@@ -9,6 +9,7 @@ import {
   useSkuldChat,
 } from '@niuulabs/ui';
 import type { PersonaRole } from '@niuulabs/domain';
+import { Eye, EyeOff } from 'lucide-react';
 import { useMessages, useSessions } from './hooks/useSessions';
 import { useRavens } from './hooks/useRavens';
 import { useRavnBudget } from './hooks/useBudget';
@@ -475,6 +476,11 @@ export function pickDefaultSession(sessions: Session[], preferredId: string | nu
   return sorted.find((session) => session.status === 'running')?.id ?? sorted[0]!.id;
 }
 
+function preferredSessionId(): string | null {
+  const fromUrl = new URLSearchParams(window.location.search).get('session');
+  return fromUrl || loadStorage<string | null>(SESSION_STORAGE_KEY, null);
+}
+
 function SessionRailItem({
   session,
   selected,
@@ -557,12 +563,18 @@ function SessionHeader({
   session,
   ravn,
   personaLabel,
+  showInternalMessages,
+  onToggleInternalMessages,
 }: {
   session: Session;
   ravn: Ravn | null;
   personaLabel: string;
+  showInternalMessages: boolean;
+  onToggleInternalMessages: () => void;
 }) {
   const isRunning = session.status === 'running';
+  const hasLiveChat = isRunning && Boolean(normalizeSessionUrl(session.chatEndpoint ?? null));
+  const InternalIcon = showInternalMessages ? EyeOff : Eye;
 
   return (
     <header className="rv-rs__head" data-testid="sessions-header">
@@ -617,6 +629,23 @@ function SessionHeader({
           </span>
         </div>
         <div className="rv-rs__actions" data-testid="sessions-actions">
+          {hasLiveChat && (
+            <button
+              type="button"
+              className={cn(
+                'rv-rs__action-btn',
+                showInternalMessages && 'rv-rs__action-btn--active',
+              )}
+              aria-label={
+                showInternalMessages ? 'Hide tool calls and results' : 'Show tool calls and results'
+              }
+              aria-pressed={showInternalMessages}
+              data-testid="internal-toggle"
+              onClick={onToggleInternalMessages}
+            >
+              <InternalIcon size={14} aria-hidden="true" />
+            </button>
+          )}
           <button type="button" className="rv-rs__action-btn">
             export
           </button>
@@ -848,11 +877,20 @@ function Composer({ session }: { session: Session }) {
 function LiveSessionChat({
   chatEndpoint,
   sessionName,
+  showInternalMessages,
+  onInternalVisibilitySender,
 }: {
   chatEndpoint: string;
   sessionName: string;
+  showInternalMessages: boolean;
+  onInternalVisibilitySender: (sender: ((visible: boolean) => void) | null) => void;
 }) {
   const chat = useSkuldChat(chatEndpoint);
+
+  useEffect(() => {
+    onInternalVisibilitySender(chat.sendSetInternalVisibility);
+    return () => onInternalVisibilitySender(null);
+  }, [chat.sendSetInternalVisibility, onInternalVisibilitySender]);
 
   return (
     <div className="rv-rs__live-chat" data-testid="sessions-live-chat">
@@ -873,9 +911,12 @@ function LiveSessionChat({
         capabilities={chat.capabilities}
         chatEndpoint={chatEndpoint}
         sessionName={sessionName}
+        showInternalToggle={false}
+        internalVisibility={showInternalMessages}
         onSend={chat.sendMessage}
         onStop={chat.sendInterrupt}
         onPermissionRespond={chat.respondToPermission}
+        onSetInternalVisibility={chat.sendSetInternalVisibility}
       />
     </div>
   );
@@ -1000,9 +1041,11 @@ export function SessionsView() {
   const { data: sessions, isLoading, isError, error } = useSessions();
   const { data: ravens } = useRavens();
   const [selectedId, setSelectedId] = useState<string | null>(() =>
-    loadStorage<string | null>(SESSION_STORAGE_KEY, null),
+    preferredSessionId(),
   );
   const [filter, setFilter] = useState<TranscriptFilter>('all');
+  const [showInternalMessages, setShowInternalMessages] = useState(false);
+  const setInternalVisibilityRef = useRef<((visible: boolean) => void) | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
 
   const sessionList = useMemo(() => sessions ?? [], [sessions]);
@@ -1020,7 +1063,9 @@ export function SessionsView() {
 
   useEffect(() => {
     const handleSelect = (event: Event) => {
-      const nextId = (event as CustomEvent<string>).detail;
+      const detail = (event as CustomEvent<string | { sessionId?: string }>).detail;
+      const nextId = typeof detail === 'string' ? detail : detail?.sessionId;
+      if (!nextId) return;
       saveStorage(SESSION_STORAGE_KEY, nextId);
       setSelectedId(nextId);
     };
@@ -1050,6 +1095,20 @@ export function SessionsView() {
   const personaLabel = persona?.name ?? personaKey;
   const personaRole = persona?.role ?? selectedSession?.personaRole ?? 'build';
   const personaLetter = persona?.letter ?? selectedSession?.personaLetter ?? '?';
+
+  const selectSession = (id: string) => {
+    saveStorage(SESSION_STORAGE_KEY, id);
+    setSelectedId(id);
+    const params = new URLSearchParams(window.location.search);
+    params.set('session', id);
+    window.history.replaceState(null, '', `/ravn/sessions?${params.toString()}`);
+  };
+
+  const toggleInternalMessages = () => {
+    const next = !showInternalMessages;
+    setShowInternalMessages(next);
+    setInternalVisibilityRef.current?.(next);
+  };
 
   const entries = useMemo(() => {
     if (!selectedSession) return [];
@@ -1116,10 +1175,7 @@ export function SessionsView() {
             sessions={activeSessions}
             selectedId={selectedSession.id}
             anchorTime={anchorTime}
-            onSelect={(id) => {
-              saveStorage(SESSION_STORAGE_KEY, id);
-              setSelectedId(id);
-            }}
+            onSelect={selectSession}
           />
           <SessionRailGroup
             label="closed"
@@ -1127,22 +1183,29 @@ export function SessionsView() {
             sessions={closedSessions}
             selectedId={selectedSession.id}
             anchorTime={anchorTime}
-            onSelect={(id) => {
-              saveStorage(SESSION_STORAGE_KEY, id);
-              setSelectedId(id);
-            }}
+            onSelect={selectSession}
           />
         </div>
       </aside>
 
       <main className="rv-rs__main">
-        <SessionHeader session={selectedSession} ravn={selectedRavn} personaLabel={personaLabel} />
+        <SessionHeader
+          session={selectedSession}
+          ravn={selectedRavn}
+          personaLabel={personaLabel}
+          showInternalMessages={showInternalMessages}
+          onToggleInternalMessages={toggleInternalMessages}
+        />
         <div className="rv-rs__body">
           <section className="rv-rs__chat">
             {liveChatEndpoint ? (
               <LiveSessionChat
                 chatEndpoint={liveChatEndpoint}
                 sessionName={selectedRavn?.personaName ?? selectedSession.personaName}
+                showInternalMessages={showInternalMessages}
+                onInternalVisibilitySender={(sender) => {
+                  setInternalVisibilityRef.current = sender;
+                }}
               />
             ) : (
               <>

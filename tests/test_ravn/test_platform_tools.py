@@ -494,6 +494,86 @@ class TestTingWorkflowTool:
         assert data["sessionId"] == "sess-1"
 
     @pytest.mark.asyncio
+    @respx.mock
+    async def test_launch_workflow_by_configured_alias_id(self):
+        tool = TingWorkflowTool(
+            base_url=BASE_URL,
+            workflow_aliases={
+                "research": {
+                    "workflow_id": "wf-research",
+                    "defaults": {
+                        "model": "claude-sonnet-4-6",
+                        "gate_auto_forward_after": "",
+                        "provenance": {"resident": "muninn"},
+                    },
+                }
+            },
+        )
+        route = respx.post(f"{TING_WORKFLOWS_URL}/wf-research/launch").mock(
+            return_value=httpx.Response(201, json={"sessionId": "sess-research"})
+        )
+
+        result = await tool.execute(
+            {
+                "action": "launch",
+                "workflow_alias": "research",
+                "prompt": "Research the expansion options.",
+                "provenance": {"resident": "muninn", "initiative": "expansion"},
+            }
+        )
+
+        assert not result.is_error
+        body = json.loads(route.calls.last.request.content)
+        assert body["prompt"] == "Research the expansion options."
+        assert body["model"] == "claude-sonnet-4-6"
+        assert body["gateAutoForwardAfter"] == ""
+        assert body["provenance"]["initiative"] == "expansion"
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_launch_workflow_by_configured_alias_name(self):
+        tool = TingWorkflowTool(
+            base_url=BASE_URL,
+            workflow_aliases={"research": {"name": "Research Campaign", "scope": ""}},
+        )
+        respx.get(TING_WORKFLOWS_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {"id": "wf-other", "name": "Other"},
+                    {"id": "wf-research", "name": "Research Campaign"},
+                ],
+            )
+        )
+        respx.post(f"{TING_WORKFLOWS_URL}/wf-research/launch").mock(
+            return_value=httpx.Response(201, json={"sessionId": "sess-research"})
+        )
+
+        result = await tool.execute(
+            {
+                "action": "launch",
+                "workflow_alias": "research",
+                "prompt": "Research the expansion options.",
+            }
+        )
+
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["sessionId"] == "sess-research"
+
+    @pytest.mark.asyncio
+    async def test_launch_workflow_unknown_alias(self):
+        result = await self.tool.execute(
+            {
+                "action": "launch",
+                "workflow_alias": "research",
+                "prompt": "Research the expansion options.",
+            }
+        )
+        assert result.is_error
+        assert "workflow_alias 'research' is not configured" in result.content
+
+    @pytest.mark.asyncio
     async def test_launch_workflow_missing_fields(self):
         result = await self.tool.execute({"action": "launch", "workflow_id": "wf-1"})
         assert result.is_error

@@ -951,6 +951,31 @@ class SkuldChannelConfig(BaseModel):
     )
 
 
+class PlatformWorkflowAliasConfig(BaseModel):
+    """Named workflow launch target for resident platform tools."""
+
+    workflow_id: str = Field(
+        default="",
+        description="Concrete Ting workflow id. Preferred when known.",
+    )
+    name: str = Field(
+        default="",
+        description="Exact workflow name to resolve when workflow_id is not configured.",
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Tags that must be present on the resolved workflow.",
+    )
+    scope: str = Field(
+        default="all",
+        description="Workflow scope to query while resolving by name or tags.",
+    )
+    defaults: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Default launch fields merged before explicit tool input.",
+    )
+
+
 class PlatformToolsConfig(BaseModel):
     """Platform integration tools (Volundr sessions, git, Ting sagas, tracker)."""
 
@@ -982,6 +1007,13 @@ class PlatformToolsConfig(BaseModel):
     workload_audiences: list[str] = Field(
         default_factory=lambda: ["volundr-api", "forge", "ting", "mimir", "guild"],
         description="Target service audiences requested from workload token exchange.",
+    )
+    workflow_aliases: dict[str, PlatformWorkflowAliasConfig] = Field(
+        default_factory=dict,
+        description=(
+            "Resident-local aliases for Ting workflow launches. "
+            "Example: research -> workflow id/name plus launch defaults."
+        ),
     )
 
 

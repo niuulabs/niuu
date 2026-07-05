@@ -80,9 +80,9 @@ def _build_skill_port(settings: Settings, workspace: Any) -> Any:
     )
 
 
-def _platform_kwargs(settings: Settings) -> dict[str, Any]:
+def _platform_kwargs(settings: Settings, *, workflow_aliases: bool = False) -> dict[str, Any]:
     platform = settings.gateway.platform
-    return {
+    kwargs = {
         "base_url": platform.base_url,
         "timeout": platform.timeout,
         "pat_token": platform.pat_token,
@@ -90,6 +90,12 @@ def _platform_kwargs(settings: Settings) -> dict[str, Any]:
         "exchange_url": platform.workload_exchange_url,
         "audiences": platform.workload_audiences,
     }
+    if workflow_aliases:
+        kwargs["workflow_aliases"] = {
+            name: alias.model_dump(exclude_none=True)
+            for name, alias in platform.workflow_aliases.items()
+        }
+    return kwargs
 
 
 def _build_web_search_kwargs(settings: Settings, _ctx: dict[str, Any]) -> dict[str, Any]:
@@ -351,7 +357,7 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         adapter="ravn.adapters.tools.platform_tools.TingWorkflowTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
+        kwargs_fn=lambda s, ctx: _platform_kwargs(s, workflow_aliases=True),
     ),
     "tracker_issue": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.TrackerIssueTool",

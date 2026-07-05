@@ -396,6 +396,12 @@ class TestResidentWorkloadIdentityConfigFirst:
             "platform": {
                 "enabled": True,
                 "baseUrl": "http://niuu-volundr.volundr.svc.cluster.local:80",
+                "workflowAliases": {
+                    "research": {
+                        "name": "Research Campaign",
+                        "defaults": {"gate_auto_forward_after": ""},
+                    }
+                },
             },
         },
         "volundr": {"apiUrl": "https://volundr.example"},
@@ -443,6 +449,8 @@ class TestResidentWorkloadIdentityConfigFirst:
         assert platform["workload_exchange_url"] == (
             "https://volundr.example/api/v1/tokens/workload/exchange"
         )
+        assert platform["workflow_aliases"]["research"]["name"] == "Research Campaign"
+        assert platform["workflow_aliases"]["research"]["defaults"]["gate_auto_forward_after"] == ""
 
     def test_default_render_has_no_workload_identity_config(self, tmp_path):
         rendered = _render_skuld_chart(tmp_path, {})

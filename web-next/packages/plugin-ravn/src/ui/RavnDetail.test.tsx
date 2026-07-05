@@ -441,6 +441,7 @@ describe('RavnDetail — Sessions tab', () => {
   it('dispatches ravn:session-selected event when session card is clicked', async () => {
     const handler = vi.fn();
     window.addEventListener('ravn:session-selected', handler);
+    window.history.replaceState(null, '', '/ravn/ravens');
 
     render(<RavnDetail ravn={SAMPLE_RAVN} />, { wrapper: wrap() });
     fireEvent.click(screen.getByTestId('sectab-sessions'));
@@ -454,6 +455,9 @@ describe('RavnDetail — Sessions tab', () => {
     if (card) fireEvent.click(card);
 
     expect(handler).toHaveBeenCalled();
+    expect(localStorage.getItem('ravn.session')).toBeTruthy();
+    expect(window.location.pathname).toBe('/ravn/sessions');
+    expect(window.location.search).toContain('session=');
     window.removeEventListener('ravn:session-selected', handler);
   });
 

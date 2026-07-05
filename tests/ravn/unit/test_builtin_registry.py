@@ -255,6 +255,22 @@ class TestKwargsFn:
             kwargs = BUILTIN_TOOLS[key].kwargs_fn(settings, ctx)
             assert kwargs["memory"] is mock_memory
 
+    def test_ting_workflow_kwargs_include_aliases(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        from ravn.config import PlatformWorkflowAliasConfig
+
+        settings.gateway.platform.workflow_aliases = {
+            "research": PlatformWorkflowAliasConfig(
+                workflow_id="wf-research",
+                defaults={"gate_auto_forward_after": ""},
+            )
+        }
+        ctx = _make_runtime_ctx(tmp_path)
+        kwargs = BUILTIN_TOOLS["ting_workflow"].kwargs_fn(settings, ctx)
+        assert kwargs["workflow_aliases"]["research"]["workflow_id"] == "wf-research"
+        assert kwargs["workflow_aliases"]["research"]["defaults"]["gate_auto_forward_after"] == ""
+
 
 # ---------------------------------------------------------------------------
 # required_context skipping

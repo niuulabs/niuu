@@ -486,6 +486,14 @@ resident:
     enabled: false
     # -- In-cluster Volundr base URL for the ravn platform gateway
     baseUrl: ""
+    # -- Per-resident workflow aliases for chat launches through ting_workflow.
+    # Example:
+    # workflowAliases:
+    #   research:
+    #     name: Research Campaign
+    #     defaults:
+    #       gate_auto_forward_after: ""
+    workflowAliases: {}
   workloadIdentity:
     # -- Audience for the projected serviceAccountToken
     audience: "volundr-api"

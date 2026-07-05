@@ -181,9 +181,9 @@ class TestStandaloneMerge:
         standalone = {s["id"]: s for s in sessions[1:]}
         assert standalone["resident-muninn"]["status"] == "running"
         assert standalone["resident-idle"]["status"] == "idle"
-        assert standalone["resident-off"]["status"] == "stopped"
-        assert standalone["resident-bad"]["status"] == "failed"
-        assert standalone["resident-done"]["status"] == "stopped"
+        assert "resident-off" not in standalone
+        assert "resident-bad" not in standalone
+        assert "resident-done" not in standalone
         session = standalone["resident-muninn"]
         assert session["ravn_id"] == "resident-muninn"
         assert session["title"] == "Muninn Standalone"
@@ -203,6 +203,17 @@ class TestStandaloneMerge:
         assert session is not None
         assert session["status"] == "running"
         assert session["title"] == "Muninn Standalone"
+
+    @respx.mock
+    async def test_get_session_stopped_standalone_returns_none(self):
+        respx.get(f"{_BASE}/api/v1/forge/sessions/resident-off").mock(
+            return_value=httpx.Response(404)
+        )
+        directory = ResidentDirectory(
+            base_url=_BASE,
+            discovery=_StaticDiscovery([_standalone(id="resident-off", status="suspended")]),
+        )
+        assert await directory.get_session("resident-off", {}, {}) is None
 
 
 class TestListSessions:
@@ -256,11 +267,20 @@ class TestListSessions:
         )
         directory = ResidentDirectory(base_url=_BASE)
         statuses = [s["status"] for s in await directory.list_sessions({}, {})]
-        assert statuses == ["stopped", "failed", "idle"]
+        assert statuses == ["idle"]
 
     @respx.mock
     async def test_get_session_non_ravn_returns_none(self):
         session = _forge_session(workload_type="session")
+        respx.get(f"{_BASE}/api/v1/forge/sessions/{session['id']}").mock(
+            return_value=httpx.Response(200, json=session)
+        )
+        directory = ResidentDirectory(base_url=_BASE)
+        assert await directory.get_session(session["id"], {}, {}) is None
+
+    @respx.mock
+    async def test_get_session_stopped_flock_returns_none(self):
+        session = _forge_session(status="stopped")
         respx.get(f"{_BASE}/api/v1/forge/sessions/{session['id']}").mock(
             return_value=httpx.Response(200, json=session)
         )

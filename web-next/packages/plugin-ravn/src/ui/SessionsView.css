@@ -239,6 +239,9 @@
 }
 
 .rv-rs__action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 34px;
   padding: 6px 14px;
   border: 1px solid rgba(156, 164, 177, 0.24);
@@ -250,6 +253,12 @@
   font-weight: 700;
   text-transform: lowercase;
   cursor: pointer;
+}
+
+.rv-rs__action-btn--active {
+  border-color: rgba(125, 211, 252, 0.54);
+  background: rgba(56, 189, 248, 0.12);
+  color: #bde8ff;
 }
 
 .rv-rs__action-btn:disabled {

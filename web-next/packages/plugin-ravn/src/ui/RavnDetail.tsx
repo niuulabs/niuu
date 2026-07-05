@@ -75,7 +75,12 @@ function spendPercent(budget?: BudgetState): number {
 }
 
 function dispatchSessionSelection(sessionId: string) {
-  window.dispatchEvent(new CustomEvent('ravn:session-selected', { detail: { sessionId } }));
+  saveStorage('ravn.session', sessionId);
+  window.dispatchEvent(new CustomEvent('ravn:session-selected', { detail: sessionId }));
+  const params = new URLSearchParams(window.location.search);
+  params.set('session', sessionId);
+  window.history.pushState(null, '', `/ravn/sessions?${params.toString()}`);
+  window.dispatchEvent(new Event('popstate'));
 }
 
 interface KeyValueRowProps {

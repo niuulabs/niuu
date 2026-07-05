@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -801,6 +802,7 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
         workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
         exchange_url: str = "",
         audiences: list[str] | None = None,
+        workflow_aliases: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._set_platform_auth(
             base_url=base_url,
@@ -810,6 +812,11 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
             exchange_url=exchange_url,
             audiences=audiences,
         )
+        self._workflow_aliases = {
+            str(name).strip().lower(): dict(config or {})
+            for name, config in (workflow_aliases or {}).items()
+            if str(name).strip()
+        }
 
     @property
     def name(self) -> str:
@@ -836,7 +843,16 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
                 },
                 "workflow_id": {
                     "type": "string",
-                    "description": "Workflow UUID (required for get and launch).",
+                    "description": (
+                        "Workflow UUID (required for get; optional for launch with alias)."
+                    ),
+                },
+                "workflow_alias": {
+                    "type": "string",
+                    "description": (
+                        "Configured workflow alias for launch, such as research or planning. "
+                        "The alias can provide workflow_id/name/tags and launch defaults."
+                    ),
                 },
                 "scope": {
                     "type": "string",
@@ -960,10 +976,14 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
             return _err(f"Failed to get workflow {workflow_id}: {exc}")
 
     async def _launch(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
-        workflow_id = str(input.get("workflow_id", "") or "").strip()
-        prompt = str(input.get("prompt", "") or "").strip()
+        launch_input = await self._launch_input_with_alias(client, input)
+        if isinstance(launch_input, ToolResult):
+            return launch_input
+
+        workflow_id = str(launch_input.get("workflow_id", "") or "").strip()
+        prompt = str(launch_input.get("prompt", "") or "").strip()
         if not workflow_id:
-            return _err("workflow_id is required for launch action")
+            return _err("workflow_id or workflow_alias is required for launch action")
         if not prompt:
             return _err("prompt is required for launch action")
 
@@ -981,19 +1001,19 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
             "mimir_path",
         )
         for key in scalar_keys:
-            value = input.get(key)
+            value = launch_input.get(key)
             if value not in (None, ""):
                 body[key] = value
 
-        if integration_ids := input.get("integration_ids"):
+        if integration_ids := launch_input.get("integration_ids"):
             body["integration_ids"] = integration_ids
-        if context := input.get("context"):
+        if context := launch_input.get("context"):
             body["context"] = context
-        if provenance := input.get("provenance"):
+        if provenance := launch_input.get("provenance"):
             body["provenance"] = provenance
         # Distinct from the scalar loop: an empty string is meaningful here
         # (it disables gate auto-forward so approvals wait for the human).
-        gate_auto_forward = input.get("gate_auto_forward_after")
+        gate_auto_forward = launch_input.get("gate_auto_forward_after")
         if gate_auto_forward is not None:
             body["gateAutoForwardAfter"] = str(gate_auto_forward)
 
@@ -1003,6 +1023,110 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
             return _ok(resp.json())
         except Exception as exc:
             return _err(f"Failed to launch workflow {workflow_id}: {exc}")
+
+    async def _launch_input_with_alias(
+        self, client: httpx.AsyncClient, input: dict
+    ) -> dict[str, Any] | ToolResult:
+        alias_name = str(input.get("workflow_alias") or input.get("alias") or "").strip()
+        if not alias_name:
+            return input
+
+        alias = self._workflow_aliases.get(alias_name.lower())
+        if alias is None:
+            return _err(f"workflow_alias {alias_name!r} is not configured")
+
+        defaults = alias.get("defaults") or {}
+        if not isinstance(defaults, dict):
+            return _err(f"workflow_alias {alias_name!r} defaults must be an object")
+
+        launch_input = {**defaults, **input}
+        if not str(launch_input.get("workflow_id", "") or "").strip():
+            workflow_id, error = await self._resolve_workflow_alias(client, alias_name, alias)
+            if error:
+                return _err(error)
+            launch_input["workflow_id"] = workflow_id
+        return launch_input
+
+    async def _resolve_workflow_alias(
+        self, client: httpx.AsyncClient, alias_name: str, alias: dict[str, Any]
+    ) -> tuple[str, str]:
+        workflow_id = str(alias.get("workflow_id", "") or "").strip()
+        if workflow_id:
+            return workflow_id, ""
+
+        name = str(alias.get("name", "") or "").strip()
+        tags = [str(tag).strip() for tag in alias.get("tags") or [] if str(tag).strip()]
+        if not name and not tags:
+            return "", f"workflow_alias {alias_name!r} needs workflow_id, name, or tags"
+
+        params: dict[str, str] = {}
+        if scope := str(alias.get("scope", "") or "").strip():
+            params["scope"] = scope
+        try:
+            resp = await client.get(_TING_WORKFLOWS_PATH, params=params or None)
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as exc:
+            return "", f"Failed to resolve workflow_alias {alias_name!r}: {exc}"
+
+        workflows = _workflow_list(payload)
+        matches = [
+            workflow
+            for workflow in workflows
+            if _workflow_matches_alias(workflow, name=name, tags=tags)
+        ]
+        if not matches:
+            return "", f"workflow_alias {alias_name!r} did not match any workflows"
+        if len(matches) > 1:
+            names = ", ".join(
+                str(item.get("name") or item.get("id") or "") for item in matches[:3]
+            )
+            return "", f"workflow_alias {alias_name!r} matched multiple workflows: {names}"
+
+        resolved = str(matches[0].get("id") or matches[0].get("workflow_id") or "").strip()
+        if not resolved:
+            return "", f"workflow_alias {alias_name!r} matched a workflow without an id"
+        return resolved, ""
+
+
+def _workflow_list(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("workflows", "items", "data"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _workflow_matches_alias(workflow: dict[str, Any], *, name: str, tags: list[str]) -> bool:
+    if name:
+        workflow_names = {
+            str(workflow.get("name") or "").strip().lower(),
+            str(workflow.get("id") or "").strip().lower(),
+            str(workflow.get("workflow_id") or "").strip().lower(),
+        }
+        if name.lower() not in workflow_names:
+            return False
+    if tags:
+        workflow_tags = {tag.lower() for tag in _workflow_tags(workflow)}
+        if not {tag.lower() for tag in tags}.issubset(workflow_tags):
+            return False
+    return True
+
+
+def _workflow_tags(workflow: dict[str, Any]) -> list[str]:
+    candidates: list[Any] = [workflow.get("tags")]
+    for parent in ("graph", "metadata"):
+        value = workflow.get(parent)
+        if isinstance(value, dict):
+            candidates.append(value.get("tags"))
+    for value in candidates:
+        if isinstance(value, list):
+            return [str(tag) for tag in value if str(tag).strip()]
+    return []
 
 
 # ---------------------------------------------------------------------------

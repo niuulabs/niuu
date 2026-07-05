@@ -156,6 +156,34 @@ describe('SessionsView', () => {
     expect(within(header).getByRole('heading', { name: 'Review PR #142' })).toBeInTheDocument();
   });
 
+  it('responds to legacy object-shaped ravn:session-selected events', async () => {
+    render(<SessionsView />, { wrapper: wrap(services()) });
+    await waitFor(() => expect(screen.getByTestId('sessions-page')).toBeInTheDocument());
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('ravn:session-selected', {
+          detail: { sessionId: '10000001-0000-4000-8000-000000000005' },
+        }),
+      );
+    });
+
+    const header = await screen.findByTestId('sessions-header');
+    expect(within(header).getByRole('heading', { name: 'Review PR #142' })).toBeInTheDocument();
+  });
+
+  it('selects a session from the route query param', async () => {
+    window.history.replaceState(
+      null,
+      '',
+      '/ravn/sessions?session=10000001-0000-4000-8000-000000000005',
+    );
+    render(<SessionsView />, { wrapper: wrap(services()) });
+
+    const header = await screen.findByTestId('sessions-header');
+    expect(within(header).getByRole('heading', { name: 'Review PR #142' })).toBeInTheDocument();
+  });
+
   it('persists selection to localStorage', async () => {
     render(<SessionsView />, { wrapper: wrap(services()) });
     const target = await screen.findByRole('button', {
@@ -231,6 +259,21 @@ describe('SessionsView — live chat', () => {
     // The synthesized read-only transcript must NOT be present.
     expect(screen.queryByTestId('sessions-composer')).not.toBeInTheDocument();
     expect(screen.queryByRole('log', { name: /session transcript/i })).not.toBeInTheDocument();
+  });
+
+  it('toggles internal visibility for live chat sessions', async () => {
+    const sendSetInternalVisibility = vi.fn();
+    useSkuldChatMock.mockImplementation(() => makeChatState({ sendSetInternalVisibility }));
+    render(<SessionsView />, {
+      wrapper: wrap(servicesWith(singleSessionStream(liveRunningSession()))),
+    });
+    const toggle = await screen.findByTestId('internal-toggle');
+
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    expect(sendSetInternalVisibility).toHaveBeenCalledWith(true);
   });
 
   it('drives SessionChat from the useSkuldChat hook messages', async () => {

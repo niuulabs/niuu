@@ -73,6 +73,10 @@ data:
         {{- if .Values.volundr.apiUrl }}
         workload_exchange_url: {{ printf "%s/api/v1/tokens/workload/exchange" (.Values.volundr.apiUrl | trimSuffix "/") | quote }}
         {{- end }}
+        {{- with .Values.resident.platform.workflowAliases }}
+        workflow_aliases:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
       {{- end }}
     initiative:
       enabled: true
