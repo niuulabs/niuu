@@ -169,6 +169,8 @@ class ResidentDirectory:
         auth_params: dict[str, str],
     ) -> dict[str, Any] | None:
         """Return one live ravn session by id, or None."""
+        if not _RAVN_ID_RE.fullmatch(session_id):
+            return None
         try:
             session = await self._get_json(
                 f"/api/v1/forge/sessions/{session_id}",
