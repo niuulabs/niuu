@@ -124,6 +124,74 @@ class TestListRavens:
             await directory.list_ravens({}, {})
 
 
+class TestListSessions:
+    @respx.mock
+    async def test_lists_resident_and_flock_sessions_with_chat(self):
+        respx.get(f"{_BASE}/api/v1/forge/sessions").mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    _forge_session(),  # resident
+                    _forge_session(
+                        id="flock-1",
+                        workload_type="ravn_flock",
+                        resident=None,
+                        name="research campaign",
+                    ),
+                    _forge_session(id="plain", workload_type="session", resident=None),
+                ],
+            )
+        )
+        directory = ResidentDirectory(base_url=_BASE)
+        sessions = await directory.list_sessions({}, {})
+        # resident + flock, NOT the plain coding session
+        assert len(sessions) == 2
+        resident = sessions[0]
+        assert resident["ravn_id"] == "flock-product-steward"
+        assert resident["persona_name"] == "product-steward"
+        assert resident["status"] == "running"
+        assert resident["chat_endpoint"] == "ws://host:8080/s/1111/session"
+        flock = sessions[1]
+        assert flock["ravn_id"] == "flock-1"  # falls back to session id
+        assert flock["chat_endpoint"]
+
+    @respx.mock
+    async def test_status_mapping(self):
+        respx.get(f"{_BASE}/api/v1/forge/sessions").mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    _forge_session(id="a", status="stopped"),
+                    _forge_session(id="b", status="failed"),
+                    _forge_session(id="c", status="starting"),
+                ],
+            )
+        )
+        directory = ResidentDirectory(base_url=_BASE)
+        statuses = [s["status"] for s in await directory.list_sessions({}, {})]
+        assert statuses == ["stopped", "failed", "idle"]
+
+    @respx.mock
+    async def test_get_session_non_ravn_returns_none(self):
+        session = _forge_session(workload_type="session", resident=None)
+        respx.get(f"{_BASE}/api/v1/forge/sessions/{session['id']}").mock(
+            return_value=httpx.Response(200, json=session)
+        )
+        directory = ResidentDirectory(base_url=_BASE)
+        assert await directory.get_session(session["id"], {}, {}) is None
+
+    @respx.mock
+    async def test_get_session_resident(self):
+        session = _forge_session()
+        respx.get(f"{_BASE}/api/v1/forge/sessions/{session['id']}").mock(
+            return_value=httpx.Response(200, json=session)
+        )
+        directory = ResidentDirectory(base_url=_BASE)
+        got = await directory.get_session(session["id"], {}, {})
+        assert got is not None
+        assert got["chat_endpoint"] == "ws://host:8080/s/1111/session"
+
+
 class TestGetRaven:
     @respx.mock
     async def test_get_resident(self):

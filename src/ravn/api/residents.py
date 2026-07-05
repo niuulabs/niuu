@@ -49,6 +49,23 @@ _STATUS_MAP = {
     "archived": "completed",
 }
 
+# Forge session status → ravn Session status (web session vocabulary:
+# running | idle | stopped | failed).
+_SESSION_STATUS_MAP = {
+    "created": "idle",
+    "starting": "idle",
+    "provisioning": "idle",
+    "running": "running",
+    "stopping": "stopped",
+    "stopped": "stopped",
+    "failed": "failed",
+    "archived": "stopped",
+}
+
+# The workload types that ARE ravn agents you can chat with / steer (each runs
+# a Skuld room). Plain coding sessions are not "ravn sessions".
+_RAVN_SESSION_WORKLOADS = frozenset({"resident", "ravn_flock"})
+
 
 def forward_auth(request: Request) -> tuple[dict[str, str], dict[str, str]]:
     """Extract forwardable auth headers and dev-identity query params."""
@@ -109,6 +126,73 @@ class ResidentDirectory:
             and session.get("workload_type") == "resident"
             and session.get("resident")
         ]
+
+    async def list_sessions(
+        self,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        """Return the caller's live ravn sessions (resident + flock rooms).
+
+        These are the real running sessions you can open and chat with, the
+        Ravn-side equivalent of the Volundr live session list — each carries a
+        ``chat_endpoint`` (its Skuld room) so the UI can reuse the shared chat.
+        """
+        sessions = await self._get_json(
+            "/api/v1/forge/sessions",
+            auth_headers,
+            auth_params,
+        )
+        if not isinstance(sessions, list):
+            raise RuntimeError(
+                f"Forge sessions API returned unexpected payload: {type(sessions).__name__}"
+            )
+        return [
+            self._to_session(session)
+            for session in sessions
+            if isinstance(session, dict) and session.get("workload_type") in _RAVN_SESSION_WORKLOADS
+        ]
+
+    async def get_session(
+        self,
+        session_id: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any] | None:
+        """Return one live ravn session by id, or None."""
+        try:
+            session = await self._get_json(
+                f"/api/v1/forge/sessions/{session_id}",
+                auth_headers,
+                auth_params,
+            )
+        except httpx.HTTPStatusError as exc:
+            if 400 <= exc.response.status_code < 500:
+                return None
+            raise
+        if (
+            not isinstance(session, dict)
+            or session.get("workload_type") not in _RAVN_SESSION_WORKLOADS
+        ):
+            return None
+        return self._to_session(session)
+
+    @staticmethod
+    def _to_session(session: dict[str, Any]) -> dict[str, Any]:
+        resident = session.get("resident") or {}
+        # ravnId is required by the web schema; prefer the resident peer id, fall
+        # back to the session id so a flock session still has a stable owner ref.
+        ravn_id = resident.get("peer_id") or session.get("id")
+        return {
+            "id": session.get("id"),
+            "ravn_id": ravn_id,
+            "persona_name": resident.get("persona") or session.get("name") or "",
+            "status": _SESSION_STATUS_MAP.get(str(session.get("status") or ""), "idle"),
+            "model": session.get("model") or "",
+            "created_at": session.get("created_at"),
+            "chat_endpoint": session.get("chat_endpoint"),
+            "title": resident.get("name") or session.get("name") or "",
+        }
 
     async def get_raven(
         self,

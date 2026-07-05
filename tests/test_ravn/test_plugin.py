@@ -366,15 +366,17 @@ def test_create_api_app_lists_ravens_sessions_and_triggers():
             )
         )
         ravens = client.get("/api/v1/ravn/ravens")
+        # /sessions is also real discovery now (same forge mock).
+        sessions = client.get("/api/v1/ravn/sessions")
     assert ravens.status_code == 200
     assert isinstance(ravens.json(), list)
     assert ravens.json()[0]["persona_name"] == "product-steward"
     assert ravens.json()[0]["kind"] == "resident"
 
-    sessions = client.get("/api/v1/ravn/sessions")
     assert sessions.status_code == 200
     assert isinstance(sessions.json(), list)
-    assert sessions.json()[0]["ravn_id"]
+    assert sessions.json()[0]["ravn_id"] == "flock-product-steward"
+    assert sessions.json()[0]["chat_endpoint"]
 
     triggers = client.get("/api/v1/ravn/triggers")
     assert triggers.status_code == 200
@@ -395,14 +397,29 @@ def test_create_api_app_supports_session_messages_and_budget_routes():
 
     client = TestClient(app)
 
-    session = client.get("/api/v1/ravn/sessions/10000001-0000-4000-8000-000000000001")
-    assert session.status_code == 200
-    assert session.json()["persona_name"] == "sindri"
+    import httpx
+    import respx
 
-    messages = client.get("/api/v1/ravn/sessions/10000001-0000-4000-8000-000000000001/messages")
+    sid = "11111111-2222-4333-8444-555555555555"
+    forge_session = {
+        "id": sid,
+        "status": "running",
+        "model": "claude-opus-4-8",
+        "chat_endpoint": "ws://host/s/1/session",
+        "workload_type": "resident",
+        "resident": {"name": "Muninn", "persona": "product-steward", "peer_id": "flock-ps"},
+    }
+    with respx.mock(assert_all_called=False) as router:
+        router.get(f"http://127.0.0.1:8080/api/v1/forge/sessions/{sid}").mock(
+            return_value=httpx.Response(200, json=forge_session)
+        )
+        session = client.get(f"/api/v1/ravn/sessions/{sid}")
+        # Live transcript flows over the chat WS, so REST messages is empty.
+        messages = client.get(f"/api/v1/ravn/sessions/{sid}/messages")
+    assert session.status_code == 200
+    assert session.json()["persona_name"] == "product-steward"
     assert messages.status_code == 200
-    assert isinstance(messages.json(), list)
-    assert messages.json()[0]["session_id"] == "10000001-0000-4000-8000-000000000001"
+    assert messages.json() == []
 
     budget = client.get("/api/v1/ravn/budget/a3f1b2c4-8e7d-4a6f-9b0c-1d2e3f4a5b6c")
     assert budget.status_code == 200
