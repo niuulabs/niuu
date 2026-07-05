@@ -49,8 +49,10 @@ from ravn.api.valkyries import (
 )
 from ravn.api.warden_stream import WardenStreamBroker
 from ravn.config import Settings
+from ravn.ports.resident_discovery import ResidentDiscoveryPort
 from ravn.ports.warden_deployer import WardenDeploymentError
 from ravn.ports.warden_discovery import WardenDiscoveryPort
+from ravn.resident_discovery import build_resident_discovery
 from ravn.warden import (
     WardenConsoleConfig,
     WardenFeatures,
@@ -132,6 +134,7 @@ def create_app(
     warden_store: WardenStore | None = None,
     settings: Settings | None = None,
     warden_discovery: WardenDiscoveryPort | None = None,
+    resident_discovery: ResidentDiscoveryPort | None = None,
 ) -> FastAPI:
     """Create and return the Ravn FastAPI sub-application.
 
@@ -147,8 +150,13 @@ def create_app(
     loaded_settings = settings or Settings()
     # gateway.platform.base_url is the canonical "where is the platform API"
     # setting (config file, or RAVN_GATEWAY__PLATFORM__BASE_URL env override).
+    if resident_discovery is None:
+        standalone_discovery = build_resident_discovery(loaded_settings.resident_discovery)
+    else:
+        standalone_discovery = resident_discovery
     resident_directory = ResidentDirectory(
-        base_url=loaded_settings.gateway.platform.base_url
+        base_url=loaded_settings.gateway.platform.base_url,
+        discovery=standalone_discovery,
     )
     store = warden_store or build_warden_store()
     if warden_discovery is None:

@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import logging
-import os
-import re
 from datetime import UTC, datetime
-from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
-import httpx
-
+from ravn.adapters.kubernetes_deployments import (
+    KubernetesDeploymentDiscovery,
+    _objectify,
+)
 from ravn.warden.models import (
     WardenFeatures,
     WardenMimirBinding,
@@ -23,13 +21,15 @@ from ravn.warden.models import (
     WardenSupervisor,
 )
 
+__all__ = ["KubernetesWardenDiscoveryAdapter", "_objectify"]
+
 logger = logging.getLogger(__name__)
-_SERVICE_ACCOUNT_ROOT = Path("/var/run/secrets/kubernetes.io/serviceaccount")
-_CAMEL_RE = re.compile(r"(?<!^)(?=[A-Z])")
 
 
-class KubernetesWardenDiscoveryAdapter:
+class KubernetesWardenDiscoveryAdapter(KubernetesDeploymentDiscovery):
     """Read Warden deployments from the Kubernetes API."""
+
+    _discovery_kind = "wardens"
 
     def __init__(
         self,
@@ -41,121 +41,32 @@ class KubernetesWardenDiscoveryAdapter:
         in_cluster: bool | None = None,
         apps_api: Any | None = None,
     ) -> None:
-        self._namespace = namespace
-        self._label_selector = label_selector
-        self._required_labels = required_labels or {"niuu.world/kind": "warden"}
-        self._kubeconfig = kubeconfig
-        self._context = context
-        self._in_cluster = in_cluster
-        self._apps_api = apps_api
+        super().__init__(
+            namespace=namespace,
+            label_selector=label_selector,
+            required_labels=required_labels or {"niuu.world/kind": "warden"},
+            kubeconfig=kubeconfig,
+            context=context,
+            in_cluster=in_cluster,
+            apps_api=apps_api,
+        )
 
     async def list_wardens(self) -> list[WardenSpec]:
         """Return wardens represented by Kubernetes deployments."""
-        apps_api = self._apps_api or self._build_apps_api()
-        if apps_api is None:
-            items = await self._list_incluster_deployments()
-        else:
-            try:
-                response = self._list_deployments(apps_api)
-            except Exception as exc:  # pragma: no cover - depends on cluster client
-                logger.warning("Unable to discover Kubernetes wardens: %s", exc)
-                return []
-            items = getattr(response, "items", response if isinstance(response, list) else [])
-
-        wardens = [
-            self._deployment_to_warden(item) for item in items if self._deployment_matches(item)
-        ]
+        items = await self._list_matching_deployments()
+        wardens = [self._deployment_to_warden(item) for item in items]
         return [warden for warden in wardens if warden is not None]
-
-    def _build_apps_api(self) -> Any | None:
-        try:
-            from kubernetes import client, config  # noqa: PLC0415
-        except ImportError:
-            return None
-
-        try:
-            self._load_config(config)
-        except Exception as exc:  # pragma: no cover - depends on local cluster config
-            logger.warning("Unable to configure Kubernetes client: %s", exc)
-            return None
-        return client.AppsV1Api()
-
-    async def _list_incluster_deployments(self) -> list[Any]:
-        token_path = _SERVICE_ACCOUNT_ROOT / "token"
-        ca_path = _SERVICE_ACCOUNT_ROOT / "ca.crt"
-        if not token_path.exists():
-            logger.info("Kubernetes service-account token is not mounted")
-            return []
-
-        host = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
-        port = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
-        if self._namespace:
-            path = f"/apis/apps/v1/namespaces/{self._namespace}/deployments"
-        else:
-            path = "/apis/apps/v1/deployments"
-        url = f"https://{host}:{port}{path}"
-        params = {"labelSelector": self._label_selector} if self._label_selector else None
-        headers = {"Authorization": f"Bearer {token_path.read_text(encoding='utf-8').strip()}"}
-
-        try:
-            async with httpx.AsyncClient(
-                timeout=10.0,
-                verify=str(ca_path) if ca_path.exists() else True,
-            ) as client:
-                response = await client.get(url, headers=headers, params=params)
-                response.raise_for_status()
-                payload = response.json()
-        except Exception as exc:
-            logger.warning("Unable to discover Kubernetes wardens through REST API: %s", exc)
-            return []
-        items = payload.get("items", []) if isinstance(payload, dict) else []
-        return [_objectify(item) for item in items if isinstance(item, dict)]
-
-    def _load_config(self, config: Any) -> None:
-        if self._in_cluster is True:
-            config.load_incluster_config()
-            return
-        if self._in_cluster is False:
-            config.load_kube_config(
-                config_file=self._kubeconfig or None,
-                context=self._context or None,
-            )
-            return
-        try:
-            config.load_incluster_config()
-            return
-        except Exception:
-            config.load_kube_config(
-                config_file=self._kubeconfig or None,
-                context=self._context or None,
-            )
-
-    def _list_deployments(self, apps_api: Any) -> Any:
-        if self._namespace:
-            return apps_api.list_namespaced_deployment(
-                namespace=self._namespace,
-                label_selector=self._label_selector,
-            )
-        return apps_api.list_deployment_for_all_namespaces(
-            label_selector=self._label_selector,
-        )
 
     def _deployment_to_warden(self, deployment: Any) -> WardenSpec | None:
         metadata = getattr(deployment, "metadata", None)
-        labels = getattr(metadata, "labels", None) or {}
-        annotations = getattr(metadata, "annotations", None) or {}
         name = str(getattr(metadata, "name", "") or "")
         namespace = str(getattr(metadata, "namespace", "") or self._namespace)
         if not name:
             return None
 
         pod_template = getattr(getattr(deployment, "spec", None), "template", None)
-        pod_labels = getattr(getattr(pod_template, "metadata", None), "labels", None) or {}
-        pod_annotations = (
-            getattr(getattr(pod_template, "metadata", None), "annotations", None) or {}
-        )
-        merged_labels = {**pod_labels, **labels}
-        merged_annotations = {**pod_annotations, **annotations}
+        merged_labels = self._merged_labels(deployment)
+        merged_annotations = self._merged_annotations(deployment)
         env = self._pod_template_env(pod_template)
         status = getattr(deployment, "status", None)
         replicas = int(getattr(status, "replicas", None) or 0)
@@ -279,14 +190,6 @@ class KubernetesWardenDiscoveryAdapter:
                     env[name] = str(value)
         return env
 
-    def _deployment_matches(self, deployment: Any) -> bool:
-        metadata = getattr(deployment, "metadata", None)
-        deployment_labels = getattr(metadata, "labels", None) or {}
-        pod_template = getattr(getattr(deployment, "spec", None), "template", None)
-        pod_labels = getattr(getattr(pod_template, "metadata", None), "labels", None) or {}
-        labels = {**pod_labels, **deployment_labels}
-        return all(labels.get(key) == value for key, value in self._required_labels.items())
-
     def _image(self, pod_template: Any) -> str:
         pod_spec = getattr(pod_template, "spec", None)
         containers = getattr(pod_spec, "containers", None) or []
@@ -302,9 +205,6 @@ class KubernetesWardenDiscoveryAdapter:
         if ready_replicas > 0:
             return "degraded"
         return "idle"
-
-    def _value(self, data: dict[str, str], key: str) -> str:
-        return str(data.get(key) or "").strip()
 
     def _csv(self, value: str) -> list[str]:
         return [item.strip() for item in value.split(",") if item.strip()]
@@ -322,25 +222,3 @@ class KubernetesWardenDiscoveryAdapter:
         if value in {"false", "0", "no", "off"}:
             return False
         return default
-
-
-def _objectify(value: Any) -> Any:
-    if isinstance(value, list):
-        return [_objectify(item) for item in value]
-    if isinstance(value, dict):
-        if _is_label_map(value):
-            return value
-        return SimpleNamespace(
-            **{_snake_key(str(key)): _objectify(item) for key, item in value.items()}
-        )
-    return value
-
-
-def _is_label_map(value: dict[Any, Any]) -> bool:
-    return all(not isinstance(item, (dict, list)) for item in value.values()) and any(
-        "/" in str(key) or "." in str(key) for key in value
-    )
-
-
-def _snake_key(value: str) -> str:
-    return _CAMEL_RE.sub("_", value).lower()

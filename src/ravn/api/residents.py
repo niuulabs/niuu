@@ -20,6 +20,8 @@ from typing import Any
 import httpx
 from fastapi import Request
 
+from ravn.ports.resident_discovery import ResidentDiscoveryPort, StandaloneResident
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PLATFORM_API_URL = "http://localhost:8080"  # matches PlatformToolsConfig.base_url
@@ -69,6 +71,16 @@ _SESSION_STATUS_MAP = {
 # a Skuld room). Plain coding sessions are not "ravn sessions".
 _RAVN_SESSION_WORKLOADS = frozenset({"resident", "ravn_flock"})
 
+# StandaloneResident status (raven fleet vocabulary) → ravn Session status
+# (web session vocabulary: running | idle | stopped | failed).
+_STANDALONE_SESSION_STATUS_MAP = {
+    "active": "running",
+    "idle": "idle",
+    "suspended": "stopped",
+    "failed": "failed",
+    "completed": "stopped",
+}
+
 
 def _sanitize_for_log(value: str) -> str:
     """Remove line-break/control characters to prevent log-forging."""
@@ -89,19 +101,27 @@ def forward_auth(request: Request) -> tuple[dict[str, str], dict[str, str]]:
 
 
 class ResidentDirectory:
-    """Discovers resident ravns from the Volundr Forge sessions API."""
+    """Discovers resident ravns from the Volundr Forge sessions API.
+
+    Optionally merges in standalone residents (helm-deployed, outside Forge)
+    reported by a :class:`ResidentDiscoveryPort`. Forge is the primary source:
+    a discovery failure degrades to forge-only results, while forge failures
+    still propagate loudly.
+    """
 
     def __init__(
         self,
         *,
         base_url: str = "",
         timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+        discovery: ResidentDiscoveryPort | None = None,
     ) -> None:
         # Configuration-driven: create_app threads gateway.platform.base_url
         # from the ravn Settings here (config file or standard RAVN_ env
         # overrides) — no bespoke environment lookups.
         self._base_url = (base_url or _DEFAULT_PLATFORM_API_URL).rstrip("/")
         self._timeout = timeout_seconds
+        self._discovery = discovery
         # One pooled client for the directory's lifetime — /ravens and
         # /settings hit this per request, so a fresh client (new TCP+TLS)
         # per call is pure setup waste.
@@ -125,13 +145,20 @@ class ResidentDirectory:
             raise RuntimeError(
                 f"Forge sessions API returned unexpected payload: {type(sessions).__name__}"
             )
-        return [
+        ravens = [
             self._to_raven(session)
             for session in sessions
             if isinstance(session, dict)
             and session.get("workload_type") == "resident"
             and session.get("resident")
         ]
+        forge_ids = {raven["id"] for raven in ravens}
+        ravens.extend(
+            self._standalone_to_raven(resident)
+            for resident in await self._discover_standalone()
+            if resident.id not in forge_ids
+        )
+        return ravens
 
     async def list_sessions(
         self,
@@ -153,11 +180,18 @@ class ResidentDirectory:
             raise RuntimeError(
                 f"Forge sessions API returned unexpected payload: {type(sessions).__name__}"
             )
-        return [
+        ravn_sessions = [
             self._to_session(session)
             for session in sessions
             if isinstance(session, dict) and session.get("workload_type") in _RAVN_SESSION_WORKLOADS
         ]
+        forge_ids = {session["id"] for session in ravn_sessions}
+        ravn_sessions.extend(
+            self._standalone_to_session(resident)
+            for resident in await self._discover_standalone()
+            if resident.id not in forge_ids
+        )
+        return ravn_sessions
 
     async def get_session(
         self,
@@ -176,13 +210,13 @@ class ResidentDirectory:
             )
         except httpx.HTTPStatusError as exc:
             if 400 <= exc.response.status_code < 500:
-                return None
+                return await self._standalone_session(session_id)
             raise
         if (
             not isinstance(session, dict)
             or session.get("workload_type") not in _RAVN_SESSION_WORKLOADS
         ):
-            return None
+            return await self._standalone_session(session_id)
         return self._to_session(session)
 
     @staticmethod
@@ -231,14 +265,14 @@ class ResidentDirectory:
                     _sanitize_for_log(ravn_id),
                 )
             if 400 <= status < 500:
-                return None
+                return await self._standalone_raven(ravn_id)
             raise
         if (
             not isinstance(session, dict)
             or session.get("workload_type") != "resident"
             or not session.get("resident")
         ):
-            return None
+            return await self._standalone_raven(ravn_id)
         return self._to_raven(session)
 
     async def _get_json(
@@ -252,6 +286,62 @@ class ResidentDirectory:
             response = await client.get(url, headers=auth_headers, params=auth_params)
             response.raise_for_status()
             return response.json()
+
+    async def _discover_standalone(self) -> list[StandaloneResident]:
+        """Return discovered standalone residents; never break forge results."""
+        if self._discovery is None:
+            return []
+        try:
+            return await self._discovery.list_residents()
+        except Exception:
+            logger.warning(
+                "standalone resident discovery failed; serving forge results only",
+                exc_info=True,
+            )
+            return []
+
+    async def _standalone_raven(self, ravn_id: str) -> dict[str, Any] | None:
+        for resident in await self._discover_standalone():
+            if resident.id == ravn_id:
+                return self._standalone_to_raven(resident)
+        return None
+
+    async def _standalone_session(self, session_id: str) -> dict[str, Any] | None:
+        for resident in await self._discover_standalone():
+            if resident.id == session_id:
+                return self._standalone_to_session(resident)
+        return None
+
+    @staticmethod
+    def _standalone_to_raven(resident: StandaloneResident) -> dict[str, Any]:
+        return {
+            "id": resident.id,
+            "persona_name": resident.persona_name,
+            "resident_name": resident.resident_name,
+            "peer_id": "",
+            "kind": "resident",
+            "status": resident.status,
+            "model": resident.model,
+            "created_at": resident.created_at,
+            "updated_at": resident.updated_at,
+            "chat_endpoint": resident.chat_endpoint,
+            "session_id": resident.id,
+            "location": resident.location,
+            "deployment": "standalone",
+        }
+
+    @staticmethod
+    def _standalone_to_session(resident: StandaloneResident) -> dict[str, Any]:
+        return {
+            "id": resident.id,
+            "ravn_id": resident.id,
+            "persona_name": resident.persona_name,
+            "status": _STANDALONE_SESSION_STATUS_MAP.get(resident.status, "idle"),
+            "model": resident.model,
+            "created_at": resident.created_at,
+            "chat_endpoint": resident.chat_endpoint,
+            "title": resident.resident_name,
+        }
 
     @staticmethod
     def _to_raven(session: dict[str, Any]) -> dict[str, Any]:

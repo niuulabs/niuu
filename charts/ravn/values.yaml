@@ -27,6 +27,18 @@ serviceAccount:
   annotations: {}
   name: ""
 
+rbac:
+  # Kubernetes discovery permissions for standalone-resident discovery
+  # (resident_discovery Settings section). Disabled by default.
+  discovery:
+    enabled: false
+    # Grant cluster-wide read access (ClusterRole/ClusterRoleBinding) instead
+    # of a single namespace.
+    clusterWide: false
+    # Namespace the Role/RoleBinding are created in; defaults to the release
+    # namespace. Ignored when clusterWide is true.
+    namespace: ""
+
 service:
   type: ClusterIP
   port: 80

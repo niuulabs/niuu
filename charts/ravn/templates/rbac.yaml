@@ -1,0 +1,57 @@
+{{- if .Values.rbac.discovery.enabled -}}
+{{- if .Values.rbac.discovery.clusterWide }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "ravn.fullname" . }}-resident-discovery
+  labels:
+    {{- include "ravn.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "ravn.fullname" . }}-resident-discovery
+  labels:
+    {{- include "ravn.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "ravn.fullname" . }}-resident-discovery
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "ravn.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- else }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "ravn.fullname" . }}-resident-discovery
+  namespace: {{ .Values.rbac.discovery.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "ravn.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "ravn.fullname" . }}-resident-discovery
+  namespace: {{ .Values.rbac.discovery.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "ravn.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "ravn.fullname" . }}-resident-discovery
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "ravn.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}

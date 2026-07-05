@@ -3299,6 +3299,55 @@ class WardenDiscoveryConfig(BaseModel):
         return self
 
 
+class ResidentDiscoveryAdapterConfig(BaseModel):
+    """Dynamic adapter entry for standalone-resident discovery."""
+
+    adapter: str = Field(
+        default=(
+            "ravn.adapters.resident_discovery.kubernetes.KubernetesResidentDiscoveryAdapter"
+        ),
+        description="Fully-qualified class path for the resident discovery adapter.",
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+    model_config = {"extra": "allow"}
+
+    def adapter_kwargs(self) -> dict[str, Any]:
+        """Return constructor kwargs from explicit kwargs plus extra fields."""
+        extras = self.__pydantic_extra__ or {}
+        return {**self.kwargs, **extras}
+
+
+class ResidentDiscoveryConfig(BaseModel):
+    """Read-only standalone-resident discovery configuration.
+
+    No adapters are configured by default: discovering residents from a
+    cluster is an explicit deployment decision (in-cluster RBAC, or a local
+    kubeconfig that may point at a live cluster).
+    """
+
+    enabled: bool = True
+    adapters: list[ResidentDiscoveryAdapterConfig] = Field(default_factory=list)
+    adapters_json: str = Field(
+        default="",
+        description="JSON list of adapter objects for env-driven deployments.",
+    )
+
+    @model_validator(mode="after")
+    def _parse_adapters_json(self) -> ResidentDiscoveryConfig:
+        if not self.adapters_json.strip():
+            return self
+        raw_adapters = json.loads(self.adapters_json)
+        if not isinstance(raw_adapters, list):
+            msg = "resident_discovery.adapters_json must be a JSON list"
+            raise ValueError(msg)
+        self.adapters = [
+            ResidentDiscoveryAdapterConfig.model_validate(item) for item in raw_adapters
+        ]
+        return self
+
+
 class Settings(BaseSettings):
     """Ravn application settings.
 
@@ -3402,6 +3451,9 @@ class Settings(BaseSettings):
 
     # Warden discovery for UI/Guild/Observatory surfaces.
     warden_discovery: WardenDiscoveryConfig = Field(default_factory=WardenDiscoveryConfig)
+
+    # Standalone-resident discovery (helm-deployed residents outside Forge).
+    resident_discovery: ResidentDiscoveryConfig = Field(default_factory=ResidentDiscoveryConfig)
 
     # NIU-435: cascade coordinator / flock delegation / ephemeral spawn
     cascade: CascadeConfig = Field(default_factory=CascadeConfig)

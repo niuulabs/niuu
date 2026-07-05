@@ -9,8 +9,37 @@ import pytest
 import respx
 
 from ravn.api.residents import ResidentDirectory, forward_auth
+from ravn.ports.resident_discovery import StandaloneResident
 
 _BASE = "http://volundr.test"
+
+
+def _standalone(**overrides) -> StandaloneResident:
+    fields = {
+        "id": "resident-muninn",
+        "resident_name": "Muninn Standalone",
+        "persona_name": "product-steward",
+        "status": "active",
+        "model": "claude-fable-5",
+        "chat_endpoint": "ws://resident-muninn/session",
+        "location": "volundr/resident-muninn",
+        "created_at": "2026-07-01T09:00:00Z",
+    }
+    fields.update(overrides)
+    return StandaloneResident(**fields)
+
+
+class _StaticDiscovery:
+    def __init__(self, residents: list[StandaloneResident]) -> None:
+        self._residents = residents
+
+    async def list_residents(self) -> list[StandaloneResident]:
+        return self._residents
+
+
+class _FailingDiscovery:
+    async def list_residents(self) -> list[StandaloneResident]:
+        raise RuntimeError("cluster unreachable")
 
 
 def _forge_session(**overrides) -> dict:
@@ -124,6 +153,138 @@ class TestListRavens:
             await directory.list_ravens({}, {})
 
 
+class TestStandaloneMerge:
+    @respx.mock
+    async def test_list_ravens_appends_standalone_residents(self):
+        respx.get(f"{_BASE}/api/v1/forge/sessions").mock(
+            return_value=httpx.Response(200, json=[_forge_session()])
+        )
+        directory = ResidentDirectory(
+            base_url=_BASE,
+            discovery=_StaticDiscovery([_standalone()]),
+        )
+        ravens = await directory.list_ravens({}, {})
+        assert [r["id"] for r in ravens] == [
+            "11111111-2222-4333-8444-555555555555",
+            "resident-muninn",
+        ]
+        standalone = ravens[1]
+        assert standalone["deployment"] == "standalone"
+        assert standalone["kind"] == "resident"
+        assert standalone["peer_id"] == ""
+        assert standalone["session_id"] == "resident-muninn"
+        assert standalone["status"] == "active"
+        assert standalone["location"] == "volundr/resident-muninn"
+        assert standalone["chat_endpoint"] == "ws://resident-muninn/session"
+
+    @respx.mock
+    async def test_forge_wins_on_id_collision(self):
+        forge = _forge_session()
+        respx.get(f"{_BASE}/api/v1/forge/sessions").mock(
+            return_value=httpx.Response(200, json=[forge])
+        )
+        directory = ResidentDirectory(
+            base_url=_BASE,
+            discovery=_StaticDiscovery([_standalone(id=forge["id"])]),
+        )
+        ravens = await directory.list_ravens({}, {})
+        assert len(ravens) == 1
+        assert ravens[0]["deployment"] == "resident"
+        assert ravens[0]["resident_name"] == "Muninn"
+
+    @respx.mock
+    async def test_discovery_failure_keeps_forge_results(self):
+        respx.get(f"{_BASE}/api/v1/forge/sessions").mock(
+            return_value=httpx.Response(200, json=[_forge_session()])
+        )
+        directory = ResidentDirectory(base_url=_BASE, discovery=_FailingDiscovery())
+        ravens = await directory.list_ravens({}, {})
+        assert len(ravens) == 1
+        sessions = await directory.list_sessions({}, {})
+        assert len(sessions) == 1
+
+    @respx.mock
+    async def test_forge_failure_still_propagates(self):
+        respx.get(f"{_BASE}/api/v1/forge/sessions").mock(return_value=httpx.Response(500))
+        directory = ResidentDirectory(
+            base_url=_BASE,
+            discovery=_StaticDiscovery([_standalone()]),
+        )
+        with pytest.raises(httpx.HTTPStatusError):
+            await directory.list_ravens({}, {})
+        with pytest.raises(httpx.HTTPStatusError):
+            await directory.list_sessions({}, {})
+
+    @respx.mock
+    async def test_list_sessions_appends_standalone_with_status_mapping(self):
+        respx.get(f"{_BASE}/api/v1/forge/sessions").mock(
+            return_value=httpx.Response(200, json=[_forge_session()])
+        )
+        directory = ResidentDirectory(
+            base_url=_BASE,
+            discovery=_StaticDiscovery(
+                [
+                    _standalone(),
+                    _standalone(id="resident-idle", status="idle"),
+                    _standalone(id="resident-off", status="suspended"),
+                    _standalone(id="resident-bad", status="failed"),
+                    _standalone(id="resident-done", status="completed"),
+                ]
+            ),
+        )
+        sessions = await directory.list_sessions({}, {})
+        standalone = {s["id"]: s for s in sessions[1:]}
+        assert standalone["resident-muninn"]["status"] == "running"
+        assert standalone["resident-idle"]["status"] == "idle"
+        assert standalone["resident-off"]["status"] == "stopped"
+        assert standalone["resident-bad"]["status"] == "failed"
+        assert standalone["resident-done"]["status"] == "stopped"
+        session = standalone["resident-muninn"]
+        assert session["ravn_id"] == "resident-muninn"
+        assert session["title"] == "Muninn Standalone"
+        assert session["persona_name"] == "product-steward"
+        assert session["chat_endpoint"] == "ws://resident-muninn/session"
+
+    @respx.mock
+    async def test_get_raven_falls_back_to_standalone(self):
+        respx.get(f"{_BASE}/api/v1/forge/sessions/resident-muninn").mock(
+            return_value=httpx.Response(404)
+        )
+        directory = ResidentDirectory(
+            base_url=_BASE,
+            discovery=_StaticDiscovery([_standalone()]),
+        )
+        raven = await directory.get_raven("resident-muninn", {}, {})
+        assert raven is not None
+        assert raven["deployment"] == "standalone"
+        assert raven["resident_name"] == "Muninn Standalone"
+
+    @respx.mock
+    async def test_get_raven_unknown_id_still_none(self):
+        respx.get(f"{_BASE}/api/v1/forge/sessions/unknown").mock(
+            return_value=httpx.Response(404)
+        )
+        directory = ResidentDirectory(
+            base_url=_BASE,
+            discovery=_StaticDiscovery([_standalone()]),
+        )
+        assert await directory.get_raven("unknown", {}, {}) is None
+
+    @respx.mock
+    async def test_get_session_falls_back_to_standalone(self):
+        respx.get(f"{_BASE}/api/v1/forge/sessions/resident-muninn").mock(
+            return_value=httpx.Response(404)
+        )
+        directory = ResidentDirectory(
+            base_url=_BASE,
+            discovery=_StaticDiscovery([_standalone()]),
+        )
+        session = await directory.get_session("resident-muninn", {}, {})
+        assert session is not None
+        assert session["status"] == "running"
+        assert session["title"] == "Muninn Standalone"
+
+
 class TestListSessions:
     @respx.mock
     async def test_lists_resident_and_flock_sessions_with_chat(self):
@@ -181,6 +342,31 @@ class TestListSessions:
         assert await directory.get_session(session["id"], {}, {}) is None
 
     @respx.mock
+    async def test_list_sessions_unexpected_payload_fails_loudly(self):
+        respx.get(f"{_BASE}/api/v1/forge/sessions").mock(
+            return_value=httpx.Response(200, json={"not": "a list"})
+        )
+        directory = ResidentDirectory(base_url=_BASE)
+        with pytest.raises(RuntimeError, match="unexpected payload"):
+            await directory.list_sessions({}, {})
+
+    async def test_get_session_rejects_malformed_id(self):
+        directory = ResidentDirectory(base_url=_BASE)
+        assert await directory.get_session("../escape", {}, {}) is None
+
+    @respx.mock
+    async def test_get_session_server_error_propagates(self):
+        respx.get(f"{_BASE}/api/v1/forge/sessions/boom").mock(return_value=httpx.Response(500))
+        directory = ResidentDirectory(base_url=_BASE)
+        with pytest.raises(httpx.HTTPStatusError):
+            await directory.get_session("boom", {}, {})
+
+    async def test_aclose_closes_pooled_client(self):
+        directory = ResidentDirectory(base_url=_BASE)
+        await directory.aclose()
+        assert directory._client.is_closed
+
+    @respx.mock
     async def test_get_session_resident(self):
         session = _forge_session()
         respx.get(f"{_BASE}/api/v1/forge/sessions/{session['id']}").mock(
@@ -193,6 +379,10 @@ class TestListSessions:
 
 
 class TestGetRaven:
+    async def test_rejects_malformed_id(self):
+        directory = ResidentDirectory(base_url=_BASE)
+        assert await directory.get_raven("../escape", {}, {}) is None
+
     @respx.mock
     async def test_get_resident(self):
         session = _forge_session()
