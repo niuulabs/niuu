@@ -86,6 +86,12 @@ data:
       enabled: true
       instances:
         {{- toYaml $instances | nindent 8 }}
+      source_trigger:
+        enabled: {{ .Values.resident.mimir.sourceTrigger.enabled }}
+        poll_interval_seconds: {{ .Values.resident.mimir.sourceTrigger.pollIntervalSeconds }}
+      staleness_trigger:
+        enabled: {{ .Values.resident.mimir.stalenessTrigger.enabled }}
+        schedule_hours: {{ .Values.resident.mimir.stalenessTrigger.scheduleHours }}
       write_routing:
         rules: []
         {{- if $writeDefault }}

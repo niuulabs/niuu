@@ -403,6 +403,19 @@ class TestResidentWorkloadIdentityConfigFirst:
                     }
                 },
             },
+            "mimir": {
+                "sourceTrigger": {"enabled": False, "pollIntervalSeconds": 300},
+                "stalenessTrigger": {"enabled": False, "scheduleHours": 24},
+            },
+        },
+        "mimir": {
+            "instances": [
+                {
+                    "name": "shared",
+                    "role": "shared",
+                    "url": "http://niuu-mimir-shared.volundr.svc.cluster.local",
+                }
+            ]
         },
         "volundr": {"apiUrl": "https://volundr.example"},
     }
@@ -451,6 +464,11 @@ class TestResidentWorkloadIdentityConfigFirst:
         )
         assert platform["workflow_aliases"]["research"]["name"] == "Research Campaign"
         assert platform["workflow_aliases"]["research"]["defaults"]["gate_auto_forward_after"] == ""
+        mimir = ravn_cfg["mimir"]
+        assert mimir["source_trigger"]["enabled"] is False
+        assert mimir["source_trigger"]["poll_interval_seconds"] == 300
+        assert mimir["staleness_trigger"]["enabled"] is False
+        assert mimir["staleness_trigger"]["schedule_hours"] == 24
 
     def test_default_render_has_no_workload_identity_config(self, tmp_path):
         rendered = _render_skuld_chart(tmp_path, {})

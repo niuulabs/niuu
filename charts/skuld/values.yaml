@@ -494,6 +494,17 @@ resident:
     #     defaults:
     #       gate_auto_forward_after: ""
     workflowAliases: {}
+  mimir:
+    sourceTrigger:
+      # -- Automatically synthesize unprocessed Mímir sources.
+      enabled: true
+      # -- Seconds between source-trigger polls.
+      pollIntervalSeconds: 60
+    stalenessTrigger:
+      # -- Periodically refresh stale frequently-used Mímir pages.
+      enabled: true
+      # -- Hours between staleness checks.
+      scheduleHours: 6
   workloadIdentity:
     # -- Audience for the projected serviceAccountToken
     audience: "volundr-api"
