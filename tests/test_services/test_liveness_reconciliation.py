@@ -93,35 +93,35 @@ class TestReconcileLiveness:
         assert count == 3
 
     async def test_exempt_workload_type_never_reaped(self, service, repo):
-        """Residents idle by design — a quiet resident is not a dead one."""
+        """Exempted long-lived workloads idle by design — quiet is not dead."""
         old = datetime.now(UTC) - timedelta(seconds=3600)
-        resident = _session(SessionStatus.RUNNING, old, workload_type="resident")
+        exempted = _session(SessionStatus.RUNNING, old, workload_type="ravn_flock")
         plain = _session(SessionStatus.RUNNING, old)
-        await repo.create(resident)
+        await repo.create(exempted)
         await repo.create(plain)
 
         count = await service.reconcile_liveness(
             stale_after_seconds=600,
-            exempt_workload_types=["resident"],
+            exempt_workload_types=["ravn_flock"],
         )
 
         assert count == 1
-        assert (await repo.get(resident.id)).status == SessionStatus.RUNNING
+        assert (await repo.get(exempted.id)).status == SessionStatus.RUNNING
         assert (await repo.get(plain.id)).status == SessionStatus.STOPPED
 
     async def test_no_exemptions_by_default_argument(self, service, repo):
         old = datetime.now(UTC) - timedelta(seconds=3600)
-        resident = _session(SessionStatus.RUNNING, old, workload_type="resident")
-        await repo.create(resident)
+        flock = _session(SessionStatus.RUNNING, old, workload_type="ravn_flock")
+        await repo.create(flock)
 
         count = await service.reconcile_liveness(stale_after_seconds=600)
 
         assert count == 1
 
-    def test_resident_exempt_in_default_config(self):
+    def test_no_exemptions_in_default_config(self):
         from volundr.config import SessionLivenessConfig
 
-        assert "resident" in SessionLivenessConfig().exempt_workload_types
+        assert SessionLivenessConfig().exempt_workload_types == []
 
 
 class TestActivityRefreshesLastActive:

@@ -2074,7 +2074,7 @@ def test_list_sessions_returns_live_ravn_sessions(client: TestClient):
     import respx
 
     # /sessions is real discovery now — it proxies the Forge sessions API and
-    # keeps only ravn workloads (resident/flock) with their chat endpoints.
+    # keeps only ravn workloads (flock rooms) with their chat endpoints.
     with respx.mock(assert_all_called=False) as router:
         router.get("http://localhost:8080/api/v1/forge/sessions").mock(
             return_value=httpx.Response(
@@ -2082,16 +2082,12 @@ def test_list_sessions_returns_live_ravn_sessions(client: TestClient):
                 json=[
                     {
                         "id": "11111111-2222-4333-8444-555555555555",
+                        "name": "research campaign",
                         "status": "running",
                         "model": "claude-opus-4-8",
                         "chat_endpoint": "ws://host/s/1/session",
-                        "workload_type": "resident",
+                        "workload_type": "ravn_flock",
                         "created_at": "2026-07-04T10:00:00Z",
-                        "resident": {
-                            "name": "Muninn",
-                            "persona": "product-steward",
-                            "peer_id": "flock-product-steward",
-                        },
                     },
                     {
                         "id": "22222222-2222-4333-8444-555555555555",
@@ -2110,7 +2106,7 @@ def test_list_sessions_returns_live_ravn_sessions(client: TestClient):
     assert isinstance(data, list)
     # Only the ravn workload survives; plain coding sessions are excluded.
     assert len(data) == 1
-    assert data[0]["ravn_id"] == "flock-product-steward"
+    assert data[0]["ravn_id"] == "11111111-2222-4333-8444-555555555555"
     assert data[0]["status"] == "running"
     assert data[0]["chat_endpoint"] == "ws://host/s/1/session"
 
@@ -2142,7 +2138,7 @@ def test_create_app_no_args_returns_fastapi():
     assert isinstance(create_app(), FastAPI)
 
 
-def test_ravens_dials_platform_base_url_from_settings():
+def test_sessions_dial_platform_base_url_from_settings():
     """gateway.platform.base_url in Settings is the forge API the directory calls."""
     from ravn.config import Settings
 
@@ -2154,7 +2150,7 @@ def test_ravens_dials_platform_base_url_from_settings():
         route = respx.get("http://forge.configured.internal:9999/api/v1/forge/sessions").respond(
             json=[]
         )
-        resp = client.get("/api/v1/ravn/ravens")
+        resp = client.get("/api/v1/ravn/sessions")
     assert resp.status_code == 200
     assert resp.json() == []
     assert route.called

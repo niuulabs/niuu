@@ -745,13 +745,6 @@ class SessionResponse(BaseModel):
         default="session",
         description="Workload type used to launch the session",
     )
-    resident: dict | None = Field(
-        default=None,
-        description=(
-            "Public resident identity (name/persona/peer_id) for resident "
-            "sessions; None otherwise. Raw workload_config is never exposed."
-        ),
-    )
     origin: str = Field(
         default="volundr",
         description="Where the session originated (volundr, claude, codex)",
@@ -825,7 +818,6 @@ class SessionResponse(BaseModel):
             activity_metadata=session.activity_metadata,
             needs_attention=session.needs_attention,
             workload_type=session.workload_type,
-            resident=session.resident,
             origin=session.origin,
             external_session_id=session.external_session_id,
             cli_session_id=session.cli_session_id,

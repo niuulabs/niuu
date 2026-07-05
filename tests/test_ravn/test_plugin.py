@@ -340,8 +340,14 @@ def test_create_api_app_lists_ravens_sessions_and_triggers():
 
     client = TestClient(app)
 
-    # /ravens is real resident discovery now — it proxies the Forge sessions
-    # API with the caller's auth forwarded.
+    # /ravens is standalone resident discovery only now; no discovery is
+    # configured in the default plugin app, so the fleet is empty.
+    ravens = client.get("/api/v1/ravn/ravens")
+    assert ravens.status_code == 200
+    assert ravens.json() == []
+
+    # /sessions is real discovery — it proxies the Forge sessions API with
+    # the caller's auth forwarded and keeps ravn_flock rooms.
     import httpx
     import respx
 
@@ -352,30 +358,19 @@ def test_create_api_app_lists_ravens_sessions_and_triggers():
                 json=[
                     {
                         "id": "11111111-2222-4333-8444-555555555555",
+                        "name": "research campaign",
                         "status": "running",
                         "model": "claude-opus-4-8",
                         "chat_endpoint": "ws://host/s/1/session",
-                        "workload_type": "resident",
-                        "resident": {
-                            "name": "Muninn",
-                            "persona": "product-steward",
-                            "peer_id": "flock-product-steward",
-                        },
+                        "workload_type": "ravn_flock",
                     }
                 ],
             )
         )
-        ravens = client.get("/api/v1/ravn/ravens")
-        # /sessions is also real discovery now (same forge mock).
         sessions = client.get("/api/v1/ravn/sessions")
-    assert ravens.status_code == 200
-    assert isinstance(ravens.json(), list)
-    assert ravens.json()[0]["persona_name"] == "product-steward"
-    assert ravens.json()[0]["kind"] == "resident"
-
     assert sessions.status_code == 200
     assert isinstance(sessions.json(), list)
-    assert sessions.json()[0]["ravn_id"] == "flock-product-steward"
+    assert sessions.json()[0]["ravn_id"] == "11111111-2222-4333-8444-555555555555"
     assert sessions.json()[0]["chat_endpoint"]
 
     triggers = client.get("/api/v1/ravn/triggers")
@@ -403,11 +398,11 @@ def test_create_api_app_supports_session_messages_and_budget_routes():
     sid = "11111111-2222-4333-8444-555555555555"
     forge_session = {
         "id": sid,
+        "name": "research campaign",
         "status": "running",
         "model": "claude-opus-4-8",
         "chat_endpoint": "ws://host/s/1/session",
-        "workload_type": "resident",
-        "resident": {"name": "Muninn", "persona": "product-steward", "peer_id": "flock-ps"},
+        "workload_type": "ravn_flock",
     }
     with respx.mock(assert_all_called=False) as router:
         router.get(f"http://localhost:8080/api/v1/forge/sessions/{sid}").mock(
@@ -417,7 +412,7 @@ def test_create_api_app_supports_session_messages_and_budget_routes():
         # Live transcript flows over the chat WS, so REST messages is empty.
         messages = client.get(f"/api/v1/ravn/sessions/{sid}/messages")
     assert session.status_code == 200
-    assert session.json()["persona_name"] == "product-steward"
+    assert session.json()["persona_name"] == "research campaign"
     assert messages.status_code == 200
     assert messages.json() == []
 

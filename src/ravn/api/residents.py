@@ -1,14 +1,17 @@
-"""Real resident discovery for the Ravn HTTP API.
+"""Resident discovery and live-session proxying for the Ravn HTTP API.
 
-Ravens in the fleet UI are the operator's RESIDENT sessions — long-lived
-flock-of-one chat agents provisioned by Volundr (``workload_type ==
-"resident"``). This module discovers them live from the Forge sessions API
-instead of serving seed data.
+Ravens in the fleet UI are STANDALONE residents — long-lived chat agents
+deployed as infrastructure via the skuld chart's resident mode and found
+through a :class:`ResidentDiscoveryPort` (e.g. the ``niuu.world/kind=resident``
+cluster label). Nothing provisions residents as Forge sessions anymore.
 
-Module boundaries: ravn must not import volundr, so discovery goes over
-HTTP with the caller's auth forwarded verbatim. Ownership scoping is
-therefore enforced by Volundr — a caller only ever sees their own
-residents.
+The Forge sessions API is still proxied for LIVE RAVN SESSIONS: ravn_flock
+workflow sessions remain ordinary Forge sessions with a Skuld room, and the
+session endpoints merge those with the discovered residents.
+
+Module boundaries: ravn must not import volundr, so the session proxy goes
+over HTTP with the caller's auth forwarded verbatim. Ownership scoping is
+therefore enforced by Volundr — a caller only ever sees their own sessions.
 """
 
 from __future__ import annotations
@@ -42,18 +45,6 @@ _AUTH_QUERY_PARAMS = ("devUserId", "devEmail", "devTenantId", "devRoles")
 # Session ids accepted for downstream forge lookup.
 _RAVN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
-# Forge session status/activity → RavnStatus (web fleet vocabulary).
-_STATUS_MAP = {
-    "created": "idle",
-    "starting": "idle",
-    "provisioning": "idle",
-    "running": "active",
-    "stopping": "suspended",
-    "stopped": "suspended",
-    "failed": "failed",
-    "archived": "completed",
-}
-
 # Forge session status → ravn Session status (web session vocabulary:
 # running | idle | stopped | failed).
 _SESSION_STATUS_MAP = {
@@ -69,7 +60,7 @@ _SESSION_STATUS_MAP = {
 
 # The workload types that ARE ravn agents you can chat with / steer (each runs
 # a Skuld room). Plain coding sessions are not "ravn sessions".
-_RAVN_SESSION_WORKLOADS = frozenset({"resident", "ravn_flock"})
+_RAVN_SESSION_WORKLOADS = frozenset({"ravn_flock"})
 
 # StandaloneResident status (raven fleet vocabulary) → ravn Session status
 # (web session vocabulary: running | idle | stopped | failed).
@@ -80,11 +71,6 @@ _STANDALONE_SESSION_STATUS_MAP = {
     "failed": "failed",
     "completed": "stopped",
 }
-
-
-def _sanitize_for_log(value: str) -> str:
-    """Remove line-break/control characters to prevent log-forging."""
-    return value.replace("\r", "").replace("\n", "")
 
 
 def forward_auth(request: Request) -> tuple[dict[str, str], dict[str, str]]:
@@ -101,12 +87,13 @@ def forward_auth(request: Request) -> tuple[dict[str, str], dict[str, str]]:
 
 
 class ResidentDirectory:
-    """Discovers resident ravns from the Volundr Forge sessions API.
+    """Serves the ravn fleet: discovered residents plus live Forge sessions.
 
-    Optionally merges in standalone residents (helm-deployed, outside Forge)
-    reported by a :class:`ResidentDiscoveryPort`. Forge is the primary source:
-    a discovery failure degrades to forge-only results, while forge failures
-    still propagate loudly.
+    Ravens come exclusively from a :class:`ResidentDiscoveryPort` (standalone
+    residents deployed via the skuld chart) — discovery failures there
+    propagate loudly. Sessions proxy the Forge API (ravn_flock rooms) and
+    merge in the discovered residents; on the session path a discovery
+    failure degrades to forge-only results, while forge failures propagate.
     """
 
     def __init__(
@@ -130,42 +117,25 @@ class ResidentDirectory:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def list_ravens(
-        self,
-        auth_headers: dict[str, str],
-        auth_params: dict[str, str],
-    ) -> list[dict[str, Any]]:
-        """Return every resident session visible to the caller as a raven."""
-        sessions = await self._get_json(
-            "/api/v1/forge/sessions",
-            auth_headers,
-            auth_params,
-        )
-        if not isinstance(sessions, list):
-            raise RuntimeError(
-                f"Forge sessions API returned unexpected payload: {type(sessions).__name__}"
-            )
-        ravens = [
-            self._to_raven(session)
-            for session in sessions
-            if isinstance(session, dict)
-            and session.get("workload_type") == "resident"
-            and session.get("resident")
-        ]
-        forge_ids = {raven["id"] for raven in ravens}
-        ravens.extend(
+    async def list_ravens(self) -> list[dict[str, Any]]:
+        """Return every discovered standalone resident as a raven.
+
+        Discovery is the ONLY source for ravens now, so failures propagate —
+        a broken discovery must not masquerade as an empty fleet.
+        """
+        if self._discovery is None:
+            return []
+        return [
             self._standalone_to_raven(resident)
-            for resident in await self._discover_standalone()
-            if resident.id not in forge_ids
-        )
-        return ravens
+            for resident in await self._discovery.list_residents()
+        ]
 
     async def list_sessions(
         self,
         auth_headers: dict[str, str],
         auth_params: dict[str, str],
     ) -> list[dict[str, Any]]:
-        """Return the caller's live ravn sessions (resident + flock rooms).
+        """Return the caller's live ravn sessions (flock rooms + residents).
 
         These are the real running sessions you can open and chat with, the
         Ravn-side equivalent of the Volundr live session list — each carries a
@@ -221,59 +191,27 @@ class ResidentDirectory:
 
     @staticmethod
     def _to_session(session: dict[str, Any]) -> dict[str, Any]:
-        resident = session.get("resident") or {}
-        # ravnId is required by the web schema; prefer the resident peer id, fall
-        # back to the session id so a flock session still has a stable owner ref.
-        ravn_id = resident.get("peer_id") or session.get("id")
         return {
             "id": session.get("id"),
-            "ravn_id": ravn_id,
-            "persona_name": resident.get("persona") or session.get("name") or "",
+            # ravnId is required by the web schema; the session id gives a
+            # flock session a stable owner ref.
+            "ravn_id": session.get("id"),
+            "persona_name": session.get("name") or "",
             "status": _SESSION_STATUS_MAP.get(str(session.get("status") or ""), "idle"),
             "model": session.get("model") or "",
             "created_at": session.get("created_at"),
             "chat_endpoint": session.get("chat_endpoint"),
-            "title": resident.get("name") or session.get("name") or "",
+            "title": session.get("name") or "",
         }
 
-    async def get_raven(
-        self,
-        ravn_id: str,
-        auth_headers: dict[str, str],
-        auth_params: dict[str, str],
-    ) -> dict[str, Any] | None:
-        """Return one resident raven by its session id, or None."""
-        if not _RAVN_ID_RE.fullmatch(ravn_id):
+    async def get_raven(self, ravn_id: str) -> dict[str, Any] | None:
+        """Return one discovered standalone resident by its id, or None."""
+        if self._discovery is None:
             return None
-        try:
-            session = await self._get_json(
-                f"/api/v1/forge/sessions/{ravn_id}",
-                auth_headers,
-                auth_params,
-            )
-        except httpx.HTTPStatusError as exc:
-            # Any client-side status (404 not found, 422 non-UUID id, 401/403
-            # not permitted) means "no such resident for this caller" — a clean
-            # None, not a 500. Only server errors propagate. Log auth failures
-            # so a bad-credential misconfig isn't indistinguishable from a
-            # genuinely-missing resident.
-            status = exc.response.status_code
-            if status in (401, 403):
-                logger.warning(
-                    "resident get_raven: forge returned %s for %s (auth?) — reporting None",
-                    status,
-                    _sanitize_for_log(ravn_id),
-                )
-            if 400 <= status < 500:
-                return await self._standalone_raven(ravn_id)
-            raise
-        if (
-            not isinstance(session, dict)
-            or session.get("workload_type") != "resident"
-            or not session.get("resident")
-        ):
-            return await self._standalone_raven(ravn_id)
-        return self._to_raven(session)
+        for resident in await self._discovery.list_residents():
+            if resident.id == ravn_id:
+                return self._standalone_to_raven(resident)
+        return None
 
     async def _get_json(
         self,
@@ -299,12 +237,6 @@ class ResidentDirectory:
                 exc_info=True,
             )
             return []
-
-    async def _standalone_raven(self, ravn_id: str) -> dict[str, Any] | None:
-        for resident in await self._discover_standalone():
-            if resident.id == ravn_id:
-                return self._standalone_to_raven(resident)
-        return None
 
     async def _standalone_session(self, session_id: str) -> dict[str, Any] | None:
         for resident in await self._discover_standalone():
@@ -341,26 +273,4 @@ class ResidentDirectory:
             "created_at": resident.created_at,
             "chat_endpoint": resident.chat_endpoint,
             "title": resident.resident_name,
-        }
-
-    @staticmethod
-    def _to_raven(session: dict[str, Any]) -> dict[str, Any]:
-        resident = session.get("resident") or {}
-        status = _STATUS_MAP.get(str(session.get("status") or ""), "idle")
-        # A running resident that idles between messages is still 'active'
-        # fleet-wise — the session status, not activity, drives the state.
-        return {
-            "id": session.get("id"),
-            "persona_name": resident.get("persona") or "",
-            "resident_name": resident.get("name") or "",
-            "peer_id": resident.get("peer_id") or "",
-            "kind": "resident",
-            "status": status,
-            "model": session.get("model") or "",
-            "created_at": session.get("created_at"),
-            "updated_at": session.get("updated_at"),
-            "chat_endpoint": session.get("chat_endpoint"),
-            "session_id": session.get("id"),
-            "location": session.get("pod_name") or "",
-            "deployment": "resident",
         }

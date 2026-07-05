@@ -258,14 +258,15 @@ def create_app(
     @app.get("/api/v1/ravn/settings", response_model=SettingsProviderSchema)
     async def settings_endpoint(request: Request) -> SettingsProviderSchema:
         auth_headers, auth_params = forward_auth(request)
-        # The aggregated settings page must not hard-depend on Volundr being
-        # reachable — a Forge outage degrades the fleet/session counts to 0,
-        # not a 500 of the whole settings section (triggers/budget are local).
+        # The aggregated settings page must not hard-depend on Volundr or the
+        # resident discovery being reachable — an outage degrades the
+        # fleet/session counts to 0, not a 500 of the whole settings section
+        # (triggers/budget are local).
         try:
-            ravens = await resident_directory.list_ravens(auth_headers, auth_params)
+            ravens = await resident_directory.list_ravens()
             sessions = await resident_directory.list_sessions(auth_headers, auth_params)
         except Exception:
-            logger.warning("settings: forge discovery failed, reporting 0", exc_info=True)
+            logger.warning("settings: fleet discovery failed, reporting 0", exc_info=True)
             ravens = []
             sessions = []
         triggers = list_runtime_triggers()
@@ -326,15 +327,14 @@ def create_app(
 
     @app.get("/api/v1/ravn/sessions")
     async def list_sessions_endpoint(request: Request) -> list[dict]:
-        """List the caller's live ravn sessions (resident + flock rooms)."""
+        """List the caller's live ravn sessions (flock rooms + residents)."""
         auth_headers, auth_params = forward_auth(request)
         return await resident_directory.list_sessions(auth_headers, auth_params)
 
     @app.get("/api/v1/ravn/ravens")
-    async def list_ravens_endpoint(request: Request) -> list[dict]:
-        """List the caller's resident ravns (live from the Forge sessions API)."""
-        auth_headers, auth_params = forward_auth(request)
-        return await resident_directory.list_ravens(auth_headers, auth_params)
+    async def list_ravens_endpoint() -> list[dict]:
+        """List standalone resident ravns found by cluster discovery."""
+        return await resident_directory.list_ravens()
 
     @app.get("/api/v1/ravn/wardens", response_model=list[WardenSpec])
     async def list_wardens_endpoint() -> list[WardenSpec]:
@@ -587,10 +587,9 @@ def create_app(
         return uninstalled
 
     @app.get("/api/v1/ravn/ravens/{ravn_id}")
-    async def get_raven_endpoint(ravn_id: str, request: Request) -> dict:
-        """Return one resident ravn by its session id."""
-        auth_headers, auth_params = forward_auth(request)
-        ravn = await resident_directory.get_raven(ravn_id, auth_headers, auth_params)
+    async def get_raven_endpoint(ravn_id: str) -> dict:
+        """Return one discovered standalone resident ravn by its id."""
+        ravn = await resident_directory.get_raven(ravn_id)
         if ravn is None:
             raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Ravn not found")
         return ravn

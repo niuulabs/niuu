@@ -494,9 +494,9 @@ class SessionService:
         and see nothing. Reconciling clears the endpoint and flips the status to
         ``stopped`` (resumable) so the list reflects reality.
 
-        Workload types in *exempt_workload_types* (e.g. residents — long-lived
-        chat agents that idle by design) are never heartbeat-reaped; the
-        pod-status reconcile loop remains their authoritative death check.
+        Workload types in *exempt_workload_types* (long-lived workloads that
+        idle by design) are never heartbeat-reaped; the pod-status reconcile
+        loop remains their authoritative death check.
 
         Returns the number of sessions reconciled.
         """
@@ -793,11 +793,11 @@ class SessionService:
 
         # Restart parity for workload identity: the REST start endpoint calls us
         # with the DEFAULT workload_type ("session") and no config, so a naive
-        # copy would demote a resident (or any special workload) to a plain CLI
-        # session on every restart — vanishing from the fleet and losing its
-        # liveness exemption. Fall back to the stored values whenever the caller
-        # did not explicitly override them, and thread them through provisioning
-        # so the contributor pipeline re-applies the resident spec.
+        # copy would demote a special workload (e.g. a ravn flock) to a plain
+        # CLI session on every restart — vanishing from the fleet. Fall back to
+        # the stored values whenever the caller did not explicitly override
+        # them, and thread them through provisioning so the contributor
+        # pipeline re-applies the workload spec.
         if workload_type == "session" and session.workload_type != "session":
             workload_type = session.workload_type
         if not workload_config and session.workload_config:
@@ -822,7 +822,7 @@ class SessionService:
                 "updated_at": datetime.now(UTC),
                 "workload_type": workload_type,
                 # Persist the workload config so workload identity (e.g. a
-                # resident's name/persona) survives restarts.
+                # flock's personas) survives restarts.
                 "workload_config": workload_config or {},
             }
         )

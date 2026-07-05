@@ -80,8 +80,8 @@ def test_ravn_settings_available(client: TestClient) -> None:
     import httpx
     import respx
 
-    # The fleet-member count comes from real resident discovery now, which
-    # proxies the Forge sessions API.
+    # The active-session count comes from real discovery now, which proxies
+    # the Forge sessions API (the fleet count is cluster discovery, empty here).
     with respx.mock(assert_all_called=False) as router:
         router.get("http://localhost:8080/api/v1/forge/sessions").mock(
             return_value=httpx.Response(200, json=[])

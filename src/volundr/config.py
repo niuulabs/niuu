@@ -647,10 +647,10 @@ class SessionLivenessConfig(BaseModel):
     stale_after_seconds: int = Field(default=600, ge=30)
     check_interval_seconds: int = Field(default=120, ge=10)
     exempt_workload_types: list[str] = Field(
-        default_factory=lambda: ["resident"],
+        default_factory=list,
         description=(
-            "Workload types the heartbeat reaper never reaps. Residents are "
-            "long-lived chat agents that idle by design — a quiet resident is "
+            "Workload types the heartbeat reaper never reaps. Use for "
+            "long-lived workloads that idle by design — a quiet session is "
             "not a dead one (pod-status reconcile still catches real death)."
         ),
     )

@@ -362,17 +362,6 @@ def _create_contributors(
         contributors.append(RavnFlockContributor(**ravn_kwargs))
         logger.info("Session contributor: ravn_flock (auto-wired)")
 
-    # Auto-wire ResidentContributor so resident workloads (long-lived
-    # flock-of-one chat sessions) spawn the same way flocks do.
-    from volundr.adapters.outbound.contributors.resident import ResidentContributor
-
-    if not _has_contributor("resident"):
-        resident_kwargs = dict(ports)
-        if settings.ravn_flock_image:
-            resident_kwargs["ravn_image"] = settings.ravn_flock_image
-        contributors.append(ResidentContributor(**resident_kwargs))
-        logger.info("Session contributor: resident (auto-wired)")
-
     if not _has_contributor("session_mcp"):
         contributors.append(SessionMCPContributor(**ports))
         logger.info("Session contributor: session_mcp (auto-wired)")

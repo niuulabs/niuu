@@ -7,60 +7,71 @@ spec stacks, planning), and reports back into the room when results land.
 
 ## Deploy
 
-Residents are ordinary Forge sessions with `workload_type: "resident"` — a
-*flock of one*: a Skuld broker in room mode plus one ravn daemon.
+Residents are **infrastructure, not Forge sessions**: each one is a
+deployment of the skuld chart (`charts/skuld`) in resident mode, declared in
+gitops. The pod is a Skuld broker in room mode plus one ravn daemon sidecar —
+a flock of one. Nothing creates residents through the Forge sessions API.
 
-```bash
-curl -X POST "$VOLUNDR/api/v1/forge/sessions" \
-  -H "Authorization: Bearer $PAT" -H "Content-Type: application/json" \
-  -d '{
-    "name": "muninn",
-    "workload_type": "resident",
-    "workload_config": {
-      "persona": "product-steward",
-      "resident_name": "Muninn",
-      "platform": {"enabled": true, "base_url": "http://volundr:8080"},
-      "mimir": {"hosted_url": "http://mimir/api/v1"}
-    }
-  }'
-# then start it
-curl -X POST "$VOLUNDR/api/v1/forge/sessions/$ID/start" -H "Authorization: Bearer $PAT"
-```
+Key chart values:
 
-Key `workload_config` fields (see `ResidentContributor` for the full set):
-
-| Field | Meaning |
+| Value | Meaning |
 |---|---|
-| `persona` (required) | Ravn persona the resident runs (e.g. `product-steward`) |
-| `resident_name` | Display identity in the room and fleet UI |
-| `platform` | `gateway.platform` overlay — enables the Ting/Forge/tracker tools |
-| `mimir` | Same shape flocks accept (hosted url / registry refs / instances) |
-| `llm_config`, `daily_budget_usd`, `iteration_budget` | Runtime limits |
+| `resident.enabled` | Deploy this release as a resident (broker room mode + ravn sidecar) |
+| `resident.name` | Display identity (e.g. `"Muninn"`); defaults to the persona |
+| `resident.persona` | Ravn persona the resident runs (required) |
+| `resident.routeId` | Path segment for the gateway HTTPRoute (`/s/<routeId>`) and the session id; unique per gateway, defaults to `<namespace>-<release>` |
+| `resident.maxConcurrentTasks`, `resident.dailyBudgetUsd`, `resident.llm` | Runtime limits and LLM config |
+| `resident.platform.enabled` / `resident.platform.baseUrl` | Platform access: Volundr gateway tools via workload identity |
+| `session.ownerId` | Owning user id (IDP sub), rendered into the broker config — Skuld enforces WebSocket ownership against it |
+| `mimir.instances` | Mímir memory instances handed to the resident's ravn daemon |
+| `persistence.emptyDir: true` | Pod-local workspace; residents don't need the shared sessions PVC |
 
-For a standalone (off-platform) deployment, use the agent Helm chart with
-`charts/agent/values-resident-steward.yaml`.
+A live example ships in the infrastructure repo under
+`valhalla/resident-ravn/` — copy that as the starting point for a new
+resident.
+
+### Platform access (workload identity)
+
+When `resident.platform.enabled` is set, the pod gets a projected
+ServiceAccount token (`resident.workloadIdentity.audience`, default
+`volundr-api`) and exchanges it at `POST /api/v1/tokens/workload/exchange`
+for a short-lived Niuu JWT. Map the resident's ServiceAccount subject to its
+owning user in Volundr's `workload_identity.mappings` (subject →
+`owner_id`/`tenant_id`/roles) or the exchange rejects it.
 
 ## Discover and chat
 
-Residents appear in the Ravn web UI fleet — `GET /api/v1/ravn/ravens` now
-returns the caller's resident sessions (live from Forge, ownership-scoped;
-no seed data). Each record carries `chat_endpoint`; the Ravn detail page
-shows a **Chat** tab wired to the same Skuld room chat the Volundr session
-view uses. Plain messages route to the resident automatically
-(`room.default_target_peer_id`), so any chat client works.
+Residents advertise themselves via pod labels the chart sets when resident
+mode is on: `niuu.world/kind: resident` and `niuu.world/persona`, plus the
+`niuu.world/resident-name` annotation. The Ravn API finds them through its
+`resident_discovery` config (e.g. the Kubernetes adapter, which watches for
+`niuu.world/kind=resident`); no adapters are configured by default —
+discovery is an explicit deployment decision:
 
-Residents idle by design: the heartbeat liveness reaper exempts
-`workload_type: resident` (`session_liveness.exempt_workload_types`);
-pod-status reconcile remains the authoritative death check. Nothing
-auto-stops a resident — stop it like any session when you're done with it.
+```yaml
+resident_discovery:
+  adapters:
+    - adapter: ravn.adapters.resident_discovery.kubernetes.KubernetesResidentDiscoveryAdapter
+      namespace: volundr
+```
+
+`GET /api/v1/ravn/ravens` returns the discovered residents; the fleet UI
+renders them with a **Chat** tab wired to the broker's Skuld room via the
+gateway HTTPRoute (`/s/<routeId>`). Plain messages route to the resident
+automatically (`room.default_target_peer_id`), so any chat client works.
+Discovered residents also appear in `GET /api/v1/ravn/sessions` alongside
+live `ravn_flock` workflow sessions.
+
+Nothing auto-stops a resident — it lives until you scale down or delete the
+release.
 
 ## Ownership
 
 Skuld enforces session ownership at WebSocket accept (`ws_auth` in the
 broker config): browser and ravn connections must present an identity
-matching the session owner (Envoy headers, dev params, or bearer token;
+matching `session.ownerId` (Envoy headers, dev params, or bearer token;
 admin roles bypass; unauthenticated loopback stays open for in-pod peers).
-A resident authenticates with its platform identity, so it can join
+The resident authenticates with its platform identity, so it can join
 exactly the sessions its owner owns — nothing else.
 
 ## The loop back
