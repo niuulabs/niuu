@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 import httpx
@@ -36,6 +37,9 @@ _AUTH_HEADERS = (
 )
 # Developer-identity query params (mirrors volundr's extract_principal).
 _AUTH_QUERY_PARAMS = ("devUserId", "devEmail", "devTenantId", "devRoles")
+
+# Session ids accepted for downstream forge lookup.
+_RAVN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # Forge session status/activity → RavnStatus (web fleet vocabulary).
 _STATUS_MAP = {
@@ -65,6 +69,11 @@ _SESSION_STATUS_MAP = {
 # The workload types that ARE ravn agents you can chat with / steer (each runs
 # a Skuld room). Plain coding sessions are not "ravn sessions".
 _RAVN_SESSION_WORKLOADS = frozenset({"resident", "ravn_flock"})
+
+
+def _sanitize_for_log(value: str) -> str:
+    """Remove line-break/control characters to prevent log-forging."""
+    return value.replace("\r", "").replace("\n", "")
 
 
 def forward_auth(request: Request) -> tuple[dict[str, str], dict[str, str]]:
@@ -201,6 +210,8 @@ class ResidentDirectory:
         auth_params: dict[str, str],
     ) -> dict[str, Any] | None:
         """Return one resident raven by its session id, or None."""
+        if not _RAVN_ID_RE.fullmatch(ravn_id):
+            return None
         try:
             session = await self._get_json(
                 f"/api/v1/forge/sessions/{ravn_id}",
@@ -218,7 +229,7 @@ class ResidentDirectory:
                 logger.warning(
                     "resident get_raven: forge returned %s for %s (auth?) — reporting None",
                     status,
-                    ravn_id,
+                    _sanitize_for_log(ravn_id),
                 )
             if 400 <= status < 500:
                 return None
