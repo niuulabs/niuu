@@ -117,7 +117,8 @@ describe('SessionsView', () => {
     render(<SessionsView />, { wrapper: wrap(services()) });
     await waitFor(() => expect(screen.getByTestId('sessions-page')).toBeInTheDocument());
     expect(screen.getByText(/10 active/i)).toBeInTheDocument();
-    expect(screen.getByText(/2 closed/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 idle/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open session Monitor overnight alerts' })).toBeNull();
   });
 
   it('selects the newest running session by default and shows the header', async () => {
@@ -236,13 +237,16 @@ describe('SessionsView', () => {
     expect(screen.getByRole('textbox', { name: /session message composer/i })).toBeInTheDocument();
   });
 
-  it('shows the read-only composer variant for closed sessions', async () => {
-    render(<SessionsView />, { wrapper: wrap(services()) });
-    const closedSession = await screen.findByRole('button', {
-      name: 'Open session Monitor overnight alerts',
+  it('omits stopped sessions from the live control-room rail', async () => {
+    render(<SessionsView />, {
+      wrapper: wrap(
+        servicesWith(
+          singleSessionStream(liveRunningSession({ status: 'stopped', chatEndpoint: null })),
+        ),
+      ),
     });
-    fireEvent.click(closedSession);
-    expect(await screen.findByTestId('sessions-composer-closed')).toBeInTheDocument();
+    expect(await screen.findByTestId('sessions-empty')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /open session/i })).toBeNull();
   });
 });
 
@@ -318,11 +322,11 @@ describe('SessionsView — live chat', () => {
     expect(useSkuldChatMock).not.toHaveBeenCalled();
   });
 
-  it('keeps the read-only surface for a stopped session even with a chatEndpoint', async () => {
+  it('hides stopped sessions even when a stale chatEndpoint is present', async () => {
     render(<SessionsView />, {
       wrapper: wrap(servicesWith(singleSessionStream(liveRunningSession({ status: 'stopped' })))),
     });
-    expect(await screen.findByTestId('sessions-composer-closed')).toBeInTheDocument();
+    expect(await screen.findByTestId('sessions-empty')).toBeInTheDocument();
     expect(screen.queryByTestId('sessions-live-chat')).not.toBeInTheDocument();
     expect(useSkuldChatMock).not.toHaveBeenCalled();
   });

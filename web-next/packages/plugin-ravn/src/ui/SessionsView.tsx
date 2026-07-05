@@ -1048,7 +1048,13 @@ export function SessionsView() {
   const setInternalVisibilityRef = useRef<((visible: boolean) => void) | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
 
-  const sessionList = useMemo(() => sessions ?? [], [sessions]);
+  const sessionList = useMemo(
+    () =>
+      (sessions ?? []).filter(
+        (session) => session.status === 'running' || session.status === 'idle',
+      ),
+    [sessions],
+  );
   const sortedSessions = useMemo(
     () => [...sessionList].sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
     [sessionList],
@@ -1148,7 +1154,7 @@ export function SessionsView() {
   }
 
   const activeSessions = sortedSessions.filter((session) => session.status === 'running');
-  const closedSessions = sortedSessions.filter((session) => session.status !== 'running');
+  const idleSessions = sortedSessions.filter((session) => session.status === 'idle');
   const anchorTime = deriveAnchorTime(sortedSessions);
 
   // A running session with a Skuld endpoint is a real live chat — the shared
@@ -1164,7 +1170,7 @@ export function SessionsView() {
         <div className="rv-rs__rail-head">
           <div className="rv-rs__rail-title">Sessions</div>
           <div className="rv-rs__rail-subtitle">
-            {activeSessions.length} active · {closedSessions.length} closed
+            {activeSessions.length} active · {idleSessions.length} idle
           </div>
         </div>
 
@@ -1178,9 +1184,9 @@ export function SessionsView() {
             onSelect={selectSession}
           />
           <SessionRailGroup
-            label="closed"
-            count={closedSessions.length}
-            sessions={closedSessions}
+            label="idle"
+            count={idleSessions.length}
+            sessions={idleSessions}
             selectedId={selectedSession.id}
             anchorTime={anchorTime}
             onSelect={selectSession}

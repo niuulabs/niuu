@@ -300,7 +300,7 @@ spec:
           env:
             - name: SKULD__SESSION__WORKSPACE_DIR
               value: {{ include "skuld.workspacePath" . | quote }}
-            {{- if .Values.volundr.apiUrl }}
+            {{- if and .Values.volundr.apiUrl (not (include "skuld.residentEnabled" .)) }}
             - name: SKULD__VOLUNDR_API_URL
               value: {{ .Values.volundr.apiUrl | quote }}
             {{- end }}
