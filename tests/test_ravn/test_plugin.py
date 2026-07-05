@@ -346,7 +346,7 @@ def test_create_api_app_lists_ravens_sessions_and_triggers():
     import respx
 
     with respx.mock(assert_all_called=False) as router:
-        router.get("http://127.0.0.1:8080/api/v1/forge/sessions").mock(
+        router.get("http://localhost:8080/api/v1/forge/sessions").mock(
             return_value=httpx.Response(
                 200,
                 json=[
@@ -410,7 +410,7 @@ def test_create_api_app_supports_session_messages_and_budget_routes():
         "resident": {"name": "Muninn", "persona": "product-steward", "peer_id": "flock-ps"},
     }
     with respx.mock(assert_all_called=False) as router:
-        router.get(f"http://127.0.0.1:8080/api/v1/forge/sessions/{sid}").mock(
+        router.get(f"http://localhost:8080/api/v1/forge/sessions/{sid}").mock(
             return_value=httpx.Response(200, json=forge_session)
         )
         session = client.get(f"/api/v1/ravn/sessions/{sid}")

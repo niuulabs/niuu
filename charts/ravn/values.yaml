@@ -37,6 +37,14 @@ config:
   host: "0.0.0.0"
   port: 8084
   logLevel: "info"
+  # Ravn Settings (src/ravn/config.py schema) rendered to /etc/ravn/config.yaml
+  # and loaded via RAVN_CONFIG. Standard RAVN_* env vars still override
+  # individual fields. Example:
+  #   settings:
+  #     gateway:
+  #       platform:
+  #         base_url: "http://niuu-volundr.volundr.svc.cluster.local:80"
+  settings: {}
 
 persistence:
   enabled: false

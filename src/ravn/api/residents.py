@@ -14,7 +14,6 @@ residents.
 from __future__ import annotations
 
 import logging
-import os
 import re
 from typing import Any
 
@@ -23,7 +22,7 @@ from fastapi import Request
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_PLATFORM_API_URL = "http://127.0.0.1:8080"
+_DEFAULT_PLATFORM_API_URL = "http://localhost:8080"  # matches PlatformToolsConfig.base_url
 _DEFAULT_TIMEOUT_SECONDS = 5.0
 
 # Headers that carry caller identity (Envoy-injected or bearer); forwarded
@@ -98,12 +97,10 @@ class ResidentDirectory:
         base_url: str = "",
         timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
-        self._base_url = (
-            base_url
-            or os.environ.get("RAVN_PLATFORM_API_URL", "")
-            or os.environ.get("NIUU_PLATFORM_API_URL", "")
-            or _DEFAULT_PLATFORM_API_URL
-        ).rstrip("/")
+        # Configuration-driven: create_app threads gateway.platform.base_url
+        # from the ravn Settings here (config file or standard RAVN_ env
+        # overrides) — no bespoke environment lookups.
+        self._base_url = (base_url or _DEFAULT_PLATFORM_API_URL).rstrip("/")
         self._timeout = timeout_seconds
         # One pooled client for the directory's lifetime — /ravens and
         # /settings hit this per request, so a fresh client (new TCP+TLS)

@@ -121,4 +121,7 @@ Annotations for checksum/config - forces restart on config changes
 {{- if .Values.envoy.enabled }}
 checksum/envoy: {{ include (print $.Template.BasePath "/envoy-configmap.yaml") . | sha256sum }}
 {{- end }}
+{{- if .Values.config.settings }}
+checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+{{- end }}
 {{- end }}

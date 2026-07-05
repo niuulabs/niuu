@@ -48,7 +48,7 @@ from ravn.api.valkyries import (
     create_valkyrie_router,
 )
 from ravn.api.warden_stream import WardenStreamBroker
-from ravn.config import PlatformToolsConfig, Settings
+from ravn.config import Settings
 from ravn.ports.warden_deployer import WardenDeploymentError
 from ravn.ports.warden_discovery import WardenDiscoveryPort
 from ravn.warden import (
@@ -127,21 +127,6 @@ _LOG_LINE_RE = re.compile(
 )
 
 
-def _configured_platform_base_url(settings: Settings) -> str:
-    """Return the explicitly configured platform API base URL, or "".
-
-    ``gateway.platform.base_url`` is the canonical setting for "where is the
-    platform API" (settable via config file or ``RAVN_GATEWAY__PLATFORM__
-    BASE_URL``). When it is left at its default the value is treated as unset
-    so :class:`ResidentDirectory` falls back to its ``RAVN_PLATFORM_API_URL``
-    environment override — deployments without a ravn config file rely on it.
-    """
-    configured = settings.gateway.platform.base_url
-    if configured == PlatformToolsConfig().base_url:
-        return ""
-    return configured
-
-
 def create_app(
     persona_loader: PersonaRegistryPort | None = None,
     warden_store: WardenStore | None = None,
@@ -160,8 +145,10 @@ def create_app(
     """
     app = FastAPI(title="Ravn API", docs_url=None, redoc_url=None)
     loaded_settings = settings or Settings()
+    # gateway.platform.base_url is the canonical "where is the platform API"
+    # setting (config file, or RAVN_GATEWAY__PLATFORM__BASE_URL env override).
     resident_directory = ResidentDirectory(
-        base_url=_configured_platform_base_url(loaded_settings)
+        base_url=loaded_settings.gateway.platform.base_url
     )
     store = warden_store or build_warden_store()
     if warden_discovery is None:

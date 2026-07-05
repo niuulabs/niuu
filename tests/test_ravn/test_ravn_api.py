@@ -2076,7 +2076,7 @@ def test_list_sessions_returns_live_ravn_sessions(client: TestClient):
     # /sessions is real discovery now — it proxies the Forge sessions API and
     # keeps only ravn workloads (resident/flock) with their chat endpoints.
     with respx.mock(assert_all_called=False) as router:
-        router.get("http://127.0.0.1:8080/api/v1/forge/sessions").mock(
+        router.get("http://localhost:8080/api/v1/forge/sessions").mock(
             return_value=httpx.Response(
                 200,
                 json=[
@@ -2142,22 +2142,22 @@ def test_create_app_no_args_returns_fastapi():
     assert isinstance(create_app(), FastAPI)
 
 
-def test_platform_base_url_unset_falls_back_to_env_override():
-    """Default settings leave the directory on its env-var fallback."""
-    from ravn.api import _configured_platform_base_url
-    from ravn.config import Settings
-
-    assert _configured_platform_base_url(Settings()) == ""
-
-
-def test_platform_base_url_configured_via_settings_wins():
-    from ravn.api import _configured_platform_base_url
+def test_ravens_dials_platform_base_url_from_settings():
+    """gateway.platform.base_url in Settings is the forge API the directory calls."""
     from ravn.config import Settings
 
     settings = Settings(
-        gateway={"platform": {"base_url": "http://niuu-volundr.volundr.svc:80"}}
+        gateway={"platform": {"base_url": "http://forge.configured.internal:9999"}}
     )
-    assert _configured_platform_base_url(settings) == "http://niuu-volundr.volundr.svc:80"
+    client = TestClient(create_app(settings=settings))
+    with respx.mock:
+        route = respx.get("http://forge.configured.internal:9999/api/v1/forge/sessions").respond(
+            json=[]
+        )
+        resp = client.get("/api/v1/ravn/ravens")
+    assert resp.status_code == 200
+    assert resp.json() == []
+    assert route.called
 
 
 def test_list_wardens_returns_empty_list_when_store_is_empty(tmp_path):

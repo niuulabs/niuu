@@ -68,7 +68,7 @@ def test_ravn_sessions_available(client: TestClient) -> None:
 
     # /sessions is real discovery now — proxies the Forge sessions API.
     with respx.mock(assert_all_called=False) as router:
-        router.get("http://127.0.0.1:8080/api/v1/forge/sessions").mock(
+        router.get("http://localhost:8080/api/v1/forge/sessions").mock(
             return_value=httpx.Response(200, json=[])
         )
         resp = client.get("/api/v1/ravn/sessions")
@@ -83,7 +83,7 @@ def test_ravn_settings_available(client: TestClient) -> None:
     # The fleet-member count comes from real resident discovery now, which
     # proxies the Forge sessions API.
     with respx.mock(assert_all_called=False) as router:
-        router.get("http://127.0.0.1:8080/api/v1/forge/sessions").mock(
+        router.get("http://localhost:8080/api/v1/forge/sessions").mock(
             return_value=httpx.Response(200, json=[])
         )
         resp = client.get("/api/v1/ravn/settings")
