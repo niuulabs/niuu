@@ -80,13 +80,6 @@ def _build_skill_port(settings: Settings, workspace: Any) -> Any:
     )
 
 
-def _session_join_manager(settings: Settings):
-    """Process-wide join manager — shared with the drive loop's observer."""
-    from ravn.session_join import get_session_join_manager  # noqa: PLC0415
-
-    return get_session_join_manager(settings)
-
-
 def _platform_kwargs(settings: Settings) -> dict[str, Any]:
     platform = settings.gateway.platform
     return {
@@ -370,7 +363,10 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         adapter="ravn.adapters.tools.session_join_tool.SessionJoinTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled and s.skuld.enabled,
-        kwargs_fn=lambda s, ctx: {"manager": _session_join_manager(s)},
+        # The manager is built by the resident daemon's composition root and
+        # injected via runtime context; the tool is skipped when it is absent.
+        required_context=frozenset({"session_join_manager"}),
+        kwargs_fn=lambda s, ctx: {"manager": ctx["session_join_manager"]},
     ),
     "ting_plan": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.TingPlanTool",

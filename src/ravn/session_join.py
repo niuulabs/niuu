@@ -196,11 +196,8 @@ class SessionJoinManager:
 
 
 # ---------------------------------------------------------------------------
-# Process-wide manager (shared between the drive loop and the join tool)
+# Composition-root builder (drive loop owns the instance; the tool is injected)
 # ---------------------------------------------------------------------------
-
-_MANAGER: SessionJoinManager | None = None
-
 
 # Re-exchange a workload token once it is within this many seconds of expiry.
 # Without a cache, a reconnect storm (N joins × M attempts each) re-reads the
@@ -254,7 +251,13 @@ def _build_token_provider(settings: Any) -> AuthTokenProvider | None:
 
 
 def build_session_join_manager(settings: Any) -> SessionJoinManager:
-    """Construct a manager from daemon settings (identity + auth)."""
+    """Construct a manager from daemon settings (identity + auth).
+
+    Built once at the resident daemon's composition root (the drive loop) and
+    injected into both the loop's observer and the ``session_join`` tool's
+    runtime context, so the two share one membership set without a module
+    global.
+    """
     peer_id = (
         settings.mesh.own_peer_id
         if settings.mesh.enabled and settings.mesh.own_peer_id
@@ -272,23 +275,3 @@ def build_session_join_manager(settings: Any) -> SessionJoinManager:
         reconnect_delay=settings.skuld.reconnect_delay_seconds,
         max_reconnect_attempts=settings.skuld.max_reconnect_attempts,
     )
-
-
-def get_session_join_manager(settings: Any) -> SessionJoinManager:
-    """Return the process-wide manager, building it on first use.
-
-    Both the drive loop (observer registration, shutdown) and the
-    ``session_join`` tool (join/leave/post actions) must talk to the SAME
-    manager even though tools are constructed separately — hence a
-    process-wide instance.
-    """
-    global _MANAGER
-    if _MANAGER is None:
-        _MANAGER = build_session_join_manager(settings)
-    return _MANAGER
-
-
-def reset_session_join_manager() -> None:
-    """Drop the process-wide manager (test isolation)."""
-    global _MANAGER
-    _MANAGER = None

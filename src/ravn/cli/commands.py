@@ -1053,6 +1053,7 @@ def _build_tools(
     profile: str = "default",
     discovery: Any | None = None,
     mimir_event_emitter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+    session_join_manager: Any | None = None,
 ) -> list[Any]:
     """Build the tool list from the built-in registry, filtered by profile.
 
@@ -1109,6 +1110,12 @@ def _build_tools(
         workflow_sources = _build_workflow_capability_sources(settings)
         if workflow_sources:
             runtime_ctx["workflow_sources"] = workflow_sources
+
+    # The session_join tool only makes sense for a resident daemon, which owns
+    # the manager and injects it here; when absent (CLI single-shot) the tool
+    # is filtered out via its required_context.
+    if session_join_manager is not None:
+        runtime_ctx["session_join_manager"] = session_join_manager
 
     tools: list[ToolPort] = []
     state_tool: Any = None
@@ -2894,6 +2901,7 @@ async def _run_daemon(
             mimir_event_emitter=(
                 _emit_mimir_ingest_event if resolved_persona is not None else None
             ),
+            session_join_manager=drive_loop._session_join_manager,
         )
         if profile_cfg.include_mcp:
             tools.extend(_filter_tools(mcp_tools, settings, resolved_persona))

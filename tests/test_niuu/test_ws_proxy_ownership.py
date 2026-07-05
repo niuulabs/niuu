@@ -106,47 +106,74 @@ class TestMayAttach:
         assert await reg.may_attach("s1", "mallory", None, ()) is False
 
 
-def _owned_session(owner_id: str | None, tenant_id: str | None = None):
-    return SimpleNamespace(owner_id=owner_id, tenant_id=tenant_id)
-
-
 class TestOwnershipGuardPolicy:
-    """The policy the composition root installs (mirrored here for coverage)."""
+    """The guard delegates owned-session decisions to the REAL authorization
+    adapter (the same one the REST API uses), via the Principal/Resource shape
+    _may_attach builds. These exercise that actual policy target so the WS
+    attach check can't drift from REST."""
 
     @staticmethod
-    def _make_guard(sessions: dict):
-        async def guard(session_id, user_id, tenant_id, roles):
-            session = sessions.get(session_id)
-            if session is None or not session.owner_id:
-                return True
-            if session.tenant_id and tenant_id and session.tenant_id != tenant_id:
-                return False
-            if "volundr:admin" in roles:
-                return True
-            return user_id == session.owner_id
+    async def _attach(
+        adapter,
+        *,
+        owner_id: str,
+        tenant_id: str = "",
+        user_id: str,
+        principal_tenant: str = "",
+        roles: tuple[str, ...] = (),
+    ) -> bool:
+        from niuu.domain.models import Principal
+        from volundr.domain.ports import Resource
 
-        return guard
+        principal = Principal(
+            user_id=user_id, email="", tenant_id=principal_tenant, roles=list(roles)
+        )
+        resource = Resource(
+            kind="session", id="s1", attr={"owner_id": owner_id, "tenant_id": tenant_id}
+        )
+        return await adapter.is_allowed(principal, "start", resource)
+
+    @staticmethod
+    def _adapter():
+        from volundr.adapters.outbound.authorization import SimpleRoleAuthorizationAdapter
+
+        return SimpleRoleAuthorizationAdapter()
 
     async def test_owner_allowed(self):
-        guard = self._make_guard({"s1": _owned_session("alice")})
-        assert await guard("s1", "alice", None, ()) is True
+        assert await self._attach(self._adapter(), owner_id="alice", user_id="alice") is True
 
     async def test_non_owner_denied(self):
-        guard = self._make_guard({"s1": _owned_session("alice")})
-        assert await guard("s1", "mallory", None, ()) is False
+        assert await self._attach(self._adapter(), owner_id="alice", user_id="mallory") is False
 
     async def test_admin_bypass(self):
-        guard = self._make_guard({"s1": _owned_session("alice")})
-        assert await guard("s1", "root", None, ("volundr:admin",)) is True
+        assert (
+            await self._attach(
+                self._adapter(), owner_id="alice", user_id="root", roles=("volundr:admin",)
+            )
+            is True
+        )
 
     async def test_cross_tenant_denied_even_admin(self):
-        guard = self._make_guard({"s1": _owned_session("alice", "t1")})
-        assert await guard("s1", "root", "t2", ("volundr:admin",)) is False
+        assert (
+            await self._attach(
+                self._adapter(),
+                owner_id="alice",
+                tenant_id="t1",
+                user_id="root",
+                principal_tenant="t2",
+                roles=("volundr:admin",),
+            )
+            is False
+        )
 
-    async def test_unowned_session_permissive(self):
-        guard = self._make_guard({"s1": _owned_session(None)})
-        assert await guard("s1", "anyone", None, ()) is True
-
-    async def test_unknown_session_permissive(self):
-        guard = self._make_guard({})
-        assert await guard("missing", "anyone", None, ()) is True
+    async def test_viewer_only_owner_denied_on_mutating_attach(self):
+        # Chat is bidirectional (the attacher can send), so it is the mutating
+        # "start" action — a viewer-only principal is denied even on their own
+        # session. This is the intended tightening from routing through the
+        # canonical adapter rather than the old hand-rolled owner==user check.
+        assert (
+            await self._attach(
+                self._adapter(), owner_id="alice", user_id="alice", roles=("volundr:viewer",)
+            )
+            is False
+        )

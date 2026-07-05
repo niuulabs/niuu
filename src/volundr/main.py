@@ -883,6 +883,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # direct/flock connections; the proxy dials it from loopback, so
             # this is the check that actually covers proxied browser traffic.
             if skuld_reg is not None and hasattr(skuld_reg, "set_ownership_guard"):
+                from niuu.domain.models import Principal
+                from volundr.domain.ports import Resource
 
                 async def _may_attach(
                     session_id: str,
@@ -898,11 +900,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         # Unknown or unowned (legacy/dev) session: not the
                         # proxy's job to invent a policy — stay permissive.
                         return True
-                    if session.tenant_id and tenant_id and session.tenant_id != tenant_id:
-                        return False
-                    if "volundr:admin" in roles:
-                        return True
-                    return user_id == session.owner_id
+                    # Delegate to the ONE authorization policy (the same adapter
+                    # the REST API uses) so the WS attach check can never drift
+                    # from it. "start" is the mutating action-class the ladder
+                    # gates on owner match.
+                    principal = Principal(
+                        user_id=user_id or "",
+                        email="",
+                        tenant_id=tenant_id or "",
+                        roles=list(roles),
+                    )
+                    resource = Resource(
+                        kind="session",
+                        id=session_id,
+                        attr={
+                            "owner_id": session.owner_id,
+                            "tenant_id": session.tenant_id,
+                        },
+                    )
+                    return await authorization_adapter.is_allowed(principal, "start", resource)
 
                 skuld_reg.set_ownership_guard(_may_attach)
 

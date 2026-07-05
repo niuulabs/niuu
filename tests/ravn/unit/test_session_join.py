@@ -8,18 +8,25 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from ravn.adapters.tools.session_join_tool import SessionJoinTool
+from ravn.config import Settings
 from ravn.session_join import (
     SessionJoinManager,
+    build_session_join_manager,
     derive_ravn_ws_url,
-    reset_session_join_manager,
 )
 
 
-@pytest.fixture(autouse=True)
-def _isolated_manager():
-    reset_session_join_manager()
-    yield
-    reset_session_join_manager()
+class TestBuildManager:
+    def test_defaults_to_ravn_daemon_peer(self):
+        m = build_session_join_manager(Settings())
+        assert m.peer_id == "ravn-daemon"
+
+    def test_uses_mesh_peer_id_when_enabled(self):
+        s = Settings()
+        s.mesh.enabled = True
+        s.mesh.own_peer_id = "flock-product-steward"
+        m = build_session_join_manager(s)
+        assert m.peer_id == "flock-product-steward"
 
 
 class TestDeriveRavnWsUrl:

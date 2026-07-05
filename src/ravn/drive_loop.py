@@ -833,11 +833,18 @@ class DriveLoop:
             warn_at_percent=_warn,
         )
 
+        # Session-join manager: built once here (composition root) and injected
+        # into both this loop's observer and the session_join tool's runtime
+        # context, so the tool and the drive loop share one membership set
+        # without a module global.
+        from ravn.session_join import build_session_join_manager  # noqa: PLC0415
+
+        self._session_join_manager = build_session_join_manager(settings)
+
         # Skuld channel for browser delivery (mesh cascade visualization)
         # TODO(niu-activity-bus): Once direct Skuld streaming is stable again,
         # split high-frequency live activity onto a dedicated activity bus/channel
         # and leave workflow/outcome propagation on the mesh.
-        self._session_join_manager = None
         self._skuld_channel: SkuldChannel | None = None
         if settings.skuld.enabled:
             # peer_id is appended to the broker_url
@@ -1389,9 +1396,8 @@ class DriveLoop:
             # Session joins (secondary rooms): frames directed at us inside a
             # JOINED session are perception, not operator turns — they arrive
             # tagged with their source session and enqueue at normal priority.
-            from ravn.session_join import get_session_join_manager  # noqa: PLC0415
-
-            self._session_join_manager = get_session_join_manager(self._settings)
+            # The manager was built in __init__ and is shared with the
+            # session_join tool via the tool runtime context.
             self._session_join_manager.set_observer(self._handle_joined_session_message)
 
         coros: list[Awaitable] = [
