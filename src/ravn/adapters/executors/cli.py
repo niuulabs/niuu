@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
+import sys
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -435,6 +437,7 @@ class CliTransportExecutor(ExecutorPort):
         session: Session = kwargs["session"]
         task_id = str(kwargs.get("task_id") or session.id)
         permission_mode = str(kwargs.get("permission_mode", "workspace_write"))
+        tools = list(kwargs.get("tools", []))
         transport_kwargs = {
             "workspace_dir": workspace_dir,
             "model": str(kwargs.get("model", "")),
@@ -445,7 +448,11 @@ class CliTransportExecutor(ExecutorPort):
         if not _delegates_permission_config_to_cli(self._binding.cls):
             transport_kwargs["skip_permissions"] = permission_mode != "prompt"
         if "mcp_servers" in kwargs:
-            transport_kwargs["mcp_servers"] = kwargs["mcp_servers"]
+            transport_kwargs["mcp_servers"] = _with_ravn_tool_mcp_server(
+                list(kwargs["mcp_servers"]),
+                persona=str(kwargs.get("persona", "")),
+                tools=tools,
+            )
         transport_kwargs.update(self._transport_kwargs)
 
         return CliTransportAgent(
@@ -459,5 +466,36 @@ class CliTransportExecutor(ExecutorPort):
             checkpoint_port=kwargs.get("checkpoint_port"),
             task_id=task_id,
             persona=str(kwargs.get("persona", "")),
-            preloaded_tools=kwargs.get("tools", []),
+            preloaded_tools=tools,
         )
+
+
+def _with_ravn_tool_mcp_server(
+    mcp_servers: list[dict[str, Any]],
+    *,
+    persona: str,
+    tools: list[object],
+) -> list[dict[str, Any]]:
+    if not tools or any(str(server.get("name") or "") == "ravn-tools" for server in mcp_servers):
+        return mcp_servers
+
+    env: dict[str, str] = {}
+    if config := os.environ.get("RAVN_CONFIG"):
+        env["RAVN_CONFIG"] = config
+    if pythonpath := os.environ.get("PYTHONPATH"):
+        env["PYTHONPATH"] = pythonpath
+
+    args = ["-m", "ravn", "tool-mcp"]
+    if persona:
+        args.extend(["--persona", persona])
+
+    return [
+        *mcp_servers,
+        {
+            "name": "ravn-tools",
+            "type": "stdio",
+            "command": sys.executable,
+            "args": args,
+            "env": env,
+        },
+    ]

@@ -2294,6 +2294,65 @@ async def _run_turn(
             sys.exit(1)
 
 
+@app.command("tool-mcp")
+def tool_mcp(
+    config: str = typer.Option("", "--config", "-c", help="Path to ravn config YAML."),
+    persona: str = typer.Option(
+        "", "--persona", "-p", help="Persona whose allowed tools should be exposed."
+    ),
+    profile: str = typer.Option(
+        "", "--profile", help="Profile name (built-in or from ~/.ravn/profiles/)."
+    ),
+) -> None:
+    """Serve the active Ravn ToolPort set over MCP stdio."""
+    if config:
+        os.environ["RAVN_CONFIG"] = config
+
+    settings = Settings()
+    _configure_logging(settings)
+    project_config = ProjectConfig.discover()
+    ravn_profile = _resolve_profile(profile)
+    effective_persona = persona or (ravn_profile.persona if ravn_profile else "")
+    persona_config = _resolve_persona(effective_persona, project_config, settings=settings)
+    tools = _build_tool_mcp_tools(settings, persona_config=persona_config)
+
+    from ravn.adapters.mcp.tool_port_server import ToolPortMcpServer
+
+    asyncio.run(ToolPortMcpServer(tools).run_stdio())
+
+
+def _build_tool_mcp_tools(settings: Settings, *, persona_config: Any | None) -> list[Any]:
+    workspace = _resolve_workspace(settings)
+    session = Session()
+    memory = (
+        _build_memory(settings) if _tool_mcp_allows(persona_config, _MEMORY_TOOL_NAMES) else None
+    )
+    mimir = _build_mimir(settings) if _tool_mcp_allows(persona_config, _MIMIR_TOOL_NAMES) else None
+    max_iterations = settings.agent.max_iterations
+    if persona_config is not None and persona_config.iteration_budget is not None:
+        max_iterations = persona_config.iteration_budget
+    return _build_tools(
+        settings,
+        workspace,
+        session,
+        llm=None,
+        memory=memory,
+        iteration_budget=_build_iteration_budget(settings, max_iterations),
+        mimir=mimir,
+        persona_config=persona_config,
+    )
+
+
+_MEMORY_TOOL_NAMES = {"ravn_memory_search", "session_search"}
+
+
+def _tool_mcp_allows(persona_config: Any | None, names: set[str] | list[str]) -> bool:
+    if persona_config is None or not getattr(persona_config, "allowed_tools", None):
+        return True
+    allowed = _expand_allowed_tools(set(persona_config.allowed_tools or []))
+    return any(_in_groups(name, allowed) for name in names)
+
+
 def _print_usage(usage: TokenUsage) -> None:
     parts = [f"in={usage.input_tokens}", f"out={usage.output_tokens}"]
     if usage.cache_read_tokens:

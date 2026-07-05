@@ -13,7 +13,8 @@ from ravn.adapters.executors.cli import (
 )
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.events import RavnEvent
-from ravn.domain.models import Message, Session
+from ravn.domain.models import Message, Session, ToolResult
+from ravn.ports.tool import ToolPort
 
 
 class _CollectingChannel:
@@ -22,6 +23,27 @@ class _CollectingChannel:
 
     async def emit(self, event: RavnEvent) -> None:
         self.events.append(event)
+
+
+class DummyTool(ToolPort):
+    @property
+    def name(self) -> str:
+        return "dummy_tool"
+
+    @property
+    def description(self) -> str:
+        return "Dummy test tool."
+
+    @property
+    def input_schema(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    @property
+    def required_permission(self) -> str:
+        return "test:dummy"
+
+    async def execute(self, input: dict) -> ToolResult:
+        return ToolResult(tool_call_id="", content="ok")
 
 
 class FakeResumableTransport(CLITransport):
@@ -494,6 +516,33 @@ def test_cli_executor_passes_mcp_servers_to_codex_transport() -> None:
         ("mcp_servers.mimir-local.command", '"python3"'),
         ("mcp_servers.mimir-local.args", '["-m", "mimir"]'),
     ]
+
+
+def test_cli_executor_adds_ravn_tools_mcp_server_when_tools_are_preloaded() -> None:
+    channel = _CollectingChannel()
+    executor = CliTransportExecutor(
+        transport_adapter="skuld.transports.codex.CodexSubprocessTransport"
+    )
+    agent = executor.build(
+        channel=channel,
+        system_prompt="You are a researcher.",
+        session=Session(),
+        model="gpt-5.5",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-ravn-tool-mcp",
+        persona="product-steward",
+        workspace_dir="/tmp/workspace",
+        permission_mode="read_only",
+        tools=[DummyTool()],
+        mcp_servers=[],
+    )
+
+    transport = agent._create_transport()
+    assert any(
+        key == "mcp_servers.ravn-tools.args" and '"tool-mcp"' in value
+        for key, value in transport._mcp_overrides
+    )
 
 
 def test_cli_executor_delegates_codex_ws_permissions_to_codex_config() -> None:
