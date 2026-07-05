@@ -118,7 +118,9 @@ describe('SessionsView', () => {
     await waitFor(() => expect(screen.getByTestId('sessions-page')).toBeInTheDocument());
     expect(screen.getByText(/10 active/i)).toBeInTheDocument();
     expect(screen.getByText(/1 idle/i)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Open session Monitor overnight alerts' })).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: 'Open session Monitor overnight alerts' }),
+    ).toBeNull();
   });
 
   it('selects the newest running session by default and shows the header', async () => {
@@ -139,6 +141,18 @@ describe('SessionsView', () => {
     expect(target).toHaveAttribute('aria-pressed', 'true');
     const header = await screen.findByTestId('sessions-header');
     expect(within(header).getByRole('heading', { name: 'Review PR #142' })).toBeInTheDocument();
+  });
+
+  it('collapses and expands the sessions rail', async () => {
+    render(<SessionsView />, { wrapper: wrap(services()) });
+    const collapse = await screen.findByRole('button', { name: /collapse sessions sidebar/i });
+
+    fireEvent.click(collapse);
+    expect(screen.getByRole('button', { name: /expand sessions sidebar/i })).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /open session/i }).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: /expand sessions sidebar/i }));
+    expect(screen.getByRole('button', { name: /collapse sessions sidebar/i })).toBeInTheDocument();
   });
 
   it('responds to ravn:session-selected events', async () => {
@@ -263,6 +277,7 @@ describe('SessionsView — live chat', () => {
     // The synthesized read-only transcript must NOT be present.
     expect(screen.queryByTestId('sessions-composer')).not.toBeInTheDocument();
     expect(screen.queryByRole('log', { name: /session transcript/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sessions-context')).not.toBeInTheDocument();
   });
 
   it('uses the live resident persona for header metadata and emissions', async () => {
@@ -275,7 +290,7 @@ describe('SessionsView — live chat', () => {
     const header = await screen.findByTestId('sessions-header');
     expect(within(header).getByText('product-steward')).toBeInTheDocument();
     expect(within(header).queryByText('coder')).not.toBeInTheDocument();
-    expect(screen.getByText('no emission configured')).toBeInTheDocument();
+    expect(screen.queryByTestId('sessions-context')).not.toBeInTheDocument();
     expect(screen.queryByText('code.changed')).not.toBeInTheDocument();
   });
 

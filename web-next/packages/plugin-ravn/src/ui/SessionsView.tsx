@@ -559,6 +559,39 @@ function SessionRailGroup({
   );
 }
 
+function CollapsedSessionRail({
+  sessions,
+  selectedId,
+  onSelect,
+}: {
+  sessions: Session[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <div className="rv-rs__rail-collapsed-body">
+      {sessions.map((session) => (
+        <button
+          key={session.id}
+          type="button"
+          className={cn(
+            'rv-rs__rail-collapsed-item',
+            selectedId === session.id && 'rv-rs__rail-collapsed-item--selected',
+          )}
+          onClick={() => onSelect(session.id)}
+          aria-label={`Open session ${titleForSession(session)}`}
+        >
+          <PersonaAvatar
+            role={session.personaRole ?? 'build'}
+            letter={session.personaLetter ?? '?'}
+            size={24}
+          />
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function SessionHeader({
   session,
   ravn,
@@ -1041,10 +1074,9 @@ function ContextSidebar({
 export function SessionsView() {
   const { data: sessions, isLoading, isError, error } = useSessions();
   const { data: ravens } = useRavens();
-  const [selectedId, setSelectedId] = useState<string | null>(() =>
-    preferredSessionId(),
-  );
+  const [selectedId, setSelectedId] = useState<string | null>(() => preferredSessionId());
   const [filter, setFilter] = useState<TranscriptFilter>('all');
+  const [railCollapsed, setRailCollapsed] = useState(false);
   const [showInternalMessages, setShowInternalMessages] = useState(false);
   const setInternalVisibilityRef = useRef<((visible: boolean) => void) | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
@@ -1173,32 +1205,71 @@ export function SessionsView() {
 
   return (
     <div className="rv-rs" data-testid="sessions-page">
-      <aside className="rv-rs__rail" aria-label="Sessions">
-        <div className="rv-rs__rail-head">
-          <div className="rv-rs__rail-title">Sessions</div>
-          <div className="rv-rs__rail-subtitle">
-            {activeSessions.length} active · {idleSessions.length} idle
-          </div>
-        </div>
+      <aside
+        className={cn('rv-rs__rail', railCollapsed && 'rv-rs__rail--collapsed')}
+        aria-label="Sessions"
+      >
+        {railCollapsed ? (
+          <>
+            <div className="rv-rs__rail-collapsed-head">
+              <button
+                type="button"
+                onClick={() => setRailCollapsed(false)}
+                className="rv-rs__rail-toggle"
+                data-testid="sessions-sidebar-toggle"
+                aria-label="Expand sessions sidebar"
+              >
+                ›
+              </button>
+            </div>
+            <CollapsedSessionRail
+              sessions={sortedSessions}
+              selectedId={selectedSession.id}
+              onSelect={selectSession}
+            />
+          </>
+        ) : (
+          <>
+            <div className="rv-rs__rail-head">
+              <div className="rv-rs__rail-head-row">
+                <div>
+                  <div className="rv-rs__rail-title">Sessions</div>
+                  <div className="rv-rs__rail-subtitle">
+                    {activeSessions.length} active · {idleSessions.length} idle
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setRailCollapsed(true)}
+                  className="rv-rs__rail-toggle"
+                  data-testid="sessions-sidebar-toggle"
+                  aria-label="Collapse sessions sidebar"
+                >
+                  ‹
+                </button>
+              </div>
+            </div>
 
-        <div className="rv-rs__rail-body">
-          <SessionRailGroup
-            label="active"
-            count={activeSessions.length}
-            sessions={activeSessions}
-            selectedId={selectedSession.id}
-            anchorTime={anchorTime}
-            onSelect={selectSession}
-          />
-          <SessionRailGroup
-            label="idle"
-            count={idleSessions.length}
-            sessions={idleSessions}
-            selectedId={selectedSession.id}
-            anchorTime={anchorTime}
-            onSelect={selectSession}
-          />
-        </div>
+            <div className="rv-rs__rail-body">
+              <SessionRailGroup
+                label="active"
+                count={activeSessions.length}
+                sessions={activeSessions}
+                selectedId={selectedSession.id}
+                anchorTime={anchorTime}
+                onSelect={selectSession}
+              />
+              <SessionRailGroup
+                label="idle"
+                count={idleSessions.length}
+                sessions={idleSessions}
+                selectedId={selectedSession.id}
+                anchorTime={anchorTime}
+                onSelect={selectSession}
+              />
+            </div>
+          </>
+        )}
       </aside>
 
       <main className="rv-rs__main">
@@ -1209,7 +1280,7 @@ export function SessionsView() {
           showInternalMessages={showInternalMessages}
           onToggleInternalMessages={toggleInternalMessages}
         />
-        <div className="rv-rs__body">
+        <div className={cn('rv-rs__body', liveChatEndpoint && 'rv-rs__body--chat-only')}>
           <section className="rv-rs__chat">
             {liveChatEndpoint ? (
               <LiveSessionChat
@@ -1261,14 +1332,16 @@ export function SessionsView() {
             )}
           </section>
 
-          <ContextSidebar
-            session={selectedSession}
-            ravn={selectedRavn}
-            budget={budget}
-            persona={persona}
-            entries={entries}
-            personaLabel={personaLabel}
-          />
+          {!liveChatEndpoint && (
+            <ContextSidebar
+              session={selectedSession}
+              ravn={selectedRavn}
+              budget={budget}
+              persona={persona}
+              entries={entries}
+              personaLabel={personaLabel}
+            />
+          )}
         </div>
       </main>
     </div>

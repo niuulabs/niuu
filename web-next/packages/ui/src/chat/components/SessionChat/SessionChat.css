@@ -15,11 +15,11 @@
 }
 
 .niuu-chat-outer-grid[data-has-sidebar][data-right-panel] {
-  grid-template-columns: auto 1fr 360px;
+  grid-template-columns: auto 1fr 216px;
 }
 
 .niuu-chat-outer-grid[data-right-panel]:not([data-has-sidebar]) {
-  grid-template-columns: 1fr 360px;
+  grid-template-columns: 1fr 216px;
 }
 
 .niuu-chat-outer-grid[data-has-sidebar][data-right-panel][data-right-panel-collapsed] {
