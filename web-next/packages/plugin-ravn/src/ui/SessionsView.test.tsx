@@ -265,6 +265,20 @@ describe('SessionsView — live chat', () => {
     expect(screen.queryByRole('log', { name: /session transcript/i })).not.toBeInTheDocument();
   });
 
+  it('uses the live resident persona for header metadata and emissions', async () => {
+    render(<SessionsView />, {
+      wrapper: wrap(
+        servicesWith(singleSessionStream(liveRunningSession({ personaName: 'product-steward' }))),
+      ),
+    });
+
+    const header = await screen.findByTestId('sessions-header');
+    expect(within(header).getByText('product-steward')).toBeInTheDocument();
+    expect(within(header).queryByText('coder')).not.toBeInTheDocument();
+    expect(screen.getByText('no emission configured')).toBeInTheDocument();
+    expect(screen.queryByText('code.changed')).not.toBeInTheDocument();
+  });
+
   it('toggles internal visibility for live chat sessions', async () => {
     const sendSetInternalVisibility = vi.fn();
     useSkuldChatMock.mockImplementation(() => makeChatState({ sendSetInternalVisibility }));

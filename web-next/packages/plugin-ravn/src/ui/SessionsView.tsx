@@ -1095,7 +1095,14 @@ export function SessionsView() {
   const ravnById = useMemo(() => new Map((ravens ?? []).map((ravn) => [ravn.id, ravn])), [ravens]);
 
   const selectedRavn = selectedSession ? (ravnById.get(selectedSession.ravnId) ?? null) : null;
-  const personaKey = selectedSession ? derivePersonaKey(selectedSession) : '';
+  const hasLiveChat =
+    selectedSession?.status === 'running' &&
+    Boolean(normalizeSessionUrl(selectedSession.chatEndpoint ?? null));
+  const personaKey = selectedSession
+    ? hasLiveChat
+      ? selectedSession.personaName
+      : derivePersonaKey(selectedSession)
+    : '';
   const { data: persona } = usePersona(personaKey);
   const { data: budget } = useRavnBudget(selectedSession?.ravnId ?? '');
 
@@ -1160,10 +1167,9 @@ export function SessionsView() {
 
   // A running session with a Skuld endpoint is a real live chat — the shared
   // SessionChat becomes the transcript. Everything else keeps the read-only view.
-  const liveChatEndpoint =
-    selectedSession.status === 'running'
-      ? normalizeSessionUrl(selectedSession.chatEndpoint ?? null)
-      : null;
+  const liveChatEndpoint = hasLiveChat
+    ? normalizeSessionUrl(selectedSession.chatEndpoint ?? null)
+    : null;
 
   return (
     <div className="rv-rs" data-testid="sessions-page">
