@@ -359,6 +359,8 @@ def _create_contributors(
         ravn_kwargs = dict(ports)
         if settings.ravn_flock_image:
             ravn_kwargs["ravn_image"] = settings.ravn_flock_image
+        if settings.ravn_flock_init_writer_image:
+            ravn_kwargs["init_writer_image"] = settings.ravn_flock_init_writer_image
         contributors.append(RavnFlockContributor(**ravn_kwargs))
         logger.info("Session contributor: ravn_flock (auto-wired)")
 

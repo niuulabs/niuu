@@ -1739,6 +1739,13 @@ class Settings(BaseSettings):
             "When empty, the contributor's built-in default is used."
         ),
     )
+    ravn_flock_init_writer_image: str = Field(
+        default="",
+        description=(
+            "Optional image used by Ravn flock init containers that write per-persona "
+            "config files. When empty, the contributor's built-in default is used."
+        ),
+    )
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
         default_factory=_default_session_definitions,
         description="Session definitions keyed by name (e.g. skuldClaude, skuldCodex).",
