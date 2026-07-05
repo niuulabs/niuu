@@ -130,7 +130,7 @@ class TestFilesystemPersonaAdapterParse:
         assert cfg.allowed_tools == ["file", "git"]
         assert cfg.forbidden_tools == ["cascade"]
         assert cfg.permission_mode == "workspace-write"
-        assert cfg.llm.primary_alias == ""
+        assert cfg.llm.primary_alias == "balanced"
         assert cfg.llm.thinking_enabled is True
         assert cfg.iteration_budget == 25
 
@@ -405,6 +405,10 @@ class TestBuiltinPersonas:
                 assert cfg.iteration_budget == 0
                 continue
             assert cfg.iteration_budget > 0, f"{p.stem} has non-positive iteration_budget"
+
+    def test_product_steward_uses_gpt55_alias(self) -> None:
+        cfg = self._load("product-steward")
+        assert cfg.llm.primary_alias == "gpt-5.5"
 
     # ------------------------------------------------------------------
     # Specialist personas (NIU-586)

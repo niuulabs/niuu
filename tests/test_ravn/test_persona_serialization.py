@@ -304,14 +304,14 @@ def test_to_yaml_includes_all_non_zero_fields() -> None:
         allowed_tools=["file"],
         forbidden_tools=["terminal"],
         permission_mode="read-only",
-        llm=PersonaLLMConfig(thinking_enabled=True, max_tokens=1000),
+        llm=PersonaLLMConfig(primary_alias="balanced", thinking_enabled=True, max_tokens=1000),
         iteration_budget=25,
     )
     d = p.to_dict()
     assert d["allowed_tools"] == ["file"]
     assert d["forbidden_tools"] == ["terminal"]
     assert d["permission_mode"] == "read-only"
-    assert "primary_alias" not in d["llm"]
+    assert d["llm"]["primary_alias"] == "balanced"
     assert d["llm"]["thinking_enabled"] is True
     assert d["llm"]["max_tokens"] == 1000
     assert d["iteration_budget"] == 25
