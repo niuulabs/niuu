@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -145,10 +146,13 @@ class ResidentRelay:
         # this, a resident subscribed to a broad pattern re-wakes itself on
         # every turn — an unbounded feedback loop burning the daily budget.
         # Check the ORIGIN (who published), never resident_peer_id (which is
-        # the deliver-to provenance target handled below).
+        # the deliver-to provenance target handled below). Match on exact
+        # tokens, not substring: a substring test would make peer id
+        # "flock-spec" wrongly suppress a distinct "flock-spec-writer".
         payload = event.payload or {}
         origin = f"{payload.get('ravn_source') or ''} {event.source or ''}"
-        if self._resident_peer_id and self._resident_peer_id in origin:
+        origin_tokens = re.split(r"[\s:/,]+", origin)
+        if self._resident_peer_id and self._resident_peer_id in origin_tokens:
             return
 
         participant = self._room_bridge.participants.get(self._resident_peer_id)

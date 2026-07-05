@@ -179,6 +179,12 @@ class SkuldPortRegistry:
 
 _skuld_registry: SkuldPortRegistry | None = None
 
+# The broker replays the FULL conversation history as one frame on connect;
+# long sessions exceed the websockets client's 1 MiB default (which killed the
+# broker leg with 1009 "message too big" and trapped clients in a reconnect
+# loop). 64 MiB headroom, shared by both the /session and /ws/ravn proxy legs.
+_WS_PROXY_MAX_FRAME_BYTES = 2**26
+
 
 def _decode_jwt_claims(token: str) -> dict:
     """Decode a JWT payload without verifying the signature (Envoy's job)."""
@@ -837,12 +843,7 @@ def build_root_app(
             try:
                 async with ws_client.connect(
                     f"ws://127.0.0.1:{port}/session",
-                    # The broker replays the FULL conversation history as one
-                    # frame on connect; long sessions exceed the websockets
-                    # client's 1 MiB default, which killed the broker leg with
-                    # 1009 ("message too big") and trapped browsers in an
-                    # infinite reconnect loop. 64 MiB headroom.
-                    max_size=2**26,
+                    max_size=_WS_PROXY_MAX_FRAME_BYTES,
                     additional_headers={
                         **{
                             k.decode(): v.decode()
@@ -941,10 +942,11 @@ def build_root_app(
             await websocket.accept()
             import websockets.asyncio.client as ws_client
 
+            connected = False
             try:
                 async with ws_client.connect(
                     f"ws://127.0.0.1:{port}/ws/ravn/{peer_id}",
-                    max_size=2**26,
+                    max_size=_WS_PROXY_MAX_FRAME_BYTES,
                     additional_headers={
                         k.decode(): v.decode()
                         for k, v in websocket.headers.raw
@@ -958,6 +960,7 @@ def build_root_app(
                         )
                     },
                 ) as broker_ws:
+                    connected = True
 
                     async def ravn_to_broker() -> None:
                         with suppress(Exception):
@@ -969,7 +972,7 @@ def build_root_app(
                             async for msg in broker_ws:
                                 await websocket.send_text(str(msg))
 
-                    _done, pending = await asyncio.wait(
+                    done, pending = await asyncio.wait(
                         [
                             asyncio.create_task(ravn_to_broker()),
                             asyncio.create_task(broker_to_ravn()),
@@ -978,6 +981,12 @@ def build_root_app(
                     )
                     for task in pending:
                         task.cancel()
+                    # Await the cancelled tasks so neither is destroyed while
+                    # still pending, and surface any exception from the
+                    # completed leg (fail loudly, not silently).
+                    await asyncio.gather(*pending, return_exceptions=True)
+                    for task in done:
+                        task.result()
             except Exception:
                 logger.debug(
                     "Ravn WS proxy ended for session %s peer %s",
@@ -985,6 +994,14 @@ def build_root_app(
                     _sanitize_log(peer_id),
                 )
             finally:
+                # Same M-8 self-heal as the /session proxy: if the broker leg
+                # never connected, a stale RUNNING port must only be dropped
+                # when the pod-authoritative reconcile CONFIRMS the session is
+                # dead — never on a transient blip against a live pod.
+                if not connected:
+                    confirmed_dead = await skuld_reg.reconcile_dead(session_id)
+                    if confirmed_dead:
+                        skuld_reg.unregister(session_id)
                 with suppress(Exception):
                     await websocket.close()
 

@@ -849,6 +849,8 @@ class DriveLoop:
                 peer_id=peer_id,
                 persona=None,  # Set per-task
                 display_name=settings.skuld.display_name or "",
+                reconnect_delay=settings.skuld.reconnect_delay_seconds,
+                max_reconnect_attempts=settings.skuld.max_reconnect_attempts,
             )
 
     # ------------------------------------------------------------------

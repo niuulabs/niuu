@@ -163,6 +163,17 @@ class TestRelayDelivery:
         await subscriber.handler(ev)
         send_directed.assert_not_awaited()
 
+    async def test_self_origin_is_exact_token_not_substring(self):
+        # A distinct peer whose id merely CONTAINS the resident's id as a
+        # substring (flock-product-steward vs flock-product-steward-2) must
+        # still be delivered — the guard matches exact tokens, not substrings.
+        relay, subscriber, _room, send_directed, _notify = _relay(subscribes_to=("research.*",))
+        await relay.start()
+        await subscriber.handler(
+            _event("research.completed", {"ravn_source": f"ravn:{_RESIDENT}-2"})
+        )
+        send_directed.assert_awaited_once()
+
     async def test_resident_absent_drops_quietly(self):
         relay, subscriber, room, send_directed, notify = _relay()
         room.participants = {}

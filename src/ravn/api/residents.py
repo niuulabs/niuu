@@ -119,8 +119,17 @@ class ResidentDirectory:
         except httpx.HTTPStatusError as exc:
             # Any client-side status (404 not found, 422 non-UUID id, 401/403
             # not permitted) means "no such resident for this caller" — a clean
-            # None, not a 500. Only server errors propagate.
-            if 400 <= exc.response.status_code < 500:
+            # None, not a 500. Only server errors propagate. Log auth failures
+            # so a bad-credential misconfig isn't indistinguishable from a
+            # genuinely-missing resident.
+            status = exc.response.status_code
+            if status in (401, 403):
+                logger.warning(
+                    "resident get_raven: forge returned %s for %s (auth?) — reporting None",
+                    status,
+                    ravn_id,
+                )
+            if 400 <= status < 500:
                 return None
             raise
         if (

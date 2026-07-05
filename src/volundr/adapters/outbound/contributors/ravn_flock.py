@@ -28,7 +28,12 @@ import yaml
 from niuu.domain.llm_merge import _SECURITY_KEYS, merge_llm
 from niuu.mesh import nng_gateway_port_for as _gateway_port_for
 from niuu.mesh import nng_ports_for as _ports_for
-from volundr.domain.models import LaunchSpec, PodSpecAdditions, Session
+from volundr.domain.models import (
+    LaunchSpec,
+    PodSpecAdditions,
+    Session,
+    flock_peer_id,
+)
 from volundr.domain.ports import (
     LaunchSpecProvider,
     SessionContext,
@@ -444,7 +449,7 @@ def _build_static_mesh_peers(
         emits = [str(item) for item in persona_dict.get("emits_event_types") or []]
         peers.append(
             _mesh_peer_entry(
-                peer_id=f"flock-{persona}",
+                peer_id=flock_peer_id(persona),
                 persona=persona,
                 index=i,
                 base_port=base_port,
@@ -493,7 +498,7 @@ def _build_ravn_config(
     gw = _ravn_gateway_port_for(index, base_port)
 
     peers: list[dict[str, str]] = [{"peer_id": skuld_peer_id}] + [
-        {"peer_id": f"flock-{p}"} for p in all_personas if p != persona
+        {"peer_id": flock_peer_id(p)} for p in all_personas if p != persona
     ]
 
     mimir_instances, mimir_write_routing = _resolve_mimir_runtime(mimir_config)
@@ -1031,7 +1036,7 @@ class RavnFlockContributor(SessionContributor):
         for i, persona_dict in enumerate(persona_dicts):
             persona = persona_dict["name"]
             ravn_index = i + 1
-            peer_id = f"flock-{persona}"
+            peer_id = flock_peer_id(persona)
             pub, rep, hs = _ports_for(ravn_index, base_port)
             gw = _ravn_gateway_port_for(ravn_index, base_port)
 
