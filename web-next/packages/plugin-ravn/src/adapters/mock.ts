@@ -860,6 +860,8 @@ const SEED_SESSIONS: Session[] = [
     messageCount: 6,
     tokenCount: 4820,
     costUsd: 0.18,
+    // Mock never opens sockets — a null endpoint keeps the read-only surface.
+    chatEndpoint: null,
   },
   {
     id: '10000001-0000-4000-8000-000000000002',

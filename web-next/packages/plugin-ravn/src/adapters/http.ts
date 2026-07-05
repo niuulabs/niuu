@@ -247,6 +247,7 @@ interface RawSession {
   status: string;
   model: string;
   created_at: string;
+  chat_endpoint?: string | null;
 }
 
 interface RawMessage {
@@ -405,6 +406,7 @@ function toSession(raw: RawSession): Session {
     status: raw.status as SessionStatus,
     model: raw.model,
     createdAt: raw.created_at,
+    chatEndpoint: raw.chat_endpoint,
   };
 }
 

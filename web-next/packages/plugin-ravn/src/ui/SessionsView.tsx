@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { PersonaAvatar, ErrorState, LoadingState, cn } from '@niuulabs/ui';
+import {
+  PersonaAvatar,
+  ErrorState,
+  LoadingState,
+  SessionChat,
+  cn,
+  normalizeSessionUrl,
+  useSkuldChat,
+} from '@niuulabs/ui';
 import type { PersonaRole } from '@niuulabs/domain';
 import { useMessages, useSessions } from './hooks/useSessions';
 import { useRavens } from './hooks/useRavens';
@@ -837,6 +845,42 @@ function Composer({ session }: { session: Session }) {
   );
 }
 
+function LiveSessionChat({
+  chatEndpoint,
+  sessionName,
+}: {
+  chatEndpoint: string;
+  sessionName: string;
+}) {
+  const chat = useSkuldChat(chatEndpoint);
+
+  return (
+    <div className="rv-rs__live-chat" data-testid="sessions-live-chat">
+      <SessionChat
+        className="rv-rs__live-chat-session"
+        showToolbar={false}
+        messages={chat.messages}
+        streamingContent={chat.streamingContent}
+        streamingParts={chat.streamingParts}
+        streamingModel={chat.streamingModel}
+        connected={chat.connected}
+        historyLoaded={chat.historyLoaded}
+        participants={chat.participants}
+        meshEvents={chat.meshEvents}
+        agentEvents={chat.agentEvents}
+        pendingPermissions={chat.pendingPermissions}
+        availableCommands={chat.availableCommands}
+        capabilities={chat.capabilities}
+        chatEndpoint={chatEndpoint}
+        sessionName={sessionName}
+        onSend={chat.sendMessage}
+        onStop={chat.sendInterrupt}
+        onPermissionRespond={chat.respondToPermission}
+      />
+    </div>
+  );
+}
+
 function ContextSidebar({
   session,
   ravn,
@@ -1048,6 +1092,13 @@ export function SessionsView() {
   const closedSessions = sortedSessions.filter((session) => session.status !== 'running');
   const anchorTime = deriveAnchorTime(sortedSessions);
 
+  // A running session with a Skuld endpoint is a real live chat — the shared
+  // SessionChat becomes the transcript. Everything else keeps the read-only view.
+  const liveChatEndpoint =
+    selectedSession.status === 'running'
+      ? normalizeSessionUrl(selectedSession.chatEndpoint ?? null)
+      : null;
+
   return (
     <div className="rv-rs" data-testid="sessions-page">
       <aside className="rv-rs__rail" aria-label="Sessions">
@@ -1088,39 +1139,50 @@ export function SessionsView() {
         <SessionHeader session={selectedSession} ravn={selectedRavn} personaLabel={personaLabel} />
         <div className="rv-rs__body">
           <section className="rv-rs__chat">
-            <TranscriptToolbar filter={filter} onFilterChange={setFilter} />
-            <div
-              className="rv-rs__scroll"
-              ref={transcriptRef}
-              role="log"
-              aria-label="Session transcript"
-            >
-              {messagesLoading ? (
-                <div className="rv-rs__empty">loading transcript…</div>
-              ) : messagesError ? (
-                <div className="rv-rs__empty rv-rs__empty--error">failed to load transcript</div>
-              ) : (
-                <>
-                  {filteredEntries.map((entry) => (
-                    <TranscriptMessage
-                      key={entry.id}
-                      entry={entry}
-                      personaLabel={personaLabel}
-                      personaLetter={personaLetter}
-                      personaRole={personaRole}
-                    />
-                  ))}
-                  {selectedSession.status === 'running' && (
-                    <ActiveCursor
-                      personaLabel={personaLabel}
-                      personaLetter={personaLetter}
-                      personaRole={personaRole}
-                    />
+            {liveChatEndpoint ? (
+              <LiveSessionChat
+                chatEndpoint={liveChatEndpoint}
+                sessionName={selectedRavn?.personaName ?? selectedSession.personaName}
+              />
+            ) : (
+              <>
+                <TranscriptToolbar filter={filter} onFilterChange={setFilter} />
+                <div
+                  className="rv-rs__scroll"
+                  ref={transcriptRef}
+                  role="log"
+                  aria-label="Session transcript"
+                >
+                  {messagesLoading ? (
+                    <div className="rv-rs__empty">loading transcript…</div>
+                  ) : messagesError ? (
+                    <div className="rv-rs__empty rv-rs__empty--error">
+                      failed to load transcript
+                    </div>
+                  ) : (
+                    <>
+                      {filteredEntries.map((entry) => (
+                        <TranscriptMessage
+                          key={entry.id}
+                          entry={entry}
+                          personaLabel={personaLabel}
+                          personaLetter={personaLetter}
+                          personaRole={personaRole}
+                        />
+                      ))}
+                      {selectedSession.status === 'running' && (
+                        <ActiveCursor
+                          personaLabel={personaLabel}
+                          personaLetter={personaLetter}
+                          personaRole={personaRole}
+                        />
+                      )}
+                    </>
                   )}
-                </>
-              )}
-            </div>
-            <Composer session={selectedSession} />
+                </div>
+                <Composer session={selectedSession} />
+              </>
+            )}
           </section>
 
           <ContextSidebar

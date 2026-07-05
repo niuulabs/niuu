@@ -503,14 +503,3 @@
   }
 }
 
-.rv-chat-body {
-  display: flex;
-  flex-direction: column;
-  height: 560px;
-  min-height: 320px;
-}
-
-.rv-chat-session {
-  height: 100%;
-  min-height: 0;
-}

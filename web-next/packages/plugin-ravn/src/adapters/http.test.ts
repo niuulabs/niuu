@@ -451,6 +451,30 @@ describe('buildRavnSessionAdapter', () => {
     expect(result[0]!.sessionId).toBe(rawSession.id);
     expect(result[0]!.kind).toBe('asst');
   });
+
+  it('maps chat_endpoint to chatEndpoint when present', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      ...rawSession,
+      chat_endpoint: 'wss://skuld.example/s/abc/session',
+    });
+    const result = await buildRavnSessionAdapter(client).getSession(rawSession.id);
+    expect(result.chatEndpoint).toBe('wss://skuld.example/s/abc/session');
+  });
+
+  it('maps a null chat_endpoint through unchanged', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({ ...rawSession, chat_endpoint: null });
+    const result = await buildRavnSessionAdapter(client).getSession(rawSession.id);
+    expect(result.chatEndpoint).toBeNull();
+  });
+
+  it('leaves chatEndpoint undefined when absent from the wire record', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(rawSession);
+    const result = await buildRavnSessionAdapter(client).getSession(rawSession.id);
+    expect(result.chatEndpoint).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

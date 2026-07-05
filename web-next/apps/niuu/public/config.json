@@ -23,7 +23,7 @@
     "ravn": { "mode": "mock" },
     "ravn.personas": { "mode": "mock" },
     "ravn.ravens": { "mode": "http", "baseUrl": "/api/v1/ravn/ravens" },
-    "ravn.sessions": { "mode": "mock" },
+    "ravn.sessions": { "mode": "http", "baseUrl": "/api/v1/ravn/sessions" },
     "ravn.triggers": { "mode": "mock" },
     "ravn.budget": { "mode": "mock" },
     "valkyrie": { "mode": "mock" },

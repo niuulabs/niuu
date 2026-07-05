@@ -777,6 +777,19 @@
   }
 }
 
+/* Live SessionChat surface — fills the chat pane for running broker sessions. */
+.rv-rs__live-chat {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.rv-rs__live-chat-session {
+  min-height: 0;
+  flex: 1;
+}
+
 @media (max-width: 1180px) {
   .rv-rs {
     flex-direction: column;
