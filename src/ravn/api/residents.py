@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 import httpx
@@ -36,6 +37,9 @@ _AUTH_HEADERS = (
 )
 # Developer-identity query params (mirrors volundr's extract_principal).
 _AUTH_QUERY_PARAMS = ("devUserId", "devEmail", "devTenantId", "devRoles")
+
+# Session ids accepted for downstream forge lookup.
+_RAVN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # Forge session status/activity → RavnStatus (web fleet vocabulary).
 _STATUS_MAP = {
@@ -117,6 +121,8 @@ class ResidentDirectory:
         auth_params: dict[str, str],
     ) -> dict[str, Any] | None:
         """Return one resident raven by its session id, or None."""
+        if not _RAVN_ID_RE.fullmatch(ravn_id):
+            return None
         try:
             session = await self._get_json(
                 f"/api/v1/forge/sessions/{ravn_id}",
