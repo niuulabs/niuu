@@ -313,6 +313,37 @@ describe('SessionsView — live chat', () => {
     expect(sendMessage).toHaveBeenCalledWith('Review the code and suggest improvements', []);
   });
 
+  it('sends @mentioned resident messages through the directed hook callback', async () => {
+    const sendDirectedMessages = vi.fn();
+    const productSteward = {
+      peerId: 'flock-product-steward',
+      persona: 'product-steward',
+      displayName: 'Muninn',
+      participantType: 'ravn',
+    };
+    useSkuldChatMock.mockImplementation(() =>
+      makeChatState({
+        participants: new Map([[productSteward.peerId, productSteward]]),
+        sendDirectedMessages,
+      }),
+    );
+    render(<SessionsView />, {
+      wrapper: wrap(servicesWith(singleSessionStream(liveRunningSession()))),
+    });
+
+    await screen.findByTestId('sessions-live-chat');
+    fireEvent.change(screen.getByTestId('chat-textarea'), {
+      target: { value: '@product-steward research solvent defaults' },
+    });
+    fireEvent.click(screen.getByTestId('send-btn'));
+
+    expect(sendDirectedMessages).toHaveBeenCalledWith(
+      [productSteward],
+      '@product-steward research solvent defaults',
+      [],
+    );
+  });
+
   it('keeps the read-only transcript for a running session without a chatEndpoint', async () => {
     render(<SessionsView />, {
       wrapper: wrap(servicesWith(singleSessionStream(liveRunningSession({ chatEndpoint: null })))),

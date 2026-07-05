@@ -914,6 +914,7 @@ function LiveSessionChat({
         showInternalToggle={false}
         internalVisibility={showInternalMessages}
         onSend={chat.sendMessage}
+        onSendDirected={chat.sendDirectedMessages}
         onStop={chat.sendInterrupt}
         onPermissionRespond={chat.respondToPermission}
         onSetInternalVisibility={chat.sendSetInternalVisibility}
