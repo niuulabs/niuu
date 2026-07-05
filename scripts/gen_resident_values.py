@@ -2,13 +2,16 @@
 platform composition code (ResidentContributor + GatewayContributor +
 FluxPodManager merge/translation) so the declared pod is identical to what
 the platform would provision — minus the session row."""
-import asyncio, copy, json, sys
+import asyncio
+import json
+import sys
+
 import yaml
 
-from volundr.adapters.outbound.contributors.resident import ResidentContributor
 from volundr.adapters.outbound.contributors.gateway import GatewayContributor
-from volundr.adapters.outbound.k8s_gateway import K8sGatewayAdapter
+from volundr.adapters.outbound.contributors.resident import ResidentContributor
 from volundr.adapters.outbound.flux import _deep_merge, _inject_workload_exchange_env
+from volundr.adapters.outbound.k8s_gateway import K8sGatewayAdapter
 from volundr.domain.models import GitSource, Session
 from volundr.domain.ports import SessionContext
 
@@ -58,7 +61,11 @@ values: dict = {}
 # resident needs; no repo checkout, no claude CLI creds, no code-server ingress)
 _deep_merge(values, {
     "global": {"niuu": {"cluster": "valhalla"}},
-    "image": {"repository": "ghcr.io/niuulabs/skuld", "tag": IMAGE_TAG, "pullPolicy": "IfNotPresent"},
+    "image": {
+        "repository": "ghcr.io/niuulabs/skuld",
+        "tag": IMAGE_TAG,
+        "pullPolicy": "IfNotPresent",
+    },
     "volundr": {"apiUrl": "https://volundr.valhalla.asgard.niuu.world"},
     "ingress": {"enabled": False},
     "persistence": {"enabled": False},
