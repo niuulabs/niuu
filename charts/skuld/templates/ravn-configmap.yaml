@@ -117,6 +117,8 @@ data:
       enabled: true
       broker_url: "ws://127.0.0.1:8081/ws/ravn"
       display_name: {{ $residentName | quote }}
+      reconnect_delay_seconds: {{ .Values.resident.skuld.reconnectDelaySeconds | default 2 }}
+      max_reconnect_attempts: {{ .Values.resident.skuld.maxReconnectAttempts | default 60 }}
     environment:
       resident_name: {{ $residentName | quote }}
 {{- end }}

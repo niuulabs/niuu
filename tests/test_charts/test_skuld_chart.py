@@ -393,6 +393,10 @@ class TestResidentWorkloadIdentityConfigFirst:
             "name": "Muninn",
             "persona": "product-steward",
             "routeId": "muninn",
+            "skuld": {
+                "reconnectDelaySeconds": 1,
+                "maxReconnectAttempts": 120,
+            },
             "platform": {
                 "enabled": True,
                 "baseUrl": "http://niuu-volundr.volundr.svc.cluster.local:80",
@@ -464,6 +468,9 @@ class TestResidentWorkloadIdentityConfigFirst:
         )
         assert platform["workflow_aliases"]["research"]["name"] == "Research Campaign"
         assert platform["workflow_aliases"]["research"]["defaults"]["gate_auto_forward_after"] == ""
+        skuld = ravn_cfg["skuld"]
+        assert skuld["reconnect_delay_seconds"] == 1
+        assert skuld["max_reconnect_attempts"] == 120
         mimir = ravn_cfg["mimir"]
         assert mimir["source_trigger"]["enabled"] is False
         assert mimir["source_trigger"]["poll_interval_seconds"] == 300
