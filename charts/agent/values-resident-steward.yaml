@@ -65,7 +65,7 @@ config:
         workload_token_file: /var/run/secrets/niuu/token
         workload_exchange_url: "http://volundr.niuu.svc.cluster.local:8080/api/v1/tokens/workload/exchange"
         # Off-cluster alternative: set pat_token via env override
-        # RAVN__GATEWAY__PLATFORM__PAT_TOKEN (never bake tokens into values).
+        # RAVN_GATEWAY__PLATFORM__PAT_TOKEN (never bake tokens into values).
     mimir:
       enabled: true
       instances:

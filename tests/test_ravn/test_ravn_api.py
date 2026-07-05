@@ -2142,6 +2142,24 @@ def test_create_app_no_args_returns_fastapi():
     assert isinstance(create_app(), FastAPI)
 
 
+def test_platform_base_url_unset_falls_back_to_env_override():
+    """Default settings leave the directory on its env-var fallback."""
+    from ravn.api import _configured_platform_base_url
+    from ravn.config import Settings
+
+    assert _configured_platform_base_url(Settings()) == ""
+
+
+def test_platform_base_url_configured_via_settings_wins():
+    from ravn.api import _configured_platform_base_url
+    from ravn.config import Settings
+
+    settings = Settings(
+        gateway={"platform": {"base_url": "http://niuu-volundr.volundr.svc:80"}}
+    )
+    assert _configured_platform_base_url(settings) == "http://niuu-volundr.volundr.svc:80"
+
+
 def test_list_wardens_returns_empty_list_when_store_is_empty(tmp_path):
     client = TestClient(create_app(warden_store=_store(tmp_path)))
 
