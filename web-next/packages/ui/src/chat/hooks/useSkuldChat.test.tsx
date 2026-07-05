@@ -955,8 +955,28 @@ page_path: council/demo/opinion-b.md
       type: 'directed_message',
       targetPeerId: 'flock-council-chair',
       content: 'Please revise the conclusion.',
+      request_id: expect.any(String),
     });
+    const directedRequestId = sendJson.mock.calls.at(-1)?.[0]?.request_id as string;
     expect(result.current.messages.at(-1)).toMatchObject({
+      role: 'user',
+      content: 'Please revise the conclusion.',
+    });
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'user_confirmed',
+          request_id: directedRequestId,
+          id: 'directed-confirmed-1',
+          content: '@council-chair Please revise the conclusion.',
+        }),
+      );
+    });
+
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0]).toMatchObject({
+      id: 'directed-confirmed-1',
       role: 'user',
       content: 'Please revise the conclusion.',
     });

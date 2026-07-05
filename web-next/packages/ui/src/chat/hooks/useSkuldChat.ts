@@ -1677,10 +1677,15 @@ export function useSkuldChat(
     (targetParticipants: RoomParticipant[], text: string, attachments: FileAttachment[]) => {
       const trimmed = text.trim();
       if (!trimmed || targetParticipants.length === 0) return;
+      const optimisticMessageId = generateId();
+      const requestIds = targetParticipants.map(() => generateId());
+      for (const requestId of requestIds) {
+        optimisticUserMessagesRef.current.set(requestId, optimisticMessageId);
+      }
       setMessages((prev) => [
         ...prev,
         {
-          id: generateId(),
+          id: optimisticMessageId,
           role: 'user',
           content: trimmed,
           createdAt: new Date(),
@@ -1688,8 +1693,14 @@ export function useSkuldChat(
         },
       ]);
       void attachments;
-      for (const participant of targetParticipants) {
-        sendJson({ type: 'directed_message', targetPeerId: participant.peerId, content: trimmed });
+      for (let index = 0; index < targetParticipants.length; index += 1) {
+        const participant = targetParticipants[index]!;
+        sendJson({
+          type: 'directed_message',
+          targetPeerId: participant.peerId,
+          content: trimmed,
+          request_id: requestIds[index],
+        });
       }
     },
     [sendJson],
