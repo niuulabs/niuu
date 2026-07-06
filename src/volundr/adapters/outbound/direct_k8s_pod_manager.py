@@ -278,6 +278,9 @@ class DirectK8sPodManager(PodManager):
         """
         return f"ws://{self._ingress_backend}{self._session_path(session)}/session"
 
+    def initial_chat_endpoint(self, session: Session) -> str | None:
+        return self._chat_endpoint(session)
+
     def _code_endpoint(self, session: Session) -> str:
         """Build the editor endpoint URL."""
         return f"http://{self._ingress_backend}{self._session_path(session)}/"

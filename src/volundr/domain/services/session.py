@@ -803,10 +803,13 @@ class SessionService:
         if not workload_config and session.workload_config:
             workload_config = dict(session.workload_config)
 
-        # Set chat_endpoint eagerly — URL is deterministic from session ID
-        host = _public_loopback_host()
-        port = os.environ.get("NIUU_SERVER_PORT", "8080")
-        chat_endpoint = f"ws://{host}:{port}/s/{session_id}/session"
+        # Set chat_endpoint eagerly — Flux/Gateway sessions know their public
+        # route before the pod is ready; local mode falls back to the root proxy.
+        chat_endpoint = self._pod_manager.initial_chat_endpoint(session)
+        if not chat_endpoint:
+            host = _public_loopback_host()
+            port = os.environ.get("NIUU_SERVER_PORT", "8080")
+            chat_endpoint = f"ws://{host}:{port}/s/{session_id}/session"
 
         starting = session.model_copy(
             update={

@@ -312,6 +312,31 @@ class TestSessionProvisioningState:
         assert result.chat_endpoint is not None
 
     @pytest.mark.asyncio
+    async def test_start_session_uses_pod_manager_initial_chat_endpoint(
+        self, repository, pod_manager, broadcaster
+    ):
+        """Flux/Gateway sessions return their public route immediately."""
+        service = SessionService(
+            repository=repository,
+            pod_manager=pod_manager,
+            broadcaster=broadcaster,
+            provisioning_initial_delay=0,
+            provisioning_timeout=1.0,
+        )
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        pod_manager.initial_chat_endpoint = (  # type: ignore[method-assign]
+            lambda s: f"wss://sessions.example.com/s/{s.id}/session"
+        )
+
+        result = await service.start_session(session.id)
+
+        assert result.chat_endpoint == f"wss://sessions.example.com/s/{session.id}/session"
+
+    @pytest.mark.asyncio
     async def test_start_session_clears_stale_error(self, service, repository):
         """Restart is an explicit "bring it back" — a stale failure verdict
         (e.g. the liveness reaper's "broker presumed dead") must not survive
