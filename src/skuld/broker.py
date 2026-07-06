@@ -2832,13 +2832,28 @@ class Broker:
         )
 
         frame = {
+            "type": "outcome",
             "metadata": {"event_type": node.completion_event_type},
             "data": {
                 "event_type": node.completion_event_type,
+                "canonical_event_type": node.completion_event_type,
                 "fields": fields,
                 "valid": True,
+                "verdict": payload.get("verdict"),
+                "summary": payload.get("summary"),
+                "bubble_up": False,
             },
         }
+        if self._room_bridge is not None:
+            await self._room_bridge.register_mesh_peer(
+                peer_id=terminal_peer_id,
+                persona="workflow-runtime",
+                display_name="workflow-runtime",
+                participant_type="workflow",
+                participant_kind="workflow",
+                heartbeat_ttl_s=0.0,
+            )
+            await self._room_bridge.handle_ravn_frame(terminal_peer_id, frame)
         await self._maybe_report_flock_completion(terminal_peer_id, frame)
 
     async def _maybe_report_flock_completion(

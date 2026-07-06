@@ -1389,6 +1389,8 @@ class TestBroker:
             "flock-reviewer": MagicMock(persona="reviewer"),
             "flock-security": MagicMock(persona="security-auditor"),
         }
+        broker_under_test._room_bridge.register_mesh_peer = AsyncMock()
+        broker_under_test._room_bridge.handle_ravn_frame = AsyncMock()
         broker_under_test._artifacts.git_commit_count = 1
         broker_under_test._artifacts.git_push_count = 1
         broker_under_test._emit_pipeline_event = AsyncMock()
@@ -1434,6 +1436,17 @@ class TestBroker:
         assert final_call.args[0] == "outcome"
         assert final_call.args[1]["event_type"] == "ravn.task.completed"
         assert final_call.args[1]["verdict"] == "approve"
+        broker_under_test._room_bridge.handle_ravn_frame.assert_awaited_once()
+        terminal_peer_id, terminal_frame = (
+            broker_under_test._room_bridge.handle_ravn_frame.await_args.args
+        )
+        assert terminal_peer_id == "workflow-stop:run-complete"
+        assert terminal_frame["type"] == "outcome"
+        assert terminal_frame["metadata"]["event_type"] == "ravn.task.completed"
+        assert terminal_frame["data"]["bubble_up"] is False
+        assert terminal_frame["data"]["fields"]["summary"] == (
+            "reviewer: Looks good | security-auditor: No security issues"
+        )
         broker_under_test._report_activity_state.assert_awaited_once()
         completion = broker_under_test._report_activity_state.await_args.kwargs["extra_metadata"]
         assert completion["structured_outcome"]["verdict"] == "approve"
@@ -1472,6 +1485,8 @@ class TestBroker:
         broker_under_test._room_bridge.participants = {
             "flock-publisher": MagicMock(persona="publisher"),
         }
+        broker_under_test._room_bridge.register_mesh_peer = AsyncMock()
+        broker_under_test._room_bridge.handle_ravn_frame = AsyncMock()
         broker_under_test._emit_pipeline_event = AsyncMock()
         broker_under_test._report_activity_state = AsyncMock()
         broker_under_test._is_room_only_workflow_session = MagicMock(return_value=True)
@@ -1497,6 +1512,21 @@ class TestBroker:
         assert completion["completion_event_type"] == "delivery.completed"
         assert completion["completion_peer_id"] == "workflow-stop:delivery-complete"
         assert completion["structured_outcome"]["verdict"] == "approve"
+        broker_under_test._room_bridge.register_mesh_peer.assert_awaited_once_with(
+            peer_id="workflow-stop:delivery-complete",
+            persona="workflow-runtime",
+            display_name="workflow-runtime",
+            participant_type="workflow",
+            participant_kind="workflow",
+            heartbeat_ttl_s=0.0,
+        )
+        terminal_peer_id, terminal_frame = (
+            broker_under_test._room_bridge.handle_ravn_frame.await_args.args
+        )
+        assert terminal_peer_id == "workflow-stop:delivery-complete"
+        assert terminal_frame["metadata"]["event_type"] == "delivery.completed"
+        assert terminal_frame["data"]["bubble_up"] is False
+        assert terminal_frame["data"]["summary"] == "publisher: Delivery artifacts published"
 
     @pytest.mark.asyncio
     async def test_parallel_terminal_node_waits_for_git_push_when_required(self, tmp_path):
@@ -1630,6 +1660,8 @@ class TestBroker:
             "flock-reviewer": MagicMock(persona="reviewer"),
             "flock-security": MagicMock(persona="security-auditor"),
         }
+        broker_under_test._room_bridge.register_mesh_peer = AsyncMock()
+        broker_under_test._room_bridge.handle_ravn_frame = AsyncMock()
         broker_under_test._artifacts.git_commit_count = 0
         broker_under_test._artifacts.git_push_count = 0
         broker_under_test._git_workspace_checkpoint = MagicMock()
@@ -1679,6 +1711,7 @@ class TestBroker:
         assert "ravn.task.completed" in emitted_event_types
         assert broker_under_test._artifacts.git_commit_count == 1
         assert broker_under_test._artifacts.git_push_count == 1
+        broker_under_test._room_bridge.handle_ravn_frame.assert_awaited_once()
 
     def test_create_transport_invalid_class(self, tmp_path):
         """Valid module but missing class raises ValueError via AttributeError."""
