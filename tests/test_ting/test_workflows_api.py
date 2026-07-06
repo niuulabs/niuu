@@ -56,9 +56,16 @@ class InMemoryWorkflowRepository(WorkflowRepository):
 
 
 class RecordingVolundrPort(VolundrPort):
-    def __init__(self, *, name: str = "local", target_id: str = "local") -> None:
+    def __init__(
+        self,
+        *,
+        name: str = "local",
+        target_id: str = "local",
+        chat_endpoint: str = "wss://sessions.example/s/session-123/session",
+    ) -> None:
         self._name = name
         self._target_id = target_id
+        self._chat_endpoint = chat_endpoint
         self.requests: list[SpawnRequest] = []
 
     @property
@@ -81,7 +88,7 @@ class RecordingVolundrPort(VolundrPort):
             id="session-123",
             name=request.name,
             status="starting",
-            chat_endpoint="wss://sessions.example/s/session-123/session",
+            chat_endpoint=self._chat_endpoint,
             tracker_issue_id=request.tracker_issue_id,
             cluster_name=self._name,
             repo=request.repo,
@@ -611,6 +618,24 @@ class TestWorkflowCatalogAPI:
         assert "Workflow Launch" in spawn.initial_prompt
         assert "Launch Context" in spawn.initial_prompt
         assert "Are AI grief companions a credible product category?" in spawn.initial_prompt
+
+    def test_launch_workflow_returns_public_chat_endpoint(self, monkeypatch) -> None:
+        monkeypatch.setenv("NIUU_SERVER_PUBLIC_HOST", "sessions.example")
+        workflow = _make_research_workflow()
+        repo = InMemoryWorkflowRepository([workflow])
+        adapter = RecordingVolundrPort(
+            chat_endpoint="ws://127.0.0.1:8080/s/session-123/session"
+        )
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([adapter]))
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "Launch a small research smoke test."},
+        )
+
+        assert response.status_code == 201
+        assert response.json()["chatEndpoint"] == "ws://sessions.example:8080/s/session-123/session"
 
     def test_launch_workflow_uses_first_available_connection(self) -> None:
         workflow = _make_research_workflow()

@@ -26,6 +26,7 @@ from ting.domain.utils import _session_name, _slugify
 from ting.domain.workflow_snapshot import build_workflow_snapshot, workflow_mimir_from_snapshot
 from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrSession
 from ting.ports.workflow_repository import WorkflowRepository
+from volundr.adapters.inbound.rest import _public_session_endpoint
 
 _DEFAULT_WORKFLOW_LAUNCH_DEFINITION = "skuldCodex"
 
@@ -294,7 +295,7 @@ def _launch_response(
         session_name=session.name,
         status=session.status,
         cluster_name=session.cluster_name,
-        chat_endpoint=session.chat_endpoint,
+        chat_endpoint=_public_session_endpoint(session.chat_endpoint),
     )
 
 
