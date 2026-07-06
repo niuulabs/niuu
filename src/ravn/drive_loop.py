@@ -1393,6 +1393,7 @@ class DriveLoop:
         # the registration frame sent on connect carries the full identity.
         if self._skuld_channel is not None:
             self._skuld_channel.on_directed_message(self._handle_directed_message)
+            self._session_join_manager.set_status_channel(self._skuld_channel)
             await self._skuld_channel.connect()
 
             # Session joins (secondary rooms): frames directed at us inside a

@@ -30,6 +30,7 @@ import httpx
 
 from ravn.adapters.channels.skuld_channel import AuthTokenProvider, SkuldChannel
 from ravn.domain.events import RavnEvent, RavnEventType
+from ravn.ports.channel import ChannelPort
 
 logger = logging.getLogger(__name__)
 
@@ -108,10 +109,15 @@ class SessionJoinManager:
         self._session_ready_timeout = session_ready_timeout
         self._joined: dict[str, JoinedSession] = {}
         self._observer: JoinObserver | None = None
+        self._status_channel: ChannelPort | None = None
 
     def set_observer(self, observer: JoinObserver) -> None:
         """Register the handler for frames directed at us in joined rooms."""
         self._observer = observer
+
+    def set_status_channel(self, channel: ChannelPort | None) -> None:
+        """Register the resident's own room channel for join status updates."""
+        self._status_channel = channel
 
     def set_subscribes_to(self, event_types: list[str]) -> None:
         """Set event subscriptions used when joining workflow rooms."""
@@ -139,42 +145,69 @@ class SessionJoinManager:
         if session_id in self._joined:
             return self._joined[session_id].describe()
 
-        chat_endpoint = await self._wait_for_session_ready(session_id, chat_endpoint)
-        ws_url = derive_ravn_ws_url(chat_endpoint, self._peer_id)
-        channel = SkuldChannel(
-            broker_url=ws_url,
-            session_id=session_id,
-            peer_id=self._peer_id,
-            persona=self._persona,
-            display_name=self._display_name,
-            subscribes_to=self._subscribes_to,
-            reconnect_delay=self._reconnect_delay,
-            max_reconnect_attempts=self._max_reconnect_attempts,
-            auth_token_provider=self._auth_token_provider,
-        )
-
-        async def _on_directed(content: str, metadata: dict[str, Any] | None) -> None:
-            if self._observer is None:
-                logger.warning(
-                    "SessionJoinManager: directed message from session %s "
-                    "dropped — no observer registered",
-                    session_id,
-                )
-                return
-            await self._observer(session_id, content, metadata)
-
-        channel.on_directed_message(_on_directed)
-        await channel.connect()
-        if not channel.connected:
-            raise RuntimeError(
-                f"failed to join session {session_id}: broker at {ws_url} unreachable "
-                "or connection rejected (ownership?)"
+        try:
+            chat_endpoint = await self._wait_for_session_ready(session_id, chat_endpoint)
+            ws_url = derive_ravn_ws_url(chat_endpoint, self._peer_id)
+            channel = SkuldChannel(
+                broker_url=ws_url,
+                session_id=session_id,
+                peer_id=self._peer_id,
+                persona=self._persona,
+                display_name=self._display_name,
+                subscribes_to=self._subscribes_to,
+                reconnect_delay=self._reconnect_delay,
+                max_reconnect_attempts=self._max_reconnect_attempts,
+                auth_token_provider=self._auth_token_provider,
             )
 
-        entry = JoinedSession(session_id=session_id, ws_url=ws_url, channel=channel)
-        self._joined[session_id] = entry
-        logger.info("SessionJoinManager: joined session %s at %s", session_id, ws_url)
-        return entry.describe()
+            async def _on_directed(content: str, metadata: dict[str, Any] | None) -> None:
+                if self._observer is None:
+                    logger.warning(
+                        "SessionJoinManager: directed message from session %s "
+                        "dropped — no observer registered",
+                        session_id,
+                    )
+                    return
+                await self._observer(session_id, content, metadata)
+
+            channel.on_directed_message(_on_directed)
+            await channel.connect()
+            if not channel.connected:
+                raise RuntimeError(
+                    f"failed to join session {session_id}: broker at {ws_url} unreachable "
+                    "or connection rejected (ownership?)"
+                )
+
+            entry = JoinedSession(session_id=session_id, ws_url=ws_url, channel=channel)
+            self._joined[session_id] = entry
+            logger.info("SessionJoinManager: joined session %s at %s", session_id, ws_url)
+            await self._notify_status(
+                session_id,
+                f"Joined session room {session_id}. "
+                "I will receive matching subscribed outcomes here.",
+            )
+            return entry.describe()
+        except Exception as exc:
+            await self._notify_status(
+                session_id,
+                f"Failed to join session room {session_id}: {exc}",
+            )
+            raise
+
+    async def _notify_status(self, session_id: str, text: str) -> None:
+        if self._status_channel is None:
+            return
+        try:
+            await self._status_channel.emit(
+                RavnEvent.response(
+                    self._peer_id,
+                    text,
+                    correlation_id=session_id,
+                    session_id=session_id,
+                )
+            )
+        except Exception:
+            logger.warning("SessionJoinManager: failed to report join status", exc_info=True)
 
     async def _wait_for_session_ready(self, session_id: str, chat_endpoint: str) -> str:
         """Wait for Volundr's existing readiness state before opening the room socket."""
