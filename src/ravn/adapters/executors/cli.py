@@ -76,7 +76,12 @@ def _sum_model_usage(raw: dict | None) -> TokenUsage:
 
 def _is_ting_workflow_tool(tool_name: str) -> bool:
     name = tool_name.replace("-", "_")
-    return name == "ting_workflow" or name.endswith("__ting_workflow")
+    return (
+        name == "ting_workflow"
+        or name.endswith("__ting_workflow")
+        or name.endswith("/ting_workflow")
+        or name.endswith(".ting_workflow")
+    )
 
 
 def _decode_tool_result_json(content: str) -> dict[str, Any] | None:
@@ -87,7 +92,22 @@ def _decode_tool_result_json(content: str) -> dict[str, Any] | None:
         data = json.loads(text)
     except json.JSONDecodeError:
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+
+    wrapped_content = data.get("content")
+    if isinstance(wrapped_content, list):
+        for item in wrapped_content:
+            if not isinstance(item, dict):
+                continue
+            item_text = item.get("text")
+            if not isinstance(item_text, str) or not item_text.strip():
+                continue
+            nested = _decode_tool_result_json(item_text)
+            if nested is not None:
+                return nested
+
+    return data
 
 
 class CliTransportAgent(ExecutionAgentPort):
