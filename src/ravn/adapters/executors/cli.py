@@ -298,6 +298,12 @@ class CliTransportAgent(ExecutionAgentPort):
             await self._emit_delta(data, correlation_id)
             return
 
+        if event_type == "content_block_start":
+            block = data.get("content_block")
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                await self._record_tool_result_block(block, correlation_id)
+            return
+
         if event_type in {"assistant", "message"}:
             await self._emit_message_event(data, correlation_id)
             return
@@ -378,26 +384,29 @@ class CliTransportAgent(ExecutionAgentPort):
         for block in content:
             if not isinstance(block, dict) or block.get("type") != "tool_result":
                 continue
-            tool_use_id = str(block.get("tool_use_id", ""))
-            tool_name = self._current_tool_names.get(tool_use_id, "")
-            result = str(block.get("content", ""))
-            is_error = bool(block.get("is_error", False))
-            self._turn_tool_results.append(
-                ToolResult(tool_call_id=tool_use_id, content=result, is_error=is_error)
+            await self._record_tool_result_block(block, correlation_id)
+
+    async def _record_tool_result_block(self, block: dict, correlation_id: str) -> None:
+        tool_use_id = str(block.get("tool_use_id", ""))
+        tool_name = self._current_tool_names.get(tool_use_id, "")
+        result = str(block.get("content", ""))
+        is_error = bool(block.get("is_error", False))
+        self._turn_tool_results.append(
+            ToolResult(tool_call_id=tool_use_id, content=result, is_error=is_error)
+        )
+        if not is_error:
+            await self._join_launched_workflow_session(tool_name, result)
+        await self._channel.emit(
+            RavnEvent.tool_result(
+                source=self._source_id,
+                tool_name=tool_name,
+                result=result,
+                correlation_id=correlation_id,
+                session_id=correlation_id,
+                task_id=self._task_id,
+                is_error=is_error,
             )
-            if not is_error:
-                await self._join_launched_workflow_session(tool_name, result)
-            await self._channel.emit(
-                RavnEvent.tool_result(
-                    source=self._source_id,
-                    tool_name=tool_name,
-                    result=result,
-                    correlation_id=correlation_id,
-                    session_id=correlation_id,
-                    task_id=self._task_id,
-                    is_error=is_error,
-                )
-            )
+        )
 
     async def _join_launched_workflow_session(self, tool_name: str, result: str) -> None:
         manager = self._session_join_manager

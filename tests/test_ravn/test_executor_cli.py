@@ -508,6 +508,40 @@ async def test_cli_transport_agent_joins_ting_workflow_result() -> None:
     assert channel.events[-1].payload["tool_name"] == "mcp__ravn_tools__ting_workflow"
 
 
+@pytest.mark.asyncio
+async def test_cli_transport_agent_joins_codex_ws_tool_result_block() -> None:
+    class JoinManager:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def join(self, session_id: str, chat_endpoint: str) -> dict:
+            self.calls.append((session_id, chat_endpoint))
+            return {"connected": True}
+
+    manager = JoinManager()
+    agent, channel = _make_agent(session_join_manager=manager)
+    agent._current_tool_names["tool-1"] = "mcp__ravn_tools__ting_workflow"
+
+    await agent._handle_transport_event(
+        {
+            "type": "content_block_start",
+            "content_block": {
+                "type": "tool_result",
+                "tool_use_id": "tool-1",
+                "content": json.dumps(
+                    {
+                        "sessionId": "sess-2",
+                        "chatEndpoint": "wss://sessions.example/s/sess-2/session",
+                    }
+                ),
+            },
+        }
+    )
+
+    assert manager.calls == [("sess-2", "wss://sessions.example/s/sess-2/session")]
+    assert channel.events[-1].payload["tool_name"] == "mcp__ravn_tools__ting_workflow"
+
+
 def test_cli_executor_passes_mcp_servers_to_transport() -> None:
     channel = _CollectingChannel()
     manager = object()
