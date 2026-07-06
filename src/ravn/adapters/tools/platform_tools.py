@@ -803,6 +803,7 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
         exchange_url: str = "",
         audiences: list[str] | None = None,
         workflow_aliases: dict[str, dict[str, Any]] | None = None,
+        session_join_manager: Any | None = None,
     ) -> None:
         self._set_platform_auth(
             base_url=base_url,
@@ -817,6 +818,7 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
             for name, config in (workflow_aliases or {}).items()
             if str(name).strip()
         }
+        self._session_join_manager = session_join_manager
 
     @property
     def name(self) -> str:
@@ -1024,9 +1026,32 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
         try:
             resp = await client.post(f"{_TING_WORKFLOWS_PATH}/{workflow_id}/launch", json=body)
             resp.raise_for_status()
-            return _ok(resp.json())
+            payload = resp.json()
+            if isinstance(payload, dict):
+                await self._join_launched_session(payload)
+            return _ok(payload)
         except Exception as exc:
             return _err(f"Failed to launch workflow {workflow_id}: {exc}")
+
+    async def _join_launched_session(self, payload: dict[str, Any]) -> None:
+        manager = self._session_join_manager
+        if manager is None:
+            return
+        session_id = str(payload.get("sessionId") or payload.get("session_id") or "").strip()
+        chat_endpoint = str(
+            payload.get("chatEndpoint") or payload.get("chat_endpoint") or ""
+        ).strip()
+        if not session_id or not chat_endpoint:
+            payload["observerJoin"] = {
+                "status": "skipped",
+                "reason": "launch response did not include sessionId and chatEndpoint",
+            }
+            return
+        try:
+            payload["observerJoin"] = await manager.join(session_id, chat_endpoint)
+        except Exception as exc:
+            logger.warning("Failed to join launched workflow session %s", session_id, exc_info=True)
+            payload["observerJoin"] = {"status": "failed", "reason": str(exc)}
 
     async def _launch_input_with_alias(
         self, client: httpx.AsyncClient, input: dict

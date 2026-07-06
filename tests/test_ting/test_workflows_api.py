@@ -81,6 +81,7 @@ class RecordingVolundrPort(VolundrPort):
             id="session-123",
             name=request.name,
             status="starting",
+            chat_endpoint="wss://sessions.example/s/session-123/session",
             tracker_issue_id=request.tracker_issue_id,
             cluster_name=self._name,
             repo=request.repo,
@@ -589,6 +590,7 @@ class TestWorkflowCatalogAPI:
         assert body["workflowId"] == str(workflow.id)
         assert body["slug"] == "grief-companions"
         assert body["sessionId"] == "session-123"
+        assert body["chatEndpoint"] == "wss://sessions.example/s/session-123/session"
         assert len(adapter.requests) == 1
         spawn = adapter.requests[0]
         assert spawn.definition == "skuldCodex"

@@ -97,6 +97,7 @@ class WorkflowLaunchResponse(BaseModel):
     session_name: str = Field(serialization_alias="sessionName")
     status: str
     cluster_name: str = Field(default="", serialization_alias="clusterName")
+    chat_endpoint: str | None = Field(default=None, serialization_alias="chatEndpoint")
 
     model_config = {"populate_by_name": True}
 
@@ -293,6 +294,7 @@ def _launch_response(
         session_name=session.name,
         status=session.status,
         cluster_name=session.cluster_name,
+        chat_endpoint=session.chat_endpoint,
     )
 
 

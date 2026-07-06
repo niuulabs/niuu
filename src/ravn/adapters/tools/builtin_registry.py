@@ -98,6 +98,13 @@ def _platform_kwargs(settings: Settings, *, workflow_aliases: bool = False) -> d
     return kwargs
 
 
+def _ting_workflow_kwargs(settings: Settings, ctx: dict[str, Any]) -> dict[str, Any]:
+    kwargs = _platform_kwargs(settings, workflow_aliases=True)
+    if ctx.get("session_join_manager") is not None:
+        kwargs["session_join_manager"] = ctx["session_join_manager"]
+    return kwargs
+
+
 def _build_web_search_kwargs(settings: Settings, _ctx: dict[str, Any]) -> dict[str, Any]:
     """Construct kwargs for WebSearchTool, including the dynamic provider."""
     from ravn.cli.commands import _import_class, _inject_secrets  # noqa: PLC0415
@@ -357,7 +364,7 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         adapter="ravn.adapters.tools.platform_tools.TingWorkflowTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: _platform_kwargs(s, workflow_aliases=True),
+        kwargs_fn=_ting_workflow_kwargs,
     ),
     "tracker_issue": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.TrackerIssueTool",

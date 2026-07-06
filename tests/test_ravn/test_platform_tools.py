@@ -495,6 +495,58 @@ class TestTingWorkflowTool:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_launch_workflow_joins_when_chat_endpoint_returned(self):
+        class JoinManager:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, str]] = []
+
+            async def join(self, session_id: str, chat_endpoint: str) -> dict:
+                self.calls.append((session_id, chat_endpoint))
+                return {"session_id": session_id, "connected": True}
+
+        manager = JoinManager()
+        tool = TingWorkflowTool(base_url=BASE_URL, session_join_manager=manager)
+        respx.post(f"{TING_WORKFLOWS_URL}/wf-1/launch").mock(
+            return_value=httpx.Response(
+                201,
+                json={
+                    "sessionId": "sess-1",
+                    "chatEndpoint": "wss://sessions.example/s/sess-1/session",
+                },
+            )
+        )
+
+        result = await tool.execute(
+            {"action": "launch", "workflow_id": "wf-1", "prompt": "Research it."}
+        )
+
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert manager.calls == [("sess-1", "wss://sessions.example/s/sess-1/session")]
+        assert data["observerJoin"]["connected"] is True
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_launch_workflow_reports_join_skipped_without_chat_endpoint(self):
+        class JoinManager:
+            async def join(self, session_id: str, chat_endpoint: str) -> dict:
+                raise AssertionError("should not join without chatEndpoint")
+
+        tool = TingWorkflowTool(base_url=BASE_URL, session_join_manager=JoinManager())
+        respx.post(f"{TING_WORKFLOWS_URL}/wf-1/launch").mock(
+            return_value=httpx.Response(201, json={"sessionId": "sess-1"})
+        )
+
+        result = await tool.execute(
+            {"action": "launch", "workflow_id": "wf-1", "prompt": "Research it."}
+        )
+
+        assert not result.is_error
+        data = json.loads(result.content)
+        assert data["observerJoin"]["status"] == "skipped"
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_launch_workflow_by_configured_alias_id(self):
         tool = TingWorkflowTool(
             base_url=BASE_URL,

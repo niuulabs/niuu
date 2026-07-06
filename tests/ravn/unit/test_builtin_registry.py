@@ -363,3 +363,17 @@ class TestBuildWebSearchKwargs:
         result = _build_web_search_kwargs(s, ctx)
         # AskUserTool is not a real web search provider, but it gets instantiated
         assert result["provider"] is not None
+
+
+class TestTingWorkflowKwargs:
+    def test_includes_session_join_manager_when_available(self, tmp_path: Path) -> None:
+        from ravn.adapters.tools.builtin_registry import _ting_workflow_kwargs
+
+        manager = object()
+        s = Settings()
+        ctx = _make_runtime_ctx(tmp_path)
+        ctx["session_join_manager"] = manager
+
+        result = _ting_workflow_kwargs(s, ctx)
+
+        assert result["session_join_manager"] is manager
