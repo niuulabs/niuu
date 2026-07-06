@@ -19,11 +19,14 @@ identity token. A resident can only join sessions its owner owns.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+
+import httpx
 
 from ravn.adapters.channels.skuld_channel import AuthTokenProvider, SkuldChannel
 from ravn.domain.events import RavnEvent, RavnEventType
@@ -35,6 +38,8 @@ JoinObserver = Callable[[str, str, dict[str, Any] | None], Awaitable[None]]
 
 _CHAT_ENDPOINT_SUFFIX = "/session"
 _RAVN_WS_SUFFIX = "/ws/ravn"
+_SESSION_RUNNING_STATUS = "running"
+_SESSION_TERMINAL_STATUSES = {"failed", "stopped", "stopping", "archived"}
 
 
 def derive_ravn_ws_url(chat_endpoint: str, peer_id: str) -> str:
@@ -89,6 +94,8 @@ class SessionJoinManager:
         auth_token_provider: AuthTokenProvider | None = None,
         reconnect_delay: float = 2.0,
         max_reconnect_attempts: int = 5,
+        platform_base_url: str = "",
+        session_ready_timeout: float = 600.0,
     ) -> None:
         self._peer_id = peer_id
         self._persona = persona
@@ -97,6 +104,8 @@ class SessionJoinManager:
         self._auth_token_provider = auth_token_provider
         self._reconnect_delay = reconnect_delay
         self._max_reconnect_attempts = max_reconnect_attempts
+        self._platform_base_url = platform_base_url.strip().rstrip("/")
+        self._session_ready_timeout = session_ready_timeout
         self._joined: dict[str, JoinedSession] = {}
         self._observer: JoinObserver | None = None
 
@@ -124,6 +133,7 @@ class SessionJoinManager:
         if session_id in self._joined:
             return self._joined[session_id].describe()
 
+        chat_endpoint = await self._wait_for_session_ready(session_id, chat_endpoint)
         ws_url = derive_ravn_ws_url(chat_endpoint, self._peer_id)
         channel = SkuldChannel(
             broker_url=ws_url,
@@ -159,6 +169,67 @@ class SessionJoinManager:
         self._joined[session_id] = entry
         logger.info("SessionJoinManager: joined session %s at %s", session_id, ws_url)
         return entry.describe()
+
+    async def _wait_for_session_ready(self, session_id: str, chat_endpoint: str) -> str:
+        """Wait for Volundr's existing readiness state before opening the room socket."""
+        if not self._platform_base_url:
+            return chat_endpoint
+
+        url = f"{self._platform_base_url}/api/v1/forge/sessions/{session_id}"
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._session_ready_timeout
+        last_status = ""
+        last_error = ""
+        timeout = httpx.Timeout(min(10.0, max(1.0, self._reconnect_delay + 5.0)))
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            while True:
+                try:
+                    headers: dict[str, str] = {}
+                    if self._auth_token_provider is not None:
+                        headers["Authorization"] = f"Bearer {await self._auth_token_provider()}"
+                    response = await client.get(url, headers=headers)
+                    response.raise_for_status()
+                    payload = response.json()
+                    status = str(payload.get("status") or "").strip().lower()
+                    if status != last_status:
+                        logger.info(
+                            "SessionJoinManager: session %s status=%s before join",
+                            session_id,
+                            status or "unknown",
+                        )
+                        last_status = status
+                    if status == _SESSION_RUNNING_STATUS:
+                        endpoint = str(
+                            payload.get("chat_endpoint")
+                            or payload.get("chatEndpoint")
+                            or chat_endpoint
+                        ).strip()
+                        return endpoint or chat_endpoint
+                    if status in _SESSION_TERMINAL_STATUSES:
+                        reason = str(payload.get("error") or "").strip()
+                        suffix = f": {reason}" if reason else ""
+                        raise RuntimeError(
+                            f"session {session_id} reached {status} before observer join{suffix}"
+                        )
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code in {401, 403}:
+                        raise RuntimeError(
+                            f"cannot read session {session_id} readiness: "
+                            f"HTTP {exc.response.status_code}"
+                        ) from exc
+                    last_error = f"HTTP {exc.response.status_code}"
+                except httpx.HTTPError as exc:
+                    last_error = str(exc)
+
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    suffix = f" (last error: {last_error})" if last_error else ""
+                    raise RuntimeError(
+                        f"session {session_id} did not become running within "
+                        f"{self._session_ready_timeout:.0f}s before observer join{suffix}"
+                    )
+                await asyncio.sleep(min(self._reconnect_delay, remaining))
 
     async def leave(self, session_id: str) -> bool:
         """Leave a joined session's room. Returns False when not joined."""
@@ -274,4 +345,8 @@ def build_session_join_manager(settings: Any) -> SessionJoinManager:
         auth_token_provider=_build_token_provider(settings),
         reconnect_delay=settings.skuld.reconnect_delay_seconds,
         max_reconnect_attempts=settings.skuld.max_reconnect_attempts,
+        platform_base_url=(
+            settings.gateway.platform.base_url if settings.gateway.platform.enabled else ""
+        ),
+        session_ready_timeout=settings.skuld.session_ready_timeout_seconds,
     )

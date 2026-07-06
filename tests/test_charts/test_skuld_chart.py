@@ -396,6 +396,7 @@ class TestResidentWorkloadIdentityConfigFirst:
             "skuld": {
                 "reconnectDelaySeconds": 1,
                 "maxReconnectAttempts": 120,
+                "sessionReadyTimeoutSeconds": 900,
             },
             "platform": {
                 "enabled": True,
@@ -491,6 +492,7 @@ class TestResidentWorkloadIdentityConfigFirst:
         skuld = ravn_cfg["skuld"]
         assert skuld["reconnect_delay_seconds"] == 1
         assert skuld["max_reconnect_attempts"] == 120
+        assert skuld["session_ready_timeout_seconds"] == 900
         mimir = ravn_cfg["mimir"]
         assert mimir["source_trigger"]["enabled"] is False
         assert mimir["source_trigger"]["poll_interval_seconds"] == 300

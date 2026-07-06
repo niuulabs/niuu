@@ -503,6 +503,7 @@ async def test_cli_transport_agent_joins_ting_workflow_result() -> None:
             ],
         }
     )
+    await asyncio.sleep(0)
 
     assert manager.calls == [("sess-1", "wss://sessions.example/s/sess-1/session")]
     assert channel.events[-1].payload["tool_name"] == "mcp__ravn_tools__ting_workflow"
@@ -537,6 +538,7 @@ async def test_cli_transport_agent_joins_codex_ws_tool_result_block() -> None:
             },
         }
     )
+    await asyncio.sleep(0)
 
     assert manager.calls == [("sess-2", "wss://sessions.example/s/sess-2/session")]
     assert channel.events[-1].payload["tool_name"] == "mcp__ravn_tools__ting_workflow"
@@ -583,6 +585,7 @@ async def test_cli_transport_agent_joins_codex_ws_wrapped_mcp_tool_result() -> N
             },
         }
     )
+    await asyncio.sleep(0)
 
     assert manager.calls == [("sess-3", "wss://sessions.example/s/sess-3/session")]
 

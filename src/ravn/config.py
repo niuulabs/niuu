@@ -952,6 +952,14 @@ class SkuldChannelConfig(BaseModel):
         description="Reconnect attempts before giving up. Also used for the "
         "cross-session joins the session_join tool opens.",
     )
+    session_ready_timeout_seconds: float = Field(
+        default=600.0,
+        gt=0,
+        description=(
+            "Maximum time to wait for a launched Volundr session to reach "
+            "running before opening a cross-session join."
+        ),
+    )
 
 
 class PlatformWorkflowAliasConfig(BaseModel):

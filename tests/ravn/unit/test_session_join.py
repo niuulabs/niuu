@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+import respx
 
 from ravn.adapters.tools.session_join_tool import SessionJoinTool
 from ravn.config import Settings
@@ -71,6 +73,51 @@ class TestSessionJoinManager:
         assert info["connected"] is True
         assert ctor.call_args.kwargs["broker_url"].endswith("/ws/ravn/flock-product-steward")
         channel.connect.assert_awaited_once()
+
+    @respx.mock
+    async def test_join_waits_for_platform_session_running(self):
+        respx.get("http://volundr.test/api/v1/forge/sessions/sess-1").mock(
+            side_effect=[
+                httpx.Response(200, json={"status": "provisioning"}),
+                httpx.Response(
+                    200,
+                    json={
+                        "status": "running",
+                        "chat_endpoint": "ws://ready/s/sess-1/session",
+                    },
+                ),
+            ]
+        )
+        manager = SessionJoinManager(
+            peer_id="flock-product-steward",
+            persona="product-steward",
+            reconnect_delay=0.01,
+            platform_base_url="http://volundr.test",
+        )
+        channel = _connected_channel()
+        with patch("ravn.session_join.SkuldChannel", return_value=channel) as ctor:
+            await manager.join("sess-1", "ws://early/s/sess-1/session")
+
+        assert ctor.call_args.kwargs["broker_url"] == (
+            "ws://ready/s/sess-1/ws/ravn/flock-product-steward"
+        )
+
+    @respx.mock
+    async def test_join_fails_when_platform_session_fails_before_running(self):
+        respx.get("http://volundr.test/api/v1/forge/sessions/sess-1").mock(
+            return_value=httpx.Response(
+                200,
+                json={"status": "failed", "error": "pod did not become ready"},
+            )
+        )
+        manager = SessionJoinManager(
+            peer_id="flock-product-steward",
+            persona="product-steward",
+            reconnect_delay=0.01,
+            platform_base_url="http://volundr.test",
+        )
+        with pytest.raises(RuntimeError, match="pod did not become ready"):
+            await manager.join("sess-1", "ws://early/s/sess-1/session")
 
     async def test_join_failure_raises(self):
         manager = _manager()

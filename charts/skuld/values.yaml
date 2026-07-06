@@ -486,6 +486,9 @@ resident:
     reconnectDelaySeconds: 2
     # -- Attempts before giving up on the initial broker room connection.
     maxReconnectAttempts: 60
+    # -- Seconds to wait for a launched Volundr session to become running
+    # before opening a cross-session observer join.
+    sessionReadyTimeoutSeconds: 600
   platform:
     # -- Give the resident platform access (Volundr gateway + workload identity)
     enabled: false

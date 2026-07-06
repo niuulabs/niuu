@@ -443,14 +443,22 @@ class CliTransportAgent(ExecutionAgentPort):
         ).strip()
         if not session_id or not chat_endpoint:
             return
-        try:
-            await manager.join(session_id, chat_endpoint)
-        except Exception:
-            logger.warning(
-                "CLI executor failed to join launched workflow session %s",
-                session_id,
-                exc_info=True,
-            )
+        task = asyncio.create_task(
+            manager.join(session_id, chat_endpoint),
+            name=f"join-workflow-session-{session_id}",
+        )
+
+        def _log_join_result(done: asyncio.Task) -> None:
+            try:
+                done.result()
+            except Exception:
+                logger.warning(
+                    "CLI executor failed to join launched workflow session %s",
+                    session_id,
+                    exc_info=True,
+                )
+
+        task.add_done_callback(_log_join_result)
 
     async def _emit_content_block(self, block: dict, correlation_id: str) -> None:
         block_type = str(block.get("type", ""))

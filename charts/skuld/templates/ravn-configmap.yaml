@@ -119,6 +119,7 @@ data:
       display_name: {{ $residentName | quote }}
       reconnect_delay_seconds: {{ .Values.resident.skuld.reconnectDelaySeconds | default 2 }}
       max_reconnect_attempts: {{ .Values.resident.skuld.maxReconnectAttempts | default 60 }}
+      session_ready_timeout_seconds: {{ .Values.resident.skuld.sessionReadyTimeoutSeconds | default 600 }}
     environment:
       resident_name: {{ $residentName | quote }}
 {{- end }}
