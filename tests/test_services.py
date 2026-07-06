@@ -530,6 +530,46 @@ class TestFluxWaitForReady:
     """Tests for Flux adapter wait_for_ready with mocked watch."""
 
     @pytest.mark.asyncio
+    async def test_flux_status_missing_release_is_starting_while_session_starts(self):
+        """A just-created STARTING session may be polled before its HelmRelease exists."""
+        from unittest.mock import AsyncMock, Mock, patch
+
+        from volundr.adapters.outbound.flux import FluxPodManager
+
+        flux = FluxPodManager(namespace="test")
+        session = Session(
+            name="Test",
+            model="test",
+            source=GitSource(repo="test", branch="main"),
+            status=SessionStatus.STARTING,
+        )
+        api = Mock()
+        api.get_namespaced_custom_object = AsyncMock(side_effect=Exception("404 NotFound"))
+
+        with patch.object(flux, "_get_api", AsyncMock(return_value=api)):
+            assert await flux.status(session) == SessionStatus.STARTING
+
+    @pytest.mark.asyncio
+    async def test_flux_status_missing_release_is_stopped_after_running(self):
+        """Missing HelmRelease remains authoritative death for an already live row."""
+        from unittest.mock import AsyncMock, Mock, patch
+
+        from volundr.adapters.outbound.flux import FluxPodManager
+
+        flux = FluxPodManager(namespace="test")
+        session = Session(
+            name="Test",
+            model="test",
+            source=GitSource(repo="test", branch="main"),
+            status=SessionStatus.RUNNING,
+        )
+        api = Mock()
+        api.get_namespaced_custom_object = AsyncMock(side_effect=Exception("404 NotFound"))
+
+        with patch.object(flux, "_get_api", AsyncMock(return_value=api)):
+            assert await flux.status(session) == SessionStatus.STOPPED
+
+    @pytest.mark.asyncio
     async def test_flux_wait_for_ready_returns_running(self):
         """Flux wait_for_ready returns RUNNING when ready condition is True."""
         import sys

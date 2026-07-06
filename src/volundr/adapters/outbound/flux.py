@@ -266,6 +266,8 @@ class FluxPodManager(PodManager):
             )
         except Exception as exc:
             if "404" in str(exc) or "NotFound" in str(exc):
+                if session.status == SessionStatus.STARTING:
+                    return SessionStatus.STARTING
                 return SessionStatus.STOPPED
             raise
 
