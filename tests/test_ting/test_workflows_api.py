@@ -619,6 +619,27 @@ class TestWorkflowCatalogAPI:
         assert "Launch Context" in spawn.initial_prompt
         assert "Are AI grief companions a credible product category?" in spawn.initial_prompt
 
+    def test_launch_workflow_trims_trailing_dash_from_generated_session_name(self) -> None:
+        workflow = _make_research_workflow()
+        repo = InMemoryWorkflowRepository([workflow])
+        adapter = RecordingVolundrPort()
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([adapter]))
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={
+                "prompt": (
+                    "Final public-session-endpoint observer join smoke from Muninn. "
+                    "Produce one short sentence and stop."
+                ),
+                "definition": "skuldCodex",
+            },
+        )
+
+        assert response.status_code == 201
+        assert adapter.requests[0].name == "research-campaign-final-public-session-endpoint"
+
     def test_launch_workflow_returns_public_chat_endpoint(self, monkeypatch) -> None:
         monkeypatch.setenv("NIUU_SERVER_PUBLIC_HOST", "sessions.example")
         workflow = _make_research_workflow()
