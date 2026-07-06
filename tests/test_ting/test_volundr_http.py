@@ -128,6 +128,45 @@ class TestSpawnSession:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_rewrites_loopback_chat_endpoint_to_adapter_origin(self):
+        adapter = VolundrHTTPAdapter(
+            base_url="https://volundr.valhalla.asgard.niuu.world",
+            timeout=5.0,
+            name="Valhalla",
+        )
+        respx.post("https://volundr.valhalla.asgard.niuu.world/api/v1/forge/sessions").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": "ses-1",
+                    "name": "my-session",
+                    "status": "creating",
+                    "chat_endpoint": "ws://localhost:8080/s/ses-1/session",
+                },
+            )
+        )
+
+        session = await adapter.spawn_session(
+            SpawnRequest(
+                name="my-session",
+                repo="org/repo",
+                branch="main",
+                model="gpt-5.5",
+                tracker_issue_id="",
+                tracker_issue_url="",
+                system_prompt="",
+                initial_prompt="go",
+                base_branch="main",
+            )
+        )
+
+        assert (
+            session.chat_endpoint
+            == "wss://volundr.valhalla.asgard.niuu.world/s/ses-1/session"
+        )
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_sends_correct_payload(self, adapter: VolundrHTTPAdapter):
         route = respx.post(SESSIONS_URL).mock(
             return_value=httpx.Response(
@@ -293,6 +332,26 @@ class TestGetSession:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_get_session_rewrites_loopback_chat_endpoint(self, adapter: VolundrHTTPAdapter):
+        respx.get(f"{SESSIONS_URL}/ses-1").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": "ses-1",
+                    "name": "my-session",
+                    "status": "running",
+                    "chat_endpoint": "ws://127.0.0.1:8080/s/ses-1/session",
+                },
+            )
+        )
+
+        session = await adapter.get_session("ses-1")
+
+        assert session is not None
+        assert session.chat_endpoint == "ws://volundr.test:8000/s/ses-1/session"
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_not_found(self, adapter: VolundrHTTPAdapter):
         respx.get(f"{SESSIONS_URL}/nonexistent").mock(return_value=httpx.Response(404))
 
@@ -358,6 +417,7 @@ class TestListSessions:
         assert len(sessions) == 2
         assert sessions[0].id == "ses-1"
         assert sessions[0].tracker_issue_id == "A-1"
+        assert sessions[0].chat_endpoint is None
         assert sessions[1].id == "ses-2"
         assert sessions[1].tracker_issue_id is None
 
