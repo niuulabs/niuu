@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
+import logging
 import os
 import sys
 import uuid
@@ -20,6 +22,8 @@ from ravn.domain.models import Message, Session, TokenUsage, ToolCall, ToolResul
 from ravn.ports.channel import ChannelPort
 from ravn.ports.checkpoint import CheckpointPort
 from ravn.ports.executor import ExecutionAgentPort, ExecutorPort
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,22 @@ def _sum_model_usage(raw: dict | None) -> TokenUsage:
     )
 
 
+def _is_ting_workflow_tool(tool_name: str) -> bool:
+    name = tool_name.replace("-", "_")
+    return name == "ting_workflow" or name.endswith("__ting_workflow")
+
+
+def _decode_tool_result_json(content: str) -> dict[str, Any] | None:
+    text = content.strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 class CliTransportAgent(ExecutionAgentPort):
     """Agent-shaped wrapper that executes turns through a CLI transport."""
 
@@ -87,6 +107,7 @@ class CliTransportAgent(ExecutionAgentPort):
         task_id: str,
         persona: str,
         preloaded_tools: Iterable[object] = (),
+        session_join_manager: Any | None = None,
     ) -> None:
         self._transport_binding = transport_binding
         self._transport_kwargs = dict(transport_kwargs)
@@ -105,6 +126,7 @@ class CliTransportAgent(ExecutionAgentPort):
         self._tools = {
             getattr(tool, "name", f"tool_{idx}"): tool for idx, tool in enumerate(preloaded_tools)
         }
+        self._session_join_manager = session_join_manager
         self._interrupt_reason: InterruptReason | None = None
         self._current_tool_names: dict[str, str] = {}
         self._turn_tool_calls: list[ToolCall] = []
@@ -363,6 +385,8 @@ class CliTransportAgent(ExecutionAgentPort):
             self._turn_tool_results.append(
                 ToolResult(tool_call_id=tool_use_id, content=result, is_error=is_error)
             )
+            if not is_error:
+                await self._join_launched_workflow_session(tool_name, result)
             await self._channel.emit(
                 RavnEvent.tool_result(
                     source=self._source_id,
@@ -373,6 +397,30 @@ class CliTransportAgent(ExecutionAgentPort):
                     task_id=self._task_id,
                     is_error=is_error,
                 )
+            )
+
+    async def _join_launched_workflow_session(self, tool_name: str, result: str) -> None:
+        manager = self._session_join_manager
+        if manager is None or not _is_ting_workflow_tool(tool_name):
+            return
+        payload = _decode_tool_result_json(result)
+        if not payload:
+            return
+        if isinstance(payload.get("data"), dict):
+            payload = payload["data"]
+        session_id = str(payload.get("sessionId") or payload.get("session_id") or "").strip()
+        chat_endpoint = str(
+            payload.get("chatEndpoint") or payload.get("chat_endpoint") or ""
+        ).strip()
+        if not session_id or not chat_endpoint:
+            return
+        try:
+            await manager.join(session_id, chat_endpoint)
+        except Exception:
+            logger.warning(
+                "CLI executor failed to join launched workflow session %s",
+                session_id,
+                exc_info=True,
             )
 
     async def _emit_content_block(self, block: dict, correlation_id: str) -> None:
@@ -467,6 +515,7 @@ class CliTransportExecutor(ExecutorPort):
             task_id=task_id,
             persona=str(kwargs.get("persona", "")),
             preloaded_tools=tools,
+            session_join_manager=kwargs.get("session_join_manager"),
         )
 
 

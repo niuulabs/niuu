@@ -3063,6 +3063,9 @@ async def _run_daemon(
             # NIU-612: persona config for outcome parsing + early termination
             persona_config=resolved_persona,
             stop_on_outcome=resolved_persona.stop_on_outcome if resolved_persona else False,
+            session_join_manager=(
+                drive_loop._session_join_manager if drive_loop is not None else None
+            ),
         )
         # Reviews and flock proposals must cross the mesh, not stay on the
         # daemon's in-process reflection bus — same precedence as the drive
