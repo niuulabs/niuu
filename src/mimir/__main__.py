@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import typer
@@ -26,6 +27,24 @@ app = typer.Typer(name="mimir", help="Standalone Mímir knowledge service.")
 
 _DEFAULT_EVAL_CORPUS = "tests/test_mimir/evals/corpus"
 _DEFAULT_EVAL_GOLDEN = "tests/test_mimir/evals/golden.yaml"
+
+
+def _configured_mimir_adapter():
+    if not os.environ.get("RAVN_CONFIG", "").strip():
+        return None
+    from ravn.cli.commands import _build_mimir
+    from ravn.config import Settings
+
+    return _build_mimir(Settings())
+
+
+def _mcp_adapter(path: str):
+    configured = _configured_mimir_adapter()
+    if configured is not None:
+        return configured
+    from mimir.adapters.markdown import MarkdownMimirAdapter
+
+    return MarkdownMimirAdapter(root=path)
 
 
 @app.command()
@@ -98,10 +117,9 @@ def mcp(
           }
         }
     """
-    from mimir.adapters.markdown import MarkdownMimirAdapter
     from mimir.mcp import MimirMcpServer
 
-    adapter = MarkdownMimirAdapter(root=path)
+    adapter = _mcp_adapter(path)
     server = MimirMcpServer(adapter=adapter, name=name)
     asyncio.run(server.run_stdio())
 
