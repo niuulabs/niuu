@@ -652,6 +652,75 @@ class TestActivityFrameTranslation:
 
 
 # ---------------------------------------------------------------------------
+# Event translation — outcome subscriptions
+# ---------------------------------------------------------------------------
+
+
+class TestOutcomeFrameTranslation:
+    @pytest.mark.asyncio
+    async def test_outcome_frame_forwards_to_subscribed_ravn_ws(self):
+        bridge, registry = _make_bridge()
+        source_ws = _fake_ws()
+        observer_ws = _fake_ws()
+        await bridge.register("publisher", "publisher", source_ws)
+        await bridge.register(
+            "observer",
+            "observer",
+            observer_ws,
+            subscribes_to=["research.completed"],
+        )
+        registry.broadcast.reset_mock()
+        source_ws.send_text.reset_mock()
+        observer_ws.send_text.reset_mock()
+
+        await bridge.handle_ravn_frame(
+            "publisher",
+            {
+                "type": "outcome",
+                "data": {
+                    "verdict": "approve",
+                    "fields": {"summary": "done"},
+                },
+                "metadata": {"event_type": "research.completed"},
+            },
+        )
+
+        event = registry.broadcast.await_args.args[0]
+        assert event["type"] == "room_outcome"
+        assert event["eventType"] == "research.completed"
+        observer_ws.send_text.assert_awaited_once()
+        sent = json.loads(observer_ws.send_text.await_args.args[0])
+        assert sent["type"] == "room_outcome"
+        assert sent["eventType"] == "research.completed"
+        assert sent["summary"] == "done"
+        source_ws.send_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_outcome_frame_does_not_forward_to_unsubscribed_ravn_ws(self):
+        bridge, _ = _make_bridge()
+        observer_ws = _fake_ws()
+        await bridge.register("publisher", "publisher", _fake_ws())
+        await bridge.register(
+            "observer",
+            "observer",
+            observer_ws,
+            subscribes_to=["plan.completed"],
+        )
+        observer_ws.send_text.reset_mock()
+
+        await bridge.handle_ravn_frame(
+            "publisher",
+            {
+                "type": "outcome",
+                "data": {"verdict": "approve"},
+                "metadata": {"event_type": "research.completed"},
+            },
+        )
+
+        observer_ws.send_text.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # History persistence via append_turn callback
 # ---------------------------------------------------------------------------
 
