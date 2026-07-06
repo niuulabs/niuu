@@ -334,6 +334,72 @@ async def test_recv_loop_delivers_directed_message_metadata() -> None:
 
 
 @pytest.mark.asyncio
+async def test_recv_loop_delivers_subscribed_room_outcome() -> None:
+    ch = SkuldChannel(
+        broker_url="ws://localhost:9000/ws/ravn/test",
+        session_id="test-session",
+        subscribes_to=["research.completed"],
+        reconnect_delay=0.0,
+        max_reconnect_attempts=1,
+    )
+    handler = AsyncMock()
+    ch.on_directed_message(handler)
+
+    mock_ws = AsyncMock()
+    mock_ws.state = 1
+    mock_ws.recv = AsyncMock(
+        side_effect=[
+            json.dumps(
+                {
+                    "type": "room_outcome",
+                    "eventType": "research.completed",
+                    "summary": "done",
+                    "verdict": "published",
+                    "fields": {"page_path": "research/x.md"},
+                }
+            ),
+            asyncio.CancelledError(),
+        ]
+    )
+    ch._ws = mock_ws
+
+    await ch._recv_loop()
+
+    content, metadata = handler.await_args.args
+    assert "research.completed" in content
+    assert metadata["room_outcome"] is True
+    assert metadata["event_type"] == "research.completed"
+    assert metadata["fields"] == {"page_path": "research/x.md"}
+
+
+@pytest.mark.asyncio
+async def test_recv_loop_ignores_unsubscribed_room_outcome() -> None:
+    ch = SkuldChannel(
+        broker_url="ws://localhost:9000/ws/ravn/test",
+        session_id="test-session",
+        subscribes_to=["plan.completed"],
+        reconnect_delay=0.0,
+        max_reconnect_attempts=1,
+    )
+    handler = AsyncMock()
+    ch.on_directed_message(handler)
+
+    mock_ws = AsyncMock()
+    mock_ws.state = 1
+    mock_ws.recv = AsyncMock(
+        side_effect=[
+            json.dumps({"type": "room_outcome", "eventType": "research.completed"}),
+            asyncio.CancelledError(),
+        ]
+    )
+    ch._ws = mock_ws
+
+    await ch._recv_loop()
+
+    handler.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_recv_loop_ignores_non_dict_metadata() -> None:
     ch = _make_channel()
     handler = AsyncMock()

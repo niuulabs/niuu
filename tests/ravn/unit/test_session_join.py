@@ -74,6 +74,15 @@ class TestSessionJoinManager:
         assert ctor.call_args.kwargs["broker_url"].endswith("/ws/ravn/flock-product-steward")
         channel.connect.assert_awaited_once()
 
+    async def test_join_registers_resident_subscriptions(self):
+        manager = _manager()
+        manager.set_subscribes_to(["research.completed"])
+        channel = _connected_channel()
+        with patch("ravn.session_join.SkuldChannel", return_value=channel) as ctor:
+            await manager.join("sess-1", "ws://host/s/sess-1/session")
+
+        assert ctor.call_args.kwargs["subscribes_to"] == ["research.completed"]
+
     @respx.mock
     async def test_join_waits_for_platform_session_running(self):
         respx.get("http://volundr.test/api/v1/forge/sessions/sess-1").mock(

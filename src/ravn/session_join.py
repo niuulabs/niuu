@@ -113,6 +113,12 @@ class SessionJoinManager:
         """Register the handler for frames directed at us in joined rooms."""
         self._observer = observer
 
+    def set_subscribes_to(self, event_types: list[str]) -> None:
+        """Set event subscriptions used when joining workflow rooms."""
+        self._subscribes_to = list(event_types or [])
+        for entry in self._joined.values():
+            entry.channel._subscribes_to = list(self._subscribes_to)
+
     @property
     def peer_id(self) -> str:
         return self._peer_id

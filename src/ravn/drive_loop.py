@@ -1033,6 +1033,8 @@ class DriveLoop:
             emits.extend(persona_config.produces.event_type_map.values())
             self._skuld_channel._emits = list(dict.fromkeys(emits))  # dedupe, preserve order
             self._skuld_channel._tools = persona_config.allowed_tools
+        if self._session_join_manager is not None and persona_config is not None:
+            self._session_join_manager.set_subscribes_to(persona_config.consumes.event_types)
 
     def set_workflow_allowed_outcomes_resolver(
         self,
