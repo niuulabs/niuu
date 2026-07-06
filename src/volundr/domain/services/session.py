@@ -1376,6 +1376,7 @@ class SessionService:
         """
         active_sessions = [
             *await self._repository.list(status=SessionStatus.STARTING),
+            *await self._repository.list(status=SessionStatus.PROVISIONING),
             *await self._repository.list(status=SessionStatus.RUNNING),
         ]
         reconciled = 0
@@ -1395,6 +1396,9 @@ class SessionService:
             reconciled += 1
             if self._broadcaster is not None:
                 await self._broadcaster.publish_session_updated(final)
+            if session.status != SessionStatus.RUNNING and final.status == SessionStatus.RUNNING:
+                await self._register_communication_routes(final)
+                await self._emit_session_started(final)
         return reconciled
 
     async def reconcile_session_if_active(self, session_id: UUID) -> Session | None:
@@ -1402,7 +1406,11 @@ class SessionService:
         session = await self._repository.get(session_id)
         if session is None:
             return None
-        if session.status not in {SessionStatus.STARTING, SessionStatus.RUNNING}:
+        if session.status not in {
+            SessionStatus.STARTING,
+            SessionStatus.PROVISIONING,
+            SessionStatus.RUNNING,
+        }:
             return session
 
         actual_status = await self._pod_manager.status(session)
@@ -1419,6 +1427,9 @@ class SessionService:
         final = await self._repository.update(updated)
         if self._broadcaster is not None:
             await self._broadcaster.publish_session_updated(final)
+        if session.status != SessionStatus.RUNNING and final.status == SessionStatus.RUNNING:
+            await self._register_communication_routes(final)
+            await self._emit_session_started(final)
         return final
 
     async def mark_session_dead(self, session_id: UUID) -> Session | None:
