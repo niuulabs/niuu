@@ -499,6 +499,25 @@ class TestResidentWorkloadIdentityConfigFirst:
         assert mimir["staleness_trigger"]["enabled"] is False
         assert mimir["staleness_trigger"]["schedule_hours"] == 24
 
+    def test_ravn_config_can_override_platform_workload_exchange_url(self, tmp_path):
+        values = dict(self.RESIDENT_VALUES)
+        values["resident"] = {
+            **values["resident"],
+            "platform": {
+                **values["resident"]["platform"],
+                "workloadExchangeUrl": "https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange",
+            },
+        }
+        rendered = _render_skuld_chart(tmp_path, values)
+        configmaps = self._configmaps(rendered)
+        ravn_cm = next(cm for name, cm in configmaps.items() if name.endswith("-ravn-config"))
+        ravn_cfg = yaml.safe_load(ravn_cm["data"]["config.yaml"])
+
+        assert (
+            ravn_cfg["gateway"]["platform"]["workload_exchange_url"]
+            == "https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange"
+        )
+
     def test_default_render_has_no_workload_identity_config(self, tmp_path):
         rendered = _render_skuld_chart(tmp_path, {})
         assert "workload_identity" not in rendered

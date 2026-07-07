@@ -70,7 +70,9 @@ data:
         # Workload identity (config-first; replaces the legacy
         # NIUU_WORKLOAD_IDENTITY_* env vars on the ravn container).
         workload_token_file: "/var/run/secrets/niuu-workload/token"
-        {{- if .Values.volundr.apiUrl }}
+        {{- if .Values.resident.platform.workloadExchangeUrl }}
+        workload_exchange_url: {{ .Values.resident.platform.workloadExchangeUrl | quote }}
+        {{- else if .Values.volundr.apiUrl }}
         workload_exchange_url: {{ printf "%s/api/v1/tokens/workload/exchange" (.Values.volundr.apiUrl | trimSuffix "/") | quote }}
         {{- end }}
         {{- with .Values.resident.platform.workflowAliases }}

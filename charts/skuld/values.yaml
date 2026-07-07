@@ -494,6 +494,9 @@ resident:
     enabled: false
     # -- In-cluster Volundr base URL for the ravn platform gateway
     baseUrl: ""
+    # -- Optional workload token exchange URL for the ravn platform gateway.
+    # Defaults to volundr.apiUrl + /api/v1/tokens/workload/exchange.
+    workloadExchangeUrl: ""
     # -- Per-resident workflow aliases for chat launches through ting_workflow.
     # Example:
     # workflowAliases:
