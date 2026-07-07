@@ -1,5 +1,5 @@
 # Stage 1: Build the next-generation Niuu web UI
-FROM node:24-alpine@sha256:2bdb65ed1dab192432bc31c95f94155ca5ad7fc1392fb7eb7526ab682fa5bf14 AS build
+FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS build
 
 WORKDIR /app
 
@@ -25,7 +25,7 @@ RUN pnpm install --frozen-lockfile
 RUN pnpm build
 
 # Stage 2: Serve with nginx
-FROM nginx:1.31.1-alpine@sha256:8b1e78743a03dbb2c95171cc58639fef29abc8816598e27fb910ed2e621e589a
+FROM nginx:1.31.2-alpine@sha256:54f2a904c251d5a34adf545a72d32515a15e08418dae0266e23be2e18c66fefa
 
 # Patch base image vulnerabilities (CVE-2026-22184: zlib).
 RUN apk upgrade --no-cache zlib
