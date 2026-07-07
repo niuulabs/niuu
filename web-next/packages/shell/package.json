@@ -27,7 +27,7 @@
     "dev": "tsup --watch"
   },
   "peerDependencies": {
-    "@tanstack/react-router": "^1.170.15",
+    "@tanstack/react-router": "^1.170.17",
     "react": "^19.2.7"
   },
   "dependencies": {
@@ -37,13 +37,13 @@
   },
   "devDependencies": {
     "@niuulabs/design-tokens": "workspace:*",
-    "@tanstack/react-router": "^1.170.15",
+    "@tanstack/react-router": "^1.170.17",
     "@types/react": "^19.2.17",
-    "autoprefixer": "^10.4.20",
-    "postcss": "^8.5.15",
+    "autoprefixer": "^10.5.2",
+    "postcss": "^8.5.16",
     "postcss-import": "^16.1.0",
     "react": "^19.2.7",
-    "tailwindcss": "^4.3.0",
+    "tailwindcss": "^4.3.2",
     "tsup": "^8.3.5",
     "typescript": "^6.0.3"
   }
