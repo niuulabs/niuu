@@ -9,8 +9,10 @@ import pytest
 import respx
 
 from ravn.adapters.tools.platform_tools import (
+    TingPlanTool,
     TingResearchTool,
     TingSagaTool,
+    TingSpecTool,
     TingWorkflowTool,
     TrackerIssueTool,
     VolundrGitTool,
@@ -23,6 +25,8 @@ FORGE_GIT_URL = f"{BASE_URL}/api/v1/forge/repos"
 TRACKER_ISSUES_URL = f"{BASE_URL}/api/v1/tracker/issues"
 TING_WORKFLOWS_URL = f"{BASE_URL}/api/v1/ting/workflows"
 TING_RESEARCH_URL = f"{BASE_URL}/api/v1/ting/research/campaigns"
+TING_PLAN_URL = f"{BASE_URL}/api/v1/ting/sagas/plan"
+TING_SPEC_URL = f"{BASE_URL}/api/v1/ting/specs/campaigns"
 
 
 # ===========================================================================
@@ -847,3 +851,77 @@ class TestTingResearchTool:
         body = json.loads(route.calls.last.request.content)
         assert body["question"] == "Look into agent memory solutions."
         assert "workflowId" not in body
+
+
+class TestTingPlanTool:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_launch_plan_uses_configured_alias_defaults(self):
+        tool = TingPlanTool(
+            base_url=BASE_URL,
+            workflow_aliases={
+                "plan": {
+                    "workflow_id": "wf-plan",
+                    "defaults": {
+                        "connection_id": "Valhalla",
+                        "base_branch": "dev",
+                    },
+                }
+            },
+        )
+        route = respx.post(TING_PLAN_URL).mock(
+            return_value=httpx.Response(
+                201,
+                json={
+                    "session_id": "sess-plan",
+                    "chat_endpoint": "/api/v1/forge/sessions/sess-plan/messages",
+                    "campaign_slug": "plan-build-it",
+                },
+            )
+        )
+
+        result = await tool.execute({"action": "launch", "prompt": "Plan building it."})
+
+        assert not result.is_error
+        body = json.loads(route.calls.last.request.content)
+        assert body["spec"] == "Plan building it."
+        assert body["workflowId"] == "wf-plan"
+        assert body["connectionId"] == "Valhalla"
+        assert body["base_branch"] == "dev"
+
+
+class TestTingSpecTool:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_launch_spec_uses_configured_alias_defaults(self):
+        tool = TingSpecTool(
+            base_url=BASE_URL,
+            workflow_aliases={
+                "spec": {
+                    "workflow_id": "wf-spec",
+                    "defaults": {
+                        "connection_id": "Valhalla",
+                        "repos": ["niuulabs/volundr"],
+                    },
+                }
+            },
+        )
+        route = respx.post(TING_SPEC_URL).mock(
+            return_value=httpx.Response(
+                201,
+                json={
+                    "sessionId": "sess-spec",
+                    "chatEndpoint": "/api/v1/forge/sessions/sess-spec/messages",
+                    "slug": "spec-build-it",
+                },
+            )
+        )
+
+        result = await tool.execute({"action": "launch", "prompt": "Specify building it."})
+
+        assert not result.is_error
+        body = json.loads(route.calls.last.request.content)
+        assert body["prompt"] == "Specify building it."
+        assert body["workflowId"] == "wf-spec"
+        assert body["connectionId"] == "Valhalla"
+        assert body["repos"] == ["niuulabs/volundr"]

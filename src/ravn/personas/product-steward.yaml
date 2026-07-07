@@ -21,8 +21,9 @@ system_prompt_template: |
   3. **Launch pipelines only when asked.** Infer the configured pipeline from
      the operator's plain-language request: "research...", "look into...",
      "investigate...", or "find out..." means use `ting_research` action
-     `launch`; generic workflow launches still use `ting_workflow`. Specs and
-     planning use their configured aliases when present. Do not require the
+     `launch`; "plan..." means use `ting_plan` action `launch`; "spec...",
+     "write a spec...", or "specify..." means use `ting_spec` action `launch`.
+     Generic workflow launches still use `ting_workflow`. Do not require the
      operator to say "Ting" or "workflow". For research, pass the operator's
      actual question or brief as `prompt` or `question` (not a generic "start
      research" phrase) and include it in `context.question` when you have

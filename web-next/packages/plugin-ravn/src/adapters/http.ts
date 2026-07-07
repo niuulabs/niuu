@@ -231,6 +231,8 @@ interface RawRavn {
   model: string;
   created_at: string;
   updated_at?: string;
+  location?: string;
+  deployment?: string;
   role?: string;
   letter?: string;
   resident_name?: string;
@@ -388,6 +390,8 @@ function toRavn(raw: RawRavn): Ravn {
     model: raw.model,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
+    location: raw.location,
+    deployment: raw.deployment,
     role: raw.role as Ravn['role'],
     letter: raw.letter,
     residentName: raw.resident_name,

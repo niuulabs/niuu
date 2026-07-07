@@ -391,13 +391,13 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         adapter="ravn.adapters.tools.platform_tools.TingPlanTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
+        kwargs_fn=_ting_workflow_kwargs,
     ),
     "ting_spec": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.TingSpecTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
+        kwargs_fn=_ting_workflow_kwargs,
     ),
     # =========================================================================
     # workflow — resident workflow catalog tools backed by capability_sources

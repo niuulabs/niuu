@@ -1063,7 +1063,8 @@ class TestSpawnPlanSession:
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
-        workflow_repo = InMemoryWorkflowRepository([_planning_workflow()])
+        workflow = _planning_workflow()
+        workflow_repo = InMemoryWorkflowRepository([workflow])
         app.dependency_overrides[resolve_workflow_repo] = lambda: workflow_repo
         campaign_repo = InMemoryWorkflowCampaignRepository()
         app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaign_repo
@@ -1130,7 +1131,12 @@ class TestSpawnPlanSession:
         client = TestClient(app)
         resp = client.post(
             "/api/v1/ting/sagas/plan",
-            json={"spec": "Ship the dashboard", "repo": "niuulabs/volundr"},
+            json={
+                "spec": "Ship the dashboard",
+                "repo": "niuulabs/volundr",
+                "workflowId": str(workflow.id),
+                "connectionId": "local",
+            },
         )
 
         assert resp.status_code == 201
@@ -1156,6 +1162,7 @@ class TestSpawnPlanSession:
             "surface": "ting.plan",
             "repo": "niuulabs/volundr",
             "base_branch": "main",
+            "connection_id": "local",
         }
         campaign = next(iter(campaign_repo._campaigns.values()), None)
         assert campaign is not None
@@ -1163,6 +1170,7 @@ class TestSpawnPlanSession:
         assert campaign.session_id == "plan-1"
         assert campaign.metadata["repo"] == "niuulabs/volundr"
         assert campaign.metadata["base_branch"] == "main"
+        assert campaign.metadata["connection_id"] == "local"
         assert campaign.stage_state[0].status == "active"
 
         status_resp = client.get("/api/v1/ting/sagas/plan/plan-ship-the-dashboard")
