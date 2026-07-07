@@ -366,6 +366,12 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         condition=lambda s: s.gateway.platform.enabled,
         kwargs_fn=_ting_workflow_kwargs,
     ),
+    "ting_research": BuiltinToolDef(
+        adapter="ravn.adapters.tools.platform_tools.TingResearchTool",
+        groups=frozenset({"platform"}),
+        condition=lambda s: s.gateway.platform.enabled,
+        kwargs_fn=_ting_workflow_kwargs,
+    ),
     "tracker_issue": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.TrackerIssueTool",
         groups=frozenset({"platform"}),

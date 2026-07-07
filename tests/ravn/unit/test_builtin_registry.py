@@ -107,6 +107,7 @@ class TestRegistryStructure:
             "volundr_git",
             "ting_saga",
             "ting_workflow",
+            "ting_research",
             "tracker_issue",
         }.issubset(platform_keys)
 
@@ -197,6 +198,7 @@ class TestConditions:
             "volundr_git",
             "ting_saga",
             "ting_workflow",
+            "ting_research",
             "tracker_issue",
         ):
             cond = BUILTIN_TOOLS[key].condition
@@ -267,9 +269,10 @@ class TestKwargsFn:
             )
         }
         ctx = _make_runtime_ctx(tmp_path)
-        kwargs = BUILTIN_TOOLS["ting_workflow"].kwargs_fn(settings, ctx)
-        assert kwargs["workflow_aliases"]["research"]["workflow_id"] == "wf-research"
-        assert kwargs["workflow_aliases"]["research"]["defaults"]["gate_auto_forward_after"] == ""
+        for key in ("ting_workflow", "ting_research"):
+            kwargs = BUILTIN_TOOLS[key].kwargs_fn(settings, ctx)
+            assert kwargs["workflow_aliases"]["research"]["workflow_id"] == "wf-research"
+            assert kwargs["workflow_aliases"]["research"]["defaults"]["gate_auto_forward_after"] == ""
 
 
 # ---------------------------------------------------------------------------

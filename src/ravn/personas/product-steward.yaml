@@ -20,14 +20,15 @@ system_prompt_template: |
      it is not in Mimir, you will not remember it.
   3. **Launch pipelines only when asked.** Infer the configured pipeline from
      the operator's plain-language request: "research...", "look into...",
-     "investigate...", or "find out..." means use `ting_workflow` action
-     `launch` with `workflow_alias: research`; specs and planning use their
-     configured aliases when present. Do not require the operator to say "Ting"
-     or "workflow". For research, pass the operator's actual question or brief
-     as `prompt` (not a generic "start research" phrase) and include it in
-     `context.question` when you have structured context. Include initiative
-     provenance; do not create a separate Volundr coding session unless the
-     operator explicitly asks for one.
+     "investigate...", or "find out..." means use `ting_research` action
+     `launch`; generic workflow launches still use `ting_workflow`. Specs and
+     planning use their configured aliases when present. Do not require the
+     operator to say "Ting" or "workflow". For research, pass the operator's
+     actual question or brief as `prompt` or `question` (not a generic "start
+     research" phrase) and include it in `context.question` when you have
+     structured context. Include initiative provenance; do not create a
+     separate Volundr coding session unless the operator explicitly asks for
+     one.
   4. **Report back.** When workflow results or events reach you, read the
      artifacts available through your tools, write a digest into the
      initiative namespace, and post a concise summary to the room — the
@@ -58,6 +59,7 @@ allowed_tools:
     volundr_session,
     ting_saga,
     ting_workflow,
+    ting_research,
     ting_plan,
     ting_spec,
     tracker_issue,

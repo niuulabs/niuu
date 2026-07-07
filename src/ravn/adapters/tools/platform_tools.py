@@ -863,11 +863,7 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
                 },
                 "prompt": {
                     "type": "string",
-                    "description": (
-                        "Launch prompt describing the work to do (required for launch). "
-                        "For workflow_alias=research, pass the operator's actual "
-                        "research question or brief, not a generic launch phrase."
-                    ),
+                    "description": "Launch prompt describing the work to do (required for launch).",
                 },
                 "slug": {
                     "type": "string",
@@ -992,8 +988,6 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
             return _err("workflow_id or workflow_alias is required for launch action")
         if not prompt:
             return _err("prompt is required for launch action")
-        if self._is_research_launch(launch_input):
-            return await self._launch_research_campaign(client, launch_input, workflow_id, prompt)
 
         body: dict[str, object] = {"prompt": prompt}
         scalar_keys = (
@@ -1034,67 +1028,6 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
             return _ok(payload)
         except Exception as exc:
             return _err(f"Failed to launch workflow {workflow_id}: {exc}")
-
-    async def _launch_research_campaign(
-        self,
-        client: httpx.AsyncClient,
-        launch_input: dict[str, Any],
-        workflow_id: str,
-        prompt: str,
-    ) -> ToolResult:
-        context = launch_input.get("context")
-        context = context if isinstance(context, dict) else {}
-        question = str(context.get("question") or prompt).strip()
-        body: dict[str, object] = {
-            "question": question,
-            "workflowId": workflow_id,
-            "mode": str(context.get("mode") or launch_input.get("mode") or "exploratory"),
-        }
-        field_map = {
-            "name": "name",
-            "repo": "repo",
-            "branch": "branch",
-            "model": "model",
-            "definition": "definition",
-            "audience": "audience",
-            "deliverable": "deliverable",
-            "success": "success",
-            "connection_id": "connectionId",
-            "monitoring_cadence": "monitoringCadence",
-        }
-        for source, target in field_map.items():
-            value = launch_input.get(source)
-            if value in (None, ""):
-                value = context.get(source)
-            if value not in (None, ""):
-                body[target] = value
-        constraints = launch_input.get("constraints", context.get("constraints"))
-        if isinstance(constraints, list):
-            body["constraints"] = constraints
-        gate_auto_forward = launch_input.get("gate_auto_forward_after")
-        if gate_auto_forward is not None:
-            body["gateAutoForwardAfter"] = str(gate_auto_forward)
-
-        try:
-            resp = await client.post("/api/v1/ting/research/campaigns", json=body)
-            resp.raise_for_status()
-            payload = resp.json()
-            if isinstance(payload, dict):
-                await self._join_launched_session(payload)
-            return _ok(payload)
-        except Exception as exc:
-            return _err(f"Failed to launch research campaign {workflow_id}: {exc}")
-
-    @staticmethod
-    def _is_research_launch(launch_input: dict[str, Any]) -> bool:
-        alias_name = str(launch_input.get("_workflow_alias_name") or "").strip().lower()
-        if alias_name == "research":
-            return True
-        context = launch_input.get("context")
-        surface = launch_input.get("surface")
-        if isinstance(context, dict) and surface in (None, ""):
-            surface = context.get("surface")
-        return str(surface or "").strip().lower() in {"research", "ting.research"}
 
     async def _join_launched_session(self, payload: dict[str, Any]) -> None:
         manager = self._session_join_manager
@@ -1146,21 +1079,7 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
         alias_name: str,
         launch_input: dict[str, Any],
     ) -> None:
-        if alias_name.strip().lower() != "research":
-            return
-
-        prompt = str(launch_input.get("prompt", "") or "").strip()
-        if not prompt:
-            return
-
-        context = launch_input.get("context")
-        if not isinstance(context, dict):
-            context = {}
-        else:
-            context = dict(context)
-        context.setdefault("question", prompt)
-        context.setdefault("mode", "exploratory")
-        launch_input["context"] = context
+        return
 
     async def _resolve_workflow_alias(
         self, client: httpx.AsyncClient, alias_name: str, alias: dict[str, Any]
@@ -1202,6 +1121,190 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
         if not resolved:
             return "", f"workflow_alias {alias_name!r} matched a workflow without an id"
         return resolved, ""
+
+
+# ---------------------------------------------------------------------------
+# ting_research
+# ---------------------------------------------------------------------------
+
+
+class TingResearchTool(TingWorkflowTool):
+    """Launch persistent Ting Research campaigns."""
+
+    @property
+    def name(self) -> str:
+        return "ting_research"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Launch persistent Ting Research campaigns. Use this when the operator asks "
+            "for research so the run appears in the Ting Research tab and writes durable "
+            "campaign metadata."
+        )
+
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["launch"],
+                    "description": "Operation to perform.",
+                },
+                "question": {
+                    "type": "string",
+                    "description": "Research question or brief.",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Alias for question when launching from chat.",
+                },
+                "workflow_id": {
+                    "type": "string",
+                    "description": "Optional Research Campaign workflow UUID override.",
+                },
+                "workflow_alias": {
+                    "type": "string",
+                    "description": (
+                        "Configured research workflow alias. Defaults to the configured "
+                        "'research' alias when present."
+                    ),
+                },
+                "mode": {
+                    "type": "string",
+                    "description": "Research mode, such as exploratory or evaluative.",
+                },
+                "name": {"type": "string", "description": "Optional campaign title."},
+                "repo": {"type": "string", "description": "Optional repo URL or org/repo."},
+                "branch": {"type": "string", "description": "Optional repo branch."},
+                "model": {"type": "string", "description": "Optional model override."},
+                "definition": {
+                    "type": "string",
+                    "description": "Optional Volundr session definition override.",
+                },
+                "connection_id": {
+                    "type": "string",
+                    "description": "Optional Volundr target for the workflow execution.",
+                },
+                "audience": {"type": "string", "description": "Optional target audience."},
+                "deliverable": {"type": "string", "description": "Optional deliverable."},
+                "success": {"type": "string", "description": "Optional success criteria."},
+                "constraints": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional research constraints.",
+                },
+                "monitoring_cadence": {
+                    "type": "string",
+                    "description": "Optional monitoring cadence.",
+                },
+                "gate_auto_forward_after": {
+                    "type": "string",
+                    "description": (
+                        "Override every gate's autoForwardAfter. Pass an empty string "
+                        "to disable auto-forward."
+                    ),
+                },
+                "context": {
+                    "type": "object",
+                    "description": "Optional structured research launch context.",
+                },
+            },
+            "required": ["action"],
+        }
+
+    async def execute(self, input: dict) -> ToolResult:
+        action = input.get("action", "")
+        if action != "launch":
+            return _err(f"Unknown action: {action!r}")
+        async with await self._client() as client:
+            return await self._launch(client, input)
+
+    async def _launch(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
+        launch_seed = dict(input)
+        if (
+            not str(launch_seed.get("workflow_id", "") or "").strip()
+            and not str(launch_seed.get("workflow_alias", "") or launch_seed.get("alias", "")).strip()
+            and "research" in self._workflow_aliases
+        ):
+            launch_seed["workflow_alias"] = "research"
+
+        launch_input = await self._launch_input_with_alias(client, launch_seed)
+        if isinstance(launch_input, ToolResult):
+            return launch_input
+
+        context = launch_input.get("context")
+        context = context if isinstance(context, dict) else {}
+        prompt = str(launch_input.get("prompt", "") or "").strip()
+        question = str(launch_input.get("question") or context.get("question") or prompt).strip()
+        if not question:
+            return _err("question or prompt is required for launch action")
+
+        workflow_id = str(launch_input.get("workflow_id", "") or "").strip()
+        body: dict[str, object] = {
+            "question": question,
+            "mode": str(context.get("mode") or launch_input.get("mode") or "exploratory"),
+        }
+        if workflow_id:
+            body["workflowId"] = workflow_id
+        field_map = {
+            "name": "name",
+            "repo": "repo",
+            "branch": "branch",
+            "model": "model",
+            "definition": "definition",
+            "audience": "audience",
+            "deliverable": "deliverable",
+            "success": "success",
+            "connection_id": "connectionId",
+            "monitoring_cadence": "monitoringCadence",
+        }
+        for source, target in field_map.items():
+            value = launch_input.get(source)
+            if value in (None, ""):
+                value = context.get(source)
+            if value not in (None, ""):
+                body[target] = value
+        constraints = launch_input.get("constraints", context.get("constraints"))
+        if isinstance(constraints, list):
+            body["constraints"] = constraints
+        gate_auto_forward = launch_input.get("gate_auto_forward_after")
+        if gate_auto_forward is not None:
+            body["gateAutoForwardAfter"] = str(gate_auto_forward)
+
+        try:
+            resp = await client.post("/api/v1/ting/research/campaigns", json=body)
+            resp.raise_for_status()
+            payload = resp.json()
+            if isinstance(payload, dict):
+                await self._join_launched_session(payload)
+            return _ok(payload)
+        except Exception as exc:
+            suffix = f" {workflow_id}" if workflow_id else ""
+            return _err(f"Failed to launch research campaign{suffix}: {exc}")
+
+    def _apply_alias_input_conventions(
+        self,
+        alias_name: str,
+        launch_input: dict[str, Any],
+    ) -> None:
+        if alias_name.strip().lower() != "research":
+            return
+
+        prompt = str(launch_input.get("prompt", "") or "").strip()
+        if not prompt:
+            return
+
+        context = launch_input.get("context")
+        if not isinstance(context, dict):
+            context = {}
+        else:
+            context = dict(context)
+        context.setdefault("question", prompt)
+        context.setdefault("mode", "exploratory")
+        launch_input["context"] = context
 
 
 def _workflow_list(payload: Any) -> list[dict[str, Any]]:
