@@ -76,13 +76,8 @@ def _sum_model_usage(raw: dict | None) -> TokenUsage:
 
 def _is_ting_workflow_tool(tool_name: str) -> bool:
     name = tool_name.replace("-", "_")
-    launch_tools = ("ting_workflow", "ting_research", "ting_plan", "ting_spec")
-    return any(
-        name == tool
-        or name.endswith(f"__{tool}")
-        or name.endswith(f"/{tool}")
-        or name.endswith(f".{tool}")
-        for tool in launch_tools
+    return name.startswith("ting_") or any(
+        marker in name for marker in ("__ting_", "/ting_", ".ting_")
     )
 
 

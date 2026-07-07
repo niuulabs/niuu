@@ -510,7 +510,10 @@ async def test_cli_transport_agent_joins_ting_workflow_result() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["ting_research", "ting_plan", "ting_spec"])
+@pytest.mark.parametrize(
+    "tool_name",
+    ["ting_research", "ting_plan", "ting_spec", "ting_adhoc_workflow"],
+)
 async def test_cli_transport_agent_joins_durable_ting_tool_result(tool_name: str) -> None:
     class JoinManager:
         def __init__(self) -> None:
