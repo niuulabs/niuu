@@ -398,6 +398,9 @@ def test_create_campaign_launches_workflow_and_persists_record(tmp_path: Path) -
             "constraints": ["Use public sources only"],
             "repo": "niuulabs/volundr",
             "branch": "dev",
+            "model": "gpt-5.5",
+            "definition": "skuldCodex",
+            "gateAutoForwardAfter": "",
         },
     )
 
@@ -408,6 +411,8 @@ def test_create_campaign_launches_workflow_and_persists_record(tmp_path: Path) -
     assert len(volundr_port.requests) == 1
     assert volundr_port.requests[0].tracker_issue_id.startswith("workflow:")
     assert volundr_port.requests[0].name == "rag-competitor-map"
+    assert volundr_port.requests[0].model == "gpt-5.5"
+    assert volundr_port.requests[0].definition == "skuldCodex"
     assert "- Title: RAG competitor map" in volundr_port.requests[0].initial_prompt
     assert body["name"] == "RAG competitor map"
 

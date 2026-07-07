@@ -992,6 +992,8 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
             return _err("workflow_id or workflow_alias is required for launch action")
         if not prompt:
             return _err("prompt is required for launch action")
+        if self._is_research_launch(launch_input):
+            return await self._launch_research_campaign(client, launch_input, workflow_id, prompt)
 
         body: dict[str, object] = {"prompt": prompt}
         scalar_keys = (
@@ -1033,6 +1035,67 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
         except Exception as exc:
             return _err(f"Failed to launch workflow {workflow_id}: {exc}")
 
+    async def _launch_research_campaign(
+        self,
+        client: httpx.AsyncClient,
+        launch_input: dict[str, Any],
+        workflow_id: str,
+        prompt: str,
+    ) -> ToolResult:
+        context = launch_input.get("context")
+        context = context if isinstance(context, dict) else {}
+        question = str(context.get("question") or prompt).strip()
+        body: dict[str, object] = {
+            "question": question,
+            "workflowId": workflow_id,
+            "mode": str(context.get("mode") or launch_input.get("mode") or "exploratory"),
+        }
+        field_map = {
+            "name": "name",
+            "repo": "repo",
+            "branch": "branch",
+            "model": "model",
+            "definition": "definition",
+            "audience": "audience",
+            "deliverable": "deliverable",
+            "success": "success",
+            "connection_id": "connectionId",
+            "monitoring_cadence": "monitoringCadence",
+        }
+        for source, target in field_map.items():
+            value = launch_input.get(source)
+            if value in (None, ""):
+                value = context.get(source)
+            if value not in (None, ""):
+                body[target] = value
+        constraints = launch_input.get("constraints", context.get("constraints"))
+        if isinstance(constraints, list):
+            body["constraints"] = constraints
+        gate_auto_forward = launch_input.get("gate_auto_forward_after")
+        if gate_auto_forward is not None:
+            body["gateAutoForwardAfter"] = str(gate_auto_forward)
+
+        try:
+            resp = await client.post("/api/v1/ting/research/campaigns", json=body)
+            resp.raise_for_status()
+            payload = resp.json()
+            if isinstance(payload, dict):
+                await self._join_launched_session(payload)
+            return _ok(payload)
+        except Exception as exc:
+            return _err(f"Failed to launch research campaign {workflow_id}: {exc}")
+
+    @staticmethod
+    def _is_research_launch(launch_input: dict[str, Any]) -> bool:
+        alias_name = str(launch_input.get("_workflow_alias_name") or "").strip().lower()
+        if alias_name == "research":
+            return True
+        context = launch_input.get("context")
+        surface = launch_input.get("surface")
+        if isinstance(context, dict) and surface in (None, ""):
+            surface = context.get("surface")
+        return str(surface or "").strip().lower() in {"research", "ting.research"}
+
     async def _join_launched_session(self, payload: dict[str, Any]) -> None:
         manager = self._session_join_manager
         if manager is None:
@@ -1069,6 +1132,7 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
             return _err(f"workflow_alias {alias_name!r} defaults must be an object")
 
         launch_input = {**defaults, **input}
+        launch_input["_workflow_alias_name"] = alias_name.lower()
         self._apply_alias_input_conventions(alias_name, launch_input)
         if not str(launch_input.get("workflow_id", "") or "").strip():
             workflow_id, error = await self._resolve_workflow_alias(client, alias_name, alias)

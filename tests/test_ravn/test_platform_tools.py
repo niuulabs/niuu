@@ -21,6 +21,7 @@ FORGE_SESSIONS_URL = f"{BASE_URL}/api/v1/forge/sessions"
 FORGE_GIT_URL = f"{BASE_URL}/api/v1/forge/repos"
 TRACKER_ISSUES_URL = f"{BASE_URL}/api/v1/tracker/issues"
 TING_WORKFLOWS_URL = f"{BASE_URL}/api/v1/ting/workflows"
+TING_RESEARCH_URL = f"{BASE_URL}/api/v1/ting/research/campaigns"
 
 
 # ===========================================================================
@@ -561,8 +562,17 @@ class TestTingWorkflowTool:
                 }
             },
         )
-        route = respx.post(f"{TING_WORKFLOWS_URL}/wf-research/launch").mock(
-            return_value=httpx.Response(201, json={"sessionId": "sess-research"})
+        route = respx.post(TING_RESEARCH_URL).mock(
+            return_value=httpx.Response(
+                201,
+                json={
+                    "workflowId": "wf-research",
+                    "slug": "expansion",
+                    "sessionId": "sess-research",
+                    "sessionName": "research-expansion",
+                    "status": "running",
+                },
+            )
         )
 
         result = await tool.execute(
@@ -576,14 +586,12 @@ class TestTingWorkflowTool:
 
         assert not result.is_error
         body = json.loads(route.calls.last.request.content)
-        assert body["prompt"] == "Research the expansion options."
-        assert body["context"] == {
-            "mode": "exploratory",
-            "question": "Research the expansion options.",
-        }
+        assert body["question"] == "Research the expansion options."
+        assert body["workflowId"] == "wf-research"
+        assert body["mode"] == "exploratory"
         assert body["model"] == "claude-sonnet-4-6"
         assert body["gateAutoForwardAfter"] == ""
-        assert body["provenance"]["initiative"] == "expansion"
+        assert "provenance" not in body
 
     @pytest.mark.asyncio
     @respx.mock
@@ -592,8 +600,17 @@ class TestTingWorkflowTool:
             base_url=BASE_URL,
             workflow_aliases={"research": {"workflow_id": "wf-research"}},
         )
-        route = respx.post(f"{TING_WORKFLOWS_URL}/wf-research/launch").mock(
-            return_value=httpx.Response(201, json={"sessionId": "sess-research"})
+        route = respx.post(TING_RESEARCH_URL).mock(
+            return_value=httpx.Response(
+                201,
+                json={
+                    "workflowId": "wf-research",
+                    "slug": "germany-market",
+                    "sessionId": "sess-research",
+                    "sessionName": "research-germany-market",
+                    "status": "running",
+                },
+            )
         )
 
         result = await tool.execute(
@@ -610,10 +627,8 @@ class TestTingWorkflowTool:
 
         assert not result.is_error
         body = json.loads(route.calls.last.request.content)
-        assert body["context"] == {
-            "question": "Is Germany a good expansion market?",
-            "mode": "evaluative",
-        }
+        assert body["question"] == "Is Germany a good expansion market?"
+        assert body["mode"] == "evaluative"
 
     @pytest.mark.asyncio
     @respx.mock
@@ -631,8 +646,17 @@ class TestTingWorkflowTool:
                 ],
             )
         )
-        respx.post(f"{TING_WORKFLOWS_URL}/wf-research/launch").mock(
-            return_value=httpx.Response(201, json={"sessionId": "sess-research"})
+        respx.post(TING_RESEARCH_URL).mock(
+            return_value=httpx.Response(
+                201,
+                json={
+                    "workflowId": "wf-research",
+                    "slug": "expansion",
+                    "sessionId": "sess-research",
+                    "sessionName": "research-expansion",
+                    "status": "running",
+                },
+            )
         )
 
         result = await tool.execute(
