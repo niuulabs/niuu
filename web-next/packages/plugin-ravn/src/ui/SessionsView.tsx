@@ -8,8 +8,10 @@ import {
   normalizeSessionUrl,
   useSkuldChat,
 } from '@niuulabs/ui';
+import { useService } from '@niuulabs/plugin-sdk';
+import { LiveLogsTab, TelemetryTab, type IVolundrService } from '@niuulabs/plugin-volundr';
 import type { PersonaRole } from '@niuulabs/domain';
-import { Eye, EyeOff } from 'lucide-react';
+import { Eye, EyeOff, FileCode2, MessageSquareText, Sparkles } from 'lucide-react';
 import { useMessages, useSessions } from './hooks/useSessions';
 import { useRavens } from './hooks/useRavens';
 import { useRavnBudget } from './hooks/useBudget';
@@ -24,6 +26,7 @@ import './SessionsView.css';
 const SESSION_STORAGE_KEY = 'ravn.session';
 
 type TranscriptFilter = 'all' | 'chat' | 'tools' | 'system';
+type SessionSurfaceTab = 'chat' | 'trace' | 'logs';
 
 type TimelineTone = 'info' | 'muted' | 'warn' | 'good';
 
@@ -51,6 +54,16 @@ const FILTER_OPTIONS: Array<{ value: TranscriptFilter; label: string }> = [
   { value: 'chat', label: 'chat only' },
   { value: 'tools', label: '+ tools' },
   { value: 'system', label: '+ system' },
+];
+
+const SESSION_SURFACE_TABS: Array<{
+  id: SessionSurfaceTab;
+  label: string;
+  icon: typeof MessageSquareText;
+}> = [
+  { id: 'chat', label: 'Chat', icon: MessageSquareText },
+  { id: 'trace', label: 'Trace', icon: Sparkles },
+  { id: 'logs', label: 'Logs', icon: FileCode2 },
 ];
 
 const DEFAULT_PERSONA_BY_ROLE: Partial<Record<PersonaRole, string>> = {
@@ -956,6 +969,68 @@ function LiveSessionChat({
   );
 }
 
+function SessionObservabilityPanel({
+  session,
+  tab,
+}: {
+  session: Session;
+  tab: Exclude<SessionSurfaceTab, 'chat'>;
+}) {
+  const volundr = useService<IVolundrService>('volundr');
+
+  if (tab === 'trace') {
+    return (
+      <div className="rv-rs__observability-panel rv-rs__observability-panel--trace">
+        <TelemetryTab
+          sessionId={session.id}
+          session={null}
+          runLabel={titleForSession(session)}
+          volundr={volundr}
+          isRunning={session.status === 'running'}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="rv-rs__observability-panel">
+      <LiveLogsTab sessionId={session.id} volundr={volundr} />
+    </div>
+  );
+}
+
+function SessionSurfaceTabs({
+  activeTab,
+  onTabChange,
+}: {
+  activeTab: SessionSurfaceTab;
+  onTabChange: (tab: SessionSurfaceTab) => void;
+}) {
+  return (
+    <div className="rv-rs__surface-tabs" role="tablist" aria-label="Session view">
+      {SESSION_SURFACE_TABS.map((tab) => {
+        const Icon = tab.icon;
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            className={cn(
+              'rv-rs__surface-tab',
+              activeTab === tab.id && 'rv-rs__surface-tab--active',
+            )}
+            onClick={() => onTabChange(tab.id)}
+          >
+            <Icon className="rv-rs__surface-tab-icon" />
+            <span>{tab.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function ContextSidebar({
   session,
   ravn,
@@ -1076,6 +1151,7 @@ export function SessionsView() {
   const { data: ravens } = useRavens();
   const [selectedId, setSelectedId] = useState<string | null>(() => preferredSessionId());
   const [filter, setFilter] = useState<TranscriptFilter>('all');
+  const [surfaceTab, setSurfaceTab] = useState<SessionSurfaceTab>('chat');
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [showInternalMessages, setShowInternalMessages] = useState(false);
   const setInternalVisibilityRef = useRef<((visible: boolean) => void) | null>(null);
@@ -1280,69 +1356,74 @@ export function SessionsView() {
           showInternalMessages={showInternalMessages}
           onToggleInternalMessages={toggleInternalMessages}
         />
-        <div className={cn('rv-rs__body', liveChatEndpoint && 'rv-rs__body--chat-only')}>
-          <section className="rv-rs__chat">
-            {liveChatEndpoint ? (
-              <LiveSessionChat
-                chatEndpoint={liveChatEndpoint}
-                sessionName={selectedRavn?.personaName ?? selectedSession.personaName}
-                showInternalMessages={showInternalMessages}
-                onInternalVisibilitySender={(sender) => {
-                  setInternalVisibilityRef.current = sender;
-                }}
-              />
-            ) : (
-              <>
-                <TranscriptToolbar filter={filter} onFilterChange={setFilter} />
-                <div
-                  className="rv-rs__scroll"
-                  ref={transcriptRef}
-                  role="log"
-                  aria-label="Session transcript"
-                >
-                  {messagesLoading ? (
-                    <div className="rv-rs__empty">loading transcript…</div>
-                  ) : messagesError ? (
-                    <div className="rv-rs__empty rv-rs__empty--error">
-                      failed to load transcript
-                    </div>
-                  ) : (
-                    <>
-                      {filteredEntries.map((entry) => (
-                        <TranscriptMessage
-                          key={entry.id}
-                          entry={entry}
-                          personaLabel={personaLabel}
-                          personaLetter={personaLetter}
-                          personaRole={personaRole}
-                        />
-                      ))}
-                      {selectedSession.status === 'running' && (
-                        <ActiveCursor
-                          personaLabel={personaLabel}
-                          personaLetter={personaLetter}
-                          personaRole={personaRole}
-                        />
-                      )}
-                    </>
-                  )}
-                </div>
-                <Composer session={selectedSession} />
-              </>
-            )}
-          </section>
+        <SessionSurfaceTabs activeTab={surfaceTab} onTabChange={setSurfaceTab} />
+        {surfaceTab === 'chat' ? (
+          <div className={cn('rv-rs__body', liveChatEndpoint && 'rv-rs__body--chat-only')}>
+            <section className="rv-rs__chat">
+              {liveChatEndpoint ? (
+                <LiveSessionChat
+                  chatEndpoint={liveChatEndpoint}
+                  sessionName={selectedRavn?.personaName ?? selectedSession.personaName}
+                  showInternalMessages={showInternalMessages}
+                  onInternalVisibilitySender={(sender) => {
+                    setInternalVisibilityRef.current = sender;
+                  }}
+                />
+              ) : (
+                <>
+                  <TranscriptToolbar filter={filter} onFilterChange={setFilter} />
+                  <div
+                    className="rv-rs__scroll"
+                    ref={transcriptRef}
+                    role="log"
+                    aria-label="Session transcript"
+                  >
+                    {messagesLoading ? (
+                      <div className="rv-rs__empty">loading transcript…</div>
+                    ) : messagesError ? (
+                      <div className="rv-rs__empty rv-rs__empty--error">
+                        failed to load transcript
+                      </div>
+                    ) : (
+                      <>
+                        {filteredEntries.map((entry) => (
+                          <TranscriptMessage
+                            key={entry.id}
+                            entry={entry}
+                            personaLabel={personaLabel}
+                            personaLetter={personaLetter}
+                            personaRole={personaRole}
+                          />
+                        ))}
+                        {selectedSession.status === 'running' && (
+                          <ActiveCursor
+                            personaLabel={personaLabel}
+                            personaLetter={personaLetter}
+                            personaRole={personaRole}
+                          />
+                        )}
+                      </>
+                    )}
+                  </div>
+                  <Composer session={selectedSession} />
+                </>
+              )}
+            </section>
 
-          {!liveChatEndpoint && (
-            <ContextSidebar
-              session={selectedSession}
-              ravn={selectedRavn}
-              budget={budget}
-              persona={persona}
-              entries={entries}
-              personaLabel={personaLabel}
-            />
-          )}
-        </div>
+            {!liveChatEndpoint && (
+              <ContextSidebar
+                session={selectedSession}
+                ravn={selectedRavn}
+                budget={budget}
+                persona={persona}
+                entries={entries}
+                personaLabel={personaLabel}
+              />
+            )}
+          </div>
+        ) : (
+          <SessionObservabilityPanel session={selectedSession} tab={surfaceTab} />
+        )}
       </main>
     </div>
   );

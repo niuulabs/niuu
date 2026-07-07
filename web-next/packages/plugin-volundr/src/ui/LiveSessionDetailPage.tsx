@@ -64,7 +64,16 @@ import { SessionTerminalLive } from './SessionTerminalLive';
 import { StructuredLogViewer } from './components/StructuredLogViewer';
 import './LiveSessionDetailPage.css';
 
-type SessionTab = 'chat' | 'terminal' | 'diffs' | 'files' | 'chronicles' | 'telemetry' | 'logs';
+export type LiveSessionTab =
+  | 'chat'
+  | 'terminal'
+  | 'diffs'
+  | 'files'
+  | 'chronicles'
+  | 'telemetry'
+  | 'logs';
+
+type SessionTab = LiveSessionTab;
 
 const ALL_TABS: Array<{ id: SessionTab; label: string; icon: typeof MessageSquareText }> = [
   { id: 'chat', label: 'Chat', icon: MessageSquareText },
@@ -1930,7 +1939,7 @@ function TelemetryMetricCard({
   );
 }
 
-function TelemetryTab({
+export function TelemetryTab({
   sessionId,
   session,
   runLabel,
@@ -2718,7 +2727,13 @@ function DeleteSessionDialog({
   );
 }
 
-function LiveLogsTab({ sessionId, volundr }: { sessionId: string; volundr: IVolundrService }) {
+export function LiveLogsTab({
+  sessionId,
+  volundr,
+}: {
+  sessionId: string;
+  volundr: IVolundrService;
+}) {
   const [level, setLevel] = useState('DEBUG');
   const requestKey = `${sessionId}:${level}`;
   const [logState, setLogState] = useState<{
@@ -3496,23 +3511,32 @@ function LiveDiffsTab({ chatEndpoint }: { chatEndpoint: string | null }) {
 export function LiveSessionDetailPage({
   sessionId,
   readOnly = false,
+  initialTab = 'chat',
 }: {
   sessionId: string;
   readOnly?: boolean;
   initialTab?: SessionTab;
 }) {
-  return <LiveSessionDetailPageInner key={sessionId} sessionId={sessionId} readOnly={readOnly} />;
+  return (
+    <LiveSessionDetailPageInner
+      key={sessionId}
+      sessionId={sessionId}
+      readOnly={readOnly}
+      initialTab={initialTab}
+    />
+  );
 }
 
 function LiveSessionDetailPageInner({
   sessionId,
   readOnly = false,
+  initialTab = 'chat',
 }: {
   sessionId: string;
   readOnly?: boolean;
   initialTab?: SessionTab;
 }) {
-  const [activeTab, setActiveTab] = useState<SessionTab>('chat');
+  const [activeTab, setActiveTab] = useState<SessionTab>(initialTab);
   const [tabWasManuallySelected, setTabWasManuallySelected] = useState(false);
   const [actionBusy, setActionBusy] = useState<
     'start' | 'stop' | 'archive' | 'restore' | 'delete' | null

@@ -577,6 +577,9 @@ importers:
       '@niuulabs/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk
+      '@niuulabs/plugin-volundr':
+        specifier: workspace:*
+        version: link:../plugin-volundr
       '@niuulabs/query':
         specifier: workspace:*
         version: link:../query

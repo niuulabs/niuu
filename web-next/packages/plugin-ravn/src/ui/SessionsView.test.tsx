@@ -22,6 +22,15 @@ vi.mock('@niuulabs/ui', async (importOriginal) => {
   return { ...actual, useSkuldChat: useSkuldChatMock };
 });
 
+vi.mock('@niuulabs/plugin-volundr', () => ({
+  TelemetryTab: ({ sessionId }: { sessionId: string }) => (
+    <div data-testid="volundr-trace-tab">trace {sessionId}</div>
+  ),
+  LiveLogsTab: ({ sessionId }: { sessionId: string }) => (
+    <div data-testid="volundr-logs-tab">logs {sessionId}</div>
+  ),
+}));
+
 function makeChatState(overrides: Record<string, unknown> = {}) {
   return {
     messages: [],
@@ -98,6 +107,13 @@ function servicesWith(sessionStream: ISessionStream) {
     'ravn.ravens': createMockRavenStream(),
     'ravn.personas': createMockPersonaStore(),
     'ravn.budget': createMockBudgetStream(),
+  };
+}
+
+function servicesWithVolundr(sessionStream: ISessionStream) {
+  return {
+    ...servicesWith(sessionStream),
+    volundr: {},
   };
 }
 
@@ -278,6 +294,21 @@ describe('SessionsView — live chat', () => {
     expect(screen.queryByTestId('sessions-composer')).not.toBeInTheDocument();
     expect(screen.queryByRole('log', { name: /session transcript/i })).not.toBeInTheDocument();
     expect(screen.queryByTestId('sessions-context')).not.toBeInTheDocument();
+  });
+
+  it('mounts Volundr trace and logs tabs for the selected live session', async () => {
+    const session = liveRunningSession();
+    render(<SessionsView />, {
+      wrapper: wrap(servicesWithVolundr(singleSessionStream(session))),
+    });
+
+    expect(await screen.findByTestId('sessions-live-chat')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: /trace/i }));
+    expect(await screen.findByTestId('volundr-trace-tab')).toHaveTextContent(session.id);
+
+    fireEvent.click(screen.getByRole('tab', { name: /logs/i }));
+    expect(await screen.findByTestId('volundr-logs-tab')).toHaveTextContent(session.id);
   });
 
   it('uses the live resident persona for header metadata and emissions', async () => {

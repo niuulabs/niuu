@@ -327,6 +327,61 @@
   color: #dd6e60;
 }
 
+.rv-rs__surface-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 42px;
+  padding: 0 28px;
+  border-bottom: 1px solid rgba(156, 164, 177, 0.12);
+  background: #121318;
+}
+
+.rv-rs__surface-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: #8992a0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.rv-rs__surface-tab:hover {
+  color: #dbe2ec;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.rv-rs__surface-tab--active {
+  border-color: rgba(125, 211, 252, 0.42);
+  background: rgba(56, 189, 248, 0.12);
+  color: #c8ecff;
+}
+
+.rv-rs__surface-tab-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+}
+
+.rv-rs__observability-panel {
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  background: #090a0d;
+}
+
+.rv-rs__observability-panel--trace {
+  overflow: auto;
+}
+
 .rv-rs__body {
   display: grid;
   min-height: 0;

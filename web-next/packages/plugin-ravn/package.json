@@ -35,6 +35,7 @@
   "dependencies": {
     "@niuulabs/domain": "workspace:*",
     "@niuulabs/plugin-sdk": "workspace:*",
+    "@niuulabs/plugin-volundr": "workspace:*",
     "@niuulabs/query": "workspace:*",
     "@niuulabs/shell": "workspace:*",
     "@niuulabs/ui": "workspace:*",

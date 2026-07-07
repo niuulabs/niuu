@@ -121,6 +121,12 @@ export { FileViewer } from './ui/FileTree/FileViewer';
 export type { FileViewerProps } from './ui/FileTree/FileViewer';
 export { SessionDetailPage } from './ui/SessionDetailPage';
 export type { SessionDetailPageProps, SessionTab } from './ui/SessionDetailPage';
+export {
+  LiveSessionDetailPage,
+  LiveLogsTab,
+  TelemetryTab,
+  type LiveSessionTab,
+} from './ui/LiveSessionDetailPage';
 export { SessionsPage } from './ui/SessionsPage';
 export { ForgePage } from './ui/ForgePage';
 export { StructuredLogViewer } from './ui/components/StructuredLogViewer';
