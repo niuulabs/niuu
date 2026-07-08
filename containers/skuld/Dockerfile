@@ -55,6 +55,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     git \
+    iproute2 \
     jq \
     tmux \
     vim \
@@ -96,7 +97,9 @@ RUN cd /opt/npm-bootstrap \
 # Create app user with UID 1000 (matches helm chart runAsUser)
 RUN existing=$(getent passwd 1000 | cut -d: -f1) && \
     [ -n "$existing" ] && userdel -r "$existing" || true && \
-    useradd -m -s /bin/bash -u 1000 skuld
+    useradd -m -s /bin/bash -u 1000 skuld && \
+    groupadd -r sandbox && \
+    useradd -m -s /bin/bash -g sandbox sandbox
 
 # Copy the pre-built venv from builder.
 ENV VIRTUAL_ENV=/opt/venv
@@ -110,6 +113,11 @@ RUN chmod +x /app/entrypoint.sh
 # Copy svc CLI tool
 COPY containers/skuld/svc /usr/local/bin/svc
 RUN chmod +x /usr/local/bin/svc
+
+# OpenShell local Docker proof bootstrap: starts the installed broker and exits
+# after its health endpoint is ready, leaving the sandbox resident.
+COPY scripts/openshell-run-installed-skuld.sh /usr/local/bin/openshell-run-installed-skuld
+RUN chmod +x /usr/local/bin/openshell-run-installed-skuld
 
 # Set working directory
 WORKDIR /app

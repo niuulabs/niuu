@@ -1,22 +1,24 @@
 # NVIDIA OpenShell as a Forge Session Runtime
 
-Status: **proposal — not implemented**. Research notes and integration path for
-running Forge sessions inside NVIDIA OpenShell sandboxes as an alternative to
-the current mini-mode local-process runtime.
+Status: **local adapter implemented**. Volundr can select
+`OpenShellPodManager` through the existing dynamic `pod_manager.adapter`
+configuration and create one OpenShell sandbox per Forge session. The current
+implementation uses the OpenShell CLI as a narrow boundary because the local
+gateway API is not yet documented as a stable public SDK.
 
 ## What OpenShell is
 
 [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) is an open-source
 (Apache-2.0, Rust) sandboxed runtime for autonomous AI agents. Alpha software —
-v0.0.76 as of 2026-07, self-described "proof-of-life, single-player mode".
+v0.0.78 as of 2026-07, self-described "proof-of-life, single-player mode".
 
 Components:
 
-- **Gateway** — control plane (local daemon on `:18080`, or in-cluster via
+- **Gateway** — control plane (package-managed local service, or in-cluster via
   Helm). Owns sandbox lifecycle, policy delivery, credential mapping,
   inference routing. Driven via the `openshell` CLI (gRPC/HTTP under the
-  hood; **no public API docs, no Python SDK** — the CLI with `-o json` is the
-  stable programmatic surface today).
+  hood; **no public API docs, no Python SDK** — the CLI is the stable
+  programmatic surface today, using JSON output where supported).
 - **Sandbox + supervisor** — each sandbox runs a supervisor as PID 1 that
   dials *outbound* to the gateway, then launches the agent as a restricted
   child process. No inbound reachability needed from gateway to sandbox.
@@ -43,16 +45,17 @@ Agents supported unmodified: Claude Code (full policy coverage), OpenCode
 CLI surface relevant to us:
 
 ```bash
-openshell gateway add http://127.0.0.1:18080 --local --name local
+openshell status
+openshell gateway add http://127.0.0.1:17670 --local --name local
 openshell sandbox create --name forge-<id> --from <image> \
   --cpu 2 --memory 4Gi --env K=V --label session=<id> \
   --driver-config-json '{"docker":{"mounts":[{"type":"bind","source":"...","target":"/sandbox/work"}]}}' \
   -- <command>
 openshell sandbox list -o json          # lifecycle: Provisioning → Ready → Error → Deleting
-openshell sandbox get forge-<id> -o json
+openshell sandbox get forge-<id>
 openshell policy set forge-<id> --policy policy.yaml   # dynamic sections hot-reload
 openshell sandbox exec -n forge-<id> --tty -- bash
-openshell forward start <port> forge-<id>              # host port → sandbox port
+openshell forward service forge-<id> --target-port <port> --local 127.0.0.1:<port>
 openshell service expose forge-<id> <port>
 openshell sandbox upload / download                    # workspace-scoped file transfer
 openshell logs forge-<id> --source sandbox
@@ -100,11 +103,11 @@ A fourth `PodManager` adapter. Per session, it:
 2. `openshell sandbox create --name forge-<session_id> --from <skuld image>
    --label session=<id> ... -- skuld` with the workspace bind-mounted (or
    volume-mounted) at the workspace path,
-3. `openshell forward start <sdk_port> forge-<session_id>` (or
-   `service expose`) so the niuu host can reach Skuld's WebSocket exactly as
-   it does today via `/s/{session_id}/session`,
+3. `openshell forward service forge-<session_id> --target-port <sdk_port>`
+   so the niuu host can reach Skuld's WebSocket exactly as it does today via
+   `/s/{session_id}/session`,
 4. maps `status()`/`wait_for_ready()` onto
-   `openshell sandbox get -o json` lifecycle phases
+   `openshell sandbox list -o json` lifecycle phases
    (Provisioning → Ready → Error → Deleting),
 5. `stop()` → `openshell sandbox delete`.
 
@@ -120,7 +123,7 @@ niuu host :8080 ──ws──► forwarded port ──► [OpenShell sandbox]
                                                  └─ claude / codex / opencode CLI
                                              egress ──► policy proxy ──► allowlisted hosts
                                              LLM calls ► inference.local ──► bifrost
-[openshell gateway :18080] ◄──outbound──── supervisor control session
+[openshell gateway] ◄──outbound──── supervisor control session
 ```
 
 Wiring follows `.claude/rules/dynamic-adapters.md` — no new mode enum, just
@@ -128,8 +131,8 @@ config:
 
 ```yaml
 pod_manager:
-  adapter: "volundr.adapters.outbound.openshell_pod_manager.OpenShellPodManager"
-  gateway_url: "http://127.0.0.1:18080"
+  adapter: "volundr.adapters.outbound.openshell.OpenShellPodManager"
+  gateway_url: ""                 # empty = use active OpenShell CLI gateway
   sandbox_image: "ghcr.io/niuulabs/skuld:<tag>"
   workspaces_dir: "~/.niuu/workspaces"
   mount_mode: "bind"            # bind | volume | upload
@@ -187,7 +190,7 @@ default.
 
 ### Phase 0 — spike (no code)
 
-Manual validation on macOS + Linux; kills the proposal cheaply if any fail:
+Manual validation on macOS + Linux; keeps the runtime cheap to disprove:
 
 1. Install (`uv tool install openshell`), gateway up, Docker driver,
    `enable_bind_mounts = true`.
@@ -208,17 +211,240 @@ Manual validation on macOS + Linux; kills the proposal cheaply if any fail:
 7. macOS specifics: Docker Desktop vs `podman machine` vs libkrun MicroVM;
    bind-mount I/O throughput across the VM boundary.
 
+## Local developer workflow
+
+OpenShell mode is opt-in. Mini mode remains the default for dependency-free
+local development.
+
+1. Start the OpenShell gateway locally and make sure the Docker/Podman driver
+   allows bind mounts for `~/.niuu/workspaces`.
+
+   The Docker driver proof used OpenShell 0.0.78 with a local plaintext
+   gateway config shaped like this:
+
+   ```toml
+   [openshell]
+   version = 1
+
+   [openshell.gateway]
+   bind_address = "127.0.0.1:17670"
+   log_level = "info"
+   compute_drivers = ["docker"]
+   disable_tls = true
+   enable_loopback_service_http = true
+
+   [openshell.gateway.auth]
+   allow_unauthenticated_users = true
+
+   [openshell.gateway.gateway_jwt]
+   signing_key_path = "/tmp/openshell/tls/jwt/signing.pem"
+   public_key_path = "/tmp/openshell/tls/jwt/public.pem"
+   kid_path = "/tmp/openshell/tls/jwt/kid"
+   gateway_id = "openshell-docker-dev"
+   ttl_secs = 0
+
+   [openshell.drivers.docker]
+   enable_bind_mounts = true
+   ```
+
+   For the macOS MicroVM driver, the host also needs `e2fsprogs` so
+   `mkfs.ext4` exists at the Homebrew keg path expected by OpenShell:
+
+   ```bash
+   brew install e2fsprogs
+   ```
+
+2. Start Volundr with the OpenShell PodManager:
+
+   ```bash
+   ./start-dev --openshell
+   ```
+
+   This sets the CLI config mode to `openshell`, exports:
+
+   ```yaml
+   pod_manager:
+     adapter: "volundr.adapters.outbound.openshell.OpenShellPodManager"
+     kwargs:
+       gateway_url: ""     # empty = use active OpenShell CLI gateway
+       gateway_name: local
+       openshell_binary: "openshell"
+       sandbox_image: "ghcr.io/niuulabs/skuld:0.2.0"
+       workspaces_dir: "~/.niuu/workspaces"
+       state_file: "~/.niuu/openshell-forge-state.json"
+       sdk_port_start: 9200
+       forward_mode: service
+   ```
+
+   For a local image rebuilt from this checkout, the Docker proof command is:
+
+   ```bash
+   docker build -f containers/skuld/Dockerfile -t volundr-skuld:openshell-local .
+
+   NIUU_SERVER__HOST=127.0.0.1 \
+   NIUU_POD_MANAGER__SANDBOX_IMAGE=volundr-skuld:openshell-local \
+   NIUU_POD_MANAGER__SANDBOX_COMMAND=/usr/local/bin/openshell-run-installed-skuld \
+   NIUU_POD_MANAGER__FORWARD_MODE=service \
+     ./start-dev --openshell
+   ```
+
+   The local image can use either API-key credentials inherited from the
+   platform process (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`) or local CLI OAuth
+   state. CLI state is opt-in because it mounts local auth files into the
+   sandbox:
+
+   ```bash
+   NIUU_POD_MANAGER__SANDBOX_MOUNTS="$HOME/.codex:/home/sandbox/.codex,$HOME/.claude:/home/sandbox/.claude" \
+     ./start-dev --openshell
+   ```
+
+   For the macOS VM driver, or when validating this checkout before publishing
+   a new Skuld image, use OpenShell's upload path instead of a bind mount:
+
+   ```bash
+   NIUU_POD_MANAGER__SANDBOX_IMAGE=mcr.microsoft.com/devcontainers/python:3.12-bookworm \
+   NIUU_POD_MANAGER__MOUNT_WORKSPACE=false \
+   NIUU_POD_MANAGER__UPLOAD_WORKSPACE=true \
+   NIUU_POD_MANAGER__UPLOAD_WORKSPACE_TARGET=/sandbox/workspace \
+   NIUU_POD_MANAGER__SANDBOX_WORKSPACE=/sandbox/workspace/volundr \
+   NIUU_POD_MANAGER__COMMAND_TIMEOUT=1200 \
+   NIUU_POD_MANAGER__POLICY_FILE="$PWD/scripts/openshell-dev-bootstrap-policy.yaml" \
+   NIUU_POD_MANAGER__SANDBOX_COMMAND="/bin/sh /sandbox/workspace/volundr/scripts/openshell-run-skuld-from-workspace.sh" \
+     ./start-dev --openshell
+   ```
+
+   `scripts/openshell-run-skuld-from-workspace.sh` installs the uploaded repo
+   into a sandbox-local venv, installs the existing Codex/Claude npm tool
+   bundle when npm is available, starts Skuld in the background, and returns
+   only after Skuld's `/health` endpoint answers.
+
+   During local development, if that bootstrap script is not committed yet,
+   upload it explicitly and run it from a stable sandbox path:
+
+   ```bash
+   NIUU_POD_MANAGER__UPLOAD_WORKSPACE_TARGET=/sandbox/workspace \
+   NIUU_POD_MANAGER__SANDBOX_WORKSPACE=/sandbox/workspace/volundr \
+   NIUU_POD_MANAGER__SANDBOX_UPLOADS="$PWD/scripts/openshell-run-skuld-from-workspace.sh:/sandbox" \
+   NIUU_POD_MANAGER__SANDBOX_COMMAND="/bin/sh /sandbox/openshell-run-skuld-from-workspace.sh" \
+     ./start-dev --openshell
+   ```
+
+   OpenShell uploads directories into the destination directory using the
+   source basename. The example above therefore uploads the checkout to
+   `/sandbox/workspace/volundr` and sets Skuld's workspace path to that child.
+   On the local Docker driver, bind mounts are exposed through OpenShell's
+   `fakeowner` mount and may be read-only; use upload mode when the CLI needs
+   to write runtime state such as `.skuld-tools` or `.skuld`.
+
+3. Create one Claude-backed and one Codex-backed Forge session through the
+   ordinary Volundr API/UI launch flow:
+
+   - Claude: use `standard-claude` or any launch spec whose session definition
+     resolves to `broker.cliType: claude`.
+   - Codex: use `standard-codex` or any launch spec whose session definition
+     resolves to `broker.cliType: codex` / `codex-ws`.
+
+   Volundr still creates the session. The OpenShell adapter creates
+   `forge-<session_id>`, bind-mounts the workspace at `/sandbox/workspace`,
+   starts Skuld inside the sandbox, and forwards the Skuld port back to the
+   Volundr `/s/<session_id>/session` proxy endpoint.
+
+4. Inspect local sandboxes:
+
+   ```bash
+   openshell status
+   openshell sandbox list -o json
+   openshell sandbox get forge-<session_id>
+   openshell logs forge-<session_id> --source sandbox
+   ```
+
+5. Stop the stack and any OpenShell sandboxes tracked by this dev run:
+
+   ```bash
+   ./stop-dev
+   ```
+
+### Local proof notes
+
+The local adapter was exercised successfully on 2026-07-08 against OpenShell
+0.0.78 on macOS with a manually started plaintext Docker gateway. The gateway
+had sandbox JWT auth configured and `enable_bind_mounts = true` under
+`[openshell.drivers.docker]`.
+
+The proof used a locally rebuilt Skuld image:
+
+```bash
+docker build -f containers/skuld/Dockerfile -t volundr-skuld:openshell-local .
+```
+
+That image contains the OpenShell compatibility pieces the published
+`ghcr.io/niuulabs/skuld:0.2.0` image did not yet have during the spike:
+`iproute2`, a `sandbox` user/group, command-aware entrypoint behavior, and
+`/usr/local/bin/openshell-run-installed-skuld`.
+
+This smoke created one Codex-backed and one Claude-backed Forge session through
+the ordinary Volundr API:
+
+```bash
+NIUU_SERVER__HOST=127.0.0.1 \
+NIUU_POD_MANAGER__SANDBOX_IMAGE=volundr-skuld:openshell-local \
+NIUU_POD_MANAGER__SANDBOX_COMMAND=/usr/local/bin/openshell-run-installed-skuld \
+NIUU_POD_MANAGER__FORWARD_MODE=service \
+  scripts/openshell-volundr-smoke.sh --cleanup
+```
+
+Result:
+
+```text
+Codex session running:
+  session_id: 6d9e9152-810b-481a-9703-9a38a27fcd29
+  sandbox: forge-6d9e9152-810b-481a-9703-9a38a27fcd29
+Claude session running:
+  session_id: 7fcd1e99-67a0-476f-b159-2f6ee7fa6225
+  sandbox: forge-7fcd1e99-67a0-476f-b159-2f6ee7fa6225
+
+OpenShell Volundr smoke passed.
+```
+
+OpenShell reported both sandboxes as `Ready` with Volundr labels:
+`app.kubernetes.io/managed-by=volundr`,
+`volundr.niuu.io/session=<session_id>`, and
+`volundr.niuu.io/runtime=codex-ws|claude`. The `--cleanup` path stopped
+Volundr and removed all OpenShell sandboxes.
+
+The macOS VM/upload path was also investigated. VM sandbox creation worked
+with a base Python image after installing `e2fsprogs`, and create-time
+`policy_file` attachment works. The upload bootstrap still hit OpenShell VM
+proxy restrictions while fetching Python build dependencies, so Docker is the
+current local proof path and the rebuilt Skuld image is the shortest path to a
+VM proof after publishing.
+
 ### Phase 1 — `OpenShellPodManager` adapter
 
-- New adapter in `src/volundr/adapters/outbound/openshell_pod_manager.py`,
-  shelling out to the `openshell` CLI with `-o json` (pin the version;
-  CLI contract is the API until the gateway API is documented).
+Implemented in `src/volundr/adapters/outbound/openshell.py`:
+
+- `OpenShellClient` wraps the CLI commands: `gateway add`, `sandbox create`,
+  `sandbox get`, `forward start` / `forward service`, and `sandbox delete`.
+- `OpenShellPodManager` implements `initial_chat_endpoint`, `start`, `stop`,
+  `status`, and `wait_for_ready`.
+- `wait_for_ready` requires both OpenShell sandbox readiness and Skuld broker
+  health on the forwarded `/health` endpoint by default.
+- VM drivers can use OpenShell's `--upload` path via `upload_workspace: true`;
+  Docker/Podman remain on bind mounts by default.
+- Sandbox create can pass a custom OpenShell policy with `policy_file`.
+- Session definitions still choose the agent runtime through Skuld broker env:
+  Claude sessions set `SKULD__CLI_TYPE=claude`; Codex sessions set
+  `SKULD__CLI_TYPE=codex` / `codex-ws`.
+- State is tracked in `~/.niuu/openshell-forge-state.json` with
+  `managed_by: openshell`, separate from mini mode's local process state.
+- Unit tests use a fake OpenShell client; no Docker, Podman, or gateway is
+  required for the test suite.
+
+Remaining hardening work:
+
 - Static default policy: workspace read-write, `/usr` `/lib` `/etc`
   read-only, non-root user, network audit-mode allowlist seeded with
   Anthropic/OpenAI endpoints + niuu host + git remotes.
-- Config via the dynamic-adapter pattern (above); mini mode default
-  untouched. Tests mock the CLI boundary (no Docker in tests, per
-  `.claude/rules/database.md` spirit).
 - Session labels (`--label session=<id> user=<id>`) for reconciliation on
   restart, mirroring `state_file` recovery in `LocalProcessPodManager`.
 
@@ -259,7 +485,7 @@ Manual validation on macOS + Linux; kills the proposal cheaply if any fail:
 
 ## Risks and open questions
 
-- **Alpha software.** v0.0.76, "proof-of-life". Pin the version, wrap all CLI
+- **Alpha software.** v0.0.78, "proof-of-life". Pin the version, wrap all CLI
   parsing in one module, expect breaking changes. Do not put it in the
   default path yet.
 - **No documented gateway API / SDK.** Shelling out to the CLI is the

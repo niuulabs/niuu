@@ -82,6 +82,7 @@ nav:
       - Events: reference/events.md
   - Operations:
       - Local development: operations/local-development.md
+      - OpenShell runtime: operations/openshell-runtime.md
       - Kubernetes deployment: operations/kubernetes-deployment.md
       - Production checklist: operations/production-checklist.md
       - Migrations: operations/migrations.md

@@ -282,6 +282,53 @@ class TestDynamicUpCallback:
         startup.assert_awaited_once()
         shutdown.assert_awaited_once_with(manager)
 
+    def test_up_callback_sets_openshell_runtime_overrides(self) -> None:
+        service_defs = {"volundr": _make_svc_def("volundr")}
+        manager = MagicMock()
+        settings = CLISettings(
+            mode="openshell",
+            pod_manager=PodManagerConfig(
+                adapter="volundr.adapters.outbound.openshell.OpenShellPodManager",
+                gateway_url="",
+                sandbox_image="skuld:test",
+                workspaces_dir="~/.niuu/workspaces",
+                sdk_port_start=9200,
+            ),
+        )
+        up_fn = _build_up_callback(service_defs, manager, settings)
+
+        fake_event = MagicMock()
+        fake_event.wait = AsyncMock(side_effect=asyncio.CancelledError())
+        startup = AsyncMock()
+        shutdown = AsyncMock()
+
+        with (
+            patch("cli.commands.platform._startup", startup),
+            patch("cli.commands.platform._shutdown", shutdown),
+            patch("cli.commands.platform.asyncio.Event", return_value=fake_event),
+            patch("cli.commands.platform.asyncio.run", side_effect=asyncio.run),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            up_fn(
+                skip_preflight=True,
+                all=False,
+                no_web=False,
+                host_profile="full",
+                mounts="",
+                volundr=True,
+            )
+
+            assert os.environ["LOCAL_MOUNTS__ENABLED"] == "true"
+            assert os.environ["LOCAL_MOUNTS__MINI_MODE"] == "true"
+            assert os.environ["POD_MANAGER__ADAPTER"] == settings.pod_manager.adapter
+            assert os.environ["POD_MANAGER__KWARGS__GATEWAY_URL"] == ""
+            assert os.environ["POD_MANAGER__KWARGS__SANDBOX_IMAGE"] == "skuld:test"
+            assert os.environ["POD_MANAGER__KWARGS__SDK_PORT_START"] == "9200"
+            assert os.environ["GIT__VALIDATE_ON_CREATE"] == "false"
+
+        startup.assert_awaited_once()
+        shutdown.assert_awaited_once_with(manager)
+
     def test_up_callback_applies_workspaces_dir_override_in_mini_mode(self) -> None:
         service_defs = {"volundr": _make_svc_def("volundr")}
         manager = MagicMock()
@@ -325,7 +372,7 @@ class TestDynamicUpCallback:
         settings = CLISettings(mode="cluster")
         up_fn = _build_up_callback(service_defs, manager, settings)
 
-        with pytest.raises(typer.BadParameter, match="only supported in mini mode"):
+        with pytest.raises(typer.BadParameter, match="only supported in mini or openshell mode"):
             up_fn(
                 skip_preflight=True,
                 all=False,
@@ -506,6 +553,13 @@ class TestBuildInitConfig:
         assert "direct_k8s" in config["pod_manager"]["adapter"]
         assert config["pod_manager"]["namespace"] == "volundr"
 
+    def test_openshell_config(self) -> None:
+        config = _build_init_config("openshell")
+        assert config["mode"] == "openshell"
+        assert "openshell.OpenShellPodManager" in config["pod_manager"]["adapter"]
+        assert config["pod_manager"]["gateway_url"] == ""
+        assert config["pod_manager"]["sdk_port_start"] == 9200
+
     def test_cluster_config_uses_pinned_image_version(self) -> None:
         """skuld_image must use a pinned version, not :latest."""
         config = _build_init_config("cluster")
@@ -616,17 +670,31 @@ class TestPromptModeSelection:
             mode = _prompt_mode_selection()
         assert mode == "mini"
 
-    def test_choice_2_returns_cluster(self) -> None:
+    def test_choice_2_returns_openshell(self) -> None:
         from unittest.mock import patch
 
         with patch("cli.commands.platform.typer.prompt", return_value="2"):
             mode = _prompt_mode_selection()
-        assert mode == "cluster"
+        assert mode == "openshell"
 
     def test_choice_cluster_string_returns_cluster(self) -> None:
         from unittest.mock import patch
 
         with patch("cli.commands.platform.typer.prompt", return_value="cluster"):
+            mode = _prompt_mode_selection()
+        assert mode == "cluster"
+
+    def test_choice_openshell_string_returns_openshell(self) -> None:
+        from unittest.mock import patch
+
+        with patch("cli.commands.platform.typer.prompt", return_value="openshell"):
+            mode = _prompt_mode_selection()
+        assert mode == "openshell"
+
+    def test_choice_cluster_number_returns_cluster(self) -> None:
+        from unittest.mock import patch
+
+        with patch("cli.commands.platform.typer.prompt", return_value="3"):
             mode = _prompt_mode_selection()
         assert mode == "cluster"
 
@@ -676,6 +744,16 @@ class TestConfigModeSwitching:
         )
         assert "DirectK8sPodManager" in settings.pod_manager.adapter
         assert settings.mode == "cluster"
+
+    def test_openshell_mode_adapter(self) -> None:
+        settings = CLISettings(
+            mode="openshell",
+            pod_manager=PodManagerConfig(
+                adapter="volundr.adapters.outbound.openshell.OpenShellPodManager",
+            ),
+        )
+        assert "OpenShellPodManager" in settings.pod_manager.adapter
+        assert settings.mode == "openshell"
 
 
 class TestPlatformStatusClusterInfo:

@@ -1,0 +1,72 @@
+version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /usr
+    - /lib
+    - /lib64
+    - /etc
+    - /proc
+    - /dev/urandom
+  read_write:
+    - /sandbox
+    - /tmp
+    - /dev/null
+landlock:
+  compatibility: best_effort
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
+network_policies:
+  python_package_indexes:
+    name: python-package-indexes
+    endpoints:
+      - host: pypi.org
+        port: 443
+        enforcement: audit
+      - host: files.pythonhosted.org
+        port: 443
+        enforcement: audit
+    binaries:
+      - path: /usr/local/bin/python*
+      - path: /usr/bin/python*
+      - path: /tmp/skuld-venv/bin/python*
+      - path: /tmp/skuld-venv/bin/pip*
+  npm_registry:
+    name: npm-registry
+    endpoints:
+      - host: registry.npmjs.org
+        port: 443
+        enforcement: audit
+    binaries:
+      - path: /usr/bin/npm
+      - path: /usr/bin/node
+      - path: /usr/local/bin/npm
+      - path: /usr/local/bin/node
+  llm_endpoints:
+    name: llm-endpoints
+    endpoints:
+      - host: chatgpt.com
+        port: 443
+        protocol: websocket
+        access: read-write
+        enforcement: audit
+      - host: api.openai.com
+        port: 443
+        enforcement: audit
+      - host: api.anthropic.com
+        port: 443
+        enforcement: audit
+      - host: claude.ai
+        port: 443
+        enforcement: audit
+    binaries:
+      - path: /usr/local/bin/codex
+      - path: /usr/bin/codex
+      - path: /usr/local/bin/claude
+      - path: /usr/bin/claude
+      - path: /opt/venv/bin/python
+      - path: /opt/venv/bin/python*
+      - path: /opt/venv/lib/python*/site-packages/claude_agent_sdk/_bundled/claude
+      - path: /usr/bin/curl
+      - path: /usr/local/bin/curl
