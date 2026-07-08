@@ -8,6 +8,10 @@ echo "==== Skuld Entrypoint ===="
 echo "Session ID: ${SESSION_ID:-unknown}"
 echo "Workspace: ${WORKSPACE_DIR:-/volundr/sessions/${SESSION_ID}/workspace}"
 
+if [ "$#" -gt 0 ]; then
+    exec "$@"
+fi
+
 # Set defaults
 export SESSION_ID="${SESSION_ID:-unknown}"
 export WORKSPACE_DIR="${WORKSPACE_DIR:-/volundr/sessions/${SESSION_ID}/workspace}"

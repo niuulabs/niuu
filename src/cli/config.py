@@ -184,7 +184,7 @@ class CLISettings(BaseSettings):
 
     mode: str = Field(
         default="mini",
-        description="Operating mode: 'mini' (local) or 'cluster'.",
+        description="Operating mode: 'mini', 'openshell', or 'cluster'.",
     )
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)

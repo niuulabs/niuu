@@ -233,19 +233,19 @@ def _build_up_callback(
         workspaces_dir = str(kwargs.pop("workspaces_dir", "") or "").strip()
         effective_settings = settings
         if workspaces_dir:
-            if settings.mode != "mini":
+            if settings.mode not in {"mini", "openshell"}:
                 raise typer.BadParameter(
-                    "--workspaces-dir is only supported in mini mode",
+                    "--workspaces-dir is only supported in mini or openshell mode",
                     param_hint="workspaces-dir",
                 )
             effective_settings = settings.model_copy(deep=True)
             effective_settings.pod_manager.workspaces_dir = workspaces_dir
 
-        # In mini mode, enable local mounts and mini_mode feature flag.
-        if effective_settings.mode == "mini":
+        # Host-local runtimes need local mount support and dynamic PodManager env.
+        if effective_settings.mode in {"mini", "openshell"}:
             os.environ.setdefault("LOCAL_MOUNTS__ENABLED", "true")
             os.environ.setdefault("LOCAL_MOUNTS__MINI_MODE", "true")
-            for key, value in _resolve_mini_pod_manager_env(effective_settings).items():
+            for key, value in _resolve_local_pod_manager_env(effective_settings).items():
                 os.environ[key] = value
 
         skip_preflight: bool = bool(kwargs.pop("skip_preflight", False))
@@ -349,6 +349,7 @@ def _build_up_callback(
 
 MINI_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.local_process.LocalProcessPodManager"
 CLUSTER_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.direct_k8s_pod_manager.DirectK8sPodManager"
+OPENSHELL_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.openshell.OpenShellPodManager"
 
 CLUSTER_POD_MANAGER_DEFAULTS: dict[str, Any] = {
     "adapter": CLUSTER_POD_MANAGER_ADAPTER,
@@ -365,9 +366,20 @@ MINI_POD_MANAGER_DEFAULTS: dict[str, Any] = {
     "claude_binary": "claude",
 }
 
+OPENSHELL_POD_MANAGER_DEFAULTS: dict[str, Any] = {
+    "adapter": OPENSHELL_POD_MANAGER_ADAPTER,
+    "gateway_url": "",
+    "gateway_name": "local",
+    "openshell_binary": "openshell",
+    "sandbox_image": "ghcr.io/niuulabs/skuld:0.2.0",
+    "workspaces_dir": "~/.niuu/workspaces",
+    "state_file": "~/.niuu/openshell-forge-state.json",
+    "sdk_port_start": 9200,
+}
 
-def _resolve_mini_pod_manager_env(settings: CLISettings) -> dict[str, str]:
-    """Build env overrides for Volundr mini-mode runtime configuration."""
+
+def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
+    """Build env overrides for Volundr host-local runtime configuration."""
     from pathlib import Path
 
     kwargs = dict(settings.pod_manager.adapter_kwargs())
@@ -386,12 +398,15 @@ def _resolve_mini_pod_manager_env(settings: CLISettings) -> dict[str, str]:
 
 
 def _prompt_mode_selection() -> str:
-    """Prompt the user for mini or cluster mode."""
+    """Prompt the user for mini, OpenShell, or cluster mode."""
     typer.echo("Select operating mode:")
     typer.echo("  [1] mini   — local processes, no cluster needed (default)")
-    typer.echo("  [2] cluster — session pods run in k3d/k3s cluster")
+    typer.echo("  [2] openshell — local OpenShell sandboxes")
+    typer.echo("  [3] cluster — session pods run in k3d/k3s cluster")
     choice = typer.prompt("Choice", default="1", show_default=False)
-    if choice.strip() in ("2", "cluster"):
+    if choice.strip() in ("2", "openshell"):
+        return "openshell"
+    if choice.strip() in ("3", "cluster"):
         return "cluster"
     return "mini"
 
@@ -402,6 +417,11 @@ def _build_init_config(mode: str) -> dict[str, Any]:
         return {
             "mode": "cluster",
             "pod_manager": dict(CLUSTER_POD_MANAGER_DEFAULTS),
+        }
+    if mode == "openshell":
+        return {
+            "mode": "openshell",
+            "pod_manager": dict(OPENSHELL_POD_MANAGER_DEFAULTS),
         }
     return {
         "mode": "mini",
@@ -460,6 +480,16 @@ def create_platform_commands(
             typer.echo("Cluster info:")
             typer.echo(f"  Namespace: {kwargs.get('namespace', 'volundr')}")
             typer.echo(f"  Kubeconfig: {kwargs.get('kubeconfig', '~/.kube/config')}")
+            typer.echo()
+        elif settings.mode == "openshell":
+            kwargs = settings.pod_manager.adapter_kwargs()
+            typer.echo("OpenShell info:")
+            binary = kwargs.get("openshell_binary", "openshell")
+            typer.echo(f"  Binary: {binary}")
+            gateway = kwargs.get("gateway_url") or "(active openshell gateway)"
+            typer.echo(f"  Gateway: {gateway}")
+            image = kwargs.get("sandbox_image", "ghcr.io/niuulabs/skuld:0.2.0")
+            typer.echo(f"  Sandbox image: {image}")
             typer.echo()
 
         plugins = registry.plugins

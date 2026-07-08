@@ -8,6 +8,7 @@ PLATFORM_PID_FILE="${RUN_DIR}/platform.pid"
 PG_CTL="${ROOT_DIR}/build/pginstall/bin/pg_ctl"
 PG_DATA="${HOME}/.niuu/pgdata"
 PLATFORM_LOG="${LOG_DIR}/platform.log"
+RUNTIME_MODE="${RUNTIME_MODE:-mini}"
 # Auto-detect a LAN-routable IP so the platform binds to (and bakes into URLs)
 # an address that browsers on this machine *and* on the LAN can reach. Override
 # by exporting NIUU_SERVER__HOST before invoking this script.
@@ -44,12 +45,19 @@ mkdir -p "${LOG_DIR}"
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0")
+Usage: $(basename "$0") [--openshell]
+
+Options:
+  --openshell  Start Volundr with the local OpenShell PodManager adapter.
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --openshell)
+      RUNTIME_MODE="openshell"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -245,7 +253,21 @@ fi
 HOST_PROFILE="full"
 export ROOT_DIR PLATFORM_LOG PLATFORM_PID_FILE UI_VARIANT HOST_PROFILE
 
-echo "Starting platform on ${NIUU_SERVER__HOST}:8080 (host-profile=${HOST_PROFILE})..."
+if [[ "${RUNTIME_MODE}" == "openshell" ]]; then
+  export NIUU_MODE="openshell"
+  export NIUU_POD_MANAGER__ADAPTER="volundr.adapters.outbound.openshell.OpenShellPodManager"
+  if [[ -n "${NIUU_POD_MANAGER__GATEWAY_URL:-}" ]]; then
+    export NIUU_POD_MANAGER__GATEWAY_URL
+  fi
+  export NIUU_POD_MANAGER__GATEWAY_NAME="${NIUU_POD_MANAGER__GATEWAY_NAME:-local}"
+  export NIUU_POD_MANAGER__SANDBOX_IMAGE="${NIUU_POD_MANAGER__SANDBOX_IMAGE:-ghcr.io/niuulabs/skuld:0.2.0}"
+  export NIUU_POD_MANAGER__WORKSPACES_DIR="${NIUU_POD_MANAGER__WORKSPACES_DIR:-${HOME}/.niuu/workspaces}"
+  export NIUU_POD_MANAGER__STATE_FILE="${NIUU_POD_MANAGER__STATE_FILE:-${HOME}/.niuu/openshell-forge-state.json}"
+  export NIUU_POD_MANAGER__SDK_PORT_START="${NIUU_POD_MANAGER__SDK_PORT_START:-9200}"
+  export NIUU_POD_MANAGER__FORWARD_MODE="${NIUU_POD_MANAGER__FORWARD_MODE:-service}"
+fi
+
+echo "Starting platform on ${NIUU_SERVER__HOST}:8080 (host-profile=${HOST_PROFILE}, runtime=${RUNTIME_MODE})..."
 python3 - <<'PY'
 import os
 import subprocess

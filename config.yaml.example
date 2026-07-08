@@ -64,6 +64,38 @@ pod_manager:
     chat_path: /session
     code_path: /
 
+# Local OpenShell runtime (opt-in; also available via ./start-dev --openshell):
+# pod_manager:
+#   adapter: "volundr.adapters.outbound.openshell.OpenShellPodManager"
+#   kwargs:
+#     # Empty = use the active OpenShell CLI gateway. Set this for a container gateway.
+#     gateway_url: ""
+#     gateway_name: local
+#     openshell_binary: "openshell"
+#     sandbox_image: "ghcr.io/niuulabs/skuld:0.2.0"
+#     workspaces_dir: "~/.niuu/workspaces"
+#     state_file: "~/.niuu/openshell-forge-state.json"
+#     sdk_port_start: 9200
+#     forward_mode: "service"
+#     require_broker_ready: true
+#     broker_health_path: "/health"
+#     # Docker proof path for a local image rebuilt from this checkout:
+#     # sandbox_image: "volundr-skuld:openshell-local"
+#     # sandbox_command: "/usr/local/bin/openshell-run-installed-skuld"
+#     # Optional local-only CLI auth mounts for Codex/Claude OAuth state.
+#     # Prefer OPENAI_API_KEY / ANTHROPIC_API_KEY env passthrough in automation.
+#     # sandbox_mounts: "~/.codex:/home/sandbox/.codex,~/.claude:/home/sandbox/.claude"
+#     # VM/upload proof path for running Skuld from this checkout:
+#     # sandbox_image: "mcr.microsoft.com/devcontainers/python:3.12-bookworm"
+#     # mount_workspace: false
+#     # upload_workspace: true
+#     # upload_workspace_target: "/sandbox/workspace"
+#     # sandbox_workspace: "/sandbox/workspace/volundr"
+#     # command_timeout: 1200
+#     # policy_file: "/local/path/openshell-dev-bootstrap-policy.yaml"
+#     # sandbox_command: "/bin/sh /sandbox/openshell-run-skuld-from-workspace.sh"
+#     # sandbox_uploads: "/local/path/openshell-run-skuld-from-workspace.sh:/sandbox"
+
 # Forge profiles (argument templates for workload instantiation)
 # Profiles define the base set of values assembled into session specs.
 profiles:

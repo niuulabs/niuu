@@ -8,6 +8,7 @@ PG_CTL="${ROOT_DIR}/build/pginstall/bin/pg_ctl"
 PG_DATA="${HOME}/.niuu/pgdata"
 PLATFORM_PORT="8080"
 FORGE_STATE_FILE="${HOME}/.niuu/forge-state.json"
+OPENSHELL_FORGE_STATE_FILE="${HOME}/.niuu/openshell-forge-state.json"
 
 stop_pid_file() {
   local pid_file="$1"
@@ -69,7 +70,7 @@ for sid, raw in data.items():
     state = str(raw.get("state") or raw.get("status") or "").lower()
     managed_by = str(raw.get("managed_by") or "local_process")
     pid = raw.get("pid")
-    if state not in {"starting", "running"}:
+    if state not in {"starting", "running", "failed"}:
         continue
     if managed_by != "local_process":
         continue
@@ -153,6 +154,99 @@ PY
 }
 
 stop_forge_state_processes "${FORGE_STATE_FILE}"
+
+stop_openshell_sandboxes() {
+  local state_file="$1"
+
+  if [[ ! -f "${state_file}" ]]; then
+    return 0
+  fi
+
+  local records
+  if ! records="$(python3 - "${state_file}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state_file = Path(sys.argv[1])
+try:
+    data = json.loads(state_file.read_text(encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+
+if not isinstance(data, dict):
+    sys.exit(0)
+
+for sid, raw in data.items():
+    if not isinstance(raw, dict):
+        continue
+    state = str(raw.get("state") or raw.get("status") or "").lower()
+    managed_by = str(raw.get("managed_by") or "openshell")
+    sandbox_name = str(raw.get("sandbox_name") or raw.get("name") or "")
+    if state not in {"starting", "running", "failed"}:
+        continue
+    if managed_by != "openshell" or not sandbox_name:
+        continue
+    print(f"{sid}\t{sandbox_name}")
+PY
+  )"; then
+    return 0
+  fi
+
+  if [[ -z "${records}" ]]; then
+    return 0
+  fi
+
+  if ! command -v openshell >/dev/null 2>&1; then
+    echo "Skipping OpenShell sandbox cleanup; openshell is not on PATH."
+    return 0
+  fi
+
+  local stopped_sids=()
+  local sid
+  local sandbox_name
+  while IFS=$'\t' read -r sid sandbox_name; do
+    [[ -n "${sid}" && -n "${sandbox_name}" ]] || continue
+    echo "Stopping OpenShell sandbox ${sandbox_name}..."
+    openshell sandbox delete "${sandbox_name}" >/dev/null 2>&1 || true
+    stopped_sids+=("${sid}")
+  done <<< "${records}"
+
+  if [[ ${#stopped_sids[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  python3 - "${state_file}" "${stopped_sids[@]}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state_file = Path(sys.argv[1])
+stopped = set(sys.argv[2:])
+try:
+    data = json.loads(state_file.read_text(encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+
+if not isinstance(data, dict):
+    sys.exit(0)
+
+changed = False
+for sid in stopped:
+    raw = data.get(sid)
+    if not isinstance(raw, dict):
+        continue
+    raw["state"] = "stopped"
+    changed = True
+
+if changed:
+    tmp = state_file.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(state_file)
+PY
+}
+
+stop_openshell_sandboxes "${OPENSHELL_FORGE_STATE_FILE}"
 
 stop_matching_processes() {
   local pattern="$1"
