@@ -760,9 +760,8 @@ describe('computeLayout', () => {
 
     const positions = computeLayout(topology);
     const bifrost = positions.get('service-bifrost')!;
-    const modelPositions = Array.from(
-      { length: 5 },
-      (_, index) => positions.get(`model-${index}`)!,
+    const modelPositions = Array.from({ length: 5 }, (_, index) =>
+      positions.get(`model-${index}`)!,
     );
     for (let index = 0; index < 5; index += 1) {
       const model = positions.get(`model-${index}`)!;

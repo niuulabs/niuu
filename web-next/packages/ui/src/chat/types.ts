@@ -73,13 +73,7 @@ export interface AgentInternalEvent {
 }
 
 export type MeshVerdict =
-  | 'approve'
-  | 'pass'
-  | 'retry'
-  | 'escalate'
-  | 'fail'
-  | 'needs_changes'
-  | 'needs_review';
+  'approve' | 'pass' | 'retry' | 'escalate' | 'fail' | 'needs_changes' | 'needs_review';
 
 interface MeshEventBase {
   id: string;

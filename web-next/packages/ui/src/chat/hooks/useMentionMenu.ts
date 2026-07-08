@@ -3,12 +3,10 @@ import type { KeyboardEvent } from 'react';
 import type { RoomParticipant, FileEntry } from '../types';
 
 export type SelectedMention =
-  | { kind: 'file'; entry: FileEntry }
-  | { kind: 'agent'; participant: RoomParticipant };
+  { kind: 'file'; entry: FileEntry } | { kind: 'agent'; participant: RoomParticipant };
 
 export type MentionMenuItem =
-  | { kind: 'file'; entry: FileEntry }
-  | { kind: 'agent'; participant: RoomParticipant };
+  { kind: 'file'; entry: FileEntry } | { kind: 'agent'; participant: RoomParticipant };
 
 interface UseMentionMenuReturn {
   isOpen: boolean;

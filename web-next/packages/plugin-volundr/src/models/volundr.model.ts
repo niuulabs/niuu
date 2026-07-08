@@ -532,12 +532,7 @@ export interface VolundrLaunchSpec {
 // ---------------------------------------------------------------------------
 
 export type SecretType =
-  | 'api_key'
-  | 'oauth_token'
-  | 'git_credential'
-  | 'ssh_key'
-  | 'tls_cert'
-  | 'generic';
+  'api_key' | 'oauth_token' | 'git_credential' | 'ssh_key' | 'tls_cert' | 'generic';
 
 export interface StoredCredential {
   id: string;

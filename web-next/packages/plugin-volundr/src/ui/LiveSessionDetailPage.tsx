@@ -65,13 +65,7 @@ import { StructuredLogViewer } from './components/StructuredLogViewer';
 import './LiveSessionDetailPage.css';
 
 export type LiveSessionTab =
-  | 'chat'
-  | 'terminal'
-  | 'diffs'
-  | 'files'
-  | 'chronicles'
-  | 'telemetry'
-  | 'logs';
+  'chat' | 'terminal' | 'diffs' | 'files' | 'chronicles' | 'telemetry' | 'logs';
 
 type SessionTab = LiveSessionTab;
 
