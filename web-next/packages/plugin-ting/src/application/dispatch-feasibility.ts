@@ -13,10 +13,7 @@ import type { DispatcherState } from '../domain/dispatcher';
 // ---------------------------------------------------------------------------
 
 export type FeasibilityGateName =
-  | 'raven_resolution'
-  | 'confidence'
-  | 'upstream_blocked'
-  | 'cluster_healthy';
+  'raven_resolution' | 'confidence' | 'upstream_blocked' | 'cluster_healthy';
 
 export interface FeasibilityGate {
   name: FeasibilityGateName;

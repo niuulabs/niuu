@@ -102,13 +102,7 @@ export type NodeStatus = 'healthy' | 'degraded' | 'failed' | 'idle' | 'observing
 
 /** Activity state of an agent/entity. */
 export type NodeActivity =
-  | 'idle'
-  | 'thinking'
-  | 'tooling'
-  | 'waiting'
-  | 'delegating'
-  | 'writing'
-  | 'reading';
+  'idle' | 'thinking' | 'tooling' | 'waiting' | 'delegating' | 'writing' | 'reading';
 
 /**
  * An instance of an EntityType in the live topology graph.

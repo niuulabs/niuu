@@ -155,6 +155,25 @@ class TestConstruction:
             for key, value in t._mcp_overrides
         )
 
+    def test_init_with_mcp_server_env_uses_nested_codex_overrides(self, tmp_path):
+        t = _make_transport(
+            tmp_path,
+            mcp_servers=[
+                {
+                    "name": "ravn-tools",
+                    "command": "python3",
+                    "args": ["-m", "ravn", "tool-mcp"],
+                    "env": {"RAVN_CONFIG": "/etc/ravn/config.yaml"},
+                }
+            ],
+        )
+
+        assert (
+            "mcp_servers.ravn-tools.env.RAVN_CONFIG",
+            '"/etc/ravn/config.yaml"',
+        ) in t._mcp_overrides
+        assert not any(key == "mcp_servers.ravn-tools.env" for key, _ in t._mcp_overrides)
+
     @pytest.mark.asyncio
     async def test_connect_ws_uses_configured_large_message_limit(self, tmp_path):
         t = _make_transport(tmp_path, max_ws_message_bytes=12 * 1024 * 1024)

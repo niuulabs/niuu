@@ -362,7 +362,14 @@ async def _resolve_selected_workflow(
 async def _resolve_planning_workflow(
     repo: WorkflowRepository,
     principal: Principal,
+    workflow_id: UUID | None = None,
 ) -> WorkflowDefinition:
+    if workflow_id is not None:
+        workflow = await repo.get_workflow(workflow_id)
+        if workflow is None or not _can_use_workflow(workflow, principal):
+            raise HTTPException(status_code=404, detail=f"Workflow not found: {workflow_id}")
+        return workflow
+
     workflows = await repo.list_workflows(
         owner_id=principal.user_id,
         scope=WorkflowScope.SYSTEM,
@@ -794,9 +801,13 @@ class PlanRequest(BaseModel):
     """Request to spawn an interactive planning session."""
 
     spec: str = Field(min_length=1)
+    workflow_id: UUID | None = Field(default=None, alias="workflowId")
     repo: str = ""
     base_branch: str = Field(default="main", description="Base branch for the planning session")
     model: str = Field(default="")
+    connection_id: str | None = Field(default=None, alias="connectionId")
+
+    model_config = {"populate_by_name": True}
 
 
 class PlanFeedbackRequest(BaseModel):
@@ -1520,8 +1531,26 @@ def create_sagas_router() -> APIRouter:
             )
 
         try:
-            workflow = await _resolve_planning_workflow(workflow_repo, principal)
+            workflow = await _resolve_planning_workflow(
+                workflow_repo,
+                principal,
+                body.workflow_id,
+            )
             plan_name = _plan_name(body.spec)
+            provenance = {
+                "surface": "ting.plan",
+                "repo": repo,
+                "base_branch": body.base_branch,
+            }
+            metadata = {
+                "surface": "ting.plan",
+                "spec": body.spec,
+                "repo": repo,
+                "base_branch": body.base_branch,
+            }
+            if body.connection_id:
+                provenance["connection_id"] = body.connection_id
+                metadata["connection_id"] = body.connection_id
             execution = await launch_workflow_execution(
                 request=request,
                 workflow=workflow,
@@ -1531,11 +1560,8 @@ def create_sagas_router() -> APIRouter:
                     repo=repo,
                     branch=body.base_branch,
                     model=model,
-                    provenance={
-                        "surface": "ting.plan",
-                        "repo": repo,
-                        "base_branch": body.base_branch,
-                    },
+                    connectionId=body.connection_id,
+                    provenance=provenance,
                 ),
                 volundr_factory=volundr_factory,
                 principal=principal,
@@ -1559,13 +1585,7 @@ def create_sagas_router() -> APIRouter:
                 status=campaign_status,
                 active_stage_id=stage_state[0].stage_id if stage_state else None,
                 stage_state=stage_state,
-                metadata={
-                    "surface": "ting.plan",
-                    "spec": body.spec,
-                    "repo": repo,
-                    "base_branch": body.base_branch,
-                    "cluster_name": execution.session.cluster_name,
-                },
+                metadata={**metadata, "cluster_name": execution.session.cluster_name},
                 created_at=now,
                 updated_at=now,
                 last_activity_at=now,

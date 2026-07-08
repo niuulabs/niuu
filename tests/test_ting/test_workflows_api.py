@@ -56,9 +56,16 @@ class InMemoryWorkflowRepository(WorkflowRepository):
 
 
 class RecordingVolundrPort(VolundrPort):
-    def __init__(self, *, name: str = "local", target_id: str = "local") -> None:
+    def __init__(
+        self,
+        *,
+        name: str = "local",
+        target_id: str = "local",
+        chat_endpoint: str = "wss://sessions.example/s/session-123/session",
+    ) -> None:
         self._name = name
         self._target_id = target_id
+        self._chat_endpoint = chat_endpoint
         self.requests: list[SpawnRequest] = []
 
     @property
@@ -81,6 +88,7 @@ class RecordingVolundrPort(VolundrPort):
             id="session-123",
             name=request.name,
             status="starting",
+            chat_endpoint=self._chat_endpoint,
             tracker_issue_id=request.tracker_issue_id,
             cluster_name=self._name,
             repo=request.repo,
@@ -570,6 +578,12 @@ class TestWorkflowCatalogAPI:
                 "branch": "feat/research",
                 "model": "gpt-5.5",
                 "definition": "skuldCodex",
+                "context": {
+                    "question": (
+                        "Are AI grief companions a credible product category?"
+                    ),
+                    "mode": "evaluative",
+                },
                 "provenance": {
                     "signal_id": "sig-1",
                     "valkyrie_id": "valkyrie-ymir",
@@ -583,6 +597,7 @@ class TestWorkflowCatalogAPI:
         assert body["workflowId"] == str(workflow.id)
         assert body["slug"] == "grief-companions"
         assert body["sessionId"] == "session-123"
+        assert body["chatEndpoint"] == "wss://sessions.example/s/session-123/session"
         assert len(adapter.requests) == 1
         spawn = adapter.requests[0]
         assert spawn.definition == "skuldCodex"
@@ -601,6 +616,47 @@ class TestWorkflowCatalogAPI:
         }
         assert spawn.workload_config["personas"][0]["name"] == "research-framer"
         assert "Workflow Launch" in spawn.initial_prompt
+        assert "Launch Context" in spawn.initial_prompt
+        assert "Are AI grief companions a credible product category?" in spawn.initial_prompt
+
+    def test_launch_workflow_trims_trailing_dash_from_generated_session_name(self) -> None:
+        workflow = _make_research_workflow()
+        repo = InMemoryWorkflowRepository([workflow])
+        adapter = RecordingVolundrPort()
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([adapter]))
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={
+                "prompt": (
+                    "Final public-session-endpoint observer join smoke from Muninn. "
+                    "Produce one short sentence and stop."
+                ),
+                "definition": "skuldCodex",
+            },
+        )
+
+        assert response.status_code == 201
+        assert adapter.requests[0].name == "research-campaign-final-public-session-endpoint"
+
+    def test_launch_workflow_returns_public_chat_endpoint(self, monkeypatch) -> None:
+        monkeypatch.setenv("NIUU_SERVER_PUBLIC_HOST", "sessions.example")
+        workflow = _make_research_workflow()
+        repo = InMemoryWorkflowRepository([workflow])
+        adapter = RecordingVolundrPort(
+            chat_endpoint="ws://127.0.0.1:8080/s/session-123/session"
+        )
+        client = _make_client(repo, volundr_factory=RecordingVolundrFactory([adapter]))
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "Launch a small research smoke test."},
+        )
+
+        assert response.status_code == 201
+        assert response.json()["chatEndpoint"] == "ws://sessions.example:8080/s/session-123/session"
 
     def test_launch_workflow_uses_first_available_connection(self) -> None:
         workflow = _make_research_workflow()

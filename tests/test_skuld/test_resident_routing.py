@@ -51,12 +51,15 @@ class TestPlainMessageRouting:
     async def test_plain_content_routes_to_default_target(self):
         broker = _resident_broker()
         broker.handle_directed_room_message = AsyncMock(return_value="msg-1")
-        await broker._dispatch_browser_message({"content": "hello resident"})
+        await broker._dispatch_browser_message(
+            {"content": "hello resident", "request_id": "req-resident-1"}
+        )
         broker.handle_directed_room_message.assert_awaited_once()
         args, kwargs = broker.handle_directed_room_message.await_args
         assert args[0] == "flock-product-steward"
         assert args[1] == "hello resident"
         assert kwargs.get("source") == "browser"
+        assert kwargs.get("request_id") == "req-resident-1"
 
     @pytest.mark.asyncio
     async def test_unknown_default_target_reports_error(self):
@@ -76,10 +79,16 @@ class TestPlainMessageRouting:
         broker = _resident_broker()
         broker.handle_directed_room_message = AsyncMock(return_value="msg-2")
         await broker._dispatch_browser_message(
-            {"type": "directed_message", "targetPeerId": "other-peer", "content": "hi"}
+            {
+                "type": "directed_message",
+                "targetPeerId": "other-peer",
+                "content": "hi",
+                "request_id": "req-directed-1",
+            }
         )
-        args, _kwargs = broker.handle_directed_room_message.await_args
+        args, kwargs = broker.handle_directed_room_message.await_args
         assert args[0] == "other-peer"
+        assert kwargs.get("request_id") == "req-directed-1"
 
     @pytest.mark.asyncio
     async def test_no_default_target_keeps_classic_path(self):

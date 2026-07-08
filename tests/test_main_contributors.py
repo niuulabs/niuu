@@ -70,3 +70,14 @@ def test_create_contributors_passes_ravn_flock_image_to_auto_wired_contributor()
     )
 
     assert ravn_flock._ravn_image == "ghcr.io/niuulabs/skuld:dev-test"
+
+
+def test_create_contributors_passes_ravn_flock_init_writer_image() -> None:
+    settings = Settings(ravn_flock_init_writer_image="ghcr.io/niuulabs/skuld:writer")
+
+    contributors = _create_contributors(settings)
+    ravn_flock = next(
+        contributor for contributor in contributors if contributor.name == "ravn_flock"
+    )
+
+    assert ravn_flock._init_writer_image == "ghcr.io/niuulabs/skuld:writer"

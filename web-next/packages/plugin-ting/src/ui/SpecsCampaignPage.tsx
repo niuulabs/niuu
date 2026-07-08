@@ -117,7 +117,7 @@ function SpecMarkdown({ content }: { content: string }) {
   const elements: ReactNode[] = [];
   let paragraphIndex = 0;
 
-  for (let index = 0; index < lines.length; ) {
+  for (let index = 0; index < lines.length;) {
     const line = lines[index] ?? '';
     if (!line.trim()) {
       index += 1;

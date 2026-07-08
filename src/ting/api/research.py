@@ -64,6 +64,8 @@ class ResearchCampaignCreateBody(BaseModel):
     workflow_id: UUID | None = Field(default=None, alias="workflowId")
     repo: str = Field(default="", max_length=500)
     branch: str = Field(default="", max_length=255)
+    model: str = Field(default="", max_length=255)
+    definition: str | None = Field(default=None, max_length=255)
     mode: str = Field(default="exploratory", max_length=64)
     audience: str = Field(default="", max_length=255)
     deliverable: str = Field(default="", max_length=255)
@@ -71,6 +73,11 @@ class ResearchCampaignCreateBody(BaseModel):
     constraints: list[str] = Field(default_factory=list)
     monitoring_cadence: str | None = Field(default=None, alias="monitoringCadence", max_length=255)
     connection_id: str | None = Field(default=None, alias="connectionId", max_length=255)
+    gate_auto_forward_after: str | None = Field(
+        default=None,
+        max_length=32,
+        alias="gateAutoForwardAfter",
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -115,6 +122,7 @@ class ResearchCampaignResponse(BaseModel):
     workflow_name: str = Field(serialization_alias="workflowName")
     session_id: str = Field(serialization_alias="sessionId")
     session_name: str = Field(serialization_alias="sessionName")
+    chat_endpoint: str | None = Field(default=None, serialization_alias="chatEndpoint")
     status: str
     active_stage_id: str | None = Field(default=None, serialization_alias="activeStageId")
     stage_state: list[CampaignStageStateResponse] = Field(
@@ -206,6 +214,9 @@ def create_research_router() -> APIRouter:
             repo=body.repo,
             branch=body.branch,
             connectionId=body.connection_id,
+            model=body.model,
+            definition=body.definition,
+            gateAutoForwardAfter=body.gate_auto_forward_after,
         )
         execution = await launch_workflow_execution(
             request=request,
@@ -254,7 +265,7 @@ def create_research_router() -> APIRouter:
         )
         saved = await campaign_repo.save_campaign(campaign)
         await _emit_campaign_event(request, "workflow.campaign.created", saved)
-        return _to_campaign_response(saved)
+        return _to_campaign_response(saved, chat_endpoint=execution.session.chat_endpoint)
 
     @router.get("/campaigns/{slug}", response_model=ResearchCampaignDetailResponse)
     async def get_campaign(
@@ -957,7 +968,11 @@ def _to_stage_response(stage: CampaignStageState) -> CampaignStageStateResponse:
     )
 
 
-def _to_campaign_response(campaign: WorkflowCampaign) -> ResearchCampaignResponse:
+def _to_campaign_response(
+    campaign: WorkflowCampaign,
+    *,
+    chat_endpoint: str | None = None,
+) -> ResearchCampaignResponse:
     return ResearchCampaignResponse(
         id=str(campaign.id),
         slug=campaign.slug,
@@ -968,6 +983,7 @@ def _to_campaign_response(campaign: WorkflowCampaign) -> ResearchCampaignRespons
         workflow_name=campaign.workflow_name,
         session_id=campaign.session_id,
         session_name=campaign.session_name,
+        chat_endpoint=chat_endpoint,
         status=campaign.status.value,
         active_stage_id=campaign.active_stage_id,
         stage_state=[_to_stage_response(stage) for stage in campaign.stage_state],

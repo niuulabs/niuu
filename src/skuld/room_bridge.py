@@ -41,6 +41,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _matches_subscription(event_type: str, subscriptions: tuple[str, ...]) -> bool:
+    for pattern in subscriptions:
+        if pattern == event_type:
+            return True
+        if pattern.endswith(".*") and event_type.startswith(pattern[:-1]):
+            return True
+        if pattern.endswith("*") and event_type.startswith(pattern[:-1]):
+            return True
+    return False
+
+
 _GIT_COMMIT_PREFIXES = ("git commit", "git -c ", "git -C ")
 _GIT_COMMIT_OUTPUT_RE = re.compile(r"\[[\w/-]+\s+([a-f0-9]{7,})\]\s+(.+)")
 
@@ -1211,12 +1223,36 @@ class RoomBridge:
             outcome["verdict"] = verdict
 
         await self._channels.broadcast(outcome)
+        await self._send_outcome_to_subscribed_ravns(outcome)
         logger.info(
             "RoomBridge: outcome broadcast peer_id=%s event_type=%s verdict=%s",
             meta.peer_id,
             event_type,
             verdict,
         )
+
+    async def _send_outcome_to_subscribed_ravns(self, outcome: dict) -> None:
+        event_type = str(outcome.get("eventType") or "").strip()
+        if not event_type:
+            return
+
+        payload = json.dumps(outcome)
+        for peer_id, meta in list(self._participants.items()):
+            if not meta.subscribes_to:
+                continue
+            if not _matches_subscription(event_type, meta.subscribes_to):
+                continue
+            ws = self._websockets.get(peer_id)
+            if ws is None:
+                continue
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                logger.warning(
+                    "RoomBridge: failed to send room_outcome to peer_id=%s",
+                    peer_id,
+                    exc_info=True,
+                )
 
     async def _handle_mesh_delegation_frame(
         self,

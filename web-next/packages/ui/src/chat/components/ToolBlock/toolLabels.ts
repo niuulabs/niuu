@@ -1,12 +1,5 @@
 export type ToolCategory =
-  | 'terminal'
-  | 'file'
-  | 'search'
-  | 'web'
-  | 'agent'
-  | 'task'
-  | 'mcp'
-  | 'default';
+  'terminal' | 'file' | 'search' | 'web' | 'agent' | 'task' | 'mcp' | 'default';
 
 const TOOL_LABEL_MAP: Record<string, string> = {
   Bash: 'Terminal',

@@ -8,7 +8,10 @@ import {
   normalizeSessionUrl,
   useSkuldChat,
 } from '@niuulabs/ui';
+import { useService } from '@niuulabs/plugin-sdk';
+import { LiveLogsTab, TelemetryTab, type IVolundrService } from '@niuulabs/plugin-volundr';
 import type { PersonaRole } from '@niuulabs/domain';
+import { Eye, EyeOff, FileCode2, MessageSquareText, Sparkles } from 'lucide-react';
 import { useMessages, useSessions } from './hooks/useSessions';
 import { useRavens } from './hooks/useRavens';
 import { useRavnBudget } from './hooks/useBudget';
@@ -23,6 +26,7 @@ import './SessionsView.css';
 const SESSION_STORAGE_KEY = 'ravn.session';
 
 type TranscriptFilter = 'all' | 'chat' | 'tools' | 'system';
+type SessionSurfaceTab = 'chat' | 'trace' | 'logs';
 
 type TimelineTone = 'info' | 'muted' | 'warn' | 'good';
 
@@ -50,6 +54,16 @@ const FILTER_OPTIONS: Array<{ value: TranscriptFilter; label: string }> = [
   { value: 'chat', label: 'chat only' },
   { value: 'tools', label: '+ tools' },
   { value: 'system', label: '+ system' },
+];
+
+const SESSION_SURFACE_TABS: Array<{
+  id: SessionSurfaceTab;
+  label: string;
+  icon: typeof MessageSquareText;
+}> = [
+  { id: 'chat', label: 'Chat', icon: MessageSquareText },
+  { id: 'trace', label: 'Trace', icon: Sparkles },
+  { id: 'logs', label: 'Logs', icon: FileCode2 },
 ];
 
 const DEFAULT_PERSONA_BY_ROLE: Partial<Record<PersonaRole, string>> = {
@@ -475,6 +489,11 @@ export function pickDefaultSession(sessions: Session[], preferredId: string | nu
   return sorted.find((session) => session.status === 'running')?.id ?? sorted[0]!.id;
 }
 
+function preferredSessionId(): string | null {
+  const fromUrl = new URLSearchParams(window.location.search).get('session');
+  return fromUrl || loadStorage<string | null>(SESSION_STORAGE_KEY, null);
+}
+
 function SessionRailItem({
   session,
   selected,
@@ -553,16 +572,55 @@ function SessionRailGroup({
   );
 }
 
+function CollapsedSessionRail({
+  sessions,
+  selectedId,
+  onSelect,
+}: {
+  sessions: Session[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <div className="rv-rs__rail-collapsed-body">
+      {sessions.map((session) => (
+        <button
+          key={session.id}
+          type="button"
+          className={cn(
+            'rv-rs__rail-collapsed-item',
+            selectedId === session.id && 'rv-rs__rail-collapsed-item--selected',
+          )}
+          onClick={() => onSelect(session.id)}
+          aria-label={`Open session ${titleForSession(session)}`}
+        >
+          <PersonaAvatar
+            role={session.personaRole ?? 'build'}
+            letter={session.personaLetter ?? '?'}
+            size={24}
+          />
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function SessionHeader({
   session,
   ravn,
   personaLabel,
+  showInternalMessages,
+  onToggleInternalMessages,
 }: {
   session: Session;
   ravn: Ravn | null;
   personaLabel: string;
+  showInternalMessages: boolean;
+  onToggleInternalMessages: () => void;
 }) {
   const isRunning = session.status === 'running';
+  const hasLiveChat = isRunning && Boolean(normalizeSessionUrl(session.chatEndpoint ?? null));
+  const InternalIcon = showInternalMessages ? EyeOff : Eye;
 
   return (
     <header className="rv-rs__head" data-testid="sessions-header">
@@ -617,6 +675,23 @@ function SessionHeader({
           </span>
         </div>
         <div className="rv-rs__actions" data-testid="sessions-actions">
+          {hasLiveChat && (
+            <button
+              type="button"
+              className={cn(
+                'rv-rs__action-btn',
+                showInternalMessages && 'rv-rs__action-btn--active',
+              )}
+              aria-label={
+                showInternalMessages ? 'Hide tool calls and results' : 'Show tool calls and results'
+              }
+              aria-pressed={showInternalMessages}
+              data-testid="internal-toggle"
+              onClick={onToggleInternalMessages}
+            >
+              <InternalIcon size={14} aria-hidden="true" />
+            </button>
+          )}
           <button type="button" className="rv-rs__action-btn">
             export
           </button>
@@ -848,11 +923,20 @@ function Composer({ session }: { session: Session }) {
 function LiveSessionChat({
   chatEndpoint,
   sessionName,
+  showInternalMessages,
+  onInternalVisibilitySender,
 }: {
   chatEndpoint: string;
   sessionName: string;
+  showInternalMessages: boolean;
+  onInternalVisibilitySender: (sender: ((visible: boolean) => void) | null) => void;
 }) {
   const chat = useSkuldChat(chatEndpoint);
+
+  useEffect(() => {
+    onInternalVisibilitySender(chat.sendSetInternalVisibility);
+    return () => onInternalVisibilitySender(null);
+  }, [chat.sendSetInternalVisibility, onInternalVisibilitySender]);
 
   return (
     <div className="rv-rs__live-chat" data-testid="sessions-live-chat">
@@ -873,10 +957,76 @@ function LiveSessionChat({
         capabilities={chat.capabilities}
         chatEndpoint={chatEndpoint}
         sessionName={sessionName}
+        showInternalToggle={false}
+        internalVisibility={showInternalMessages}
         onSend={chat.sendMessage}
+        onSendDirected={chat.sendDirectedMessages}
         onStop={chat.sendInterrupt}
         onPermissionRespond={chat.respondToPermission}
+        onSetInternalVisibility={chat.sendSetInternalVisibility}
       />
+    </div>
+  );
+}
+
+function SessionObservabilityPanel({
+  session,
+  tab,
+}: {
+  session: Session;
+  tab: Exclude<SessionSurfaceTab, 'chat'>;
+}) {
+  const volundr = useService<IVolundrService>('volundr');
+
+  if (tab === 'trace') {
+    return (
+      <div className="rv-rs__observability-panel rv-rs__observability-panel--trace">
+        <TelemetryTab
+          sessionId={session.id}
+          session={null}
+          runLabel={titleForSession(session)}
+          volundr={volundr}
+          isRunning={session.status === 'running'}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="rv-rs__observability-panel">
+      <LiveLogsTab sessionId={session.id} volundr={volundr} />
+    </div>
+  );
+}
+
+function SessionSurfaceTabs({
+  activeTab,
+  onTabChange,
+}: {
+  activeTab: SessionSurfaceTab;
+  onTabChange: (tab: SessionSurfaceTab) => void;
+}) {
+  return (
+    <div className="rv-rs__surface-tabs" role="tablist" aria-label="Session view">
+      {SESSION_SURFACE_TABS.map((tab) => {
+        const Icon = tab.icon;
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            className={cn(
+              'rv-rs__surface-tab',
+              activeTab === tab.id && 'rv-rs__surface-tab--active',
+            )}
+            onClick={() => onTabChange(tab.id)}
+          >
+            <Icon className="rv-rs__surface-tab-icon" />
+            <span>{tab.label}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -999,13 +1149,21 @@ function ContextSidebar({
 export function SessionsView() {
   const { data: sessions, isLoading, isError, error } = useSessions();
   const { data: ravens } = useRavens();
-  const [selectedId, setSelectedId] = useState<string | null>(() =>
-    loadStorage<string | null>(SESSION_STORAGE_KEY, null),
-  );
+  const [selectedId, setSelectedId] = useState<string | null>(() => preferredSessionId());
   const [filter, setFilter] = useState<TranscriptFilter>('all');
+  const [surfaceTab, setSurfaceTab] = useState<SessionSurfaceTab>('chat');
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  const [showInternalMessages, setShowInternalMessages] = useState(false);
+  const setInternalVisibilityRef = useRef<((visible: boolean) => void) | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
 
-  const sessionList = useMemo(() => sessions ?? [], [sessions]);
+  const sessionList = useMemo(
+    () =>
+      (sessions ?? []).filter(
+        (session) => session.status === 'running' || session.status === 'idle',
+      ),
+    [sessions],
+  );
   const sortedSessions = useMemo(
     () => [...sessionList].sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
     [sessionList],
@@ -1020,7 +1178,9 @@ export function SessionsView() {
 
   useEffect(() => {
     const handleSelect = (event: Event) => {
-      const nextId = (event as CustomEvent<string>).detail;
+      const detail = (event as CustomEvent<string | { sessionId?: string }>).detail;
+      const nextId = typeof detail === 'string' ? detail : detail?.sessionId;
+      if (!nextId) return;
       saveStorage(SESSION_STORAGE_KEY, nextId);
       setSelectedId(nextId);
     };
@@ -1043,13 +1203,34 @@ export function SessionsView() {
   const ravnById = useMemo(() => new Map((ravens ?? []).map((ravn) => [ravn.id, ravn])), [ravens]);
 
   const selectedRavn = selectedSession ? (ravnById.get(selectedSession.ravnId) ?? null) : null;
-  const personaKey = selectedSession ? derivePersonaKey(selectedSession) : '';
+  const hasLiveChat =
+    selectedSession?.status === 'running' &&
+    Boolean(normalizeSessionUrl(selectedSession.chatEndpoint ?? null));
+  const personaKey = selectedSession
+    ? hasLiveChat
+      ? selectedSession.personaName
+      : derivePersonaKey(selectedSession)
+    : '';
   const { data: persona } = usePersona(personaKey);
   const { data: budget } = useRavnBudget(selectedSession?.ravnId ?? '');
 
   const personaLabel = persona?.name ?? personaKey;
   const personaRole = persona?.role ?? selectedSession?.personaRole ?? 'build';
   const personaLetter = persona?.letter ?? selectedSession?.personaLetter ?? '?';
+
+  const selectSession = (id: string) => {
+    saveStorage(SESSION_STORAGE_KEY, id);
+    setSelectedId(id);
+    const params = new URLSearchParams(window.location.search);
+    params.set('session', id);
+    window.history.replaceState(null, '', `/ravn/sessions?${params.toString()}`);
+  };
+
+  const toggleInternalMessages = () => {
+    const next = !showInternalMessages;
+    setShowInternalMessages(next);
+    setInternalVisibilityRef.current?.(next);
+  };
 
   const entries = useMemo(() => {
     if (!selectedSession) return [];
@@ -1089,111 +1270,160 @@ export function SessionsView() {
   }
 
   const activeSessions = sortedSessions.filter((session) => session.status === 'running');
-  const closedSessions = sortedSessions.filter((session) => session.status !== 'running');
+  const idleSessions = sortedSessions.filter((session) => session.status === 'idle');
   const anchorTime = deriveAnchorTime(sortedSessions);
 
   // A running session with a Skuld endpoint is a real live chat — the shared
   // SessionChat becomes the transcript. Everything else keeps the read-only view.
-  const liveChatEndpoint =
-    selectedSession.status === 'running'
-      ? normalizeSessionUrl(selectedSession.chatEndpoint ?? null)
-      : null;
+  const liveChatEndpoint = hasLiveChat
+    ? normalizeSessionUrl(selectedSession.chatEndpoint ?? null)
+    : null;
 
   return (
     <div className="rv-rs" data-testid="sessions-page">
-      <aside className="rv-rs__rail" aria-label="Sessions">
-        <div className="rv-rs__rail-head">
-          <div className="rv-rs__rail-title">Sessions</div>
-          <div className="rv-rs__rail-subtitle">
-            {activeSessions.length} active · {closedSessions.length} closed
-          </div>
-        </div>
+      <aside
+        className={cn('rv-rs__rail', railCollapsed && 'rv-rs__rail--collapsed')}
+        aria-label="Sessions"
+      >
+        {railCollapsed ? (
+          <>
+            <div className="rv-rs__rail-collapsed-head">
+              <button
+                type="button"
+                onClick={() => setRailCollapsed(false)}
+                className="rv-rs__rail-toggle"
+                data-testid="sessions-sidebar-toggle"
+                aria-label="Expand sessions sidebar"
+              >
+                ›
+              </button>
+            </div>
+            <CollapsedSessionRail
+              sessions={sortedSessions}
+              selectedId={selectedSession.id}
+              onSelect={selectSession}
+            />
+          </>
+        ) : (
+          <>
+            <div className="rv-rs__rail-head">
+              <div className="rv-rs__rail-head-row">
+                <div>
+                  <div className="rv-rs__rail-title">Sessions</div>
+                  <div className="rv-rs__rail-subtitle">
+                    {activeSessions.length} active · {idleSessions.length} idle
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setRailCollapsed(true)}
+                  className="rv-rs__rail-toggle"
+                  data-testid="sessions-sidebar-toggle"
+                  aria-label="Collapse sessions sidebar"
+                >
+                  ‹
+                </button>
+              </div>
+            </div>
 
-        <div className="rv-rs__rail-body">
-          <SessionRailGroup
-            label="active"
-            count={activeSessions.length}
-            sessions={activeSessions}
-            selectedId={selectedSession.id}
-            anchorTime={anchorTime}
-            onSelect={(id) => {
-              saveStorage(SESSION_STORAGE_KEY, id);
-              setSelectedId(id);
-            }}
-          />
-          <SessionRailGroup
-            label="closed"
-            count={closedSessions.length}
-            sessions={closedSessions}
-            selectedId={selectedSession.id}
-            anchorTime={anchorTime}
-            onSelect={(id) => {
-              saveStorage(SESSION_STORAGE_KEY, id);
-              setSelectedId(id);
-            }}
-          />
-        </div>
+            <div className="rv-rs__rail-body">
+              <SessionRailGroup
+                label="active"
+                count={activeSessions.length}
+                sessions={activeSessions}
+                selectedId={selectedSession.id}
+                anchorTime={anchorTime}
+                onSelect={selectSession}
+              />
+              <SessionRailGroup
+                label="idle"
+                count={idleSessions.length}
+                sessions={idleSessions}
+                selectedId={selectedSession.id}
+                anchorTime={anchorTime}
+                onSelect={selectSession}
+              />
+            </div>
+          </>
+        )}
       </aside>
 
       <main className="rv-rs__main">
-        <SessionHeader session={selectedSession} ravn={selectedRavn} personaLabel={personaLabel} />
-        <div className="rv-rs__body">
-          <section className="rv-rs__chat">
-            {liveChatEndpoint ? (
-              <LiveSessionChat
-                chatEndpoint={liveChatEndpoint}
-                sessionName={selectedRavn?.personaName ?? selectedSession.personaName}
-              />
-            ) : (
-              <>
-                <TranscriptToolbar filter={filter} onFilterChange={setFilter} />
-                <div
-                  className="rv-rs__scroll"
-                  ref={transcriptRef}
-                  role="log"
-                  aria-label="Session transcript"
-                >
-                  {messagesLoading ? (
-                    <div className="rv-rs__empty">loading transcript…</div>
-                  ) : messagesError ? (
-                    <div className="rv-rs__empty rv-rs__empty--error">
-                      failed to load transcript
-                    </div>
-                  ) : (
-                    <>
-                      {filteredEntries.map((entry) => (
-                        <TranscriptMessage
-                          key={entry.id}
-                          entry={entry}
-                          personaLabel={personaLabel}
-                          personaLetter={personaLetter}
-                          personaRole={personaRole}
-                        />
-                      ))}
-                      {selectedSession.status === 'running' && (
-                        <ActiveCursor
-                          personaLabel={personaLabel}
-                          personaLetter={personaLetter}
-                          personaRole={personaRole}
-                        />
-                      )}
-                    </>
-                  )}
-                </div>
-                <Composer session={selectedSession} />
-              </>
-            )}
-          </section>
+        <SessionHeader
+          session={selectedSession}
+          ravn={selectedRavn}
+          personaLabel={personaLabel}
+          showInternalMessages={showInternalMessages}
+          onToggleInternalMessages={toggleInternalMessages}
+        />
+        <SessionSurfaceTabs activeTab={surfaceTab} onTabChange={setSurfaceTab} />
+        {surfaceTab === 'chat' ? (
+          <div className={cn('rv-rs__body', liveChatEndpoint && 'rv-rs__body--chat-only')}>
+            <section className="rv-rs__chat">
+              {liveChatEndpoint ? (
+                <LiveSessionChat
+                  chatEndpoint={liveChatEndpoint}
+                  sessionName={selectedRavn?.personaName ?? selectedSession.personaName}
+                  showInternalMessages={showInternalMessages}
+                  onInternalVisibilitySender={(sender) => {
+                    setInternalVisibilityRef.current = sender;
+                  }}
+                />
+              ) : (
+                <>
+                  <TranscriptToolbar filter={filter} onFilterChange={setFilter} />
+                  <div
+                    className="rv-rs__scroll"
+                    ref={transcriptRef}
+                    role="log"
+                    aria-label="Session transcript"
+                  >
+                    {messagesLoading ? (
+                      <div className="rv-rs__empty">loading transcript…</div>
+                    ) : messagesError ? (
+                      <div className="rv-rs__empty rv-rs__empty--error">
+                        failed to load transcript
+                      </div>
+                    ) : (
+                      <>
+                        {filteredEntries.map((entry) => (
+                          <TranscriptMessage
+                            key={entry.id}
+                            entry={entry}
+                            personaLabel={personaLabel}
+                            personaLetter={personaLetter}
+                            personaRole={personaRole}
+                          />
+                        ))}
+                        {selectedSession.status === 'running' && (
+                          <ActiveCursor
+                            personaLabel={personaLabel}
+                            personaLetter={personaLetter}
+                            personaRole={personaRole}
+                          />
+                        )}
+                      </>
+                    )}
+                  </div>
+                  <Composer session={selectedSession} />
+                </>
+              )}
+            </section>
 
-          <ContextSidebar
-            session={selectedSession}
-            ravn={selectedRavn}
-            budget={budget}
-            persona={persona}
-            entries={entries}
-            personaLabel={personaLabel}
-          />
-        </div>
+            {!liveChatEndpoint && (
+              <ContextSidebar
+                session={selectedSession}
+                ravn={selectedRavn}
+                budget={budget}
+                persona={persona}
+                entries={entries}
+                personaLabel={personaLabel}
+              />
+            )}
+          </div>
+        ) : (
+          <SessionObservabilityPanel session={selectedSession} tab={surfaceTab} />
+        )}
       </main>
     </div>
   );

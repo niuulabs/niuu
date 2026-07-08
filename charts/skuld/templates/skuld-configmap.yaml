@@ -34,7 +34,7 @@ data:
     port: 8081
     persistence_mount_path: {{ .Values.persistence.mountPath | default "/volundr/sessions" | quote }}
 
-    {{- if .Values.volundr.apiUrl }}
+    {{- if and .Values.volundr.apiUrl (not (include "skuld.residentEnabled" .)) }}
     volundr_api_url: {{ .Values.volundr.apiUrl | quote }}
     {{- end }}
     service_user_id: {{ .Values.volundr.serviceUserId | default "skuld-broker" | quote }}

@@ -218,6 +218,33 @@ class TestReconcileActiveSessions:
         assert updated.status == SessionStatus.RUNNING
         assert updated.chat_endpoint is not None
 
+    async def test_ready_pod_provisioning_row_is_promoted_to_running(
+        self, service, repo, pod_manager
+    ):
+        session = _session(SessionStatus.PROVISIONING, datetime.now(UTC))
+        await repo.create(session)
+        started: list[str] = []
+
+        async def alive(_session):
+            return SessionStatus.RUNNING
+
+        async def register_routes(updated):
+            started.append(f"routes:{updated.id}")
+
+        async def emit_started(updated):
+            started.append(f"started:{updated.id}")
+
+        pod_manager.status = alive  # type: ignore[method-assign]
+        service._register_communication_routes = register_routes  # type: ignore[method-assign]
+        service._emit_session_started = emit_started  # type: ignore[method-assign]
+
+        count = await service.reconcile_active_sessions()
+
+        assert count == 1
+        updated = await repo.get(session.id)
+        assert updated.status == SessionStatus.RUNNING
+        assert started == [f"routes:{session.id}", f"started:{session.id}"]
+
     async def test_mark_session_dead_reconciles_single_row(self, service, repo, pod_manager):
         session = _session(SessionStatus.RUNNING, datetime.now(UTC))
         await repo.create(session)
@@ -233,6 +260,22 @@ class TestReconcileActiveSessions:
         assert result.status == SessionStatus.STOPPED
         assert result.chat_endpoint is None
         assert (result.error or "").startswith("liveness:")
+
+    async def test_mark_session_dead_can_reconcile_provisioning_row(
+        self, service, repo, pod_manager
+    ):
+        session = _session(SessionStatus.PROVISIONING, datetime.now(UTC))
+        await repo.create(session)
+
+        async def alive(_session):
+            return SessionStatus.RUNNING
+
+        pod_manager.status = alive  # type: ignore[method-assign]
+
+        result = await service.mark_session_dead(session.id)
+
+        assert result is not None
+        assert result.status == SessionStatus.RUNNING
 
     async def test_mark_session_dead_leaves_live_session_untouched(
         self, service, repo, pod_manager

@@ -2832,13 +2832,28 @@ class Broker:
         )
 
         frame = {
+            "type": "outcome",
             "metadata": {"event_type": node.completion_event_type},
             "data": {
                 "event_type": node.completion_event_type,
+                "canonical_event_type": node.completion_event_type,
                 "fields": fields,
                 "valid": True,
+                "verdict": payload.get("verdict"),
+                "summary": payload.get("summary"),
+                "bubble_up": False,
             },
         }
+        if self._room_bridge is not None:
+            await self._room_bridge.register_mesh_peer(
+                peer_id=terminal_peer_id,
+                persona="workflow-runtime",
+                display_name="workflow-runtime",
+                participant_type="workflow",
+                participant_kind="workflow",
+                heartbeat_ttl_s=0.0,
+            )
+            await self._room_bridge.handle_ravn_frame(terminal_peer_id, frame)
         await self._maybe_report_flock_completion(terminal_peer_id, frame)
 
     async def _maybe_report_flock_completion(
@@ -3888,6 +3903,7 @@ class Broker:
                         str(target),
                         str(content),
                         source="browser",
+                        request_id=self._extract_request_id(data),
                         metadata=(
                             data.get("metadata") if isinstance(data.get("metadata"), dict) else None
                         ),
@@ -3931,11 +3947,14 @@ class Broker:
                 # Python repr of the block list (base64 blobs inline).
                 default_target = self._room_default_target_peer_id()
                 if default_target:
+                    request_id = data.get("request_id")
+                    request_id = request_id if isinstance(request_id, str) and request_id else None
                     try:
                         await self.handle_directed_room_message(
                             default_target,
                             _normalize_browser_message_content(message),
                             source="browser",
+                            request_id=request_id,
                             metadata=(
                                 data.get("metadata")
                                 if isinstance(data.get("metadata"), dict)
@@ -4522,6 +4541,7 @@ class Broker:
         content: str,
         *,
         source: str = "external",
+        request_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         participant_id: str | None = None,
         deliver_to_transport: bool = True,
@@ -4572,6 +4592,8 @@ class Broker:
             "source": source,
             "metadata": metadata_payload,
         }
+        if request_id:
+            event["request_id"] = request_id
         if participant_id:
             event["participantId"] = participant_id
             event["participant"] = participant_meta
@@ -4602,6 +4624,7 @@ class Broker:
         content: str,
         *,
         source: str = "external",
+        request_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> str:
         """Record and route a directed human message to a room participant."""
@@ -4614,10 +4637,14 @@ class Broker:
 
         participant = self._room_bridge.participants.get(target_peer_id)
         display_target = participant.persona if participant else target_peer_id
-        rendered_content = f"@{display_target} {content}"
+        target_prefix = f"@{display_target}"
+        rendered_content = (
+            content if content.lstrip().startswith(target_prefix) else f"{target_prefix} {content}"
+        )
         msg_id = await self.handle_human_room_message(
             rendered_content,
             source=source,
+            request_id=request_id,
             metadata=metadata,
             participant_id=_non_empty_str(metadata.get("participant_id")) if metadata else None,
             deliver_to_transport=False,

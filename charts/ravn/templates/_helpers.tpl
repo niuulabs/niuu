@@ -77,19 +77,22 @@ Create the name of the service account to use
 {{- end }}
 
 {{/*
-Return the proper image name (global overrides local)
+Return the proper image name (explicit local tag overrides global)
 */}}
 {{- define "ravn.image" -}}
 {{- $registryName := .Values.image.registry -}}
 {{- $repositoryName := .Values.image.repository -}}
-{{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
+{{- $tag := .Values.image.tag -}}
 {{- if and .Values.global .Values.global.image -}}
   {{- if .Values.global.image.registry -}}
     {{- $registryName = .Values.global.image.registry -}}
   {{- end -}}
-  {{- if .Values.global.image.tag -}}
+  {{- if and (not $tag) .Values.global.image.tag -}}
     {{- $tag = .Values.global.image.tag -}}
   {{- end -}}
+{{- end -}}
+{{- if not $tag -}}
+  {{- $tag = .Chart.AppVersion -}}
 {{- end -}}
 {{- if $registryName }}
 {{- printf "%s/%s:%s" $registryName $repositoryName $tag -}}

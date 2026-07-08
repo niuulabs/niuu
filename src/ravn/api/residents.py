@@ -57,6 +57,7 @@ _SESSION_STATUS_MAP = {
     "failed": "failed",
     "archived": "stopped",
 }
+_LIVE_SESSION_STATUSES = frozenset({"running", "idle"})
 
 # The workload types that ARE ravn agents you can chat with / steer (each runs
 # a Skuld room). Plain coding sessions are not "ravn sessions".
@@ -150,17 +151,22 @@ class ResidentDirectory:
             raise RuntimeError(
                 f"Forge sessions API returned unexpected payload: {type(sessions).__name__}"
             )
-        ravn_sessions = [
-            self._to_session(session)
-            for session in sessions
-            if isinstance(session, dict) and session.get("workload_type") in _RAVN_SESSION_WORKLOADS
-        ]
+        ravn_sessions = []
+        for session in sessions:
+            if not isinstance(session, dict):
+                continue
+            if session.get("workload_type") not in _RAVN_SESSION_WORKLOADS:
+                continue
+            mapped = self._to_session(session)
+            if _is_live_session(mapped):
+                ravn_sessions.append(mapped)
         forge_ids = {session["id"] for session in ravn_sessions}
-        ravn_sessions.extend(
-            self._standalone_to_session(resident)
-            for resident in await self._discover_standalone()
-            if resident.id not in forge_ids
-        )
+        for resident in await self._discover_standalone():
+            if resident.id in forge_ids:
+                continue
+            mapped = self._standalone_to_session(resident)
+            if _is_live_session(mapped):
+                ravn_sessions.append(mapped)
         return ravn_sessions
 
     async def get_session(
@@ -187,7 +193,10 @@ class ResidentDirectory:
             or session.get("workload_type") not in _RAVN_SESSION_WORKLOADS
         ):
             return await self._standalone_session(session_id)
-        return self._to_session(session)
+        mapped = self._to_session(session)
+        if not _is_live_session(mapped):
+            return None
+        return mapped
 
     @staticmethod
     def _to_session(session: dict[str, Any]) -> dict[str, Any]:
@@ -241,7 +250,10 @@ class ResidentDirectory:
     async def _standalone_session(self, session_id: str) -> dict[str, Any] | None:
         for resident in await self._discover_standalone():
             if resident.id == session_id:
-                return self._standalone_to_session(resident)
+                mapped = self._standalone_to_session(resident)
+                if _is_live_session(mapped):
+                    return mapped
+                return None
         return None
 
     @staticmethod
@@ -274,3 +286,8 @@ class ResidentDirectory:
             "chat_endpoint": resident.chat_endpoint,
             "title": resident.resident_name,
         }
+
+
+def _is_live_session(session: dict[str, Any]) -> bool:
+    """Return True for sessions worth showing in the live Ravn control room."""
+    return str(session.get("status") or "") in _LIVE_SESSION_STATUSES

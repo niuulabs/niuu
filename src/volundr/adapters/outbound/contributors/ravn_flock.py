@@ -743,6 +743,7 @@ class RavnFlockContributor(SessionContributor):
         persona_source_configmap_name: str = _PERSONA_CM_DEFAULT_NAME,
         persona_source_mount_path: str = _PERSONA_CM_DEFAULT_MOUNT_PATH,
         persona_source_http_base_url: str = "",
+        init_writer_image: str = _INIT_WRITER_IMAGE,
         workload_identity_volume_name: str = "niuu-workload-identity",
         workload_identity_mount_path: str = _DEFAULT_WORKLOAD_IDENTITY_MOUNT_PATH,
         workload_identity_token_file_env: str = "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE",
@@ -756,6 +757,7 @@ class RavnFlockContributor(SessionContributor):
         self._persona_source_configmap_name = persona_source_configmap_name
         self._persona_source_mount_path = persona_source_mount_path
         self._persona_source_http_base_url = persona_source_http_base_url
+        self._init_writer_image = init_writer_image
         self._workload_identity_volume_name = workload_identity_volume_name
         self._workload_identity_mount_path = workload_identity_mount_path.rstrip("/")
         self._workload_identity_token_file_env = workload_identity_token_file_env
@@ -1073,7 +1075,7 @@ class RavnFlockContributor(SessionContributor):
             init_containers.append(
                 {
                     "name": f"write-ravn-cfg-{persona}",
-                    "image": _INIT_WRITER_IMAGE,
+                    "image": self._init_writer_image,
                     "command": ["sh", "-c", heredoc],
                     "securityContext": _INIT_WRITER_SECURITY_CONTEXT.copy(),
                     "volumeMounts": [

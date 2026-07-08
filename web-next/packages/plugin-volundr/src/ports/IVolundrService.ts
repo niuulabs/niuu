@@ -75,12 +75,7 @@ export interface VolundrConversationHistory {
 }
 
 export type PermissionAutoApprovalReason =
-  | 'allowed'
-  | 'disabled'
-  | 'no_command'
-  | 'denylist'
-  | 'no_allowlist_match'
-  | 'endpoint_error';
+  'allowed' | 'disabled' | 'no_command' | 'denylist' | 'no_allowlist_match' | 'endpoint_error';
 
 export interface PermissionAutoApprovalRequest {
   requestId: string;

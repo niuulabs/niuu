@@ -70,8 +70,14 @@ data:
         # Workload identity (config-first; replaces the legacy
         # NIUU_WORKLOAD_IDENTITY_* env vars on the ravn container).
         workload_token_file: "/var/run/secrets/niuu-workload/token"
-        {{- if .Values.volundr.apiUrl }}
+        {{- if .Values.resident.platform.workloadExchangeUrl }}
+        workload_exchange_url: {{ .Values.resident.platform.workloadExchangeUrl | quote }}
+        {{- else if .Values.volundr.apiUrl }}
         workload_exchange_url: {{ printf "%s/api/v1/tokens/workload/exchange" (.Values.volundr.apiUrl | trimSuffix "/") | quote }}
+        {{- end }}
+        {{- with .Values.resident.platform.workflowAliases }}
+        workflow_aliases:
+          {{- toYaml . | nindent 10 }}
         {{- end }}
       {{- end }}
     initiative:
@@ -82,6 +88,12 @@ data:
       enabled: true
       instances:
         {{- toYaml $instances | nindent 8 }}
+      source_trigger:
+        enabled: {{ .Values.resident.mimir.sourceTrigger.enabled }}
+        poll_interval_seconds: {{ .Values.resident.mimir.sourceTrigger.pollIntervalSeconds }}
+      staleness_trigger:
+        enabled: {{ .Values.resident.mimir.stalenessTrigger.enabled }}
+        schedule_hours: {{ .Values.resident.mimir.stalenessTrigger.scheduleHours }}
       write_routing:
         rules: []
         {{- if $writeDefault }}
@@ -107,6 +119,9 @@ data:
       enabled: true
       broker_url: "ws://127.0.0.1:8081/ws/ravn"
       display_name: {{ $residentName | quote }}
+      reconnect_delay_seconds: {{ .Values.resident.skuld.reconnectDelaySeconds | default 2 }}
+      max_reconnect_attempts: {{ .Values.resident.skuld.maxReconnectAttempts | default 60 }}
+      session_ready_timeout_seconds: {{ .Values.resident.skuld.sessionReadyTimeoutSeconds | default 600 }}
     environment:
       resident_name: {{ $residentName | quote }}
 {{- end }}

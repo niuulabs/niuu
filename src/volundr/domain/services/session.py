@@ -803,10 +803,13 @@ class SessionService:
         if not workload_config and session.workload_config:
             workload_config = dict(session.workload_config)
 
-        # Set chat_endpoint eagerly — URL is deterministic from session ID
-        host = _public_loopback_host()
-        port = os.environ.get("NIUU_SERVER_PORT", "8080")
-        chat_endpoint = f"ws://{host}:{port}/s/{session_id}/session"
+        # Set chat_endpoint eagerly — Flux/Gateway sessions know their public
+        # route before the pod is ready; local mode falls back to the root proxy.
+        chat_endpoint = self._pod_manager.initial_chat_endpoint(session)
+        if not chat_endpoint:
+            host = _public_loopback_host()
+            port = os.environ.get("NIUU_SERVER_PORT", "8080")
+            chat_endpoint = f"ws://{host}:{port}/s/{session_id}/session"
 
         starting = session.model_copy(
             update={
@@ -1373,6 +1376,7 @@ class SessionService:
         """
         active_sessions = [
             *await self._repository.list(status=SessionStatus.STARTING),
+            *await self._repository.list(status=SessionStatus.PROVISIONING),
             *await self._repository.list(status=SessionStatus.RUNNING),
         ]
         reconciled = 0
@@ -1392,6 +1396,9 @@ class SessionService:
             reconciled += 1
             if self._broadcaster is not None:
                 await self._broadcaster.publish_session_updated(final)
+            if session.status != SessionStatus.RUNNING and final.status == SessionStatus.RUNNING:
+                await self._register_communication_routes(final)
+                await self._emit_session_started(final)
         return reconciled
 
     async def reconcile_session_if_active(self, session_id: UUID) -> Session | None:
@@ -1399,7 +1406,11 @@ class SessionService:
         session = await self._repository.get(session_id)
         if session is None:
             return None
-        if session.status not in {SessionStatus.STARTING, SessionStatus.RUNNING}:
+        if session.status not in {
+            SessionStatus.STARTING,
+            SessionStatus.PROVISIONING,
+            SessionStatus.RUNNING,
+        }:
             return session
 
         actual_status = await self._pod_manager.status(session)
@@ -1416,6 +1427,9 @@ class SessionService:
         final = await self._repository.update(updated)
         if self._broadcaster is not None:
             await self._broadcaster.publish_session_updated(final)
+        if session.status != SessionStatus.RUNNING and final.status == SessionStatus.RUNNING:
+            await self._register_communication_routes(final)
+            await self._emit_session_started(final)
         return final
 
     async def mark_session_dead(self, session_id: UUID) -> Session | None:

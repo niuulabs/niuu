@@ -340,6 +340,8 @@ const rawRavn = {
   model: 'balanced',
   created_at: '2026-04-01T12:00:00Z',
   updated_at: '2026-04-02T09:30:00Z',
+  location: 'midgard',
+  deployment: 'standalone',
 };
 
 describe('buildRavnRavenAdapter', () => {
@@ -356,6 +358,8 @@ describe('buildRavnRavenAdapter', () => {
         model: 'balanced',
         createdAt: rawRavn.created_at,
         updatedAt: rawRavn.updated_at,
+        location: 'midgard',
+        deployment: 'standalone',
       },
     ]);
   });

@@ -265,6 +265,10 @@ class TimelineRepository(ABC):
 class PodManager(ABC):
     """Port for managing session pods (Skuld, code-server, terminal)."""
 
+    def initial_chat_endpoint(self, session: Session) -> str | None:
+        """Return the deterministic chat endpoint before pods are ready, if known."""
+        return None
+
     @abstractmethod
     async def start(
         self,

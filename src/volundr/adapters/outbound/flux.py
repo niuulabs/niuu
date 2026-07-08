@@ -90,6 +90,9 @@ class FluxPodManager(PodManager):
             return f"wss://{self._gateway_domain}/s/{session_id}/session"
         return f"{self._chat_scheme}://{self._session_host(session_name)}{self._chat_path}"
 
+    def initial_chat_endpoint(self, session: Session) -> str | None:
+        return self._chat_endpoint(session.name, str(session.id))
+
     def _code_endpoint(self, session_name: str, session_id: str = "") -> str:
         if self._gateway_domain:
             return f"https://{self._gateway_domain}/s/{session_id}/"
@@ -263,6 +266,8 @@ class FluxPodManager(PodManager):
             )
         except Exception as exc:
             if "404" in str(exc) or "NotFound" in str(exc):
+                if session.status == SessionStatus.STARTING:
+                    return SessionStatus.STARTING
                 return SessionStatus.STOPPED
             raise
 

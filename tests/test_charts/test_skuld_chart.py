@@ -393,10 +393,34 @@ class TestResidentWorkloadIdentityConfigFirst:
             "name": "Muninn",
             "persona": "product-steward",
             "routeId": "muninn",
+            "skuld": {
+                "reconnectDelaySeconds": 1,
+                "maxReconnectAttempts": 120,
+                "sessionReadyTimeoutSeconds": 900,
+            },
             "platform": {
                 "enabled": True,
                 "baseUrl": "http://niuu-volundr.volundr.svc.cluster.local:80",
+                "workflowAliases": {
+                    "research": {
+                        "name": "Research Campaign",
+                        "defaults": {"gate_auto_forward_after": ""},
+                    }
+                },
             },
+            "mimir": {
+                "sourceTrigger": {"enabled": False, "pollIntervalSeconds": 300},
+                "stalenessTrigger": {"enabled": False, "scheduleHours": 24},
+            },
+        },
+        "mimir": {
+            "instances": [
+                {
+                    "name": "shared",
+                    "role": "shared",
+                    "url": "http://niuu-mimir-shared.volundr.svc.cluster.local",
+                }
+            ]
         },
         "volundr": {"apiUrl": "https://volundr.example"},
     }
@@ -426,12 +450,32 @@ class TestResidentWorkloadIdentityConfigFirst:
             "https://volundr.example/api/v1/tokens/workload/exchange"
         )
 
+    def test_resident_broker_does_not_report_as_forge_session(self, rendered):
+        configmaps = self._configmaps(rendered)
+        broker_cfg = next(
+            yaml.safe_load(cm["data"]["config.yaml"])
+            for cm in configmaps.values()
+            if "config.yaml" in cm.get("data", {})
+            and "transport_adapter" in cm["data"]["config.yaml"]
+        )
+        assert "volundr_api_url" not in broker_cfg
+
     def test_pod_has_no_workload_identity_env_vars(self, rendered):
         deployment = _deployment_from_rendered(rendered)
         for container in deployment["spec"]["template"]["spec"]["containers"]:
             env_names = {entry["name"] for entry in container.get("env", [])}
             offending = {n for n in env_names if n.startswith("NIUU_WORKLOAD_IDENTITY")}
             assert not offending, f"{container['name']} still injects {offending}"
+
+    def test_resident_broker_has_no_volundr_api_env_var(self, rendered):
+        deployment = _deployment_from_rendered(rendered)
+        broker = next(
+            c
+            for c in deployment["spec"]["template"]["spec"]["containers"]
+            if c["name"] == "skuld"
+        )
+        env_names = {entry["name"] for entry in broker.get("env", [])}
+        assert "SKULD__VOLUNDR_API_URL" not in env_names
 
     def test_ravn_config_carries_platform_workload_fields(self, rendered):
         configmaps = self._configmaps(rendered)
@@ -443,11 +487,80 @@ class TestResidentWorkloadIdentityConfigFirst:
         assert platform["workload_exchange_url"] == (
             "https://volundr.example/api/v1/tokens/workload/exchange"
         )
+        assert platform["workflow_aliases"]["research"]["name"] == "Research Campaign"
+        assert platform["workflow_aliases"]["research"]["defaults"]["gate_auto_forward_after"] == ""
+        skuld = ravn_cfg["skuld"]
+        assert skuld["reconnect_delay_seconds"] == 1
+        assert skuld["max_reconnect_attempts"] == 120
+        assert skuld["session_ready_timeout_seconds"] == 900
+        mimir = ravn_cfg["mimir"]
+        assert mimir["source_trigger"]["enabled"] is False
+        assert mimir["source_trigger"]["poll_interval_seconds"] == 300
+        assert mimir["staleness_trigger"]["enabled"] is False
+        assert mimir["staleness_trigger"]["schedule_hours"] == 24
+
+    def test_ravn_config_can_override_platform_workload_exchange_url(self, tmp_path):
+        values = dict(self.RESIDENT_VALUES)
+        values["resident"] = {
+            **values["resident"],
+            "platform": {
+                **values["resident"]["platform"],
+                "workloadExchangeUrl": "https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange",
+            },
+        }
+        rendered = _render_skuld_chart(tmp_path, values)
+        configmaps = self._configmaps(rendered)
+        ravn_cm = next(cm for name, cm in configmaps.items() if name.endswith("-ravn-config"))
+        ravn_cfg = yaml.safe_load(ravn_cm["data"]["config.yaml"])
+
+        assert (
+            ravn_cfg["gateway"]["platform"]["workload_exchange_url"]
+            == "https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange"
+        )
 
     def test_default_render_has_no_workload_identity_config(self, tmp_path):
         rendered = _render_skuld_chart(tmp_path, {})
         assert "workload_identity" not in rendered
         assert "NIUU_WORKLOAD_IDENTITY" not in rendered
+
+
+class TestVolundrReportingConfig:
+    """Volundr reporting stays enabled for normal workflow sessions."""
+
+    def _broker_config(self, rendered: str) -> dict:
+        for doc in yaml.safe_load_all(rendered):
+            if (
+                isinstance(doc, dict)
+                and doc.get("kind") == "ConfigMap"
+                and "config.yaml" in doc.get("data", {})
+                and "transport_adapter" in doc["data"]["config.yaml"]
+            ):
+                return yaml.safe_load(doc["data"]["config.yaml"])
+        pytest.fail("Skuld broker config was not rendered")
+        raise AssertionError("Skuld broker config was not rendered")
+
+    def test_non_resident_sessions_keep_volundr_reporting(self, tmp_path):
+        rendered = _render_skuld_chart(
+            tmp_path,
+            {
+                "session": {"id": "11111111-1111-4111-8111-111111111111"},
+                "volundr": {"apiUrl": "https://volundr.example"},
+            },
+        )
+
+        broker_cfg = self._broker_config(rendered)
+        deployment = _deployment_from_rendered(rendered)
+        broker = next(
+            c
+            for c in deployment["spec"]["template"]["spec"]["containers"]
+            if c["name"] == "skuld"
+        )
+        volundr_env = next(
+            entry for entry in broker.get("env", []) if entry["name"] == "SKULD__VOLUNDR_API_URL"
+        )
+
+        assert broker_cfg["volundr_api_url"] == "https://volundr.example"
+        assert volundr_env["value"] == "https://volundr.example"
 
 
 def _render_skuld_chart(tmp_path: Path, values: dict) -> str:

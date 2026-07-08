@@ -42,6 +42,32 @@ DirectedMessageHandler = Callable[[str, dict[str, Any] | None], Awaitable[None]]
 AuthTokenProvider = Callable[[], Awaitable[str]]
 
 
+def _matches_subscription(event_type: str, subscriptions: list[str]) -> bool:
+    for pattern in subscriptions:
+        if pattern == event_type:
+            return True
+        if pattern.endswith(".*") and event_type.startswith(pattern[:-1]):
+            return True
+        if pattern.endswith("*") and event_type.startswith(pattern[:-1]):
+            return True
+    return False
+
+
+def _render_room_outcome_message(frame: dict[str, Any], event_type: str) -> str:
+    summary = str(frame.get("summary") or "").strip()
+    verdict = str(frame.get("verdict") or "").strip()
+    fields = frame.get("fields") if isinstance(frame.get("fields"), dict) else {}
+    lines = [f"Joined session outcome received: {event_type}"]
+    if summary:
+        lines.append(f"Summary: {summary}")
+    if verdict:
+        lines.append(f"Verdict: {verdict}")
+    if fields:
+        lines.append(f"Fields: {json.dumps(fields, sort_keys=True, default=str)}")
+    lines.append("This matches your subscriptions. Digest the result and update your operator.")
+    return "\n".join(lines)
+
+
 class SkuldChannel(ChannelPort):
     """Delivers Ravn events to the browser via the Skuld WebSocket broker.
 
@@ -90,6 +116,7 @@ class SkuldChannel(ChannelPort):
         self._buffer: list[RavnEvent] = []
         self._on_directed_message: DirectedMessageHandler | None = None
         self._recv_task: asyncio.Task | None = None
+        self._connect_gave_up = False
 
     async def emit(self, event: RavnEvent) -> None:
         """Emit *event* to the Skuld broker as an NDJSON frame."""
@@ -166,6 +193,8 @@ class SkuldChannel(ChannelPort):
                 await asyncio.sleep(self._reconnect_delay)
                 with suppress(Exception):
                     await self.connect()
+                if self._connect_gave_up:
+                    return
                 continue
             try:
                 raw = await ws.recv()
@@ -177,6 +206,21 @@ class SkuldChannel(ChannelPort):
                         metadata = None
                     if content:
                         await self._on_directed_message(content, metadata)
+                elif frame.get("type") == "room_outcome" and self._on_directed_message:
+                    event_type = str(frame.get("eventType") or "").strip()
+                    if event_type and _matches_subscription(event_type, self._subscribes_to):
+                        metadata = {
+                            "room_outcome": True,
+                            "event_type": event_type,
+                            "participant_id": frame.get("participantId") or "",
+                            "fields": frame.get("fields") or {},
+                            "summary": frame.get("summary") or "",
+                            "verdict": frame.get("verdict") or "",
+                        }
+                        await self._on_directed_message(
+                            _render_room_outcome_message(frame, event_type),
+                            metadata,
+                        )
             except websockets.exceptions.ConnectionClosed:
                 logger.info("SkuldChannel: recv loop — connection closed, waiting for reconnect.")
                 await asyncio.sleep(self._reconnect_delay)
@@ -194,6 +238,7 @@ class SkuldChannel(ChannelPort):
 
     async def _do_connect(self) -> None:
         attempts = 0
+        self._connect_gave_up = False
         while attempts < self._max_reconnect_attempts:
             try:
                 connect_kwargs: dict = {}
@@ -247,6 +292,7 @@ class SkuldChannel(ChannelPort):
             self._broker_url,
             self._max_reconnect_attempts,
         )
+        self._connect_gave_up = True
 
     async def _send(self, payload: str) -> None:
         """Send *payload* over the WebSocket, reconnecting if necessary."""

@@ -709,7 +709,10 @@ class AgentConfig(BaseModel):
 
     model: str = Field(default="claude-sonnet-4-6")
     max_tokens: int = Field(default=8192)
-    max_iterations: int = Field(default=20, description="Max tool-call iterations per turn.")
+    max_iterations: int = Field(
+        default=20,
+        description="Max tool-call iterations per turn. Set 0 for no cap.",
+    )
     system_prompt: str = Field(
         default=(
             "You are Ravn, a helpful AI assistant. "
@@ -949,6 +952,39 @@ class SkuldChannelConfig(BaseModel):
         description="Reconnect attempts before giving up. Also used for the "
         "cross-session joins the session_join tool opens.",
     )
+    session_ready_timeout_seconds: float = Field(
+        default=600.0,
+        gt=0,
+        description=(
+            "Maximum time to wait for a launched Volundr session to reach "
+            "running before opening a cross-session join."
+        ),
+    )
+
+
+class PlatformWorkflowAliasConfig(BaseModel):
+    """Named workflow launch target for resident platform tools."""
+
+    workflow_id: str = Field(
+        default="",
+        description="Concrete Ting workflow id. Preferred when known.",
+    )
+    name: str = Field(
+        default="",
+        description="Exact workflow name to resolve when workflow_id is not configured.",
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Tags that must be present on the resolved workflow.",
+    )
+    scope: str = Field(
+        default="all",
+        description="Workflow scope to query while resolving by name or tags.",
+    )
+    defaults: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Default launch fields merged before explicit tool input.",
+    )
 
 
 class PlatformToolsConfig(BaseModel):
@@ -982,6 +1018,13 @@ class PlatformToolsConfig(BaseModel):
     workload_audiences: list[str] = Field(
         default_factory=lambda: ["volundr-api", "forge", "ting", "mimir", "guild"],
         description="Target service audiences requested from workload token exchange.",
+    )
+    workflow_aliases: dict[str, PlatformWorkflowAliasConfig] = Field(
+        default_factory=dict,
+        description=(
+            "Resident-local aliases for Ting workflow launches. "
+            "Example: research -> workflow id/name plus launch defaults."
+        ),
     )
 
 

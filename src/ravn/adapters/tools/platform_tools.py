@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -801,6 +802,8 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
         workload_token_file: str = _DEFAULT_WORKLOAD_TOKEN_FILE,
         exchange_url: str = "",
         audiences: list[str] | None = None,
+        workflow_aliases: dict[str, dict[str, Any]] | None = None,
+        session_join_manager: Any | None = None,
     ) -> None:
         self._set_platform_auth(
             base_url=base_url,
@@ -810,6 +813,12 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
             exchange_url=exchange_url,
             audiences=audiences,
         )
+        self._workflow_aliases = {
+            str(name).strip().lower(): dict(config or {})
+            for name, config in (workflow_aliases or {}).items()
+            if str(name).strip()
+        }
+        self._session_join_manager = session_join_manager
 
     @property
     def name(self) -> str:
@@ -836,7 +845,16 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
                 },
                 "workflow_id": {
                     "type": "string",
-                    "description": "Workflow UUID (required for get and launch).",
+                    "description": (
+                        "Workflow UUID (required for get; optional for launch with alias)."
+                    ),
+                },
+                "workflow_alias": {
+                    "type": "string",
+                    "description": (
+                        "Configured workflow alias for launch, such as research or planning. "
+                        "The alias can provide workflow_id/name/tags and launch defaults."
+                    ),
                 },
                 "scope": {
                     "type": "string",
@@ -960,10 +978,14 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
             return _err(f"Failed to get workflow {workflow_id}: {exc}")
 
     async def _launch(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
-        workflow_id = str(input.get("workflow_id", "") or "").strip()
-        prompt = str(input.get("prompt", "") or "").strip()
+        launch_input = await self._launch_input_with_alias(client, input)
+        if isinstance(launch_input, ToolResult):
+            return launch_input
+
+        workflow_id = str(launch_input.get("workflow_id", "") or "").strip()
+        prompt = str(launch_input.get("prompt", "") or "").strip()
         if not workflow_id:
-            return _err("workflow_id is required for launch action")
+            return _err("workflow_id or workflow_alias is required for launch action")
         if not prompt:
             return _err("prompt is required for launch action")
 
@@ -981,28 +1003,366 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
             "mimir_path",
         )
         for key in scalar_keys:
-            value = input.get(key)
+            value = launch_input.get(key)
             if value not in (None, ""):
                 body[key] = value
 
-        if integration_ids := input.get("integration_ids"):
+        if integration_ids := launch_input.get("integration_ids"):
             body["integration_ids"] = integration_ids
-        if context := input.get("context"):
+        if context := launch_input.get("context"):
             body["context"] = context
-        if provenance := input.get("provenance"):
+        if provenance := launch_input.get("provenance"):
             body["provenance"] = provenance
         # Distinct from the scalar loop: an empty string is meaningful here
         # (it disables gate auto-forward so approvals wait for the human).
-        gate_auto_forward = input.get("gate_auto_forward_after")
+        gate_auto_forward = launch_input.get("gate_auto_forward_after")
         if gate_auto_forward is not None:
             body["gateAutoForwardAfter"] = str(gate_auto_forward)
 
         try:
             resp = await client.post(f"{_TING_WORKFLOWS_PATH}/{workflow_id}/launch", json=body)
             resp.raise_for_status()
-            return _ok(resp.json())
+            payload = resp.json()
+            if isinstance(payload, dict):
+                await self._join_launched_session(payload)
+            return _ok(payload)
         except Exception as exc:
             return _err(f"Failed to launch workflow {workflow_id}: {exc}")
+
+    async def _join_launched_session(self, payload: dict[str, Any]) -> None:
+        manager = self._session_join_manager
+        if manager is None:
+            return
+        session_id = str(payload.get("sessionId") or payload.get("session_id") or "").strip()
+        chat_endpoint = str(
+            payload.get("chatEndpoint") or payload.get("chat_endpoint") or ""
+        ).strip()
+        if not session_id or not chat_endpoint:
+            payload["observerJoin"] = {
+                "status": "skipped",
+                "reason": "launch response did not include sessionId and chatEndpoint",
+            }
+            return
+        try:
+            payload["observerJoin"] = await manager.join(session_id, chat_endpoint)
+        except Exception as exc:
+            logger.warning("Failed to join launched workflow session %s", session_id, exc_info=True)
+            payload["observerJoin"] = {"status": "failed", "reason": str(exc)}
+
+    async def _launch_input_with_alias(
+        self, client: httpx.AsyncClient, input: dict
+    ) -> dict[str, Any] | ToolResult:
+        alias_name = str(input.get("workflow_alias") or input.get("alias") or "").strip()
+        if not alias_name:
+            return input
+
+        alias = self._workflow_aliases.get(alias_name.lower())
+        if alias is None:
+            return _err(f"workflow_alias {alias_name!r} is not configured")
+
+        defaults = alias.get("defaults") or {}
+        if not isinstance(defaults, dict):
+            return _err(f"workflow_alias {alias_name!r} defaults must be an object")
+
+        launch_input = {**defaults, **input}
+        launch_input["_workflow_alias_name"] = alias_name.lower()
+        self._apply_alias_input_conventions(alias_name, launch_input)
+        if not str(launch_input.get("workflow_id", "") or "").strip():
+            workflow_id, error = await self._resolve_workflow_alias(client, alias_name, alias)
+            if error:
+                return _err(error)
+            launch_input["workflow_id"] = workflow_id
+        return launch_input
+
+    def _apply_alias_input_conventions(
+        self,
+        alias_name: str,
+        launch_input: dict[str, Any],
+    ) -> None:
+        return
+
+    async def _resolve_workflow_alias(
+        self, client: httpx.AsyncClient, alias_name: str, alias: dict[str, Any]
+    ) -> tuple[str, str]:
+        workflow_id = str(alias.get("workflow_id", "") or "").strip()
+        if workflow_id:
+            return workflow_id, ""
+
+        name = str(alias.get("name", "") or "").strip()
+        tags = [str(tag).strip() for tag in alias.get("tags") or [] if str(tag).strip()]
+        if not name and not tags:
+            return "", f"workflow_alias {alias_name!r} needs workflow_id, name, or tags"
+
+        params: dict[str, str] = {}
+        if scope := str(alias.get("scope", "") or "").strip():
+            params["scope"] = scope
+        try:
+            resp = await client.get(_TING_WORKFLOWS_PATH, params=params or None)
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as exc:
+            return "", f"Failed to resolve workflow_alias {alias_name!r}: {exc}"
+
+        workflows = _workflow_list(payload)
+        matches = [
+            workflow
+            for workflow in workflows
+            if _workflow_matches_alias(workflow, name=name, tags=tags)
+        ]
+        if not matches:
+            return "", f"workflow_alias {alias_name!r} did not match any workflows"
+        if len(matches) > 1:
+            names = ", ".join(str(item.get("name") or item.get("id") or "") for item in matches[:3])
+            return "", f"workflow_alias {alias_name!r} matched multiple workflows: {names}"
+
+        resolved = str(matches[0].get("id") or matches[0].get("workflow_id") or "").strip()
+        if not resolved:
+            return "", f"workflow_alias {alias_name!r} matched a workflow without an id"
+        return resolved, ""
+
+
+# ---------------------------------------------------------------------------
+# ting_research
+# ---------------------------------------------------------------------------
+
+
+class TingResearchTool(TingWorkflowTool):
+    """Launch persistent Ting Research campaigns."""
+
+    @property
+    def name(self) -> str:
+        return "ting_research"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Launch persistent Ting Research campaigns. Use this when the operator asks "
+            "for research so the run appears in the Ting Research tab and writes durable "
+            "campaign metadata."
+        )
+
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["launch"],
+                    "description": "Operation to perform.",
+                },
+                "question": {
+                    "type": "string",
+                    "description": "Research question or brief.",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Alias for question when launching from chat.",
+                },
+                "workflow_id": {
+                    "type": "string",
+                    "description": "Optional Research Campaign workflow UUID override.",
+                },
+                "workflow_alias": {
+                    "type": "string",
+                    "description": (
+                        "Configured research workflow alias. Defaults to the configured "
+                        "'research' alias when present."
+                    ),
+                },
+                "mode": {
+                    "type": "string",
+                    "description": "Research mode, such as exploratory or evaluative.",
+                },
+                "name": {"type": "string", "description": "Optional campaign title."},
+                "repo": {"type": "string", "description": "Optional repo URL or org/repo."},
+                "branch": {"type": "string", "description": "Optional repo branch."},
+                "model": {"type": "string", "description": "Optional model override."},
+                "definition": {
+                    "type": "string",
+                    "description": "Optional Volundr session definition override.",
+                },
+                "connection_id": {
+                    "type": "string",
+                    "description": "Optional Volundr target for the workflow execution.",
+                },
+                "audience": {"type": "string", "description": "Optional target audience."},
+                "deliverable": {"type": "string", "description": "Optional deliverable."},
+                "success": {"type": "string", "description": "Optional success criteria."},
+                "constraints": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional research constraints.",
+                },
+                "monitoring_cadence": {
+                    "type": "string",
+                    "description": "Optional monitoring cadence.",
+                },
+                "gate_auto_forward_after": {
+                    "type": "string",
+                    "description": (
+                        "Override every gate's autoForwardAfter. Pass an empty string "
+                        "to disable auto-forward."
+                    ),
+                },
+                "context": {
+                    "type": "object",
+                    "description": "Optional structured research launch context.",
+                },
+            },
+            "required": ["action"],
+        }
+
+    async def execute(self, input: dict) -> ToolResult:
+        action = input.get("action", "")
+        if action != "launch":
+            return _err(f"Unknown action: {action!r}")
+        async with await self._client() as client:
+            return await self._launch(client, input)
+
+    async def _launch(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
+        launch_seed = dict(input)
+        if (
+            not str(launch_seed.get("workflow_id", "") or "").strip()
+            and not str(
+                launch_seed.get("workflow_alias", "") or launch_seed.get("alias", "")
+            ).strip()
+            and "research" in self._workflow_aliases
+        ):
+            launch_seed["workflow_alias"] = "research"
+
+        launch_input = await self._launch_input_with_alias(client, launch_seed)
+        if isinstance(launch_input, ToolResult):
+            return launch_input
+
+        context = launch_input.get("context")
+        context = context if isinstance(context, dict) else {}
+        prompt = str(launch_input.get("prompt", "") or "").strip()
+        question = str(launch_input.get("question") or context.get("question") or prompt).strip()
+        if not question:
+            return _err("question or prompt is required for launch action")
+
+        workflow_id = str(launch_input.get("workflow_id", "") or "").strip()
+        body: dict[str, object] = {
+            "question": question,
+            "mode": str(context.get("mode") or launch_input.get("mode") or "exploratory"),
+        }
+        if workflow_id:
+            body["workflowId"] = workflow_id
+        field_map = {
+            "name": "name",
+            "repo": "repo",
+            "branch": "branch",
+            "model": "model",
+            "definition": "definition",
+            "audience": "audience",
+            "deliverable": "deliverable",
+            "success": "success",
+            "connection_id": "connectionId",
+            "monitoring_cadence": "monitoringCadence",
+        }
+        for source, target in field_map.items():
+            value = launch_input.get(source)
+            if value in (None, ""):
+                value = context.get(source)
+            if value not in (None, ""):
+                body[target] = value
+        constraints = launch_input.get("constraints", context.get("constraints"))
+        if isinstance(constraints, list):
+            body["constraints"] = constraints
+        gate_auto_forward = launch_input.get("gate_auto_forward_after")
+        if gate_auto_forward is not None:
+            body["gateAutoForwardAfter"] = str(gate_auto_forward)
+
+        try:
+            resp = await client.post("/api/v1/ting/research/campaigns", json=body)
+            resp.raise_for_status()
+            payload = resp.json()
+            if isinstance(payload, dict):
+                await self._join_launched_session(payload)
+            return _ok(payload)
+        except Exception as exc:
+            suffix = f" {workflow_id}" if workflow_id else ""
+            return _err(f"Failed to launch research campaign{suffix}: {exc}")
+
+    def _apply_alias_input_conventions(
+        self,
+        alias_name: str,
+        launch_input: dict[str, Any],
+    ) -> None:
+        if alias_name.strip().lower() != "research":
+            return
+
+        prompt = str(launch_input.get("prompt", "") or "").strip()
+        if not prompt:
+            return
+
+        context = launch_input.get("context")
+        if not isinstance(context, dict):
+            context = {}
+        else:
+            context = dict(context)
+        context.setdefault("question", prompt)
+        context.setdefault("mode", "exploratory")
+        launch_input["context"] = context
+
+
+def _workflow_list(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("workflows", "items", "data"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _workflow_matches_alias(workflow: dict[str, Any], *, name: str, tags: list[str]) -> bool:
+    if name:
+        workflow_names = {
+            str(workflow.get("name") or "").strip().lower(),
+            str(workflow.get("id") or "").strip().lower(),
+            str(workflow.get("workflow_id") or "").strip().lower(),
+        }
+        if name.lower() not in workflow_names:
+            return False
+    if tags:
+        workflow_tags = {tag.lower() for tag in _workflow_tags(workflow)}
+        if not {tag.lower() for tag in tags}.issubset(workflow_tags):
+            return False
+    return True
+
+
+def _workflow_tags(workflow: dict[str, Any]) -> list[str]:
+    candidates: list[Any] = [workflow.get("tags")]
+    for parent in ("graph", "metadata"):
+        value = workflow.get(parent)
+        if isinstance(value, dict):
+            candidates.append(value.get("tags"))
+    for value in candidates:
+        if isinstance(value, list):
+            return [str(tag) for tag in value if str(tag).strip()]
+    return []
+
+
+def _with_default_workflow_alias(
+    input: dict[str, Any],
+    aliases: dict[str, dict[str, Any]],
+    *names: str,
+) -> dict[str, Any]:
+    launch_seed = dict(input)
+    if (
+        str(launch_seed.get("workflow_id", "") or "").strip()
+        or str(launch_seed.get("workflow_alias", "") or launch_seed.get("alias", "")).strip()
+    ):
+        return launch_seed
+    for name in names:
+        if name in aliases:
+            launch_seed["workflow_alias"] = name
+            break
+    return launch_seed
 
 
 # ---------------------------------------------------------------------------
@@ -1138,10 +1498,11 @@ class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
 _TING_PLAN_PATH = "/api/v1/ting/sagas/plan"
 
 
-class TingPlanTool(_PlatformAuthMixin, ToolPort):
+class TingPlanTool(TingWorkflowTool):
     """Drive Ting's planning flow: spec text → gated plan → saga breakdown.
 
     Actions:
+    - ``launch``   — start a planning session from chat (requires ``prompt`` or ``spec``).
     - ``spawn``    — start a planning session (requires ``spec``; optional
       ``repo``, ``base_branch``, ``model``).
     - ``list``     — list active planning campaigns.
@@ -1163,8 +1524,8 @@ class TingPlanTool(_PlatformAuthMixin, ToolPort):
     def description(self) -> str:
         return (
             "Drive Ting's planning flow (spec → gated plan → structured "
-            "breakdown). Actions: spawn (spec required), list, status (slug "
-            "required), draft (slug required — returns the breakdown to "
+            "breakdown). Actions: launch/spawn (prompt/spec required), list, "
+            "status (slug required), draft (slug required — returns the breakdown to "
             "commit via ting_saga), feedback (slug + content required, "
             "decision approve|changes_requested), cancel (slug required)."
         )
@@ -1176,24 +1537,43 @@ class TingPlanTool(_PlatformAuthMixin, ToolPort):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["spawn", "list", "status", "draft", "feedback", "cancel"],
+                    "enum": ["launch", "spawn", "list", "status", "draft", "feedback", "cancel"],
                     "description": "Planning operation to perform.",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Planning prompt or brief (launch).",
                 },
                 "spec": {
                     "type": "string",
-                    "description": "Specification text to plan from (spawn).",
+                    "description": "Specification text to plan from (launch/spawn).",
+                },
+                "workflow_id": {
+                    "type": "string",
+                    "description": "Optional Saga Planning workflow UUID override.",
+                },
+                "workflow_alias": {
+                    "type": "string",
+                    "description": (
+                        "Configured planning workflow alias. Defaults to plan/planning "
+                        "when present."
+                    ),
                 },
                 "repo": {
                     "type": "string",
-                    "description": "Repository in org/repo form (spawn, optional).",
+                    "description": "Repository in org/repo form (launch/spawn, optional).",
                 },
                 "base_branch": {
                     "type": "string",
-                    "description": "Base branch for the planning session (spawn).",
+                    "description": "Base branch for the planning session (launch/spawn).",
                 },
                 "model": {
                     "type": "string",
-                    "description": "Model override for the planning session (spawn).",
+                    "description": "Model override for the planning session (launch/spawn).",
+                },
+                "connection_id": {
+                    "type": "string",
+                    "description": "Optional Volundr target for the workflow execution.",
                 },
                 "slug": {
                     "type": "string",
@@ -1224,6 +1604,8 @@ class TingPlanTool(_PlatformAuthMixin, ToolPort):
         action = input.get("action", "")
         async with await self._client() as client:
             match action:
+                case "launch":
+                    return await self._spawn(client, input)
                 case "spawn":
                     return await self._spawn(client, input)
                 case "list":
@@ -1240,19 +1622,33 @@ class TingPlanTool(_PlatformAuthMixin, ToolPort):
                     return _err(f"Unknown action: {action!r}")
 
     async def _spawn(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
-        spec = str(input.get("spec") or "").strip()
+        launch_seed = _with_default_workflow_alias(
+            input, self._workflow_aliases, "plan", "planning"
+        )
+        launch_input = await self._launch_input_with_alias(client, launch_seed)
+        if isinstance(launch_input, ToolResult):
+            return launch_input
+
+        spec = str(launch_input.get("spec") or launch_input.get("prompt") or "").strip()
         if not spec:
-            return _err("spec is required for spawn")
+            return _err("spec or prompt is required for launch/spawn")
         body = {
             "spec": spec,
-            "repo": str(input.get("repo") or ""),
-            "base_branch": str(input.get("base_branch") or "main"),
-            "model": str(input.get("model") or ""),
+            "repo": str(launch_input.get("repo") or ""),
+            "base_branch": str(launch_input.get("base_branch") or "main"),
+            "model": str(launch_input.get("model") or ""),
         }
+        if workflow_id := str(launch_input.get("workflow_id") or "").strip():
+            body["workflowId"] = workflow_id
+        if connection_id := str(launch_input.get("connection_id") or "").strip():
+            body["connectionId"] = connection_id
         try:
             resp = await client.post(_TING_PLAN_PATH, json=body)
             resp.raise_for_status()
-            return _ok(resp.json())
+            payload = resp.json()
+            if isinstance(payload, dict):
+                await self._join_launched_session(payload)
+            return _ok(payload)
         except Exception as exc:
             return _err(f"Failed to spawn planning session: {exc}")
 
@@ -1310,10 +1706,11 @@ class TingPlanTool(_PlatformAuthMixin, ToolPort):
 _TING_SPECS_PATH = "/api/v1/ting/specs/campaigns"
 
 
-class TingSpecTool(_PlatformAuthMixin, ToolPort):
+class TingSpecTool(TingWorkflowTool):
     """Follow and review Ting specification campaigns (PRD/SRD/SDD gates).
 
     Actions:
+    - ``launch``    — start a specification campaign (requires ``prompt``).
     - ``list``      — list spec campaigns.
     - ``status``    — one campaign with pending gates (requires ``slug``).
     - ``artifacts`` — list a campaign's document artifacts (requires ``slug``).
@@ -1330,7 +1727,8 @@ class TingSpecTool(_PlatformAuthMixin, ToolPort):
     def description(self) -> str:
         return (
             "Follow and review Ting specification campaigns (PRD → SRD → "
-            "SDD with human gates). Actions: list, status (slug required), "
+            "SDD with human gates). Actions: launch (prompt required), list, "
+            "status (slug required), "
             "artifacts (slug required), artifact (slug + path required), "
             "review (slug required, decision approve|changes_requested, "
             "notes optional)."
@@ -1343,8 +1741,44 @@ class TingSpecTool(_PlatformAuthMixin, ToolPort):
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "status", "artifacts", "artifact", "review"],
+                    "enum": [
+                        "launch",
+                        "create",
+                        "list",
+                        "status",
+                        "artifacts",
+                        "artifact",
+                        "review",
+                    ],
                     "description": "Spec-campaign operation to perform.",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Specification brief or request (launch/create).",
+                },
+                "workflow_id": {
+                    "type": "string",
+                    "description": "Optional Specification Stack workflow UUID override.",
+                },
+                "workflow_alias": {
+                    "type": "string",
+                    "description": (
+                        "Configured specification workflow alias. Defaults to "
+                        "spec/specification when present."
+                    ),
+                },
+                "name": {"type": "string", "description": "Optional campaign title."},
+                "repo": {"type": "string", "description": "Optional primary repo URL or org/repo."},
+                "repos": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional repos for the specification campaign.",
+                },
+                "branch": {"type": "string", "description": "Optional branch."},
+                "context": {"type": "string", "description": "Optional spec context."},
+                "connection_id": {
+                    "type": "string",
+                    "description": "Optional Volundr target for the workflow execution.",
                 },
                 "slug": {
                     "type": "string",
@@ -1379,6 +1813,8 @@ class TingSpecTool(_PlatformAuthMixin, ToolPort):
         action = input.get("action", "")
         async with await self._client() as client:
             match action:
+                case "launch" | "create":
+                    return await self._launch(client, input)
                 case "list":
                     return await self._list(client)
                 case "status":
@@ -1391,6 +1827,47 @@ class TingSpecTool(_PlatformAuthMixin, ToolPort):
                     return await self._review(client, input)
                 case _:
                     return _err(f"Unknown action: {action!r}")
+
+    async def _launch(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
+        launch_seed = _with_default_workflow_alias(
+            input,
+            self._workflow_aliases,
+            "spec",
+            "specification",
+        )
+        launch_input = await self._launch_input_with_alias(client, launch_seed)
+        if isinstance(launch_input, ToolResult):
+            return launch_input
+
+        prompt = str(launch_input.get("prompt") or "").strip()
+        if not prompt:
+            return _err("prompt is required for launch action")
+
+        body: dict[str, object] = {"prompt": prompt}
+        field_map = {
+            "workflow_id": "workflowId",
+            "name": "name",
+            "repo": "repo",
+            "branch": "branch",
+            "context": "context",
+            "connection_id": "connectionId",
+        }
+        for source, target in field_map.items():
+            value = launch_input.get(source)
+            if value not in (None, ""):
+                body[target] = value
+        repos = launch_input.get("repos")
+        if isinstance(repos, list):
+            body["repos"] = repos
+        try:
+            resp = await client.post(_TING_SPECS_PATH, json=body)
+            resp.raise_for_status()
+            payload = resp.json()
+            if isinstance(payload, dict):
+                await self._join_launched_session(payload)
+            return _ok(payload)
+        except Exception as exc:
+            return _err(f"Failed to launch spec campaign: {exc}")
 
     async def _list(self, client: httpx.AsyncClient) -> ToolResult:
         try:

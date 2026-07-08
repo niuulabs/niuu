@@ -7,7 +7,7 @@ import json
 import logging
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse, urlunparse
 
 import httpx
 
@@ -22,6 +22,7 @@ FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
 INTEGRATIONS_PATH = "/api/v1/integrations"
 WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
 WORKFLOW_GATE_INTENT_RESOLVE = "resolve"
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
 
 
 def _looks_like_local_path(value: str) -> bool:
@@ -34,6 +35,21 @@ def _local_mount_path(value: str) -> str | None:
     if not _looks_like_local_path(value):
         return None
     return str(Path(value).expanduser().resolve())
+
+
+def _public_chat_endpoint(chat_endpoint: str | None, base_url: str) -> str | None:
+    if not chat_endpoint:
+        return chat_endpoint
+    parsed = urlparse(chat_endpoint)
+    if parsed.hostname not in _LOOPBACK_HOSTS:
+        return chat_endpoint
+    base = urlparse(base_url)
+    if not base.scheme or not base.netloc:
+        return chat_endpoint
+    scheme = "wss" if base.scheme == "https" else "ws"
+    return urlunparse(
+        (scheme, base.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    )
 
 
 class VolundrHTTPAdapter(VolundrPort):
@@ -152,7 +168,7 @@ class VolundrHTTPAdapter(VolundrPort):
                 name=data["name"],
                 status=data["status"],
                 tracker_issue_id=data.get("tracker_issue_id"),
-                chat_endpoint=data.get("chat_endpoint"),
+                chat_endpoint=_public_chat_endpoint(data.get("chat_endpoint"), self._base_url),
                 cluster_name=self._name,
                 repo=source.get("repo") or source.get("local_path", ""),
                 branch=source.get("branch", ""),
@@ -182,7 +198,7 @@ class VolundrHTTPAdapter(VolundrPort):
                 name=data["name"],
                 status=data["status"],
                 tracker_issue_id=data.get("tracker_issue_id"),
-                chat_endpoint=data.get("chat_endpoint"),
+                chat_endpoint=_public_chat_endpoint(data.get("chat_endpoint"), self._base_url),
                 cluster_name=self._name,
                 repo=source.get("repo") or source.get("local_path", ""),
                 branch=source.get("branch", ""),
@@ -212,6 +228,7 @@ class VolundrHTTPAdapter(VolundrPort):
                     name=s["name"],
                     status=s["status"],
                     tracker_issue_id=s.get("tracker_issue_id"),
+                    chat_endpoint=_public_chat_endpoint(s.get("chat_endpoint"), self._base_url),
                     cluster_name=self._name,
                     workload_type=s.get("workload_type", "default"),
                 )

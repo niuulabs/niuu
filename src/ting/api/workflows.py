@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -25,6 +26,7 @@ from ting.domain.utils import _session_name, _slugify
 from ting.domain.workflow_snapshot import build_workflow_snapshot, workflow_mimir_from_snapshot
 from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrSession
 from ting.ports.workflow_repository import WorkflowRepository
+from volundr.adapters.inbound.rest import _public_session_endpoint
 
 _DEFAULT_WORKFLOW_LAUNCH_DEFINITION = "skuldCodex"
 
@@ -71,6 +73,7 @@ class WorkflowLaunchBody(BaseModel):
     connection_id: str | None = Field(default=None, max_length=255, alias="connectionId")
     model: str = Field(default="", max_length=255)
     definition: str | None = Field(default=None, max_length=255)
+    context: dict[str, Any] = Field(default_factory=dict)
     provenance: dict[str, Any] = Field(default_factory=dict)
     gate_auto_forward_after: str | None = Field(
         default=None,
@@ -95,6 +98,7 @@ class WorkflowLaunchResponse(BaseModel):
     session_name: str = Field(serialization_alias="sessionName")
     status: str
     cluster_name: str = Field(default="", serialization_alias="clusterName")
+    chat_endpoint: str | None = Field(default=None, serialization_alias="chatEndpoint")
 
     model_config = {"populate_by_name": True}
 
@@ -291,6 +295,7 @@ def _launch_response(
         session_name=session.name,
         status=session.status,
         cluster_name=session.cluster_name,
+        chat_endpoint=_public_session_endpoint(session.chat_endpoint),
     )
 
 
@@ -482,6 +487,14 @@ def _build_workflow_initiative_context(
             launch.prompt.strip(),
         ]
     )
+    if launch.context:
+        lines.extend(
+            [
+                "",
+                "## Launch Context",
+                json.dumps(launch.context, indent=2, sort_keys=True),
+            ]
+        )
     lines.extend(
         [
             "",

@@ -481,11 +481,41 @@ resident:
   dailyBudgetUsd: ""
   # -- Ravn llm config dict rendered verbatim into the node config
   llm: {}
+  skuld:
+    # -- Seconds between attempts when the resident Ravn connects to the broker room.
+    reconnectDelaySeconds: 2
+    # -- Attempts before giving up on the initial broker room connection.
+    maxReconnectAttempts: 60
+    # -- Seconds to wait for a launched Volundr session to become running
+    # before opening a cross-session observer join.
+    sessionReadyTimeoutSeconds: 600
   platform:
     # -- Give the resident platform access (Volundr gateway + workload identity)
     enabled: false
     # -- In-cluster Volundr base URL for the ravn platform gateway
     baseUrl: ""
+    # -- Optional workload token exchange URL for the ravn platform gateway.
+    # Defaults to volundr.apiUrl + /api/v1/tokens/workload/exchange.
+    workloadExchangeUrl: ""
+    # -- Per-resident workflow aliases for chat launches through ting_workflow.
+    # Example:
+    # workflowAliases:
+    #   research:
+    #     name: Research Campaign
+    #     defaults:
+    #       gate_auto_forward_after: ""
+    workflowAliases: {}
+  mimir:
+    sourceTrigger:
+      # -- Automatically synthesize unprocessed Mímir sources.
+      enabled: true
+      # -- Seconds between source-trigger polls.
+      pollIntervalSeconds: 60
+    stalenessTrigger:
+      # -- Periodically refresh stale frequently-used Mímir pages.
+      enabled: true
+      # -- Hours between staleness checks.
+      scheduleHours: 6
   workloadIdentity:
     # -- Audience for the projected serviceAccountToken
     audience: "volundr-api"

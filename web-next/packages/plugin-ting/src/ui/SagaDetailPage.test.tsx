@@ -377,38 +377,34 @@ describe('SagaDetailPage', () => {
 
   it('shows pending feedback requests and sends a directed reply', async () => {
     const user = userEvent.setup();
-    const listRunMessages = vi.fn(
-      async (): Promise<RunSessionMessage[]> => [
-        {
-          id: 'msg-help-1',
-          sessionId: 'session-council-1',
-          content: '{"summary":"Need your call","reason":"needs_feedback"}',
-          sender: 'help_needed',
-          createdAt: '2026-05-11T12:00:00Z',
-          kind: 'help_request',
-          helpRequest: {
-            summary: 'Need your call on the final recommendation.',
-            reason: 'needs_feedback',
-            attempted: ['Compared the top two options'],
-            recommendation: 'Pick the rollout order.',
-            context: { slug: 'research/council-human-v1' },
-            targetPeerId: 'flock-council-chair',
-            persona: 'council-chair',
-          },
-        },
-      ],
-    );
-    const sendRunMessage = vi.fn(
-      async (): Promise<RunSessionMessage> => ({
-        id: 'msg-user-1',
+    const listRunMessages = vi.fn(async (): Promise<RunSessionMessage[]> => [
+      {
+        id: 'msg-help-1',
         sessionId: 'session-council-1',
-        content: 'Please prefer the staged rollout option.',
-        sender: 'user',
-        createdAt: '2026-05-11T12:05:00Z',
-        kind: 'message',
-        helpRequest: null,
-      }),
-    );
+        content: '{"summary":"Need your call","reason":"needs_feedback"}',
+        sender: 'help_needed',
+        createdAt: '2026-05-11T12:00:00Z',
+        kind: 'help_request',
+        helpRequest: {
+          summary: 'Need your call on the final recommendation.',
+          reason: 'needs_feedback',
+          attempted: ['Compared the top two options'],
+          recommendation: 'Pick the rollout order.',
+          context: { slug: 'research/council-human-v1' },
+          targetPeerId: 'flock-council-chair',
+          persona: 'council-chair',
+        },
+      },
+    ]);
+    const sendRunMessage = vi.fn(async (): Promise<RunSessionMessage> => ({
+      id: 'msg-user-1',
+      sessionId: 'session-council-1',
+      content: 'Please prefer the staged rollout option.',
+      sender: 'user',
+      createdAt: '2026-05-11T12:05:00Z',
+      kind: 'message',
+      helpRequest: null,
+    }));
 
     const svc = {
       getSaga: async () => makeSaga(),

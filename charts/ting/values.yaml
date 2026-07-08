@@ -248,6 +248,9 @@ envoy:
       tenantClaim: "tenant_id"
       rolesClaim: "resource_access.ting.roles"
       extraClaimHeaders: []
+      jwksHost: ""
+      jwksPort: 443
+      jwksTls: true
   # -- Extra HTTP filters (inserted before the router filter)
   extraHttpFilters: []
   # -- Extra upstream clusters

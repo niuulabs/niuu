@@ -14,4 +14,4 @@ def _slugify(name: str) -> str:
 
 def _session_name(name: str) -> str:
     """Convert a name to a Volundr session name (slug, max 48 chars)."""
-    return _slugify(name)[:48]
+    return _slugify(name)[:48].strip("-")

@@ -7,13 +7,7 @@ export type SignalStatus = 'new' | 'triaged' | 'acting' | 'resolved' | 'ignored'
 export type ActionStatus = 'planned' | 'running' | 'succeeded' | 'failed' | 'rolled_back';
 export type LearningScope = 'private' | 'environment' | 'domain' | 'flock' | 'shared';
 export type LearningStatus =
-  | 'requested'
-  | 'candidate'
-  | 'canary'
-  | 'adopted'
-  | 'rejected'
-  | 'rolled_back'
-  | 'completed';
+  'requested' | 'candidate' | 'canary' | 'adopted' | 'rejected' | 'rolled_back' | 'completed';
 
 export interface EnvironmentSummary {
   id: string;
@@ -649,11 +643,7 @@ export interface LearningRecord {
 // ---------------------------------------------------------------------------
 
 export type LearningFeedbackVerdict =
-  | 'useful'
-  | 'good_action'
-  | 'bad_action'
-  | 'dismissed'
-  | 'wrong_tier';
+  'useful' | 'good_action' | 'bad_action' | 'dismissed' | 'wrong_tier';
 
 export const LEARNING_FEEDBACK_VERDICTS: ReadonlyArray<{
   verdict: LearningFeedbackVerdict;
@@ -1016,12 +1006,7 @@ export type ReviewKind =
   | 'morning_brief';
 
 export type ReviewStatus =
-  | 'pending'
-  | 'approved'
-  | 'rejected'
-  | 'expired'
-  | 'applied'
-  | 'apply_failed';
+  'pending' | 'approved' | 'rejected' | 'expired' | 'applied' | 'apply_failed';
 
 export type ReviewRiskClass = 'low' | 'medium' | 'high' | 'critical';
 

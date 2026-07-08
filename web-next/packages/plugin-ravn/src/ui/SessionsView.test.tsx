@@ -22,6 +22,15 @@ vi.mock('@niuulabs/ui', async (importOriginal) => {
   return { ...actual, useSkuldChat: useSkuldChatMock };
 });
 
+vi.mock('@niuulabs/plugin-volundr', () => ({
+  TelemetryTab: ({ sessionId }: { sessionId: string }) => (
+    <div data-testid="volundr-trace-tab">trace {sessionId}</div>
+  ),
+  LiveLogsTab: ({ sessionId }: { sessionId: string }) => (
+    <div data-testid="volundr-logs-tab">logs {sessionId}</div>
+  ),
+}));
+
 function makeChatState(overrides: Record<string, unknown> = {}) {
   return {
     messages: [],
@@ -101,6 +110,13 @@ function servicesWith(sessionStream: ISessionStream) {
   };
 }
 
+function servicesWithVolundr(sessionStream: ISessionStream) {
+  return {
+    ...servicesWith(sessionStream),
+    volundr: {},
+  };
+}
+
 beforeEach(() => {
   localStorage.clear();
   useSkuldChatMock.mockReset();
@@ -117,7 +133,10 @@ describe('SessionsView', () => {
     render(<SessionsView />, { wrapper: wrap(services()) });
     await waitFor(() => expect(screen.getByTestId('sessions-page')).toBeInTheDocument());
     expect(screen.getByText(/10 active/i)).toBeInTheDocument();
-    expect(screen.getByText(/2 closed/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 idle/i)).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Open session Monitor overnight alerts' }),
+    ).toBeNull();
   });
 
   it('selects the newest running session by default and shows the header', async () => {
@@ -140,6 +159,18 @@ describe('SessionsView', () => {
     expect(within(header).getByRole('heading', { name: 'Review PR #142' })).toBeInTheDocument();
   });
 
+  it('collapses and expands the sessions rail', async () => {
+    render(<SessionsView />, { wrapper: wrap(services()) });
+    const collapse = await screen.findByRole('button', { name: /collapse sessions sidebar/i });
+
+    fireEvent.click(collapse);
+    expect(screen.getByRole('button', { name: /expand sessions sidebar/i })).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /open session/i }).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: /expand sessions sidebar/i }));
+    expect(screen.getByRole('button', { name: /collapse sessions sidebar/i })).toBeInTheDocument();
+  });
+
   it('responds to ravn:session-selected events', async () => {
     render(<SessionsView />, { wrapper: wrap(services()) });
     await waitFor(() => expect(screen.getByTestId('sessions-page')).toBeInTheDocument());
@@ -151,6 +182,34 @@ describe('SessionsView', () => {
         }),
       );
     });
+
+    const header = await screen.findByTestId('sessions-header');
+    expect(within(header).getByRole('heading', { name: 'Review PR #142' })).toBeInTheDocument();
+  });
+
+  it('responds to legacy object-shaped ravn:session-selected events', async () => {
+    render(<SessionsView />, { wrapper: wrap(services()) });
+    await waitFor(() => expect(screen.getByTestId('sessions-page')).toBeInTheDocument());
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('ravn:session-selected', {
+          detail: { sessionId: '10000001-0000-4000-8000-000000000005' },
+        }),
+      );
+    });
+
+    const header = await screen.findByTestId('sessions-header');
+    expect(within(header).getByRole('heading', { name: 'Review PR #142' })).toBeInTheDocument();
+  });
+
+  it('selects a session from the route query param', async () => {
+    window.history.replaceState(
+      null,
+      '',
+      '/ravn/sessions?session=10000001-0000-4000-8000-000000000005',
+    );
+    render(<SessionsView />, { wrapper: wrap(services()) });
 
     const header = await screen.findByTestId('sessions-header');
     expect(within(header).getByRole('heading', { name: 'Review PR #142' })).toBeInTheDocument();
@@ -208,13 +267,16 @@ describe('SessionsView', () => {
     expect(screen.getByRole('textbox', { name: /session message composer/i })).toBeInTheDocument();
   });
 
-  it('shows the read-only composer variant for closed sessions', async () => {
-    render(<SessionsView />, { wrapper: wrap(services()) });
-    const closedSession = await screen.findByRole('button', {
-      name: 'Open session Monitor overnight alerts',
+  it('omits stopped sessions from the live control-room rail', async () => {
+    render(<SessionsView />, {
+      wrapper: wrap(
+        servicesWith(
+          singleSessionStream(liveRunningSession({ status: 'stopped', chatEndpoint: null })),
+        ),
+      ),
     });
-    fireEvent.click(closedSession);
-    expect(await screen.findByTestId('sessions-composer-closed')).toBeInTheDocument();
+    expect(await screen.findByTestId('sessions-empty')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /open session/i })).toBeNull();
   });
 });
 
@@ -231,6 +293,51 @@ describe('SessionsView — live chat', () => {
     // The synthesized read-only transcript must NOT be present.
     expect(screen.queryByTestId('sessions-composer')).not.toBeInTheDocument();
     expect(screen.queryByRole('log', { name: /session transcript/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sessions-context')).not.toBeInTheDocument();
+  });
+
+  it('mounts Volundr trace and logs tabs for the selected live session', async () => {
+    const session = liveRunningSession();
+    render(<SessionsView />, {
+      wrapper: wrap(servicesWithVolundr(singleSessionStream(session))),
+    });
+
+    expect(await screen.findByTestId('sessions-live-chat')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: /trace/i }));
+    expect(await screen.findByTestId('volundr-trace-tab')).toHaveTextContent(session.id);
+
+    fireEvent.click(screen.getByRole('tab', { name: /logs/i }));
+    expect(await screen.findByTestId('volundr-logs-tab')).toHaveTextContent(session.id);
+  });
+
+  it('uses the live resident persona for header metadata and emissions', async () => {
+    render(<SessionsView />, {
+      wrapper: wrap(
+        servicesWith(singleSessionStream(liveRunningSession({ personaName: 'product-steward' }))),
+      ),
+    });
+
+    const header = await screen.findByTestId('sessions-header');
+    expect(within(header).getByText('product-steward')).toBeInTheDocument();
+    expect(within(header).queryByText('coder')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sessions-context')).not.toBeInTheDocument();
+    expect(screen.queryByText('code.changed')).not.toBeInTheDocument();
+  });
+
+  it('toggles internal visibility for live chat sessions', async () => {
+    const sendSetInternalVisibility = vi.fn();
+    useSkuldChatMock.mockImplementation(() => makeChatState({ sendSetInternalVisibility }));
+    render(<SessionsView />, {
+      wrapper: wrap(servicesWith(singleSessionStream(liveRunningSession()))),
+    });
+    const toggle = await screen.findByTestId('internal-toggle');
+
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    expect(sendSetInternalVisibility).toHaveBeenCalledWith(true);
   });
 
   it('drives SessionChat from the useSkuldChat hook messages', async () => {
@@ -266,6 +373,37 @@ describe('SessionsView — live chat', () => {
     expect(sendMessage).toHaveBeenCalledWith('Review the code and suggest improvements', []);
   });
 
+  it('sends @mentioned resident messages through the directed hook callback', async () => {
+    const sendDirectedMessages = vi.fn();
+    const productSteward = {
+      peerId: 'flock-product-steward',
+      persona: 'product-steward',
+      displayName: 'Muninn',
+      participantType: 'ravn',
+    };
+    useSkuldChatMock.mockImplementation(() =>
+      makeChatState({
+        participants: new Map([[productSteward.peerId, productSteward]]),
+        sendDirectedMessages,
+      }),
+    );
+    render(<SessionsView />, {
+      wrapper: wrap(servicesWith(singleSessionStream(liveRunningSession()))),
+    });
+
+    await screen.findByTestId('sessions-live-chat');
+    fireEvent.change(screen.getByTestId('chat-textarea'), {
+      target: { value: '@product-steward research solvent defaults' },
+    });
+    fireEvent.click(screen.getByTestId('send-btn'));
+
+    expect(sendDirectedMessages).toHaveBeenCalledWith(
+      [productSteward],
+      '@product-steward research solvent defaults',
+      [],
+    );
+  });
+
   it('keeps the read-only transcript for a running session without a chatEndpoint', async () => {
     render(<SessionsView />, {
       wrapper: wrap(servicesWith(singleSessionStream(liveRunningSession({ chatEndpoint: null })))),
@@ -275,11 +413,11 @@ describe('SessionsView — live chat', () => {
     expect(useSkuldChatMock).not.toHaveBeenCalled();
   });
 
-  it('keeps the read-only surface for a stopped session even with a chatEndpoint', async () => {
+  it('hides stopped sessions even when a stale chatEndpoint is present', async () => {
     render(<SessionsView />, {
       wrapper: wrap(servicesWith(singleSessionStream(liveRunningSession({ status: 'stopped' })))),
     });
-    expect(await screen.findByTestId('sessions-composer-closed')).toBeInTheDocument();
+    expect(await screen.findByTestId('sessions-empty')).toBeInTheDocument();
     expect(screen.queryByTestId('sessions-live-chat')).not.toBeInTheDocument();
     expect(useSkuldChatMock).not.toHaveBeenCalled();
   });

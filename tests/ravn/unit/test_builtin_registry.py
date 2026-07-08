@@ -107,6 +107,7 @@ class TestRegistryStructure:
             "volundr_git",
             "ting_saga",
             "ting_workflow",
+            "ting_research",
             "tracker_issue",
         }.issubset(platform_keys)
 
@@ -197,6 +198,7 @@ class TestConditions:
             "volundr_git",
             "ting_saga",
             "ting_workflow",
+            "ting_research",
             "tracker_issue",
         ):
             cond = BUILTIN_TOOLS[key].condition
@@ -254,6 +256,23 @@ class TestKwargsFn:
         for key in ("ravn_memory_search", "session_search"):
             kwargs = BUILTIN_TOOLS[key].kwargs_fn(settings, ctx)
             assert kwargs["memory"] is mock_memory
+
+    def test_ting_workflow_kwargs_include_aliases(self, settings: Settings, tmp_path: Path) -> None:
+        from ravn.config import PlatformWorkflowAliasConfig
+
+        settings.gateway.platform.workflow_aliases = {
+            "research": PlatformWorkflowAliasConfig(
+                workflow_id="wf-research",
+                defaults={"gate_auto_forward_after": ""},
+            )
+        }
+        ctx = _make_runtime_ctx(tmp_path)
+        for key in ("ting_workflow", "ting_research", "ting_plan", "ting_spec"):
+            kwargs = BUILTIN_TOOLS[key].kwargs_fn(settings, ctx)
+            assert kwargs["workflow_aliases"]["research"]["workflow_id"] == "wf-research"
+            assert (
+                kwargs["workflow_aliases"]["research"]["defaults"]["gate_auto_forward_after"] == ""
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -347,3 +366,17 @@ class TestBuildWebSearchKwargs:
         result = _build_web_search_kwargs(s, ctx)
         # AskUserTool is not a real web search provider, but it gets instantiated
         assert result["provider"] is not None
+
+
+class TestTingWorkflowKwargs:
+    def test_includes_session_join_manager_when_available(self, tmp_path: Path) -> None:
+        from ravn.adapters.tools.builtin_registry import _ting_workflow_kwargs
+
+        manager = object()
+        s = Settings()
+        ctx = _make_runtime_ctx(tmp_path)
+        ctx["session_join_manager"] = manager
+
+        result = _ting_workflow_kwargs(s, ctx)
+
+        assert result["session_join_manager"] is manager
