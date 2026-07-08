@@ -50,17 +50,18 @@ def test_create_app_returns_fastapi_app(tmp_path: Path) -> None:
 def test_create_app_mounts_mimir_router(tmp_path: Path) -> None:
     config = MimirServiceConfig(path=str(tmp_path / "mimir"))
     app = create_app(config)
-    routes = [r.path for r in app.routes]  # type: ignore[attr-defined]
+    with TestClient(app) as client:
+        routes = client.get("/openapi.json").json()["paths"]
     assert any("/mimir" in r for r in routes)
 
 
 def test_create_app_exposes_api_v1_mimir_routes(tmp_path: Path) -> None:
     config = MimirServiceConfig(path=str(tmp_path / "mimir"))
     app = create_app(config)
-    routes = [r.path for r in app.routes]  # type: ignore[attr-defined]
-    assert "/api/v1/mimir/stats" in routes
-    assert "/api/v1/mimir/mounts" in routes
-    assert "/api/v1/mimir/mcp" in routes
+    with TestClient(app) as client:
+        assert client.get("/api/v1/mimir/stats").status_code == 200
+        assert client.get("/api/v1/mimir/mounts").status_code == 200
+        assert client.get("/api/v1/mimir/mcp").status_code == 405
 
 
 def test_create_app_exposes_settings_schema(tmp_path: Path) -> None:

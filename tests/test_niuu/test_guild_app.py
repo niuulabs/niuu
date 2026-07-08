@@ -57,7 +57,7 @@ def test_create_app_mounts_only_guild_routes(monkeypatch) -> None:
         response = client.get("/health")
         assert response.status_code == 200
 
-        paths = {route.path for route in app.routes}
+        paths = set(client.get("/openapi.json").json()["paths"])
         assert "/api/v1/niuu/instances" in paths
         assert "/api/v1/niuu/instances/catalog" in paths
         assert "/api/v1/niuu/targets/volundr" in paths
