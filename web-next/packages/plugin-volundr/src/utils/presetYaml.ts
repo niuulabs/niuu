@@ -98,6 +98,8 @@ export function serializePresetYaml(fields: PresetRuntimeFields): string {
 }
 
 export function parsePresetYaml(yamlContent: string): Partial<PresetRuntimeFields> {
+  if (!yamlContent.trim()) return {};
+
   const parsed = yaml.load(yamlContent) as PresetYamlDoc | null;
   if (!parsed || typeof parsed !== 'object') return {};
 
