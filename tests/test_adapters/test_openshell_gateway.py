@@ -4,14 +4,24 @@ from __future__ import annotations
 
 import importlib
 import io
+import json
 import sys
 import tarfile
+import time
 import types
 from uuid import uuid4
 
+import jwt
 import pytest
 
-from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec, SessionStatus
+from volundr.domain.models import (
+    GitSource,
+    PodSpecAdditions,
+    SecretType,
+    Session,
+    SessionSpec,
+    SessionStatus,
+)
 
 
 def _import_adapter(monkeypatch: pytest.MonkeyPatch):
@@ -228,6 +238,25 @@ class _FakeCredentialStore:
     def __init__(self, values: dict[str, dict[str, str]]) -> None:
         self.values = values
         self.gets: list[tuple[str, str, str]] = []
+        self.stores: list[dict] = []
+
+    async def store(self, owner_type, owner_id, name, secret_type, data, metadata=None):
+        self.values[name] = dict(data)
+        self.stores.append(
+            {
+                "owner_type": owner_type,
+                "owner_id": owner_id,
+                "name": name,
+                "secret_type": secret_type,
+                "data": dict(data),
+                "metadata": metadata or {},
+            }
+        )
+        return types.SimpleNamespace(
+            keys=tuple(data),
+            secret_type=secret_type,
+            metadata=metadata or {},
+        )
 
     async def get_value(self, owner_type: str, owner_id: str, name: str):
         self.gets.append((owner_type, owner_id, name))
@@ -237,7 +266,30 @@ class _FakeCredentialStore:
         values = self.values.get(name)
         if values is None:
             return None
-        return types.SimpleNamespace(keys=tuple(values))
+        return types.SimpleNamespace(
+            keys=tuple(values),
+            secret_type=SecretType.GENERIC,
+            metadata={},
+        )
+
+
+def _codex_auth_document(*, expires_in: int = 3600) -> str:
+    access_token = jwt.encode(
+        {"sub": "user", "exp": int(time.time()) + expires_in},
+        key="",
+        algorithm="none",
+    )
+    return json.dumps(
+        {
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "access_token": access_token,
+                "refresh_token": "refresh-from-openbao",
+                "account_id": "account-from-openbao",
+                "id_token": "id-token-from-openbao",
+            },
+        }
+    )
 
 
 class _FakeSessionRepository:
@@ -444,11 +496,54 @@ async def test_start_creates_dynamic_openbao_providers_without_secret_environmen
     }
     assert all(not grant["profile"].credentials[0].required for grant in client.provider_grants)
     assert all(
-        grant["config"]["volundr_session_id"] == str(session.id)
-        for grant in client.provider_grants
+        grant["config"]["volundr_session_id"] == str(session.id) for grant in client.provider_grants
     )
 
     assert await manager.stop(session) is True
+
+
+@pytest.mark.asyncio
+async def test_start_uses_dynamic_codex_grant_without_projecting_oauth_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    manager.set_credential_store(
+        _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
+    )
+    spec = SessionSpec(
+        values={
+            "openshell": {
+                "codexAuth": {
+                    "credentialName": "codex-credentials",
+                    "authField": "auth.json",
+                }
+            }
+        },
+        pod_spec=PodSpecAdditions(),
+    )
+
+    await manager.start(session, spec)
+
+    assert client.written_files == []
+    assert client.created is not None
+    assert client.created["env"][adapter.CODEX_ACCESS_TOKEN_ENV] == (
+        adapter.CODEX_ACCESS_TOKEN_REFERENCE
+    )
+    assert client.created["env"][adapter.CODEX_ACCOUNT_ID_ENV] == "account-from-openbao"
+    assert len(client.provider_grants) == 1
+    grant = client.provider_grants[0]
+    assert grant["profile"].credentials[0].env_vars == [adapter.CODEX_ACCESS_TOKEN_ENV]
+    assert grant["profile"].credentials[0].token_grant.cache_ttl_seconds == 0
+    assert {endpoint.host for endpoint in grant["profile"].endpoints} >= {
+        "api.openai.com",
+        "auth.openai.com",
+        "chatgpt.com",
+    }
+    assert grant["config"]["volundr_credential_format"] == adapter.CODEX_AUTH_FORMAT
+    assert grant["config"]["volundr_credential_field"] == "auth.json"
 
 
 @pytest.mark.asyncio
@@ -482,7 +577,7 @@ async def test_start_fails_when_openshell_credential_mapping_is_missing(
 
 
 @pytest.mark.asyncio
-async def test_start_projects_openbao_file_mapping_into_sandbox_home(
+async def test_start_projects_non_agent_file_mapping_into_sandbox(
     monkeypatch: pytest.MonkeyPatch,
 ):
     adapter = _import_adapter(monkeypatch)
@@ -490,17 +585,15 @@ async def test_start_projects_openbao_file_mapping_into_sandbox_home(
     client = _FakeOpenShellGatewayClient(adapter)
     manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
     manager.set_credential_store(
-        _FakeCredentialStore({"claude-home": {"credentials.json": '{"oauthAccount":{}}'}})
+        _FakeCredentialStore({"tool-config": {"credentials.json": '{"token":"opaque"}'}})
     )
     spec = SessionSpec(
         values={
             "openshell": {
                 "credentialMappings": [
                     {
-                        "credentialName": "claude-home",
-                        "fileMappings": {
-                            "/home/volundr/.claude/.credentials.json": "credentials.json"
-                        },
+                        "credentialName": "tool-config",
+                        "fileMappings": {"/run/secrets/tool/credentials.json": "credentials.json"},
                     },
                 ],
             },
@@ -513,11 +606,48 @@ async def test_start_projects_openbao_file_mapping_into_sandbox_home(
     assert client.written_files == [
         {
             "sandbox_id": "sandbox-id",
-            "files": {
-                "/sandbox/.claude/.credentials.json": b'{"oauthAccount":{}}'
-            },
+            "files": {"/run/secrets/tool/credentials.json": b'{"token":"opaque"}'},
         }
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "destination",
+    (
+        "/home/volundr/.codex/auth.json",
+        "/home/volundr/.claude/.credentials.json",
+    ),
+)
+async def test_start_rejects_agent_auth_file_projection(
+    monkeypatch: pytest.MonkeyPatch,
+    destination: str,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    manager.set_credential_store(
+        _FakeCredentialStore({"agent-auth": {"auth": '{"token":"secret"}'}})
+    )
+    spec = SessionSpec(
+        values={
+            "openshell": {
+                "credentialMappings": [
+                    {
+                        "credentialName": "agent-auth",
+                        "fileMappings": {destination: "auth"},
+                    }
+                ]
+            }
+        },
+        pod_spec=PodSpecAdditions(),
+    )
+
+    with pytest.raises(RuntimeError, match="must use a dynamic provider"):
+        await manager.start(session, spec)
+
+    assert client.created is None
 
 
 @pytest.mark.asyncio
@@ -805,6 +935,178 @@ async def test_credential_grant_binds_svid_sandbox_provider_session_and_openbao(
 
     assert token.access_token == "sk-from-openbao"
     assert token.expires_in == 300
+
+
+@pytest.mark.asyncio
+async def test_codex_credential_grant_reads_access_token_from_openbao_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    sandbox_id = str(uuid4())
+    provider_name = f"volundr-{session.id.hex[:12]}-codexgrant"
+    audience = f"{adapter.GRANT_AUDIENCE_PREFIX}{provider_name}"
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.grant_sandbox = adapter.OpenShellSandbox(
+        id=sandbox_id,
+        name="forge-test",
+        phase=adapter.openshell_pb2.SANDBOX_PHASE_READY,
+        labels={"volundr.niuu.io/session": str(session.id)},
+        providers=(provider_name,),
+    )
+    client.grant_provider = types.SimpleNamespace(
+        type=provider_name,
+        config={
+            "volundr_session_id": str(session.id),
+            "volundr_credential_name": "codex-credentials",
+            "volundr_credential_field": "auth.json",
+            "volundr_credential_format": adapter.CODEX_AUTH_FORMAT,
+        },
+    )
+
+    class Credential:
+        token_grant = types.SimpleNamespace(audience=audience)
+
+        def HasField(self, name: str) -> bool:  # noqa: N802
+            return name == "token_grant"
+
+    client.grant_profile = types.SimpleNamespace(credentials=[Credential()])
+    store = _FakeCredentialStore(
+        {"codex-credentials": {"auth.json": _codex_auth_document(expires_in=3600)}}
+    )
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+    manager.set_session_repository(_FakeSessionRepository(session))
+    manager.set_credential_store(store)
+
+    class Verifier:
+        async def verify(self, _token: str):
+            return {"sub": f"{adapter.DEFAULT_SPIFFE_SUBJECT_PREFIX}{sandbox_id}"}
+
+    manager._spiffe_verifier = Verifier()
+    expected_access_token = json.loads(store.values["codex-credentials"]["auth.json"])["tokens"][
+        "access_token"
+    ]
+
+    token = await manager.exchange_credential_grant(
+        client_assertion="signed-svid",
+        client_assertion_type=adapter.OAUTH_CLIENT_ASSERTION_TYPE,
+        grant_type="client_credentials",
+        audience=audience,
+        scope="",
+    )
+
+    assert token.access_token == expected_access_token
+    assert token.expires_in > 3000
+    assert store.stores == []
+
+
+@pytest.mark.asyncio
+async def test_codex_credential_grant_refreshes_and_persists_rotated_oauth_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    sandbox_id = str(uuid4())
+    provider_name = f"volundr-{session.id.hex[:12]}-codexgrant"
+    audience = f"{adapter.GRANT_AUDIENCE_PREFIX}{provider_name}"
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.grant_sandbox = adapter.OpenShellSandbox(
+        id=sandbox_id,
+        name="forge-test",
+        phase=adapter.openshell_pb2.SANDBOX_PHASE_READY,
+        labels={"volundr.niuu.io/session": str(session.id)},
+        providers=(provider_name,),
+    )
+    client.grant_provider = types.SimpleNamespace(
+        type=provider_name,
+        config={
+            "volundr_session_id": str(session.id),
+            "volundr_credential_name": "codex-credentials",
+            "volundr_credential_field": "auth.json",
+            "volundr_credential_format": adapter.CODEX_AUTH_FORMAT,
+        },
+    )
+
+    class Credential:
+        token_grant = types.SimpleNamespace(audience=audience)
+
+        def HasField(self, name: str) -> bool:  # noqa: N802
+            return name == "token_grant"
+
+    client.grant_profile = types.SimpleNamespace(credentials=[Credential()])
+    store = _FakeCredentialStore(
+        {
+            "codex-credentials": {
+                "auth.json": _codex_auth_document(expires_in=-60),
+                "config.toml": 'model = "gpt-5"',
+            }
+        }
+    )
+    refreshed_access_token = jwt.encode(
+        {"sub": "user", "exp": int(time.time()) + 7200},
+        key="",
+        algorithm="none",
+    )
+
+    class OAuthResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "access_token": refreshed_access_token,
+                "refresh_token": "rotated-refresh-token",
+                "id_token": "rotated-id-token",
+            }
+
+    class OAuthClient:
+        def __init__(self) -> None:
+            self.posts: list[dict] = []
+
+        async def post(self, url: str, data: dict):
+            self.posts.append({"url": url, "data": dict(data)})
+            return OAuthResponse()
+
+    oauth_client = OAuthClient()
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client,
+        codex_oauth_client=oauth_client,
+    )
+    manager.set_session_repository(_FakeSessionRepository(session))
+    manager.set_credential_store(store)
+
+    class Verifier:
+        async def verify(self, _token: str):
+            return {"sub": f"{adapter.DEFAULT_SPIFFE_SUBJECT_PREFIX}{sandbox_id}"}
+
+    manager._spiffe_verifier = Verifier()
+
+    token = await manager.exchange_credential_grant(
+        client_assertion="signed-svid",
+        client_assertion_type=adapter.OAUTH_CLIENT_ASSERTION_TYPE,
+        grant_type="client_credentials",
+        audience=audience,
+        scope="",
+    )
+
+    assert token.access_token == refreshed_access_token
+    assert token.expires_in > 7000
+    assert oauth_client.posts == [
+        {
+            "url": adapter.DEFAULT_CODEX_OAUTH_TOKEN_URL,
+            "data": {
+                "grant_type": "refresh_token",
+                "client_id": adapter.DEFAULT_CODEX_OAUTH_CLIENT_ID,
+                "refresh_token": "refresh-from-openbao",
+            },
+        }
+    ]
+    assert len(store.stores) == 1
+    persisted = json.loads(store.stores[0]["data"]["auth.json"])
+    assert persisted["tokens"]["access_token"] == refreshed_access_token
+    assert persisted["tokens"]["refresh_token"] == "rotated-refresh-token"
+    assert persisted["tokens"]["id_token"] == "rotated-id-token"
+    assert store.stores[0]["data"]["config.toml"] == 'model = "gpt-5"'
 
 
 @pytest.mark.asyncio

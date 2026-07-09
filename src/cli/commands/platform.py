@@ -374,7 +374,7 @@ OPENSHELL_POD_MANAGER_DEFAULTS: dict[str, Any] = {
     "gateway_public_url": "",
     "token_url": "https://keycloak.niuu.world/realms/volundr/protocol/openid-connect/token",
     "client_id": "openshell-volundr-agent",
-    "sandbox_image": "ghcr.io/niuulabs/niuu-openshell:openshell-provider-v2-20260709",
+    "sandbox_image": "ghcr.io/niuulabs/niuu-openshell:niu-1096-codex-openbao-20260709",
     "sandbox_command": ["/opt/niuu/bin/python", "-m", "skuld"],
     "service_port": 9200,
 }
@@ -494,7 +494,7 @@ def create_platform_commands(
             typer.echo(f"  OIDC client: {client_id}")
             image = kwargs.get(
                 "sandbox_image",
-                "ghcr.io/niuulabs/niuu-openshell:openshell-provider-v2-20260709",
+                "ghcr.io/niuulabs/niuu-openshell:niu-1096-codex-openbao-20260709",
             )
             typer.echo(f"  Sandbox image: {image}")
             typer.echo()

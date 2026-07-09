@@ -123,8 +123,8 @@ pod_manager:
     gateway_endpoint: "openshell.openshell.svc.cluster.local:8080"
     token_url: "https://keycloak.niuu.world/realms/volundr/protocol/openid-connect/token"
     client_id: "openshell-volundr-agent"
-    sandbox_image: "ghcr.io/niuulabs/niuu-openshell:openshell-provider-v2-20260709"
-    sandbox_command: ["/opt/niuu/bin/python", "-m", "skuld"]
+    sandbox_image: "ghcr.io/niuulabs/niuu-openshell:niu-1096-codex-openbao-20260709"
+    sandbox_command: ["/usr/local/bin/openshell-run-installed-skuld"]
     sandbox_workspace: "/sandbox/workspace"
     sandbox_home: "/sandbox"
     credential_token_endpoint: "http://niuu-volundr.volundr.svc.cluster.local/api/v1/internal/openshell/credential-token"
@@ -132,6 +132,9 @@ pod_manager:
     spiffe_issuer: "https://spire-oidc.noatun.asgard.niuu.world"
     spiffe_audience: "http://niuu-volundr.volundr.svc.cluster.local/api/v1/internal/openshell/credential-token"
     spiffe_subject_prefix: "spiffe://niuu.world/openshell/sandbox/"
+    codex_oauth_token_url: "https://auth.openai.com/oauth/token"
+    codex_oauth_client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
+    codex_refresh_skew_seconds: 300
     service_port: 9200
   secret_kwargs_env:
     client_secret: OPENSHELL_OIDC_CLIENT_SECRET
@@ -200,32 +203,28 @@ environment by Völundr.
 
 Provider v2 handles credentials and network policy, not arbitrary home-directory
 mounts. Stable, non-secret defaults such as Codex `config.toml` belong in the
-sandbox image or should be generated from session configuration. OAuth client
-state that cannot be represented by a provider grant remains an explicit file
-mapping. Völundr projects those OpenBao fields with mode `0600` under the
-OpenShell user's real home (`/sandbox`):
+sandbox image or session configuration.
+
+Codex subscription authentication uses an OpenBao-backed dynamic grant:
 
 ```yaml
 openshell:
-  credentialMappings:
-    - credentialName: claude-credentials
-      fileMappings:
-        /home/volundr/.claude/.credentials.json: credentials.json
-        /home/volundr/.claude/settings.json: settings.json
-    - credentialName: codex-credentials
-      fileMappings:
-        /home/volundr/.codex/auth.json: auth.json
-        /home/volundr/.codex/config.toml: config.toml
+  codexAuth:
+    credentialName: codex-credentials
+    authField: auth.json
 ```
 
-This is the Kubernetes-compatible path for Claude subscription authentication
-described in NVIDIA/OpenShell issue 620. The same mapping carries Codex OAuth and
-configuration without requiring interactive login in every sandbox.
+The sandbox image generates `~/.codex/auth.json` locally. It contains only the
+OpenShell runtime reference `openshell:resolve:env:CODEX_AUTH_ACCESS_TOKEN`, the
+non-secret account ID, and a metadata-only ID token. OpenShell replaces the
+outbound Authorization header with the SPIFFE-brokered access token. Völundr
+refreshes expiring Codex OAuth tokens and persists rotations back to the same
+OpenBao credential.
 
-Codex Provider v2 supports access, refresh, account, and ID token fields. Claude
-Code's built-in profile supports API keys; Claude subscription OAuth state is not
-a first-class OpenShell provider credential. Do not mount the legacy Völundr home
-PVC into OpenShell sandboxes or use a PVC copy as the credential model.
+Claude Code's built-in profile supports API keys. Claude subscription OAuth state
+is not a first-class OpenShell provider credential, so it is not represented as a
+supported dynamic grant. Do not upload agent authentication files or mount the
+legacy Völundr home PVC into OpenShell sandboxes.
 
 ## Operational Checks
 

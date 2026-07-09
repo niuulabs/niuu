@@ -5,7 +5,7 @@ LOG_FILE="${SKULD_BOOTSTRAP_LOG:-/tmp/skuld.log}"
 PORT="${SKULD__PORT:-8081}"
 HEALTH_URL="http://127.0.0.1:${PORT}/health"
 
-PYTHON_BIN="${SKULD_PYTHON_BIN:-/opt/venv/bin/python}"
+PYTHON_BIN="${SKULD_PYTHON_BIN:-$(command -v python)}"
 
 setup_cli_home() {
     env_name="$1"
@@ -28,6 +28,7 @@ setup_cli_home() {
 
 setup_cli_home CODEX_HOME "$HOME/.codex" /tmp/codex-home
 setup_cli_home CLAUDE_CONFIG_DIR "$HOME/.claude" /tmp/claude-home
+"$PYTHON_BIN" -m skuld.openshell_home
 
 nohup "$PYTHON_BIN" -m skuld >"$LOG_FILE" 2>&1 &
 broker_pid="$!"
