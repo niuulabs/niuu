@@ -40,6 +40,9 @@ class WorkloadIdentityContributor(SessionContributor):
         session: Session,
         context: SessionContext,
     ) -> SessionContribution:
+        if context.runtime_backend == "openshell":
+            return SessionContribution()
+
         if not self._enabled:
             return SessionContribution()
 

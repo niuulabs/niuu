@@ -833,6 +833,7 @@ class RavnFlockContributor(SessionContributor):
             persona_source_mount_path=self._persona_source_mount_path,
             persona_source_http_base_url=self._persona_source_http_base_url,
             workflow=workflow_cfg,
+            runtime_backend=context.runtime_backend,
         )
 
         return SessionContribution(values=values, pod_spec=pod_spec)
@@ -865,6 +866,7 @@ class RavnFlockContributor(SessionContributor):
         persona_source_http_base_url: str = "",
         workflow: dict[str, Any] | None = None,
         extra_ravn_config: dict[str, Any] | None = None,
+        runtime_backend: str = "",
     ) -> tuple[dict[str, Any], PodSpecAdditions]:
         session_id = str(session.id)
         base_port = self._base_port
@@ -1034,6 +1036,7 @@ class RavnFlockContributor(SessionContributor):
         extra_containers: list[dict] = []
         config_volumes: list[dict] = []
         init_containers: list[dict] = []
+        openshell_processes: list[dict[str, Any]] = []
 
         for i, persona_dict in enumerate(persona_dicts):
             persona = persona_dict["name"]
@@ -1146,6 +1149,39 @@ class RavnFlockContributor(SessionContributor):
                 "volumeMounts": volume_mounts,
             }
             extra_containers.append(container)
+            if runtime_backend == "openshell":
+                config_path = f"/sandbox/.volundr/flock/{persona}.yaml"
+                process_env = {
+                    str(entry["name"]): str(entry.get("value") or "")
+                    for entry in ravn_env
+                    if entry.get("name") and "value" in entry
+                }
+                process_env.update(
+                    {
+                        "HOME": "/sandbox/workspace",
+                        "RAVN_CONFIG": config_path,
+                        "RAVN_STATE_DIR": "/sandbox/workspace/.ravn",
+                    }
+                )
+                process_env.pop(self._workload_identity_token_file_env, None)
+                openshell_processes.append(
+                    {
+                        "name": f"ravn-{persona}",
+                        "command": [
+                            "/opt/niuu/bin/python",
+                            "-m",
+                            "ravn",
+                            "daemon",
+                            "--config",
+                            config_path,
+                            "--persona",
+                            persona,
+                        ],
+                        "env": process_env,
+                        "files": {config_path: config_yaml},
+                        "logPath": f"/sandbox/.volundr/flock/{persona}.log",
+                    }
+                )
 
         pod_volumes: list[dict[str, Any]] = [*config_volumes, *persona_source_volumes]
         if requires_local_mimir_mount:
@@ -1183,6 +1219,8 @@ class RavnFlockContributor(SessionContributor):
             values["flock"]["daily_budget_usd"] = float(daily_budget_usd)
         if workflow:
             values["workflow"] = workflow
+        if openshell_processes:
+            values["openshell"] = {"processes": openshell_processes}
 
         if mimir_config:
             values["mimir"] = {

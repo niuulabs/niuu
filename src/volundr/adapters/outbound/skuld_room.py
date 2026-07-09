@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+from dataclasses import dataclass
+from urllib.parse import urlparse, urlunparse
 from uuid import UUID
 
 import httpx
@@ -14,6 +17,15 @@ from volundr.domain.models import (
 )
 from volundr.domain.ports import SessionCommunicationPort, SessionRepository, SessionRoomPort
 
+DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL = "http://openshell.openshell.svc.cluster.local:8080"
+OPENSHELL_SERVICE_HOST_SUFFIX = ".openshell.localhost"
+
+
+@dataclass(frozen=True)
+class _SkuldRequestTarget:
+    base_url: str
+    headers: dict[str, str]
+
 
 class SkuldRoomAdapter(SessionRoomPort, SessionCommunicationPort):
     """Use the live session proxy to talk to internal Skuld room endpoints."""
@@ -23,9 +35,15 @@ class SkuldRoomAdapter(SessionRoomPort, SessionCommunicationPort):
         session_repository: SessionRepository,
         *,
         timeout: float = 10.0,
+        openshell_internal_gateway_url: str | None = None,
     ) -> None:
         self._session_repository = session_repository
         self._timeout = timeout
+        self._openshell_internal_gateway_url = (
+            openshell_internal_gateway_url
+            or os.environ.get("OPENSHELL_INTERNAL_GATEWAY_URL")
+            or DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL
+        ).rstrip("/")
 
     async def send_room_message(
         self,
@@ -119,20 +137,24 @@ class SkuldRoomAdapter(SessionRoomPort, SessionCommunicationPort):
         return targets
 
     async def _post(self, session_id: UUID, suffix: str, payload: dict) -> dict:
-        base_url = await self._resolve_base_url(session_id)
+        target = await self._resolve_request_target(session_id)
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.post(f"{base_url}{suffix}", json=payload)
+            response = await client.post(
+                f"{target.base_url}{suffix}",
+                json=payload,
+                headers=target.headers,
+            )
             response.raise_for_status()
             return response.json()
 
     async def _get(self, session_id: UUID, suffix: str) -> dict:
-        base_url = await self._resolve_base_url(session_id)
+        target = await self._resolve_request_target(session_id)
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.get(f"{base_url}{suffix}")
+            response = await client.get(f"{target.base_url}{suffix}", headers=target.headers)
             response.raise_for_status()
             return response.json()
 
-    async def _resolve_base_url(self, session_id: UUID) -> str:
+    async def _resolve_request_target(self, session_id: UUID) -> _SkuldRequestTarget:
         session = await self._session_repository.get(session_id)
         if session is None:
             raise LookupError(f"Session not found: {session_id}")
@@ -141,10 +163,30 @@ class SkuldRoomAdapter(SessionRoomPort, SessionCommunicationPort):
         base_url = session.chat_endpoint.replace("wss://", "https://").replace("ws://", "http://")
         if base_url.endswith("/session"):
             base_url = base_url[: -len("/session")]
-        return base_url
+        parsed = urlparse(base_url)
+        if _is_openshell_service_host(parsed.hostname):
+            gateway = urlparse(self._openshell_internal_gateway_url)
+            return _SkuldRequestTarget(
+                base_url=urlunparse(
+                    (
+                        gateway.scheme or "http",
+                        gateway.netloc,
+                        parsed.path.rstrip("/"),
+                        "",
+                        "",
+                        "",
+                    )
+                ),
+                headers={"Host": parsed.netloc},
+            )
+        return _SkuldRequestTarget(base_url=base_url, headers={})
 
 
 def _normalize_optional_str(value: object) -> str | None:
     if value in (None, ""):
         return None
     return str(value)
+
+
+def _is_openshell_service_host(hostname: str | None) -> bool:
+    return bool(hostname and hostname.endswith(OPENSHELL_SERVICE_HOST_SUFFIX))

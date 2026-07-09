@@ -130,6 +130,7 @@ class SessionService:
         communication_route_repository: CommunicationRouteRepository | None = None,
         session_communication_port: SessionCommunicationPort | None = None,
         attention_notifier: AttentionNotifier | None = None,
+        runtime_backend: str = "kubernetes",
     ):
         self._repository = repository
         self._pod_manager = pod_manager
@@ -151,6 +152,7 @@ class SessionService:
         self._sleipnir_publisher = sleipnir_publisher
         self._communication_route_repository = communication_route_repository
         self._session_communication_port = session_communication_port
+        self._runtime_backend = runtime_backend
 
     async def create_session(
         self,
@@ -951,6 +953,7 @@ class SessionService:
             principal=principal,
             definition=definition,
             launch_spec=launch_spec,
+            runtime_backend=self._runtime_backend,
             terminal_restricted=terminal_restricted,
             credential_names=tuple(credential_names or ()),
             integration_ids=tuple(c.id for c in resolved_connections),

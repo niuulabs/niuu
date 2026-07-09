@@ -39,45 +39,43 @@ Environment overrides use the same nested shape. For a directly started
 Völundr service, adapter kwargs live under `POD_MANAGER__KWARGS__...`:
 
 ```bash
-POD_MANAGER__ADAPTER=volundr.adapters.outbound.openshell.OpenShellPodManager
-POD_MANAGER__KWARGS__SANDBOX_IMAGE=ghcr.io/niuulabs/skuld:0.2.0
+POD_MANAGER__ADAPTER=volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager
+POD_MANAGER__KWARGS__GATEWAY_ENDPOINT=openshell.openshell.svc.cluster.local:8080
 ```
 
 The local `niuu platform` CLI uses the `NIUU_` prefix for its own config and
 then exports service-level settings when it starts Völundr.
 
-Local development can use mini mode, cluster mode, or OpenShell mode. OpenShell
-mode keeps the normal Skuld broker/session protocol but runs each session in an
-OpenShell sandbox:
+Deployments can use mini mode, cluster mode, or OpenShell mode. OpenShell mode
+keeps the normal Skuld broker/session protocol but creates each session through
+the OpenShell gateway API:
 
 ```yaml
 pod_manager:
-  adapter: "volundr.adapters.outbound.openshell.OpenShellPodManager"
+  adapter: "volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager"
   kwargs:
-    openshell_binary: "openshell"
-    gateway_url: ""
-    gateway_name: local
-    sandbox_image: "ghcr.io/niuulabs/skuld:0.2.0"
-    cpu: "2"
-    memory: "4Gi"
-    policy_file: "/etc/niuu/openshell-policy.yaml"
-    workspaces_dir: "~/.niuu/workspaces"
-    state_file: "~/.niuu/openshell-forge-state.json"
-    forward_mode: service
+    gateway_endpoint: "openshell.openshell.svc.cluster.local:8080"
+    token_url: "https://keycloak.niuu.world/realms/volundr/protocol/openid-connect/token"
+    client_id: "openshell-volundr-agent"
+    sandbox_image: "ghcr.io/niuulabs/niuu-openshell:openshell-provider-v2-20260709"
+    sandbox_command: ["/opt/niuu/bin/python", "-m", "skuld"]
+    service_port: 9200
+  secret_kwargs_env:
+    client_secret: OPENSHELL_OIDC_CLIENT_SECRET
 ```
 
 OpenShell-specific controls are split across three layers:
 
 | Control | Where to configure it |
 | --- | --- |
-| CPU, memory, GPU | OpenShell sandbox create flags; Völundr exposes `cpu` and `memory` as adapter kwargs. |
-| Network access | OpenShell policy YAML `network_policies`; pass the create-time policy with `policy_file`. |
-| Filesystem/process access | OpenShell policy YAML `filesystem_policy`, `landlock`, and `process`; these are locked at sandbox creation. |
-| Workspace storage and mounts | OpenShell driver config; Völundr exposes workspace bind/upload settings and `sandbox_mounts`. |
-| CLI location | `openshell_binary`, or `NIUU_POD_MANAGER__OPENSHELL_BINARY` for local overrides. |
+| Authentication | Keycloak client credentials from `OPENSHELL_OIDC_CLIENT_SECRET`; the token is sent as `Authorization: Bearer ...` to the gateway. |
+| CPU and memory | Session `resources` values; the adapter maps them to OpenShell template resources. |
+| Scheduling | Session `nodeSelector`, `tolerations`, `runtimeClassName`, and `priorityClassName`; the adapter maps them to Kubernetes driver config. |
+| Runtime env | Session env and pod-spec literal env values; secret `valueFrom` env requires a follow-up gateway-compatible secret path. |
+| Service exposure | OpenShell `ExposeService`; Völundr stores the returned Skuld chat/code endpoints. |
 
-See [OpenShell runtime](../operations/openshell-runtime.md) for the local
-OpenShell workflow and policy examples.
+See [OpenShell runtime](../operations/openshell-runtime.md) for the gateway
+runtime shape.
 
 ## Local stack
 

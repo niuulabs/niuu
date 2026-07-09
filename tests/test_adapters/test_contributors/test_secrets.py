@@ -87,6 +87,32 @@ class TestSecretInjectionContributor:
         assert result.values == {}
         assert result.pod_spec is None
 
+    async def test_no_adapter_returns_openshell_mapping_values(self, session):
+        defn = _definition(
+            slug="openai",
+            env_from_credentials={"OPENAI_API_KEY": "api_key"},
+        )
+        registry = _registry([defn])
+
+        ctx = SessionContext(
+            integration_connections=(_connection("openai-cred", "openai"),),
+        )
+        c = SecretInjectionContributor(integration_registry=registry)
+        result = await c.contribute(session, ctx)
+
+        assert result.pod_spec is None
+        assert result.values == {
+            "openshell": {
+                "credentialMappings": [
+                    {
+                        "credentialName": "openai-cred",
+                        "envMappings": {"OPENAI_API_KEY": "api_key"},
+                        "fileMappings": {},
+                    }
+                ]
+            }
+        }
+
     async def test_no_owner_returns_empty(self):
         session = Session(name="test", model="claude", source=GitSource(repo="", branch="main"))
         adapter = AsyncMock()
@@ -109,6 +135,17 @@ class TestSecretInjectionContributor:
         c = SecretInjectionContributor(secret_injection=adapter)
         result = await c.contribute(session, ctx)
         assert result.pod_spec is pod_spec
+        assert result.values == {
+            "openshell": {
+                "credentialMappings": [
+                    {
+                        "credentialName": "my-cred",
+                        "envMappings": {},
+                        "fileMappings": {},
+                    }
+                ]
+            }
+        }
         adapter.pod_spec_additions.assert_called_once_with("user-1", str(session.id))
         adapter.ensure_secret_provider_class.assert_called_once_with(
             "user-1",
@@ -116,6 +153,31 @@ class TestSecretInjectionContributor:
             session_id=str(session.id),
             tenant_id=None,
         )
+
+    async def test_openshell_backend_skips_k8s_injection_resources(self, session):
+        adapter = AsyncMock()
+        ctx = SessionContext(
+            runtime_backend="openshell",
+            integration_connections=(_connection("my-cred", "test"),),
+        )
+        c = SecretInjectionContributor(secret_injection=adapter)
+
+        result = await c.contribute(session, ctx)
+
+        assert result.pod_spec is None
+        assert result.values == {
+            "openshell": {
+                "credentialMappings": [
+                    {
+                        "credentialName": "my-cred",
+                        "envMappings": {},
+                        "fileMappings": {},
+                    }
+                ]
+            }
+        }
+        adapter.ensure_secret_provider_class.assert_not_called()
+        adapter.pod_spec_additions.assert_not_called()
 
     async def test_builds_mappings_from_registry(self, session):
         """Credential mappings include env and file mappings from definitions."""

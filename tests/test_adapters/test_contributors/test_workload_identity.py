@@ -48,3 +48,15 @@ async def test_workload_identity_contributor_projects_audience_scoped_token():
         "name": "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL",
         "value": "https://niuu.example/api/v1/tokens/workload/exchange",
     } in contribution.pod_spec.env
+
+
+async def test_workload_identity_contributor_skips_openshell_backend():
+    contributor = WorkloadIdentityContributor()
+
+    contribution = await contributor.contribute(
+        Session(name="session", model="gpt-5.5", source=GitSource()),
+        SessionContext(runtime_backend="openshell"),
+    )
+
+    assert contribution.values == {}
+    assert contribution.pod_spec is None

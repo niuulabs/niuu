@@ -48,6 +48,9 @@ class StorageContributor(SessionContributor):
         session: Session,
         context: SessionContext,
     ) -> SessionContribution:
+        if context.runtime_backend == "openshell":
+            return SessionContribution()
+
         if self._storage is None:
             return SessionContribution()
 

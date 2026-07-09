@@ -282,17 +282,16 @@ class TestDynamicUpCallback:
         startup.assert_awaited_once()
         shutdown.assert_awaited_once_with(manager)
 
-    def test_up_callback_sets_openshell_runtime_overrides(self) -> None:
+    def test_up_callback_does_not_set_local_overrides_for_openshell_gateway(self) -> None:
         service_defs = {"volundr": _make_svc_def("volundr")}
         manager = MagicMock()
         settings = CLISettings(
             mode="openshell",
             pod_manager=PodManagerConfig(
-                adapter="volundr.adapters.outbound.openshell.OpenShellPodManager",
-                gateway_url="",
+                adapter="volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager",
+                gateway_endpoint="openshell.openshell.svc.cluster.local:8080",
                 sandbox_image="skuld:test",
-                workspaces_dir="~/.niuu/workspaces",
-                sdk_port_start=9200,
+                service_port=9200,
             ),
         )
         up_fn = _build_up_callback(service_defs, manager, settings)
@@ -318,13 +317,8 @@ class TestDynamicUpCallback:
                 volundr=True,
             )
 
-            assert os.environ["LOCAL_MOUNTS__ENABLED"] == "true"
-            assert os.environ["LOCAL_MOUNTS__MINI_MODE"] == "true"
-            assert os.environ["POD_MANAGER__ADAPTER"] == settings.pod_manager.adapter
-            assert os.environ["POD_MANAGER__KWARGS__GATEWAY_URL"] == ""
-            assert os.environ["POD_MANAGER__KWARGS__SANDBOX_IMAGE"] == "skuld:test"
-            assert os.environ["POD_MANAGER__KWARGS__SDK_PORT_START"] == "9200"
-            assert os.environ["GIT__VALIDATE_ON_CREATE"] == "false"
+            assert "LOCAL_MOUNTS__ENABLED" not in os.environ
+            assert "POD_MANAGER__ADAPTER" not in os.environ
 
         startup.assert_awaited_once()
         shutdown.assert_awaited_once_with(manager)
@@ -372,7 +366,7 @@ class TestDynamicUpCallback:
         settings = CLISettings(mode="cluster")
         up_fn = _build_up_callback(service_defs, manager, settings)
 
-        with pytest.raises(typer.BadParameter, match="only supported in mini or openshell mode"):
+        with pytest.raises(typer.BadParameter, match="only supported in mini mode"):
             up_fn(
                 skip_preflight=True,
                 all=False,
@@ -556,9 +550,12 @@ class TestBuildInitConfig:
     def test_openshell_config(self) -> None:
         config = _build_init_config("openshell")
         assert config["mode"] == "openshell"
-        assert "openshell.OpenShellPodManager" in config["pod_manager"]["adapter"]
-        assert config["pod_manager"]["gateway_url"] == ""
-        assert config["pod_manager"]["sdk_port_start"] == 9200
+        assert "openshell_gateway.OpenShellGatewayPodManager" in config["pod_manager"]["adapter"]
+        assert (
+            config["pod_manager"]["gateway_endpoint"]
+            == "openshell.openshell.svc.cluster.local:8080"
+        )
+        assert config["pod_manager"]["service_port"] == 9200
 
     def test_cluster_config_uses_pinned_image_version(self) -> None:
         """skuld_image must use a pinned version, not :latest."""
@@ -749,10 +746,10 @@ class TestConfigModeSwitching:
         settings = CLISettings(
             mode="openshell",
             pod_manager=PodManagerConfig(
-                adapter="volundr.adapters.outbound.openshell.OpenShellPodManager",
+                adapter="volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager",
             ),
         )
-        assert "OpenShellPodManager" in settings.pod_manager.adapter
+        assert "OpenShellGatewayPodManager" in settings.pod_manager.adapter
         assert settings.mode == "openshell"
 
 

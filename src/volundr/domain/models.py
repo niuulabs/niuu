@@ -1578,6 +1578,13 @@ def _deep_merge(base: dict, override: dict) -> None:
         if key == "mcpServers" and isinstance(base.get(key), list) and isinstance(value, list):
             base[key] = _merge_mcp_server_lists(base[key], value)
             continue
+        if (
+            key == "credentialMappings"
+            and isinstance(base.get(key), list)
+            and isinstance(value, list)
+        ):
+            base[key] = _merge_credential_mapping_lists(base[key], value)
+            continue
         if key in base and isinstance(base[key], dict) and isinstance(value, dict):
             _deep_merge(base[key], value)
         else:
@@ -1603,6 +1610,35 @@ def _merge_mcp_server_lists(existing: list, override: list) -> list:
         index_by_name[name] = len(merged)
         merged.append(dict(entry))
 
+    return merged
+
+
+def _merge_credential_mapping_lists(existing: list, override: list) -> list:
+    """Merge credential mappings by name while combining env and file fields."""
+    merged: list = []
+    index_by_name: dict[str, int] = {}
+    for entry in list(existing) + list(override):
+        if not isinstance(entry, dict):
+            merged.append(entry)
+            continue
+        name = str(entry.get("credentialName") or entry.get("credential_name") or "").strip()
+        if not name:
+            merged.append(dict(entry))
+            continue
+        normalized = {
+            "credentialName": name,
+            "envMappings": dict(entry.get("envMappings") or entry.get("env_mappings") or {}),
+            "fileMappings": dict(
+                entry.get("fileMappings") or entry.get("file_mappings") or {}
+            ),
+        }
+        if name not in index_by_name:
+            index_by_name[name] = len(merged)
+            merged.append(normalized)
+            continue
+        current = merged[index_by_name[name]]
+        current["envMappings"].update(normalized["envMappings"])
+        current["fileMappings"].update(normalized["fileMappings"])
     return merged
 
 

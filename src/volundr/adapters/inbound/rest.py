@@ -79,6 +79,8 @@ from volundr.session_archive import load_workspace_transcript
 
 logger = logging.getLogger(__name__)
 WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
+DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL = "http://openshell.openshell.svc.cluster.local:8080"
+OPENSHELL_SERVICE_HOST_SUFFIX = ".openshell.localhost"
 # How long send_session_message holds the WS open waiting for the broker's
 # correlated delivery ACK before reporting the message as "pending" (the broker's
 # bounded retry then drives it to delivered/failed). Named so it is not a magic
@@ -107,6 +109,29 @@ def _public_session_endpoint(endpoint: str | None) -> str | None:
     if parsed.port is not None:
         netloc = f"{public_host}:{parsed.port}"
     return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+
+
+def _server_side_ws_connect_overrides(ws_url: str) -> dict[str, object]:
+    try:
+        parsed = urlsplit(ws_url)
+    except ValueError:
+        return {}
+    if not parsed.hostname or not parsed.hostname.endswith(OPENSHELL_SERVICE_HOST_SUFFIX):
+        return {}
+    gateway_url = (
+        os.environ.get("OPENSHELL_INTERNAL_GATEWAY_URL") or DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL
+    )
+    try:
+        gateway = urlsplit(gateway_url)
+    except ValueError:
+        return {}
+    if not gateway.hostname:
+        return {}
+    return {
+        "host": gateway.hostname,
+        "port": gateway.port or (443 if gateway.scheme == "https" else 80),
+        "proxy": None,
+    }
 
 
 def _sanitize_log(value: object) -> str:
@@ -2546,6 +2571,7 @@ def create_router(
             ssl_ctx.check_hostname = False
             ssl_ctx.verify_mode = ssl.CERT_NONE
             connect_kwargs["ssl"] = ssl_ctx
+        connect_kwargs.update(_server_side_ws_connect_overrides(ws_url))
 
         # INV-7: correlate this message with the broker's delivery ACK so the response
         # distinguishes DELIVERED from NOT-delivered — a 200 means the transport actually

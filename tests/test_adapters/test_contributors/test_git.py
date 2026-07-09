@@ -45,6 +45,17 @@ class TestGitContributor:
         assert result.values["git"]["cloneUrl"] == "https://token@github.com/org/repo.git"
         assert result.values["git"]["branch"] == "feat/test"
 
+    async def test_openshell_uses_clean_repo_url_and_dynamic_provider_auth(self, session):
+        registry = MagicMock()
+        registry.get_clone_url.return_value = "https://token@github.com/org/repo.git"
+        c = GitContributor(git_registry=registry)
+
+        result = await c.contribute(session, SessionContext(runtime_backend="openshell"))
+
+        assert result.values["git"]["repoUrl"] == "https://github.com/org/repo"
+        assert result.values["git"]["cloneUrl"] == "https://github.com/org/repo"
+        registry.get_clone_url.assert_not_called()
+
     async def test_clone_url_none(self, session):
         registry = MagicMock()
         registry.get_clone_url.return_value = None

@@ -213,6 +213,35 @@ class TestWorkloadTypeRouting:
 
 
 class TestContributorOutput:
+    async def test_openshell_backend_emits_in_sandbox_process_plan(
+        self, session, flock_template
+    ):
+        provider = MagicMock()
+        provider.get.return_value = flock_template
+        contributor = RavnFlockContributor(launch_spec_provider=provider)
+
+        result = await contributor.contribute(
+            session,
+            SessionContext(launch_spec="ravn-flock", runtime_backend="openshell"),
+        )
+
+        processes = result.values["openshell"]["processes"]
+        assert [process["name"] for process in processes] == [
+            "ravn-coordinator",
+            "ravn-reviewer",
+        ]
+        assert processes[0]["command"][:4] == [
+            "/opt/niuu/bin/python",
+            "-m",
+            "ravn",
+            "daemon",
+        ]
+        assert processes[0]["env"]["HOME"] == "/sandbox/workspace"
+        assert "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE" not in processes[0]["env"]
+        config_path = "/sandbox/.volundr/flock/coordinator.yaml"
+        assert config_path in processes[0]["files"]
+        assert yaml.safe_load(processes[0]["files"][config_path])["persona"] == "coordinator"
+
     async def test_two_ravn_containers_produced(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template

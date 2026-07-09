@@ -56,6 +56,9 @@ from volundr.adapters.inbound.rest_git import create_git_router
 from volundr.adapters.inbound.rest_integrations import create_canonical_integrations_router
 from volundr.adapters.inbound.rest_issues import create_canonical_issues_router
 from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router
+from volundr.adapters.inbound.rest_openshell_credentials import (
+    create_openshell_credentials_router,
+)
 from volundr.adapters.inbound.rest_prompts import create_prompts_router
 from volundr.adapters.inbound.rest_resources import create_resources_router
 from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
@@ -93,7 +96,7 @@ from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
 from volundr.catalog import build_catalog
 from volundr.domain.models import SessionStatus
-from volundr.domain.ports import SessionContributor
+from volundr.domain.ports import OpenShellCredentialGrantPort, SessionContributor
 from volundr.domain.services import (
     ChronicleService,
     ExternalSessionService,
@@ -186,6 +189,15 @@ def _create_pod_manager(settings: Settings) -> "PodManager":  # noqa: F821
     instance = cls(**kwargs)
     logger.info("Pod manager: %s", pm_cfg.adapter.rsplit(".", 1)[-1])
     return instance
+
+
+def _runtime_backend(settings: Settings) -> str:
+    adapter = settings.pod_manager.adapter.rsplit(".", 1)[-1].lower()
+    if "openshell" in adapter:
+        return "openshell"
+    if mode := getattr(settings, "mode", None):
+        return mode
+    return "kubernetes"
 
 
 def _create_authorization_adapter(settings: Settings) -> "AuthorizationPort":  # noqa: F821
@@ -664,6 +676,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             persona_registry = PostgresPersonaRegistry(pool)
             app.state.persona_registry = persona_registry
             pod_manager = _create_pod_manager(settings)
+            if hasattr(pod_manager, "set_session_repository"):
+                pod_manager.set_session_repository(repository)
 
             # Inject Skuld port registry for mini mode proxy routing
             skuld_reg = None
@@ -835,6 +849,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 communication_route_repository=communication_route_repository,
                 session_communication_port=session_room_port,
                 attention_notifier=attention_notifier,
+                runtime_backend=_runtime_backend(settings),
             )
             # Local-process brokers notify the session service when they exit so
             # the DB row is reconciled promptly (pod-status authoritative) rather
@@ -985,6 +1000,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 prefix="/api/v1/forge",
             )
             app.include_router(forge_router)
+            if isinstance(pod_manager, OpenShellCredentialGrantPort):
+                app.include_router(create_openshell_credentials_router(pod_manager))
 
             app.include_router(catalog.router)
 

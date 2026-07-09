@@ -38,6 +38,7 @@ cd web-next && pnpm test          # web tests (coverage-gated)
 - 85% coverage gates on backend and web; never lower them — `.claude/rules/testing.md`
 - Conventional commits — `.claude/rules/commits.md`
 - New adapters use dynamic `adapter:` + kwargs config — `.claude/rules/dynamic-adapters.md`
+- No placeholders or incomplete implementations outside tests — `.claude/rules/implementation-completeness.md`
 - `web-next/` is Tailwind + tokens and has its own `web-next/CLAUDE.md`; legacy `web/` rules differ
 
 ## Docs

@@ -129,6 +129,31 @@ class SessionRepository(ABC):
         """Delete a session. Returns True if deleted, False if not found."""
 
 
+@dataclass(frozen=True)
+class OpenShellCredentialGrantToken:
+    """OAuth token response returned to an OpenShell sandbox supervisor."""
+
+    access_token: str
+    expires_in: int = 300
+    token_type: str = "Bearer"
+
+
+class OpenShellCredentialGrantPort(ABC):
+    """Exchange an OpenShell sandbox JWT-SVID for one authorized credential."""
+
+    @abstractmethod
+    async def exchange_credential_grant(
+        self,
+        *,
+        client_assertion: str,
+        client_assertion_type: str,
+        grant_type: str,
+        audience: str,
+        scope: str,
+    ) -> OpenShellCredentialGrantToken:
+        """Validate the sandbox identity and return a short-lived credential value."""
+
+
 class ExternalSessionProvider(ABC):
     """Port for discovering CLI sessions that live outside Volundr.
 
@@ -1388,6 +1413,7 @@ class SessionContext:
     principal: Principal | None = None
     definition: str | None = None
     launch_spec: str | None = None
+    runtime_backend: str = "kubernetes"
     terminal_restricted: bool = False
     credential_names: tuple[str, ...] = ()
     integration_ids: tuple[str, ...] = ()

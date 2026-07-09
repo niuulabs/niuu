@@ -121,3 +121,24 @@ async def test_list_communication_targets_uses_internal_skuld_endpoint():
     assert targets[0].platform.value == "telegram"
     assert targets[0].conversation_id == "-100123"
     assert targets[0].thread_id == "7"
+
+
+@respx.mock
+async def test_openshell_service_endpoint_uses_gateway_with_host_header():
+    session = _session()
+    session.chat_endpoint = (
+        "ws://forge-8093e93dc7634efeb2c382--skuld.openshell.localhost:8080/session"
+    )
+    route = respx.get(
+        "http://openshell.openshell.svc.cluster.local:8080/api/room/participants"
+    ).mock(return_value=httpx.Response(200, json={"participants": []}))
+    adapter = SkuldRoomAdapter(_FakeSessionRepository(session))
+
+    participants = await adapter.list_room_participants(session.id)
+
+    assert participants == []
+    assert route.called
+    assert (
+        route.calls[0].request.headers["host"]
+        == "forge-8093e93dc7634efeb2c382--skuld.openshell.localhost:8080"
+    )

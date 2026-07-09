@@ -4,7 +4,8 @@ requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14'",
     "python_full_version == '3.13.*'",
-    "python_full_version < '3.13'",
+    "python_full_version == '3.12.*'",
+    "python_full_version < '3.12'",
 ]
 
 [[package]]
@@ -377,6 +378,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/3d/fa/656b739db8587d7b5dfa22e22ed02566950fbfbcdc20311993483657a5c0/click-8.3.1.tar.gz", hash = "sha256:12ff4785d337a1bb490bb7e9c2b1ee5da3112e94a8622f26a6c77f5d2fc6842a", size = 295065, upload-time = "2025-11-15T20:45:42.706Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/98/78/01c019cdb5d6498122777c1a43056ebb3ebfeef2076d9d026bfe15583b2b/click-8.3.1-py3-none-any.whl", hash = "sha256:981153a64e25f12d547d3426c367a4857371575ee7ad18df2a6183ab0545b2a6", size = 108274, upload-time = "2025-11-15T20:45:41.139Z" },
+]
+
+[[package]]
+name = "cloudpickle"
+version = "3.1.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/27/fb/576f067976d320f5f0114a8d9fa1215425441bb35627b1993e5afd8111e5/cloudpickle-3.1.2.tar.gz", hash = "sha256:7fda9eb655c9c230dab534f1983763de5835249750e85fbcef43aaa30a9a2414", size = 22330, upload-time = "2025-11-03T09:25:26.604Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/88/39/799be3f2f0f38cc727ee3b4f1445fe6d5e4133064ec2e4115069418a5bb6/cloudpickle-3.1.2-py3-none-any.whl", hash = "sha256:9acb47f6afd73f60dc1df93bb801b472f05ff42fa6c84167d25cb206be1fbf4a", size = 22228, upload-time = "2025-11-03T09:25:25.534Z" },
 ]
 
 [[package]]
@@ -1791,6 +1801,22 @@ source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c2/f3/d86c845465a2723ad7e1e5c36dcd75ddb82898b3f53be47ebd429fb2fa5d/nvidia_nvtx-13.0.85-py3-none-manylinux1_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:4936d1d6780fbe68db454f5e72a42ff64d1fd6397df9f363ae786930fd5c1cd4", size = 148047, upload-time = "2025-09-04T08:29:01.761Z" },
     { url = "https://files.pythonhosted.org/packages/a8/64/3708a90d1ebe202ffdeb7185f878a3c84d15c2b2c31858da2ce0583e2def/nvidia_nvtx-13.0.85-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:cb7780edb6b14107373c835bf8b72e7a178bac7367e23da7acb108f973f157a6", size = 148878, upload-time = "2025-09-04T08:28:53.627Z" },
+]
+
+[[package]]
+name = "openshell"
+version = "0.0.78"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cloudpickle", marker = "python_full_version >= '3.12'" },
+    { name = "grpcio", marker = "python_full_version >= '3.12'" },
+    { name = "httpx", marker = "python_full_version >= '3.12'" },
+    { name = "protobuf", marker = "python_full_version >= '3.12'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ee/42/0955d0a5fb01c75c4067e7ef21ccf700f9d7f98a137024814b26c887cefc/openshell-0.0.78-py3-none-macosx_13_0_arm64.whl", hash = "sha256:7396cb28091207b26512409dde91bf1a2d0a91697f1f35a1ac791b9f9ca1420b", size = 15921875, upload-time = "2026-07-07T15:36:48.585Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/c3/1b01d5c61b4d2a70460a1ce978a10e69fb39ee8981f436d387c476ede47a/openshell-0.0.78-py3-none-manylinux_2_39_aarch64.whl", hash = "sha256:223098d77d798b5f09bd9ce7ba56c43cb181f3b7b55d2e1dba2be8dff417136f", size = 19411721, upload-time = "2026-07-07T15:37:10.438Z" },
+    { url = "https://files.pythonhosted.org/packages/95/7d/33b7eea2e08ac02f3cfdf574c8cf6686fd040387c6e7becce55ed0bf667e/openshell-0.0.78-py3-none-manylinux_2_39_x86_64.whl", hash = "sha256:c265e9759a536a61ec30deed9a305960c1399b005b0472b502ea66344ba14d1e", size = 20256095, upload-time = "2026-07-07T15:37:32.212Z" },
 ]
 
 [[package]]
@@ -3361,6 +3387,9 @@ k8s = [
 nats = [
     { name = "nats-py" },
 ]
+openshell = [
+    { name = "openshell", marker = "python_full_version >= '3.12'" },
+]
 otel = [
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
@@ -3410,6 +3439,7 @@ requires-dist = [
     { name = "nats-py", marker = "extra == 'dev'", specifier = ">=2.15.0" },
     { name = "nats-py", marker = "extra == 'nats'", specifier = ">=2.15.0" },
     { name = "nuitka", extras = ["onefile"], marker = "extra == 'cli'", specifier = ">=4.1.3" },
+    { name = "openshell", marker = "python_full_version >= '3.12' and extra == 'openshell'", specifier = "==0.0.78" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.43.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'otel'", specifier = ">=1.43.0" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.43.0" },
@@ -3450,7 +3480,7 @@ requires-dist = [
     { name = "websockets", specifier = ">=16.0" },
     { name = "zeroconf", specifier = ">=0.150.0" },
 ]
-provides-extras = ["nats", "embeddings", "test", "rabbitmq", "redis", "k8s", "otel", "encryption", "browser", "infra", "cli", "tui", "dev"]
+provides-extras = ["openshell", "nats", "embeddings", "test", "rabbitmq", "redis", "k8s", "otel", "encryption", "browser", "infra", "cli", "tui", "dev"]
 
 [package.metadata.requires-dev]
 dev = [

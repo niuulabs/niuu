@@ -1,182 +1,141 @@
 # OpenShell Runtime
 
-OpenShell mode runs each local Forge session inside an NVIDIA OpenShell
-sandbox while keeping the existing Skuld broker and Forge session protocol.
-Use it when local process mode is too permissive and a full Kubernetes cluster
-is more machinery than the job needs.
+OpenShell mode creates Forge sessions through the OpenShell gateway API. Völundr
+does not shell out to the OpenShell CLI; it mints a Keycloak client-credentials
+token and calls the gateway gRPC service directly.
 
 ## Runtime Shape
 
 ```text
-Völundr session
-  -> OpenShellPodManager
-  -> OpenShell sandbox
-  -> Skuld broker
-  -> Claude, Codex, or another Skuld-managed CLI
+Völundr
+  -> OpenShellGatewayPodManager
+  -> OpenShell gateway gRPC API
+  -> Kubernetes compute driver
+  -> OpenShell Sandbox
+  -> Skuld broker (+ Ravn processes for flock sessions)
 ```
 
-This is still Skuld-on-OpenShell. Native NemoClaw, OpenClaw, Hermes, or
-DeepAgents runtimes should use their own OpenShell/NemoClaw images and remain a
-separate integration path.
+The sandbox starts with the OpenShell supervisor. Völundr then runs the Skuld
+session command via gateway `ExecSandbox` and exposes Skuld via gateway
+`ExposeService`.
 
 ## Configure The Pod Manager
 
-OpenShell mode uses the same dynamic `pod_manager` adapter shape as mini and
-cluster modes:
-
 ```yaml
 pod_manager:
-  adapter: "volundr.adapters.outbound.openshell.OpenShellPodManager"
+  adapter: "volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager"
   kwargs:
-    openshell_binary: "openshell"
-    gateway_url: ""
-    gateway_name: local
-    sandbox_image: "ghcr.io/niuulabs/skuld:0.2.0"
-    workspaces_dir: "~/.niuu/workspaces"
-    state_file: "~/.niuu/openshell-forge-state.json"
-    sdk_port_start: 9200
-    forward_mode: service
+    gateway_endpoint: "openshell.openshell.svc.cluster.local:8080"
+    token_url: "https://keycloak.niuu.world/realms/volundr/protocol/openid-connect/token"
+    client_id: "openshell-volundr-agent"
+    sandbox_image: "ghcr.io/niuulabs/niuu-openshell:openshell-provider-v2-20260709"
+    sandbox_command: ["/opt/niuu/bin/python", "-m", "skuld"]
+    sandbox_home: "/sandbox"
+    credential_token_endpoint: "http://niuu-volundr.volundr.svc.cluster.local/api/v1/internal/openshell/credential-token"
+    spiffe_jwks_uri: "https://spire-spiffe-oidc-discovery-provider.spire.svc.cluster.local/keys"
+    spiffe_issuer: "https://spire-spiffe-oidc-discovery-provider.spire.svc.cluster.local"
+    spiffe_audience: "http://niuu-volundr.volundr.svc.cluster.local/api/v1/internal/openshell/credential-token"
+    spiffe_subject_prefix: "spiffe://niuu.world/openshell/sandbox/"
+    spiffe_ca_cert_path: "/etc/spire/ca.crt"
+    service_port: 9200
+  secret_kwargs_env:
+    client_secret: OPENSHELL_OIDC_CLIENT_SECRET
 ```
 
-For local development, `./start-dev --openshell` applies these defaults. Override
-individual values with `NIUU_POD_MANAGER__...` environment variables:
+In Helm values, mount the Keycloak client secret with `podManager.secretKwargs`:
+
+```yaml
+podManager:
+  adapter: "volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager"
+  kwargs:
+    gateway_endpoint: "openshell.openshell.svc.cluster.local:8080"
+    token_url: "https://keycloak.niuu.world/realms/volundr/protocol/openid-connect/token"
+    client_id: "openshell-volundr-agent"
+  secretKwargs:
+    - kwarg: "client_secret"
+      secretName: "openshell-volundr-agent-oidc"
+      secretKey: "client-secret"
+```
+
+The adapter also honors these environment variables:
+
+- `OPENSHELL_GATEWAY_ENDPOINT`
+- `OPENSHELL_GATEWAY_PUBLIC_URL`
+- `OPENSHELL_OIDC_TOKEN_URL`
+- `OPENSHELL_OIDC_CLIENT_ID`
+- `OPENSHELL_OIDC_CLIENT_SECRET`
+
+## Supported Session Inputs
+
+The OpenShell gateway API supports a sandbox template, not an arbitrary
+multi-container Kubernetes pod. The adapter maps the supported Volundr session
+surface:
+
+| Volundr input | OpenShell mapping |
+| --- | --- |
+| Session labels and annotations | Sandbox template labels and annotations |
+| Literal env values | Sandbox environment |
+| `resources.requests` / `resources.limits` | Sandbox template resources |
+| `nodeSelector` | Kubernetes driver `pod.node_selector` |
+| `tolerations` | Kubernetes driver `pod.tolerations` |
+| `runtimeClassName` | Kubernetes driver `pod.runtime_class_name` |
+| `priorityClassName` | Kubernetes driver `pod.priority_class_name` |
+
+Ravn flock contributions are translated into a structured OpenShell process plan.
+The sandbox contains one Skuld process and one Ravn daemon process per persona,
+with shared workspace and mesh addresses. Other arbitrary extra containers, init
+containers, volume mounts, and service accounts remain unsupported by the
+OpenShell Kubernetes driver and are logged.
+
+## Credentials And Agent Home
+
+OpenBao remains the source of truth. API credentials use OpenShell Provider v2
+dynamic token grants:
+
+1. Völundr creates an empty provider instance and profile for the session mapping.
+2. The sandbox supervisor obtains a SPIFFE JWT-SVID from SPIRE.
+3. The supervisor exchanges the assertion at Völundr's internal OAuth endpoint.
+4. Völundr verifies the SVID, attached provider, sandbox label, session, owner, and
+   requested OpenBao field before returning the credential.
+5. OpenShell caches the short-lived response and injects it only for the profile's
+   matching HTTP endpoints.
+
+No API credential value is persisted in OpenShell or placed in the sandbox process
+environment by Völundr.
+
+OAuth client state and agent configuration are files, which Provider v2 does not
+materialize. Map those OpenBao fields explicitly; Völundr projects them with mode
+`0600` under the OpenShell user's real home (`/sandbox`):
+
+```yaml
+openshell:
+  credentialMappings:
+    - credentialName: claude-credentials
+      fileMappings:
+        /home/volundr/.claude/.credentials.json: credentials.json
+        /home/volundr/.claude/settings.json: settings.json
+    - credentialName: codex-credentials
+      fileMappings:
+        /home/volundr/.codex/auth.json: auth.json
+        /home/volundr/.codex/config.toml: config.toml
+```
+
+This is the Kubernetes-compatible path for Claude subscription authentication
+described in NVIDIA/OpenShell issue 620. The same mapping carries Codex OAuth and
+configuration without requiring interactive login in every sandbox.
+
+## Operational Checks
+
+Check that the OpenShell gateway has OIDC enabled and can validate Keycloak
+tokens:
 
 ```bash
-NIUU_POD_MANAGER__OPENSHELL_BINARY=/opt/openshell/bin/openshell \
-NIUU_POD_MANAGER__SANDBOX_IMAGE=volundr-skuld:openshell-local \
-  ./start-dev --openshell
+kubectl -n openshell logs statefulset/openshell
 ```
 
-## Sandbox Resources
+Expected gateway startup logs include OIDC discovery/JWKS loading and JWT
+validation enabled. Once Völundr starts a session, the corresponding OpenShell
+Sandbox should reach Ready and report a connected supervisor.
 
-CPU and memory are OpenShell sandbox-create settings. The Völundr adapter passes
-them through to `openshell sandbox create --cpu ... --memory ...`.
-
-```yaml
-pod_manager:
-  kwargs:
-    cpu: "2"
-    memory: "4Gi"
-```
-
-Docker and Podman apply these as runtime limits. Kubernetes applies them as both
-request and limit. The OpenShell VM driver currently accepts these flags but
-does not resize the VM allocation.
-
-GPU requests are also an OpenShell sandbox-create concern, but Völundr does not
-currently expose a first-class `gpu` adapter option.
-
-## Policy Controls
-
-OpenShell policy YAML controls filesystem access, process identity, and network
-egress.
-
-Static policy sections are locked at sandbox creation:
-
-- `filesystem_policy`
-- `landlock`
-- `process`
-
-Dynamic policy sections can be hot-reloaded on a running sandbox with
-`openshell policy update` or `openshell policy set`:
-
-- `network_policies`
-
-Attach a create-time policy file through the adapter:
-
-```yaml
-pod_manager:
-  kwargs:
-    policy_file: "/etc/niuu/openshell-policy.yaml"
-```
-
-Example policy:
-
-```yaml
-version: 1
-
-filesystem_policy:
-  include_workdir: true
-  read_only: [/usr, /lib, /etc, /var/log]
-  read_write: [/sandbox, /tmp]
-landlock:
-  compatibility: best_effort
-process:
-  run_as_user: sandbox
-  run_as_group: sandbox
-
-network_policies:
-  github_api:
-    endpoints:
-      - host: api.github.com
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
-    binaries:
-      - path: /usr/bin/curl
-```
-
-Network policies are per binary and per endpoint. If no policy entry matches
-the destination and calling binary, outbound traffic is denied. REST and
-WebSocket policies can enforce method/path rules instead of only host/port
-rules.
-
-## Workspace Storage And Mounts
-
-OpenShell storage behavior depends on the active compute driver.
-
-Docker and Podman support `volume`, `tmpfs`, and opt-in host `bind` mounts
-through driver config. Bind mounts require `enable_bind_mounts = true` in the
-OpenShell gateway driver config and can weaken isolation by exposing host paths
-to the sandbox.
-
-The Völundr adapter exposes the common local workflow settings:
-
-```yaml
-pod_manager:
-  kwargs:
-    mount_workspace: true
-    sandbox_mounts: "~/.codex:/home/sandbox/.codex"
-```
-
-Use upload mode when bind mounts are not available or when the sandbox needs a
-writable copy of the checkout:
-
-```yaml
-pod_manager:
-  kwargs:
-    mount_workspace: false
-    upload_workspace: true
-    upload_workspace_target: "/sandbox/workspace"
-    sandbox_workspace: "/sandbox/workspace/volundr"
-```
-
-## Managed Inference
-
-OpenShell can route sandbox LLM calls through `https://inference.local`. In that
-mode the gateway injects provider credentials and strips sandbox-supplied
-credentials before forwarding requests upstream.
-
-The current Völundr OpenShell adapter does not yet configure managed inference.
-Today it preserves the existing Skuld behavior and passes normal CLI/model
-environment into the sandbox. Managed inference through OpenShell should be a
-follow-up hardening step.
-
-## Stop And Clean Up
-
-`./stop-dev` stops the local stack and removes OpenShell sandboxes tracked in
-the local OpenShell state file:
-
-```text
-~/.niuu/openshell-forge-state.json
-```
-
-Use OpenShell directly when debugging:
-
-```bash
-openshell status
-openshell sandbox list -o json
-openshell sandbox get forge-<session-id>
-openshell logs forge-<session-id> --source sandbox
-```
+Stopping a session explicitly deletes its exposed service, sandbox, provider
+instances, and provider profiles. Launch rollback performs the same cleanup.

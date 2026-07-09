@@ -7,6 +7,7 @@ SPIFFE JWT-SVIDs later by changing issuer/audience/JWKS configuration.
 from __future__ import annotations
 
 import json
+import ssl
 from typing import Any
 
 import jwt
@@ -25,6 +26,7 @@ class JwtWorkloadIdentityVerifier(WorkloadIdentityVerifier):
         audiences: list[str] | str | None = None,
         jwks_uri: str = "",
         static_jwks: dict[str, Any] | str | None = None,
+        ca_cert_path: str = "",
         algorithms: list[str] | None = None,
         insecure_skip_signature_verification: bool = False,
         **_extra: object,
@@ -43,7 +45,10 @@ class JwtWorkloadIdentityVerifier(WorkloadIdentityVerifier):
             self._static_jwks = static_jwks if isinstance(static_jwks, dict) else None
         self._algorithms = algorithms or ["RS256", "ES256"]
         self._insecure_skip_signature_verification = insecure_skip_signature_verification
-        self._client = PyJWKClient(jwks_uri) if jwks_uri else None
+        ssl_context = None
+        if ca_cert_path:
+            ssl_context = ssl.create_default_context(cafile=ca_cert_path)
+        self._client = PyJWKClient(jwks_uri, ssl_context=ssl_context) if jwks_uri else None
 
     async def verify(self, token: str) -> dict[str, Any]:
         options = {

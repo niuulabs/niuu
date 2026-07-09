@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MIMIR_SECRET_VOLUME_PATH = "/run/secrets/mimir"
+_OPENSHELL_VALUES_KEY = "openshell"
+_OPENSHELL_CREDENTIAL_MAPPINGS_KEY = "credentialMappings"
 
 
 def _secret_file_name(value: str) -> str:
@@ -32,6 +34,24 @@ def _secret_file_name(value: str) -> str:
 
 def _integration_auth_ref(slug: str) -> str:
     return f"integration:{slug}"
+
+
+def _mapping_payload(mapping: CredentialMapping) -> dict[str, object]:
+    return {
+        "credentialName": mapping.credential_name,
+        "envMappings": dict(mapping.env_mappings),
+        "fileMappings": dict(mapping.file_mappings),
+    }
+
+
+def _openshell_credential_values(mappings: list[CredentialMapping]) -> dict[str, object]:
+    return {
+        _OPENSHELL_VALUES_KEY: {
+            _OPENSHELL_CREDENTIAL_MAPPINGS_KEY: [
+                _mapping_payload(mapping) for mapping in mappings
+            ],
+        },
+    }
 
 
 class SecretInjectionContributor(SessionContributor):
@@ -188,12 +208,19 @@ class SecretInjectionContributor(SessionContributor):
         session: Session,
         context: SessionContext,
     ) -> SessionContribution:
-        if not self._secret_injection or not session.owner_id:
+        if not session.owner_id:
             return SessionContribution()
 
         mappings = await self._build_mappings(context, session.owner_id)
         if not mappings:
             return SessionContribution()
+
+        values = _openshell_credential_values(mappings)
+        if context.runtime_backend == "openshell":
+            return SessionContribution(values=values)
+
+        if not self._secret_injection:
+            return SessionContribution(values=values)
 
         # Ensure injection config exists (ConfigMap, SPC, etc.)
         try:
@@ -209,7 +236,7 @@ class SecretInjectionContributor(SessionContributor):
                 session.owner_id,
                 exc_info=True,
             )
-            return SessionContribution()
+            return SessionContribution(values=values)
 
         # Get pod spec additions (annotations, volumes, mounts)
         pod_spec = await self._secret_injection.pod_spec_additions(
@@ -217,7 +244,7 @@ class SecretInjectionContributor(SessionContributor):
             str(session.id),
         )
 
-        return SessionContribution(pod_spec=pod_spec)
+        return SessionContribution(values=values, pod_spec=pod_spec)
 
     async def cleanup(
         self,

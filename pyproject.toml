@@ -34,6 +34,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+openshell = [
+    "openshell==0.0.78; python_version >= '3.12'",
+]
 nats = [
     "nats-py>=2.15.0",
 ]

@@ -233,16 +233,16 @@ def _build_up_callback(
         workspaces_dir = str(kwargs.pop("workspaces_dir", "") or "").strip()
         effective_settings = settings
         if workspaces_dir:
-            if settings.mode not in {"mini", "openshell"}:
+            if settings.mode != "mini":
                 raise typer.BadParameter(
-                    "--workspaces-dir is only supported in mini or openshell mode",
+                    "--workspaces-dir is only supported in mini mode",
                     param_hint="workspaces-dir",
                 )
             effective_settings = settings.model_copy(deep=True)
             effective_settings.pod_manager.workspaces_dir = workspaces_dir
 
-        # Host-local runtimes need local mount support and dynamic PodManager env.
-        if effective_settings.mode in {"mini", "openshell"}:
+        # Host-local runtime needs local mount support and dynamic PodManager env.
+        if effective_settings.mode == "mini":
             os.environ.setdefault("LOCAL_MOUNTS__ENABLED", "true")
             os.environ.setdefault("LOCAL_MOUNTS__MINI_MODE", "true")
             for key, value in _resolve_local_pod_manager_env(effective_settings).items():
@@ -349,7 +349,9 @@ def _build_up_callback(
 
 MINI_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.local_process.LocalProcessPodManager"
 CLUSTER_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.direct_k8s_pod_manager.DirectK8sPodManager"
-OPENSHELL_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.openshell.OpenShellPodManager"
+OPENSHELL_POD_MANAGER_ADAPTER = (
+    "volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager"
+)
 
 CLUSTER_POD_MANAGER_DEFAULTS: dict[str, Any] = {
     "adapter": CLUSTER_POD_MANAGER_ADAPTER,
@@ -368,13 +370,13 @@ MINI_POD_MANAGER_DEFAULTS: dict[str, Any] = {
 
 OPENSHELL_POD_MANAGER_DEFAULTS: dict[str, Any] = {
     "adapter": OPENSHELL_POD_MANAGER_ADAPTER,
-    "gateway_url": "",
-    "gateway_name": "local",
-    "openshell_binary": "openshell",
-    "sandbox_image": "ghcr.io/niuulabs/skuld:0.2.0",
-    "workspaces_dir": "~/.niuu/workspaces",
-    "state_file": "~/.niuu/openshell-forge-state.json",
-    "sdk_port_start": 9200,
+    "gateway_endpoint": "openshell.openshell.svc.cluster.local:8080",
+    "gateway_public_url": "",
+    "token_url": "https://keycloak.niuu.world/realms/volundr/protocol/openid-connect/token",
+    "client_id": "openshell-volundr-agent",
+    "sandbox_image": "ghcr.io/niuulabs/niuu-openshell:openshell-provider-v2-20260709",
+    "sandbox_command": ["/opt/niuu/bin/python", "-m", "skuld"],
+    "service_port": 9200,
 }
 
 
@@ -401,7 +403,7 @@ def _prompt_mode_selection() -> str:
     """Prompt the user for mini, OpenShell, or cluster mode."""
     typer.echo("Select operating mode:")
     typer.echo("  [1] mini   — local processes, no cluster needed (default)")
-    typer.echo("  [2] openshell — local OpenShell sandboxes")
+    typer.echo("  [2] openshell — OpenShell gateway sandboxes")
     typer.echo("  [3] cluster — session pods run in k3d/k3s cluster")
     choice = typer.prompt("Choice", default="1", show_default=False)
     if choice.strip() in ("2", "openshell"):
@@ -484,11 +486,16 @@ def create_platform_commands(
         elif settings.mode == "openshell":
             kwargs = settings.pod_manager.adapter_kwargs()
             typer.echo("OpenShell info:")
-            binary = kwargs.get("openshell_binary", "openshell")
-            typer.echo(f"  Binary: {binary}")
-            gateway = kwargs.get("gateway_url") or "(active openshell gateway)"
-            typer.echo(f"  Gateway: {gateway}")
-            image = kwargs.get("sandbox_image", "ghcr.io/niuulabs/skuld:0.2.0")
+            endpoint = kwargs.get("gateway_endpoint", "openshell.openshell.svc.cluster.local:8080")
+            typer.echo(f"  Gateway endpoint: {endpoint}")
+            public_url = kwargs.get("gateway_public_url") or "(from OpenShell service exposure)"
+            typer.echo(f"  Gateway public URL: {public_url}")
+            client_id = kwargs.get("client_id", "openshell-volundr-agent")
+            typer.echo(f"  OIDC client: {client_id}")
+            image = kwargs.get(
+                "sandbox_image",
+                "ghcr.io/niuulabs/niuu-openshell:openshell-provider-v2-20260709",
+            )
             typer.echo(f"  Sandbox image: {image}")
             typer.echo()
 

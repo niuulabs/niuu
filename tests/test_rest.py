@@ -8,11 +8,28 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from tests.conftest import MockEventBroadcaster
-from volundr.adapters.inbound.rest import create_router
+from volundr.adapters.inbound.rest import _server_side_ws_connect_overrides, create_router
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
 from volundr.domain.models import DeviceToken, EventType, RealtimeEvent
 from volundr.domain.ports import DeviceTokenRepository
 from volundr.domain.services import SessionService, StatsService
+
+
+def test_server_side_ws_connect_overrides_openshell_service_host(monkeypatch):
+    monkeypatch.setenv(
+        "OPENSHELL_INTERNAL_GATEWAY_URL",
+        "http://openshell.openshell.svc.cluster.local:8080",
+    )
+
+    overrides = _server_side_ws_connect_overrides(
+        "ws://forge-8093e93dc7634efeb2c382--skuld.openshell.localhost:8080/session"
+    )
+
+    assert overrides == {
+        "host": "openshell.openshell.svc.cluster.local",
+        "port": 8080,
+        "proxy": None,
+    }
 
 
 class _FakeDeviceRepo(DeviceTokenRepository):
