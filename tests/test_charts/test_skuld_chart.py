@@ -467,6 +467,11 @@ class TestResidentWorkloadIdentityConfigFirst:
 
         assert _deployment_from_rendered(rendered)["spec"]["replicas"] == 0
 
+    def test_resident_restart_never_overlaps_agent_replicas(self, rendered):
+        assert _deployment_from_rendered(rendered)["spec"]["strategy"] == {
+            "type": "Recreate"
+        }
+
     def test_resident_name_annotation_can_be_supplied_by_control_plane(self, tmp_path):
         values = dict(self.RESIDENT_VALUES)
         values["podAnnotations"] = {
