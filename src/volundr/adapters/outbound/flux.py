@@ -488,6 +488,8 @@ class FluxPodManager(PodManager, ResidentRuntimeController):
                 "niuu.world/profile-id": runtime.profile_id,
             },
         }
+        if runtime.model:
+            runtime_values["session"]["model"] = runtime.model
         _deep_merge(values, runtime_values)
         _inject_workload_exchange_env(values)
         return values

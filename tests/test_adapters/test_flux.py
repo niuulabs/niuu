@@ -968,6 +968,7 @@ class TestFluxResidentRuntimeController:
         assert values["resident"]["persona"] == "product-steward"
         assert values["resident"]["llm"] == {"provider": "openai", "model": "gpt-5.6"}
         assert values["session"]["ownerId"] == "user-a"
+        assert values["session"]["model"] == "gpt-5.6"
         assert values["persistence"]["existingClaim"] == "resident-workspaces"
         assert values["podAnnotations"]["niuu.world/tenant-id"] == "tenant-a"
         assert observation.observed_state is ResidentObservedState.DEPLOYING
