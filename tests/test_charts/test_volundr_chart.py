@@ -27,6 +27,23 @@ class TestChartMetadata:
         assert chart_yaml["version"]
 
 
+class TestEnvoySidecarConfig:
+    """Tests for the Envoy sidecar configmap template."""
+
+    @pytest.fixture
+    def envoy_template(self) -> str:
+        """Load the raw envoy configmap template text."""
+        template_path = CHART_DIR / "templates" / "envoy-configmap.yaml"
+        return template_path.read_text()
+
+    def test_websocket_upgrades_enabled(self, envoy_template):
+        """Browser session WebSockets (/s/{id}/session) terminate at this
+        sidecar; without upgrade_configs Envoy rejects every Upgrade request
+        with 403 before JWT auth or routing runs."""
+        assert "upgrade_configs:" in envoy_template
+        assert "- upgrade_type: websocket" in envoy_template
+
+
 class TestValuesDefaults:
     """Tests for values.yaml defaults."""
 

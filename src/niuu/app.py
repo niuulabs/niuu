@@ -84,9 +84,7 @@ class SkuldPortRegistry:
         self._ownership_guard: (
             Callable[[str, str | None, str | None, tuple[str, ...]], Awaitable[bool]] | None
         ) = None
-        self._target_resolver: (
-            Callable[[str], Awaitable[SessionProxyTarget | None]] | None
-        ) = None
+        self._target_resolver: Callable[[str], Awaitable[SessionProxyTarget | None]] | None = None
 
     def set_reconcile_hook(self, hook: Callable[[str], Awaitable[bool]]) -> None:
         """Inject the session-row reconcile callback used on a dead-pod proxy.
@@ -214,9 +212,7 @@ def _bearer_token_from_ws(websocket: WebSocket) -> str:
         if proto.startswith("volundr.bearer."):
             return urllib.parse.unquote(proto.removeprefix("volundr.bearer.").strip())
     return str(
-        websocket.query_params.get("access_token")
-        or websocket.query_params.get("token")
-        or ""
+        websocket.query_params.get("access_token") or websocket.query_params.get("token") or ""
     ).strip()
 
 
@@ -432,6 +428,148 @@ def _session_http_connect_url(target: SessionProxyTarget, path: str) -> tuple[st
     netloc = f"{host}:{target.connect_port}"
     url = urllib.parse.urlunsplit((scheme, netloc, path, "", ""))
     return url, service.netloc
+
+
+def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) -> None:
+    """Register the ``/s/{session_id}`` session-proxy routes on *app*.
+
+    Shared by the mini-mode root app and the standalone Volundr deployment
+    (K8s), where no CLI root app exists to terminate the browser's session
+    traffic. Sessions resolve first by local broker port, then through the
+    registry's target resolver (e.g. the OpenShell gateway).
+    """
+
+    @app.websocket("/s/{session_id}/session")
+    async def skuld_ws_proxy(
+        websocket: WebSocket,
+        session_id: str,
+    ) -> None:
+        """Proxy the browser chat WebSocket to the session's Skuld broker."""
+        await _proxy_ws(
+            websocket,
+            session_id,
+            skuld_reg,
+            "/session",
+            log_label="Skuld WS proxy",
+            include_cookie=True,
+            forward_dev_params=True,
+        )
+
+    @app.websocket("/s/{session_id}/ws/ravn/{peer_id}")
+    async def skuld_ravn_ws_proxy(
+        websocket: WebSocket,
+        session_id: str,
+        peer_id: str,
+    ) -> None:
+        """Proxy a ravn participant WebSocket to the session's broker.
+
+        This is how a resident joins ANOTHER session's room through the
+        gateway (session_join): the browser chat endpoint is proxied at
+        ``/s/{id}/session``, and the sibling ravn endpoint must be proxied
+        too, or cross-session joins only work in strip-prefix k8s ingress
+        and fail in mini/gateway mode. Same ownership guard.
+        """
+        await _proxy_ws(
+            websocket,
+            session_id,
+            skuld_reg,
+            f"/ws/ravn/{peer_id}",
+            log_label="Ravn WS proxy",
+        )
+
+    @app.api_route(
+        "/s/{session_id}/api/{path:path}",
+        methods=["GET", "POST", "PUT", "DELETE"],
+        include_in_schema=False,
+    )
+    async def skuld_http_proxy(request: Request, session_id: str, path: str) -> Response:
+        """Proxy HTTP requests to the Skuld subprocess."""
+        port = skuld_reg.get_port(session_id)
+        target = None if port is not None else await skuld_reg.resolve_target(session_id)
+        if port is None and target is None:
+            return JSONResponse({"detail": "Session not found"}, status_code=404)
+
+        import re
+        from urllib.parse import quote
+
+        import httpx
+
+        # Skuld workflow gate ids use ":" as an internal delimiter, so the
+        # session proxy needs to accept it in path segments while still
+        # rejecting slashes and traversal tokens.
+        allowed_segment = re.compile(r"^[A-Za-z0-9._~:-]+$")
+        raw_segments = path.split("/")
+        normalized_segments: list[str] = []
+        for seg in raw_segments:
+            if seg in ("", ".", ".."):
+                return JSONResponse({"detail": "Invalid path"}, status_code=400)
+            if "\\" in seg or not allowed_segment.fullmatch(seg):
+                return JSONResponse({"detail": "Invalid path"}, status_code=400)
+            normalized_segments.append(seg)
+
+        sanitized_path = "/".join(quote(seg, safe="") for seg in normalized_segments)
+        proxy_path = f"/api/{sanitized_path}"
+        url = f"http://127.0.0.1:{port}{proxy_path}"
+        params = dict(request.query_params)
+        headers = {
+            k: v
+            for k, v in request.headers.items()
+            if k.lower() not in ("host", "content-length", "transfer-encoding")
+        }
+        if target is not None:
+            url, service_host = _session_http_connect_url(target, proxy_path)
+            headers["Host"] = service_host
+        body = await request.body()
+
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.request(
+                    method=request.method,
+                    url=url,
+                    params=params,
+                    headers=headers,
+                    content=body if body else None,
+                )
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                headers=dict(resp.headers),
+            )
+        except httpx.ConnectError:
+            return JSONResponse(
+                {"detail": "Skuld broker not ready"},
+                status_code=502,
+            )
+
+    @app.get("/s/{session_id}/health", include_in_schema=False)
+    async def skuld_health_proxy(request: Request, session_id: str) -> Response:
+        """Proxy health check to the Skuld subprocess."""
+        del request
+        port = skuld_reg.get_port(session_id)
+        target = None if port is not None else await skuld_reg.resolve_target(session_id)
+        if port is None and target is None:
+            return JSONResponse({"detail": "Session not found"}, status_code=404)
+
+        import httpx
+
+        try:
+            url = f"http://127.0.0.1:{port}/health"
+            headers: dict[str, str] = {}
+            if target is not None:
+                url, service_host = _session_http_connect_url(target, "/health")
+                headers["Host"] = service_host
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(url, headers=headers)
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                headers=dict(resp.headers),
+            )
+        except httpx.ConnectError:
+            return JSONResponse(
+                {"detail": "Skuld broker not ready"},
+                status_code=502,
+            )
 
 
 def _local_service_host(host: str) -> str:
@@ -974,138 +1112,7 @@ def build_root_app(
     skuld_reg = skuld_registry or SkuldPortRegistry()
 
     if "skuld-proxy" in active_mounts:
-
-        @root.websocket("/s/{session_id}/session")
-        async def skuld_ws_proxy(
-            websocket: WebSocket,  # noqa: F811
-            session_id: str,
-        ) -> None:
-            """Proxy the browser chat WebSocket to the session's Skuld broker."""
-            await _proxy_ws(
-                websocket,
-                session_id,
-                skuld_reg,
-                "/session",
-                log_label="Skuld WS proxy",
-                include_cookie=True,
-                forward_dev_params=True,
-            )
-
-        @root.websocket("/s/{session_id}/ws/ravn/{peer_id}")
-        async def skuld_ravn_ws_proxy(
-            websocket: WebSocket,  # noqa: F811
-            session_id: str,
-            peer_id: str,
-        ) -> None:
-            """Proxy a ravn participant WebSocket to the session's broker.
-
-            This is how a resident joins ANOTHER session's room through the
-            gateway (session_join): the browser chat endpoint is proxied at
-            ``/s/{id}/session``, and the sibling ravn endpoint must be proxied
-            too, or cross-session joins only work in strip-prefix k8s ingress
-            and fail in mini/gateway mode. Same ownership guard.
-            """
-            await _proxy_ws(
-                websocket,
-                session_id,
-                skuld_reg,
-                f"/ws/ravn/{peer_id}",
-                log_label="Ravn WS proxy",
-            )
-
-        @root.api_route(
-            "/s/{session_id}/api/{path:path}",
-            methods=["GET", "POST", "PUT", "DELETE"],
-            include_in_schema=False,
-        )
-        async def skuld_http_proxy(request: Request, session_id: str, path: str) -> Response:
-            """Proxy HTTP requests to the Skuld subprocess."""
-            port = skuld_reg.get_port(session_id)
-            target = None if port is not None else await skuld_reg.resolve_target(session_id)
-            if port is None and target is None:
-                return JSONResponse({"detail": "Session not found"}, status_code=404)
-
-            import re
-            from urllib.parse import quote
-
-            import httpx
-
-            # Skuld workflow gate ids use ":" as an internal delimiter, so the
-            # session proxy needs to accept it in path segments while still
-            # rejecting slashes and traversal tokens.
-            allowed_segment = re.compile(r"^[A-Za-z0-9._~:-]+$")
-            raw_segments = path.split("/")
-            normalized_segments: list[str] = []
-            for seg in raw_segments:
-                if seg in ("", ".", ".."):
-                    return JSONResponse({"detail": "Invalid path"}, status_code=400)
-                if "\\" in seg or not allowed_segment.fullmatch(seg):
-                    return JSONResponse({"detail": "Invalid path"}, status_code=400)
-                normalized_segments.append(seg)
-
-            sanitized_path = "/".join(quote(seg, safe="") for seg in normalized_segments)
-            proxy_path = f"/api/{sanitized_path}"
-            url = f"http://127.0.0.1:{port}{proxy_path}"
-            params = dict(request.query_params)
-            headers = {
-                k: v
-                for k, v in request.headers.items()
-                if k.lower() not in ("host", "content-length", "transfer-encoding")
-            }
-            if target is not None:
-                url, service_host = _session_http_connect_url(target, proxy_path)
-                headers["Host"] = service_host
-            body = await request.body()
-
-            try:
-                async with httpx.AsyncClient(timeout=30) as client:
-                    resp = await client.request(
-                        method=request.method,
-                        url=url,
-                        params=params,
-                        headers=headers,
-                        content=body if body else None,
-                    )
-                return Response(
-                    content=resp.content,
-                    status_code=resp.status_code,
-                    headers=dict(resp.headers),
-                )
-            except httpx.ConnectError:
-                return JSONResponse(
-                    {"detail": "Skuld broker not ready"},
-                    status_code=502,
-                )
-
-        @root.get("/s/{session_id}/health", include_in_schema=False)
-        async def skuld_health_proxy(request: Request, session_id: str) -> Response:
-            """Proxy health check to the Skuld subprocess."""
-            del request
-            port = skuld_reg.get_port(session_id)
-            target = None if port is not None else await skuld_reg.resolve_target(session_id)
-            if port is None and target is None:
-                return JSONResponse({"detail": "Session not found"}, status_code=404)
-
-            import httpx
-
-            try:
-                url = f"http://127.0.0.1:{port}/health"
-                headers: dict[str, str] = {}
-                if target is not None:
-                    url, service_host = _session_http_connect_url(target, "/health")
-                    headers["Host"] = service_host
-                async with httpx.AsyncClient(timeout=5) as client:
-                    resp = await client.get(url, headers=headers)
-                return Response(
-                    content=resp.content,
-                    status_code=resp.status_code,
-                    headers=dict(resp.headers),
-                )
-            except httpx.ConnectError:
-                return JSONResponse(
-                    {"detail": "Skuld broker not ready"},
-                    status_code=502,
-                )
+        register_session_proxy_routes(root, skuld_reg)
 
     live_config_template: str | None = None
 

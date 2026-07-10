@@ -232,6 +232,61 @@ class TestLifespan:
         assert "/api/v1/audit/events" in paths
         assert hasattr(app.state, "pat_service")
 
+    def test_lifespan_mounts_session_proxy_routes_standalone(self):
+        """Standalone (no CLI root app): the /s/{id} session proxy must exist.
+
+        The K8s deployment runs ``uvicorn volundr.main:create_app`` directly.
+        The regression was FastAPI's default 404 ("Not Found") because nothing
+        mounted the proxy routes; the mounted route answers with the proxy's
+        own "Session not found".
+        """
+        from fastapi.testclient import TestClient
+
+        mock_pool = AsyncMock()
+
+        @asynccontextmanager
+        async def _mock_db_pool(_config):
+            yield mock_pool
+
+        with (
+            patch("volundr.main._bootstrap_startup_schema", new=AsyncMock()),
+            patch("volundr.main.database_pool", _mock_db_pool),
+            patch(
+                "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "volundr.domain.services.tenant.TenantService.ensure_default_tenant",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_provisioning_sessions",
+                new=AsyncMock(),
+            ),
+            patch(
+                "volundr.domain.services.session.SessionService.reconcile_active_sessions",
+                new=AsyncMock(),
+            ),
+            # Hermetic even when another test built a mini-mode root app and
+            # left the module-global registry set.
+            patch("cli.server.get_skuld_registry", return_value=None),
+        ):
+            app = create_app()
+            with TestClient(app) as client:
+                resp = client.get("/s/00000000-0000-0000-0000-000000000000/health")
+                assert resp.status_code == 404
+                assert resp.json()["detail"] == "Session not found"
+
+                # Lifespan re-entry must not register the routes twice; the
+                # registry is pinned on app.state and reused.
+                registry = app.state.session_proxy_registry
+            with TestClient(app):
+                assert app.state.session_proxy_registry is registry
+                proxy_routes = [
+                    r for r in app.routes if getattr(r, "path", "") == "/s/{session_id}/health"
+                ]
+                assert len(proxy_routes) == 1
+
     def test_lifespan_seeds_integrations_and_starts_audit_subscriber(self):
         """Lifespan runs the shared seeders and audit subscriber when enabled."""
         from fastapi.testclient import TestClient

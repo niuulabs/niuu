@@ -21,6 +21,11 @@ data:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                     stat_prefix: ingress_http
                     codec_type: AUTO
+                    # Browser session WebSockets (/s/{id}/session) terminate at
+                    # this sidecar; without this Envoy rejects every Upgrade
+                    # request with 403 before JWT auth or routing runs.
+                    upgrade_configs:
+                      - upgrade_type: websocket
                     stream_idle_timeout: 0s
                     access_log:
                       - name: envoy.access_loggers.stdout

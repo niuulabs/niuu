@@ -690,6 +690,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except ImportError:
                 pass  # Not running via CLI
 
+            if skuld_reg is None:
+                # Standalone deployment (K8s / bare uvicorn): no CLI root app
+                # exists to terminate /s/{session_id} browser traffic, so this
+                # app must serve the session proxy itself. Local broker ports
+                # never register here; sessions resolve through the target
+                # resolver (e.g. the OpenShell gateway) wired below. The
+                # registry lives on app.state so a lifespan re-entry rewires
+                # hooks on the same object the mounted routes captured.
+                from niuu.app import SkuldPortRegistry, register_session_proxy_routes
+
+                skuld_reg = getattr(app.state, "session_proxy_registry", None)
+                if skuld_reg is None:
+                    skuld_reg = SkuldPortRegistry()
+                    app.state.session_proxy_registry = skuld_reg
+                    register_session_proxy_routes(app, skuld_reg)
+                if hasattr(pod_manager, "set_skuld_registry"):
+                    pod_manager.set_skuld_registry(skuld_reg)
+
             gateway_adapter = _create_gateway_adapter(settings)
             bifrost_auth = _create_http_auth_adapter(settings.bifrost.auth)
             bifrost_catalog = HttpBifrostCatalogAdapter(
