@@ -24,7 +24,11 @@ from niuu.domain.services.token_scope import (
     VALKYRIE_BUILD_TOKEN_USE,
     bound_build_scopes,
 )
-from niuu.ports.workload_identity import WorkloadIdentityVerifier
+from niuu.ports.workload_identity import (
+    IssuedWorkloadToken,
+    WorkloadIdentityVerifier,
+    WorkloadTokenIssuer,
+)
 from niuu.utils import import_class, resolve_secret_kwargs
 
 
@@ -68,7 +72,7 @@ def _claim(claims: dict[str, Any], path: str) -> Any:
     return current
 
 
-class WorkloadIdentityService:
+class WorkloadIdentityService(WorkloadTokenIssuer):
     """Validate workload proofs and mint short-lived Volundr JWTs."""
 
     def __init__(self, config: Any) -> None:
@@ -180,39 +184,83 @@ class WorkloadIdentityService:
             raise WorkloadIdentityError("Matched workload identity has no owner_id")
         tenant_id = str(getattr(mapping, "tenant_id", "") or "default").strip() or "default"
         roles = [str(role) for role in (getattr(mapping, "roles", []) or ["volundr:developer"])]
-        now = int(time.time())
-        expires_at = now + int(getattr(self._config, "token_ttl_seconds", 900))
         workload_subject = str(claims.get("sub") or "")
         workload_name = str(getattr(mapping, "name", "") or workload_subject)
         email = str(getattr(mapping, "email", "") or "")
+        principal = Principal(
+            user_id=owner_id,
+            email=email,
+            tenant_id=tenant_id,
+            roles=roles,
+        )
+        issued = self.issue_token(
+            principal=principal,
+            workload_subject=workload_subject,
+            workload_name=workload_name,
+            audiences=audiences,
+            token_use=VALKYRIE_BUILD_TOKEN_USE if build_scopes else "",
+            claims={
+                **dict(getattr(mapping, "metadata", {}) or {}),
+                **({"scopes": list(build_scopes)} if build_scopes else {}),
+                "issuer": str(claims.get("iss") or ""),
+            },
+        )
+        return WorkloadExchangeResult(
+            token=issued.token,
+            expires_at=issued.expires_at,
+            principal=principal,
+            workload_subject=workload_subject,
+            workload_name=workload_name,
+        )
+
+    def issue_token(
+        self,
+        *,
+        principal: Principal,
+        workload_subject: str,
+        workload_name: str,
+        audiences: list[str],
+        token_use: str = "",
+        claims: dict[str, Any] | None = None,
+    ) -> IssuedWorkloadToken:
+        """Mint a workload JWT for a principal authenticated by another adapter."""
+        if not self.enabled:
+            raise WorkloadIdentityError("Workload identity exchange is disabled")
+        resolved_audiences = self._resolve_audiences(audiences)
+        now = int(time.time())
+        expires_at = now + int(getattr(self._config, "token_ttl_seconds", 900))
         resource_access = {
-            audience: {"roles": roles} for audience in _resource_access_audiences(audiences)
+            audience: {"roles": principal.roles}
+            for audience in _resource_access_audiences(resolved_audiences)
         }
         payload: dict[str, Any] = {
             "iss": getattr(self._config, "issuer", "") or "niuu-workload",
-            "sub": owner_id,
-            "aud": audiences,
+            "sub": principal.user_id,
+            "aud": resolved_audiences,
             "iat": now,
             "nbf": now - 5,
             "exp": expires_at,
             "jti": str(uuid4()),
             "typ": "Bearer",
             "azp": "niuu-workload-identity",
-            "email": email,
-            "tenant_id": tenant_id,
-            "preferred_username": owner_id,
+            "email": principal.email,
+            "tenant_id": principal.tenant_id,
+            "preferred_username": principal.user_id,
             "workload_sub": workload_subject,
             "workload_name": workload_name,
-            "workload_issuer": str(claims.get("iss") or ""),
             "resource_access": resource_access,
         }
-        metadata = dict(getattr(mapping, "metadata", {}) or {})
-        for key, value in metadata.items():
+        extra_claims = dict(claims or {})
+        workload_issuer = str(extra_claims.pop("issuer", ""))
+        payload["workload_issuer"] = workload_issuer
+        scopes = extra_claims.pop("scopes", None)
+        for key, value in extra_claims.items():
             payload[f"workload_{key}"] = value
 
-        if build_scopes:
-            payload["token_use"] = VALKYRIE_BUILD_TOKEN_USE
-            payload["scopes"] = list(build_scopes)
+        if token_use:
+            payload["token_use"] = token_use
+        if scopes:
+            payload["scopes"] = list(scopes)
 
         token = jwt.encode(
             payload,
@@ -220,18 +268,7 @@ class WorkloadIdentityService:
             algorithm="RS256",
             headers={"kid": getattr(self._config, "key_id", "niuu-workload")},
         )
-        return WorkloadExchangeResult(
-            token=token,
-            expires_at=expires_at,
-            principal=Principal(
-                user_id=owner_id,
-                email=email,
-                tenant_id=tenant_id,
-                roles=roles,
-            ),
-            workload_subject=workload_subject,
-            workload_name=workload_name,
-        )
+        return IssuedWorkloadToken(token=token, expires_at=expires_at)
 
     def _load_or_generate_key(self) -> RSAPrivateKey:
         configured = str(getattr(self._config, "signing_key_pem", "") or "")

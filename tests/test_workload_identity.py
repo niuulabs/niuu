@@ -131,6 +131,38 @@ async def test_workload_identity_exchange_mints_owner_scoped_token() -> None:
     assert result.workload_name == "ravn-valkyrie"
 
 
+def test_workload_identity_issues_session_bound_token_for_verified_adapter() -> None:
+    proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    service = _service(proof_key)
+
+    issued = service.issue_token(
+        principal=Principal(
+            user_id=OWNER_ID,
+            email="jozef@niuu.world",
+            tenant_id="default",
+            roles=["volundr:developer"],
+        ),
+        workload_subject="spiffe://niuu.world/openshell/sandbox/sandbox-1",
+        workload_name="openshell-session-session-1",
+        audiences=["volundr-api"],
+        token_use="openshell_session",
+        claims={"session_id": "session-1", "sandbox_id": "sandbox-1"},
+    )
+
+    jwk = PyJWKSet.from_dict(service.jwks()).keys[0]
+    claims = jwt.decode(
+        issued.token,
+        key=jwk.key,
+        algorithms=["RS256"],
+        audience="volundr-api",
+        issuer=EXCHANGE_ISSUER,
+    )
+    assert claims["sub"] == OWNER_ID
+    assert claims["token_use"] == "openshell_session"
+    assert claims["workload_session_id"] == "session-1"
+    assert claims["workload_sandbox_id"] == "sandbox-1"
+
+
 @pytest.mark.asyncio
 async def test_workload_identity_exchange_mints_requested_service_audiences() -> None:
     proof_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)

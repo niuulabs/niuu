@@ -1520,9 +1520,7 @@ class CodexWebSocketTransport(CLITransport):
             "input": [{"type": "text", "text": content, "textElements": []}],
         }
         if self._reasoning_effort:
-            params["effort"] = _normalize_codex_effort(
-                self._reasoning_effort, self._model
-            )
+            params["effort"] = _normalize_codex_effort(self._reasoning_effort, self._model)
 
         logger.info("Sending turn/start to Codex (thread=%s)", self._thread_id)
         try:

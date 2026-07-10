@@ -675,9 +675,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             persona_registry = PostgresPersonaRegistry(pool)
             app.state.persona_registry = persona_registry
+            workload_identity_service = WorkloadIdentityService(settings.workload_identity)
             pod_manager = _create_pod_manager(settings)
             if hasattr(pod_manager, "set_session_repository"):
                 pod_manager.set_session_repository(repository)
+            if hasattr(pod_manager, "set_workload_token_issuer"):
+                pod_manager.set_workload_token_issuer(workload_identity_service)
 
             # Inject Skuld port registry for mini mode proxy routing
             skuld_reg = None
@@ -1095,9 +1098,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             app.state.pat_validator = pat_validator
             app.state.pat_service = pat_service
-            app.state.workload_identity_service = WorkloadIdentityService(
-                settings.workload_identity
-            )
+            app.state.workload_identity_service = workload_identity_service
             app.include_router(create_pats_router(extract_principal, prefix="/api/v1/tokens"))
 
             # Realm governance — a Valkyrie's build capability, trust, and config

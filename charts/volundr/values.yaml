@@ -261,6 +261,9 @@ database:
 #       sandbox_command: ["/usr/local/bin/openshell-run-installed-skuld"]
 #       sandbox_home: "/sandbox"
 #       credential_token_endpoint: "http://niuu-volundr.volundr.svc.cluster.local/api/v1/internal/openshell/credential-token"
+#       volundr_api_url: "http://niuu-volundr.volundr.svc.cluster.local"
+#       workload_audience: "volundr-api"
+#       workload_roles: ["volundr:developer"]
 #       spiffe_jwks_uri: "https://spire-spiffe-oidc-discovery-provider.spire.svc.cluster.local/keys"
 #       spiffe_issuer: "https://spire-spiffe-oidc-discovery-provider.spire.svc.cluster.local"
 #       spiffe_audience: "http://niuu-volundr.volundr.svc.cluster.local/api/v1/internal/openshell/credential-token"

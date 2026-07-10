@@ -112,6 +112,42 @@ class TestReportTokenUsageEndpoint:
         assert data["provider"] == "cloud"
         assert data["model"] == "claude-sonnet-4-20250514"
 
+    def test_report_usage_accepts_matching_openshell_session_binding(
+        self,
+        client: TestClient,
+        session_repository: InMemorySessionRepository,
+        running_session: Session,
+    ) -> None:
+        import asyncio
+
+        asyncio.run(session_repository.create(running_session))
+        response = client.post(
+            f"/api/v1/forge/sessions/{running_session.id}/usage",
+            headers={
+                "x-auth-token-use": "openshell_session",
+                "x-auth-workload-session-id": str(running_session.id),
+            },
+            json={"tokens": 13, "provider": "cloud", "model": "gpt-5.6-sol"},
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED
+
+    def test_report_usage_rejects_mismatched_openshell_session_binding(
+        self,
+        client: TestClient,
+        running_session: Session,
+    ) -> None:
+        response = client.post(
+            f"/api/v1/forge/sessions/{running_session.id}/usage",
+            headers={
+                "x-auth-token-use": "openshell_session",
+                "x-auth-workload-session-id": str(uuid4()),
+            },
+            json={"tokens": 13, "provider": "cloud", "model": "gpt-5.6-sol"},
+        )
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
     def test_report_usage_local_provider(
         self,
         client: TestClient,

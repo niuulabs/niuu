@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Res
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from niuu.domain.services.token_scope import require_build_scope
+from niuu.domain.services.token_scope import OPENSHELL_SESSION_TOKEN_USE, require_build_scope
 from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turns
 from volundr.adapters.inbound.auth import extract_principal, require_role
 from volundr.config import PermissionAutoApprovalConfig
@@ -1355,6 +1355,16 @@ def create_router(
         archive_service=archive_service,
     )
 
+    def _require_bound_workload_session(request: Request, session_id: UUID) -> None:
+        if request.headers.get("x-auth-token-use") != OPENSHELL_SESSION_TOKEN_USE:
+            return
+        if request.headers.get("x-auth-workload-session-id") == str(session_id):
+            return
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="OpenShell workload token is not bound to this session",
+        )
+
     async def _optional_principal(request: Request) -> Principal | None:
         """Extract principal if identity is configured, else return None.
 
@@ -1915,6 +1925,7 @@ def create_router(
         Updates the session's activity_state and broadcasts a
         session_activity SSE event for downstream consumers (e.g. Ting).
         """
+        _require_bound_workload_session(request, session_id)
         # Authorization: caller must own the session
         principal = await _optional_principal(request)
         session = await forge.get_session(session_id)
@@ -2169,6 +2180,7 @@ def create_router(
         data: TokenUsageReport = ...,
     ) -> TokenUsageResponse:
         """Report token usage for a session."""
+        _require_bound_workload_session(request, session_id)
         if token_service is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

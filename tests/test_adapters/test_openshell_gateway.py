@@ -14,6 +14,7 @@ from uuid import uuid4
 import jwt
 import pytest
 
+from niuu.ports.workload_identity import IssuedWorkloadToken
 from volundr.domain.models import (
     GitSource,
     PodSpecAdditions,
@@ -273,6 +274,22 @@ class _FakeCredentialStore:
         )
 
 
+class _FakeWorkloadTokenIssuer:
+    def __init__(self) -> None:
+        self.requests: list[dict] = []
+
+    @property
+    def enabled(self) -> bool:
+        return True
+
+    def issue_token(self, **kwargs) -> IssuedWorkloadToken:
+        self.requests.append(kwargs)
+        return IssuedWorkloadToken(
+            token="volundr-workload-token",
+            expires_at=int(time.time()) + 900,
+        )
+
+
 def _codex_auth_document(*, expires_in: int = 3600) -> str:
     access_token = jwt.encode(
         {"sub": "user", "exp": int(time.time()) + expires_in},
@@ -521,6 +538,60 @@ async def test_start_creates_dynamic_openbao_providers_without_secret_environmen
     )
 
     assert await manager.stop(session) is True
+
+
+@pytest.mark.asyncio
+async def test_start_attaches_session_bound_platform_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    issuer = _FakeWorkloadTokenIssuer()
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client,
+        ready_timeout=0.1,
+        volundr_api_url="http://niuu-volundr.volundr.svc.cluster.local",
+    )
+    manager.set_workload_token_issuer(issuer)
+
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+    assert client.created is not None
+    assert client.created["env"]["SKULD__VOLUNDR_API_URL"] == (
+        "http://niuu-volundr.volundr.svc.cluster.local"
+    )
+    assert len(client.provider_grants) == 1
+    grant = client.provider_grants[0]
+    credential = grant["profile"].credentials[0]
+    assert credential.env_vars == [adapter.PLATFORM_ACCESS_TOKEN_ENV]
+    assert credential.token_grant.audience.startswith(adapter.PLATFORM_GRANT_AUDIENCE_PREFIX)
+    assert grant["profile"].endpoints[0].host == "niuu-volundr.volundr.svc.cluster.local"
+    assert grant["profile"].endpoints[0].port == 80
+    assert grant["config"] == {
+        "volundr_session_id": str(session.id),
+        "volundr_grant_kind": "platform",
+    }
+    assert client.created["providers"] == (grant["provider_name"],)
+    assert adapter.PLATFORM_ACCESS_TOKEN_ENV not in client.created["env"]
+
+
+@pytest.mark.asyncio
+async def test_start_rejects_platform_reporting_without_workload_issuer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client,
+        ready_timeout=0.1,
+        volundr_api_url="http://niuu-volundr.volundr.svc.cluster.local",
+    )
+
+    with pytest.raises(RuntimeError, match="workload token issuer"):
+        await manager.start(_session(), SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+    assert client.created is None
 
 
 @pytest.mark.asyncio
@@ -987,6 +1058,67 @@ async def test_credential_grant_binds_svid_sandbox_provider_session_and_openbao(
 
     assert token.access_token == "sk-from-openbao"
     assert token.expires_in == 300
+
+
+@pytest.mark.asyncio
+async def test_platform_grant_mints_session_bound_workload_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    sandbox_id = str(uuid4())
+    provider_name = f"volundr-{session.id.hex[:12]}-platform"
+    audience = f"{adapter.PLATFORM_GRANT_AUDIENCE_PREFIX}{provider_name}"
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.grant_sandbox = adapter.OpenShellSandbox(
+        id=sandbox_id,
+        name="forge-test",
+        phase=adapter.openshell_pb2.SANDBOX_PHASE_READY,
+        labels={"volundr.niuu.io/session": str(session.id)},
+        providers=(provider_name,),
+    )
+    client.grant_provider = types.SimpleNamespace(
+        type=provider_name,
+        config={
+            "volundr_session_id": str(session.id),
+            "volundr_grant_kind": "platform",
+        },
+    )
+
+    class Credential:
+        token_grant = types.SimpleNamespace(audience=audience)
+
+        def HasField(self, name: str) -> bool:  # noqa: N802
+            return name == "token_grant"
+
+    client.grant_profile = types.SimpleNamespace(credentials=[Credential()])
+    issuer = _FakeWorkloadTokenIssuer()
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+    manager.set_session_repository(_FakeSessionRepository(session))
+    manager.set_workload_token_issuer(issuer)
+
+    class Verifier:
+        async def verify(self, _token: str):
+            return {"sub": f"{adapter.DEFAULT_SPIFFE_SUBJECT_PREFIX}{sandbox_id}"}
+
+    manager._spiffe_verifier = Verifier()
+
+    token = await manager.exchange_credential_grant(
+        client_assertion="signed-svid",
+        client_assertion_type=adapter.OAUTH_CLIENT_ASSERTION_TYPE,
+        grant_type="client_credentials",
+        audience=audience,
+        scope="",
+    )
+
+    assert token.access_token == "volundr-workload-token"
+    assert token.expires_in > 800
+    assert issuer.requests[0]["principal"].user_id == session.owner_id
+    assert issuer.requests[0]["token_use"] == "openshell_session"
+    assert issuer.requests[0]["claims"] == {
+        "session_id": str(session.id),
+        "sandbox_id": sandbox_id,
+    }
 
 
 @pytest.mark.asyncio

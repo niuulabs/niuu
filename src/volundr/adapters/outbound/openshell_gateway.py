@@ -33,7 +33,10 @@ from google.protobuf import struct_pb2
 from openshell._proto import datamodel_pb2, openshell_pb2, openshell_pb2_grpc, sandbox_pb2
 
 from niuu.adapters.workload_identity.jwt import JwtWorkloadIdentityVerifier
+from niuu.domain.models import Principal
+from niuu.domain.services.token_scope import OPENSHELL_SESSION_TOKEN_USE
 from niuu.ports.session_proxy import SessionProxyTarget
+from niuu.ports.workload_identity import WorkloadTokenIssuer
 from volundr.adapters.outbound.local_process import LocalProcessPodManager
 from volundr.domain.models import Session, SessionSpec, SessionStatus
 from volundr.domain.ports import (
@@ -58,6 +61,8 @@ BOOTSTRAP_TIMEOUT_SECONDS = 600
 BOOTSTRAP_GIT_ATTEMPTS = 20
 OAUTH_CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe"
 GRANT_AUDIENCE_PREFIX = "niuu:credential:"
+PLATFORM_GRANT_AUDIENCE_PREFIX = "niuu:platform:"
+PLATFORM_ACCESS_TOKEN_ENV = "NIUU_VOLUNDR_ACCESS_TOKEN"
 PROVIDERS_V2_SETTING = "providers_v2_enabled"
 DEFAULT_CREDENTIAL_TOKEN_ENDPOINT = (
     "http://niuu-volundr.volundr.svc.cluster.local/api/v1/internal/openshell/credential-token"
@@ -87,6 +92,7 @@ SECRET_ENV_KEYS = {
     "CODEX_AUTH_REFRESH_TOKEN",
     CODEX_ACCOUNT_ID_ENV,
     "CODEX_AUTH_ID_TOKEN",
+    PLATFORM_ACCESS_TOKEN_ENV,
 }
 SECRET_INJECTION_ANNOTATION_PREFIXES = ("vault.hashicorp.com/",)
 AGENT_AUTH_FILE_SUFFIXES = (
@@ -530,6 +536,9 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
         command_timeout: float = 30.0,
         ready_timeout: float = 300.0,
         credential_token_endpoint: str = DEFAULT_CREDENTIAL_TOKEN_ENDPOINT,
+        volundr_api_url: str = "",
+        workload_audience: str = "volundr-api",
+        workload_roles: list[str] | None = None,
         spiffe_jwks_uri: str = DEFAULT_SPIFFE_JWKS_URI,
         spiffe_issuer: str = DEFAULT_SPIFFE_ISSUER,
         spiffe_audience: str = DEFAULT_SPIFFE_AUDIENCE,
@@ -564,6 +573,9 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
         self._memory = memory
         self._ready_timeout = float(ready_timeout)
         self._credential_token_endpoint = credential_token_endpoint
+        self._volundr_api_url = volundr_api_url.rstrip("/")
+        self._workload_audience = workload_audience
+        self._workload_roles = tuple(workload_roles or ["volundr:developer"])
         self._codex_oauth_token_url = codex_oauth_token_url
         self._codex_oauth_client_id = codex_oauth_client_id
         self._codex_refresh_skew_seconds = int(codex_refresh_skew_seconds)
@@ -592,6 +604,7 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
         self._provider_grants: dict[str, tuple[OpenShellProviderGrant, ...]] = {}
         self._credential_store: CredentialStorePort | None = None
         self._session_repository: SessionRepository | None = None
+        self._workload_token_issuer: WorkloadTokenIssuer | None = None
 
     def set_credential_store(self, store: CredentialStorePort) -> None:
         """Inject credential store for resolving OpenShell launch credentials."""
@@ -600,6 +613,10 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
     def set_session_repository(self, repository: SessionRepository) -> None:
         """Inject session persistence for sandbox-to-owner grant authorization."""
         self._session_repository = repository
+
+    def set_workload_token_issuer(self, issuer: WorkloadTokenIssuer) -> None:
+        """Inject the configured issuer for session-bound platform tokens."""
+        self._workload_token_issuer = issuer
 
     def initial_chat_endpoint(self, session: Session) -> str | None:
         return None
@@ -640,12 +657,18 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
             annotations.update(self._supported_annotations_from_pod_spec(spec.pod_spec.annotations))
         self._warn_unsupported_pod_spec(session, spec)
         try:
+            platform_providers = await self._resolve_platform_provider(session)
+            grants = tuple(
+                OpenShellProviderGrant(provider_name=name, profile_id=name)
+                for name in platform_providers
+            )
             credential_context = await self._resolve_credential_env(session, spec)
             env.update(credential_context.environment)
             runtime_processes = _runtime_processes_from_spec(spec)
+            provider_names = (*platform_providers, *credential_context.providers)
             grants = tuple(
                 OpenShellProviderGrant(provider_name=name, profile_id=name)
-                for name in credential_context.providers
+                for name in provider_names
             )
             if grants:
                 await asyncio.to_thread(self._client.ensure_providers_v2)
@@ -658,7 +681,7 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
                 annotations=annotations,
                 resources=self._resources_from_spec(spec),
                 driver_config=self._driver_config_from_spec(spec),
-                providers=credential_context.providers,
+                providers=provider_names,
             )
             ready = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
             projected_files = dict(credential_context.files)
@@ -761,9 +784,11 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
             raise ValueError("unsupported client_assertion_type")
         if not client_assertion:
             raise ValueError("missing client_assertion")
-        if not audience.startswith(GRANT_AUDIENCE_PREFIX):
+        is_platform_grant = audience.startswith(PLATFORM_GRANT_AUDIENCE_PREFIX)
+        if not is_platform_grant and not audience.startswith(GRANT_AUDIENCE_PREFIX):
             raise ValueError("unsupported credential audience")
-        provider_name = audience.removeprefix(GRANT_AUDIENCE_PREFIX)
+        prefix = PLATFORM_GRANT_AUDIENCE_PREFIX if is_platform_grant else GRANT_AUDIENCE_PREFIX
+        provider_name = audience.removeprefix(prefix)
         if not provider_name.startswith("volundr-"):
             raise ValueError("invalid credential audience")
 
@@ -797,8 +822,8 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
         labels = sandbox.labels or {}
         if labels.get("volundr.niuu.io/session") != session_id:
             raise ValueError("credential provider session binding does not match sandbox")
-        if self._session_repository is None or self._credential_store is None:
-            raise ValueError("credential grant dependencies are unavailable")
+        if self._session_repository is None:
+            raise ValueError("credential grant session repository is unavailable")
         try:
             session_uuid = UUID(session_id)
         except ValueError as exc:
@@ -806,6 +831,15 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
         session = await self._session_repository.get(session_uuid)
         if session is None or not session.owner_id:
             raise ValueError("credential grant session does not exist")
+        if is_platform_grant:
+            return self._issue_platform_token(
+                session=session,
+                workload_subject=subject,
+                sandbox_id=sandbox_id,
+            )
+
+        if self._credential_store is None:
+            raise ValueError("credential store is unavailable")
         credential_format = str(config.get("volundr_credential_format") or "")
         if credential_format == CODEX_AUTH_FORMAT:
             return await self._exchange_codex_credential(
@@ -819,6 +853,37 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
         if not value or "\x00" in value or "\r" in value or "\n" in value:
             raise ValueError("credential field is unavailable for this session")
         return OpenShellCredentialGrantToken(access_token=value)
+
+    def _issue_platform_token(
+        self,
+        *,
+        session: Session,
+        workload_subject: str,
+        sandbox_id: str,
+    ) -> OpenShellCredentialGrantToken:
+        if self._workload_token_issuer is None:
+            raise ValueError("workload token issuer is unavailable")
+        issued = self._workload_token_issuer.issue_token(
+            principal=Principal(
+                user_id=session.owner_id or "",
+                email="",
+                tenant_id=session.tenant_id or "default",
+                roles=list(self._workload_roles),
+            ),
+            workload_subject=workload_subject,
+            workload_name=f"openshell-session-{session.id}",
+            audiences=[self._workload_audience],
+            token_use=OPENSHELL_SESSION_TOKEN_USE,
+            claims={
+                "session_id": str(session.id),
+                "sandbox_id": sandbox_id,
+            },
+        )
+        expires_in = max(1, issued.expires_at - int(time.time()))
+        return OpenShellCredentialGrantToken(
+            access_token=issued.token,
+            expires_in=expires_in,
+        )
 
     async def _exchange_codex_credential(
         self,
@@ -991,6 +1056,36 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
             providers=tuple(providers),
             environment=environment,
         )
+
+    async def _resolve_platform_provider(self, session: Session) -> tuple[str, ...]:
+        if not self._volundr_api_url:
+            return ()
+        if not session.owner_id:
+            raise RuntimeError("OpenShell platform reporting requires a session owner")
+        if self._workload_token_issuer is None or not self._workload_token_issuer.enabled:
+            raise RuntimeError("OpenShell platform reporting requires a workload token issuer")
+
+        provider_name = _provider_grant_name(
+            session_id=str(session.id),
+            credential_name="volundr-platform",
+            field_name="access-token",
+            env_name=PLATFORM_ACCESS_TOKEN_ENV,
+        )
+        profile = _platform_provider_profile(
+            profile_id=provider_name,
+            token_endpoint=self._credential_token_endpoint,
+            api_url=self._volundr_api_url,
+        )
+        await asyncio.to_thread(
+            self._client.create_provider_grant,
+            profile=profile,
+            provider_name=provider_name,
+            config={
+                "volundr_session_id": str(session.id),
+                "volundr_grant_kind": "platform",
+            },
+        )
+        return (provider_name,)
 
     async def _resolve_codex_auth(
         self,
@@ -1191,11 +1286,9 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
             env["SKULD__SESSION__TENANT_ID"] = session.tenant_id
         if session.model:
             env["SKULD__SESSION__MODEL"] = session.model
-        env["SKULD__VOLUNDR_API_URL"] = str(spec.values.get("volundr", {}).get("apiUrl") or "")
-        if not env["SKULD__VOLUNDR_API_URL"]:
-            server_host = os.environ.get("NIUU_SERVER_HOST", "127.0.0.1")
-            server_port = os.environ.get("NIUU_SERVER_PORT", "8080")
-            env["SKULD__VOLUNDR_API_URL"] = f"http://{server_host}:{server_port}"
+        env["SKULD__VOLUNDR_API_URL"] = str(
+            spec.values.get("volundr", {}).get("apiUrl") or self._volundr_api_url
+        )
 
         sandbox_env = {key: value for key, value in env.items() if _safe_env_var(key, value)}
 
@@ -1512,6 +1605,58 @@ def _provider_profile(
         category=target["category"],
         credentials=[credential],
         endpoints=endpoints,
+        binaries=binaries,
+    )
+
+
+def _platform_provider_profile(
+    *,
+    profile_id: str,
+    token_endpoint: str,
+    api_url: str,
+) -> Any:
+    parsed = urlparse(api_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise RuntimeError("OpenShell Völundr API URL must be an absolute HTTP URL")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    audience = f"{PLATFORM_GRANT_AUDIENCE_PREFIX}{profile_id}"
+    credential = openshell_pb2.ProviderProfileCredential(
+        name="access_token",
+        description="Session-bound Völundr workload token",
+        env_vars=[PLATFORM_ACCESS_TOKEN_ENV],
+        required=False,
+        auth_style="bearer",
+        header_name="Authorization",
+        token_grant=openshell_pb2.ProviderCredentialTokenGrant(
+            token_endpoint=token_endpoint,
+            audience=audience,
+            jwt_svid_audience=token_endpoint,
+            client_assertion_type=OAUTH_CLIENT_ASSERTION_TYPE,
+            cache_ttl_seconds=0,
+        ),
+    )
+    endpoint = sandbox_pb2.NetworkEndpoint(
+        host=parsed.hostname,
+        port=port,
+        protocol="rest",
+        tls="terminate" if parsed.scheme == "https" else "",
+        enforcement="enforce",
+        access="full",
+    )
+    binaries = [
+        sandbox_pb2.NetworkBinary(path=path)
+        for path in (
+            "/opt/niuu/**",
+            "/sandbox/.uv/python/**",
+        )
+    ]
+    return openshell_pb2.ProviderProfile(
+        id=profile_id,
+        display_name="Niuu Völundr session reporting",
+        description="SPIFFE-authenticated platform reporting for one Völundr session",
+        category=openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
+        credentials=[credential],
+        endpoints=[endpoint],
         binaries=binaries,
     )
 
