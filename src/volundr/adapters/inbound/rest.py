@@ -280,6 +280,25 @@ def _session_proxy_url(base_url: str, *path_segments: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
+def _server_side_http_proxy_target(url: str) -> tuple[str, dict[str, str]]:
+    """Route an OpenShell service URL through the in-cluster gateway."""
+    parsed = urlsplit(url)
+    if not parsed.hostname or not parsed.hostname.endswith(OPENSHELL_SERVICE_HOST_SUFFIX):
+        return url, {}
+
+    gateway_url = (
+        os.environ.get("OPENSHELL_INTERNAL_GATEWAY_URL") or DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL
+    )
+    gateway = urlsplit(gateway_url)
+    if not gateway.scheme or not gateway.netloc:
+        raise ValueError("OpenShell internal gateway must be an absolute URL")
+
+    routed_url = urlunsplit(
+        (gateway.scheme, gateway.netloc, parsed.path, parsed.query, parsed.fragment)
+    )
+    return routed_url, {"Host": parsed.netloc}
+
+
 def _fallback_workspace_logs(
     session: Session,
     *,
@@ -2242,9 +2261,13 @@ def create_router(
             auth = request.headers.get("authorization")
             if auth:
                 headers["Authorization"] = auth
+            proxy_url, routing_headers = _server_side_http_proxy_target(
+                _session_proxy_url(base_url, "api", "logs")
+            )
+            headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
-                    _session_proxy_url(base_url, "api", "logs"),
+                    proxy_url,
                     params={"lines": lines, "level": level},
                     headers=headers,
                 )
@@ -2312,9 +2335,13 @@ def create_router(
                 auth = request.headers.get("authorization")
                 if auth:
                     headers["Authorization"] = auth
+                proxy_url, routing_headers = _server_side_http_proxy_target(
+                    _session_proxy_url(base_url, "api", "logs", "aggregate")
+                )
+                headers.update(routing_headers)
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     response = await client.get(
-                        _session_proxy_url(base_url, "api", "logs", "aggregate"),
+                        proxy_url,
                         params={
                             "lines": lines,
                             "level": level,
@@ -2386,10 +2413,14 @@ def create_router(
                 headers[name] = value
         body = await request.body()
         try:
+            proxy_url, routing_headers = _server_side_http_proxy_target(
+                _session_proxy_url(base_url, "api", *path_segments)
+            )
+            headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
                 response = await client.request(
                     request.method,
-                    _session_proxy_url(base_url, "api", *path_segments),
+                    proxy_url,
                     params=list(request.query_params.multi_items()),
                     headers=headers,
                     content=body if body else None,
@@ -2779,9 +2810,13 @@ def create_router(
                     headers["Authorization"] = auth
 
                 t_fetch = time.perf_counter()
+                proxy_url, routing_headers = _server_side_http_proxy_target(
+                    _session_proxy_url(base_url, "api", "conversation", "history")
+                )
+                headers.update(routing_headers)
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     response = await client.get(
-                        _session_proxy_url(base_url, "api", "conversation", "history"),
+                        proxy_url,
                         headers=headers,
                         params={"detail": detail},
                     )
@@ -2953,11 +2988,13 @@ def create_router(
                 auth = request.headers.get("authorization")
                 if auth:
                     headers["Authorization"] = auth
+                proxy_url, routing_headers = _server_side_http_proxy_target(
+                    _session_proxy_url(base_url, "api", "conversation", "tool-result", tool_use_id)
+                )
+                headers.update(routing_headers)
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     response = await client.get(
-                        _session_proxy_url(
-                            base_url, "api", "conversation", "tool-result", tool_use_id
-                        ),
+                        proxy_url,
                         headers=headers,
                     )
                     if response.status_code != status.HTTP_404_NOT_FOUND:
@@ -3012,9 +3049,13 @@ def create_router(
             auth = request.headers.get("authorization")
             if auth:
                 headers["Authorization"] = auth
+            proxy_url, routing_headers = _server_side_http_proxy_target(
+                _session_proxy_url(base_url, "api", "workflow", "gates")
+            )
+            headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
-                    _session_proxy_url(base_url, "api", "workflow", "gates"),
+                    proxy_url,
                     headers=headers,
                 )
                 response.raise_for_status()
@@ -3091,9 +3132,13 @@ def create_router(
             headers[WORKFLOW_GATE_INTENT_HEADER] = intent
 
         try:
+            proxy_url, routing_headers = _server_side_http_proxy_target(
+                _session_proxy_url(base_url, "api", "workflow", "gates", gate_id, "resolve")
+            )
+            headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
-                    _session_proxy_url(base_url, "api", "workflow", "gates", gate_id, "resolve"),
+                    proxy_url,
                     headers=headers,
                     json=body.model_dump(),
                 )
@@ -3680,9 +3725,13 @@ def create_router(
             proxy_headers["Authorization"] = auth_header
 
         try:
+            proxy_url, routing_headers = _server_side_http_proxy_target(
+                _session_proxy_url(base_url, "api", "diff")
+            )
+            proxy_headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(
-                    _session_proxy_url(base_url, "api", "diff"),
+                    proxy_url,
                     params={"file": file, "base": base},
                     headers=proxy_headers,
                 )
