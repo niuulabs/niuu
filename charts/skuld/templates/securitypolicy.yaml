@@ -40,6 +40,7 @@ spec:
               valuePrefix: "Bearer "
           params:
             - access_token
+            - token
         claimToHeaders:
           - claim: sub
             header: x-auth-user-id
@@ -57,6 +58,7 @@ spec:
               valuePrefix: "Bearer "
           params:
             - access_token
+            - token
         claimToHeaders:
           - claim: sub
             header: x-auth-user-id

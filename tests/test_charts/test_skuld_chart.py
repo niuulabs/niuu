@@ -487,6 +487,33 @@ class TestResidentWorkloadIdentityConfigFirst:
         assert annotations["niuu.world/resident-name"] == "managed-resident"
         assert annotations["niuu.world/resident-id"] == "resident-id"
 
+    def test_gateway_extracts_browser_websocket_token(self, tmp_path):
+        values = dict(self.RESIDENT_VALUES)
+        values["gateway"] = {
+            "enabled": True,
+            "jwt": {
+                "enabled": True,
+                "issuer": "https://keycloak.example/realms/volundr",
+                "audiences": ["volundr-api"],
+                "jwksUri": "https://keycloak.example/certs",
+                "workload": {
+                    "enabled": True,
+                    "issuer": "https://volundr.example/workload",
+                    "audiences": ["volundr-api"],
+                    "jwksUri": "https://volundr.example/workload/jwks",
+                },
+            },
+        }
+        rendered = _render_skuld_chart(tmp_path, values)
+        policy = next(
+            doc
+            for doc in yaml.safe_load_all(rendered)
+            if isinstance(doc, dict) and doc.get("kind") == "SecurityPolicy"
+        )
+
+        for provider in policy["spec"]["jwt"]["providers"]:
+            assert provider["extractFrom"]["params"] == ["access_token", "token"]
+
     def test_pod_has_no_workload_identity_env_vars(self, rendered):
         deployment = _deployment_from_rendered(rendered)
         for container in deployment["spec"]["template"]["spec"]["containers"]:
