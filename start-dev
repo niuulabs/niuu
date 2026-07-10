@@ -260,7 +260,7 @@ if [[ "${RUNTIME_MODE}" == "openshell" ]]; then
   export NIUU_POD_MANAGER__GATEWAY_PUBLIC_URL="${NIUU_POD_MANAGER__GATEWAY_PUBLIC_URL:-}"
   export NIUU_POD_MANAGER__TOKEN_URL="${NIUU_POD_MANAGER__TOKEN_URL:-https://keycloak.niuu.world/realms/volundr/protocol/openid-connect/token}"
   export NIUU_POD_MANAGER__CLIENT_ID="${NIUU_POD_MANAGER__CLIENT_ID:-openshell-volundr-agent}"
-  export NIUU_POD_MANAGER__SANDBOX_IMAGE="${NIUU_POD_MANAGER__SANDBOX_IMAGE:-ghcr.io/niuulabs/niuu-openshell:niu-1096-codex-openbao-20260709}"
+  export NIUU_POD_MANAGER__SANDBOX_IMAGE="${NIUU_POD_MANAGER__SANDBOX_IMAGE:-ghcr.io/niuulabs/skuld:openshell-codex-openbao-20260709}"
   export NIUU_POD_MANAGER__SERVICE_PORT="${NIUU_POD_MANAGER__SERVICE_PORT:-9200}"
 fi
 
