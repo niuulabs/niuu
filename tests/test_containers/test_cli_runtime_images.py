@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CODEX_VERSION = "0.139.0"
+CODEX_VERSION = "0.144.1"
 
 
 def _load_json(path: str) -> dict:
