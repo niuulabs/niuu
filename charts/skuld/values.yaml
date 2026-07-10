@@ -28,6 +28,8 @@ session:
   tenantId: ""
   # -- AI model to use for the session
   model: "claude-sonnet-4-6"
+  # -- Reasoning effort passed to transports that support it
+  reasoningEffort: ""
   # -- System prompt injected into the LLM context
   systemPrompt: ""
   # -- Initial user message sent when the CLI starts

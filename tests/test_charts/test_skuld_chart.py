@@ -422,6 +422,7 @@ class TestResidentWorkloadIdentityConfigFirst:
                 }
             ]
         },
+        "session": {"model": "gpt-5.6-sol", "reasoningEffort": "high"},
         "volundr": {"apiUrl": "https://volundr.example"},
     }
 
@@ -449,6 +450,8 @@ class TestResidentWorkloadIdentityConfigFirst:
         assert workload["exchange_url"] == (
             "https://volundr.example/api/v1/tokens/workload/exchange"
         )
+        assert broker_cfg["session"]["model"] == "gpt-5.6-sol"
+        assert broker_cfg["session"]["reasoning_effort"] == "high"
 
     def test_resident_broker_does_not_report_as_forge_session(self, rendered):
         configmaps = self._configmaps(rendered)
