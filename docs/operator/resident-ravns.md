@@ -7,10 +7,10 @@ spec stacks, planning), and reports back into the room when results land.
 
 ## Deploy
 
-Residents are **infrastructure, not Forge sessions**. Existing residents are
-deployments of the skuld chart (`charts/skuld`) in resident mode, declared in
-GitOps. The pod is a Skuld broker in room mode plus one ravn daemon sidecar —
-a flock of one. Nothing creates residents through the Forge sessions API.
+Residents are **infrastructure, not Forge sessions**. Helm-managed residents
+are deployments of the existing skuld chart (`charts/skuld`) in resident mode.
+The pod is a Skuld broker in room mode plus one ravn daemon sidecar — a flock
+of one. Nothing creates residents through the Forge sessions API.
 
 Volundr persists control-plane-managed residents in `resident_runtimes` with a
 global UUID, owner, tenant, deployment profile, backend, engine, desired and
@@ -22,6 +22,50 @@ Available deployment profiles are operator configuration, not request input.
 Configure `residentRuntimeProfiles` in the Volundr chart; disabled profiles and
 backend-only `deployment` data are not returned by
 `GET /api/v1/ravn/deployment-profiles`. No profiles are enabled by default.
+
+On a target configured with `FluxPodManager`, an enabled `helmrelease` + `ravn`
+profile is deployable through the same adapter instance that owns Forge session
+HelmReleases. The profile's private `deployment.values` are merged with the
+runtime identity and passed to the existing skuld chart; no second Flux client,
+chart, state store, CRD, or Session row is involved.
+
+Configure persistent storage in the profile when suspend/resume must retain
+workspace data. Suspension sets the existing chart's `replicaCount` to `0` and
+resume restores it to `1`; `emptyDir` data does not survive that transition.
+
+```yaml
+residentRuntimeProfiles:
+  - id: ravn-helm
+    enabled: true
+    displayName: Resident Ravn (Helm)
+    backend: helmrelease
+    engine: ravn
+    capabilities: [chat, runtime.restart, runtime.suspend, logs, metrics, usage]
+    defaultModel: gpt-5.6
+    allowedModels: [gpt-5.6]
+    deployment:
+      values:
+        persistence:
+          enabled: true
+          emptyDir: false
+          existingClaim: volundr-sessions
+        resident:
+          persona: product-steward
+          platform:
+            enabled: true
+            baseUrl: http://niuu-volundr.volundr.svc.cluster.local
+```
+
+Deploy with `POST /api/v1/ravn/ravens`. The request contains the selected
+Guild `instance_id`, profile ID, resident name, persona, and an allowed model.
+The returned resident carries that `instance_id`, normalized desired/observed
+state, HelmRelease and Deployment references, chat endpoint, capabilities, and
+Flux/workload conditions.
+
+Restart, suspend, resume, and delete use the resident UUID in the `/ravens`
+path and its returned `instance_id` as the query parameter. Guild resolves that
+visible target and forwards the authenticated command without probing another
+cluster.
 
 Key chart values:
 

@@ -20,10 +20,12 @@ from volundr.domain.models import (
     ResidentObservedState,
     ResidentRuntime,
 )
+from volundr.domain.ports import ResidentRuntimeObservation
 from volundr.domain.services.resident_runtime import (
     ResidentProfileNotFoundError,
     ResidentRuntimeAccessError,
     ResidentRuntimeConflictError,
+    ResidentRuntimeDeploymentError,
     ResidentRuntimeNotFoundError,
     ResidentRuntimeService,
     ResidentRuntimeValidationError,
@@ -67,8 +69,59 @@ class MemoryResidentRuntimeRepository:
         self.items[runtime.id] = runtime
         return runtime
 
+    async def list_for_reconciliation(self) -> list[ResidentRuntime]:
+        return list(self.items.values())
+
     async def delete(self, runtime_id: UUID) -> bool:
         return self.items.pop(runtime_id, None) is not None
+
+
+class MemoryResidentRuntimeController:
+    backend = ResidentBackend.OPENSHELL
+
+    def __init__(self) -> None:
+        self.actions: list[str] = []
+
+    def supports(self, profile) -> bool:
+        return profile.backend is self.backend
+
+    @staticmethod
+    def _observation(runtime: ResidentRuntime) -> ResidentRuntimeObservation:
+        observed_state = ResidentObservedState.ACTIVE
+        if runtime.desired_state is ResidentDesiredState.SUSPENDED:
+            observed_state = ResidentObservedState.SUSPENDED
+        return ResidentRuntimeObservation(
+            observed_state=observed_state,
+            backend_ref={"kind": "Sandbox", "name": str(runtime.id)},
+            endpoints=[ResidentEndpoint(kind="chat", protocol="skuld-v1", url="/session")],
+        )
+
+    async def deploy(self, runtime, profile):
+        self.actions.append("deploy")
+        return self._observation(runtime)
+
+    async def reconcile(self, runtime, profile):
+        self.actions.append("reconcile")
+        return self._observation(runtime)
+
+    async def restart(self, runtime):
+        self.actions.append("restart")
+        return self._observation(runtime)
+
+    async def suspend(self, runtime):
+        self.actions.append("suspend")
+        return self._observation(runtime)
+
+    async def resume(self, runtime):
+        self.actions.append("resume")
+        return self._observation(runtime)
+
+    async def delete(self, runtime):
+        self.actions.append("delete")
+        return True
+
+    async def close(self):
+        self.actions.append("close")
 
 
 def _principal(
@@ -111,7 +164,8 @@ def _profiles() -> ConfigResidentDeploymentProfileProvider:
 @pytest.fixture
 def runtime_service() -> tuple[ResidentRuntimeService, MemoryResidentRuntimeRepository]:
     repository = MemoryResidentRuntimeRepository()
-    return ResidentRuntimeService(repository, _profiles()), repository
+    controller = MemoryResidentRuntimeController()
+    return ResidentRuntimeService(repository, _profiles(), [controller]), repository
 
 
 async def test_create_record_derives_identity_and_runtime_from_profile(runtime_service) -> None:
@@ -130,6 +184,43 @@ async def test_create_record_derives_identity_and_runtime_from_profile(runtime_s
     assert runtime.engine is ResidentEngine.RAVN
     assert runtime.model == "gpt-5.6"
     assert runtime.capabilities == [ResidentCapability.CHAT, ResidentCapability.LOGS]
+
+
+async def test_create_deploys_and_persists_real_observation(runtime_service) -> None:
+    service, repository = runtime_service
+
+    runtime = await service.create(
+        _principal(),
+        name="Muninn",
+        profile_id="ravn-openshell",
+        persona_name="product-steward",
+    )
+
+    assert runtime.observed_state is ResidentObservedState.ACTIVE
+    assert runtime.backend_ref["kind"] == "Sandbox"
+    assert repository.items[runtime.id] == runtime
+
+
+async def test_create_rolls_back_record_and_backend_on_deployment_failure() -> None:
+    repository = MemoryResidentRuntimeRepository()
+
+    class FailingController(MemoryResidentRuntimeController):
+        async def deploy(self, runtime, profile):
+            self.actions.append("deploy")
+            raise RuntimeError("gateway unavailable")
+
+    controller = FailingController()
+    service = ResidentRuntimeService(repository, _profiles(), [controller])
+
+    with pytest.raises(ResidentRuntimeDeploymentError, match="gateway unavailable"):
+        await service.create(
+            _principal(),
+            name="Muninn",
+            profile_id="ravn-openshell",
+        )
+
+    assert repository.items == {}
+    assert controller.actions == ["deploy", "delete"]
 
 
 async def test_create_record_rejects_unavailable_profile_and_model(runtime_service) -> None:
@@ -152,6 +243,27 @@ async def test_owner_name_is_unique(runtime_service) -> None:
 
     with pytest.raises(ResidentRuntimeConflictError):
         await service.create_record(_principal(), name="Muninn", profile_id="ravn-openshell")
+
+
+async def test_database_uniqueness_race_becomes_domain_conflict() -> None:
+    class RacingRepository(MemoryResidentRuntimeRepository):
+        async def create(self, runtime):
+            self.items[runtime.id] = runtime
+            raise RuntimeError("unique constraint")
+
+    repository = RacingRepository()
+    service = ResidentRuntimeService(
+        repository,
+        _profiles(),
+        [MemoryResidentRuntimeController()],
+    )
+
+    with pytest.raises(ResidentRuntimeConflictError, match="Muninn"):
+        await service.create_record(
+            _principal(),
+            name="Muninn",
+            profile_id="ravn-openshell",
+        )
 
 
 async def test_viewer_cannot_create_or_mutate_resident(runtime_service) -> None:
@@ -212,8 +324,22 @@ async def test_lifecycle_observation_and_delete_use_one_record(runtime_service) 
     assert resumed.desired_state is ResidentDesiredState.RUNNING
     assert observed.observed_state is ResidentObservedState.ACTIVE
     assert observed.backend_ref["kind"] == "Sandbox"
-    assert await service.delete_record(principal, runtime.id)
+    assert await service.delete(principal, runtime.id)
     assert runtime.id not in repository.items
+
+
+async def test_reconcile_converges_through_runtime_profile(runtime_service) -> None:
+    service, repository = runtime_service
+    runtime = await service.create_record(
+        _principal(),
+        name="Muninn",
+        profile_id="ravn-openshell",
+    )
+
+    reconciled = await service.reconcile(runtime.id)
+
+    assert reconciled.observed_state is ResidentObservedState.ACTIVE
+    assert repository.items[runtime.id] == reconciled
 
 
 async def test_lifecycle_rejects_suspend_without_backend_capability(runtime_service) -> None:

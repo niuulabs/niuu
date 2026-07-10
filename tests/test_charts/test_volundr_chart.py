@@ -461,6 +461,10 @@ class TestRbacTemplate:
         flux_api_group = "helm.toolkit.fluxcd.io"
         assert f'apiGroups: ["{flux_api_group}"]' in template_yaml
 
+    def test_flux_controller_can_observe_resident_deployments(self, template_yaml):
+        assert 'apiGroups: ["apps"]' in template_yaml
+        assert 'resources: ["deployments"]' in template_yaml
+
     def test_has_cluster_wide_conditional(self, template_yaml):
         """Test template has cluster-wide conditional."""
         assert ".Values.rbac.clusterWide" in template_yaml

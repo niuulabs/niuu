@@ -277,6 +277,44 @@ class TestListRavens:
         assert route.calls.last.request.headers["x-auth-user-id"] == "user-a"
 
 
+class TestManagedResidentCommands:
+    @respx.mock
+    async def test_create_and_lifecycle_use_target_platform_adapter(self):
+        runtime = _managed_runtime()
+        create_route = respx.post(f"{_BASE}/api/v1/forge/resident-runtimes").mock(
+            return_value=httpx.Response(201, json=runtime)
+        )
+        restart_route = respx.post(
+            f"{_BASE}/api/v1/forge/resident-runtimes/{runtime['id']}/restart"
+        ).mock(return_value=httpx.Response(200, json=runtime))
+        directory = _directory()
+
+        created = await directory.create_raven(
+            {"name": "Muninn", "profile_id": "ravn-helm"},
+            {"x-auth-user-id": "user-a"},
+            {},
+        )
+        restarted = await directory.control_raven(runtime["id"], "restart", {}, {})
+
+        assert created["managed"] is True
+        assert created["backend"] == "openshell"
+        assert restarted["id"] == runtime["id"]
+        assert create_route.called
+        assert restart_route.called
+
+    @respx.mock
+    async def test_delete_uses_target_platform_adapter(self):
+        runtime_id = _managed_runtime()["id"]
+        route = respx.delete(f"{_BASE}/api/v1/forge/resident-runtimes/{runtime_id}").mock(
+            return_value=httpx.Response(204)
+        )
+        directory = _directory()
+
+        await directory.delete_raven(runtime_id, {}, {})
+
+        assert route.called
+
+
 class TestStandaloneMerge:
     @respx.mock
     async def test_list_sessions_appends_standalone_residents(self):

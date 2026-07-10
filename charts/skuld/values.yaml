@@ -448,6 +448,10 @@ extraVolumes: []
 # -- Extra volume mounts added to skuld and devrunner containers
 extraVolumeMounts: []
 
+# -- Desired Deployment replicas. Resident lifecycle control uses 0/1 for
+# suspend and resume while preserving configured persistent storage.
+replicaCount: 1
+
 # -- Mesh configuration for session-local agent flocks.
 mesh:
   enabled: false

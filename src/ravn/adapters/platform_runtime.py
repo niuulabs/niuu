@@ -77,6 +77,46 @@ class HttpPlatformRuntimeAdapter:
             auth_params,
         )
 
+    async def create_resident_runtime(
+        self,
+        body: dict[str, Any],
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any]:
+        return await self._post_item(
+            "/api/v1/forge/resident-runtimes",
+            body,
+            auth_headers,
+            auth_params,
+        )
+
+    async def control_resident_runtime(
+        self,
+        runtime_id: str,
+        action: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any]:
+        return await self._post_item(
+            f"/api/v1/forge/resident-runtimes/{runtime_id}/{action}",
+            None,
+            auth_headers,
+            auth_params,
+        )
+
+    async def delete_resident_runtime(
+        self,
+        runtime_id: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> None:
+        response = await self._client.delete(
+            f"/api/v1/forge/resident-runtimes/{runtime_id}",
+            headers=auth_headers,
+            params=auth_params,
+        )
+        response.raise_for_status()
+
     async def aclose(self) -> None:
         await self._client.aclose()
 
@@ -102,6 +142,27 @@ class HttpPlatformRuntimeAdapter:
         response = await self._client.get(path, headers=auth_headers, params=auth_params)
         if response.status_code == 404:
             return None
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError(
+                f"Platform API {path} returned unexpected payload: {type(payload).__name__}"
+            )
+        return payload
+
+    async def _post_item(
+        self,
+        path: str,
+        body: dict[str, Any] | None,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any]:
+        response = await self._client.post(
+            path,
+            json=body,
+            headers=auth_headers,
+            params=auth_params,
+        )
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict):

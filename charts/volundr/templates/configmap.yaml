@@ -59,6 +59,7 @@ data:
       {{- end }}
 
     resident_runtimes:
+      reconciliation_interval_seconds: {{ .Values.residentRuntimeReconciliationIntervalSeconds | default 10.0 }}
       profiles:
         {{- range .Values.residentRuntimeProfiles }}
         - id: {{ .id | quote }}

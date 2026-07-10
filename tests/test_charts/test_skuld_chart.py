@@ -460,6 +460,13 @@ class TestResidentWorkloadIdentityConfigFirst:
         )
         assert "volundr_api_url" not in broker_cfg
 
+    def test_resident_replica_count_supports_real_suspend_and_resume(self, tmp_path):
+        suspended = dict(self.RESIDENT_VALUES)
+        suspended["replicaCount"] = 0
+        rendered = _render_skuld_chart(tmp_path, suspended)
+
+        assert _deployment_from_rendered(rendered)["spec"]["replicas"] == 0
+
     def test_pod_has_no_workload_identity_env_vars(self, rendered):
         deployment = _deployment_from_rendered(rendered)
         for container in deployment["spec"]["template"]["spec"]["containers"]:

@@ -301,6 +301,11 @@ class ResidentRuntimesConfig(BaseModel):
     """Configured resident deployment profiles for this Volundr target."""
 
     profiles: list[ResidentProfileConfig] = Field(default_factory=list)
+    reconciliation_interval_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description="Interval between resident backend reconciliation passes.",
+    )
 
     @model_validator(mode="after")
     def validate_unique_profile_ids(self) -> "ResidentRuntimesConfig":

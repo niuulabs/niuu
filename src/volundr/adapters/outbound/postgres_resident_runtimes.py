@@ -126,6 +126,16 @@ class PostgresResidentRuntimeRepository(ResidentRuntimeRepository):
         )
         return runtime
 
+    async def list_for_reconciliation(self) -> list[ResidentRuntime]:
+        rows = await self._pool.fetch(
+            """
+            SELECT * FROM resident_runtimes
+            WHERE desired_state <> 'deleted'
+            ORDER BY updated_at ASC
+            """
+        )
+        return [self._row_to_runtime(row) for row in rows]
+
     async def delete(self, runtime_id: UUID) -> bool:
         result = await self._pool.execute(
             "DELETE FROM resident_runtimes WHERE id = $1",

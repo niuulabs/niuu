@@ -15,9 +15,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 from starlette import status as http_status
 
 from niuu.adapters.inbound.auth import extract_principal
@@ -95,6 +97,27 @@ class TriggerCreateRequest(BaseModel):
     persona_name: str
     spec: str
     enabled: bool = True
+
+
+class ResidentCreateRequest(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    name: str = Field(min_length=1, max_length=255)
+    profile_id: str = Field(min_length=1, max_length=100)
+    persona_name: str = Field(default="", max_length=255)
+    model: str = Field(default="", max_length=255)
+
+
+def _raise_platform_error(exc: httpx.HTTPStatusError) -> None:
+    try:
+        payload = exc.response.json()
+    except ValueError:
+        payload = {}
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    raise HTTPException(
+        status_code=exc.response.status_code,
+        detail=detail or str(exc),
+    ) from exc
 
 
 class WardenCreateRequest(BaseModel):
@@ -358,6 +381,79 @@ def create_app(
         """List durable residents and visible compatibility deployments."""
         auth_headers, auth_params = forward_auth(request)
         return await resident_directory.list_ravens(principal, auth_headers, auth_params)
+
+    @app.post("/api/v1/ravn/ravens", status_code=http_status.HTTP_201_CREATED)
+    async def create_raven_endpoint(
+        body: ResidentCreateRequest,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> dict:
+        """Deploy one resident through this target's configured backend."""
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            return await resident_directory.create_raven(
+                body.model_dump(),
+                auth_headers,
+                auth_params,
+            )
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+
+    async def control_raven_endpoint(
+        ravn_id: str,
+        action: str,
+        request: Request,
+    ) -> dict:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            return await resident_directory.control_raven(
+                ravn_id,
+                action,
+                auth_headers,
+                auth_params,
+            )
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+
+    @app.post("/api/v1/ravn/ravens/{ravn_id}/restart")
+    async def restart_raven_endpoint(
+        ravn_id: str,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> dict:
+        return await control_raven_endpoint(ravn_id, "restart", request)
+
+    @app.post("/api/v1/ravn/ravens/{ravn_id}/suspend")
+    async def suspend_raven_endpoint(
+        ravn_id: str,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> dict:
+        return await control_raven_endpoint(ravn_id, "suspend", request)
+
+    @app.post("/api/v1/ravn/ravens/{ravn_id}/resume")
+    async def resume_raven_endpoint(
+        ravn_id: str,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> dict:
+        return await control_raven_endpoint(ravn_id, "resume", request)
+
+    @app.delete(
+        "/api/v1/ravn/ravens/{ravn_id}",
+        status_code=http_status.HTTP_204_NO_CONTENT,
+    )
+    async def delete_raven_endpoint(
+        ravn_id: str,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> Response:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            await resident_directory.delete_raven(ravn_id, auth_headers, auth_params)
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+        return Response(status_code=http_status.HTTP_204_NO_CONTENT)
 
     @app.get("/api/v1/ravn/deployment-profiles")
     async def list_resident_profiles_endpoint(

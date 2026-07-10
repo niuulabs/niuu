@@ -103,7 +103,11 @@ from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
 from volundr.catalog import build_catalog
 from volundr.domain.models import SessionStatus
-from volundr.domain.ports import OpenShellCredentialGrantPort, SessionContributor
+from volundr.domain.ports import (
+    OpenShellCredentialGrantPort,
+    ResidentRuntimeController,
+    SessionContributor,
+)
 from volundr.domain.services import (
     ChronicleService,
     ExternalSessionService,
@@ -493,6 +497,27 @@ async def _reconcile_active_loop(
             logger.exception("Active-session reconcile iteration failed")
 
 
+async def _reconcile_resident_runtimes_loop(
+    service: ResidentRuntimeService,
+    *,
+    interval_seconds: float,
+) -> None:
+    """Periodically converge durable resident records with backend state."""
+    logger.info(
+        "Resident runtime reconcile loop started, interval=%.1fs",
+        interval_seconds,
+    )
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            await service.reconcile_all()
+        except asyncio.CancelledError:
+            logger.info("Resident runtime reconcile loop cancelled")
+            break
+        except Exception:
+            logger.exception("Resident runtime reconcile iteration failed")
+
+
 def _create_otel_providers(otel_cfg):  # pragma: no cover
     """Build OTel TracerProvider + MeterProvider from config.
 
@@ -678,10 +703,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resident_profile_provider = ConfigResidentDeploymentProfileProvider(
                 settings.resident_runtimes.profiles
             )
-            resident_runtime_service = ResidentRuntimeService(
-                resident_runtime_repository,
-                resident_profile_provider,
-            )
             device_repository = PostgresDeviceTokenRepository(pool)
             communication_route_repository = PostgresCommunicationRouteRepository(pool)
             communication_cursor_repository = PostgresCommunicationCursorRepository(pool)
@@ -693,6 +714,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.persona_registry = persona_registry
             workload_identity_service = WorkloadIdentityService(settings.workload_identity)
             pod_manager = _create_pod_manager(settings)
+            resident_controllers = (
+                [pod_manager] if isinstance(pod_manager, ResidentRuntimeController) else []
+            )
+            resident_runtime_service = ResidentRuntimeService(
+                resident_runtime_repository,
+                resident_profile_provider,
+                resident_controllers,
+            )
             if hasattr(pod_manager, "set_session_repository"):
                 pod_manager.set_session_repository(repository)
             if hasattr(pod_manager, "set_workload_token_issuer"):
@@ -1364,6 +1393,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         interval_seconds=settings.session_liveness.reconcile_interval_seconds,
                     )
                 )
+            resident_reconcile_task = asyncio.create_task(
+                _reconcile_resident_runtimes_loop(
+                    resident_runtime_service,
+                    interval_seconds=settings.resident_runtimes.reconciliation_interval_seconds,
+                )
+            )
             if settings.telegram_ingress.enabled:
                 await telegram_ingress.start()
             else:
@@ -1374,6 +1409,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Reconcile sessions stuck in PROVISIONING after a restart
             await session_service.reconcile_provisioning_sessions()
             await session_service.reconcile_active_sessions()
+            await resident_runtime_service.reconcile_all()
 
             try:
                 yield
@@ -1399,6 +1435,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         await reconcile_task
                     except asyncio.CancelledError:
                         pass  # Expected: task cancellation during shutdown
+                resident_reconcile_task.cancel()
+                try:
+                    await resident_reconcile_task
+                except asyncio.CancelledError:
+                    pass
                 await event_ingestion.close_all()
                 if hasattr(pod_manager, "close"):
                     await pod_manager.close()

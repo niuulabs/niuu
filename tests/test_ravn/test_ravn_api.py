@@ -2112,6 +2112,52 @@ def test_list_sessions_returns_live_ravn_sessions(client: TestClient):
     assert data[0]["chat_endpoint"] == "ws://host/s/1/session"
 
 
+def test_resident_create_lifecycle_and_delete_proxy_target_control_plane(client: TestClient):
+    import httpx
+    import respx
+
+    runtime = {
+        "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "name": "Muninn",
+        "personaName": "product-steward",
+        "model": "gpt-5.6",
+        "backend": "helmrelease",
+        "engine": "ravn",
+        "profileId": "ravn-helm",
+        "desiredState": "running",
+        "observedState": "deploying",
+        "backendRef": {"kind": "HelmRelease", "name": "resident-id"},
+        "endpoints": [{"kind": "chat", "protocol": "skuld-v1", "url": "/s/id/session"}],
+        "capabilities": ["chat", "runtime.suspend"],
+        "conditions": [],
+    }
+    with respx.mock(assert_all_called=False) as router:
+        create_route = router.post("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+            return_value=httpx.Response(201, json=runtime)
+        )
+        suspend_route = router.post(
+            "http://localhost:8080/api/v1/forge/resident-runtimes/"
+            "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/suspend"
+        ).mock(return_value=httpx.Response(200, json=runtime))
+        delete_route = router.delete(
+            "http://localhost:8080/api/v1/forge/resident-runtimes/"
+            "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        ).mock(return_value=httpx.Response(204))
+
+        created = client.post(
+            "/api/v1/ravn/ravens",
+            json={"name": "Muninn", "profile_id": "ravn-helm"},
+        )
+        suspended = client.post("/api/v1/ravn/ravens/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/suspend")
+        deleted = client.delete("/api/v1/ravn/ravens/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+
+    assert created.status_code == 201
+    assert created.json()["managed"] is True
+    assert suspended.status_code == 200
+    assert deleted.status_code == 204
+    assert create_route.called and suspend_route.called and delete_route.called
+
+
 def test_stop_session(client: TestClient):
     resp = client.post("/api/v1/ravn/sessions/my-session-id/stop")
     assert resp.status_code == 200

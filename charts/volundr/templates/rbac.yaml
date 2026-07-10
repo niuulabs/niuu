@@ -12,6 +12,9 @@ rules:
   - apiGroups: ["helm.toolkit.fluxcd.io"]
     resources: ["helmreleases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
   {{- end }}
   {{- if and (contains "K8sStorageAdapter" .Values.storageAdapter.adapter) (not .Values.rbac.clusterWide) }}
   # Access to PVCs for dynamic per-user/session storage provisioning
@@ -73,6 +76,9 @@ rules:
   - apiGroups: ["helm.toolkit.fluxcd.io"]
     resources: ["helmreleases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
   {{- end }}
   {{- if contains "K8sStorageAdapter" .Values.storageAdapter.adapter }}
   # Cluster-wide access to PVCs (cross-namespace provisioning)

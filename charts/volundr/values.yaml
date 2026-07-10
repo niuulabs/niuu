@@ -332,7 +332,20 @@ residentRuntimeProfiles: []
 #   defaultModel: claude-sonnet-4-6
 #   allowedModels: [claude-sonnet-4-6]
 #   labels: [resident, ravn]
-#   deployment: {}
+#   deployment:
+#     values:
+#       persistence:
+#         enabled: true
+#         emptyDir: false
+#         existingClaim: volundr-sessions
+#       resident:
+#         persona: product-steward
+#         platform:
+#           enabled: true
+#           baseUrl: http://niuu-volundr.volundr.svc.cluster.local
+
+# -- Seconds between resident HelmRelease/Deployment reconciliation passes
+residentRuntimeReconciliationIntervalSeconds: 10.0
 
 # Chronicle configuration
 chronicle:

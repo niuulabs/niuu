@@ -62,6 +62,11 @@ class StubInstanceService:
             if (kind is None or instance.kind == kind)
             and (instance.enabled or not enabled_only)
             and instance.tenant_id == principal.tenant_id
+            and (
+                not tags
+                or (match == "all" and all(tag in instance.tags for tag in tags))
+                or (match == "any" and any(tag in instance.tags for tag in tags))
+            )
         ]
 
     async def get_visible(
@@ -384,6 +389,72 @@ def test_list_deployment_profiles_is_target_aware() -> None:
         ("ravn-helm", "alpha"),
         ("ravn-openshell", "beta"),
     }
+
+
+@respx.mock
+def test_create_raven_uses_existing_target_routing_and_strips_hints() -> None:
+    client = _client(
+        [
+            _instance("default", base_url="http://default", is_default=True),
+            _instance("helm", base_url="http://helm", tags=["resident", "flux"]),
+        ]
+    )
+    route = respx.post("http://helm/api/v1/ravn/ravens").mock(
+        return_value=Response(201, json={"id": "resident-id", "managed": True})
+    )
+
+    response = client.post(
+        "/api/v1/ravn/ravens",
+        headers=_headers(),
+        json={
+            "target_tags": ["flux"],
+            "profile_id": "ravn-helm",
+            "name": "Muninn",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["instance_id"] == "helm"
+    assert route.calls.last.request.read() == (b'{"profile_id":"ravn-helm","name":"Muninn"}')
+    assert route.calls.last.request.headers["authorization"] == "Bearer test-token"
+
+
+@respx.mock
+def test_resident_lifecycle_commands_target_only_the_selected_instance() -> None:
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha"),
+            _instance("beta", base_url="http://beta"),
+        ]
+    )
+    beta = respx.post("http://beta/api/v1/ravn/ravens/resident-id/suspend").mock(
+        return_value=Response(200, json={"id": "resident-id", "status": "suspended"})
+    )
+
+    response = client.post(
+        "/api/v1/ravn/ravens/resident-id/suspend?instance_id=beta",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["instance_id"] == "beta"
+    assert beta.called
+
+
+@respx.mock
+def test_delete_raven_targets_selected_instance() -> None:
+    client = _client([_instance("beta", base_url="http://beta")])
+    route = respx.delete("http://beta/api/v1/ravn/ravens/resident-id").mock(
+        return_value=Response(204)
+    )
+
+    response = client.delete(
+        "/api/v1/ravn/ravens/resident-id?instance_id=beta",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 204
+    assert route.called
 
 
 @respx.mock

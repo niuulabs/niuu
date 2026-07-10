@@ -41,7 +41,11 @@ from volundr.domain.models import (
     PushMessage,
     PVCRef,
     RealtimeEvent,
+    ResidentBackend,
+    ResidentCondition,
     ResidentDeploymentProfile,
+    ResidentEndpoint,
+    ResidentObservedState,
     ResidentRuntime,
     RoomParticipantInfo,
     SavedPrompt,
@@ -548,6 +552,61 @@ class ResidentDeploymentProfileProvider(ABC):
         """Return every enabled deployment profile."""
 
 
+@dataclass(frozen=True)
+class ResidentRuntimeObservation:
+    """Normalized backend state returned by a resident deployment controller."""
+
+    observed_state: ResidentObservedState
+    backend_ref: dict[str, Any] = field(default_factory=dict)
+    endpoints: list[ResidentEndpoint] = field(default_factory=list)
+    conditions: list[ResidentCondition] = field(default_factory=list)
+
+
+class ResidentRuntimeController(ABC):
+    """Backend lifecycle port for long-lived resident runtimes."""
+
+    @property
+    @abstractmethod
+    def backend(self) -> ResidentBackend:
+        """Return the backend implemented by this controller."""
+
+    @abstractmethod
+    def supports(self, profile: ResidentDeploymentProfile) -> bool:
+        """Return whether this controller implements the complete profile."""
+
+    @abstractmethod
+    async def deploy(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        """Create or converge the backend resources for a resident."""
+
+    @abstractmethod
+    async def reconcile(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        """Converge and observe the backend resources owned by a resident."""
+
+    @abstractmethod
+    async def restart(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
+        """Restart a running resident without replacing its durable storage."""
+
+    @abstractmethod
+    async def suspend(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
+        """Suspend a resident while retaining its durable storage."""
+
+    @abstractmethod
+    async def resume(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
+        """Resume a suspended resident."""
+
+    @abstractmethod
+    async def delete(self, runtime: ResidentRuntime) -> bool:
+        """Delete backend resources, returning whether a resource existed."""
+
+
 class ResidentRuntimeRepository(ABC):
     """Persistence port for long-lived resident runtime records."""
 
@@ -571,6 +630,10 @@ class ResidentRuntimeRepository(ABC):
         owner_id: str | None = None,
     ) -> list[ResidentRuntime]:
         """List resident runtimes in a tenant, optionally scoped to one owner."""
+
+    @abstractmethod
+    async def list_for_reconciliation(self) -> list[ResidentRuntime]:
+        """List every resident runtime requiring backend observation."""
 
     @abstractmethod
     async def update(self, runtime: ResidentRuntime) -> ResidentRuntime:

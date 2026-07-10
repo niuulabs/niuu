@@ -113,3 +113,13 @@ async def test_missing_get_and_delete_result() -> None:
     assert await repository.get(runtime_id) is None
     assert await repository.delete(runtime_id)
     assert not await repository.delete(runtime_id)
+
+
+async def test_reconciliation_list_excludes_deleted_intent() -> None:
+    runtime = _runtime()
+    pool = AsyncMock()
+    pool.fetch.return_value = [_row(runtime)]
+    repository = PostgresResidentRuntimeRepository(pool)
+
+    assert await repository.list_for_reconciliation() == [runtime]
+    assert "desired_state <> 'deleted'" in pool.fetch.await_args.args[0]

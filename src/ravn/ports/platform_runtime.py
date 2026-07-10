@@ -50,6 +50,34 @@ class PlatformRuntimePort(Protocol):
         """Return resident profiles enabled on this target."""
         raise NotImplementedError
 
+    async def create_resident_runtime(
+        self,
+        body: dict[str, Any],
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any]:
+        """Deploy one resident through the target control plane."""
+        raise NotImplementedError
+
+    async def control_resident_runtime(
+        self,
+        runtime_id: str,
+        action: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any]:
+        """Apply one lifecycle action to a target resident."""
+        raise NotImplementedError
+
+    async def delete_resident_runtime(
+        self,
+        runtime_id: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> None:
+        """Delete one resident and its owned backend resources."""
+        raise NotImplementedError
+
     async def aclose(self) -> None:
         """Release transport resources."""
         raise NotImplementedError

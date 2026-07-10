@@ -153,6 +153,49 @@ class ResidentDirectory:
         """Return profiles that can actually be deployed on this target."""
         return await self._platform.list_resident_profiles(auth_headers, auth_params)
 
+    async def create_raven(
+        self,
+        body: dict[str, Any],
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any]:
+        """Deploy one managed resident and return the Ravn product projection."""
+        runtime = await self._platform.create_resident_runtime(
+            body,
+            auth_headers,
+            auth_params,
+        )
+        return self._managed_to_raven(runtime)
+
+    async def control_raven(
+        self,
+        ravn_id: str,
+        action: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any]:
+        """Apply a lifecycle action and return the updated Ravn projection."""
+        runtime = await self._platform.control_resident_runtime(
+            ravn_id,
+            action,
+            auth_headers,
+            auth_params,
+        )
+        return self._managed_to_raven(runtime)
+
+    async def delete_raven(
+        self,
+        ravn_id: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> None:
+        """Delete one managed resident through the target control plane."""
+        await self._platform.delete_resident_runtime(
+            ravn_id,
+            auth_headers,
+            auth_params,
+        )
+
     async def list_sessions(
         self,
         principal: Principal,
