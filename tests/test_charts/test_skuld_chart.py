@@ -467,6 +467,21 @@ class TestResidentWorkloadIdentityConfigFirst:
 
         assert _deployment_from_rendered(rendered)["spec"]["replicas"] == 0
 
+    def test_resident_name_annotation_can_be_supplied_by_control_plane(self, tmp_path):
+        values = dict(self.RESIDENT_VALUES)
+        values["podAnnotations"] = {
+            "niuu.world/resident-name": "managed-resident",
+            "niuu.world/resident-id": "resident-id",
+        }
+
+        rendered = _render_skuld_chart(tmp_path, values)
+        annotations = _deployment_from_rendered(rendered)["spec"]["template"]["metadata"][
+            "annotations"
+        ]
+
+        assert annotations["niuu.world/resident-name"] == "managed-resident"
+        assert annotations["niuu.world/resident-id"] == "resident-id"
+
     def test_pod_has_no_workload_identity_env_vars(self, rendered):
         deployment = _deployment_from_rendered(rendered)
         for container in deployment["spec"]["template"]["spec"]["containers"]:

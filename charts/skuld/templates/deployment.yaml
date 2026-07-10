@@ -22,7 +22,7 @@ spec:
         {{- end }}
       {{- if or .Values.podAnnotations (include "skuld.residentEnabled" .) }}
       annotations:
-        {{- if include "skuld.residentEnabled" . }}
+        {{- if and (include "skuld.residentEnabled" .) (not (hasKey .Values.podAnnotations "niuu.world/resident-name")) }}
         niuu.world/resident-name: {{ include "skuld.residentName" . | quote }}
         {{- end }}
         {{- with .Values.podAnnotations }}
