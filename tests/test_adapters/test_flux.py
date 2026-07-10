@@ -585,6 +585,7 @@ class TestFluxPodManagerStartErrorHandling:
         patch_kwargs = mock_api.patch_namespaced_custom_object.call_args[1]
         assert patch_kwargs["name"] == f"skuld-{sample_session.id}"
         assert patch_kwargs["namespace"] == "test-ns"
+        assert patch_kwargs["_content_type"] == "application/merge-patch+json"
         assert result.pod_name == f"skuld-{sample_session.id}"
 
     async def test_start_patches_on_already_exists(
@@ -1102,6 +1103,21 @@ class TestFluxResidentRuntimeController:
         restart_body = patch_release.await_args_list[2].args[1]
         assert "niuu.world/restarted-at" in restart_body["spec"]["values"]["podAnnotations"]
         delete_release.assert_awaited_once_with(release_name)
+
+    async def test_lifecycle_patch_uses_merge_patch_content_type(
+        self,
+        pod_manager: FluxPodManager,
+        mock_api,
+    ) -> None:
+        with patch.object(pod_manager, "_get_api", return_value=mock_api):
+            await pod_manager._patch_helmrelease(
+                "resident-id",
+                {"spec": {"values": {"replicaCount": 0}}},
+            )
+
+        kwargs = mock_api.patch_namespaced_custom_object.call_args.kwargs
+        assert kwargs["body"] == {"spec": {"values": {"replicaCount": 0}}}
+        assert kwargs["_content_type"] == "application/merge-patch+json"
 
     def test_suspend_observation_waits_for_workload_to_scale_down(
         self,

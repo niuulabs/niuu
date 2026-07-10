@@ -198,6 +198,7 @@ class FluxPodManager(PodManager, ResidentRuntimeController):
                 plural=HELMRELEASE_PLURAL,
                 name=name,
                 body=manifest,
+                _content_type="application/merge-patch+json",
             )
 
     async def _get_helmrelease(self, name: str) -> dict[str, Any] | None:
@@ -224,6 +225,7 @@ class FluxPodManager(PodManager, ResidentRuntimeController):
             plural=HELMRELEASE_PLURAL,
             name=name,
             body=body,
+            _content_type="application/merge-patch+json",
         )
 
     async def _delete_helmrelease(self, name: str) -> bool:
