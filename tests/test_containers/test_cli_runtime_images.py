@@ -49,3 +49,13 @@ def test_skuld_image_installs_iproute2_for_openshell_vm() -> None:
     dockerfile = (REPO_ROOT / "containers/skuld/Dockerfile").read_text()
 
     assert "    iproute2 \\\n" in dockerfile
+
+
+def test_openshell_image_installs_locked_agent_clis() -> None:
+    """OpenShell sandboxes must not inherit stale CLIs from the base image."""
+    dockerfile = (REPO_ROOT / "containers/openshell/Dockerfile").read_text()
+
+    assert "COPY containers/skuld/npm-tools/package.json" in dockerfile
+    assert "npm ci --omit=dev" in dockerfile
+    for cli in ("claude", "codex", "opencode"):
+        assert f"node_modules/.bin/{cli} /usr/local/bin/{cli}" in dockerfile

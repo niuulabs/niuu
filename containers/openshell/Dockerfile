@@ -3,6 +3,15 @@ FROM ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:aeef1c63f00e2913ea
 USER root
 WORKDIR /app
 
+# OpenShell's base image includes agent CLIs, but their versions are outside
+# Niuu's release lifecycle. Install the same locked tools used by Skuld.
+COPY containers/skuld/npm-tools/package.json containers/skuld/npm-tools/package-lock.json /opt/skuld-tools/
+RUN cd /opt/skuld-tools \
+    && npm ci --omit=dev \
+    && ln -sf /opt/skuld-tools/node_modules/.bin/claude /usr/local/bin/claude \
+    && ln -sf /opt/skuld-tools/node_modules/.bin/codex /usr/local/bin/codex \
+    && ln -sf /opt/skuld-tools/node_modules/.bin/opencode /usr/local/bin/opencode
+
 ENV UV_PROJECT_ENVIRONMENT=/opt/niuu
 COPY pyproject.toml uv.lock README.md /app/
 COPY src/ /app/src/

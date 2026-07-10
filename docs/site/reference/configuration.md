@@ -57,7 +57,7 @@ pod_manager:
     gateway_endpoint: "openshell.openshell.svc.cluster.local:8080"
     token_url: "https://keycloak.niuu.world/realms/volundr/protocol/openid-connect/token"
     client_id: "openshell-volundr-agent"
-    sandbox_image: "ghcr.io/niuulabs/skuld:openshell-codex-openbao-20260709-3"
+    sandbox_image: "ghcr.io/niuulabs/skuld:openshell-codex-openbao-20260709-4"
     sandbox_command: ["/opt/niuu/bin/python", "-m", "skuld"]
     service_port: 9200
   secret_kwargs_env:
