@@ -138,6 +138,17 @@ resources:
     cpu: 500m
     memory: 256Mi
 
+# -- Startup probe for the PVC-backed knowledge index. Liveness and readiness
+# probes remain disabled until this succeeds.
+startupProbe:
+  enabled: true
+  path: /mimir/stats
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 5
+  successThreshold: 1
+  failureThreshold: 60
+
 autoscaling:
   # -- Enable HorizontalPodAutoscaler.
   # Disable when using a single-writer PVC (ReadWriteOnce).

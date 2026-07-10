@@ -89,6 +89,17 @@ spec:
           envFrom:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- if .Values.startupProbe.enabled }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.startupProbe.path | default "/mimir/stats" }}
+              port: http
+            initialDelaySeconds: {{ .Values.startupProbe.initialDelaySeconds | default 5 }}
+            periodSeconds: {{ .Values.startupProbe.periodSeconds | default 5 }}
+            timeoutSeconds: {{ .Values.startupProbe.timeoutSeconds | default 5 }}
+            successThreshold: {{ .Values.startupProbe.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.startupProbe.failureThreshold | default 60 }}
+          {{- end }}
           livenessProbe:
             httpGet:
               path: /mimir/stats
