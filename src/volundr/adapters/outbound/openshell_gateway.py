@@ -960,6 +960,14 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
                     environment=environment,
                 )
             for mapping in mappings:
+                mapping_credential_name = str(
+                    mapping.get("credentialName") or mapping.get("credential_name") or ""
+                )
+                if codex_auth and mapping_credential_name == codex_auth["credential_name"]:
+                    # codexAuth owns this credential through its scoped provider grant.
+                    mapping = dict(mapping)
+                    mapping.pop("env_mappings", None)
+                    mapping["envMappings"] = {}
                 await self._resolve_credential_mapping(
                     session,
                     mapping,

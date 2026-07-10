@@ -400,11 +400,7 @@ def test_session_proxy_target_preserves_service_route_and_uses_gateway(
 ):
     adapter = _import_adapter(monkeypatch)
     session = _session().model_copy(
-        update={
-            "chat_endpoint": (
-                "ws://forge-example--skuld.openshell.localhost:8080/session"
-            )
-        }
+        update={"chat_endpoint": ("ws://forge-example--skuld.openshell.localhost:8080/session")}
     )
     manager = adapter.OpenShellGatewayPodManager(
         client=_FakeOpenShellGatewayClient(adapter),
@@ -414,9 +410,7 @@ def test_session_proxy_target_preserves_service_route_and_uses_gateway(
     target = manager.session_proxy_target(session)
 
     assert target is not None
-    assert target.service_url == (
-        "ws://forge-example--skuld.openshell.localhost:8080"
-    )
+    assert target.service_url == ("ws://forge-example--skuld.openshell.localhost:8080")
     assert target.connect_host == "openshell.openshell.svc.cluster.local"
     assert target.connect_port == 8080
     assert target.connect_secure is False
@@ -554,6 +548,13 @@ async def test_start_uses_dynamic_codex_grant_without_projecting_oauth_file(
                     "authField": "auth.json",
                 },
                 "credentialMappings": [
+                    {
+                        "credentialName": "codex-credentials",
+                        "envMappings": {
+                            "CODEX_CREDENTIALS_AUTH.JSON": "auth.json",
+                            "CODEX_CREDENTIALS_CONFIG.TOML": "config.toml",
+                        },
+                    },
                     {
                         "credentialName": "openai-credential",
                         "envMappings": {"OPENAI_API_KEY": "api_key"},
