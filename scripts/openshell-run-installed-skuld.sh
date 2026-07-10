@@ -5,7 +5,13 @@ LOG_FILE="${SKULD_BOOTSTRAP_LOG:-/tmp/skuld.log}"
 PORT="${SKULD__PORT:-8081}"
 HEALTH_URL="http://127.0.0.1:${PORT}/health"
 
-PYTHON_BIN="${SKULD_PYTHON_BIN:-$(command -v python)}"
+if [ -n "${SKULD_PYTHON_BIN:-}" ]; then
+    PYTHON_BIN="$SKULD_PYTHON_BIN"
+elif [ -x /opt/niuu/bin/python ]; then
+    PYTHON_BIN=/opt/niuu/bin/python
+else
+    PYTHON_BIN="$(command -v python)"
+fi
 
 setup_cli_home() {
     env_name="$1"
