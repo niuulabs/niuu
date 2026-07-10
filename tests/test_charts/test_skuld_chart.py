@@ -570,6 +570,22 @@ class TestResidentWorkloadIdentityConfigFirst:
             == "https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange"
         )
 
+    def test_resident_wakefulness_is_rendered(self, tmp_path):
+        values = dict(self.RESIDENT_VALUES)
+        values["resident"] = {
+            **values["resident"],
+            "wakefulness": {"enabled": True, "silence_threshold_seconds": 900},
+        }
+        rendered = _render_skuld_chart(tmp_path, values)
+        configmaps = self._configmaps(rendered)
+        ravn_cm = next(cm for name, cm in configmaps.items() if name.endswith("-ravn-config"))
+        ravn_cfg = yaml.safe_load(ravn_cm["data"]["config.yaml"])
+
+        assert ravn_cfg["wakefulness"] == {
+            "enabled": True,
+            "silence_threshold_seconds": 900,
+        }
+
     def test_default_render_has_no_workload_identity_config(self, tmp_path):
         rendered = _render_skuld_chart(tmp_path, {})
         assert "workload_identity" not in rendered

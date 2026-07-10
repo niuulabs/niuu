@@ -520,6 +520,9 @@ resident:
       enabled: true
       # -- Hours between staleness checks.
       scheduleHours: 6
+  # -- Ravn wakefulness trigger configuration. Passed through to ravn.yaml.
+  wakefulness:
+    enabled: false
   workloadIdentity:
     # -- Audience for the projected serviceAccountToken
     audience: "volundr-api"
