@@ -265,6 +265,7 @@ class TestHandshake:
         assert "thread/start" not in methods
         resume_params = calls[1][1]
         assert resume_params["threadId"] == "thread-imported-1"
+        assert resume_params["config"]["model_reasoning_effort"] == "high"
         assert t._thread_id == "thread-imported-1"
 
         init_event = emit.call_args[0][0]
@@ -550,6 +551,7 @@ class TestSendMessage:
         assert params["input"][0]["type"] == "text"
         assert params["input"][0]["text"] == "hello world"
         assert params["input"][0]["textElements"] == []
+        assert params["effort"] == "high"
 
     @pytest.mark.asyncio
     async def test_send_message_resets_state(self, tmp_path):
@@ -3101,7 +3103,7 @@ class TestReasoningEffort:
     async def test_sol_handshake_sends_high_effort(self, tmp_path) -> None:
         t = _make_transport(tmp_path, model="gpt-5.6-sol")
         params = await _capture_thread_start_params(t)
-        assert params["modelReasoningEffort"] == "high"
+        assert params["config"]["model_reasoning_effort"] == "high"
 
     @pytest.mark.asyncio
     async def test_ultra_clamped_to_high_on_non_sol_model(self, tmp_path) -> None:
@@ -3109,10 +3111,10 @@ class TestReasoningEffort:
         # reach the app-server as `ultra`.
         t = _make_transport(tmp_path, model="gpt-5.5", reasoning_effort="ultra")
         params = await _capture_thread_start_params(t)
-        assert params["modelReasoningEffort"] == "high"
+        assert params["config"]["model_reasoning_effort"] == "high"
 
     @pytest.mark.asyncio
     async def test_high_effort_maps_through(self, tmp_path) -> None:
         t = _make_transport(tmp_path, model="gpt-5.5", reasoning_effort="high")
         params = await _capture_thread_start_params(t)
-        assert params["modelReasoningEffort"] == "high"
+        assert params["config"]["model_reasoning_effort"] == "high"
