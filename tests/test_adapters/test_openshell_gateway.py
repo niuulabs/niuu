@@ -511,7 +511,13 @@ async def test_start_uses_dynamic_codex_grant_without_projecting_oauth_file(
     client = _FakeOpenShellGatewayClient(adapter)
     manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
     manager.set_credential_store(
-        _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
+        _FakeCredentialStore(
+            {
+                "codex-credentials": {"auth.json": _codex_auth_document()},
+                "openai-credential": {"api_key": "sk-openai-from-openbao"},
+                "github-credential": {"token": "ghp-from-openbao"},
+            }
+        )
     )
     spec = SessionSpec(
         values={
@@ -519,7 +525,17 @@ async def test_start_uses_dynamic_codex_grant_without_projecting_oauth_file(
                 "codexAuth": {
                     "credentialName": "codex-credentials",
                     "authField": "auth.json",
-                }
+                },
+                "credentialMappings": [
+                    {
+                        "credentialName": "openai-credential",
+                        "envMappings": {"OPENAI_API_KEY": "api_key"},
+                    },
+                    {
+                        "credentialName": "github-credential",
+                        "envMappings": {"GITHUB_PERSONAL_ACCESS_TOKEN": "token"},
+                    },
+                ],
             }
         },
         pod_spec=PodSpecAdditions(),
@@ -533,8 +549,16 @@ async def test_start_uses_dynamic_codex_grant_without_projecting_oauth_file(
         adapter.CODEX_ACCESS_TOKEN_REFERENCE
     )
     assert client.created["env"][adapter.CODEX_ACCOUNT_ID_ENV] == "account-from-openbao"
-    assert len(client.provider_grants) == 1
-    grant = client.provider_grants[0]
+    assert len(client.provider_grants) == 2
+    assert {grant["profile"].credentials[0].env_vars[0] for grant in client.provider_grants} == {
+        adapter.CODEX_ACCESS_TOKEN_ENV,
+        "GITHUB_PERSONAL_ACCESS_TOKEN",
+    }
+    grant = next(
+        grant
+        for grant in client.provider_grants
+        if grant["profile"].credentials[0].env_vars == [adapter.CODEX_ACCESS_TOKEN_ENV]
+    )
     assert grant["profile"].credentials[0].env_vars == [adapter.CODEX_ACCESS_TOKEN_ENV]
     assert grant["profile"].credentials[0].token_grant.cache_ttl_seconds == 0
     assert {endpoint.host for endpoint in grant["profile"].endpoints} >= {

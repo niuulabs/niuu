@@ -940,6 +940,7 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
                     mapping,
                     files=files,
                     providers=providers,
+                    excluded_env_names={"OPENAI_API_KEY"} if codex_auth else set(),
                 )
         except Exception:
             for provider_name in reversed(providers):
@@ -1009,14 +1010,23 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
         *,
         files: dict[str, bytes],
         providers: list[str],
+        excluded_env_names: set[str] | None = None,
     ) -> None:
         credential_name = str(mapping.get("credentialName") or mapping.get("credential_name") or "")
         if not credential_name:
             return
         env_mappings = _string_dict(mapping.get("envMappings") or mapping.get("env_mappings") or {})
+        if excluded_env_names:
+            env_mappings = {
+                env_name: field_name
+                for env_name, field_name in env_mappings.items()
+                if env_name not in excluded_env_names
+            }
         file_mappings = _string_dict(
             mapping.get("fileMappings") or mapping.get("file_mappings") or {}
         )
+        if not env_mappings and not file_mappings:
+            return
         stored = await self._credential_store.get(
             "user",
             session.owner_id or "",
