@@ -8,8 +8,11 @@ WORKDIR /app
 COPY containers/skuld/npm-tools/package.json containers/skuld/npm-tools/package-lock.json /opt/skuld-tools/
 RUN cd /opt/skuld-tools \
     && npm ci --omit=dev \
+    && rm -rf /usr/lib/node_modules/@openai \
+    && mkdir -p /usr/lib/node_modules \
+    && cp -a /opt/skuld-tools/node_modules/@openai /usr/lib/node_modules/@openai \
     && ln -sf /opt/skuld-tools/node_modules/.bin/claude /usr/local/bin/claude \
-    && ln -sf /opt/skuld-tools/node_modules/.bin/codex /usr/local/bin/codex \
+    && ln -sf /usr/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex \
     && ln -sf /opt/skuld-tools/node_modules/.bin/opencode /usr/local/bin/opencode
 
 ENV UV_PROJECT_ENVIRONMENT=/opt/niuu

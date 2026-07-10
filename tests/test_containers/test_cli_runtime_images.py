@@ -57,5 +57,7 @@ def test_openshell_image_installs_locked_agent_clis() -> None:
 
     assert "COPY containers/skuld/npm-tools/package.json" in dockerfile
     assert "npm ci --omit=dev" in dockerfile
-    for cli in ("claude", "codex", "opencode"):
+    assert "cp -a /opt/skuld-tools/node_modules/@openai /usr/lib/node_modules/@openai" in dockerfile
+    assert "/usr/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex" in dockerfile
+    for cli in ("claude", "opencode"):
         assert f"node_modules/.bin/{cli} /usr/local/bin/{cli}" in dockerfile
