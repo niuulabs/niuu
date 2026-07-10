@@ -40,6 +40,15 @@ class TestValuesDefaults:
 
         assert tokens_route["service"] == "volundr"
 
+    def test_session_proxy_route_uses_target_volundr_backend(self, values_yaml: dict) -> None:
+        session_route = next(
+            route
+            for route in values_yaml["ingress"]["routeSets"]["api"]
+            if route["path"] == "/s"
+        )
+
+        assert session_route["service"] == "volundr"
+
 
 class TestIngressTemplate:
     """Tests for ingress backend resolution."""
@@ -72,6 +81,11 @@ class TestIngressTemplate:
         rendered = _render_niuu_chart()
 
         assert _service_for_path(rendered, "/api/v1/tokens") == "niuu-test-volundr"
+
+    def test_renders_session_proxy_route_to_volundr(self) -> None:
+        rendered = _render_niuu_chart()
+
+        assert _service_for_path(rendered, "/s") == "niuu-test-volundr"
 
 
 def _render_niuu_chart(*extra_args: str) -> str:

@@ -182,7 +182,7 @@ describe('setTokenProvider / getAccessToken', () => {
     vi.stubGlobal('window', originalWindow);
   });
 
-  it('adds access tokens to websocket urls for Envoy-compatible browser auth', async () => {
+  it('adds Envoy query tokens to websocket urls for browser auth', async () => {
     const fresh = await importFreshHttpClient();
     fresh.setTokenProvider(() => 'token-xyz');
 
@@ -190,7 +190,7 @@ describe('setTokenProvider / getAccessToken', () => {
       'ws://127.0.0.1:8080/s/abc/session?access_token=token-xyz',
     );
     expect(fresh.getWebSocketAuth('ws://127.0.0.1:8080/s/abc/session')).toEqual({
-      url: 'ws://127.0.0.1:8080/s/abc/session?access_token=token-xyz',
+      url: 'ws://127.0.0.1:8080/s/abc/session?token=token-xyz',
     });
   });
 

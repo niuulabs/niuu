@@ -56,14 +56,19 @@ class TestProxyWsIdentity:
         assert tenant is None
         assert roles == ()
 
-    def test_bearer_access_token_query_param(self):
-        # web-next getWebSocketAuth appends ?access_token=<jwt> in token-auth
-        # deployments — the owner must resolve, not be locked out.
+    def test_bearer_envoy_token_query_param(self):
+        # web-next uses Envoy's configured ?token=<jwt> extraction on browser
+        # WebSocket upgrades; the app accepts the same token for direct mode.
         token = _jwt({"sub": "carol", "tenant": "t3", "roles": ["volundr:developer"]})
-        user, tenant, roles = _proxy_ws_identity(_ws(query={"access_token": token}))
+        user, tenant, roles = _proxy_ws_identity(_ws(query={"token": token}))
         assert user == "carol"
         assert tenant == "t3"
         assert roles == ("volundr:developer",)
+
+    def test_bearer_access_token_query_param_remains_compatible(self):
+        token = _jwt({"sub": "carol"})
+        user, _tenant, _roles = _proxy_ws_identity(_ws(query={"access_token": token}))
+        assert user == "carol"
 
     def test_bearer_authorization_header(self):
         token = _jwt({"sub": "dave"})

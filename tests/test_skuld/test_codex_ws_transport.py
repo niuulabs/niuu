@@ -3051,7 +3051,7 @@ class TestSteeringCorrelation:
 
 
 # ---------------------------------------------------------------------------
-# Reasoning effort (GPT-5.6 Sol Ultra)
+# Reasoning effort
 # ---------------------------------------------------------------------------
 
 
@@ -3081,13 +3081,13 @@ class TestReasoningEffort:
         assert _model_supports_ultra("gpt-5.6-sol") is True
         assert _model_supports_ultra("GPT-5.6-Sol") is True
         assert _model_supports_ultra("gpt-5.5") is False
-        assert _codex_effort_for_model("gpt-5.6-sol") == "ultra"
+        assert _codex_effort_for_model("gpt-5.6-sol") == "high"
         assert _codex_effort_for_model("gpt-5.5") == "high"
         assert _codex_effort_for_model("") == "high"
 
-    def test_sol_defaults_to_ultra(self, tmp_path) -> None:
+    def test_sol_defaults_to_high(self, tmp_path) -> None:
         t = _make_transport(tmp_path, model="gpt-5.6-sol")
-        assert t._reasoning_effort == "ultra"
+        assert t._reasoning_effort == "high"
 
     def test_non_sol_defaults_to_high(self, tmp_path) -> None:
         t = _make_transport(tmp_path, model="gpt-5.5")
@@ -3098,10 +3098,10 @@ class TestReasoningEffort:
         assert t._reasoning_effort == "low"
 
     @pytest.mark.asyncio
-    async def test_sol_handshake_sends_ultra_effort(self, tmp_path) -> None:
+    async def test_sol_handshake_sends_high_effort(self, tmp_path) -> None:
         t = _make_transport(tmp_path, model="gpt-5.6-sol")
         params = await _capture_thread_start_params(t)
-        assert params["modelReasoningEffort"] == "ultra"
+        assert params["modelReasoningEffort"] == "high"
 
     @pytest.mark.asyncio
     async def test_ultra_clamped_to_high_on_non_sol_model(self, tmp_path) -> None:

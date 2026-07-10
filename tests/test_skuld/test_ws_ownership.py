@@ -91,7 +91,13 @@ class TestResolveWsPrincipal:
         assert principal.tenant_id == "t3"
         assert principal.roles == ("volundr:developer",)
 
-    def test_access_token_query_param(self):
+    def test_envoy_token_query_param(self):
+        token = _jwt({"sub": "dave"})
+        principal = _resolve_ws_principal(_fake_ws(query={"token": token}))
+        assert principal is not None
+        assert principal.user_id == "dave"
+
+    def test_legacy_access_token_query_param(self):
         token = _jwt({"sub": "dave"})
         principal = _resolve_ws_principal(_fake_ws(query={"access_token": token}))
         assert principal is not None

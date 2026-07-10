@@ -30,6 +30,7 @@ from cli.server import (
 from niuu.app import _backend_prefix_for_mount, _create_plugin_api_app, _plugin_api_base_url
 from niuu.ports.embedded_database import ConnectionInfo
 from niuu.ports.plugin import APIRouteDomain
+from niuu.ports.session_proxy import SessionProxyTarget
 from tests.test_cli.conftest import FakePlugin
 
 
@@ -115,6 +116,23 @@ class TestSkuldPortRegistry:
         # A failing hook must not propagate into the proxy close path, and an
         # unconfirmed reconcile must NOT drop the port (returns False).
         assert await reg.reconcile_dead("sess-9") is False
+
+    @pytest.mark.asyncio
+    async def test_resolve_external_target(self) -> None:
+        reg = SkuldPortRegistry()
+        target = SessionProxyTarget(
+            service_url="http://forge--skuld.openshell.localhost:8080",
+            connect_host="openshell.openshell.svc.cluster.local",
+            connect_port=8080,
+        )
+
+        async def _resolve(session_id: str) -> SessionProxyTarget | None:
+            return target if session_id == "sess-open" else None
+
+        reg.set_target_resolver(_resolve)
+
+        assert await reg.resolve_target("sess-open") == target
+        assert await reg.resolve_target("missing") is None
 
 
 class TestSkuldWsProxyTransientBlip:
@@ -638,6 +656,45 @@ class TestRootServerBuildApp:
             resp = client.get("/s/sess-1/api/data")
 
         assert resp.status_code == 200
+
+    def test_skuld_http_proxy_routes_external_session_through_gateway(self) -> None:
+        registry = PluginRegistry()
+        server = RootServer(registry=registry)
+        target = SessionProxyTarget(
+            service_url="http://forge-123--skuld.openshell.localhost:8080",
+            connect_host="openshell.openshell.svc.cluster.local",
+            connect_port=8080,
+        )
+
+        async def _resolve(session_id: str) -> SessionProxyTarget | None:
+            return target if session_id == "sess-open" else None
+
+        server.skuld_registry.set_target_resolver(_resolve)
+        with patch.dict(os.environ, {"NIUU_NO_WEB": "true"}):
+            app = server._build_app()
+        client = TestClient(app)
+
+        mock_response = MagicMock()
+        mock_response.content = b'{"ok": true}'
+        mock_response.status_code = 200
+        mock_response.headers = {"content-type": "application/json"}
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.request = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+            resp = client.get("/s/sess-open/api/conversation/history")
+
+        assert resp.status_code == 200
+        request = mock_client.request.await_args
+        assert request.kwargs["url"] == (
+            "http://openshell.openshell.svc.cluster.local:8080/api/conversation/history"
+        )
+        assert request.kwargs["headers"]["Host"] == (
+            "forge-123--skuld.openshell.localhost:8080"
+        )
 
     def test_skuld_http_proxy_connect_error(self) -> None:
         import httpx

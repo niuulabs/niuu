@@ -909,7 +909,7 @@ def _extract_token_from_websocket(websocket: WebSocket) -> str | None:
     1. Authorization header (Bearer token) — preferred, works with Envoy
     2. Sec-WebSocket-Protocol auth token — browser-safe, avoids URL logging
     3. x-auth-* headers injected by Envoy sidecar
-    4. access_token query parameter — legacy browser fallback
+    4. token query parameter (with legacy access_token fallback)
     """
     header_items = websocket.headers.items()
     if inspect.iscoroutine(header_items):
@@ -938,12 +938,12 @@ def _extract_token_from_websocket(websocket: WebSocket) -> str | None:
     # 3. If Envoy x-auth-* headers are present, we don't have the raw JWT
     #    but we have the validated claims — return None (caller uses headers).
 
-    # 4. Query parameter fallback for old clients. New UI code uses
-    # Sec-WebSocket-Protocol to avoid logging bearer tokens in URLs.
+    # 4. Browser query token. Envoy uses `token`; retain `access_token` for
+    # clients deployed before the Envoy-compatible WebSocket flow.
     query_get = getattr(websocket.query_params, "get", None)
     if not callable(query_get):
         return None
-    query_token = query_get("access_token")
+    query_token = query_get("token") or query_get("access_token")
     if inspect.iscoroutine(query_token):
         query_token.close()
         return None
@@ -994,7 +994,7 @@ def _resolve_ws_principal(websocket: WebSocket) -> WsPrincipal | None:
     1. Envoy-injected ``x-auth-*`` headers (trusted sidecar)
     2. Developer identity query parameters (``devUserId`` etc.)
     3. Decoded bearer-token claims (Authorization header, subprotocol, or
-       ``access_token`` query parameter)
+       ``token`` query parameter, with ``access_token`` compatibility)
 
     Signature validation is Envoy's job — this resolves identity for the
     broker's authorization check only.

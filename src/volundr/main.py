@@ -884,6 +884,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
                 skuld_reg.set_reconcile_hook(_on_proxy_dead)
 
+            if (
+                skuld_reg is not None
+                and hasattr(skuld_reg, "set_target_resolver")
+                and hasattr(pod_manager, "session_proxy_target")
+            ):
+
+                async def _resolve_session_proxy_target(session_id: str):
+                    try:
+                        session = await repository.get(UUID(session_id))
+                    except ValueError:
+                        return None
+                    if session is None:
+                        return None
+                    return pod_manager.session_proxy_target(session)
+
+                skuld_reg.set_target_resolver(_resolve_session_proxy_target)
+
             # Enforce session ownership at the WS proxy (the browser's
             # termination point). The broker's ws_auth is defense-in-depth for
             # direct/flock connections; the proxy dials it from loopback, so

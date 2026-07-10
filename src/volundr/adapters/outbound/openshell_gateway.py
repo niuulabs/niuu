@@ -33,6 +33,7 @@ from google.protobuf import struct_pb2
 from openshell._proto import datamodel_pb2, openshell_pb2, openshell_pb2_grpc, sandbox_pb2
 
 from niuu.adapters.workload_identity.jwt import JwtWorkloadIdentityVerifier
+from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.local_process import LocalProcessPodManager
 from volundr.domain.models import Session, SessionSpec, SessionStatus
 from volundr.domain.ports import (
@@ -545,6 +546,13 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
         gateway_endpoint = os.environ.get("OPENSHELL_GATEWAY_ENDPOINT", gateway_endpoint)
         gateway_public_url = os.environ.get("OPENSHELL_GATEWAY_PUBLIC_URL", gateway_public_url)
         self._gateway_public_url = gateway_public_url.rstrip("/")
+        gateway_hostport = _endpoint_hostport(gateway_endpoint)
+        gateway_host, separator, gateway_port = gateway_hostport.rpartition(":")
+        if not separator or not gateway_host or not gateway_port.isdigit():
+            raise ValueError("OpenShell gateway endpoint must include a host and port")
+        self._gateway_connect_host = gateway_host.strip("[]")
+        self._gateway_connect_port = int(gateway_port)
+        self._gateway_connect_secure = not plaintext
         self._sandbox_image = sandbox_image
         self._sandbox_command = _normalize_command(sandbox_command) or DEFAULT_SANDBOX_COMMAND
         self._sandbox_workspace = sandbox_workspace
@@ -595,6 +603,23 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
 
     def initial_chat_endpoint(self, session: Session) -> str | None:
         return None
+
+    def session_proxy_target(self, session: Session) -> SessionProxyTarget | None:
+        """Resolve the OpenShell service route used by Niuu's session proxy."""
+        base = self._service_urls.get(str(session.id))
+        if not base and session.chat_endpoint:
+            parsed = urlparse(session.chat_endpoint)
+            if parsed.hostname and parsed.hostname.endswith(".openshell.localhost"):
+                path = parsed.path.removesuffix("/session")
+                base = urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
+        if not base:
+            return None
+        return SessionProxyTarget(
+            service_url=base.rstrip("/"),
+            connect_host=self._gateway_connect_host,
+            connect_port=self._gateway_connect_port,
+            connect_secure=self._gateway_connect_secure,
+        )
 
     async def start(self, session: Session, spec: SessionSpec) -> PodStartResult:
         sandbox_name = self._sandbox_name(session)

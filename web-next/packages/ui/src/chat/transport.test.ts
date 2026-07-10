@@ -37,6 +37,23 @@ describe('chat transport', () => {
     });
   });
 
+  it('resolves same-origin session proxy paths as websockets', () => {
+    const originalWindow = globalThis.window;
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { location: { origin: 'https://yggdrasil.niuu.world' } },
+    });
+
+    expect(normalizeSessionUrl('/s/session-1/session')).toBe(
+      'wss://yggdrasil.niuu.world/s/session-1/session',
+    );
+
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: originalWindow,
+    });
+  });
+
   it('returns null for malformed urls', () => {
     expect(wsUrlToHttpBase('not-a-url')).toBeNull();
     expect(deriveTerminalWsUrl('not-a-url')).toBeNull();

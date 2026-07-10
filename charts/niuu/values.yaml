@@ -27,6 +27,8 @@ ingress:
         service: guild
       - path: /api/v1/forge
         service: forge-api
+      - path: /s
+        service: volundr
       - path: /api/v1/niuu/observatory
         service: guild
       - path: /api/v1/tokens

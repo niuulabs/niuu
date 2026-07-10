@@ -89,7 +89,7 @@ OPENSHELL_SERVICE_HOST_SUFFIX = ".openshell.localhost"
 SEND_MESSAGE_ACK_GRACE_SECONDS = 3.0
 
 
-def _public_session_endpoint(endpoint: str | None) -> str | None:
+def _public_session_endpoint(endpoint: str | None, session_id: str = "") -> str | None:
     """Normalize loopback session endpoints for browser-facing clients."""
     if not endpoint:
         return endpoint
@@ -97,6 +97,12 @@ def _public_session_endpoint(endpoint: str | None) -> str | None:
         parsed = urlsplit(endpoint)
     except ValueError:
         return endpoint
+    if (
+        session_id
+        and parsed.hostname
+        and parsed.hostname.endswith(OPENSHELL_SERVICE_HOST_SUFFIX)
+    ):
+        return f"/s/{quote(session_id, safe='')}/session"
     if parsed.hostname != "127.0.0.1":
         return endpoint
     host = (
@@ -836,7 +842,7 @@ class SessionResponse(BaseModel):
             model=session.model,
             source=session.source,
             status=session.status,
-            chat_endpoint=_public_session_endpoint(session.chat_endpoint),
+            chat_endpoint=_public_session_endpoint(session.chat_endpoint, str(session.id)),
             code_endpoint=session.code_endpoint,
             created_at=session.created_at.isoformat(),
             updated_at=session.updated_at.isoformat(),

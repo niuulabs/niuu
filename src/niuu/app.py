@@ -24,6 +24,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from niuu.config import CorsConfig
 from niuu.cors import apply_cors_middleware
 from niuu.ports.plugin import APIRouteDomain, Service
+from niuu.ports.session_proxy import SessionProxyTarget
 from niuu.service_databases import (
     bootstrap_database,
     bootstrap_sql_for_service,
@@ -83,6 +84,9 @@ class SkuldPortRegistry:
         self._ownership_guard: (
             Callable[[str, str | None, str | None, tuple[str, ...]], Awaitable[bool]] | None
         ) = None
+        self._target_resolver: (
+            Callable[[str], Awaitable[SessionProxyTarget | None]] | None
+        ) = None
 
     def set_reconcile_hook(self, hook: Callable[[str], Awaitable[bool]]) -> None:
         """Inject the session-row reconcile callback used on a dead-pod proxy.
@@ -102,6 +106,19 @@ class SkuldPortRegistry:
         when the caller owns (or may administer) the session.
         """
         self._ownership_guard = guard
+
+    def set_target_resolver(
+        self,
+        resolver: Callable[[str], Awaitable[SessionProxyTarget | None]],
+    ) -> None:
+        """Inject resolution for non-local session service targets."""
+        self._target_resolver = resolver
+
+    async def resolve_target(self, session_id: str) -> SessionProxyTarget | None:
+        """Resolve an externally hosted session service, when configured."""
+        if self._target_resolver is None:
+            return None
+        return await self._target_resolver(session_id)
 
     async def may_attach(
         self,
@@ -196,7 +213,11 @@ def _bearer_token_from_ws(websocket: WebSocket) -> str:
         proto = proto.strip()
         if proto.startswith("volundr.bearer."):
             return urllib.parse.unquote(proto.removeprefix("volundr.bearer.").strip())
-    return str(websocket.query_params.get("access_token") or "").strip()
+    return str(
+        websocket.query_params.get("access_token")
+        or websocket.query_params.get("token")
+        or ""
+    ).strip()
 
 
 def _proxy_ws_identity(websocket: WebSocket) -> tuple[str | None, str | None, tuple[str, ...]]:
@@ -205,7 +226,7 @@ def _proxy_ws_identity(websocket: WebSocket) -> tuple[str | None, str | None, tu
     Mirrors Volundr's ``extract_principal`` / the broker's WS identity
     resolution: Envoy ``x-auth-*`` headers first, then developer query
     parameters, then a bearer token (``Authorization``, the
-    ``volundr.bearer.<jwt>`` subprotocol, or ``?access_token=``) decoded for
+    ``volundr.bearer.<jwt>`` subprotocol, or query token) decoded for
     its ``sub``/tenant/roles claims. Returns ``(user_id, tenant_id, roles)``;
     user_id is None when no identity is present (the guard decides whether
     that is allowed).
@@ -304,7 +325,8 @@ async def _proxy_ws(
         return
 
     port = skuld_reg.get_port(session_id)
-    if port is None:
+    target = None if port is not None else await skuld_reg.resolve_target(session_id)
+    if port is None and target is None:
         # No live port — the broker is gone. Reconcile the row so a stale
         # RUNNING tombstone self-heals, then close with a deterministic
         # "session gone" code (4410) the client can branch on.
@@ -317,14 +339,24 @@ async def _proxy_ws(
 
     connected = False
     try:
+        connect_url = f"ws://127.0.0.1:{port}{broker_path}"
+        connect_kwargs: dict[str, object] = {}
+        if target is not None:
+            connect_url = _session_target_url(target.service_url, broker_path, websocket=True)
+            connect_kwargs = {
+                "host": target.connect_host,
+                "port": target.connect_port,
+                "proxy": None,
+            }
         async with ws_client.connect(
-            f"ws://127.0.0.1:{port}{broker_path}",
+            connect_url,
             max_size=_WS_PROXY_MAX_FRAME_BYTES,
             additional_headers=_proxy_forward_headers(
                 websocket,
                 include_cookie=include_cookie,
                 forward_dev_params=forward_dev_params,
             ),
+            **connect_kwargs,
         ) as broker_ws:
             connected = True
 
@@ -372,6 +404,34 @@ async def _proxy_ws(
 def get_skuld_registry() -> SkuldPortRegistry | None:
     """Return the active SkuldPortRegistry, if any."""
     return _skuld_registry
+
+
+def _session_target_url(
+    service_url: str,
+    path: str,
+    *,
+    websocket: bool = False,
+) -> str:
+    """Build a session-service URL while preserving its routing authority."""
+    parsed = urllib.parse.urlsplit(service_url)
+    if parsed.scheme not in {"http", "https", "ws", "wss"} or not parsed.netloc:
+        raise ValueError("Session proxy target must be an absolute URL")
+    scheme = parsed.scheme
+    if websocket:
+        scheme = "wss" if parsed.scheme in {"https", "wss"} else "ws"
+    return urllib.parse.urlunsplit((scheme, parsed.netloc, path, "", ""))
+
+
+def _session_http_connect_url(target: SessionProxyTarget, path: str) -> tuple[str, str]:
+    """Return the gateway URL and Host header for an HTTP session request."""
+    service = urllib.parse.urlsplit(target.service_url)
+    scheme = "https" if target.connect_secure else "http"
+    host = target.connect_host
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = f"{host}:{target.connect_port}"
+    url = urllib.parse.urlunsplit((scheme, netloc, path, "", ""))
+    return url, service.netloc
 
 
 def _local_service_host(host: str) -> str:
@@ -961,7 +1021,8 @@ def build_root_app(
         async def skuld_http_proxy(request: Request, session_id: str, path: str) -> Response:
             """Proxy HTTP requests to the Skuld subprocess."""
             port = skuld_reg.get_port(session_id)
-            if port is None:
+            target = None if port is not None else await skuld_reg.resolve_target(session_id)
+            if port is None and target is None:
                 return JSONResponse({"detail": "Session not found"}, status_code=404)
 
             import re
@@ -983,13 +1044,17 @@ def build_root_app(
                 normalized_segments.append(seg)
 
             sanitized_path = "/".join(quote(seg, safe="") for seg in normalized_segments)
-            url = f"http://127.0.0.1:{port}/api/{sanitized_path}"
+            proxy_path = f"/api/{sanitized_path}"
+            url = f"http://127.0.0.1:{port}{proxy_path}"
             params = dict(request.query_params)
             headers = {
                 k: v
                 for k, v in request.headers.items()
                 if k.lower() not in ("host", "content-length", "transfer-encoding")
             }
+            if target is not None:
+                url, service_host = _session_http_connect_url(target, proxy_path)
+                headers["Host"] = service_host
             body = await request.body()
 
             try:
@@ -1017,14 +1082,20 @@ def build_root_app(
             """Proxy health check to the Skuld subprocess."""
             del request
             port = skuld_reg.get_port(session_id)
-            if port is None:
+            target = None if port is not None else await skuld_reg.resolve_target(session_id)
+            if port is None and target is None:
                 return JSONResponse({"detail": "Session not found"}, status_code=404)
 
             import httpx
 
             try:
+                url = f"http://127.0.0.1:{port}/health"
+                headers: dict[str, str] = {}
+                if target is not None:
+                    url, service_host = _session_http_connect_url(target, "/health")
+                    headers["Host"] = service_host
                 async with httpx.AsyncClient(timeout=5) as client:
-                    resp = await client.get(f"http://127.0.0.1:{port}/health")
+                    resp = await client.get(url, headers=headers)
                 return Response(
                     content=resp.content,
                     status_code=resp.status_code,

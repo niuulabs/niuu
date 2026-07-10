@@ -239,8 +239,8 @@ class SkuldSessionConfig(BaseModel):
     reasoning_effort: str = Field(
         default="",
         description=(
-            "Reasoning effort to launch the CLI at (e.g. 'ultra' for GPT-5.6 Sol). "
-            "Empty lets the transport pick a model-appropriate default."
+            "Reasoning effort to launch the CLI at. Empty uses the transport "
+            "default of 'high'."
         ),
     )
     workspace_dir: str | None = Field(default=None)

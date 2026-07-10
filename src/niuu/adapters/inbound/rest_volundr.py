@@ -8,7 +8,7 @@ import time
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, Response, status
@@ -72,7 +72,21 @@ def _with_instance(payload: Any, instance: RegisteredInstance) -> Any:
     enriched["instance_id"] = instance.id
     enriched["instance_name"] = instance.name
     enriched["instance_slug"] = instance.slug
+    if not _uses_embedded_transport(instance):
+        for key in ("chat_endpoint", "chatEndpoint"):
+            value = enriched.get(key)
+            if isinstance(value, str) and value.startswith("/"):
+                enriched[key] = _instance_websocket_url(instance, value)
     return enriched
+
+
+def _instance_websocket_url(instance: RegisteredInstance, path: str) -> str:
+    """Resolve a target-relative session socket against its public instance origin."""
+    parsed = urlsplit(instance.base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"Instance {instance.id} has no public HTTP origin")
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    return urlunsplit((scheme, parsed.netloc, path, "", ""))
 
 
 def _query_params(request: Request) -> list[tuple[str, str]]:

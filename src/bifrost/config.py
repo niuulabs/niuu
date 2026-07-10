@@ -173,8 +173,8 @@ def _default_models() -> list[ManagedModelConfig]:
             tier=ManagedModelTier.FRONTIER,
             color="#059669",
             description=(
-                "OpenAI GPT-5.6 Sol flagship coding model; defaults to the new "
-                "Ultra reasoning effort."
+                "OpenAI GPT-5.6 Sol flagship coding model; Völundr sessions "
+                "default to high reasoning effort."
             ),
             # GPT-5.6 Sol is $5 in / $30 out per 1M tokens; use the output rate.
             cost_per_million_tokens=30.0,

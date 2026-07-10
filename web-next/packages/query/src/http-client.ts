@@ -203,7 +203,9 @@ export function getWebSocketAuth(url: string): { url: string; protocols?: string
   const resolved = new URL(url, baseOrigin);
   const token = getAccessToken();
   if (token) {
-    resolved.searchParams.set('access_token', token);
+    // Envoy extracts browser WebSocket credentials from `token`; browsers
+    // cannot attach an Authorization header to the upgrade request.
+    resolved.searchParams.set('token', token);
     return {
       url: resolved.toString(),
     };

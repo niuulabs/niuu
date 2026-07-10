@@ -204,6 +204,22 @@ class TestSessionResponse:
 
         assert response.chat_endpoint == "ws://localhost:8080/s/example/session"
 
+    def test_from_session_routes_openshell_chat_through_niuu_proxy(self):
+        session = Session(
+            id=uuid4(),
+            name="OpenShell",
+            model="gpt-5.6-sol",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            chat_endpoint=(
+                "ws://forge-example--skuld.openshell.localhost:8080/session"
+            ),
+        )
+
+        response = SessionResponse.from_session(session)
+
+        assert response.chat_endpoint == f"/s/{session.id}/session"
+
 
 class TestListSessions:
     """Tests for GET /api/v1/forge/sessions."""

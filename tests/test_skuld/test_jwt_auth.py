@@ -75,7 +75,11 @@ class TestExtractTokenFromWebSocket:
         )
         assert _extract_token_from_websocket(ws) == "header-token"
 
-    def test_query_param_fallback(self):
+    def test_envoy_query_param(self):
+        ws = self._make_ws(query_params={"token": "query-token"})
+        assert _extract_token_from_websocket(ws) == "query-token"
+
+    def test_legacy_query_param_fallback(self):
         ws = self._make_ws(query_params={"access_token": "query-token"})
         assert _extract_token_from_websocket(ws) == "query-token"
 

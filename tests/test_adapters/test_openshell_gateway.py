@@ -395,6 +395,33 @@ async def test_start_uses_gateway_client_without_host_cli(monkeypatch: pytest.Mo
     }
 
 
+def test_session_proxy_target_preserves_service_route_and_uses_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    adapter = _import_adapter(monkeypatch)
+    session = _session().model_copy(
+        update={
+            "chat_endpoint": (
+                "ws://forge-example--skuld.openshell.localhost:8080/session"
+            )
+        }
+    )
+    manager = adapter.OpenShellGatewayPodManager(
+        client=_FakeOpenShellGatewayClient(adapter),
+        gateway_endpoint="openshell.openshell.svc.cluster.local:8080",
+    )
+
+    target = manager.session_proxy_target(session)
+
+    assert target is not None
+    assert target.service_url == (
+        "ws://forge-example--skuld.openshell.localhost:8080"
+    )
+    assert target.connect_host == "openshell.openshell.svc.cluster.local"
+    assert target.connect_port == 8080
+    assert target.connect_secure is False
+
+
 def test_workspace_bootstrap_strips_embedded_git_credentials(
     monkeypatch: pytest.MonkeyPatch,
 ):

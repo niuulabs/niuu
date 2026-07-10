@@ -16,10 +16,16 @@ export function normalizeSessionUrl(url: string | null | undefined): string | nu
   if (!url) return null;
 
   try {
-    const parsed = new URL(url);
+    const relative = url.startsWith('/');
+    if (relative && typeof window === 'undefined') return url;
+    const parsed = relative ? new URL(url, window.location.origin) : new URL(url);
     if (typeof window === 'undefined') return parsed.toString();
 
     const current = new URL(window.location.origin);
+    if (relative) {
+      parsed.protocol = current.protocol === 'https:' ? 'wss:' : 'ws:';
+      return parsed.toString();
+    }
     const samePort = parsed.port === current.port;
     if (isLoopbackHostname(parsed.hostname) && isLoopbackHostname(current.hostname) && samePort) {
       parsed.protocol = publicProtocolFor(parsed.protocol, current.protocol);

@@ -91,8 +91,7 @@ _CODEX_APP_SERVER_SLASH_BY_NAME = {
 _next_id = count(1)
 
 # Codex models whose app-server build accepts the `ultra` reasoning effort.
-# GPT-5.6 Sol introduces Ultra (subagent-parallel reasoning); every earlier
-# Codex model tops out at `high`, so `ultra` must be clamped for them.
+# Sol supports it, but Völundr deliberately defaults every model to `high`.
 _ULTRA_EFFORT_MODELS = ("gpt-5.6-sol",)
 
 
@@ -104,11 +103,8 @@ def _model_supports_ultra(model: str) -> bool:
 def _codex_effort_for_model(model: str) -> str:
     """Default reasoning effort to push a new Codex session to, by model.
 
-    GPT-5.6 Sol defaults to the new ``ultra`` effort; every other Codex model
-    keeps the ``high`` default (their app-server build has no ultra tier).
+    Völundr defaults all Codex models, including GPT-5.6 Sol, to ``high``.
     """
-    if _model_supports_ultra(model):
-        return "ultra"
     return "high"
 
 
@@ -208,8 +204,7 @@ class CodexWebSocketTransport(CLITransport):
         super().__init__()
         self.workspace_dir = workspace_dir
         self._model = model
-        # Default reasoning effort by model when none is specified — GPT-5.6 Sol
-        # launches at the new `ultra` tier, every other Codex model at `high`.
+        # Default every Codex model to high unless launch configuration overrides it.
         self._reasoning_effort = reasoning_effort or _codex_effort_for_model(model)
         self._skip_permissions = skip_permissions
         self._approval_policy = approval_policy.strip()
