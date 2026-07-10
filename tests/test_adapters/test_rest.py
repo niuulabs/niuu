@@ -211,9 +211,7 @@ class TestSessionResponse:
             model="gpt-5.6-sol",
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
             status=SessionStatus.RUNNING,
-            chat_endpoint=(
-                "ws://forge-example--skuld.openshell.localhost:8080/session"
-            ),
+            chat_endpoint=("ws://forge-example--skuld.openshell.localhost:8080/session"),
         )
 
         response = SessionResponse.from_session(session)

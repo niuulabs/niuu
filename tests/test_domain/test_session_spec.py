@@ -62,9 +62,7 @@ class TestDeepMerge:
                 "credentialMappings": [
                     {
                         "credentialName": "codex-home",
-                        "fileMappings": {
-                            "/sandbox/home/.codex/auth.json": "auth.json"
-                        },
+                        "fileMappings": {"/sandbox/home/.codex/auth.json": "auth.json"},
                     }
                 ]
             }
@@ -74,9 +72,7 @@ class TestDeepMerge:
                 "credentialMappings": [
                     {
                         "credentialName": "codex-home",
-                        "fileMappings": {
-                            "/sandbox/home/.codex/config.toml": "config.toml"
-                        },
+                        "fileMappings": {"/sandbox/home/.codex/config.toml": "config.toml"},
                     },
                     {
                         "credentialName": "openai",

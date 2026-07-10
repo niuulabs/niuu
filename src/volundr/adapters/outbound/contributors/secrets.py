@@ -47,9 +47,7 @@ def _mapping_payload(mapping: CredentialMapping) -> dict[str, object]:
 def _openshell_credential_values(mappings: list[CredentialMapping]) -> dict[str, object]:
     return {
         _OPENSHELL_VALUES_KEY: {
-            _OPENSHELL_CREDENTIAL_MAPPINGS_KEY: [
-                _mapping_payload(mapping) for mapping in mappings
-            ],
+            _OPENSHELL_CREDENTIAL_MAPPINGS_KEY: [_mapping_payload(mapping) for mapping in mappings],
         },
     }
 

@@ -95,8 +95,7 @@ class TestSessionJoinManager:
 
         event = status_channel.emit.await_args.args[0]
         assert event.payload["text"] == (
-            "Joined session room sess-1. "
-            "I will receive matching subscribed outcomes here."
+            "Joined session room sess-1. I will receive matching subscribed outcomes here."
         )
 
     async def test_join_failure_reports_status_to_resident_room(self):

@@ -306,9 +306,7 @@ class TestKubernetesListingPlumbing:
         from datetime import UTC, datetime
 
         adapter = KubernetesResidentDiscoveryAdapter()
-        metadata = SimpleNamespace(
-            creation_timestamp=datetime(2026, 7, 1, 9, 0, 0, tzinfo=UTC)
-        )
+        metadata = SimpleNamespace(creation_timestamp=datetime(2026, 7, 1, 9, 0, 0, tzinfo=UTC))
 
         assert adapter._creation_timestamp(metadata) == "2026-07-01T09:00:00+00:00"
 
@@ -317,9 +315,7 @@ class TestKubernetesListingPlumbing:
 
         assert adapter._creation_timestamp(SimpleNamespace(creation_timestamp=None)) is None
 
-    async def test_builds_client_from_kubernetes_library_when_installed(
-        self, monkeypatch
-    ) -> None:
+    async def test_builds_client_from_kubernetes_library_when_installed(self, monkeypatch) -> None:
         import sys
         from types import ModuleType
 
@@ -446,9 +442,7 @@ class TestBuildResidentDiscovery:
 def test_ravn_api_lists_discovered_standalone_residents(tmp_path) -> None:
     settings = Settings()
     forge_base = settings.gateway.platform.base_url.rstrip("/")
-    respx.get(f"{forge_base}/api/v1/forge/sessions").mock(
-        return_value=httpx.Response(200, json=[])
-    )
+    respx.get(f"{forge_base}/api/v1/forge/sessions").mock(return_value=httpx.Response(200, json=[]))
     client = TestClient(
         create_app(
             warden_store=WardenStore(tmp_path),

@@ -97,11 +97,7 @@ def _public_session_endpoint(endpoint: str | None, session_id: str = "") -> str 
         parsed = urlsplit(endpoint)
     except ValueError:
         return endpoint
-    if (
-        session_id
-        and parsed.hostname
-        and parsed.hostname.endswith(OPENSHELL_SERVICE_HOST_SUFFIX)
-    ):
+    if session_id and parsed.hostname and parsed.hostname.endswith(OPENSHELL_SERVICE_HOST_SUFFIX):
         return f"/s/{quote(session_id, safe='')}/session"
     if parsed.hostname != "127.0.0.1":
         return endpoint

@@ -692,9 +692,7 @@ class TestRootServerBuildApp:
         assert request.kwargs["url"] == (
             "http://openshell.openshell.svc.cluster.local:8080/api/conversation/history"
         )
-        assert request.kwargs["headers"]["Host"] == (
-            "forge-123--skuld.openshell.localhost:8080"
-        )
+        assert request.kwargs["headers"]["Host"] == ("forge-123--skuld.openshell.localhost:8080")
 
     def test_skuld_http_proxy_connect_error(self) -> None:
         import httpx

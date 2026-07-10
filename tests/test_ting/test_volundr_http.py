@@ -160,10 +160,7 @@ class TestSpawnSession:
             )
         )
 
-        assert (
-            session.chat_endpoint
-            == "wss://volundr.valhalla.asgard.niuu.world/s/ses-1/session"
-        )
+        assert session.chat_endpoint == "wss://volundr.valhalla.asgard.niuu.world/s/ses-1/session"
 
     @pytest.mark.asyncio
     @respx.mock

@@ -579,9 +579,7 @@ class TestWorkflowCatalogAPI:
                 "model": "gpt-5.5",
                 "definition": "skuldCodex",
                 "context": {
-                    "question": (
-                        "Are AI grief companions a credible product category?"
-                    ),
+                    "question": ("Are AI grief companions a credible product category?"),
                     "mode": "evaluative",
                 },
                 "provenance": {
@@ -644,9 +642,7 @@ class TestWorkflowCatalogAPI:
         monkeypatch.setenv("NIUU_SERVER_PUBLIC_HOST", "sessions.example")
         workflow = _make_research_workflow()
         repo = InMemoryWorkflowRepository([workflow])
-        adapter = RecordingVolundrPort(
-            chat_endpoint="ws://127.0.0.1:8080/s/session-123/session"
-        )
+        adapter = RecordingVolundrPort(chat_endpoint="ws://127.0.0.1:8080/s/session-123/session")
         client = _make_client(repo, volundr_factory=RecordingVolundrFactory([adapter]))
 
         response = client.post(

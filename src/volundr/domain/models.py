@@ -1628,9 +1628,7 @@ def _merge_credential_mapping_lists(existing: list, override: list) -> list:
         normalized = {
             "credentialName": name,
             "envMappings": dict(entry.get("envMappings") or entry.get("env_mappings") or {}),
-            "fileMappings": dict(
-                entry.get("fileMappings") or entry.get("file_mappings") or {}
-            ),
+            "fileMappings": dict(entry.get("fileMappings") or entry.get("file_mappings") or {}),
         }
         if name not in index_by_name:
             index_by_name[name] = len(merged)

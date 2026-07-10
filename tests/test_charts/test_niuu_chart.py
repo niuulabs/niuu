@@ -42,9 +42,7 @@ class TestValuesDefaults:
 
     def test_session_proxy_route_uses_target_volundr_backend(self, values_yaml: dict) -> None:
         session_route = next(
-            route
-            for route in values_yaml["ingress"]["routeSets"]["api"]
-            if route["path"] == "/s"
+            route for route in values_yaml["ingress"]["routeSets"]["api"] if route["path"] == "/s"
         )
 
         assert session_route["service"] == "volundr"

@@ -2142,9 +2142,7 @@ def test_sessions_dial_platform_base_url_from_settings():
     """gateway.platform.base_url in Settings is the forge API the directory calls."""
     from ravn.config import Settings
 
-    settings = Settings(
-        gateway={"platform": {"base_url": "http://forge.configured.internal:9999"}}
-    )
+    settings = Settings(gateway={"platform": {"base_url": "http://forge.configured.internal:9999"}})
     client = TestClient(create_app(settings=settings))
     with respx.mock:
         route = respx.get("http://forge.configured.internal:9999/api/v1/forge/sessions").respond(

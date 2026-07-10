@@ -470,9 +470,7 @@ class TestResidentWorkloadIdentityConfigFirst:
     def test_resident_broker_has_no_volundr_api_env_var(self, rendered):
         deployment = _deployment_from_rendered(rendered)
         broker = next(
-            c
-            for c in deployment["spec"]["template"]["spec"]["containers"]
-            if c["name"] == "skuld"
+            c for c in deployment["spec"]["template"]["spec"]["containers"] if c["name"] == "skuld"
         )
         env_names = {entry["name"] for entry in broker.get("env", [])}
         assert "SKULD__VOLUNDR_API_URL" not in env_names
@@ -551,9 +549,7 @@ class TestVolundrReportingConfig:
         broker_cfg = self._broker_config(rendered)
         deployment = _deployment_from_rendered(rendered)
         broker = next(
-            c
-            for c in deployment["spec"]["template"]["spec"]["containers"]
-            if c["name"] == "skuld"
+            c for c in deployment["spec"]["template"]["spec"]["containers"] if c["name"] == "skuld"
         )
         volundr_env = next(
             entry for entry in broker.get("env", []) if entry["name"] == "SKULD__VOLUNDR_API_URL"

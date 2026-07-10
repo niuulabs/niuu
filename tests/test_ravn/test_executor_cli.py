@@ -616,9 +616,7 @@ async def test_cli_transport_agent_joins_codex_ws_wrapped_mcp_tool_result() -> N
                                 "text": json.dumps(
                                     {
                                         "sessionId": "sess-3",
-                                        "chatEndpoint": (
-                                            "wss://sessions.example/s/sess-3/session"
-                                        ),
+                                        "chatEndpoint": ("wss://sessions.example/s/sess-3/session"),
                                     }
                                 ),
                             }

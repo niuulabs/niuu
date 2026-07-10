@@ -219,9 +219,7 @@ def test_get_session_searches_visible_instances() -> None:
 
 @respx.mock
 def test_get_session_rebases_target_relative_chat_endpoint() -> None:
-    client = _client(
-        [_instance("noatun", base_url="https://niuu.noatun.asgard.niuu.world")]
-    )
+    client = _client([_instance("noatun", base_url="https://niuu.noatun.asgard.niuu.world")])
     respx.get("https://niuu.noatun.asgard.niuu.world/api/v1/forge/sessions/s2").mock(
         return_value=Response(
             200,
@@ -236,9 +234,7 @@ def test_get_session_rebases_target_relative_chat_endpoint() -> None:
     response = client.get("/api/v1/forge/sessions/s2", headers=_headers())
 
     assert response.status_code == 200
-    assert response.json()["chat_endpoint"] == (
-        "wss://niuu.noatun.asgard.niuu.world/s/s2/session"
-    )
+    assert response.json()["chat_endpoint"] == ("wss://niuu.noatun.asgard.niuu.world/s/s2/session")
 
 
 @respx.mock

@@ -28,9 +28,7 @@ class NamedOnly:
 
 class TestBuildDynamicAdapter:
     def test_builds_from_dict_config(self) -> None:
-        adapter = build_dynamic_adapter(
-            {"adapter": _RECORDER_PATH, "kwargs": {"a": 1}, "b": 2}
-        )
+        adapter = build_dynamic_adapter({"adapter": _RECORDER_PATH, "kwargs": {"a": 1}, "b": 2})
 
         assert isinstance(adapter, KwargRecorder)
         assert adapter.kwargs == {"a": 1, "b": 2}

@@ -3346,9 +3346,7 @@ class ResidentDiscoveryAdapterConfig(BaseModel):
     """Dynamic adapter entry for standalone-resident discovery."""
 
     adapter: str = Field(
-        default=(
-            "ravn.adapters.resident_discovery.kubernetes.KubernetesResidentDiscoveryAdapter"
-        ),
+        default=("ravn.adapters.resident_discovery.kubernetes.KubernetesResidentDiscoveryAdapter"),
         description="Fully-qualified class path for the resident discovery adapter.",
     )
     kwargs: dict[str, Any] = Field(default_factory=dict)

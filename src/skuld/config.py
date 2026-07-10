@@ -239,8 +239,7 @@ class SkuldSessionConfig(BaseModel):
     reasoning_effort: str = Field(
         default="",
         description=(
-            "Reasoning effort to launch the CLI at. Empty uses the transport "
-            "default of 'high'."
+            "Reasoning effort to launch the CLI at. Empty uses the transport default of 'high'."
         ),
     )
     workspace_dir: str | None = Field(default=None)

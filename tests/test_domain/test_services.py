@@ -604,9 +604,7 @@ class TestSessionServiceStart:
         assert result.chat_endpoint.startswith("ws://localhost:")
         assert "session" in result.chat_endpoint
 
-    async def test_restart_preserves_workload_identity(
-        self, repository: Repo, pod_manager: Pods
-    ):
+    async def test_restart_preserves_workload_identity(self, repository: Repo, pod_manager: Pods):
         """Restart must not demote a special workload to a plain CLI session.
 
         The REST start endpoint calls start_session with the default

@@ -213,9 +213,7 @@ class TestWorkloadTypeRouting:
 
 
 class TestContributorOutput:
-    async def test_openshell_backend_emits_in_sandbox_process_plan(
-        self, session, flock_template
-    ):
+    async def test_openshell_backend_emits_in_sandbox_process_plan(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
         contributor = RavnFlockContributor(launch_spec_provider=provider)
