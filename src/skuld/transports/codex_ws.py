@@ -1,7 +1,7 @@
 """CodexWebSocketTransport — Codex app-server over WebSocket (JSON-RPC 2.0).
 
-Spawns ``codex app-server --listen unix://PATH`` and connects to it as a
-WebSocket client over the Unix socket. Communication uses JSON-RPC 2.0
+Spawns ``codex app-server --listen ws://127.0.0.1:PORT`` and connects to it as a
+WebSocket client over loopback. Communication uses JSON-RPC 2.0
 (requests, responses, notifications) rather than the NDJSON protocol used by
 Claude's ``--sdk-url``.
 
@@ -15,13 +15,12 @@ import json
 import logging
 import os
 import shlex
-import shutil
-import tempfile
 from itertools import count
 from pathlib import Path
 
 import websockets
-from websockets.asyncio.client import ClientConnection, unix_connect
+from websockets.asyncio.client import ClientConnection
+from websockets.asyncio.client import connect as ws_connect
 
 from niuu.adapters.cli.runtime import (
     drain_process_stream as _drain_stream,
@@ -180,7 +179,7 @@ class CodexWebSocketTransport(CLITransport):
     """Long-lived Codex app-server process controlled via WebSocket JSON-RPC.
 
     Lifecycle:
-        1. ``start()`` spawns ``codex app-server --listen unix://PATH``
+        1. ``start()`` spawns ``codex app-server --listen ws://127.0.0.1:PORT``
         2. Skuld connects to the server as a WebSocket client
         3. JSON-RPC ``initialize`` handshake, then ``thread/start``
         4. User messages are sent via ``turn/start``
@@ -227,8 +226,6 @@ class CodexWebSocketTransport(CLITransport):
         self._process: asyncio.subprocess.Process | None = None
         self._ws: ClientConnection | None = None
         self._receive_task: asyncio.Task | None = None
-        self._codex_socket_dir: str | None = None
-        self._codex_socket_path: str | None = None
         self._fallback_transport: CodexSubprocessTransport | None = None
         self._thread_id: str | None = None
         self._current_turn_id: str | None = None
@@ -330,11 +327,6 @@ class CodexWebSocketTransport(CLITransport):
             await _stop_process(self._process)
             self._process = None
 
-        if self._codex_socket_dir:
-            shutil.rmtree(self._codex_socket_dir, ignore_errors=True)
-            self._codex_socket_dir = None
-            self._codex_socket_path = None
-
         # Cancel any awaiting RPC futures.
         for fut in self._pending.values():
             if not fut.done():
@@ -371,11 +363,7 @@ class CodexWebSocketTransport(CLITransport):
     # ------------------------------------------------------------------
 
     async def _spawn_app_server(self) -> None:
-        if self._codex_socket_dir:
-            shutil.rmtree(self._codex_socket_dir, ignore_errors=True)
-        self._codex_socket_dir = tempfile.mkdtemp(prefix="skuld-codex-")
-        self._codex_socket_path = os.path.join(self._codex_socket_dir, "app-server.sock")
-        listen_url = f"unix://{self._codex_socket_path}"
+        listen_url = f"ws://127.0.0.1:{self._codex_port}"
         codex_cli = resolve_codex_cli()
 
         _, shim_env = ensure_codex_tool_shims(
@@ -420,21 +408,17 @@ class CodexWebSocketTransport(CLITransport):
 
     async def _connect_ws(self) -> None:
         """Connect to the Codex app-server with retries."""
-        if not self._codex_socket_path:
-            raise RuntimeError("Codex socket path missing before connect")
-
-        socket_path = self._codex_socket_path
-        uri = "ws://localhost/"
+        uri = f"ws://127.0.0.1:{self._codex_port}"
         max_attempts = 30
         for attempt in range(1, max_attempts + 1):
             if self._process and self._process.returncode is not None:
                 raise RuntimeError(f"Codex app-server exited with code {self._process.returncode}")
             try:
-                self._ws = await unix_connect(
-                    path=socket_path,
-                    uri=uri,
+                self._ws = await ws_connect(
+                    uri,
                     compression=None,
                     max_size=self._max_ws_message_bytes,
+                    proxy=None,
                 )
                 logger.info("Connected to Codex app-server (attempt %d)", attempt)
                 self._alive = True
@@ -443,7 +427,7 @@ class CodexWebSocketTransport(CLITransport):
             except (OSError, websockets.exceptions.InvalidHandshake):
                 if attempt == max_attempts:
                     raise RuntimeError(
-                        f"Could not connect to Codex app-server at {socket_path} "
+                        f"Could not connect to Codex app-server at {uri} "
                         f"after {max_attempts} attempts"
                     )
                 await asyncio.sleep(0.5)

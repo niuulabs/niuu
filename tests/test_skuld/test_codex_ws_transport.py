@@ -177,19 +177,20 @@ class TestConstruction:
     @pytest.mark.asyncio
     async def test_connect_ws_uses_configured_large_message_limit(self, tmp_path):
         t = _make_transport(tmp_path, max_ws_message_bytes=12 * 1024 * 1024)
-        t._codex_socket_path = str(tmp_path / "codex.sock")
         t._process = FakeRunningProcess()
         ws = FakeWebSocket()
 
         with patch(
-            "skuld.transports.codex_ws.unix_connect",
+            "skuld.transports.codex_ws.ws_connect",
             new=AsyncMock(return_value=ws),
         ) as connect:
             await t._connect_ws()
 
         connect.assert_awaited_once()
+        assert connect.await_args.args == ("ws://127.0.0.1:19999",)
         assert connect.await_args.kwargs["max_size"] == 12 * 1024 * 1024
         assert connect.await_args.kwargs["compression"] is None
+        assert connect.await_args.kwargs["proxy"] is None
         if t._receive_task is not None:
             t._receive_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -421,9 +422,7 @@ class TestSpawnAppServer:
                 "app-server",
                 "--listen",
             )
-            assert call_args[3].startswith("unix://")
-            assert t._codex_socket_path is not None
-            assert call_args[3] == f"unix://{t._codex_socket_path}"
+            assert call_args[3] == "ws://127.0.0.1:19999"
             assert "-c" in call_args
             assert any(arg == 'mcp_servers.mimir-local.command="python3"' for arg in call_args)
             assert mock_exec.call_args.kwargs["env"]["PATH"] == "/tmp/shims:/usr/bin"
