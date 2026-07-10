@@ -114,6 +114,12 @@ The infrastructure repository owns the concrete GitOps deployment in
 `spire/`, with operator procedures in `docs/runbooks/spire.md` and
 `docs/runbooks/openshell.md`. The `local` cluster must not include `/spire`.
 
+OpenShell `0.0.78` requires the supervisor startup fix from
+[NVIDIA/OpenShell PR 2012](https://github.com/NVIDIA/OpenShell/pull/2012) when
+SPIFFE provider grants are enabled. The infrastructure runbook pins a
+version-matched public supervisor image carrying that fix; remove the pin after
+upgrading to an upstream release that includes it.
+
 ## Configure The Pod Manager
 
 ```yaml
