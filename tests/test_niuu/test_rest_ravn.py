@@ -136,6 +136,28 @@ def test_list_ravens_merges_visible_instances_and_forwards_auth() -> None:
 
 
 @respx.mock
+def test_ravn_routes_use_split_service_base_url() -> None:
+    client = _client(
+        [
+            _instance(
+                "ymir",
+                base_url="http://volundr",
+                config={"ravn_base_url": "http://ravn"},
+            )
+        ]
+    )
+    ravn_route = respx.get("http://ravn/api/v1/ravn/ravens").mock(
+        return_value=Response(200, json=[{"id": "muninn"}])
+    )
+
+    response = client.get("/api/v1/ravn/ravens", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()[0]["id"] == "muninn"
+    assert ravn_route.called
+
+
+@respx.mock
 def test_list_ravens_ignores_failing_instances_and_bad_payloads() -> None:
     client = _client(
         [

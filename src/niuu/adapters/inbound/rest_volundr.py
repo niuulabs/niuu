@@ -197,6 +197,7 @@ async def _request_remote(
     method: str,
     path: str,
     remote_prefix: str = "/api/v1/forge",
+    base_url: str | None = None,
     json_body: Any | None = None,
     content_body: bytes | None = None,
     params: list[tuple[str, str]] | None = None,
@@ -233,7 +234,7 @@ async def _request_remote(
             )
 
     try:
-        remote_url = build_remote_url(instance.base_url, remote_prefix, path)
+        remote_url = build_remote_url(base_url or instance.base_url, remote_prefix, path)
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

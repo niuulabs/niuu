@@ -35,10 +35,16 @@ from niuu.adapters.inbound.rest_volundr import (
     _visible_instances,
     _with_instance,
 )
-from niuu.domain.models import Principal
+from niuu.domain.models import Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
 
 _RAVN_REMOTE_PREFIX = "/api/v1/ravn"
+
+
+def _ravn_base_url(instance: RegisteredInstance) -> str:
+    """Resolve an optional Ravn service endpoint for split-service targets."""
+    configured = instance.config.get("ravn_base_url") or instance.config.get("ravnBaseUrl")
+    return str(configured).strip() if configured else instance.base_url
 
 
 def create_ravn_router(
@@ -64,6 +70,7 @@ def create_ravn_router(
                     method="GET",
                     path=path,
                     remote_prefix=_RAVN_REMOTE_PREFIX,
+                    base_url=_ravn_base_url(instance),
                     params=params,
                     embedded_app=embedded_forge_app,
                 )
@@ -120,6 +127,7 @@ def create_ravn_router(
                 method="GET",
                 path=path,
                 remote_prefix=_RAVN_REMOTE_PREFIX,
+                base_url=_ravn_base_url(instance),
                 embedded_app=embedded_forge_app,
             )
             if response.status_code == status.HTTP_404_NOT_FOUND:
@@ -172,6 +180,7 @@ def create_ravn_router(
             method="POST",
             path="/ravens",
             remote_prefix=_RAVN_REMOTE_PREFIX,
+            base_url=_ravn_base_url(instance),
             json_body=_strip_instance_hints(body),
             embedded_app=embedded_forge_app,
         )
@@ -230,6 +239,7 @@ def create_ravn_router(
             method="POST",
             path=f"/ravens/{ravn_id}/{action}",
             remote_prefix=_RAVN_REMOTE_PREFIX,
+            base_url=_ravn_base_url(instance),
             embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)
@@ -285,6 +295,7 @@ def create_ravn_router(
             method="DELETE",
             path=f"/ravens/{ravn_id}",
             remote_prefix=_RAVN_REMOTE_PREFIX,
+            base_url=_ravn_base_url(instance),
             embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)
