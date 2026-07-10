@@ -60,7 +60,7 @@ data:
 
     resident_runtimes:
       reconciliation_interval_seconds: {{ .Values.residentRuntimeReconciliationIntervalSeconds | default 10.0 }}
-      profiles:
+      profiles:{{ if not .Values.residentRuntimeProfiles }} []{{ else }}
         {{- range .Values.residentRuntimeProfiles }}
         - id: {{ .id | quote }}
           enabled: {{ .enabled | default false }}
@@ -73,6 +73,7 @@ data:
           allowed_models: {{ .allowedModels | default list | toJson }}
           labels: {{ .labels | default list | toJson }}
           deployment: {{ .deployment | default dict | toJson }}
+        {{- end }}
         {{- end }}
 
     chronicle:

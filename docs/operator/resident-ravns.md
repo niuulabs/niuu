@@ -41,8 +41,8 @@ residentRuntimeProfiles:
     backend: helmrelease
     engine: ravn
     capabilities: [chat, runtime.restart, runtime.suspend, logs, metrics, usage]
-    defaultModel: gpt-5.6
-    allowedModels: [gpt-5.6]
+    defaultModel: gpt-5.6-sol
+    allowedModels: [gpt-5.6-sol]
     deployment:
       values:
         persistence:
@@ -51,6 +51,8 @@ residentRuntimeProfiles:
           existingClaim: volundr-sessions
         resident:
           persona: product-steward
+          wakefulness:
+            enabled: true
           platform:
             enabled: true
             baseUrl: http://niuu-volundr.volundr.svc.cluster.local
@@ -76,6 +78,7 @@ Key chart values:
 | `resident.persona` | Ravn persona the resident runs (required) |
 | `resident.routeId` | Path segment for the gateway HTTPRoute (`/s/<routeId>`) and the session id; unique per gateway, defaults to `<namespace>-<release>` |
 | `resident.maxConcurrentTasks`, `resident.dailyBudgetUsd`, `resident.llm` | Runtime limits and LLM config |
+| `resident.wakefulness` | Ravn wakefulness trigger configuration passed through to the resident daemon |
 | `resident.platform.enabled` / `resident.platform.baseUrl` | Platform access: Volundr gateway tools via workload identity |
 | `session.ownerId` | Owning user id (IDP sub), rendered into the broker config — Skuld enforces WebSocket ownership against it |
 | `mimir.instances` | Mímir memory instances handed to the resident's ravn daemon |

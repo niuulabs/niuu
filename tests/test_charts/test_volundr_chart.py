@@ -1,5 +1,6 @@
 """Tests for Volundr Helm chart templates."""
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -495,6 +496,24 @@ class TestConfigMapTemplate:
         """Test template has HOST and PORT."""
         assert "HOST:" in template_yaml
         assert "PORT:" in template_yaml
+
+    def test_empty_resident_profiles_render_as_list(self):
+        result = subprocess.run(
+            ["helm", "template", "test", str(CHART_DIR)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        configmap = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr"
+        )
+        config = yaml.safe_load(configmap["data"]["config.yaml"])
+
+        assert config["resident_runtimes"]["profiles"] == []
 
 
 class TestHpaTemplate:
