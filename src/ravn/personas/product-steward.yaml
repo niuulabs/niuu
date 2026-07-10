@@ -76,7 +76,6 @@ executor:
     transport_adapter: skuld.transports.codex_ws.CodexWebSocketTransport
 
 llm:
-  primary_alias: gpt-5.5
   thinking_enabled: true
 
 iteration_budget: 0

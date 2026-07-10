@@ -406,9 +406,9 @@ class TestBuiltinPersonas:
                 continue
             assert cfg.iteration_budget > 0, f"{p.stem} has non-positive iteration_budget"
 
-    def test_product_steward_uses_gpt55_alias(self) -> None:
+    def test_product_steward_uses_runtime_model(self) -> None:
         cfg = self._load("product-steward")
-        assert cfg.llm.primary_alias == "gpt-5.5"
+        assert cfg.llm.primary_alias == ""
 
     # ------------------------------------------------------------------
     # Specialist personas (NIU-586)
