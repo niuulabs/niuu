@@ -15,16 +15,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette import status as http_status
 
+from niuu.adapters.inbound.auth import extract_principal
+from niuu.domain.models import Principal
 from niuu.settings_schema import (
     SettingsFieldSchema,
     SettingsProviderSchema,
     SettingsSectionSchema,
 )
+from ravn.adapters.platform_runtime import HttpPlatformRuntimeAdapter
 from ravn.api.residents import ResidentDirectory, forward_auth
 from ravn.api.runtime_data import (
     create_trigger as create_runtime_trigger,
@@ -49,6 +52,7 @@ from ravn.api.valkyries import (
 )
 from ravn.api.warden_stream import WardenStreamBroker
 from ravn.config import Settings
+from ravn.ports.platform_runtime import PlatformRuntimePort
 from ravn.ports.resident_discovery import ResidentDiscoveryPort
 from ravn.ports.warden_deployer import WardenDeploymentError
 from ravn.ports.warden_discovery import WardenDiscoveryPort
@@ -135,6 +139,7 @@ def create_app(
     settings: Settings | None = None,
     warden_discovery: WardenDiscoveryPort | None = None,
     resident_discovery: ResidentDiscoveryPort | None = None,
+    platform_runtime: PlatformRuntimePort | None = None,
 ) -> FastAPI:
     """Create and return the Ravn FastAPI sub-application.
 
@@ -154,10 +159,10 @@ def create_app(
         standalone_discovery = build_resident_discovery(loaded_settings.resident_discovery)
     else:
         standalone_discovery = resident_discovery
-    resident_directory = ResidentDirectory(
-        base_url=loaded_settings.gateway.platform.base_url,
-        discovery=standalone_discovery,
+    platform = platform_runtime or HttpPlatformRuntimeAdapter(
+        base_url=loaded_settings.gateway.platform.base_url
     )
+    resident_directory = ResidentDirectory(platform=platform, discovery=standalone_discovery)
     store = warden_store or build_warden_store()
     if warden_discovery is None:
         discovery = build_warden_discovery(loaded_settings.warden_discovery, store=store)
@@ -256,15 +261,26 @@ def create_app(
         return {"service": "ravn", "session_count": 0, "healthy": True}
 
     @app.get("/api/v1/ravn/settings", response_model=SettingsProviderSchema)
-    async def settings_endpoint(request: Request) -> SettingsProviderSchema:
+    async def settings_endpoint(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> SettingsProviderSchema:
         auth_headers, auth_params = forward_auth(request)
         # The aggregated settings page must not hard-depend on Volundr or the
         # resident discovery being reachable — an outage degrades the
         # fleet/session counts to 0, not a 500 of the whole settings section
         # (triggers/budget are local).
         try:
-            ravens = await resident_directory.list_ravens()
-            sessions = await resident_directory.list_sessions(auth_headers, auth_params)
+            ravens = await resident_directory.list_ravens(
+                principal,
+                auth_headers,
+                auth_params,
+            )
+            sessions = await resident_directory.list_sessions(
+                principal,
+                auth_headers,
+                auth_params,
+            )
         except Exception:
             logger.warning("settings: fleet discovery failed, reporting 0", exc_info=True)
             ravens = []
@@ -326,15 +342,31 @@ def create_app(
         )
 
     @app.get("/api/v1/ravn/sessions")
-    async def list_sessions_endpoint(request: Request) -> list[dict]:
+    async def list_sessions_endpoint(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict]:
         """List the caller's live ravn sessions (flock rooms + residents)."""
         auth_headers, auth_params = forward_auth(request)
-        return await resident_directory.list_sessions(auth_headers, auth_params)
+        return await resident_directory.list_sessions(principal, auth_headers, auth_params)
 
     @app.get("/api/v1/ravn/ravens")
-    async def list_ravens_endpoint() -> list[dict]:
-        """List standalone resident ravns found by cluster discovery."""
-        return await resident_directory.list_ravens()
+    async def list_ravens_endpoint(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict]:
+        """List durable residents and visible compatibility deployments."""
+        auth_headers, auth_params = forward_auth(request)
+        return await resident_directory.list_ravens(principal, auth_headers, auth_params)
+
+    @app.get("/api/v1/ravn/deployment-profiles")
+    async def list_resident_profiles_endpoint(
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> list[dict]:
+        """List resident profiles enabled on this target."""
+        auth_headers, auth_params = forward_auth(request)
+        return await resident_directory.list_profiles(auth_headers, auth_params)
 
     @app.get("/api/v1/ravn/wardens", response_model=list[WardenSpec])
     async def list_wardens_endpoint() -> list[WardenSpec]:
@@ -587,18 +619,37 @@ def create_app(
         return uninstalled
 
     @app.get("/api/v1/ravn/ravens/{ravn_id}")
-    async def get_raven_endpoint(ravn_id: str) -> dict:
-        """Return one discovered standalone resident ravn by its id."""
-        ravn = await resident_directory.get_raven(ravn_id)
+    async def get_raven_endpoint(
+        ravn_id: str,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> dict:
+        """Return one caller-visible resident ravn by its id."""
+        auth_headers, auth_params = forward_auth(request)
+        ravn = await resident_directory.get_raven(
+            ravn_id,
+            principal,
+            auth_headers,
+            auth_params,
+        )
         if ravn is None:
             raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Ravn not found")
         return ravn
 
     @app.get("/api/v1/ravn/sessions/{session_id}")
-    async def get_session_endpoint(session_id: str, request: Request) -> dict:
+    async def get_session_endpoint(
+        session_id: str,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> dict:
         """Return one live ravn session."""
         auth_headers, auth_params = forward_auth(request)
-        session_data = await resident_directory.get_session(session_id, auth_headers, auth_params)
+        session_data = await resident_directory.get_session(
+            session_id,
+            principal,
+            auth_headers,
+            auth_params,
+        )
         if session_data is None:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
@@ -607,7 +658,11 @@ def create_app(
         return session_data
 
     @app.get("/api/v1/ravn/sessions/{session_id}/messages")
-    async def list_session_messages(session_id: str, request: Request) -> list[dict]:
+    async def list_session_messages(
+        session_id: str,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict]:
         """Return transcript messages for one ravn session.
 
         The live transcript is delivered over the session's Skuld chat
@@ -616,7 +671,12 @@ def create_app(
         data — the UI opens the chat for history.
         """
         auth_headers, auth_params = forward_auth(request)
-        session_data = await resident_directory.get_session(session_id, auth_headers, auth_params)
+        session_data = await resident_directory.get_session(
+            session_id,
+            principal,
+            auth_headers,
+            auth_params,
+        )
         if session_data is None:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
@@ -783,6 +843,7 @@ def create_app(
             if valkyrie_telemetry is not None:
                 await valkyrie_telemetry.stop()
             await valkyrie_learning_commands.stop()
+            await resident_directory.aclose()
 
     app.router.lifespan_context = lifespan
 

@@ -41,6 +41,8 @@ from volundr.domain.models import (
     PushMessage,
     PVCRef,
     RealtimeEvent,
+    ResidentDeploymentProfile,
+    ResidentRuntime,
     RoomParticipantInfo,
     SavedPrompt,
     SecretInfo,
@@ -532,6 +534,51 @@ class LaunchSpecRepository(ABC):
     @abstractmethod
     async def clear_default(self, cli_tool: str) -> None:
         """Clear is_default for all user launch specs with the given cli_tool."""
+
+
+class ResidentDeploymentProfileProvider(ABC):
+    """Read-only provider for operator-approved resident deployment profiles."""
+
+    @abstractmethod
+    def get(self, profile_id: str) -> ResidentDeploymentProfile | None:
+        """Return one enabled profile by id."""
+
+    @abstractmethod
+    def list(self) -> list[ResidentDeploymentProfile]:
+        """Return every enabled deployment profile."""
+
+
+class ResidentRuntimeRepository(ABC):
+    """Persistence port for long-lived resident runtime records."""
+
+    @abstractmethod
+    async def create(self, runtime: ResidentRuntime) -> ResidentRuntime:
+        """Persist a new resident runtime."""
+
+    @abstractmethod
+    async def get(self, runtime_id: UUID) -> ResidentRuntime | None:
+        """Return a resident runtime by id."""
+
+    @abstractmethod
+    async def get_by_owner_name(self, owner_id: str, name: str) -> ResidentRuntime | None:
+        """Return a resident runtime by owner and name."""
+
+    @abstractmethod
+    async def list(
+        self,
+        *,
+        tenant_id: str,
+        owner_id: str | None = None,
+    ) -> list[ResidentRuntime]:
+        """List resident runtimes in a tenant, optionally scoped to one owner."""
+
+    @abstractmethod
+    async def update(self, runtime: ResidentRuntime) -> ResidentRuntime:
+        """Persist the current resident runtime state."""
+
+    @abstractmethod
+    async def delete(self, runtime_id: UUID) -> bool:
+        """Delete a resident runtime record."""
 
 
 class EventSink(ABC):

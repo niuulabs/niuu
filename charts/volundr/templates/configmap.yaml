@@ -58,6 +58,22 @@ data:
       secret_kwargs_env: {}
       {{- end }}
 
+    resident_runtimes:
+      profiles:
+        {{- range .Values.residentRuntimeProfiles }}
+        - id: {{ .id | quote }}
+          enabled: {{ .enabled | default false }}
+          display_name: {{ .displayName | quote }}
+          description: {{ .description | default "" | quote }}
+          backend: {{ .backend | quote }}
+          engine: {{ .engine | quote }}
+          capabilities: {{ .capabilities | default list | toJson }}
+          default_model: {{ .defaultModel | default "" | quote }}
+          allowed_models: {{ .allowedModels | default list | toJson }}
+          labels: {{ .labels | default list | toJson }}
+          deployment: {{ .deployment | default dict | toJson }}
+        {{- end }}
+
     chronicle:
       auto_create_on_stop: {{ .Values.chronicle.autoCreateOnStop | default true }}
       summary_model: {{ .Values.chronicle.summaryModel | default "claude-haiku-4-5-20251001" | quote }}

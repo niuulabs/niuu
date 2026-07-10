@@ -7,10 +7,21 @@ spec stacks, planning), and reports back into the room when results land.
 
 ## Deploy
 
-Residents are **infrastructure, not Forge sessions**: each one is a
-deployment of the skuld chart (`charts/skuld`) in resident mode, declared in
-gitops. The pod is a Skuld broker in room mode plus one ravn daemon sidecar —
+Residents are **infrastructure, not Forge sessions**. Existing residents are
+deployments of the skuld chart (`charts/skuld`) in resident mode, declared in
+GitOps. The pod is a Skuld broker in room mode plus one ravn daemon sidecar —
 a flock of one. Nothing creates residents through the Forge sessions API.
+
+Volundr persists control-plane-managed residents in `resident_runtimes` with a
+global UUID, owner, tenant, deployment profile, backend, engine, desired and
+observed state, backend reference, endpoints, capabilities, and conditions.
+Ravn reads these records through the authenticated target Volundr API. Guild
+adds the owning `instance_id` when aggregating through Yggdrasil.
+
+Available deployment profiles are operator configuration, not request input.
+Configure `residentRuntimeProfiles` in the Volundr chart; disabled profiles and
+backend-only `deployment` data are not returned by
+`GET /api/v1/ravn/deployment-profiles`. No profiles are enabled by default.
 
 Key chart values:
 
@@ -41,12 +52,13 @@ owning user in Volundr's `workload_identity.mappings` (subject →
 
 ## Discover and chat
 
-Residents advertise themselves via pod labels the chart sets when resident
-mode is on: `niuu.world/kind: resident` and `niuu.world/persona`, plus the
-`niuu.world/resident-name` annotation. The Ravn API finds them through its
-`resident_discovery` config (e.g. the Kubernetes adapter, which watches for
-`niuu.world/kind=resident`); no adapters are configured by default —
-discovery is an explicit deployment decision:
+Kubernetes discovery remains the compatibility path for residents not yet
+represented by a durable Volundr record. Residents advertise themselves via
+pod labels set by resident mode: `niuu.world/kind: resident` and
+`niuu.world/persona`, plus the `niuu.world/resident-name` annotation. The Ravn
+API finds them through its `resident_discovery` config (e.g. the Kubernetes
+adapter, which watches for `niuu.world/kind=resident`); no adapters are
+configured by default — discovery is an explicit deployment decision:
 
 ```yaml
 resident_discovery:
@@ -55,12 +67,26 @@ resident_discovery:
       namespace: volundr
 ```
 
-`GET /api/v1/ravn/ravens` returns the discovered residents; the fleet UI
+Compatibility deployments may also carry:
+
+| Annotation | Meaning |
+|---|---|
+| `niuu.world/resident-id` | Stable resident id; defaults to the Deployment name |
+| `niuu.world/visibility` | `system`, `tenant`, or `user`; defaults to `system` for existing deployments |
+| `niuu.world/owner-id` | Required owner for `user` visibility |
+| `niuu.world/tenant-id` | Required tenant for `tenant` visibility and recommended for user residents |
+
+Invalid visibility values are rejected from discovery. User-scoped residents
+are visible only to their owner or an admin in the same tenant; tenant-scoped
+residents are visible only in that tenant. New managed deployments use durable
+UUIDs and explicit ownership rather than relying on these compatibility IDs.
+
+`GET /api/v1/ravn/ravens` returns managed and visible compatibility residents; the fleet UI
 renders them with a **Chat** tab wired to the broker's Skuld room via the
 gateway HTTPRoute (`/s/<routeId>`). Plain messages route to the resident
 automatically (`room.default_target_peer_id`), so any chat client works.
-Discovered residents also appear in `GET /api/v1/ravn/sessions` alongside
-live `ravn_flock` workflow sessions.
+Live managed and compatibility residents also appear in
+`GET /api/v1/ravn/sessions` alongside `ravn_flock` workflow sessions.
 
 Nothing auto-stops a resident — it lives until you scale down or delete the
 release.

@@ -318,6 +318,22 @@ podManager:
   # Each entry: { kwarg: "name", secretName: "k8s-secret", secretKey: "key" }
   secretKwargs: []
 
+# Operator-approved resident deployment profiles for this target. Profiles are
+# hidden from the API until explicitly configured and enabled; backend-specific
+# deployment details remain server-side.
+residentRuntimeProfiles: []
+# - id: ravn-helm
+#   enabled: true
+#   displayName: Resident Ravn (Helm)
+#   description: Long-lived Ravn deployed through the existing Skuld chart
+#   backend: helmrelease
+#   engine: ravn
+#   capabilities: [chat, runtime.restart, runtime.suspend, logs, metrics, usage]
+#   defaultModel: claude-sonnet-4-6
+#   allowedModels: [claude-sonnet-4-6]
+#   labels: [resident, ravn]
+#   deployment: {}
+
 # Chronicle configuration
 chronicle:
   # -- Auto-create chronicle when a session stops

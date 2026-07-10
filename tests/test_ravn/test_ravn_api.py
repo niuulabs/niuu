@@ -2100,6 +2100,7 @@ def test_list_sessions_returns_live_ravn_sessions(client: TestClient):
                 ],
             )
         )
+        router.get("http://localhost:8080/api/v1/forge/resident-runtimes").respond(json=[])
         resp = client.get("/api/v1/ravn/sessions")
     assert resp.status_code == 200
     data = resp.json()
@@ -2148,10 +2149,14 @@ def test_sessions_dial_platform_base_url_from_settings():
         route = respx.get("http://forge.configured.internal:9999/api/v1/forge/sessions").respond(
             json=[]
         )
+        resident_route = respx.get(
+            "http://forge.configured.internal:9999/api/v1/forge/resident-runtimes"
+        ).respond(json=[])
         resp = client.get("/api/v1/ravn/sessions")
     assert resp.status_code == 200
     assert resp.json() == []
     assert route.called
+    assert resident_route.called
 
 
 def test_list_wardens_returns_empty_list_when_store_is_empty(tmp_path):

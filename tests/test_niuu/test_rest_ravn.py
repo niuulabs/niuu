@@ -338,3 +338,75 @@ def test_list_ravens_degrades_when_embedded_target_missing() -> None:
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+@respx.mock
+def test_list_ravens_preserves_same_legacy_id_from_multiple_instances() -> None:
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha"),
+            _instance("beta", base_url="http://beta"),
+        ]
+    )
+    respx.get("http://alpha/api/v1/ravn/ravens").mock(
+        return_value=Response(200, json=[{"id": "muninn", "name": "Alpha Muninn"}])
+    )
+    respx.get("http://beta/api/v1/ravn/ravens").mock(
+        return_value=Response(200, json=[{"id": "muninn", "name": "Beta Muninn"}])
+    )
+
+    response = client.get("/api/v1/ravn/ravens", headers=_headers())
+
+    assert response.status_code == 200
+    assert len(response.json()) == 2
+    assert {item["instance_id"] for item in response.json()} == {"alpha", "beta"}
+
+
+@respx.mock
+def test_list_deployment_profiles_is_target_aware() -> None:
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha"),
+            _instance("beta", base_url="http://beta"),
+        ]
+    )
+    respx.get("http://alpha/api/v1/ravn/deployment-profiles").mock(
+        return_value=Response(200, json=[{"id": "ravn-helm", "backend": "helmrelease"}])
+    )
+    respx.get("http://beta/api/v1/ravn/deployment-profiles").mock(
+        return_value=Response(200, json=[{"id": "ravn-openshell", "backend": "openshell"}])
+    )
+
+    response = client.get("/api/v1/ravn/deployment-profiles", headers=_headers())
+
+    assert response.status_code == 200
+    assert {(item["id"], item["instance_id"]) for item in response.json()} == {
+        ("ravn-helm", "alpha"),
+        ("ravn-openshell", "beta"),
+    }
+
+
+@respx.mock
+def test_get_raven_with_instance_id_does_not_probe_other_targets() -> None:
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha"),
+            _instance("beta", base_url="http://beta"),
+        ]
+    )
+    alpha = respx.get("http://alpha/api/v1/ravn/ravens/muninn").mock(
+        return_value=Response(200, json={"id": "muninn", "name": "Alpha Muninn"})
+    )
+    beta = respx.get("http://beta/api/v1/ravn/ravens/muninn").mock(
+        return_value=Response(200, json={"id": "muninn", "name": "Beta Muninn"})
+    )
+
+    response = client.get(
+        "/api/v1/ravn/ravens/muninn?instance_id=beta",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["instance_id"] == "beta"
+    assert not alpha.called
+    assert beta.called

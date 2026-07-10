@@ -12,6 +12,8 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
+from niuu.domain.models import InstanceVisibility
+
 
 class StandaloneResident(BaseModel):
     """A resident running outside Forge, described by its deployment."""
@@ -26,6 +28,9 @@ class StandaloneResident(BaseModel):
     location: str = ""
     created_at: str | None = None
     updated_at: str | None = None
+    visibility: InstanceVisibility = InstanceVisibility.SYSTEM
+    owner_id: str = ""
+    tenant_id: str = ""
 
 
 class ResidentDiscoveryPort(Protocol):

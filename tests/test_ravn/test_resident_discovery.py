@@ -75,9 +75,13 @@ class TestKubernetesResidentDiscoveryAdapter:
                 "niuu.world/persona": "product-steward",
             },
             annotations={
+                "niuu.world/resident-id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
                 "niuu.world/resident-name": "Muninn",
                 "niuu.world/chat-endpoint": "ws://resident-muninn/session",
                 "niuu.world/model": "claude-fable-5",
+                "niuu.world/visibility": "user",
+                "niuu.world/owner-id": "user-a",
+                "niuu.world/tenant-id": "tenant-a",
             },
         )
 
@@ -85,7 +89,7 @@ class TestKubernetesResidentDiscoveryAdapter:
 
         assert len(residents) == 1
         resident = residents[0]
-        assert resident.id == "resident-muninn"
+        assert resident.id == "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
         assert resident.resident_name == "Muninn"
         assert resident.persona_name == "product-steward"
         assert resident.status == "active"
@@ -93,6 +97,9 @@ class TestKubernetesResidentDiscoveryAdapter:
         assert resident.chat_endpoint == "ws://resident-muninn/session"
         assert resident.location == "volundr/resident-muninn"
         assert resident.created_at == "2026-07-01T09:00:00+00:00"
+        assert resident.visibility.value == "user"
+        assert resident.owner_id == "user-a"
+        assert resident.tenant_id == "tenant-a"
 
     async def test_defaults_when_annotations_absent(self) -> None:
         residents = await _adapter_for(_deployment()).list_residents()
@@ -116,6 +123,13 @@ class TestKubernetesResidentDiscoveryAdapter:
         residents = await _adapter_for(_deployment(name="")).list_residents()
 
         assert residents == []
+
+    async def test_skips_invalid_visibility(self) -> None:
+        deployment = _deployment(
+            annotations={"niuu.world/visibility": "everyone"},
+        )
+
+        assert await _adapter_for(deployment).list_residents() == []
 
     async def test_scaled_to_zero_is_suspended(self) -> None:
         deployment = _deployment(replicas=0, ready_replicas=0)
@@ -443,6 +457,9 @@ def test_ravn_api_lists_discovered_standalone_residents(tmp_path) -> None:
     settings = Settings()
     forge_base = settings.gateway.platform.base_url.rstrip("/")
     respx.get(f"{forge_base}/api/v1/forge/sessions").mock(return_value=httpx.Response(200, json=[]))
+    respx.get(f"{forge_base}/api/v1/forge/resident-runtimes").mock(
+        return_value=httpx.Response(200, json=[])
+    )
     client = TestClient(
         create_app(
             warden_store=WardenStore(tmp_path),

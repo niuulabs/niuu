@@ -71,6 +71,9 @@ def test_ravn_sessions_available(client: TestClient) -> None:
         router.get("http://localhost:8080/api/v1/forge/sessions").mock(
             return_value=httpx.Response(200, json=[])
         )
+        router.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+            return_value=httpx.Response(200, json=[])
+        )
         resp = client.get("/api/v1/ravn/sessions")
     assert resp.status_code == 200
     assert resp.json() == []
@@ -84,6 +87,9 @@ def test_ravn_settings_available(client: TestClient) -> None:
     # the Forge sessions API (the fleet count is cluster discovery, empty here).
     with respx.mock(assert_all_called=False) as router:
         router.get("http://localhost:8080/api/v1/forge/sessions").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        router.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
             return_value=httpx.Response(200, json=[])
         )
         resp = client.get("/api/v1/ravn/settings")

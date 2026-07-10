@@ -20,7 +20,7 @@ import asyncio
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.auth import extract_principal
@@ -28,6 +28,7 @@ from niuu.adapters.inbound.rest_volundr import (
     _normalize_timestamp,
     _query_params,
     _request_remote,
+    _resolve_target_instance,
     _visible_instances,
     _with_instance,
 )
@@ -80,7 +81,8 @@ def create_ravn_router(
             for item in payload:
                 if not isinstance(item, dict):
                     continue
-                merged[str(item.get("id") or "")] = _with_instance(item, instance)
+                item_id = str(item.get("id") or "")
+                merged[f"{instance.id}:{item_id}"] = _with_instance(item, instance)
 
         items = [item for item in merged.values() if item.get("id")]
         items.sort(
@@ -96,8 +98,19 @@ def create_ravn_router(
         principal: Principal,
         path: str,
         not_found_detail: str,
+        instance_id: str | None = None,
     ) -> dict[str, Any]:
-        for instance in await _visible_instances(service, principal):
+        if instance_id is not None:
+            instances = [
+                await _resolve_target_instance(
+                    service,
+                    principal,
+                    instance_id,
+                )
+            ]
+        else:
+            instances = await _visible_instances(service, principal)
+        for instance in instances:
             response = await _request_remote(
                 instance,
                 request,
@@ -141,10 +154,19 @@ def create_ravn_router(
         """Aggregate live ravn sessions across visible instances."""
         return await _aggregate_list(request, principal, "/sessions")
 
+    @router.get("/deployment-profiles")
+    async def list_deployment_profiles(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict[str, Any]]:
+        """List target-compatible resident deployment profiles."""
+        return await _aggregate_list(request, principal, "/deployment-profiles")
+
     @router.get("/ravens/{ravn_id}")
     async def get_raven(
         request: Request,
         ravn_id: str = Path(description="Resident ravn identifier"),
+        instance_id: str | None = Query(default=None),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
         """Return one resident ravn from whichever instance owns it."""
@@ -153,12 +175,14 @@ def create_ravn_router(
             principal,
             f"/ravens/{ravn_id}",
             f"Ravn not found: {ravn_id}",
+            instance_id,
         )
 
     @router.get("/sessions/{session_id}")
     async def get_ravn_session(
         request: Request,
         session_id: str = Path(description="Ravn session identifier"),
+        instance_id: str | None = Query(default=None),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
         """Return one live ravn session from whichever instance owns it."""
@@ -167,6 +191,7 @@ def create_ravn_router(
             principal,
             f"/sessions/{session_id}",
             f"Session not found: {session_id}",
+            instance_id,
         )
 
     return router

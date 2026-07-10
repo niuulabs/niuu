@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from niuu.domain.models import InstanceVisibility
 from ravn.adapters.kubernetes_deployments import KubernetesDeploymentDiscovery
 from ravn.ports.resident_discovery import StandaloneResident
 
@@ -57,8 +58,20 @@ class KubernetesResidentDiscoveryAdapter(KubernetesDeploymentDiscovery):
         namespace = str(getattr(metadata, "namespace", "") or self._namespace)
         labels = self._merged_labels(deployment)
         annotations = self._merged_annotations(deployment)
+        visibility_value = self._value(annotations, "niuu.world/visibility") or "system"
+        try:
+            visibility = InstanceVisibility(visibility_value)
+        except ValueError:
+            logger.warning(
+                "ignoring resident %s/%s with invalid visibility %r",
+                namespace,
+                name,
+                visibility_value,
+            )
+            return None
+
         return StandaloneResident(
-            id=name,
+            id=self._value(annotations, "niuu.world/resident-id") or name,
             resident_name=self._value(annotations, "niuu.world/resident-name")
             or self._value(labels, "niuu.world/resident-name")
             or name,
@@ -69,6 +82,9 @@ class KubernetesResidentDiscoveryAdapter(KubernetesDeploymentDiscovery):
             chat_endpoint=self._value(annotations, "niuu.world/chat-endpoint") or None,
             location=f"{namespace}/{name}",
             created_at=self._creation_timestamp(metadata),
+            visibility=visibility,
+            owner_id=self._value(annotations, "niuu.world/owner-id"),
+            tenant_id=self._value(annotations, "niuu.world/tenant-id"),
         )
 
     def _resident_status(self, deployment: Any) -> str:

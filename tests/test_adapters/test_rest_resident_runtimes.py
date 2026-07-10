@@ -1,0 +1,101 @@
+"""REST tests for resident runtime reads and profile discovery."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, Mock
+from uuid import uuid4
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from volundr.adapters.inbound.auth import extract_principal
+from volundr.adapters.inbound.rest_resident_runtimes import create_resident_runtimes_router
+from volundr.domain.models import (
+    Principal,
+    ResidentBackend,
+    ResidentCapability,
+    ResidentDeploymentProfile,
+    ResidentEngine,
+    ResidentRuntime,
+)
+from volundr.domain.services.resident_runtime import ResidentRuntimeNotFoundError
+
+_PRINCIPAL = Principal(
+    user_id="user-a",
+    email="user-a@example.test",
+    tenant_id="tenant-a",
+    roles=["volundr:developer"],
+)
+
+
+def _client(service: Mock) -> TestClient:
+    app = FastAPI()
+    app.include_router(create_resident_runtimes_router(service))
+    app.dependency_overrides[extract_principal] = lambda: _PRINCIPAL
+    return TestClient(app)
+
+
+def test_lists_only_public_profile_fields() -> None:
+    profile = ResidentDeploymentProfile(
+        id="ravn-openshell",
+        display_name="Ravn on OpenShell",
+        backend=ResidentBackend.OPENSHELL,
+        engine=ResidentEngine.RAVN,
+        capabilities=[ResidentCapability.CHAT],
+        deployment={"image": "private-deployment-input"},
+    )
+    service = Mock()
+    service.list_profiles.return_value = [profile]
+
+    response = _client(service).get("/api/v1/forge/resident-profiles")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "id": "ravn-openshell",
+            "displayName": "Ravn on OpenShell",
+            "description": "",
+            "backend": "openshell",
+            "engine": "ravn",
+            "capabilities": ["chat"],
+            "defaultModel": "",
+            "allowedModels": [],
+            "labels": [],
+        }
+    ]
+
+
+def test_lists_and_gets_with_authenticated_principal() -> None:
+    runtime = ResidentRuntime(
+        id=uuid4(),
+        owner_id="user-a",
+        tenant_id="tenant-a",
+        name="Muninn",
+        backend=ResidentBackend.OPENSHELL,
+        engine=ResidentEngine.RAVN,
+        profile_id="ravn-openshell",
+    )
+    service = Mock()
+    service.list = AsyncMock(return_value=[runtime])
+    service.get = AsyncMock(return_value=runtime)
+    client = _client(service)
+
+    listed = client.get("/api/v1/forge/resident-runtimes")
+    fetched = client.get(f"/api/v1/forge/resident-runtimes/{runtime.id}")
+
+    assert listed.status_code == 200
+    assert listed.json()[0]["id"] == str(runtime.id)
+    assert listed.json()[0]["profileId"] == "ravn-openshell"
+    assert fetched.status_code == 200
+    service.list.assert_awaited_once_with(_PRINCIPAL)
+    service.get.assert_awaited_once_with(_PRINCIPAL, runtime.id)
+
+
+def test_hidden_runtime_returns_not_found() -> None:
+    service = Mock()
+    service.get = AsyncMock(side_effect=ResidentRuntimeNotFoundError("Resident runtime not found"))
+
+    response = _client(service).get(f"/api/v1/forge/resident-runtimes/{uuid4()}")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Resident runtime not found"

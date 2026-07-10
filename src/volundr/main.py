@@ -60,6 +60,7 @@ from volundr.adapters.inbound.rest_openshell_credentials import (
     create_openshell_credentials_router,
 )
 from volundr.adapters.inbound.rest_prompts import create_prompts_router
+from volundr.adapters.inbound.rest_resident_runtimes import create_resident_runtimes_router
 from volundr.adapters.inbound.rest_resources import create_resources_router
 from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
@@ -68,6 +69,9 @@ from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_route
 from volundr.adapters.outbound.bifrost_catalog_http import HttpBifrostCatalogAdapter
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
 from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
+from volundr.adapters.outbound.config_resident_profiles import (
+    ConfigResidentDeploymentProfileProvider,
+)
 from volundr.adapters.outbound.git_registry import create_git_registry
 from volundr.adapters.outbound.linear import LinearAdapter
 from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
@@ -86,6 +90,9 @@ from volundr.adapters.outbound.postgres_integrations import PostgresIntegrationR
 from volundr.adapters.outbound.postgres_launch_specs import PostgresLaunchSpecRepository
 from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
 from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
+from volundr.adapters.outbound.postgres_resident_runtimes import (
+    PostgresResidentRuntimeRepository,
+)
 from volundr.adapters.outbound.postgres_spans import PostgresSpanRepository
 from volundr.adapters.outbound.postgres_stats import PostgresStatsRepository
 from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
@@ -114,6 +121,7 @@ from volundr.domain.services.communication_ingress import CommunicationIngressSe
 from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.event_ingestion import EventIngestionService
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
+from volundr.domain.services.resident_runtime import ResidentRuntimeService
 from volundr.domain.services.telegram_ingress import TelegramIngressService
 from volundr.domain.services.tracker import TrackerService
 from volundr.domain.services.tracker_factory import TrackerFactory
@@ -666,6 +674,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             # Create adapters
             repository = PostgresSessionRepository(pool)
+            resident_runtime_repository = PostgresResidentRuntimeRepository(pool)
+            resident_profile_provider = ConfigResidentDeploymentProfileProvider(
+                settings.resident_runtimes.profiles
+            )
+            resident_runtime_service = ResidentRuntimeService(
+                resident_runtime_repository,
+                resident_profile_provider,
+            )
             device_repository = PostgresDeviceTokenRepository(pool)
             communication_route_repository = PostgresCommunicationRouteRepository(pool)
             communication_cursor_repository = PostgresCommunicationCursorRepository(pool)
@@ -1038,6 +1054,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 prefix="/api/v1/forge",
             )
             app.include_router(forge_router)
+            app.include_router(create_resident_runtimes_router(resident_runtime_service))
+            app.state.resident_runtime_service = resident_runtime_service
             if isinstance(pod_manager, OpenShellCredentialGrantPort):
                 app.include_router(create_openshell_credentials_router(pod_manager))
 
