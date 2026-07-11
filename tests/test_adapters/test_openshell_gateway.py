@@ -16,7 +16,10 @@ import jwt
 import pytest
 
 from niuu.ports.workload_identity import IssuedWorkloadToken
-from volundr.adapters.outbound.hermes_gateway import HERMES_CREDENTIAL_NAME
+from volundr.adapters.outbound.hermes_gateway import (
+    HERMES_CREDENTIAL_NAME,
+    HERMES_LEGACY_CREDENTIAL_NAME,
+)
 from volundr.domain.models import (
     GitSource,
     PodSpecAdditions,
@@ -703,13 +706,13 @@ async def test_hermes_deploy_uses_persisted_process_only_credential_and_generic_
     observation = await manager.deploy(runtime, profile)
 
     assert observation.observed_state is ResidentObservedState.ACTIVE
-    assert observation.endpoints[0].protocol == "hermes-tui-gateway-jsonrpc"
+    assert observation.endpoints[0].protocol == "hermes-api-server-v1"
     assert observation.backend_ref["process_names"] == ["hermes"]
     assert client.created is not None
     assert client.created["policy"] is manager._sandbox_policy
     assert client.created["env"]["HERMES_HOME"] == "/sandbox/workspace/.hermes"
-    assert adapter.HERMES_DASHBOARD_SESSION_TOKEN_ENV not in client.created["env"]
-    assert client.execs[0]["env"][adapter.HERMES_DASHBOARD_SESSION_TOKEN_ENV]
+    assert adapter.HERMES_API_SERVER_KEY_ENV not in client.created["env"]
+    assert client.execs[0]["env"][adapter.HERMES_API_SERVER_KEY_ENV]
     assert client.execs[0]["env"]["HERMES_HOME"] == "/sandbox/workspace/.hermes"
     assert client.execs[0]["pid_path"] == "/sandbox/.volundr/hermes.pid"
     assert client.exposed == {
@@ -725,6 +728,8 @@ async def test_hermes_deploy_uses_persisted_process_only_credential_and_generic_
     assert "provider: custom:niuu" in hermes_config
     assert "key_env: NIUU_VOLUNDR_ACCESS_TOKEN" in hermes_config
     assert "api_key:" not in hermes_config
+    assert "api_server:" in hermes_config
+    assert "port: 18789" in hermes_config
     assert any(
         binary.path == "/opt/hermes/**"
         for grant in client.provider_grants
@@ -753,7 +758,7 @@ async def test_hermes_restart_reuses_machine_credential(
     token = "persisted-hermes-token"
     manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
     manager.set_credential_store(
-        _FakeCredentialStore({HERMES_CREDENTIAL_NAME: {"session_token": token}})
+        _FakeCredentialStore({HERMES_CREDENTIAL_NAME: {"api_key": token}})
     )
 
     observation = await manager.restart(runtime, _hermes_profile())
@@ -761,7 +766,7 @@ async def test_hermes_restart_reuses_machine_credential(
     assert observation.observed_state is ResidentObservedState.ACTIVE
     assert client.deleted == []
     assert client.bootstrap_execs[0]["script"] == adapter._resident_stop_script(("hermes",))
-    assert client.execs[0]["env"][adapter.HERMES_DASHBOARD_SESSION_TOKEN_ENV] == token
+    assert client.execs[0]["env"][adapter.HERMES_API_SERVER_KEY_ENV] == token
 
 
 @pytest.mark.asyncio
@@ -788,9 +793,13 @@ async def test_hermes_rollback_and_delete_cleanup_machine_credential(
     client.exec_detached = _FakeOpenShellGatewayClient.exec_detached.__get__(client)
     client.deleted.clear()
     client.created = {"providers": ()}
-    store.values[HERMES_CREDENTIAL_NAME] = {"session_token": "delete-me"}
+    store.values[HERMES_CREDENTIAL_NAME] = {"api_key": "delete-me"}
     assert await manager.delete(runtime)
-    assert store.deletes == [credential_key, credential_key]
+    assert store.deletes == [
+        credential_key,
+        credential_key,
+        ("resident", str(runtime.id), HERMES_LEGACY_CREDENTIAL_NAME),
+    ]
 
 
 @pytest.mark.asyncio

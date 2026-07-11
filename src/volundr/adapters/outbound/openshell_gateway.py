@@ -106,7 +106,8 @@ CODEX_AUTH_FORMAT = "codex_auth_json"
 CODEX_ACCESS_TOKEN_ENV = "CODEX_AUTH_ACCESS_TOKEN"
 CODEX_ACCOUNT_ID_ENV = "CODEX_AUTH_ACCOUNT_ID"
 CODEX_ACCESS_TOKEN_REFERENCE = f"openshell:resolve:env:{CODEX_ACCESS_TOKEN_ENV}"
-HERMES_DASHBOARD_SESSION_TOKEN_ENV = "HERMES_DASHBOARD_SESSION_TOKEN"
+HERMES_API_SERVER_KEY_ENV = "API_SERVER_KEY"
+HERMES_API_SERVER_DEFAULT_PORT = 8642
 SECRET_ENV_KEYS = {
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
@@ -119,7 +120,7 @@ SECRET_ENV_KEYS = {
     CODEX_ACCOUNT_ID_ENV,
     "CODEX_AUTH_ID_TOKEN",
     PLATFORM_ACCESS_TOKEN_ENV,
-    HERMES_DASHBOARD_SESSION_TOKEN_ENV,
+    HERMES_API_SERVER_KEY_ENV,
 }
 SECRET_INJECTION_ANNOTATION_PREFIXES = ("vault.hashicorp.com/",)
 AGENT_AUTH_FILE_SUFFIXES = (
@@ -1014,11 +1015,11 @@ class OpenShellGatewayPodManager(
                 env.setdefault("OPENCLAW_STATE_DIR", f"{self._sandbox_workspace}/.openclaw")
             if runtime.engine is ResidentEngine.HERMES:
                 from volundr.adapters.outbound.hermes_gateway import (
-                    ensure_hermes_dashboard_token,
+                    ensure_hermes_api_key,
                 )
 
                 machine_credential = {
-                    "session_token": await ensure_hermes_dashboard_token(
+                    "api_key": await ensure_hermes_api_key(
                         self._credential_store, runtime
                     )
                 }
@@ -1069,9 +1070,7 @@ class OpenShellGatewayPodManager(
             if runtime.engine is ResidentEngine.OPENCLAW and machine_credential is not None:
                 process_env["OPENCLAW_GATEWAY_TOKEN"] = machine_credential["gateway_token"]
             if runtime.engine is ResidentEngine.HERMES and machine_credential is not None:
-                process_env[HERMES_DASHBOARD_SESSION_TOKEN_ENV] = machine_credential[
-                    "session_token"
-                ]
+                process_env[HERMES_API_SERVER_KEY_ENV] = machine_credential["api_key"]
             await self._launch_resident_processes(ready.id, process_env, processes)
             await self._wait_for_resident_processes(
                 ready.id,
@@ -1198,16 +1197,14 @@ class OpenShellGatewayPodManager(
                 raise RuntimeError("OpenClaw resident machine credential is unavailable")
             env["OPENCLAW_GATEWAY_TOKEN"] = machine["gateway_token"]
         if runtime.engine is ResidentEngine.HERMES:
-            from volundr.adapters.outbound.hermes_gateway import HERMES_CREDENTIAL_NAME
+            from volundr.adapters.outbound.hermes_gateway import ensure_hermes_api_key
 
             if self._credential_store is None:
                 raise RuntimeError("Hermes residents require the configured credential store")
-            machine = await self._credential_store.get_value(
-                "resident", str(runtime.id), HERMES_CREDENTIAL_NAME
+            env[HERMES_API_SERVER_KEY_ENV] = await ensure_hermes_api_key(
+                self._credential_store,
+                runtime,
             )
-            if not machine or not machine.get("session_token"):
-                raise RuntimeError("Hermes resident machine credential is unavailable")
-            env[HERMES_DASHBOARD_SESSION_TOKEN_ENV] = machine["session_token"]
         await self._launch_resident_processes(sandbox.id, env, processes)
         service_name, service_port = _resident_service(
             values, self._service_name, self._service_port
@@ -1254,9 +1251,15 @@ class OpenShellGatewayPodManager(
         if runtime.engine is ResidentEngine.OPENCLAW and self._credential_store is not None:
             await self._credential_store.delete("resident", runtime_id, "openclaw-gateway")
         if runtime.engine is ResidentEngine.HERMES and self._credential_store is not None:
-            from volundr.adapters.outbound.hermes_gateway import HERMES_CREDENTIAL_NAME
+            from volundr.adapters.outbound.hermes_gateway import (
+                HERMES_CREDENTIAL_NAME,
+                HERMES_LEGACY_CREDENTIAL_NAME,
+            )
 
             await self._credential_store.delete("resident", runtime_id, HERMES_CREDENTIAL_NAME)
+            await self._credential_store.delete(
+                "resident", runtime_id, HERMES_LEGACY_CREDENTIAL_NAME
+            )
         return deleted
 
     async def logs(
@@ -1521,7 +1524,7 @@ class OpenShellGatewayPodManager(
                 endpoints.append(
                     ResidentEndpoint(
                         kind="sessions",
-                        protocol="hermes-tui-gateway-jsonrpc",
+                        protocol="hermes-api-server-v1",
                         url=f"/api/v1/forge/resident-runtimes/{runtime.id}/sessions",
                     )
                 )
@@ -2713,6 +2716,11 @@ def _resident_hermes_config(
     base_url = str(kwargs.get("base_url") or kwargs.get("baseUrl") or "").strip()
     if not base_url:
         raise RuntimeError("Hermes residents require resident.llm.provider.kwargs.base_url")
+    _, service_port = _resident_service(
+        values,
+        "hermes",
+        HERMES_API_SERVER_DEFAULT_PORT,
+    )
     return {
         "model": {
             "default": runtime.model,
@@ -2731,6 +2739,17 @@ def _resident_hermes_config(
         ],
         "terminal": {"cwd": "/sandbox/workspace"},
         "approvals": {"mode": "manual"},
+        "gateway": {
+            "platforms": {
+                "api_server": {
+                    "enabled": True,
+                    "extra": {
+                        "host": "127.0.0.1",
+                        "port": service_port,
+                    },
+                }
+            }
+        },
     }
 
 

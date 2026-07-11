@@ -1,4 +1,4 @@
-"""Hermes TUI Gateway adapter for resident sessions and shared chat."""
+"""Hermes API-server adapter for resident sessions and shared chat."""
 
 from __future__ import annotations
 
@@ -6,13 +6,12 @@ import asyncio
 import json
 import secrets
 from contextlib import suppress
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-import websockets
+import httpx
 
 from niuu.domain.models import SecretType
 from niuu.ports.credentials import CredentialStorePort
@@ -25,32 +24,45 @@ from volundr.domain.models import (
 )
 from volundr.domain.ports import ResidentChatConnection, ResidentSessionController
 
-HERMES_CREDENTIAL_NAME = "hermes-dashboard"
-_TOKEN_FIELD = "session_token"
-PENDING_SESSION_TTL_SECONDS = 300
+HERMES_CREDENTIAL_NAME = "hermes-api-server"
+HERMES_LEGACY_CREDENTIAL_NAME = "hermes-dashboard"
+_TOKEN_FIELD = "api_key"
+_LEGACY_TOKEN_FIELD = "session_token"
+HERMES_REQUEST_TIMEOUT_SECONDS = 30
+HERMES_SESSION_PAGE_SIZE = 200
 NIUU_MODEL_PREFIX = "niuu/"
 
 
 class HermesGatewayError(RuntimeError):
-    """Hermes JSON-RPC or transport failure."""
-
-    def __init__(self, message: str, *, code: int | None = None) -> None:
-        super().__init__(message)
-        self.code = code
+    """Hermes API or transport failure."""
 
 
-async def ensure_hermes_dashboard_token(
+async def ensure_hermes_api_key(
     store: CredentialStorePort,
     runtime: ResidentRuntime,
 ) -> str:
-    """Return the dashboard token shared by Volundr and one Hermes resident."""
+    """Return the machine API key shared by Volundr and one Hermes resident."""
     owner_id = str(runtime.id)
     existing = await store.get_value("resident", owner_id, HERMES_CREDENTIAL_NAME)
     if existing:
         token = existing.get(_TOKEN_FIELD)
         if token:
             return token
-        raise RuntimeError("Hermes resident dashboard credential is incomplete")
+        raise RuntimeError("Hermes resident API credential is incomplete")
+
+    legacy = await store.get_value("resident", owner_id, HERMES_LEGACY_CREDENTIAL_NAME)
+    if legacy and legacy.get(_LEGACY_TOKEN_FIELD):
+        token = legacy[_LEGACY_TOKEN_FIELD]
+        await store.store(
+            "resident",
+            owner_id,
+            HERMES_CREDENTIAL_NAME,
+            SecretType.API_KEY,
+            {_TOKEN_FIELD: token},
+            metadata={"purpose": "hermes-api-server"},
+        )
+        await store.delete("resident", owner_id, HERMES_LEGACY_CREDENTIAL_NAME)
+        return token
 
     token = secrets.token_urlsafe(32)
     await store.store(
@@ -59,101 +71,89 @@ async def ensure_hermes_dashboard_token(
         HERMES_CREDENTIAL_NAME,
         SecretType.API_KEY,
         {_TOKEN_FIELD: token},
-        metadata={"purpose": "hermes-dashboard-session"},
+        metadata={"purpose": "hermes-api-server"},
     )
     return token
 
 
-def _gateway_uri(target: SessionProxyTarget, token: str) -> str:
+def _api_url(target: SessionProxyTarget, path: str) -> str:
     parsed = urlsplit(target.service_url)
-    scheme = "wss" if parsed.scheme == "https" else "ws"
+    scheme = "https" if target.connect_secure else "http"
+    connect_host = target.connect_host
+    if ":" in connect_host and not connect_host.startswith("["):
+        connect_host = f"[{connect_host}]"
+    connect_netloc = f"{connect_host}:{target.connect_port}"
     base_path = parsed.path.rstrip("/")
-    path = f"{base_path}/api/ws" if base_path else "/api/ws"
-    return urlunsplit((scheme, parsed.netloc, path, urlencode({"token": token}), ""))
+    full_path = f"{base_path}/{path.lstrip('/')}"
+    return urlunsplit((scheme, connect_netloc, full_path, "", ""))
 
 
-class _HermesConnection:
-    def __init__(self, websocket: Any) -> None:
-        self._websocket = websocket
-        self._pending: dict[str, asyncio.Future[Any]] = {}
-        self.events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        self._reader = asyncio.create_task(self._read_loop())
+class _HermesAPI:
+    """Authenticated client for NVIDIA Hermes' API-server platform."""
 
-    @classmethod
-    async def connect(
-        cls,
-        target: SessionProxyTarget,
-        token: str,
-    ) -> _HermesConnection:
-        kwargs: dict[str, Any] = {
-            "host": target.connect_host,
-            "port": target.connect_port,
-            "open_timeout": 15,
-            "close_timeout": 5,
-            "max_size": 4 * 1024 * 1024,
-        }
-        if target.connect_secure:
-            kwargs["ssl"] = True
-        websocket = await websockets.connect(_gateway_uri(target, token), **kwargs)
-        return cls(websocket)
+    def __init__(self, target: SessionProxyTarget, api_key: str) -> None:
+        parsed = urlsplit(target.service_url)
+        self._target = target
+        self._client = httpx.AsyncClient(
+            timeout=HERMES_REQUEST_TIMEOUT_SECONDS,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Host": parsed.netloc,
+            },
+        )
 
-    async def request(self, method: str, params: dict[str, Any] | None = None) -> Any:
-        request_id = str(uuid4())
-        future = asyncio.get_running_loop().create_future()
-        self._pending[request_id] = future
+    async def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        response = await self._client.request(
+            method,
+            _api_url(self._target, path),
+            params=params,
+            json=json_body,
+        )
+        if response.is_success:
+            payload = response.json()
+            return payload if isinstance(payload, dict) else {}
+        self._raise_response_error(response)
+
+    async def stream_run(self, run_id: str):
+        path = f"/v1/runs/{quote(run_id, safe='')}/events"
+        async with self._client.stream("GET", _api_url(self._target, path)) as response:
+            if not response.is_success:
+                await response.aread()
+                self._raise_response_error(response)
+            async for line in response.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    event = json.loads(line.removeprefix("data:").strip())
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(event, dict):
+                    yield event
+
+    @staticmethod
+    def _raise_response_error(response: httpx.Response) -> None:
         try:
-            await self._websocket.send(
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "method": method,
-                        "params": params or {},
-                    }
-                )
-            )
-            return await asyncio.wait_for(future, timeout=30)
-        finally:
-            self._pending.pop(request_id, None)
-
-    async def _read_loop(self) -> None:
-        try:
-            async for raw in self._websocket:
-                frame = json.loads(raw)
-                if frame.get("method") == "event":
-                    params = frame.get("params")
-                    if isinstance(params, dict):
-                        await self.events.put(params)
-                    continue
-                request_id = str(frame.get("id") or "")
-                future = self._pending.get(request_id)
-                if future is None or future.done():
-                    continue
-                error = frame.get("error")
-                if isinstance(error, dict):
-                    future.set_exception(
-                        HermesGatewayError(
-                            str(error.get("message") or "Hermes Gateway request failed"),
-                            code=error.get("code") if isinstance(error.get("code"), int) else None,
-                        )
-                    )
-                    continue
-                future.set_result(frame.get("result"))
-        except Exception as exc:
-            if not self._websocket.close_code:
-                await self.events.put({"type": "connection.closed", "payload": {"error": str(exc)}})
-        finally:
-            error = HermesGatewayError("Hermes Gateway connection closed")
-            for future in self._pending.values():
-                if not future.done():
-                    future.set_exception(error)
-            await self.events.put({"type": "connection.closed", "payload": {}})
+            payload = response.json()
+        except ValueError:
+            payload = None
+        detail: Any = response.text
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            detail = error.get("message") if isinstance(error, dict) else payload.get("detail")
+        raise HermesGatewayError(
+            "Hermes API request failed "
+            f"({response.status_code}): {detail or response.reason_phrase}"
+        )
 
     async def close(self) -> None:
-        self._reader.cancel()
-        with suppress(asyncio.CancelledError):
-            await self._reader
-        await self._websocket.close()
+        await self._client.aclose()
 
 
 def _session_uuid(key: str) -> UUID:
@@ -193,170 +193,173 @@ def _history_turns(messages: Any) -> list[dict[str, Any]]:
     return turns
 
 
-def _approval_request_id(live_session_id: str, payload: dict[str, Any]) -> str:
+def _approval_request_id(run_id: str, payload: dict[str, Any]) -> str:
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-    return str(uuid5(NAMESPACE_URL, f"hermes-approval:{live_session_id}:{canonical}"))
-
-
-@dataclass
-class _PendingHermesSession:
-    connection: _HermesConnection
-    live_session_id: str
-    session: ResidentSession
-    expiry: asyncio.Task[None]
+    return str(uuid5(NAMESPACE_URL, f"hermes-approval:{run_id}:{canonical}"))
 
 
 class HermesChatConnection(ResidentChatConnection):
-    """Translate one resumed Hermes live session to shared chat frames."""
+    """Translate Hermes API-server runs and SSE events to shared chat frames."""
 
     def __init__(
         self,
-        gateway: _HermesConnection,
-        live_session_id: str,
+        api: _HermesAPI,
+        session_key: str,
         history: list[dict[str, Any]],
         model: str,
     ) -> None:
-        self._gateway = gateway
-        self._live_session_id = live_session_id
+        self._api = api
+        self._session_key = session_key
         self._model = model
-        self._initial: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        self._initial.put_nowait(
+        self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._events.put_nowait(
             {
                 "type": "capabilities",
                 "interrupt": True,
-                "steer": True,
+                "steer": False,
                 "set_model": False,
                 "set_thinking_tokens": False,
             }
         )
-        self._initial.put_nowait({"type": "conversation_history", "turns": history})
+        self._events.put_nowait({"type": "conversation_history", "turns": history})
         self._message_started = False
-        self._approval_requests: set[str] = set()
-        self._input_requests: set[str] = set()
+        self._active_run_id: str | None = None
+        self._run_stream: asyncio.Task[None] | None = None
+        self._approval_requests: dict[str, str] = {}
 
     async def receive(self) -> dict[str, Any]:
-        while True:
-            if not self._initial.empty():
-                return await self._initial.get()
-            local_frame = asyncio.create_task(self._initial.get())
-            gateway_frame = asyncio.create_task(self._gateway.events.get())
-            done, pending = await asyncio.wait(
-                (local_frame, gateway_frame), return_when=asyncio.FIRST_COMPLETED
-            )
-            for task in pending:
-                task.cancel()
-            for task in pending:
-                with suppress(asyncio.CancelledError):
-                    await task
-            if local_frame in done:
-                return local_frame.result()
+        return await self._events.get()
 
-            event = gateway_frame.result()
-            event_type = str(event.get("type") or "")
-            if event_type == "connection.closed":
-                raise HermesGatewayError("Hermes Gateway connection closed")
-            if event.get("session_id") != self._live_session_id:
-                continue
-            payload = event.get("payload")
-            if not isinstance(payload, dict):
-                payload = {}
-            normalized = self._normalize_event(event_type, payload)
-            if normalized is not None:
-                return normalized
+    async def _consume_run(self, run_id: str) -> None:
+        terminal = False
+        try:
+            async for event in self._api.stream_run(run_id):
+                terminal = await self._enqueue_event(run_id, event) or terminal
+            if terminal:
+                return
+            status = await self._api.request("GET", f"/v1/runs/{quote(run_id, safe='')}")
+            await self._enqueue_run_status(run_id, status)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await self._events.put({"type": "error", "error": str(exc)})
+        finally:
+            if self._active_run_id == run_id:
+                self._active_run_id = None
+
+    async def _enqueue_run_status(self, run_id: str, status: dict[str, Any]) -> None:
+        state = str(status.get("status") or "")
+        if state == "completed":
+            await self._enqueue_event(
+                run_id,
+                {
+                    "event": "run.completed",
+                    "output": status.get("output", ""),
+                    "usage": status.get("usage", {}),
+                },
+            )
+            return
+        if state == "cancelled":
+            await self._enqueue_event(run_id, {"event": "run.cancelled"})
+            return
+        await self._events.put(
+            {
+                "type": "error",
+                "error": str(status.get("error") or f"Hermes run ended in state {state}"),
+            }
+        )
+
+    async def _enqueue_event(self, run_id: str, event: dict[str, Any]) -> bool:
+        event_type = str(event.get("event") or "")
+        if event_type == "message.delta" and not self._message_started:
+            self._message_started = True
+            await self._events.put(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "model": self._model,
+                        "content": [],
+                    },
+                }
+            )
+            await self._events.put(
+                {
+                    "type": "content_block_delta",
+                    "delta": {
+                        "type": "text_delta",
+                        "text": str(event.get("delta") or ""),
+                    },
+                }
+            )
+            return False
+        if event_type == "run.completed" and not self._message_started:
+            text = str(event.get("output") or "")
+            await self._events.put(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "model": self._model,
+                        "content": [],
+                    },
+                }
+            )
+            if text:
+                await self._events.put(
+                    {
+                        "type": "content_block_delta",
+                        "delta": {"type": "text_delta", "text": text},
+                    }
+                )
+            await self._events.put(
+                {"type": "result", "result": text, "usage": event.get("usage", {})}
+            )
+            return True
+        normalized = self._normalize_event(run_id, event_type, event)
+        if normalized is not None:
+            await self._events.put(normalized)
+        return event_type in {"run.completed", "run.failed", "run.cancelled"}
 
     def _normalize_event(
         self,
+        run_id: str,
         event_type: str,
         payload: dict[str, Any],
     ) -> dict[str, Any] | None:
-        if event_type == "message.start":
-            self._message_started = True
-            return {
-                "type": "assistant",
-                "message": {"role": "assistant", "model": self._model, "content": []},
-            }
         if event_type == "message.delta":
-            if not self._message_started:
-                self._message_started = True
-                self._initial.put_nowait(
-                    {
-                        "type": "content_block_delta",
-                        "delta": {"type": "text_delta", "text": str(payload.get("text") or "")},
-                    }
-                )
-                return {
-                    "type": "assistant",
-                    "message": {"role": "assistant", "model": self._model, "content": []},
-                }
             return {
                 "type": "content_block_delta",
-                "delta": {"type": "text_delta", "text": str(payload.get("text") or "")},
+                "delta": {"type": "text_delta", "text": str(payload.get("delta") or "")},
             }
-        if event_type == "message.complete":
-            text = str(payload.get("text") or "")
-            if not self._message_started:
-                if text:
-                    self._initial.put_nowait(
-                        {
-                            "type": "content_block_delta",
-                            "delta": {"type": "text_delta", "text": text},
-                        }
-                    )
-                self._initial.put_nowait({"type": "result", "result": text})
-                return {
-                    "type": "assistant",
-                    "message": {"role": "assistant", "model": self._model, "content": []},
-                }
+        if event_type == "run.completed":
+            text = str(payload.get("output") or "")
             self._message_started = False
-            if payload.get("status") == "error":
-                return {"type": "error", "error": text or "Hermes turn failed"}
-            return {"type": "result", "result": text}
-        if event_type == "tool.start":
-            name = str(payload.get("name") or "tool")
-            tool_input = payload.get("args") or payload.get("context") or {}
+            return {"type": "result", "result": text, "usage": payload.get("usage", {})}
+        if event_type == "tool.started":
+            name = str(payload.get("tool") or "tool")
             return {
                 "type": "tool_start",
                 "data": name,
                 "metadata": {
                     "tool_name": name,
-                    "tool_id": str(payload.get("tool_id") or ""),
-                    "input": tool_input,
+                    "tool_id": run_id,
+                    "input": {"preview": payload.get("preview")},
                 },
             }
-        if event_type == "tool.complete":
+        if event_type == "tool.completed":
             return {
                 "type": "tool_result",
-                "data": payload.get("result", payload.get("result_text", "")),
+                "data": "",
                 "metadata": {
-                    "tool_name": str(payload.get("name") or "tool"),
-                    "tool_id": str(payload.get("tool_id") or ""),
-                    "is_error": bool(payload.get("is_error", False)),
+                    "tool_name": str(payload.get("tool") or "tool"),
+                    "tool_id": run_id,
+                    "is_error": bool(payload.get("error", False)),
                 },
             }
-        if event_type == "clarify.request":
-            request_id = str(payload.get("request_id") or "")
-            if not request_id:
-                return None
-            self._input_requests.add(request_id)
-            return {
-                "type": "ask_user_question",
-                "request_id": request_id,
-                "questions": [
-                    {
-                        "header": "Clarification",
-                        "question": str(payload.get("question") or ""),
-                        "options": [
-                            {"label": str(choice)}
-                            for choice in payload.get("choices", [])
-                            if isinstance(choice, str) and choice
-                        ],
-                        "multiSelect": False,
-                    }
-                ],
-            }
         if event_type == "approval.request":
-            request_id = _approval_request_id(self._live_session_id, payload)
-            self._approval_requests.add(request_id)
+            request_id = _approval_request_id(run_id, payload)
+            self._approval_requests[request_id] = run_id
             return {
                 "type": "control_request",
                 "request_id": request_id,
@@ -367,46 +370,52 @@ class HermesChatConnection(ResidentChatConnection):
                     "allow_permanent": bool(payload.get("allow_permanent", False)),
                 },
             }
-        if event_type == "error":
-            return {"type": "error", "error": str(payload.get("message") or "Hermes error")}
+        if event_type == "run.failed":
+            self._message_started = False
+            return {"type": "error", "error": str(payload.get("error") or "Hermes run failed")}
+        if event_type == "run.cancelled":
+            self._message_started = False
+            return {"type": "result", "result": "", "interrupted": True}
         return None
 
     async def send(self, frame: dict[str, Any]) -> None:
         frame_type = frame.get("type")
         if frame_type == "interrupt":
-            await self._gateway.request("session.interrupt", {"session_id": self._live_session_id})
+            if self._active_run_id:
+                await self._api.request(
+                    "POST", f"/v1/runs/{quote(self._active_run_id, safe='')}/stop"
+                )
             return
         if frame_type in {"steer", "steer_active_turn"}:
-            await self._gateway.request(
-                "session.steer",
-                {
-                    "session_id": self._live_session_id,
-                    "text": str(frame.get("content") or ""),
-                },
-            )
-            return
+            raise HermesGatewayError("Hermes API server does not support steering active runs")
         if frame_type == "permission_response":
             await self._send_permission_response(frame)
             return
-        if frame_type == "ask_user_answer":
-            await self._send_input_response(frame)
-            return
         if frame_type != "user":
             raise HermesGatewayError(f"Unsupported shared chat command: {frame_type}")
+        if self._active_run_id:
+            raise HermesGatewayError("Hermes already has an active run for this chat")
 
         content = frame.get("content")
         text = _frame_text(content)
-        for attachment in _image_attachments(content):
-            await self._gateway.request(
-                "image.attach_bytes",
-                {"session_id": self._live_session_id, **attachment},
-            )
+        if _image_attachments(content):
+            raise HermesGatewayError("Hermes run API does not support image attachments")
         request_id = str(frame.get("request_id") or uuid4())
-        await self._gateway.request(
-            "prompt.submit",
-            {"session_id": self._live_session_id, "text": text},
+        payload = await self._api.request(
+            "POST",
+            "/v1/runs",
+            json_body={
+                "input": text,
+                "session_id": self._session_key,
+                "model": _hermes_model_id(self._model),
+            },
         )
-        self._initial.put_nowait(
+        run_id = str(payload.get("run_id") or "")
+        if not run_id:
+            raise HermesGatewayError("Hermes run API returned no run id")
+        self._active_run_id = run_id
+        self._run_stream = asyncio.create_task(self._consume_run(run_id))
+        self._events.put_nowait(
             {
                 "type": "user_confirmed",
                 "id": request_id,
@@ -418,7 +427,8 @@ class HermesChatConnection(ResidentChatConnection):
 
     async def _send_permission_response(self, frame: dict[str, Any]) -> None:
         request_id = str(frame.get("request_id") or "")
-        if request_id not in self._approval_requests:
+        run_id = self._approval_requests.get(request_id)
+        if not run_id:
             raise HermesGatewayError("Unknown Hermes approval request")
         choices = {
             "allow": "once",
@@ -430,12 +440,13 @@ class HermesChatConnection(ResidentChatConnection):
         choice = choices.get(behavior)
         if choice is None:
             raise HermesGatewayError(f"Unsupported permission behavior: {behavior}")
-        await self._gateway.request(
-            "approval.respond",
-            {"session_id": self._live_session_id, "choice": choice},
+        await self._api.request(
+            "POST",
+            f"/v1/runs/{quote(run_id, safe='')}/approval",
+            json_body={"choice": choice},
         )
-        self._approval_requests.discard(request_id)
-        self._initial.put_nowait(
+        self._approval_requests.pop(request_id, None)
+        self._events.put_nowait(
             {
                 "type": "permission_resolved",
                 "request_id": request_id,
@@ -444,23 +455,12 @@ class HermesChatConnection(ResidentChatConnection):
             }
         )
 
-    async def _send_input_response(self, frame: dict[str, Any]) -> None:
-        request_id = str(frame.get("request_id") or "")
-        if request_id not in self._input_requests:
-            raise HermesGatewayError("Unknown Hermes input request")
-        await self._gateway.request(
-            "clarify.respond",
-            {
-                "session_id": self._live_session_id,
-                "request_id": request_id,
-                "answer": _answer_text(frame.get("answers")),
-            },
-        )
-        self._input_requests.discard(request_id)
-        self._initial.put_nowait({"type": "ask_user_resolved", "request_id": request_id})
-
     async def close(self) -> None:
-        await self._gateway.close()
+        if self._run_stream is not None:
+            self._run_stream.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._run_stream
+        await self._api.close()
 
 
 def _frame_text(content: Any) -> str:
@@ -499,19 +499,8 @@ def _image_attachments(content: Any) -> list[dict[str, str]]:
     return attachments
 
 
-def _answer_text(answers: Any) -> str:
-    if not isinstance(answers, list) or not answers:
-        return ""
-    answer = answers[0]
-    if isinstance(answer, dict):
-        answer = answer.get("answer", "")
-    if isinstance(answer, list):
-        return ", ".join(str(value) for value in answer)
-    return str(answer or "")
-
-
 class HermesResidentSessionController(ResidentSessionController):
-    """Hermes implementation of resident-native lifecycle and shared chat."""
+    """Hermes API-server implementation of resident sessions and shared chat."""
 
     def __init__(
         self,
@@ -521,33 +510,44 @@ class HermesResidentSessionController(ResidentSessionController):
         self._routes = runtime_controller
         self._credentials = credential_store
         self._session_keys: dict[UUID, str] = {}
-        self._pending_sessions: dict[UUID, _PendingHermesSession] = {}
 
     @property
     def engine(self) -> ResidentEngine:
         return ResidentEngine.HERMES
 
-    async def _connect(self, runtime: ResidentRuntime) -> _HermesConnection:
+    async def _connect(self, runtime: ResidentRuntime) -> _HermesAPI:
         target = self._routes.resident_proxy_target(runtime)
         if target is None:
-            raise HermesGatewayError("Hermes resident has no dashboard service route")
-        token = await ensure_hermes_dashboard_token(self._credentials, runtime)
-        return await _HermesConnection.connect(target, token)
+            raise HermesGatewayError("Hermes resident has no API service route")
+        api_key = await ensure_hermes_api_key(self._credentials, runtime)
+        return _HermesAPI(target, api_key)
 
-    async def _list_rows(self, connection: _HermesConnection) -> list[dict[str, Any]]:
-        payload = await connection.request("session.list", {"limit": 500})
-        rows = payload.get("sessions") if isinstance(payload, dict) else []
-        return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    async def _list_rows(self, api: _HermesAPI) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            payload = await api.request(
+                "GET",
+                "/api/sessions",
+                params={"limit": HERMES_SESSION_PAGE_SIZE, "offset": offset},
+            )
+            page = payload.get("data")
+            if not isinstance(page, list):
+                return rows
+            rows.extend(row for row in page if isinstance(row, dict))
+            if not payload.get("has_more") or not page:
+                return rows
+            offset += len(page)
 
     async def _resolve_key(
         self,
-        connection: _HermesConnection,
+        api: _HermesAPI,
         session_id: UUID,
     ) -> str:
         known = self._session_keys.get(session_id)
         if known:
             return known
-        for row in await self._list_rows(connection):
+        for row in await self._list_rows(api):
             key = str(row.get("id") or "")
             if key:
                 self._session_keys[_session_uuid(key)] = key
@@ -557,11 +557,11 @@ class HermesResidentSessionController(ResidentSessionController):
         raise HermesGatewayError(f"Hermes session {session_id} was not found")
 
     async def list_sessions(self, runtime: ResidentRuntime) -> list[ResidentSession]:
-        connection = await self._connect(runtime)
+        api = await self._connect(runtime)
         try:
-            rows = await self._list_rows(connection)
+            rows = await self._list_rows(api)
         finally:
-            await connection.close()
+            await api.close()
         sessions: list[ResidentSession] = []
         for row in rows:
             key = str(row.get("id") or "")
@@ -570,12 +570,18 @@ class HermesResidentSessionController(ResidentSessionController):
             session_id = _session_uuid(key)
             self._session_keys[session_id] = key
             created_at = _timestamp(row.get("started_at"))
+            stored_model = str(row.get("model") or runtime.model)
+            model = (
+                runtime.model
+                if _hermes_model_id(runtime.model) == stored_model
+                else stored_model
+            )
             sessions.append(
                 ResidentSession(
                     id=session_id,
                     resident_id=runtime.id,
                     title=str(row.get("title") or row.get("preview") or runtime.name),
-                    model=str(row.get("model") or runtime.model),
+                    model=model,
                     status=ResidentSessionStatus.IDLE,
                     created_at=created_at,
                     updated_at=created_at,
@@ -583,12 +589,6 @@ class HermesResidentSessionController(ResidentSessionController):
                     chat_endpoint=f"/s/{runtime.id}/sessions/{session_id}/session",
                 )
             )
-        known_ids = {session.id for session in sessions}
-        sessions.extend(
-            pending.session
-            for pending in self._pending_sessions.values()
-            if pending.session.id not in known_ids
-        )
         return sessions
 
     async def create_session(
@@ -598,37 +598,31 @@ class HermesResidentSessionController(ResidentSessionController):
         title: str,
         model: str,
     ) -> ResidentSession:
-        connection = await self._connect(runtime)
+        if model and model != runtime.model:
+            raise HermesGatewayError(
+                "Hermes API sessions use the resident model; "
+                f"requested {model!r}, resident uses {runtime.model!r}"
+            )
+        api = await self._connect(runtime)
         try:
-            payload = await connection.request(
-                "session.create",
-                {
+            payload = await api.request(
+                "POST",
+                "/api/sessions",
+                json_body={
                     "title": title or runtime.name,
-                    "model": _hermes_model_id(model or runtime.model),
-                    "source": "desktop",
-                    "close_on_disconnect": False,
+                    "model": _hermes_model_id(runtime.model),
                 },
             )
-            live_session_id = (
-                str(payload.get("session_id") or "") if isinstance(payload, dict) else ""
-            )
-            if not live_session_id:
-                raise HermesGatewayError("Hermes session.create returned no live session id")
-            await connection.request(
-                "session.title",
-                {"session_id": live_session_id, "title": title or runtime.name},
-            )
-        except Exception:
-            await connection.close()
-            raise
-        key = str(payload.get("stored_session_id") or "") if isinstance(payload, dict) else ""
+        finally:
+            await api.close()
+        session_payload = payload.get("session")
+        key = str(session_payload.get("id") or "") if isinstance(session_payload, dict) else ""
         if not key:
-            await connection.close()
-            raise HermesGatewayError("Hermes session.create returned no persistent session key")
+            raise HermesGatewayError("Hermes session API returned no persistent session id")
         session_id = _session_uuid(key)
         self._session_keys[session_id] = key
         now = datetime.now(UTC)
-        session = ResidentSession(
+        return ResidentSession(
             id=session_id,
             resident_id=runtime.id,
             title=title or runtime.name,
@@ -637,46 +631,14 @@ class HermesResidentSessionController(ResidentSessionController):
             updated_at=now,
             chat_endpoint=f"/s/{runtime.id}/sessions/{session_id}/session",
         )
-        expiry = asyncio.create_task(self._expire_pending_session(session_id))
-        self._pending_sessions[session_id] = _PendingHermesSession(
-            connection=connection,
-            live_session_id=live_session_id,
-            session=session,
-            expiry=expiry,
-        )
-        return session
-
-    async def _expire_pending_session(self, session_id: UUID) -> None:
-        try:
-            await asyncio.sleep(PENDING_SESSION_TTL_SECONDS)
-            pending = self._pending_sessions.pop(session_id, None)
-            if pending is not None:
-                with suppress(Exception):
-                    await pending.connection.request(
-                        "session.close", {"session_id": pending.live_session_id}
-                    )
-                await pending.connection.close()
-        except asyncio.CancelledError:
-            return
 
     async def delete_session(self, runtime: ResidentRuntime, session_id: UUID) -> None:
-        pending = self._pending_sessions.pop(session_id, None)
-        if pending is not None:
-            pending.expiry.cancel()
-            try:
-                await pending.connection.request(
-                    "session.close", {"session_id": pending.live_session_id}
-                )
-            finally:
-                await pending.connection.close()
-            self._session_keys.pop(session_id, None)
-            return
-        connection = await self._connect(runtime)
+        api = await self._connect(runtime)
         try:
-            key = await self._resolve_key(connection, session_id)
-            await connection.request("session.delete", {"session_id": key})
+            key = await self._resolve_key(api, session_id)
+            await api.request("DELETE", f"/api/sessions/{quote(key, safe='')}")
         finally:
-            await connection.close()
+            await api.close()
         self._session_keys.pop(session_id, None)
 
     async def connect_chat(
@@ -684,35 +646,29 @@ class HermesResidentSessionController(ResidentSessionController):
         runtime: ResidentRuntime,
         session_id: UUID,
     ) -> ResidentChatConnection:
-        pending = self._pending_sessions.pop(session_id, None)
-        if pending is not None:
-            pending.expiry.cancel()
-            connection = pending.connection
-            live_session_id = pending.live_session_id
-            payload: dict[str, Any] = {"info": {"model": pending.session.model}}
-        else:
-            connection = await self._connect(runtime)
+        api = await self._connect(runtime)
         try:
-            if pending is None:
-                key = await self._resolve_key(connection, session_id)
-                payload = await connection.request(
-                    "session.resume",
-                    {
-                        "session_id": key,
-                        "source": "desktop",
-                        "close_on_disconnect": False,
-                    },
-                )
-                if not isinstance(payload, dict) or not payload.get("session_id"):
-                    raise HermesGatewayError("Hermes session.resume returned no live session id")
-                live_session_id = str(payload["session_id"])
-            history = await connection.request("session.history", {"session_id": live_session_id})
+            key = await self._resolve_key(api, session_id)
+            encoded_key = quote(key, safe="")
+            detail = await api.request("GET", f"/api/sessions/{encoded_key}")
+            history = await api.request("GET", f"/api/sessions/{encoded_key}/messages")
         except Exception:
-            await connection.close()
+            await api.close()
             raise
+        session_payload = detail.get("session")
+        stored_model = (
+            str(session_payload.get("model") or runtime.model)
+            if isinstance(session_payload, dict)
+            else runtime.model
+        )
+        resolved_model = (
+            runtime.model
+            if _hermes_model_id(runtime.model) == stored_model
+            else stored_model
+        )
         return HermesChatConnection(
-            connection,
-            live_session_id,
-            _history_turns(history.get("messages") if isinstance(history, dict) else None),
-            str((payload.get("info") or {}).get("model") or runtime.model),
+            api,
+            key,
+            _history_turns(history.get("data")),
+            resolved_model,
         )
