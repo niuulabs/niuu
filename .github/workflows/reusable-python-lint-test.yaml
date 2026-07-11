@@ -99,12 +99,23 @@ jobs:
 
       - name: Run tests with coverage
         run: |
+          set -o pipefail
+          output_file="$(mktemp)"
           uv run pytest ${{ matrix.pkg.paths }} -v --tb=short \
             --override-ini="addopts=" \
             ${{ matrix.pkg.cov }} \
             --cov-report=term-missing \
             --cov-report=xml \
-            --cov-fail-under=85
+            --cov-fail-under=85 2>&1 | tee "$output_file"
+          status=${PIPESTATUS[0]}
+          if (( status != 0 )); then
+            failure_output="$(tail -n 200 "$output_file")"
+            failure_output="${failure_output//'%'/'%25'}"
+            failure_output="${failure_output//$'\n'/'%0A'}"
+            failure_output="${failure_output//$'\r'/'%0D'}"
+            echo "::error title=Python test failure (${{ matrix.pkg.name }})::${failure_output}"
+          fi
+          exit "$status"
 
       - name: Upload coverage to Codecov
         if: always() && hashFiles('coverage.xml') != ''

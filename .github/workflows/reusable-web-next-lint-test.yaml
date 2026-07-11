@@ -51,7 +51,16 @@ jobs:
         run: pnpm lint
 
       - name: Prettier check
-        run: pnpm format:check
+        run: |
+          output="$(pnpm format:check 2>&1)" || {
+            printf '%s\n' "$output"
+            printf '%s\n' "$output" \
+              | sed -n 's/^\[warn\] \(.*\.[[:alnum:]]*\)$/\1/p' \
+              | while IFS= read -r file; do
+                  echo "::error file=${file}::Prettier formatting required"
+                done
+            exit 1
+          }
 
   test:
     name: "web-next: Test"
