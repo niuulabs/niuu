@@ -20,6 +20,7 @@ import yaml
 
 from bifrost.config import ManagedModelConfig
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
+from niuu.config_models import default_session_definitions
 from ting.domain.models import (
     Saga,
     SagaStatus,
@@ -32,7 +33,6 @@ from ting.domain.services.dispatch_service import (
     build_flock_prompt,
 )
 from ting.ports.volundr import SpawnRequest
-from niuu.config_models import default_session_definitions
 
 # ---------------------------------------------------------------------------
 # Helpers

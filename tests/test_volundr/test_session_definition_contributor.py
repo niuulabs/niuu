@@ -2,10 +2,10 @@
 
 import pytest
 
+from niuu.config_models import SessionDefinitionConfig, default_session_definitions
 from volundr.adapters.outbound.contributors.session_def import (
     SessionDefinitionContributor,
 )
-from niuu.config_models import SessionDefinitionConfig, default_session_definitions
 from volundr.domain.ports import SessionContext
 
 
