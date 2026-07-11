@@ -33,7 +33,19 @@ jobs:
         uses: ./.github/actions/setup-python-env
 
       - name: Run ruff linting
-        run: uv run ruff check --output-format=github src/ tests/
+        run: |
+          output="$(uv run ruff check --output-format=github src/ tests/ 2>&1)" || {
+            printf '%s\n' "$output"
+            uv run ruff check --fix src/ tests/ >/dev/null 2>&1 || true
+            diff_output="$(git diff -- src/ tests/)"
+            annotation="${diff_output: -12000}"
+            annotation="${annotation//'%'/'%25'}"
+            annotation="${annotation//$'\n'/'%0A'}"
+            annotation="${annotation//$'\r'/'%0D'}"
+            echo "::error title=Ruff lint diff::${annotation}"
+            exit 1
+          }
+          printf '%s\n' "$output"
 
       - name: Check ruff formatting
         run: |
