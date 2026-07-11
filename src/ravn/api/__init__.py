@@ -59,9 +59,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_CAPABILITY_UNAVAILABLE = (
-    "This Ravn host has no configured persistence adapter for this capability"
-)
+_CAPABILITY_UNAVAILABLE = "This Ravn host has no configured persistence adapter for this capability"
 
 
 class TriggerCreateRequest(BaseModel):

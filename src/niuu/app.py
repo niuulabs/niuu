@@ -677,5 +677,4 @@ def build_root_app(
     return root
 
 
-
 from niuu.root_server import RootServer  # noqa: E402,F401

@@ -13,6 +13,7 @@ from ravn.ports.web_search import SearchResult, WebSearchPort
 
 _DEFAULT_NUM_RESULTS = 5
 
+
 class _DuckDuckGoHTMLParser(HTMLParser):
     """Extract result links and snippets from DuckDuckGo's simple HTML page."""
 
