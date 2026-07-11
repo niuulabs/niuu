@@ -1146,12 +1146,32 @@ class OpenShellGatewayPodManager(
         )
         if sandbox is None:
             raise RuntimeError("OpenShell resident sandbox does not exist")
-        return await asyncio.to_thread(
+        native_page = await asyncio.to_thread(
             self._client.get_sandbox_logs,
             sandbox.id,
             lines=lines,
             sources=sources,
             min_level=min_level,
+        )
+        process_sources = tuple(
+            source for source in ("skuld", "ravn") if not sources or source in sources
+        )
+        if not process_sources:
+            return native_page
+        exit_code, output = await asyncio.to_thread(
+            self._client.exec_script,
+            sandbox_id=sandbox.id,
+            script=_resident_process_log_script(lines, process_sources),
+            env={},
+        )
+        if exit_code != 0:
+            raise RuntimeError("OpenShell resident process logs could not be read")
+        process_entries = _resident_process_log_entries(output, min_level=min_level)
+        entries = [*native_page.entries, *process_entries]
+        entries.sort(key=lambda entry: entry.timestamp_ms)
+        return ResidentLogPage(
+            entries=entries[-lines:],
+            buffer_total=native_page.buffer_total + len(process_entries),
         )
 
     async def close(self) -> None:
@@ -2515,6 +2535,82 @@ for name in ravn skuld; do
   rm -f "/sandbox/.volundr/$name.pid"
 done
 """
+
+
+def _resident_process_log_script(lines: int, sources: Sequence[str]) -> str:
+    commands = ["set -eu"]
+    for source in sources:
+        path = f"/sandbox/.volundr/{source}.log"
+        commands.extend(
+            (
+                f"printf '%s\\n' {shlex.quote(f'__VOLUNDR_LOG_SOURCE__={source}')}",
+                f"[ ! -f {shlex.quote(path)} ] || tail -n {int(lines)} {shlex.quote(path)}",
+            )
+        )
+    return "\n".join(commands)
+
+
+def _resident_process_log_entries(output: str, *, min_level: str) -> list[ResidentLogEntry]:
+    source = ""
+    entries: list[ResidentLogEntry] = []
+    minimum = _resident_log_level_value(min_level)
+    for raw_line in output.splitlines():
+        if raw_line.startswith("__VOLUNDR_LOG_SOURCE__="):
+            source = raw_line.partition("=")[2]
+            continue
+        line = raw_line.strip()
+        if not source or not line:
+            continue
+        timestamp_ms = 0
+        level = "INFO"
+        message = line
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            level = str(payload.get("level") or level).upper()
+            message = str(payload.get("message") or payload.get("event") or line)
+            timestamp_ms = _resident_log_timestamp_ms(
+                payload.get("time") or payload.get("timestamp")
+            )
+        if _resident_log_level_value(level) < minimum:
+            continue
+        entries.append(
+            ResidentLogEntry(
+                timestamp_ms=timestamp_ms,
+                level=level,
+                source=source,
+                target="process",
+                message=message,
+                fields={},
+            )
+        )
+    return entries
+
+
+def _resident_log_timestamp_ms(value: Any) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return int(parsed.timestamp() * 1000)
+
+
+def _resident_log_level_value(level: str) -> int:
+    return {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "WARN": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL,
+    }.get(str(level or "").strip().upper(), logging.DEBUG)
 
 
 def _provider_profile(

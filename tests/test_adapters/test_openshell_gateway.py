@@ -703,6 +703,39 @@ async def test_resident_logs_use_native_gateway_log_buffer(
     assert page.entries[0].message == "PROC:LAUNCH ravn"
 
 
+@pytest.mark.asyncio
+async def test_resident_logs_merge_process_files_through_gateway_exec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _resident_runtime()
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.created = {"providers": ()}
+    client.exec_script = lambda **kwargs: (
+        0,
+        "\n".join(
+            (
+                "__VOLUNDR_LOG_SOURCE__=ravn",
+                '{"time":"2026-07-11T10:00:00Z","level":"INFO","message":"turn started"}',
+                '{"time":"2026-07-11T10:00:01Z","level":"ERROR","message":"turn failed"}',
+            )
+        ),
+    )
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+
+    page = await manager.logs(
+        runtime,
+        lines=50,
+        sources=("ravn",),
+        min_level="ERROR",
+    )
+
+    assert [(entry.source, entry.level, entry.message) for entry in page.entries] == [
+        ("sandbox", "OCSF", "PROC:LAUNCH ravn"),
+        ("ravn", "ERROR", "turn failed"),
+    ]
+
+
 def test_session_proxy_target_preserves_service_route_and_uses_gateway(
     monkeypatch: pytest.MonkeyPatch,
 ):
