@@ -284,4 +284,32 @@ describe('research campaign model', () => {
     expect(drawerSectionCountLabel(1, 'source', 'sources')).toBe('1 source');
     expect(drawerSectionCountLabel(2, 'source', 'sources')).toBe('2 sources');
   });
+
+  it('covers bounded and malformed input fallbacks', () => {
+    const oneMinuteAgo = new Date(Date.now() - 60_000).toISOString();
+    expect(formatElapsed(oneMinuteAgo)).toBe('1m');
+    expect(parseYamlScalar('12')).toBe(12);
+
+    expect(deriveWorkingThesis([artifact({ kind: 'final', body: 'Final thesis.' })])).toBe(
+      'Final thesis.',
+    );
+    expect(
+      deriveWorkingThesis([
+        artifact({ kind: 'notes', path: 'campaign/notes/exploration.md', body: 'Exploration.' }),
+      ]),
+    ).toBe('Exploration.');
+    expect(inferSourceKind(source({ originType: 'mail' }))).toBe('web');
+
+    expect(parseCritiques('## Default severity', [])[0]).toMatchObject({
+      claim: 'Default severity',
+      severity: 'high',
+    });
+    expect(parseCritiques('Introduction\n## Later section', [])[0]).toMatchObject({
+      claim: 'Later section',
+      severity: 'med',
+    });
+    expect(parseCritiques('## \nIgnored', [])).toEqual([]);
+    expect(parseListCards('- one\n- two\n- three\n- four\n- five\n- six\n- seven')).toHaveLength(6);
+    expect(parseListCards('')).toEqual([]);
+  });
 });

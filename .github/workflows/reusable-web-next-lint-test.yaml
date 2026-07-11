@@ -116,7 +116,9 @@ jobs:
           status=${PIPESTATUS[0]}
           set -e
           if (( status != 0 )); then
-            failure_output="$(tail -n 60 "$output_file")"
+            failure_output="$(grep -E 'All files|ERROR: Coverage' "$output_file" || true)"
+            failure_output+=$'\n'
+            failure_output+="$(tail -n 25 "$output_file")"
             failure_output="${failure_output//'%'/'%25'}"
             failure_output="${failure_output//$'\n'/'%0A'}"
             failure_output="${failure_output//$'\r'/'%0D'}"
