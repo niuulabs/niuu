@@ -12,8 +12,8 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
-from credentials.models import MCPServerConfig, MountType, SecretInfo, SecretMountSpec
-from identity.models import (
+from credentials.models import MCPServerConfig, MountType, SecretInfo, SecretMountSpec  # noqa: F401
+from identity.models import (  # noqa: F401
     ProvisioningResult,
     QuotaCheck,
     StorageQuota,
@@ -25,7 +25,7 @@ from identity.models import (
     UserStatus,
 )
 from niuu.domain import models as shared_models
-from tracker.models import ProjectMapping, TrackerConnectionStatus, TrackerIssue
+from tracker.models import ProjectMapping, TrackerConnectionStatus, TrackerIssue  # noqa: F401
 
 CIStatus = shared_models.CIStatus
 GitProviderType = shared_models.GitProviderType

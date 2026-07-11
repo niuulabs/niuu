@@ -10,6 +10,7 @@ from dataclasses import asdict
 from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
+
 from niuu.domain.transcript_reducer import PER_CONNECT_MARKER
 from skuld.channels import WebSocketChannel, _is_expected_ws_disconnect
 from skuld.websocket_auth import (

@@ -3,7 +3,6 @@
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-
 CONVERSATION_HISTORY_DIR = ".skuld"
 CONVERSATION_HISTORY_FILE = "conversation.json"
 

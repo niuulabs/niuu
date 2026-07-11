@@ -7,12 +7,21 @@ import logging
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class, resolve_secret_kwargs
 from volundr.config import Settings
-from volundr.domain.ports import SessionContributor
+from volundr.domain.ports import (
+    ArchiveStorePort,
+    AuthorizationPort,
+    ExternalSessionProvider,
+    GatewayPort,
+    PodManager,
+    ResourceProvider,
+    SecretInjectionPort,
+    SessionContributor,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _create_pod_manager(settings: Settings) -> "PodManager":  # noqa: F821
+def _create_pod_manager(settings: Settings) -> PodManager:
     """Create the PodManager adapter from dynamic config."""
     pm_cfg = settings.pod_manager
     cls = import_class(pm_cfg.adapter)
@@ -40,7 +49,7 @@ def _runtime_backend(settings: Settings) -> str:
     return "kubernetes"
 
 
-def _create_authorization_adapter(settings: Settings) -> "AuthorizationPort":  # noqa: F821
+def _create_authorization_adapter(settings: Settings) -> AuthorizationPort:
     """Create the AuthorizationPort adapter from dynamic config."""
     az_cfg = settings.authorization
     cls = import_class(az_cfg.adapter)
@@ -50,7 +59,7 @@ def _create_authorization_adapter(settings: Settings) -> "AuthorizationPort":  #
     return instance
 
 
-def _create_gateway_adapter(settings: Settings) -> "GatewayPort":  # noqa: F821
+def _create_gateway_adapter(settings: Settings) -> GatewayPort:
     """Create the GatewayPort adapter from dynamic config."""
     gw_cfg = settings.gateway
     cls = import_class(gw_cfg.adapter)
@@ -67,7 +76,7 @@ def _create_http_auth_adapter(config) -> HttpAuthPort:
     return cls(**kwargs)
 
 
-def _create_secret_injection_adapter(settings: Settings) -> "SecretInjectionPort":  # noqa: F821
+def _create_secret_injection_adapter(settings: Settings) -> SecretInjectionPort:
     """Create the SecretInjectionPort adapter from dynamic config."""
     si_cfg = settings.secret_injection
     cls = import_class(si_cfg.adapter)
@@ -77,7 +86,7 @@ def _create_secret_injection_adapter(settings: Settings) -> "SecretInjectionPort
     return instance
 
 
-def _create_resource_provider(settings: Settings) -> "ResourceProvider":  # noqa: F821
+def _create_resource_provider(settings: Settings) -> ResourceProvider:
     """Create the ResourceProvider adapter from dynamic config."""
     rp_cfg = settings.resource_provider
     cls = import_class(rp_cfg.adapter)
@@ -87,7 +96,7 @@ def _create_resource_provider(settings: Settings) -> "ResourceProvider":  # noqa
     return instance
 
 
-def _create_archive_store(settings: Settings) -> "ArchiveStorePort":  # noqa: F821
+def _create_archive_store(settings: Settings) -> ArchiveStorePort:
     """Create the ArchiveStorePort adapter from dynamic config."""
     as_cfg = settings.archive_store
     cls = import_class(as_cfg.adapter)
@@ -99,7 +108,7 @@ def _create_archive_store(settings: Settings) -> "ArchiveStorePort":  # noqa: F8
 
 def _create_external_session_providers(
     settings: Settings,
-) -> list["ExternalSessionProvider"]:  # noqa: F821
+) -> list[ExternalSessionProvider]:
     """Create external session provider adapters from dynamic config.
 
     Disabled unless ``external_sessions.enabled`` is true, or unset while
