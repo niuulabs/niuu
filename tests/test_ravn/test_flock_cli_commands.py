@@ -316,6 +316,7 @@ def test_peers_with_no_live_nodes(tmp_path: Path) -> None:
 
 
 def test_peers_queries_a_live_node(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RAVN_CONFIG", raising=False)
     _init(tmp_path)
     _save_runtime(FlockRuntime(started_at="now", pids={"coordinator": os.getpid()}), tmp_path)
 

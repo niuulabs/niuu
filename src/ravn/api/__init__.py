@@ -624,10 +624,13 @@ def create_app(
                 auth_params,
             )
         except httpx.HTTPStatusError as exc:
-            try:
-                detail = exc.response.json().get("detail", "Forge rejected session stop")
-            except ValueError:
-                detail = "Forge rejected session stop"
+            if exc.response.status_code >= 500:
+                detail = "Forge session lifecycle is unavailable"
+            else:
+                try:
+                    detail = exc.response.json().get("detail", "Forge rejected session stop")
+                except ValueError:
+                    detail = "Forge rejected session stop"
             raise HTTPException(
                 status_code=exc.response.status_code,
                 detail=detail,

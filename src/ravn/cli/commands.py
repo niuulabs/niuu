@@ -27,7 +27,9 @@ from ravn.cli.mcp_runtime import (  # noqa: F401
 from ravn.config import ProjectConfig, Settings
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.models import (
+    AgentTask,
     Message,
+    OutputMode,
     Session,
     TodoItem,
     TodoStatus,
@@ -88,6 +90,7 @@ def approvals_main() -> None:
 # Compatibility exports remain late because the Typer apps must exist first.
 # isort: off
 from ravn.cli.runtime_builders import (  # noqa: E402, F401
+    _REALM_CLIENT_CACHE,
     _RealmBuildConfig,
     _attach_signal_build_tool,
     _build_executor,

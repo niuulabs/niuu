@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -374,6 +375,7 @@ def _review_item_for_learning_action(
     return item
 
 
+@dataclass(frozen=True, slots=True)
 class _CommandTarget:
     label: str
     publisher: SleipnirPublisher
