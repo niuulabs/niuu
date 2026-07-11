@@ -348,18 +348,6 @@ export function useResearchCampaignPage() {
     void navigate({ to: '/ting/research' });
   }
 
-  if (isLoading) {
-    return <div className="ting-research-detail__loading">Loading campaign…</div>;
-  }
-
-  if (isError || !campaign) {
-    return (
-      <div className="ting-research-detail__error">
-        {error instanceof Error ? error.message : 'Campaign not found.'}
-      </div>
-    );
-  }
-
   return {
     slug,
     navigate,
