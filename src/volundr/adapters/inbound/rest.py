@@ -3271,7 +3271,9 @@ def create_router(
         download_root = os.path.realpath(os.path.abspath(os.fspath(path.parent)))
         safe_path = os.path.realpath(os.path.abspath(os.fspath(path)), strict=True)
         download_prefix = download_root.rstrip(os.sep) + os.sep
-        if safe_path != download_root and not safe_path.startswith(download_prefix):
+        if safe_path == download_root:
+            safe_path = download_root
+        elif not safe_path.startswith(download_prefix):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Resolved transcript artifact escapes its archive directory",

@@ -217,7 +217,9 @@ class SessionArchiveService:
                 root_path = os.path.realpath(os.path.abspath(os.fspath(archive_root)))
                 existing_path = os.path.realpath(os.path.abspath(os.fspath(existing)))
                 root_prefix = root_path.rstrip(os.sep) + os.sep
-                if existing_path != root_path and not existing_path.startswith(root_prefix):
+                if existing_path == root_path:
+                    existing_path = root_path
+                elif not existing_path.startswith(root_prefix):
                     raise ArchivePathError(f"Transcript path escapes archive root: {existing}")
                 if os.path.exists(existing_path):
                     return Path(existing_path)
@@ -228,7 +230,9 @@ class SessionArchiveService:
             root_path = os.path.realpath(os.path.abspath(os.fspath(archive_root)))
             existing_path = os.path.realpath(os.path.abspath(os.fspath(existing)))
             root_prefix = root_path.rstrip(os.sep) + os.sep
-            if existing_path != root_path and not existing_path.startswith(root_prefix):
+            if existing_path == root_path:
+                existing_path = root_path
+            elif not existing_path.startswith(root_prefix):
                 raise ArchivePathError(f"Transcript path escapes archive root: {existing}")
             if os.path.exists(existing_path):
                 return Path(existing_path)

@@ -40,7 +40,9 @@ def resolve_contained_path(
     joined_path = os.path.join(root_path, candidate_value)
     resolved_candidate = os.path.realpath(joined_path, strict=strict)
     root_prefix = root_path.rstrip(os.sep) + os.sep
-    if resolved_candidate != root_path and not resolved_candidate.startswith(root_prefix):
+    if resolved_candidate == root_path:
+        resolved_candidate = root_path
+    elif not resolved_candidate.startswith(root_prefix):
         raise ArchivePathError(f"Path escapes configured root: {candidate}")
     return Path(resolved_candidate)
 
@@ -156,7 +158,9 @@ def load_workspace_transcript(workspace_dir: str | Path, session_id: str) -> dic
     candidate = transcript_source_path(Path(workspace_path), session_id)
     path = os.path.realpath(os.path.abspath(os.fspath(candidate)))
     workspace_prefix = workspace_path.rstrip(os.sep) + os.sep
-    if path != workspace_path and not path.startswith(workspace_prefix):
+    if path == workspace_path:
+        path = workspace_path
+    elif not path.startswith(workspace_prefix):
         raise ArchivePathError(f"Transcript path escapes workspace: {candidate}")
     if not os.path.exists(path):
         return {"turns": [], "is_active": False, "last_activity": ""}
@@ -224,7 +228,9 @@ def load_archive_transcript(
     root_path = os.path.realpath(os.path.abspath(os.fspath(root)))
     candidate_path = os.path.realpath(os.path.abspath(os.fspath(path)))
     root_prefix = root_path.rstrip(os.sep) + os.sep
-    if candidate_path != root_path and not candidate_path.startswith(root_prefix):
+    if candidate_path == root_path:
+        candidate_path = root_path
+    elif not candidate_path.startswith(root_prefix):
         raise ArchivePathError(f"Archive artifact escapes archive root: {path}")
     path = Path(candidate_path)
     if not os.path.exists(candidate_path):
@@ -274,7 +280,9 @@ def load_archive_manifest(
     root_path = os.path.realpath(os.path.abspath(os.fspath(root)))
     candidate_path = os.path.realpath(os.path.abspath(os.fspath(path)))
     root_prefix = root_path.rstrip(os.sep) + os.sep
-    if candidate_path != root_path and not candidate_path.startswith(root_prefix):
+    if candidate_path == root_path:
+        candidate_path = root_path
+    elif not candidate_path.startswith(root_prefix):
         raise ArchivePathError(f"Archive manifest escapes archive root: {path}")
     if not os.path.exists(candidate_path):
         return None
@@ -326,7 +334,9 @@ def load_archive_logs(
     root_path = os.path.realpath(os.path.abspath(os.fspath(root)))
     candidate_path = os.path.realpath(os.path.abspath(os.fspath(path)))
     root_prefix = root_path.rstrip(os.sep) + os.sep
-    if candidate_path != root_path and not candidate_path.startswith(root_prefix):
+    if candidate_path == root_path:
+        candidate_path = root_path
+    elif not candidate_path.startswith(root_prefix):
         raise ArchivePathError(f"Archive artifact escapes archive root: {path}")
     path = Path(candidate_path)
     if not os.path.exists(candidate_path):
@@ -406,7 +416,9 @@ def write_session_archive(
             )
             allowed_root = os.path.realpath(os.path.join(config_base, os.fspath(configured)))
     allowed_prefix = allowed_root.rstrip(os.sep) + os.sep
-    if root_path != allowed_root and not root_path.startswith(allowed_prefix):
+    if root_path == allowed_root:
+        root_path = allowed_root
+    elif not root_path.startswith(allowed_prefix):
         raise ArchivePathError(f"Archive root escapes configured root: {root_candidate}")
     os.makedirs(root_path, exist_ok=True)
     root = Path(root_path)
@@ -415,7 +427,9 @@ def write_session_archive(
     transcript_candidate = os.path.join(root_path, "transcript.md")
     transcript_path = os.path.realpath(os.path.abspath(transcript_candidate))
     root_prefix = root_path.rstrip(os.sep) + os.sep
-    if transcript_path != root_path and not transcript_path.startswith(root_prefix):
+    if transcript_path == root_path:
+        transcript_path = root_path
+    elif not transcript_path.startswith(root_prefix):
         raise ArchivePathError(f"Transcript path escapes archive root: {transcript_candidate}")
     Path(transcript_path).write_text(
         render_transcript_markdown(transcript_payload),
@@ -436,7 +450,9 @@ def write_session_archive(
     source_candidate = transcript_source_path(workspace, session_id)
     source_path = os.path.realpath(os.path.abspath(os.fspath(source_candidate)))
     workspace_prefix = workspace_path.rstrip(os.sep) + os.sep
-    if source_path != workspace_path and not source_path.startswith(workspace_prefix):
+    if source_path == workspace_path:
+        source_path = workspace_path
+    elif not source_path.startswith(workspace_prefix):
         raise ArchivePathError(f"Transcript source escapes workspace: {source_candidate}")
 
     manifest = {
@@ -479,12 +495,16 @@ def _copy_workspace_logs(workspace: Path, destination_root: Path) -> list[str]:
     for source, relative in _workspace_log_sources(Path(workspace_path)):
         source_path = os.path.realpath(os.path.abspath(os.fspath(source)), strict=True)
         workspace_prefix = workspace_path.rstrip(os.sep) + os.sep
-        if source_path != workspace_path and not source_path.startswith(workspace_prefix):
+        if source_path == workspace_path:
+            source_path = workspace_path
+        elif not source_path.startswith(workspace_prefix):
             raise ArchivePathError(f"Log source escapes workspace: {source}")
         target_candidate = os.path.join(destination_path, os.fspath(relative))
         target_path = os.path.realpath(os.path.abspath(target_candidate))
         destination_prefix = destination_path.rstrip(os.sep) + os.sep
-        if target_path != destination_path and not target_path.startswith(destination_prefix):
+        if target_path == destination_path:
+            target_path = destination_path
+        elif not target_path.startswith(destination_prefix):
             raise ArchivePathError(f"Log destination escapes archive root: {relative}")
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
         shutil.copy2(source_path, target_path)
@@ -503,7 +523,9 @@ def _copy_event_streams(
     )
     source_parent = os.path.realpath(os.path.abspath(os.path.dirname(source_path)))
     source_parent_prefix = source_parent.rstrip(os.sep) + os.sep
-    if source_path != source_parent and not source_path.startswith(source_parent_prefix):
+    if source_path == source_parent:
+        source_path = source_parent
+    elif not source_path.startswith(source_parent_prefix):
         raise ArchivePathError(f"Event source escapes its parent: {event_source_dir}")
     if not os.path.isdir(source_path):
         return []
@@ -512,20 +534,24 @@ def _copy_event_streams(
     destination_path = os.path.realpath(os.path.abspath(os.fspath(destination_root)))
     destination_parent = os.path.realpath(os.path.abspath(os.path.dirname(destination_path)))
     destination_parent_prefix = destination_parent.rstrip(os.sep) + os.sep
-    if destination_path != destination_parent and not destination_path.startswith(
-        destination_parent_prefix
-    ):
+    if destination_path == destination_parent:
+        destination_path = destination_parent
+    elif not destination_path.startswith(destination_parent_prefix):
         raise ArchivePathError(f"Event destination escapes its parent: {destination_root}")
     os.makedirs(destination_path, exist_ok=True)
     for source in sorted(Path(source_path).glob("*.jsonl")):
         file_path = os.path.realpath(os.path.abspath(os.fspath(source)), strict=True)
         source_prefix = source_path.rstrip(os.sep) + os.sep
-        if file_path != source_path and not file_path.startswith(source_prefix):
+        if file_path == source_path:
+            file_path = source_path
+        elif not file_path.startswith(source_prefix):
             raise ArchivePathError(f"Event source escapes source directory: {source}")
         target_candidate = os.path.join(destination_path, source.name)
         target_path = os.path.realpath(os.path.abspath(target_candidate))
         destination_prefix = destination_path.rstrip(os.sep) + os.sep
-        if target_path != destination_path and not target_path.startswith(destination_prefix):
+        if target_path == destination_path:
+            target_path = destination_path
+        elif not target_path.startswith(destination_prefix):
             raise ArchivePathError(f"Event destination escapes archive root: {source.name}")
         shutil.copy2(file_path, target_path)
         copied.append(str((Path("events") / "claude-jsonl" / source.name).as_posix()))
@@ -538,30 +564,40 @@ def _workspace_log_sources(workspace: Path) -> list[tuple[Path, Path]]:
     sources: list[tuple[Path, Path]] = []
 
     skuld_path = os.path.realpath(os.path.join(workspace_path, ".skuld.log"))
-    if skuld_path != workspace_path and not skuld_path.startswith(workspace_prefix):
+    if skuld_path == workspace_path:
+        skuld_path = workspace_path
+    elif not skuld_path.startswith(workspace_prefix):
         raise ArchivePathError("Skuld log path escapes workspace")
     if os.path.isfile(skuld_path):
         sources.append((Path(skuld_path), Path("skuld.log")))
 
     flock_path = os.path.realpath(os.path.join(workspace_path, ".flock", "logs"))
-    if flock_path != workspace_path and not flock_path.startswith(workspace_prefix):
+    if flock_path == workspace_path:
+        flock_path = workspace_path
+    elif not flock_path.startswith(workspace_prefix):
         raise ArchivePathError("Flock log path escapes workspace")
     if os.path.isdir(flock_path):
         for candidate in sorted(Path(flock_path).glob("*.log")):
             path = os.path.realpath(os.path.abspath(os.fspath(candidate)), strict=True)
             flock_prefix = flock_path.rstrip(os.sep) + os.sep
-            if path != flock_path and not path.startswith(flock_prefix):
+            if path == flock_path:
+                path = flock_path
+            elif not path.startswith(flock_prefix):
                 raise ArchivePathError(f"Flock log escapes log directory: {candidate}")
             sources.append((Path(path), Path("flock") / candidate.name))
 
     service_path = os.path.realpath(os.path.join(workspace_path, ".services", "logs"))
-    if service_path != workspace_path and not service_path.startswith(workspace_prefix):
+    if service_path == workspace_path:
+        service_path = workspace_path
+    elif not service_path.startswith(workspace_prefix):
         raise ArchivePathError("Service log path escapes workspace")
     if os.path.isdir(service_path):
         for candidate in sorted(Path(service_path).glob("*.log")):
             path = os.path.realpath(os.path.abspath(os.fspath(candidate)), strict=True)
             service_prefix = service_path.rstrip(os.sep) + os.sep
-            if path != service_path and not path.startswith(service_prefix):
+            if path == service_path:
+                path = service_path
+            elif not path.startswith(service_prefix):
                 raise ArchivePathError(f"Service log escapes log directory: {candidate}")
             sources.append((Path(path), Path("services") / candidate.name))
     return sources
@@ -571,7 +607,9 @@ def _read_json(root: Path, path: Path) -> dict[str, Any]:
     root_path = os.path.realpath(os.path.abspath(os.fspath(root)))
     safe_path = os.path.realpath(os.path.abspath(os.fspath(path)), strict=True)
     root_prefix = root_path.rstrip(os.sep) + os.sep
-    if safe_path != root_path and not safe_path.startswith(root_prefix):
+    if safe_path == root_path:
+        safe_path = root_path
+    elif not safe_path.startswith(root_prefix):
         raise ArchivePathError(f"JSON path escapes archive root: {path}")
     with open(safe_path, encoding="utf-8") as archive_file:
         data = json.load(archive_file)
@@ -592,7 +630,9 @@ def _write_json(root: Path, path: str | Path, payload: dict[str, Any]) -> None:
     candidate = os.path.join(root_path, os.fspath(path))
     safe_path = os.path.realpath(os.path.abspath(candidate))
     root_prefix = root_path.rstrip(os.sep) + os.sep
-    if safe_path != root_path and not safe_path.startswith(root_prefix):
+    if safe_path == root_path:
+        safe_path = root_path
+    elif not safe_path.startswith(root_prefix):
         raise ArchivePathError(f"JSON path escapes archive root: {path}")
     os.makedirs(os.path.dirname(safe_path), exist_ok=True)
     with open(safe_path, "w", encoding="utf-8") as archive_file:

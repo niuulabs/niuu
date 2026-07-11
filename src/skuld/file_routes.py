@@ -100,9 +100,9 @@ async def list_files(path: str = "", root: str = "workspace") -> dict:
     canonical_base = os.path.realpath(os.path.abspath(os.fspath(base)))
     checked_target = os.path.realpath(os.path.abspath(os.fspath(target)))
     canonical_prefix = canonical_base.rstrip(os.sep) + os.sep
-    if checked_target != canonical_base and not checked_target.startswith(
-        canonical_prefix
-    ):
+    if checked_target == canonical_base:
+        checked_target = canonical_base
+    elif not checked_target.startswith(canonical_prefix):
         raise HTTPException(400, "Path traversal not allowed")
     target = Path(checked_target)
 
@@ -124,9 +124,7 @@ async def list_files(path: str = "", root: str = "workspace") -> dict:
             relative_item = item.relative_to(base).as_posix()
             canonical_item = _resolve_user_path(base, relative_item, strict=True)
             checked_item = os.path.realpath(os.path.abspath(os.fspath(canonical_item)))
-            if checked_item != canonical_base and not checked_item.startswith(
-                canonical_prefix
-            ):
+            if not checked_item.startswith(canonical_prefix):
                 continue
             canonical_item = Path(checked_item)
         except HTTPException:
@@ -182,9 +180,9 @@ async def upload_files(
     canonical_base = os.path.realpath(os.path.abspath(os.fspath(base)))
     checked_target_dir = os.path.realpath(os.path.abspath(os.fspath(target_dir)))
     canonical_prefix = canonical_base.rstrip(os.sep) + os.sep
-    if checked_target_dir != canonical_base and not checked_target_dir.startswith(
-        canonical_prefix
-    ):
+    if checked_target_dir == canonical_base:
+        checked_target_dir = canonical_base
+    elif not checked_target_dir.startswith(canonical_prefix):
         raise HTTPException(400, "Path traversal not allowed")
     target_dir = Path(checked_target_dir)
 
@@ -259,9 +257,9 @@ async def upload_file_raw(
 
     parent = _resolve_user_path(base, target.parent.relative_to(base).as_posix())
     checked_parent = os.path.realpath(os.path.abspath(os.fspath(parent)))
-    if checked_parent != canonical_base and not checked_parent.startswith(
-        canonical_prefix
-    ):
+    if checked_parent == canonical_base:
+        checked_parent = canonical_base
+    elif not checked_parent.startswith(canonical_prefix):
         raise HTTPException(400, "Path traversal not allowed")
     parent = Path(checked_parent)
     parent.mkdir(parents=True, exist_ok=True)

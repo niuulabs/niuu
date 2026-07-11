@@ -551,14 +551,17 @@ async def present_file(body: dict) -> dict:
     source_path = os.path.realpath(os.path.abspath(os.path.expanduser(raw_path)))
     workspace_prefix = workspace_root.rstrip(os.sep) + os.sep
     home_prefix = home_root.rstrip(os.sep) + os.sep
-    if not (
-        source_path == workspace_root
-        or source_path.startswith(workspace_prefix)
-        or source_path == home_root
-        or source_path.startswith(home_prefix)
-    ):
+    if source_path == workspace_root:
+        checked_source = workspace_root
+    elif source_path.startswith(workspace_prefix):
+        checked_source = source_path
+    elif source_path == home_root:
+        checked_source = home_root
+    elif source_path.startswith(home_prefix):
+        checked_source = source_path
+    else:
         raise HTTPException(400, "path is outside the session roots")
-    src_real = Path(source_path)
+    src_real = Path(checked_source)
     if not src_real.exists():
         raise HTTPException(404, "no such file")
     if not src_real.is_file():
