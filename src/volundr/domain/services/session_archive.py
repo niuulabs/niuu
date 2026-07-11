@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -200,46 +199,31 @@ class SessionArchiveService:
 
     async def get_transcript_download_path(self, session_id: UUID, fmt: str) -> Path:
         """Return a local file path for transcript download."""
+        if fmt not in {"json", "md"}:
+            raise ValueError(f"Unsupported transcript format: {fmt}")
         session_id_str = str(session_id)
         _, candidates = await self._workspace_dir_candidates(session_id)
 
         for candidate in candidates:
+            manifest = self._archive_store.load_manifest(
+                session_id=session_id_str,
+                workspace_dir=candidate,
+            )
+            if not self._manifest_declares_transcript(manifest, fmt):
+                continue
             existing = self._transcript_artifact_path(
                 session_id_str,
                 fmt,
                 workspace_dir=candidate,
             )
             if existing is not None:
-                archive_root = self._archive_store.archive_root(
-                    session_id=session_id_str,
-                    workspace_dir=candidate,
-                )
-                root_path = os.path.realpath(os.path.abspath(os.fspath(archive_root)))
-                checked_existing_path = os.path.realpath(os.path.abspath(os.fspath(existing)))
-                root_prefix = root_path.rstrip(os.sep) + os.sep
-                if checked_existing_path == root_path:
-                    safe_existing_path = root_path
-                elif checked_existing_path.startswith(root_prefix):
-                    safe_existing_path = checked_existing_path
-                else:
-                    raise ArchivePathError(f"Transcript path escapes archive root: {existing}")
-                if os.path.exists(safe_existing_path):
-                    return Path(safe_existing_path)
+                return existing
 
-        existing = self._transcript_artifact_path(session_id_str, fmt)
-        if existing is not None:
-            archive_root = self._archive_store.archive_root(session_id=session_id_str)
-            root_path = os.path.realpath(os.path.abspath(os.fspath(archive_root)))
-            checked_existing_path = os.path.realpath(os.path.abspath(os.fspath(existing)))
-            root_prefix = root_path.rstrip(os.sep) + os.sep
-            if checked_existing_path == root_path:
-                safe_existing_path = root_path
-            elif checked_existing_path.startswith(root_prefix):
-                safe_existing_path = checked_existing_path
-            else:
-                raise ArchivePathError(f"Transcript path escapes archive root: {existing}")
-            if os.path.exists(safe_existing_path):
-                return Path(safe_existing_path)
+        manifest = self._archive_store.load_manifest(session_id=session_id_str)
+        if self._manifest_declares_transcript(manifest, fmt):
+            existing = self._transcript_artifact_path(session_id_str, fmt)
+            if existing is not None:
+                return existing
 
         workspace_dir = await self.resolve_workspace_dir(session_id)
         await self.build_archive(session_id)
@@ -254,6 +238,23 @@ class SessionArchiveService:
                 f"No transcript artifact available for session {session_id}"
             )
         return final_path
+
+    @staticmethod
+    def _manifest_declares_transcript(manifest: dict[str, Any] | None, fmt: str) -> bool:
+        """Return whether a trusted manifest declares the requested fixed artifact."""
+        if not isinstance(manifest, dict):
+            return False
+        artifacts = manifest.get("artifacts")
+        if not isinstance(artifacts, dict):
+            return False
+        expected = {
+            "json": ("transcript_json", "transcript.json"),
+            "md": ("transcript_md", "transcript.md"),
+        }.get(fmt)
+        if expected is None:
+            return False
+        key, filename = expected
+        return artifacts.get(key) == filename
 
     async def get_archive_root(self, session_id: UUID) -> Path:
         """Return the archive root after ensuring it exists."""

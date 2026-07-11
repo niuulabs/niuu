@@ -231,13 +231,12 @@ def load_archive_transcript(
     checked_artifact_path = os.path.realpath(os.path.abspath(os.fspath(path)))
     root_prefix = root_path.rstrip(os.sep) + os.sep
     if checked_artifact_path == root_path:
-        safe_artifact_path = root_path
+        safe_path = Path(root_path)
     elif checked_artifact_path.startswith(root_prefix):
-        safe_artifact_path = checked_artifact_path
+        safe_path = Path(checked_artifact_path)
     else:
         raise ArchivePathError(f"Archive artifact escapes archive root: {path}")
-    safe_path = Path(safe_artifact_path)
-    if not os.path.exists(safe_artifact_path):
+    if not safe_path.exists():
         return None
     if not _archive_owned_by(
         workspace_dir,
@@ -285,14 +284,14 @@ def load_archive_manifest(
     checked_manifest_path = os.path.realpath(os.path.abspath(os.fspath(path)))
     root_prefix = root_path.rstrip(os.sep) + os.sep
     if checked_manifest_path == root_path:
-        safe_manifest_path = root_path
+        safe_manifest_path = Path(root_path)
     elif checked_manifest_path.startswith(root_prefix):
-        safe_manifest_path = checked_manifest_path
+        safe_manifest_path = Path(checked_manifest_path)
     else:
         raise ArchivePathError(f"Archive manifest escapes archive root: {path}")
-    if not os.path.exists(safe_manifest_path):
+    if not safe_manifest_path.exists():
         return None
-    return _read_json(Path(root_path), Path(safe_manifest_path))
+    return _read_json(Path(root_path), safe_manifest_path)
 
 
 def archive_logs_aggregate_path(
@@ -341,13 +340,12 @@ def load_archive_logs(
     checked_artifact_path = os.path.realpath(os.path.abspath(os.fspath(path)))
     root_prefix = root_path.rstrip(os.sep) + os.sep
     if checked_artifact_path == root_path:
-        safe_artifact_path = root_path
+        safe_path = Path(root_path)
     elif checked_artifact_path.startswith(root_prefix):
-        safe_artifact_path = checked_artifact_path
+        safe_path = Path(checked_artifact_path)
     else:
         raise ArchivePathError(f"Archive artifact escapes archive root: {path}")
-    safe_path = Path(safe_artifact_path)
-    if not os.path.exists(safe_artifact_path):
+    if not safe_path.exists():
         return None
     if not _archive_owned_by(
         workspace_dir,
@@ -591,7 +589,7 @@ def _copy_event_streams(
         elif checked_file_path.startswith(source_prefix):
             safe_file_path = checked_file_path
         else:
-            raise ArchivePathError(f"Event source escapes source directory: {source}")
+            raise ArchivePathError(f"Event source escapes configured root: {source}")
         target_candidate = os.path.join(safe_destination_root, source.name)
         checked_target_path = os.path.realpath(os.path.abspath(target_candidate))
         destination_prefix = safe_destination_root.rstrip(os.sep) + os.sep
@@ -615,7 +613,7 @@ def _workspace_log_sources(workspace: Path) -> list[tuple[Path, Path]]:
     if skuld_path == workspace_path:
         skuld_path = workspace_path
     elif not skuld_path.startswith(workspace_prefix):
-        raise ArchivePathError("Skuld log path escapes workspace")
+        raise ArchivePathError("Skuld log path escapes configured root")
     if os.path.isfile(skuld_path):
         sources.append((Path(skuld_path), Path("skuld.log")))
 
@@ -656,12 +654,12 @@ def _read_json(root: Path, path: Path) -> dict[str, Any]:
     checked_json_path = os.path.realpath(os.path.abspath(os.fspath(path)), strict=True)
     root_prefix = root_path.rstrip(os.sep) + os.sep
     if checked_json_path == root_path:
-        safe_json_path = root_path
+        safe_json_path = Path(root_path)
     elif checked_json_path.startswith(root_prefix):
-        safe_json_path = checked_json_path
+        safe_json_path = Path(checked_json_path)
     else:
         raise ArchivePathError(f"JSON path escapes archive root: {path}")
-    with open(safe_json_path, encoding="utf-8") as archive_file:
+    with safe_json_path.open(encoding="utf-8") as archive_file:
         data = json.load(archive_file)
     if not isinstance(data, dict):
         raise ValueError(f"Expected JSON object in {path}")
