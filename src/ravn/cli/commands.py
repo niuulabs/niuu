@@ -27,9 +27,9 @@ from ravn.cli.mcp_runtime import (  # noqa: F401
 from ravn.config import ProjectConfig, Settings
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.models import (
-    AgentTask,
+    AgentTask as AgentTask,
     Message,
-    OutputMode,
+    OutputMode as OutputMode,
     Session,
     TodoItem,
     TodoStatus,
