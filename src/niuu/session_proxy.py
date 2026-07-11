@@ -470,10 +470,7 @@ def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) ->
         if port is None and target is None:
             return JSONResponse({"detail": "Session not found"}, status_code=404)
 
-        import re
         from urllib.parse import quote
-
-        import httpx
 
         # Skuld workflow gate ids use ":" as an internal delimiter, so the
         # session proxy needs to accept it in path segments while still
@@ -530,8 +527,6 @@ def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) ->
         target = None if port is not None else await skuld_reg.resolve_target(session_id)
         if port is None and target is None:
             return JSONResponse({"detail": "Session not found"}, status_code=404)
-
-        import httpx
 
         try:
             url = f"http://127.0.0.1:{port}/health"
