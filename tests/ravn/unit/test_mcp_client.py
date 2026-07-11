@@ -644,20 +644,22 @@ class TestMCPManager:
         assert mgr.tools == []
 
     @pytest.mark.asyncio
-    async def test_resolve_auth_headers_unknown_type_returns_empty(self) -> None:
-        """Unknown auth_type logs a warning and returns empty headers."""
+    async def test_resolve_auth_headers_unknown_type_fails_explicitly(self) -> None:
+        """Unknown auth types cannot silently downgrade to an unauthenticated connection."""
         from ravn.adapters.mcp.manager import MCPManager
         from ravn.config import MCPAuthConfig, MCPServerConfig
 
         auth = MCPAuthConfig(auth_type="magic_cookie")
         cfg = MCPServerConfig(name="test", auth=auth)
-        headers = await MCPManager._resolve_auth_headers(cfg)
-        assert headers == {}
+        with pytest.raises(ValueError, match="not supported during startup"):
+            await MCPManager._resolve_auth_headers(cfg)
 
     @pytest.mark.asyncio
-    async def test_auth_error_continues_without_auth(self) -> None:
-        """When _resolve_auth_headers raises, the server still connects (degraded)."""
-        client, transport = _make_healthy_client(["tool_x"])
+    async def test_auth_error_refuses_unauthenticated_connection(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Authentication failures skip the server instead of silently connecting without auth."""
+        _client, transport = _make_healthy_client(["tool_x"])
         from ravn.config import MCPAuthConfig
 
         cfg = _stdio_cfg("authed", auth=MCPAuthConfig(auth_type="api_key"))
@@ -673,8 +675,9 @@ class TestMCPManager:
             mgr = MCPManager(configs=[cfg])
             tools = await mgr.start()
 
-        # Server still connects despite auth failure
-        assert len(tools) == 1
+        assert tools == []
+        transport.connect.assert_not_awaited()
+        assert "refusing an unauthenticated connection" in caplog.text
 
     @pytest.mark.asyncio
     async def test_resolve_auth_headers_api_key_type(self) -> None:
