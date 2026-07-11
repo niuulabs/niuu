@@ -218,7 +218,7 @@ export function normalizeStageLabel(stage: CampaignStageState | undefined): stri
   if (!stage) return 'Research';
   const label = stage.label.toLowerCase();
   if (label.includes('fram')) return 'Frame';
-  if (label.includes('explore')) return 'Explore';
+  if (label.includes('explor')) return 'Explore';
   if (label.includes('challenge')) return 'Challenge';
   if (label.includes('synth')) return 'Synthesize';
   if (label.includes('curate')) return 'Curate';

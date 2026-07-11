@@ -293,9 +293,9 @@ describe('ResearchCampaignPage helpers', () => {
         'final.md',
       ])[0],
     ).toMatchObject({
-      claim: '- First objection',
+      claim: 'First objection',
       severity: 'high',
-      against: 'Current working thesis',
+      against: 'Current thesis',
     });
     expect(parseCritiques('# Skeptic\n\nNo critiques surfaced.', ['final.md'])).toEqual([
       expect.objectContaining({
