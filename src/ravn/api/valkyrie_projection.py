@@ -52,7 +52,6 @@ from ravn.api.valkyrie_runtime_projection import (
     _validate_huddle_join_scope,
 )
 from ravn.api.valkyrie_telemetry_projection import _aggregate_telemetry
-from ravn.domain.valkyrie_history import canonical_environment_id
 from sleipnir.domain import registry
 from sleipnir.domain.events import SleipnirEvent
 
