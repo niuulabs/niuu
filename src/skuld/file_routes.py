@@ -4,15 +4,16 @@ import asyncio
 import logging
 import os
 import shutil
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from collections.abc import Callable
 from typing import Protocol
 
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from skuld.path_security import UnsafePathError, resolve_contained_path
 from skuld.session_artifacts import _resolve_git_workspace_root
 
 logger = logging.getLogger("skuld.file_routes")
@@ -36,9 +37,6 @@ class _BrokerProxy:
 
 broker = _BrokerProxy()
 
-
-def _sanitize_log(value: object) -> str:
-    return str(value).replace("\\n", "\\\\n").replace("\\r", "\\\\r")
 
 # --- Workspace File Listing API ---
 
@@ -68,32 +66,23 @@ def _resolve_root(root: str) -> Path:
     return Path(broker.workspace_dir).resolve()
 
 
-def _sanitize_relative(relative_path: str) -> str:
-    """Sanitize user-supplied path: reject NUL, normalize, reject traversal/absolute."""
-    if "\0" in relative_path:
-        raise HTTPException(400, "Invalid path")
-    normalised = os.path.normpath(relative_path)
-    # Disallow absolute paths
-    if os.path.isabs(normalised):
-        raise HTTPException(400, "Path traversal not allowed")
-    # Disallow parent-directory references that could escape the base directory
-    # (for example "foo/../../etc/passwd").
-    parts = [p for p in normalised.split(os.sep) if p not in (".", "")]
-    if any(part == os.pardir for part in parts):
-        raise HTTPException(400, "Path traversal not allowed")
-    return normalised
-
-
-def _check_within_base(base: str | Path, target: str | Path) -> None:
-    """Raise if *target* is not under *base*.
-
-    Uses ``os.path.realpath`` + ``str.startswith`` so that CodeQL
-    recognises the guard as a path-injection sanitiser.
-    """
-    base_real = os.path.realpath(str(base))
-    target_real = os.path.realpath(str(target))
-    if target_real != base_real and not target_real.startswith(base_real + os.sep):
-        raise HTTPException(400, "Path traversal not allowed")
+def _resolve_user_path(
+    base: str | Path,
+    relative_path: str,
+    *,
+    allow_root: bool = True,
+    strict: bool = False,
+) -> Path:
+    """Translate the shared path-boundary error into an HTTP 400 response."""
+    try:
+        return resolve_contained_path(
+            base,
+            relative_path,
+            allow_root=allow_root,
+            strict=strict,
+        )
+    except UnsafePathError as exc:
+        raise HTTPException(400, "Path traversal not allowed") from exc
 
 
 def _validate_root(root: str) -> None:
@@ -107,11 +96,7 @@ async def list_files(path: str = "", root: str = "workspace") -> dict:
     """List files and directories in a session root (workspace or home)."""
     _validate_root(root)
     base = _resolve_root(root)
-    sanitized = _sanitize_relative(path)
-    base_real = os.path.realpath(str(base))
-    target_real = os.path.realpath(os.path.join(base_real, sanitized))
-    _check_within_base(base_real, target_real)
-    target = Path(target_real)
+    target = _resolve_user_path(base, path)
 
     if not target.is_dir():
         raise HTTPException(404, "Directory not found")
@@ -126,6 +111,11 @@ async def list_files(path: str = "", root: str = "workspace") -> dict:
         if item.name.startswith(".") and item.name not in _SHOW_HIDDEN:
             continue
         if item.name in _SKIP_NAMES:
+            continue
+        try:
+            _resolve_user_path(base, item.name, strict=True)
+        except HTTPException:
+            # Hide symlinks that escape the selected root.
             continue
         stat = item.stat(follow_symlinks=False)
         entries.append(
@@ -146,17 +136,14 @@ async def download_file(path: str, root: str = "workspace") -> FileResponse:
     """Download a single file from the session."""
     _validate_root(root)
     base = _resolve_root(root)
-    sanitized = _sanitize_relative(path)
-    base_real = os.path.realpath(str(base))
-    target_real = os.path.realpath(os.path.join(base_real, sanitized))
-    _check_within_base(base_real, target_real)
+    target = _resolve_user_path(base, path, allow_root=False)
 
-    if not os.path.isfile(target_real):
+    if not target.is_file():
         raise HTTPException(404, "File not found")
 
     return FileResponse(
-        path=target_real,
-        filename=os.path.basename(target_real),
+        path=target,
+        filename=target.name,
         media_type="application/octet-stream",
     )
 
@@ -170,12 +157,9 @@ async def upload_files(
     """Upload files to a target directory in the session."""
     _validate_root(root)
     base = _resolve_root(root)
-    sanitized = _sanitize_relative(path)
-    base_real = os.path.realpath(str(base))
-    dir_real = os.path.realpath(os.path.join(base_real, sanitized))
-    _check_within_base(base_real, dir_real)
+    target_dir = _resolve_user_path(base, path)
 
-    if not os.path.isdir(dir_real):
+    if not target_dir.is_dir():
         raise HTTPException(404, "Target directory not found")
 
     max_size = broker._settings.max_upload_size_bytes
@@ -185,8 +169,7 @@ async def upload_files(
             continue
         # Prevent path traversal in filenames
         safe_name = os.path.basename(upload.filename)
-        dest_real = os.path.realpath(os.path.join(dir_real, safe_name))
-        _check_within_base(base_real, dest_real)
+        destination = _resolve_user_path(target_dir, safe_name, allow_root=False)
 
         content = await upload.read()
         if len(content) > max_size:
@@ -194,13 +177,13 @@ async def upload_files(
                 413,
                 f"File {safe_name} exceeds maximum upload size ({max_size} bytes)",
             )
-        with open(dest_real, "wb") as f:
-            f.write(content)
-        stat = os.stat(dest_real)
+        with destination.open("wb") as destination_file:
+            destination_file.write(content)
+        stat = destination.stat()
         uploaded.append(
             {
                 "name": safe_name,
-                "path": os.path.relpath(dest_real, base_real),
+                "path": destination.relative_to(base).as_posix(),
                 "type": "file",
                 "size": stat.st_size,
                 "modified": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
@@ -223,20 +206,8 @@ async def upload_file_raw(
     """
     _validate_root(root)
     base = _resolve_root(root)
-    sanitized = _sanitize_relative(path)
-    base_real = os.path.realpath(str(base))
-    # Containment checks are inlined (not _check_within_base) so the
-    # realpath + startswith barrier is visible to CodeQL's path-injection
-    # query in the same dataflow scope as the filesystem sinks below. The
-    # bare startswith(base_real) is the shape the query recognises; the
-    # separator-anchored check after it rules out /base vs /base-evil
-    # prefix collisions.
-    target_real = os.path.realpath(os.path.join(base_real, sanitized))
-    if not target_real.startswith(base_real):
-        raise HTTPException(400, "Path traversal not allowed")
-    if target_real != base_real and not target_real.startswith(base_real + os.sep):
-        raise HTTPException(400, "Path traversal not allowed")
-    if sanitized in ("", ".") or os.path.isdir(target_real):
+    target = _resolve_user_path(base, path, allow_root=False)
+    if target.is_dir():
         raise HTTPException(400, "path must name a file, not a directory")
 
     body = await request.body()
@@ -247,20 +218,16 @@ async def upload_file_raw(
             f"File exceeds maximum upload size ({max_size} bytes)",
         )
 
-    parent_real = os.path.realpath(os.path.dirname(target_real))
-    if not parent_real.startswith(base_real):
-        raise HTTPException(400, "Path traversal not allowed")
-    if parent_real != base_real and not parent_real.startswith(base_real + os.sep):
-        raise HTTPException(400, "Path traversal not allowed")
-    os.makedirs(parent_real, exist_ok=True)
+    parent = _resolve_user_path(base, target.parent.relative_to(base).as_posix())
+    parent.mkdir(parents=True, exist_ok=True)
 
-    with open(target_real, "wb") as f:
-        f.write(body)
+    with target.open("wb") as target_file:
+        target_file.write(body)
 
-    stat = os.stat(target_real)
+    stat = target.stat()
     return {
-        "name": os.path.basename(target_real),
-        "path": os.path.relpath(target_real, base_real),
+        "name": target.name,
+        "path": target.relative_to(base).as_posix(),
         "type": "file",
         "size": stat.st_size,
         "modified": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
@@ -277,26 +244,20 @@ async def mkdir(body: MkdirRequest) -> dict:
     """Create a directory."""
     _validate_root(body.root)
     base = _resolve_root(body.root)
-    sanitized = _sanitize_relative(body.path)
-    base_real = os.path.realpath(str(base))
-    target_real = os.path.realpath(os.path.join(base_real, sanitized))
-    if not target_real.startswith(base_real):
-        raise HTTPException(400, "Path traversal not allowed")
-    if target_real != base_real and not target_real.startswith(base_real + os.sep):
-        raise HTTPException(400, "Path traversal not allowed")
+    target = _resolve_user_path(base, body.path, allow_root=False)
 
-    if os.path.exists(target_real):
+    if target.exists():
         raise HTTPException(409, "Path already exists")
 
     try:
-        os.makedirs(target_real, exist_ok=False)
+        target.mkdir(parents=True, exist_ok=False)
     except PermissionError:
         raise HTTPException(403, "Permission denied")
 
-    stat = os.stat(target_real)
+    stat = target.stat()
     return {
-        "name": os.path.basename(target_real),
-        "path": os.path.relpath(target_real, base_real),
+        "name": target.name,
+        "path": target.relative_to(base).as_posix(),
         "type": "directory",
         "size": stat.st_size,
         "modified": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
@@ -310,23 +271,20 @@ async def delete_file(path: str, root: str = "workspace") -> dict:
     if not path:
         raise HTTPException(400, "Cannot delete root directory")
     base = _resolve_root(root)
-    sanitized = _sanitize_relative(path)
-    base_real = os.path.realpath(str(base))
-    target_real = os.path.realpath(os.path.join(base_real, sanitized))
-    _check_within_base(base_real, target_real)
+    target = _resolve_user_path(base, path, allow_root=False)
 
-    if not os.path.exists(target_real):
+    if not target.exists():
         raise HTTPException(404, "Path not found")
 
     try:
-        if os.path.isdir(target_real):
-            shutil.rmtree(target_real)
-            return {"deleted": os.path.relpath(target_real, base_real)}
-        os.unlink(target_real)
+        if target.is_dir():
+            shutil.rmtree(target)
+            return {"deleted": target.relative_to(base).as_posix()}
+        target.unlink()
     except PermissionError:
         raise HTTPException(403, "Permission denied")
 
-    return {"deleted": os.path.relpath(target_real, base_real)}
+    return {"deleted": target.relative_to(base).as_posix()}
 
 
 def _parse_diff_output(raw: str, file_path: str) -> dict:
@@ -409,15 +367,13 @@ async def get_diff(
 ) -> dict:
     """Return parsed git diff for a single file."""
     workspace = _resolve_git_workspace_root(broker.workspace_dir)
-    target = (workspace / file).resolve()
-
-    if not str(target).startswith(str(workspace)):
-        raise HTTPException(400, "Path traversal not allowed")
+    target = _resolve_user_path(workspace, file, allow_root=False)
+    safe_file = target.relative_to(workspace).as_posix()
 
     if base == "last-commit":
-        cmd = ["git", "diff", "HEAD", "--", file]
+        cmd = ["git", "diff", "HEAD", "--", safe_file]
     elif base == "default-branch":
-        cmd = ["git", "diff", "main...HEAD", "--", file]
+        cmd = ["git", "diff", "main...HEAD", "--", safe_file]
     else:
         raise HTTPException(400, f"Invalid base: {base}")
 
@@ -434,11 +390,15 @@ async def get_diff(
 
     if proc.returncode not in (0, 1):
         detail = stderr.decode(errors="replace").strip()
-        logger.warning("git diff failed for %s: %s", _sanitize_log(file), _sanitize_log(detail))
+        logger.warning(
+            "git diff failed for %s: %s",
+            repr(safe_file),
+            repr(detail),
+        )
         raise HTTPException(502, f"git diff failed: {detail}")
 
     raw = stdout.decode(errors="replace")
-    return _parse_diff_output(raw, file)
+    return _parse_diff_output(raw, safe_file)
 
 
 @router.get("/api/diff/files")
@@ -471,7 +431,7 @@ async def get_diff_files(
 
     if proc.returncode not in (0, 1):
         detail = stderr.decode(errors="replace").strip()
-        logger.warning("git diff --numstat failed: %s", detail)
+        logger.warning("git diff --numstat failed: %s", repr(detail))
         raise HTTPException(502, f"git diff failed: {detail}")
 
     files = []

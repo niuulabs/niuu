@@ -16,6 +16,7 @@ def client(tmp_path, monkeypatch):
     # Stage into a temp dir (not the real session home) and capture emitted frames instead of
     # persisting/broadcasting them.
     monkeypatch.setattr(bmod, "_presented_staging_dir", lambda: tmp_path / "staging")
+    monkeypatch.setattr(bmod.broker, "workspace_dir", str(tmp_path))
     captured: list = []
 
     async def _fake_emit(frame):
@@ -68,9 +69,28 @@ def test_title_overrides_name(client, tmp_path):
     assert r.json()["name"] == "Pretty Name.bin"
 
 
+def test_present_file_log_escapes_forged_newline(client, tmp_path, caplog):
+    src = tmp_path / "raw.bin"
+    src.write_bytes(b"x")
+    title = "report\nFORGED"
+    caplog.set_level("INFO", logger="skuld.broker")
+
+    response = client.post("/api/present-file", json={"path": str(src), "title": title})
+
+    assert response.status_code == 200
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "staged" in record.getMessage()
+    )
+    assert title not in message
+    assert "report\\nFORGED" in message
+
+
 def test_present_file_rejects_bad_input(client):
     assert client.post("/api/present-file", json={}).status_code == 400
-    assert client.post("/api/present-file", json={"path": "/no/such/file/xyz"}).status_code == 404
+    response = client.post("/api/present-file", json={"path": "/no/such/file/xyz"})
+    assert response.status_code == 400
     # opaque-id guard: a client-supplied path can never reach the filesystem
     assert client.get("/api/files/presented/not-an-id").status_code == 400
     assert client.get("/api/files/presented/../../etc/passwd").status_code in (400, 404)

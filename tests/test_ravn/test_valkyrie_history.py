@@ -488,6 +488,23 @@ async def test_ingest_persists_signals_decisions_and_actions(tmp_path: Any) -> N
 
 
 @pytest.mark.asyncio
+async def test_action_outcome_log_escapes_forged_newline(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    correlation_id = "corr\nforged-entry"
+    service = ValkyrieHistoryService(InMemoryValkyrieHistoryStore())
+    caplog.set_level("INFO", logger="ravn.api.valkyrie_history_service")
+
+    await service.ingest_event(_judgment_event(correlation_id=correlation_id))
+    await service.ingest_event(_action_event(correlation_id=correlation_id))
+
+    messages = [record.getMessage() for record in caplog.records]
+    outcome_message = next(message for message in messages if "stamped" in message)
+    assert correlation_id not in outcome_message
+    assert "corr\\nforged-entry" in outcome_message
+
+
+@pytest.mark.asyncio
 async def test_review_required_judgment_lands_in_inbox_once(tmp_path: Any) -> None:
     reviews = _review_service(tmp_path)
     service = ValkyrieHistoryService(InMemoryValkyrieHistoryStore(), review_service=reviews)

@@ -2,7 +2,6 @@
 
 import logging
 import mimetypes
-import os
 import re
 import shutil
 import time
@@ -24,6 +23,11 @@ from skuld.conversation_models import ConversationTurn
 from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turn
 from skuld.event_log import FORGE_SESSIONS_PATH
 from skuld.file_routes import register_file_routes
+from skuld.path_security import (
+    UnsafePathError,
+    resolve_contained_path,
+    resolve_path_in_roots,
+)
 from skuld.service_manager import ServiceCreateRequest, ServiceStatus
 from volundr.log_aggregate import aggregate_workspace_logs
 
@@ -482,14 +486,12 @@ register_file_routes(app, lambda: broker)
 
 # --------------------------------------------------------------------------- present-file
 #
-# The `present-file <path>` command (engine-agnostic PATH shim) lets a Forge agent hand the user ANY
-# file on the host — including /tmp scratchpad artifacts outside the workspace — that lands in the
-# Lexi app as a tappable card. The broker STAGES a copy under a broker-owned dir (outside the
-# workspace so the git tree stays clean, on the persistence mount so it survives restart), mints an
-# opaque file_id, and EMITS the file as a self-contained `conversation.turn` (durable through PASS-1
-# rebuild + live broadcast). The blob is served by opaque id (never by a client-supplied path), so
-# the workspace path-traversal guards are safely bypassed rather than relaxed. In-app analogue of
-# the harness SendUserFile tool.
+# The `present-file <path>` command (engine-agnostic PATH shim) lets a Forge agent hand the user a
+# file from its session workspace or home. The broker stages a copy under a broker-owned directory
+# on the persistence mount, mints an opaque file_id, and emits a self-contained `conversation.turn`
+# (durable through PASS-1 rebuild and live broadcast). Both source and staging paths are resolved
+# beneath their explicit roots, and the blob is served by opaque id rather than a client path. This
+# is the in-app analogue of the harness SendUserFile tool.
 
 _PRESENTED_ID_RE = re.compile(r"^pf_[0-9a-f]{32}$")
 # file_id -> staged realpath. Rebuilt from the self-describing staging dir on startup.
@@ -499,25 +501,38 @@ _presented_registry: dict[str, str] = {}
 def _presented_staging_dir() -> Path:
     """Broker-owned staging root, OUTSIDE the workspace (keeps the git tree pristine) and on the
     session home mount (survives broker restart)."""
-    return Path(broker._settings.home_path).resolve() / ".forge-presented"
+    home = Path(broker._settings.home_path).resolve(strict=True)
+    return resolve_contained_path(home, ".forge-presented")
 
 
 def _rebuild_presented_registry() -> None:
     """Repopulate the file_id -> staged-path registry from the self-describing staging dir
     ({staging}/{file_id}/{basename}) so present-file cards keep resolving after a broker restart."""
     _presented_registry.clear()
-    root = _presented_staging_dir()
     try:
+        root = _presented_staging_dir()
         if not root.is_dir():
             return
         for entry in root.iterdir():
-            if not entry.is_dir() or not _PRESENTED_ID_RE.match(entry.name):
+            if entry.is_symlink() or not entry.is_dir():
                 continue
-            files = [f for f in entry.iterdir() if f.is_file()]
+            if not _PRESENTED_ID_RE.fullmatch(entry.name):
+                continue
+            try:
+                safe_entry = resolve_contained_path(root, entry.name, strict=True)
+            except UnsafePathError:
+                continue
+            files = [
+                item
+                for item in safe_entry.iterdir()
+                if item.is_file() and not item.is_symlink()
+            ]
             if files:
-                _presented_registry[entry.name] = str(files[0].resolve())
-    except OSError as exc:  # pragma: no cover - best-effort recovery
-        logger.warning("present-file: registry rebuild failed: %s", exc)
+                _presented_registry[entry.name] = str(files[0])
+    except (OSError, UnsafePathError) as exc:  # pragma: no cover - best-effort recovery
+        logger.warning(
+            "present-file: registry rebuild failed: %s", repr(exc)
+        )
 
 
 @app.post("/api/present-file")
@@ -533,11 +548,16 @@ async def present_file(body: dict) -> dict:
     caption = str((body or {}).get("caption") or "").strip() or None
     title = str((body or {}).get("title") or "").strip() or None
 
-    src = Path(raw_path).expanduser()
     try:
-        src_real = src.resolve(strict=True)
-    except (OSError, RuntimeError):
-        raise HTTPException(404, "no such file") from None
+        src_real = resolve_path_in_roots(
+            raw_path,
+            (broker.workspace_dir, broker._settings.home_path),
+            strict=False,
+        )
+    except UnsafePathError:
+        raise HTTPException(400, "path is outside the session roots") from None
+    if not src_real.exists():
+        raise HTTPException(404, "no such file")
     if not src_real.is_file():
         raise HTTPException(400, "not a regular file")
     size = src_real.stat().st_size
@@ -549,18 +569,25 @@ async def present_file(body: dict) -> dict:
     mime = mimetypes.guess_type(src_real.name)[0] or "application/octet-stream"
 
     # Stage a COPY so a later /tmp GC or edit cannot change/lose what the user tapped.
-    dest_dir = _presented_staging_dir() / file_id
     try:
+        dest_dir = _presented_staging_dir() / file_id
         dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / src_real.name
+        dest = resolve_contained_path(dest_dir, src_real.name, allow_root=False)
         shutil.copyfile(src_real, dest)
-    except OSError as exc:
-        logger.warning("present-file: staging copy failed: %s", exc)
+    except (OSError, UnsafePathError) as exc:
+        logger.warning(
+            "present-file: staging copy failed: %s", repr(exc)
+        )
         raise HTTPException(500, "could not stage file") from None
-    _presented_registry[file_id] = str(dest.resolve())
+    _presented_registry[file_id] = str(dest)
 
     await broker._emit_broker_frame(_build_present_file_turn(file_id, name, mime, size, caption))
-    logger.info("present-file: staged %s (%d bytes) as %s", name, size, file_id)
+    logger.info(
+        "present-file: staged %s (%d bytes) as %s",
+        repr(name),
+        size,
+        file_id,
+    )
     return {"file_id": file_id, "name": name, "size": size, "mime": mime}
 
 
@@ -593,25 +620,24 @@ def _build_present_file_turn(
 @app.get("/api/files/presented/{file_id}")
 async def download_presented_file(file_id: str) -> FileResponse:
     """Serve a staged presented file by OPAQUE id (never a client path → traversal-safe)."""
-    if not _PRESENTED_ID_RE.match(file_id):
+    if not _PRESENTED_ID_RE.fullmatch(file_id):
         raise HTTPException(400, "invalid file_id")
     path = _presented_registry.get(file_id)
     if path is None:
-        # A restart may have dropped the in-memory entry before the lazy rebuild — try the dir.
-        candidate = _presented_staging_dir() / file_id
-        if candidate.is_dir():
-            files = [f for f in candidate.iterdir() if f.is_file()]
-            if files:
-                path = str(files[0].resolve())
-                _presented_registry[file_id] = path
+        _rebuild_presented_registry()
+        path = _presented_registry.get(file_id)
     if path is None:
         raise HTTPException(404, "unknown file_id")
-    if not os.path.isfile(path):
+    try:
+        safe_path = resolve_path_in_roots(path, (_presented_staging_dir(),))
+    except UnsafePathError:
+        raise HTTPException(410, "file no longer available") from None
+    if safe_path.is_symlink() or not safe_path.is_file():
         raise HTTPException(410, "file no longer available")
     return FileResponse(
-        path=path,
-        filename=os.path.basename(path),
-        media_type=mimetypes.guess_type(path)[0] or "application/octet-stream",
+        path=safe_path,
+        filename=safe_path.name,
+        media_type=mimetypes.guess_type(safe_path.name)[0] or "application/octet-stream",
     )
 
 
@@ -934,4 +960,3 @@ class _TokenRedactFilter(logging.Filter):
         elif isinstance(record.args, dict):
             record.args = {key: self._redact(value) for key, value in record.args.items()}
         return True
-
