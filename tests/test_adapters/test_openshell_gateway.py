@@ -706,6 +706,7 @@ async def test_hermes_deploy_uses_persisted_process_only_credential_and_generic_
     assert observation.endpoints[0].protocol == "hermes-tui-gateway-jsonrpc"
     assert observation.backend_ref["process_names"] == ["hermes"]
     assert client.created is not None
+    assert client.created["policy"] is manager._sandbox_policy
     assert client.created["env"]["HERMES_HOME"] == "/sandbox/workspace/.hermes"
     assert adapter.HERMES_DASHBOARD_SESSION_TOKEN_ENV not in client.created["env"]
     assert client.execs[0]["env"][adapter.HERMES_DASHBOARD_SESSION_TOKEN_ENV]

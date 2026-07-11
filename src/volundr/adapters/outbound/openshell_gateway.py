@@ -1050,6 +1050,7 @@ class OpenShellGatewayPodManager(
                 resources=_resources_from_values(values, cpu=self._cpu, memory=self._memory),
                 driver_config=_driver_config_from_values(values),
                 providers=provider_names,
+                policy=self._sandbox_policy,
             )
             ready = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
             files = {
