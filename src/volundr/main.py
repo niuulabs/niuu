@@ -23,13 +23,13 @@ from niuu.service_integrations import (
     seed_configured_integrations as _seed_configured_integrations,
 )
 from niuu.service_integrations import seed_linear_integration as _seed_linear_integration
-from niuu.service_runtime import create_workload_identity_service
 from niuu.service_runtime import (
     create_credential_store as _create_credential_store,
 )
 from niuu.service_runtime import create_identity_adapter as _create_identity_adapter
 from niuu.service_runtime import create_pat_validator as _create_pat_validator
 from niuu.service_runtime import create_storage_adapter as _create_storage_adapter
+from niuu.service_runtime import create_workload_identity_service
 from niuu.service_runtime import release_credential_store as _release_credential_store
 from niuu.utils import import_class, resolve_secret_kwargs
 from sleipnir.adapters.audit_postgres import PostgresAuditRepository
