@@ -1,7 +1,8 @@
 """BrowserbaseAdapter — cloud browser backend via Browserbase.
 
-Activated automatically when ``BROWSERBASE_API_KEY`` is set (or via config).
-Falls back gracefully to an error if the ``playwright`` package is not installed.
+Selected explicitly with ``browser.backend: browserbase``. Credentials are resolved
+by composition from the configured secret environment names and passed to the adapter.
+The adapter fails explicitly if credentials or the ``playwright`` package are unavailable.
 
 See: https://docs.browserbase.com/reference/api/create-a-session
 """
