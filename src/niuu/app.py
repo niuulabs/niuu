@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import urllib.parse
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager, suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -302,6 +302,7 @@ async def _bridge_websocket(
     connect_url: str,
     *,
     connect_kwargs: dict[str, object] | None = None,
+    additional_headers: Mapping[str, str] | None = None,
     include_cookie: bool = False,
     forward_dev_params: bool = False,
     on_connected: Callable[[], None] | None = None,
@@ -309,15 +310,17 @@ async def _bridge_websocket(
     """Bridge one accepted browser socket to a resolved Skuld endpoint."""
     import websockets.asyncio.client as ws_client
 
+    forwarded_headers = _proxy_forward_headers(
+        websocket,
+        include_cookie=include_cookie,
+        forward_dev_params=forward_dev_params,
+    )
+    forwarded_headers.update(additional_headers or {})
     await websocket.accept()
     async with ws_client.connect(
         connect_url,
         max_size=_WS_PROXY_MAX_FRAME_BYTES,
-        additional_headers=_proxy_forward_headers(
-            websocket,
-            include_cookie=include_cookie,
-            forward_dev_params=forward_dev_params,
-        ),
+        additional_headers=forwarded_headers,
         **(connect_kwargs or {}),
     ) as broker_ws:
         if on_connected is not None:

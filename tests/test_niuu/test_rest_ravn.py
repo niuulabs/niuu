@@ -188,7 +188,38 @@ def test_ravn_session_proxy_finds_owner_and_relays_browser_auth() -> None:
     assert captured["url"] == (
         "wss://niuu.noatun.test/s/resident-id/session?access_token=browser-token"
     )
+    assert captured["kwargs"]["additional_headers"]["authorization"] == "Bearer test-token"
     assert owner.calls.last.request.headers["authorization"] == "Bearer test-token"
+
+
+@respx.mock
+def test_resident_session_proxy_promotes_query_token_to_upstream_authorization() -> None:
+    client = _client([_instance("noatun", base_url="https://niuu.noatun.test")])
+    owner = respx.get("https://niuu.noatun.test/api/v1/ravn/ravens/resident-id").mock(
+        return_value=Response(200, json={"id": "resident-id"})
+    )
+    captured: dict[str, Any] = {}
+
+    def _connect(url: str, **kwargs: Any):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        raise OSError("target unavailable after route resolution")
+
+    with patch("websockets.asyncio.client.connect", side_effect=_connect):
+        with client.websocket_connect(
+            "/s/resident-id/sessions/session-id/session"
+            "?instance_id=noatun&token=machine-jwt&devUserId=user-a&devTenantId=tenant-a"
+        ) as websocket:
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+
+    assert captured["url"] == (
+        "wss://niuu.noatun.test/api/v1/forge/resident-runtimes/"
+        "resident-id/sessions/session-id/chat?token=machine-jwt"
+        "&devUserId=user-a&devTenantId=tenant-a"
+    )
+    assert captured["kwargs"]["additional_headers"]["authorization"] == "Bearer machine-jwt"
+    assert owner.calls.last.request.headers["authorization"] == "Bearer machine-jwt"
 
 
 @respx.mock

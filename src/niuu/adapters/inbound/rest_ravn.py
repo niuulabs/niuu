@@ -148,6 +148,7 @@ def create_ravn_session_proxy_router(service: InstanceService) -> APIRouter:
             await _bridge_websocket(
                 websocket,
                 connect_url,
+                additional_headers=headers,
                 include_cookie=False,
                 forward_dev_params=True,
             )
@@ -235,6 +236,7 @@ def create_ravn_session_proxy_router(service: InstanceService) -> APIRouter:
             await _bridge_websocket(
                 websocket,
                 connect_url,
+                additional_headers=headers,
                 include_cookie=False,
                 forward_dev_params=True,
             )
