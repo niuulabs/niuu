@@ -677,7 +677,7 @@ class TestMCPManager:
             tools = await mgr.start()
 
         assert tools == []
-        transport.connect.assert_not_awaited()
+        assert transport.started is False
         assert "refusing an unauthenticated connection" in caplog.text
 
     @pytest.mark.asyncio

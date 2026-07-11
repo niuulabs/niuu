@@ -20,6 +20,9 @@ from ravn.web import DEFAULT_WEB_PORT, create_standalone_app, serve
 def _redirect_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     monkeypatch.delenv("RAVN_CONFIG", raising=False)
+    monkeypatch.setenv("RAVN_GATEWAY__PLATFORM__BASE_URL", "http://localhost:8080")
+    monkeypatch.setenv("RAVN_RESIDENT_DISCOVERY__ENABLED", "false")
+    monkeypatch.delenv("RAVN_RESIDENT_DISCOVERY__ADAPTERS_JSON", raising=False)
 
 
 @pytest.fixture()
