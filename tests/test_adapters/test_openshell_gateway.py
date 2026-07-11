@@ -433,7 +433,7 @@ def _resident_profile() -> ResidentDeploymentProfile:
                     "codexAuth": {
                         "credentialName": "codex-credentials",
                         "authField": "auth.json",
-                    }
+                    },
                 },
                 "resident": {
                     "dailyBudgetUsd": "100.0",
@@ -673,7 +673,10 @@ def test_hermes_profile_requires_complete_replace_process_and_service_plan(
         manager.supports(profile.model_copy(update={"deployment": {"values": {"openshell": {}}}}))
         is False
     )
-    assert adapter._resident_platform_binaries(_hermes_runtime()) == ("/opt/hermes/**",)
+    assert adapter._resident_platform_binaries(_hermes_runtime()) == (
+        "/opt/hermes/**",
+        "/usr/bin/python3",
+    )
 
 
 @pytest.mark.asyncio

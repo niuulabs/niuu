@@ -2697,7 +2697,7 @@ def _resident_platform_binaries(runtime: ResidentRuntime) -> tuple[str, ...]:
     if runtime.engine is ResidentEngine.OPENCLAW:
         return ("/usr/bin/node",)
     if runtime.engine is ResidentEngine.HERMES:
-        return ("/opt/hermes/**",)
+        return ("/opt/hermes/**", "/usr/bin/python3")
     return ()
 
 
