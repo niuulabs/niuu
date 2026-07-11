@@ -6,7 +6,7 @@ import pytest
 from fastapi.middleware.cors import CORSMiddleware
 
 from cli.shared_host import create_app as create_niuu_app
-from niuu.config import CorsConfig, GitConfig, NiuuHostConfig
+from niuu.config import CorsConfig, GitConfig, NiuuHostConfig, NiuuSettings
 from ting.config import Settings as TingSettings
 from ting.main import create_app as create_ting_app
 from volundr.config import Settings as NiuuSharedSettings
@@ -58,6 +58,16 @@ class TestCorsConfig:
 
 
 class TestNiuuHostConfig:
+    def test_bare_bind_host_does_not_decode_as_nested_config(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HOST", "0.0.0.0")
+        monkeypatch.setenv("NIUU_FORGE_STATE_FILE", "~/.niuu/pod-state.json")
+
+        settings = NiuuSettings()
+
+        assert settings.host.forge_state_file == "~/.niuu/pod-state.json"
+
     def test_legacy_environment_aliases_are_typed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("NIUU_CORS_ORIGINS", "https://ui.example")
         monkeypatch.setenv("NIUU_FORGE_STATE_FILE", "~/.niuu/custom-state.json")

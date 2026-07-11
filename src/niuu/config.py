@@ -383,7 +383,17 @@ class NiuuSettings(BaseSettings):
 
     git: GitConfig = Field(default_factory=GitConfig)
     cors: CorsConfig = Field(default_factory=CorsConfig)
-    host: NiuuHostConfig = Field(default_factory=NiuuHostConfig)
+    host: Annotated[NiuuHostConfig, NoDecode] = Field(
+        default_factory=NiuuHostConfig,
+    )
+
+    @field_validator("host", mode="before")
+    @classmethod
+    def _ignore_bare_bind_host(cls, value: object) -> object:
+        del cls
+        if isinstance(value, str) and value == os.environ.get("HOST"):
+            return NiuuHostConfig()
+        return value
 
     @classmethod
     def settings_customise_sources(
