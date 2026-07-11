@@ -211,4 +211,63 @@ describe('validateWorkflow', () => {
     }
     expect(message).toContain('node-a');
   });
+
+  it('validates resource binding targets and uniqueness', () => {
+    const resource = {
+      id: 'resource-a',
+      kind: 'resource' as const,
+      label: 'Knowledge mount',
+      position: { x: 0, y: 100 },
+    };
+    const binding = {
+      id: 'binding-a',
+      resourceNodeId: resource.id,
+      targetType: 'workflow' as const,
+      targetId: makeWorkflow().id,
+      access: 'write' as const,
+    };
+    const nodes = [nodeA, resource];
+    expect(() =>
+      validateWorkflow(
+        makeWorkflow({
+          nodes,
+          edges: [],
+          resourceBindings: [
+            binding,
+            { ...binding, id: 'binding-stage', targetType: 'stage', targetId: nodeA.id },
+            { ...binding, id: 'binding-persona', targetType: 'persona', targetId: 'reviewer' },
+          ],
+        }),
+      ),
+    ).not.toThrow();
+
+    expect(() =>
+      validateWorkflow(
+        makeWorkflow({ nodes, edges: [], resourceBindings: [{ ...binding, resourceNodeId: 'x' }] }),
+      ),
+    ).toThrow(/unknown resource node/i);
+    expect(() =>
+      validateWorkflow(
+        makeWorkflow({ nodes, edges: [], resourceBindings: [{ ...binding, targetId: 'x' }] }),
+      ),
+    ).toThrow(/unknown workflow target/i);
+    expect(() =>
+      validateWorkflow(
+        makeWorkflow({
+          nodes,
+          edges: [],
+          resourceBindings: [{ ...binding, targetType: 'stage', targetId: 'x' }],
+        }),
+      ),
+    ).toThrow(/unknown stage target/i);
+    expect(() =>
+      validateWorkflow(
+        makeWorkflow({
+          nodes,
+          edges: [],
+          resourceBindings: [binding, { ...binding, id: 'binding-duplicate' }],
+        }),
+      ),
+    ).toThrow(/duplicate resource binding/i);
+  });
 });

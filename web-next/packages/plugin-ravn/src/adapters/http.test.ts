@@ -913,4 +913,114 @@ describe('buildRavnWardenAdapter', () => {
       message: 'warden is installed but idle',
     });
   });
+
+  it('maps sparse and alternate warden response branches', async () => {
+    const client = makeClient();
+    const sparse = {
+      ...rawWarden,
+      model: '',
+      deployment_kwargs: undefined,
+      mimir: {
+        ...rawWarden.mimir,
+        write_mount: '',
+        read_mount_names: undefined,
+        write_mount_names: undefined,
+      },
+      schedules: undefined,
+      console: undefined,
+      runtime: undefined,
+      supervisor: undefined,
+      operator: {
+        rune: 'R',
+        bio: 'Reviews changes',
+        expertise: ['review'],
+        tools: ['git'],
+        role: 'review',
+      },
+    };
+    const withDream = {
+      ...rawWarden,
+      mimir: { ...rawWarden.mimir, write_mount_names: undefined },
+      runtime: {
+        ...rawWarden.runtime,
+        last_dream: {
+          id: 'dream-1',
+          timestamp: '2026-04-20T12:00:00Z',
+          ravn: 'ravn-fjolnir',
+          mounts: ['local'],
+          pages_updated: 2,
+          entities_created: 1,
+          lint_fixes: 3,
+          duration_ms: 4000,
+        },
+      },
+      supervisor: {
+        ...rawWarden.supervisor,
+        observation: { ...rawWarden.supervisor.observation, fields: undefined },
+      },
+    };
+    client.get.mockResolvedValue([sparse, withDream]);
+
+    const [mappedSparse, mappedDream] = await buildRavnWardenAdapter(client).listWardens();
+    expect(mappedSparse).toMatchObject({
+      model: 'claude-sonnet-4-6',
+      deploymentKwargs: {},
+      readMountNames: ['local', 'shared'],
+      writeMountNames: [],
+      runtime: undefined,
+      supervisor: undefined,
+      operator: { role: 'review' },
+    });
+    expect(mappedSparse?.schedules.dreamCyclePollIntervalSeconds).toBe(60);
+    expect(mappedSparse?.console.port).toBe(8400);
+    expect(mappedDream?.writeMountNames).toEqual(['local']);
+    expect(mappedDream?.runtime?.lastDream).toMatchObject({ id: 'dream-1', durationMs: 4000 });
+    expect(mappedDream?.supervisor?.observation?.fields).toBeUndefined();
+  });
+
+  it('uses empty request defaults for a minimal warden create', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue(rawWarden);
+    await buildRavnWardenAdapter(client).createWarden({ name: 'Minimal' });
+    expect(client.post).toHaveBeenCalledWith(
+      '/wardens',
+      expect.objectContaining({
+        deployment_kwargs: {},
+        mount_names: [],
+        write_mount: '',
+        read_mount_names: [],
+        write_mount_names: [],
+        category_scope: [],
+        features: undefined,
+        schedules: undefined,
+        console: undefined,
+      }),
+    );
+  });
+
+  it('drops malformed SSE frames when no client base path is configured', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn(async () => mockSseResponse(['data: not-json\n\n']));
+    const listener = vi.fn();
+    const client = { ...makeClient(), basePath: undefined };
+
+    const unsubscribe = buildRavnWardenAdapter(client).subscribeWarden(rawWarden.id, listener);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    unsubscribe();
+    global.fetch = originalFetch;
+
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('builds optional log and activity query strings', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([]);
+    const adapter = buildRavnWardenAdapter(client);
+    await adapter.getWardenLogs(rawWarden.id);
+    await adapter.getWardenLogs(rawWarden.id, { limit: 10 });
+    await adapter.getWardenActivity(rawWarden.id);
+    expect(client.get).toHaveBeenNthCalledWith(1, `/wardens/${rawWarden.id}/logs`);
+    expect(client.get).toHaveBeenNthCalledWith(2, `/wardens/${rawWarden.id}/logs?limit=10`);
+    expect(client.get).toHaveBeenNthCalledWith(3, `/wardens/${rawWarden.id}/activity`);
+  });
 });
