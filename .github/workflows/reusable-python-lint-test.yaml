@@ -38,8 +38,14 @@ jobs:
             printf '%s\n' "$output"
             fix_output="$(uv run ruff check --fix --unsafe-fixes --show-fixes src/ tests/ 2>&1 || true)"
             diff_output="$(git diff -- src/ tests/)"
+            {
+              echo "### Ruff auto-fix diff"
+              echo '```diff'
+              printf '%s\n' "$diff_output"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
             annotation="${fix_output}"$'\n'"${diff_output}"
-            annotation="${annotation: -12000}"
+            annotation="${annotation: -4000}"
             annotation="${annotation//'%'/'%25'}"
             annotation="${annotation//$'\n'/'%0A'}"
             annotation="${annotation//$'\r'/'%0D'}"
