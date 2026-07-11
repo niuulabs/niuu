@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
-import type { IBifrostService } from '@niuulabs/plugin-bifrost';
+import type { BifrostModel, IBifrostService } from '@niuulabs/plugin-bifrost';
 import { useService } from '@niuulabs/plugin-sdk';
 import {
   BranchSelect,
@@ -40,10 +40,12 @@ import {
   deriveSessionName,
   definitionToTaskType,
   filterModelsForDefinition,
+  findSessionDefinition,
   formatIntegrationLabel,
   formatIntegrationMeta,
   formatModelOption,
   formatResourceValue,
+  FALLBACK_SESSION_DEFINITIONS,
   getDefinitionRune,
   getMatchingTargets,
   getResourceErrors,
