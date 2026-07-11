@@ -2638,6 +2638,7 @@ def _provider_target(env_name: str) -> dict[str, Any]:
                 "chatgpt.com",
                 "ab.chatgpt.com",
                 "files.openai.com",
+                "*.oaiusercontent.com",
             ),
             "binaries": (
                 "/usr/bin/codex",

@@ -977,6 +977,7 @@ async def test_start_uses_dynamic_codex_grant_without_projecting_oauth_file(
         "api.openai.com",
         "auth.openai.com",
         "chatgpt.com",
+        "*.oaiusercontent.com",
     }
     assert grant["config"]["volundr_credential_format"] == adapter.CODEX_AUTH_FORMAT
     assert grant["config"]["volundr_credential_field"] == "auth.json"
