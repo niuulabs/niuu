@@ -1,14 +1,23 @@
 import { BranchSelect, Field, Input, RepoSelect, type RepoRecord } from '@niuulabs/ui';
-import type { IntegrationConnection, SessionDefinition, TrackerIssue, VolundrTarget } from '../models/volundr.model';
+import type {
+  IntegrationConnection,
+  SessionDefinition,
+  TrackerIssue,
+  VolundrTarget,
+} from '../models/volundr.model';
 import {
   deriveSessionName,
   formatIntegrationLabel,
   formatModelOption,
-  normalizeRepoUrl,
   type RuntimeModelDescriptor,
   type WizardForm,
 } from './launchWizardModel';
-import { BOOT_STEPS, SECONDARY_BUTTON_CLASS, SectionCard } from './LaunchWizardPrimitives';
+import {
+  BOOT_STEPS,
+  SECONDARY_BUTTON_CLASS,
+  SectionCard,
+  WizardSelect,
+} from './LaunchWizardPrimitives';
 import './LaunchWizard.css';
 
 export * from './LaunchWizardPrimitives';

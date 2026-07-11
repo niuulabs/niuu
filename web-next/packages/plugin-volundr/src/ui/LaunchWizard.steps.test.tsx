@@ -815,3 +815,26 @@ describe('LaunchWizard step components', () => {
     });
   });
 });
+
+describe('SourceStep branch fallback', () => {
+  it('uses the local branch selector when repository metadata has no branches', () => {
+    const update = vi.fn();
+    const repo = { ...REPOS[0]!, branches: [] };
+
+    render(
+      <SourceStep
+        form={makeForm({ repo: repo.cloneUrl, branch: 'main' })}
+        update={update}
+        repos={[repo]}
+        branchOptions={['main', 'feat/fallback']}
+        trackerResults={[]}
+        trackerLoading={false}
+      />,
+    );
+
+    fireEvent.change(screen.getByTestId('branch-select'), {
+      target: { value: 'feat/fallback' },
+    });
+    expect(update).toHaveBeenCalledWith({ branch: 'feat/fallback' });
+  });
+});
