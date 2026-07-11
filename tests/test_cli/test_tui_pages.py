@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from textual.app import App, ComposeResult
+from textual.widgets import Static
 
 from volundr.tui._utils import format_count
 from volundr.tui.admin import (

@@ -9,7 +9,7 @@ from pathlib import Path
 from skuld.path_security import (
     UnsafePathError,
     resolve_contained_path,
-    resolve_path_in_roots
+    resolve_path_in_roots,
 )
 
 

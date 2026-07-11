@@ -7,6 +7,7 @@ import pytest
 from ravn.adapters.tools.web_search import DuckDuckGoLiteSearchProvider, WebSearchTool
 from ravn.ports.web_search import SearchResult
 
+
 # ---------------------------------------------------------------------------
 class FakeWebSearchProvider:
     _DEFAULT_RESULTS = [
