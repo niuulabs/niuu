@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect  # noqa: F401
 
 from niuu.domain.logging import LoggingConfig
 from niuu.domain.outcome import parse_outcome_block

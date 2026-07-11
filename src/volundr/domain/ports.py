@@ -14,15 +14,15 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from credentials.ports import (
+from credentials.ports import (  # noqa: F401
     MCPServerProvider,
     SecretAlreadyExistsError,
     SecretManager,
     SecretMountStrategy,
     SecretValidationError,
 )
-from identity.models import Resource
-from identity.ports import AuthorizationPort, TenantRepository, UserRepository
+from identity.models import Resource  # noqa: F401
+from identity.ports import AuthorizationPort, TenantRepository, UserRepository  # noqa: F401
 from niuu.ports.credentials import CredentialStorePort  # noqa: F401
 from niuu.ports.git import (
     GitAuthError,  # noqa: F401
@@ -36,8 +36,8 @@ from niuu.ports.identity import (
     UserProvisioningError,  # noqa: F401
 )
 from niuu.ports.integrations import IntegrationRepository  # noqa: F401
-from tracker.ports import IssueTrackerProvider, ProjectMappingRepository
-from volundr.domain.models import (
+from tracker.ports import IssueTrackerProvider, ProjectMappingRepository  # noqa: F401
+from volundr.domain.models import (  # noqa: F401
     Chronicle,
     ClusterResourceInfo,
     CommunicationRoute,
