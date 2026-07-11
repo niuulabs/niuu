@@ -64,4 +64,3 @@ def resolve_path_in_roots(
             continue
         return candidate
     raise UnsafePathError("path is outside the permitted roots")
-

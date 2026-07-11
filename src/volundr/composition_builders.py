@@ -221,5 +221,3 @@ def _create_contributors(
         logger.info("Session contributor: session_mcp (auto-wired)")
 
     return contributors
-
-

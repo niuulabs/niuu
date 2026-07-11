@@ -551,5 +551,3 @@ def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) ->
                 {"detail": "Skuld broker not ready"},
                 status_code=502,
             )
-
-
