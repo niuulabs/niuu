@@ -36,8 +36,7 @@ jobs:
         run: uv run ruff check src/ tests/
 
       - name: Check ruff formatting
-        run: uv run ruff format --check src/ tests/ || echo "::warning::Formatting issues found - consider running 'ruff format src/ tests/'"
-        continue-on-error: true
+        run: uv run ruff format --check src/ tests/
 
   test:
     name: "Python: Test ${{ matrix.pkg.name }}"
