@@ -16,8 +16,16 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
 
+from ravn.api.valkyrie_requests import (
+    LEARNING_FEEDBACK_VERDICTS,
+    AutonomyUpdateRequest,
+    HuddleJoinRequest,
+    HuddleSendRequest,
+    LearningDecisionRequest,
+    LearningFeedbackRequest,
+    LearningReviseRequest,
+)
 from ravn.domain.valkyrie_history import canonical_environment_id
 from ravn.odin.review import ReviewItem, ReviewKind, review_decided_event
 from sleipnir.domain import registry
@@ -30,56 +38,6 @@ RAW_SIGNAL_TELEMETRY_LIMIT = 1_000
 CONTROL_TELEMETRY_LIMIT = 2_000
 DASHBOARD_ENVIRONMENTS_JSON_ENV = "RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON"
 DASHBOARD_ENVIRONMENTS_FILE_ENV = "RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_FILE"
-
-
-class HuddleSendRequest(BaseModel):
-    huddleId: str  # noqa: N815
-    body: str
-    directedTo: list[str] = Field(default_factory=list)  # noqa: N815
-    authorId: str  # noqa: N815
-
-
-class HuddleJoinRequest(BaseModel):
-    huddleId: str  # noqa: N815
-    participantId: str  # noqa: N815
-    displayName: str = ""  # noqa: N815
-    action: str = "observe"
-    targetFlockId: str = ""  # noqa: N815
-    capabilities: list[str] = Field(default_factory=list)
-
-
-class LearningDecisionRequest(BaseModel):
-    learningId: str  # noqa: N815
-    reason: str = ""
-    operatorId: str = "operator"  # noqa: N815
-    targetScope: str = ""  # noqa: N815
-    canaryEnvironmentId: str = ""  # noqa: N815
-
-
-#: Operator feedback verdicts accepted by the learning feedback endpoint.
-LEARNING_FEEDBACK_VERDICTS = ("useful", "good_action", "bad_action", "dismissed", "wrong_tier")
-
-
-class LearningFeedbackRequest(BaseModel):
-    verdict: str
-    reason: str = ""
-    operatorId: str = "operator"  # noqa: N815
-    targetScope: str = ""  # noqa: N815
-
-
-class LearningReviseRequest(BaseModel):
-    title: str = ""
-    summary: str = ""
-    content: str = ""
-    reason: str = ""
-    operatorId: str = "operator"  # noqa: N815
-
-
-class AutonomyUpdateRequest(BaseModel):
-    valkyrieId: str  # noqa: N815
-    mode: str
-    reason: str = ""
-    participantId: str = ""  # noqa: N815
 
 
 def _now() -> str:
