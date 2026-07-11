@@ -42,7 +42,16 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build packages
-        run: pnpm -r --filter='./packages/*' build
+        run: |
+          output="$(pnpm -r --filter='./packages/*' build 2>&1)" || {
+            printf '%s\n' "$output"
+            output="${output//'%'/'%25'}"
+            output="${output//$'\n'/'%0A'}"
+            output="${output//$'\r'/'%0D'}"
+            echo "::error title=Web package build::${output}"
+            exit 1
+          }
+          printf '%s\n' "$output"
 
       - name: Typecheck
         run: pnpm typecheck
