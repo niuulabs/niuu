@@ -1,6 +1,7 @@
 """Tests for the InMemoryEventBroadcaster adapter."""
 
 import asyncio
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
@@ -570,6 +571,39 @@ class TestInMemoryEventBroadcaster:
         assert evt.data["files"] == []
         assert evt.data["commits"] == []
         assert evt.data["token_burn"] == []
+
+    @pytest.mark.asyncio
+    async def test_chronicle_session_id_escapes_control_characters_in_log(
+        self, broadcaster: InMemoryEventBroadcaster, caplog
+    ):
+        session_id = "session\r\nforged\tentry\x1b[31m"
+        timeline_event = TimelineEvent(
+            id=uuid4(),
+            chronicle_id=uuid4(),
+            session_id=uuid4(),
+            t=0,
+            type=TimelineEventType.SESSION,
+            label="session started",
+        )
+        timeline = TimelineResponse(
+            events=[timeline_event], files=[], commits=[], token_burn=[]
+        )
+
+        with caplog.at_level(
+            logging.INFO, logger="volundr.adapters.outbound.broadcaster"
+        ):
+            await broadcaster.publish_chronicle_event(
+                session_id, timeline_event, timeline  # type: ignore[arg-type]
+            )
+
+        message = next(
+            record.getMessage()
+            for record in caplog.records
+            if "SSE broadcast chronicle_event" in record.getMessage()
+        )
+        assert repr(session_id) in message
+        assert "\r" not in message and "\n" not in message
+        assert "\t" not in message and "\x1b" not in message
 
 
 # ---------------------------------------------------------------------------

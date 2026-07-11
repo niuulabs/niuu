@@ -44,7 +44,8 @@ from sleipnir.domain.events import SleipnirEvent
 
 
 class FakeWardenDeployer:
-    def __init__(self, *, fail_on: str = "") -> None:
+    def __init__(self, *, service_path: Path, fail_on: str = "") -> None:
+        self._service_path = service_path
         self._fail_on = fail_on
 
     def install(self, spec: WardenSpec, *, warden_dir: Path, workspace_root: Path | None = None):
@@ -55,13 +56,12 @@ class FakeWardenDeployer:
             warden_dir=warden_dir,
             workspace_root=workspace_root,
         )
-        service_path = warden_dir / "warden.plist"
-        service_path.write_text("service", encoding="utf-8")
+        self._service_path.write_text("service", encoding="utf-8")
         return WardenDeploymentResult(
             supervisor=WardenSupervisor(
                 installed=True,
                 service_label=service_label(spec.id),
-                service_file=str(service_path),
+                service_file=str(self._service_path),
                 config_file=str(config_path),
                 start_command=start_command(spec, config_path=config_path),
                 last_install_at=datetime.now(UTC),
@@ -124,7 +124,9 @@ class FakeSleipnirPublisher:
 def _store(tmp_path: Path, *, fail_on: str = "") -> WardenStore:
     return WardenStore(
         root=tmp_path,
-        deployer_factory=lambda spec: FakeWardenDeployer(fail_on=fail_on),
+        deployer_factory=lambda spec: FakeWardenDeployer(
+            service_path=tmp_path / "warden.plist", fail_on=fail_on
+        ),
     )
 
 
@@ -2447,7 +2449,9 @@ def test_install_warden_generates_service_artifacts(tmp_path):
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["supervisor"]["installed"] is True
-    assert payload["supervisor"]["service_file"].endswith(".plist")
+    service_path = tmp_path / "warden.plist"
+    assert payload["supervisor"]["service_file"] == str(service_path)
+    assert service_path.read_text(encoding="utf-8") == "service"
     assert payload["runtime"]["state"] == "idle"
 
 
