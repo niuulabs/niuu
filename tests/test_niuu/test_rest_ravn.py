@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import respx
@@ -495,6 +495,28 @@ def test_create_raven_uses_existing_target_routing_and_strips_hints() -> None:
     assert response.json()["instance_id"] == "helm"
     assert route.calls.last.request.read() == (b'{"profile_id":"ravn-helm","name":"Muninn"}')
     assert route.calls.last.request.headers["authorization"] == "Bearer test-token"
+
+
+def test_create_raven_uses_resident_command_timeout() -> None:
+    client = _client([_instance("noatun", base_url="http://noatun")])
+    response = Response(201, json={"id": "resident-id", "managed": True})
+
+    with patch(
+        "niuu.adapters.inbound.rest_ravn._request_remote",
+        new=AsyncMock(return_value=response),
+    ) as request_remote:
+        result = client.post(
+            "/api/v1/ravn/ravens",
+            headers=_headers(),
+            json={
+                "instance_id": "noatun",
+                "profile_id": "ravn-openshell",
+                "name": "Muninn",
+            },
+        )
+
+    assert result.status_code == 201
+    assert request_remote.await_args.kwargs["timeout"] == 120.0
 
 
 @respx.mock

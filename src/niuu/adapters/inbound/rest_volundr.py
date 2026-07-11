@@ -208,6 +208,7 @@ async def _request_remote(
     params: list[tuple[str, str]] | None = None,
     extra_headers: dict[str, str] | None = None,
     embedded_app: ASGIApp | None = None,
+    timeout: float = 30.0,
 ) -> httpx.Response:
     headers = _forward_headers(request)
     if extra_headers:
@@ -243,7 +244,7 @@ async def _request_remote(
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
         response = await client.request(
             method,
             remote_url,

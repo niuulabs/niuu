@@ -59,6 +59,7 @@ from niuu.domain.models import Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
 
 _RAVN_REMOTE_PREFIX = "/api/v1/ravn"
+_RESIDENT_COMMAND_TIMEOUT_SECONDS = 120.0
 logger = logging.getLogger(__name__)
 
 
@@ -301,6 +302,7 @@ def create_ravn_router(
             base_url=_ravn_base_url(instance),
             json_body=_strip_instance_hints(body),
             embedded_app=embedded_forge_app,
+            timeout=_RESIDENT_COMMAND_TIMEOUT_SECONDS,
         )
         _ensure_remote_success(response)
         payload = response.json()
@@ -359,6 +361,7 @@ def create_ravn_router(
             remote_prefix=_RAVN_REMOTE_PREFIX,
             base_url=_ravn_base_url(instance),
             embedded_app=embedded_forge_app,
+            timeout=_RESIDENT_COMMAND_TIMEOUT_SECONDS,
         )
         _ensure_remote_success(response)
         payload = response.json()
@@ -441,6 +444,7 @@ def create_ravn_router(
             remote_prefix=_RAVN_REMOTE_PREFIX,
             base_url=_ravn_base_url(instance),
             embedded_app=embedded_forge_app,
+            timeout=_RESIDENT_COMMAND_TIMEOUT_SECONDS,
         )
         _ensure_remote_success(response)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
