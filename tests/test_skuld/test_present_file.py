@@ -106,7 +106,6 @@ def test_present_file_size_cap(client, tmp_path, monkeypatch):
 
 
 def test_registry_rebuild_recovers_after_restart(client, tmp_path):
-    from skuld import broker as bmod
     from skuld import broker_api as api_mod
 
     src = tmp_path / "doc.txt"
