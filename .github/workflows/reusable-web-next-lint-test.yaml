@@ -54,11 +54,15 @@ jobs:
         run: |
           output="$(pnpm format:check 2>&1)" || {
             printf '%s\n' "$output"
-            printf '%s\n' "$output" \
-              | sed -n 's/^\[warn\] \(.*\.[[:alnum:]]*\)$/\1/p' \
-              | while IFS= read -r file; do
-                  echo "::error file=${file}::Prettier formatting required"
-                done
+            files="$(pnpm exec prettier --list-different \
+              "**/*.{ts,tsx,js,jsx,css,md,json,yaml,yml}" 2>&1 || true)"
+            printf '%s\n' "$files" | while IFS= read -r file; do
+              echo "::error file=${file}::Prettier formatting required"
+            done
+            files="${files//'%'/'%25'}"
+            files="${files//$'\n'/'%0A'}"
+            files="${files//$'\r'/'%0D'}"
+            echo "::error title=Prettier files::${files}"
             exit 1
           }
 

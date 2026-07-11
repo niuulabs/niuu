@@ -100,6 +100,7 @@ jobs:
       - name: Run tests with coverage
         run: |
           set -o pipefail
+          set +e
           output_file="$(mktemp)"
           uv run pytest ${{ matrix.pkg.paths }} -v --tb=short \
             --override-ini="addopts=" \
@@ -108,6 +109,7 @@ jobs:
             --cov-report=xml \
             --cov-fail-under=85 2>&1 | tee "$output_file"
           status=${PIPESTATUS[0]}
+          set -e
           if (( status != 0 )); then
             failure_output="$(tail -n 200 "$output_file")"
             failure_output="${failure_output//'%'/'%25'}"
