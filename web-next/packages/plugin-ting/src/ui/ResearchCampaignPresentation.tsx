@@ -1,10 +1,8 @@
 import {
-  citationToken,
   cx,
   stripHeading,
   type CitationPopoverState,
   type CritiqueVm,
-  type ParsedArtifact,
   type SourceVm,
 } from './researchCampaignModel';
 

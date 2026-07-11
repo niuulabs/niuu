@@ -1,10 +1,8 @@
 import {
   cx,
-  drawerSectionCountLabel,
   formatClock,
   formatElapsed,
   sentenceCase,
-  statusDotClass,
   type DrawerTab,
 } from './researchCampaignModel';
 import { QualityDots, ResearchMarkdown } from './ResearchCampaignPresentation';
