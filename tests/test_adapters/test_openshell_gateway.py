@@ -1163,6 +1163,42 @@ def test_exec_script_sends_multiline_script_over_stdin(monkeypatch: pytest.Monke
     assert request.environment == {"A": "B"}
 
 
+def test_write_files_includes_projection_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _import_adapter(monkeypatch)
+
+    class _Data:
+        data = "tar: cannot create sandbox/.volundr: permission denied\n"
+
+    class _Exit:
+        exit_code = 2
+
+    class _Event:
+        stderr = _Data()
+        exit = _Exit()
+
+        def __init__(self, field: str) -> None:
+            self._field = field
+
+        def HasField(self, name: str) -> bool:  # noqa: N802 - protobuf shim.
+            return name == self._field
+
+    class _Stub:
+        def ExecSandbox(self, _request, **_kwargs):  # noqa: N802 - protobuf shim.
+            return [_Event("stderr"), _Event("exit")]
+
+    adapter.openshell_pb2_grpc.OpenShellStub = lambda _channel: _Stub()
+    client = adapter.OpenShellGatewayClient(
+        endpoint="openshell.example:8080",
+        token_provider=type("TokenProvider", (), {"token": lambda self: "token"})(),
+    )
+
+    with pytest.raises(RuntimeError, match="permission denied"):
+        client.write_files(
+            sandbox_id="sandbox-id",
+            files={"/sandbox/.volundr/skuld.yaml": b"session: {}\n"},
+        )
+
+
 def test_exec_detached_sends_only_process_command_over_stdin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
