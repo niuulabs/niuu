@@ -565,7 +565,7 @@ class HermesResidentSessionController(ResidentSessionController):
             await api.close()
         sessions: list[ResidentSession] = []
         for row in rows:
-            if row.get("end_reason") == VOLUNDR_DELETED_END_REASON:
+            if row.get("ended_at") is not None:
                 continue
             key = str(row.get("id") or "")
             if not key:
