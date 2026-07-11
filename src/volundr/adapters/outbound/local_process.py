@@ -1298,7 +1298,7 @@ class LocalProcessPodManager(PodManager):
             platform_cfg.setdefault("timeout", 30.0)
             platform_cfg.setdefault(
                 "base_url",
-                f"http://{_public_loopback_host(self._server_public_host)}:{self._server_port}",
+                f"http://{_public_loopback_host(self._server_host)}:{self._server_port}",
             )
 
             persona_runtime_overrides: dict[str, Any] = {}

@@ -18,6 +18,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from niuu.config import CorsConfig, NiuuSettings
 from niuu.cors import apply_cors_middleware
 from niuu.ports.plugin import APIRouteDomain, Service
+from niuu.service_databases import bootstrap_sql_for_service as bootstrap_sql_for_service
 from niuu.session_proxy import (  # noqa: F401
     SkuldPortRegistry,
     _bearer_token_from_ws,
