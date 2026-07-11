@@ -118,6 +118,7 @@ jobs:
           if (( status != 0 )); then
             failure_output="$(grep -E 'All files|ERROR: Coverage' "$output_file" || true)"
             if [[ -f coverage/lcov.info ]]; then
+              set +o pipefail
               branch_output="$(awk -F: '
                 /^SF:/ { file = substr($0, 4) }
                 /^BRF:/ { total = $2 }
@@ -126,6 +127,7 @@ jobs:
                   if (total > 0) printf "%.2f%% (%d/%d) %s\n", 100 * covered / total, covered, total, file
                 }
               ' coverage/lcov.info | sort -n | head -n 20)"
+              set -o pipefail
               failure_output+=$'\nLowest per-file branch coverage:\n'
               failure_output+="$branch_output"
             fi
