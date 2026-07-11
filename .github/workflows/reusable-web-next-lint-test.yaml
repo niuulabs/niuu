@@ -45,10 +45,11 @@ jobs:
         run: |
           output="$(pnpm -r --filter='./packages/*' build 2>&1)" || {
             printf '%s\n' "$output"
-            output="${output//'%'/'%25'}"
-            output="${output//$'\n'/'%0A'}"
-            output="${output//$'\r'/'%0D'}"
-            echo "::error title=Web package build::${output}"
+            annotation="${output: -3500}"
+            annotation="${annotation//'%'/'%25'}"
+            annotation="${annotation//$'\n'/'%0A'}"
+            annotation="${annotation//$'\r'/'%0D'}"
+            echo "::error title=Web package build::${annotation}"
             exit 1
           }
           printf '%s\n' "$output"
