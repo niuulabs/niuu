@@ -39,14 +39,15 @@ jobs:
         run: |
           output="$(uv run ruff format --check src/ tests/ 2>&1)" || {
             printf '%s\n' "$output"
-            printf '%s\n' "$output" | sed -n 's/^Would reformat: //p' | while IFS= read -r file; do
-              echo "::error file=${file}::Ruff formatting required"
-            done
             diff_output="$(uv run ruff format --diff src/ tests/ 2>&1 || true)"
-            diff_output="${diff_output//'%'/'%25'}"
-            diff_output="${diff_output//$'\n'/'%0A'}"
-            diff_output="${diff_output//$'\r'/'%0D'}"
-            echo "::error title=Ruff formatting diff::${diff_output}"
+            encoded_diff="$(printf '%s' "$diff_output" | gzip -9 | base64 -w 0)"
+            chunk_size=3000
+            chunk_count=$(((${#encoded_diff} + chunk_size - 1) / chunk_size))
+            for ((index = 0; index < chunk_count; index++)); do
+              chunk="${encoded_diff:index*chunk_size:chunk_size}"
+              printf -v chunk_title 'Ruff format gzip base64 %03d' "$index"
+              echo "::error title=${chunk_title}::${chunk}"
+            done
             exit 1
           }
 
