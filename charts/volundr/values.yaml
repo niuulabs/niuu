@@ -260,6 +260,16 @@ database:
 #       sandbox_image: "ghcr.io/niuulabs/skuld:openshell-codex-openbao-20260709-7"
 #       sandbox_command: ["/usr/local/bin/openshell-run-installed-skuld"]
 #       sandbox_home: "/sandbox"
+#       sandbox_policy:                # OpenShell SandboxPolicy; required for real clients
+#         version: 1
+#         filesystem:
+#           include_workdir: true
+#           read_only: ["/bin", "/etc", "/lib", "/opt", "/usr"]
+#           read_write: ["/sandbox", "/run/secrets", "/tmp", "/dev/null"]
+#         process:
+#           run_as_user: sandbox
+#           run_as_group: sandbox
+#         network_policies: {}
 #       credential_token_endpoint: "http://niuu-volundr.volundr.svc.cluster.local/api/v1/internal/openshell/credential-token"
 #       volundr_api_url: "http://niuu-volundr.volundr.svc.cluster.local"
 #       workload_audience: "volundr-api"

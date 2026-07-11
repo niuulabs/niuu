@@ -1413,38 +1413,59 @@ def test_exec_detached_sends_only_process_command_over_stdin(
     assert b"OPENAI_API_KEY" not in request.stdin
 
 
-def test_default_policy_allows_bootstrap_and_codex_network(
+def test_sandbox_policy_is_built_from_adapter_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter = _import_adapter(monkeypatch)
 
-    policy = adapter._default_policy()
+    policy = adapter._sandbox_policy_from_config(
+        {
+            "version": 1,
+            "filesystem": {
+                "include_workdir": True,
+                "read_only": ["/usr"],
+                "read_write": ["/sandbox", "/tmp", "/dev/null"],
+            },
+            "process": {"run_as_user": "sandbox", "run_as_group": "sandbox"},
+            "network_policies": {
+                "npm_https": {
+                    "name": "npm-https",
+                    "endpoints": [
+                        {
+                            "host": "registry.npmjs.org",
+                            "port": 443,
+                            "protocol": "rest",
+                            "tls": "terminate",
+                            "enforcement": "enforce",
+                            "access": "full",
+                        }
+                    ],
+                    "binaries": [{"path": "/usr/bin/node"}],
+                }
+            },
+        }
+    )
 
     assert "/dev/null" in policy.filesystem.read_write
     assert "/tmp" in policy.filesystem.read_write
     assert "/usr" in policy.filesystem.read_only
+    npm = policy.network_policies["npm_https"]
+    assert [endpoint.host for endpoint in npm.endpoints] == ["registry.npmjs.org"]
+    assert [binary.path for binary in npm.binaries] == ["/usr/bin/node"]
 
-    github = policy.network_policies["github_https"]
-    assert {endpoint.host for endpoint in github.endpoints} >= {
-        "github.com",
-        "api.github.com",
-        "codeload.github.com",
-    }
-    assert {endpoint.protocol for endpoint in github.endpoints} == {"rest"}
-    assert {endpoint.tls for endpoint in github.endpoints} == {"terminate"}
-    assert {binary.path for binary in github.binaries} >= {
-        "/usr/bin/git",
-        "/usr/lib/git-core/git-remote-http",
-    }
 
-    openai = policy.network_policies["openai_https"]
-    assert [endpoint.host for endpoint in openai.endpoints] == ["api.openai.com"]
-    assert [endpoint.protocol for endpoint in openai.endpoints] == ["rest"]
-    assert [endpoint.tls for endpoint in openai.endpoints] == ["terminate"]
-    assert {binary.path for binary in openai.binaries} >= {
-        "/usr/local/bin/codex",
-        "/usr/bin/node",
-    }
+def test_sandbox_policy_requires_supported_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _import_adapter(monkeypatch)
+
+    with pytest.raises(ValueError, match="version must be 1"):
+        adapter._sandbox_policy_from_config({})
+
+
+def test_real_gateway_client_requires_sandbox_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _import_adapter(monkeypatch)
+
+    with pytest.raises(ValueError, match="sandbox_policy configuration is required"):
+        adapter.OpenShellGatewayPodManager()
 
 
 def test_credential_file_archive_uses_private_modes(monkeypatch: pytest.MonkeyPatch) -> None:
