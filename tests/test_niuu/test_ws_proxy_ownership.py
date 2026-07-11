@@ -45,10 +45,11 @@ class TestProxyWsIdentity:
         assert roles == ("volundr:viewer",)
 
     def test_headers_win_over_query(self):
-        user, _tenant, _roles = _proxy_ws_identity(
+        user, tenant, _roles = _proxy_ws_identity(
             _ws(headers={"x-auth-user-id": "alice"}, query={"devUserId": "bob"})
         )
         assert user == "alice"
+        assert tenant == "default"
 
     def test_no_identity(self):
         user, tenant, roles = _proxy_ws_identity(_ws())
@@ -67,8 +68,9 @@ class TestProxyWsIdentity:
 
     def test_bearer_access_token_query_param_remains_compatible(self):
         token = _jwt({"sub": "carol"})
-        user, _tenant, _roles = _proxy_ws_identity(_ws(query={"access_token": token}))
+        user, tenant, _roles = _proxy_ws_identity(_ws(query={"access_token": token}))
         assert user == "carol"
+        assert tenant == "default"
 
     def test_bearer_authorization_header(self):
         token = _jwt({"sub": "dave"})

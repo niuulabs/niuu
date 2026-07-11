@@ -236,7 +236,7 @@ def _proxy_ws_identity(websocket: WebSocket) -> tuple[str | None, str | None, tu
     if forwarded:
         return (
             forwarded,
-            headers.get("x-auth-tenant", "").strip() or None,
+            headers.get("x-auth-tenant", "").strip() or "default",
             _roles(headers.get("x-auth-roles", "volundr:developer")),
         )
 
@@ -245,7 +245,7 @@ def _proxy_ws_identity(websocket: WebSocket) -> tuple[str | None, str | None, tu
     if dev_user:
         return (
             dev_user,
-            str(params.get("devTenantId") or "").strip() or None,
+            str(params.get("devTenantId") or "").strip() or "default",
             _roles(str(params.get("devRoles") or "volundr:developer")),
         )
 
@@ -253,7 +253,7 @@ def _proxy_ws_identity(websocket: WebSocket) -> tuple[str | None, str | None, tu
     if token:
         user_id, tenant, roles = claims_to_identity(decode_jwt_claims(token))
         if user_id:
-            return (user_id, tenant or None, roles)
+            return (user_id, tenant or "default", roles)
 
     return (None, None, ())
 
