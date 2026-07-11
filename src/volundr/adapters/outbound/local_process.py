@@ -1296,7 +1296,10 @@ class LocalProcessPodManager(PodManager):
             platform_cfg = gateway_cfg.setdefault("platform", {})
             platform_cfg["enabled"] = True
             platform_cfg.setdefault("timeout", 30.0)
-            platform_cfg.setdefault("base_url", f"http://{_public_loopback_host()}:8080")
+            platform_cfg.setdefault(
+                "base_url",
+                f"http://{_public_loopback_host(self._server_public_host)}:{self._server_port}",
+            )
 
             persona_runtime_overrides: dict[str, Any] = {}
             system_prompt_extra = persona_override.get("system_prompt_extra")

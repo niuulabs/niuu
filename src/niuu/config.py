@@ -10,11 +10,12 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
+    NoDecode,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
     YamlConfigSettingsSource,
@@ -324,7 +325,7 @@ class NiuuHostConfig(BaseSettings):
         del cls, settings_cls, dotenv_settings
         return env_settings, init_settings, file_secret_settings
 
-    cors_origins: list[str] = Field(
+    cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
         validation_alias=AliasChoices("cors_origins", "NIUU_CORS_ORIGINS"),
     )
