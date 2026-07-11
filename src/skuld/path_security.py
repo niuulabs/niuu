@@ -20,7 +20,7 @@ def resolve_contained_path(
     """Resolve an untrusted relative path beneath *base*.
 
     Lexical parent traversal and escapes through existing symlinks are rejected.
-    The common-path comparison is deliberately explicit so static analysis can
+    The normalized-prefix comparison is deliberately explicit so static analysis can
     prove that the returned canonical path stays beneath the canonical root.
     """
     if "\0" in relative_path:
@@ -35,12 +35,17 @@ def resolve_contained_path(
     try:
         lexical_root = os.path.abspath(os.fspath(base))
         lexical_candidate = os.path.abspath(os.path.join(lexical_root, normalised))
-        if os.path.commonpath((lexical_root, lexical_candidate)) != lexical_root:
+        lexical_prefix = lexical_root.rstrip(os.sep) + os.sep
+        if (
+            lexical_candidate != lexical_root
+            and not lexical_candidate.startswith(lexical_prefix)
+        ):
             raise UnsafePathError("path traversal not allowed")
 
         canonical_root = os.path.realpath(lexical_root, strict=True)
         candidate = os.path.realpath(lexical_candidate, strict=strict)
-        if os.path.commonpath((canonical_root, candidate)) != canonical_root:
+        canonical_prefix = canonical_root.rstrip(os.sep) + os.sep
+        if candidate != canonical_root and not candidate.startswith(canonical_prefix):
             raise UnsafePathError("path traversal not allowed")
     except (OSError, RuntimeError, ValueError) as exc:
         raise UnsafePathError("path traversal not allowed") from exc
@@ -65,12 +70,17 @@ def resolve_path_in_roots(
     for root in roots:
         try:
             lexical_root = os.path.abspath(os.fspath(root))
-            if os.path.commonpath((lexical_root, lexical_candidate)) != lexical_root:
+            lexical_prefix = lexical_root.rstrip(os.sep) + os.sep
+            if (
+                lexical_candidate != lexical_root
+                and not lexical_candidate.startswith(lexical_prefix)
+            ):
                 continue
 
             canonical_root = os.path.realpath(lexical_root, strict=True)
             candidate = os.path.realpath(lexical_candidate, strict=strict)
-            if os.path.commonpath((canonical_root, candidate)) == canonical_root:
+            canonical_prefix = canonical_root.rstrip(os.sep) + os.sep
+            if candidate == canonical_root or candidate.startswith(canonical_prefix):
                 return Path(candidate)
         except (OSError, RuntimeError, ValueError):
             continue

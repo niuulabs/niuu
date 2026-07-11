@@ -32,18 +32,17 @@ def resolve_contained_path(
     operation so the validated path, rather than unchecked input, reaches the
     sink.
     """
-    resolved_root = Path(root).expanduser().resolve(strict=strict)
-    candidate_path = Path(candidate).expanduser()
-    if not candidate_path.is_absolute() and ".." in candidate_path.parts:
+    candidate_value = os.path.expanduser(os.fspath(candidate))
+    candidate_parts = candidate_value.replace("\\", "/").split("/")
+    if not os.path.isabs(candidate_value) and ".." in candidate_parts:
         raise ArchivePathError(f"Path contains traversal: {candidate}")
-    if not candidate_path.is_absolute():
-        candidate_path = resolved_root / candidate_path
-    resolved_candidate = candidate_path.resolve(strict=strict)
-    try:
-        resolved_candidate.relative_to(resolved_root)
-    except ValueError as exc:
-        raise ArchivePathError(f"Path escapes configured root: {candidate}") from exc
-    return resolved_candidate
+    root_path = os.path.realpath(os.path.expanduser(os.fspath(root)), strict=strict)
+    joined_path = os.path.join(root_path, candidate_value)
+    resolved_candidate = os.path.realpath(joined_path, strict=strict)
+    root_prefix = root_path.rstrip(os.sep) + os.sep
+    if resolved_candidate != root_path and not resolved_candidate.startswith(root_prefix):
+        raise ArchivePathError(f"Path escapes configured root: {candidate}")
+    return Path(resolved_candidate)
 
 
 def resolve_archive_member_path(root: str | Path, member_name: str) -> Path:

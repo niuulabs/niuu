@@ -545,14 +545,19 @@ async def present_file(body: dict) -> dict:
     caption = str((body or {}).get("caption") or "").strip() or None
     title = str((body or {}).get("title") or "").strip() or None
 
-    try:
-        src_real = resolve_path_in_roots(
-            raw_path,
-            (broker.workspace_dir, broker._settings.home_path),
-            strict=False,
-        )
-    except UnsafePathError:
-        raise HTTPException(400, "path is outside the session roots") from None
+    workspace_root = os.path.realpath(os.path.abspath(broker.workspace_dir))
+    home_root = os.path.realpath(os.path.abspath(broker._settings.home_path))
+    source_path = os.path.realpath(os.path.abspath(os.path.expanduser(raw_path)))
+    workspace_prefix = workspace_root.rstrip(os.sep) + os.sep
+    home_prefix = home_root.rstrip(os.sep) + os.sep
+    if not (
+        source_path == workspace_root
+        or source_path.startswith(workspace_prefix)
+        or source_path == home_root
+        or source_path.startswith(home_prefix)
+    ):
+        raise HTTPException(400, "path is outside the session roots")
+    src_real = Path(source_path)
     if not src_real.exists():
         raise HTTPException(404, "no such file")
     if not src_real.is_file():
@@ -569,7 +574,7 @@ async def present_file(body: dict) -> dict:
     try:
         dest_dir = _presented_staging_dir() / file_id
         dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = resolve_contained_path(dest_dir, src_real.name, allow_root=False)
+        dest = resolve_contained_path(dest_dir, "content", allow_root=False)
         shutil.copyfile(src_real, dest)
     except (OSError, UnsafePathError) as exc:
         logger.warning("present-file: staging copy failed: %s", repr(exc))
