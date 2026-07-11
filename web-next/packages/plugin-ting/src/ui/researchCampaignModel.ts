@@ -221,7 +221,7 @@ export function normalizeStageLabel(stage: CampaignStageState | undefined): stri
   if (label.includes('explor')) return 'Explore';
   if (label.includes('challenge')) return 'Challenge';
   if (label.includes('synth')) return 'Synthesize';
-  if (label.includes('curate')) return 'Curate';
+  if (label.includes('curat')) return 'Curate';
   if (label.includes('publish')) return 'Publish';
   if (label.includes('complete')) return 'Complete';
   return stage.label;

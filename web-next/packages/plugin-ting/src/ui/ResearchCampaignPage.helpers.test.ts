@@ -297,12 +297,7 @@ describe('ResearchCampaignPage helpers', () => {
       severity: 'high',
       against: 'Current thesis',
     });
-    expect(parseCritiques('# Skeptic\n\nNo critiques surfaced.', ['final.md'])).toEqual([
-      expect.objectContaining({
-        claim: 'No critiques surfaced.',
-        severity: 'high',
-      }),
-    ]);
+    expect(parseCritiques('# Skeptic\n\nNo critiques surfaced.', ['final.md'])).toEqual([]);
 
     expect(
       parseListCards('# Learnings\n\n## Card one\nBody line\n\n- Card two: follow-up body'),
