@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -208,12 +209,29 @@ class SessionArchiveService:
                 fmt,
                 workspace_dir=candidate,
             )
-            if existing is not None and existing.exists():
-                return existing
+            if existing is not None:
+                archive_root = self._archive_store.archive_root(
+                    session_id=session_id_str,
+                    workspace_dir=candidate,
+                )
+                root_path = os.path.realpath(os.path.abspath(os.fspath(archive_root)))
+                existing_path = os.path.realpath(os.path.abspath(os.fspath(existing)))
+                root_prefix = root_path.rstrip(os.sep) + os.sep
+                if existing_path != root_path and not existing_path.startswith(root_prefix):
+                    raise ArchivePathError(f"Transcript path escapes archive root: {existing}")
+                if os.path.exists(existing_path):
+                    return Path(existing_path)
 
         existing = self._transcript_artifact_path(session_id_str, fmt)
-        if existing is not None and existing.exists():
-            return existing
+        if existing is not None:
+            archive_root = self._archive_store.archive_root(session_id=session_id_str)
+            root_path = os.path.realpath(os.path.abspath(os.fspath(archive_root)))
+            existing_path = os.path.realpath(os.path.abspath(os.fspath(existing)))
+            root_prefix = root_path.rstrip(os.sep) + os.sep
+            if existing_path != root_path and not existing_path.startswith(root_prefix):
+                raise ArchivePathError(f"Transcript path escapes archive root: {existing}")
+            if os.path.exists(existing_path):
+                return Path(existing_path)
 
         workspace_dir = await self.resolve_workspace_dir(session_id)
         await self.build_archive(session_id)
