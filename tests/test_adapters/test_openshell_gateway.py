@@ -586,6 +586,8 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
         "/sandbox/.volundr/skuld.pid",
         "/sandbox/.volundr/ravn.pid",
     ]
+    assert client.execs[0]["env"]["NIUU_CONFIG"] == "/sandbox/.volundr/skuld.yaml"
+    assert "SKULD_CONFIG" not in client.execs[0]["env"]
 
 
 @pytest.mark.asyncio
