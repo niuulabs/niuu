@@ -183,7 +183,8 @@ def create_app(
     else:
         standalone_discovery = resident_discovery
     platform = platform_runtime or HttpPlatformRuntimeAdapter(
-        base_url=loaded_settings.gateway.platform.base_url
+        base_url=loaded_settings.gateway.platform.base_url,
+        timeout_seconds=loaded_settings.gateway.platform.timeout,
     )
     resident_directory = ResidentDirectory(platform=platform, discovery=standalone_discovery)
     store = warden_store or build_warden_store()

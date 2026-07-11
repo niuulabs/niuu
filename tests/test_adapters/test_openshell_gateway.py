@@ -408,6 +408,7 @@ def _resident_profile() -> ResidentDeploymentProfile:
                 "broker": {
                     "cliType": "codex-ws",
                     "transportAdapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
+                    "skipPermissions": True,
                 },
                 "session": {"reasoningEffort": "high"},
                 "openshell": {
@@ -578,10 +579,12 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
     assert "/sandbox/.volundr/ravn.yaml" in projected
     assert _codex_auth_document().encode() not in projected.values()
     ravn_config = projected["/sandbox/.volundr/ravn.yaml"].decode()
+    skuld_config = projected["/sandbox/.volundr/skuld.yaml"].decode()
     assert "gpt-5.6-sol" in ravn_config
     assert "mimir-yggdrasil" in ravn_config
     assert "token_env: NIUU_VOLUNDR_ACCESS_TOKEN" in ravn_config
     assert "Saga Planning" in ravn_config
+    assert "skip_permissions: true" in skuld_config
     assert [process["pid_path"] for process in client.execs] == [
         "/sandbox/.volundr/skuld.pid",
         "/sandbox/.volundr/ravn.pid",

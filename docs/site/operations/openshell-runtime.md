@@ -188,6 +188,7 @@ residentRuntimeProfiles:
         broker:
           cliType: codex-ws
           transportAdapter: skuld.transports.codex_ws.CodexWebSocketTransport
+          skipPermissions: true
         session:
           reasoningEffort: high
         openshell:

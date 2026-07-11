@@ -2181,6 +2181,15 @@ def _resident_skuld_config(
             ],
         },
     }
+    if "skipPermissions" in broker or "skip_permissions" in broker:
+        config["skip_permissions"] = bool(
+            broker.get("skipPermissions", broker.get("skip_permissions"))
+        )
+    approval_policy = broker.get("approvalPolicy", broker.get("approval_policy"))
+    if approval_policy:
+        config["approval_policy"] = str(approval_policy)
+    if broker.get("sandbox"):
+        config["sandbox"] = str(broker["sandbox"])
     openshell = values.get("openshell")
     if isinstance(openshell, dict):
         overlay = openshell.get("skuldConfig") or openshell.get("skuld_config")
