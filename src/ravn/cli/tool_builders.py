@@ -9,6 +9,7 @@ from typing import Any
 
 from ravn.agent import PostToolHook, PreToolHook
 from ravn.cli.runtime_builders import (
+    _build_workflow_capability_sources,
     _get_tool_group,
     _import_class,
     _inject_secrets,
@@ -18,6 +19,7 @@ from ravn.config import Settings, ToolGroupConfig, resolve_trust_tools
 from ravn.domain.models import Session, ToolCall, ToolResult
 
 logger = logging.getLogger(__name__)
+
 
 def _build_tools(
     settings: Settings,
@@ -286,7 +288,8 @@ def _filter_tools(
 
 
 # Maps documented group aliases to actual tool name prefixes.
-# Needed because some groups don't use prefix_ naming (e.g. "file" → "read_file", not "file_read").
+# Some groups do not use prefix naming; for example, "file" maps to
+# "read_file" instead of "file_read".
 _MIMIR_TOOL_NAMES: list[str] = [
     "mimir_ingest",
     "mimir_query",
@@ -440,17 +443,3 @@ def _build_prompt_builder(settings: Settings) -> Any:
         cache_dir=cm.prompt_cache_dir,
     )
     return PromptBuilder(cache=cache)
-
-
-# ---------------------------------------------------------------------------
-# Builder: MCP (async — called after agent construction)
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# User input function
-# ---------------------------------------------------------------------------
-
-
-
-

@@ -249,4 +249,3 @@ def _workflow_allowed_outcome_topics(
         if source_event
     }
     return topics if topics else None
-

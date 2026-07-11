@@ -4,13 +4,9 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from importlib.metadata import metadata
 from uuid import UUID
 
-from fastapi import FastAPI, Request
-from fastapi.encoders import jsonable_encoder
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 
 from niuu.adapters.inbound.rest_credentials_settings import create_credentials_settings_router
 from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
@@ -20,7 +16,6 @@ from niuu.adapters.postgres_realms import PostgresRealmRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.services.pat import PATService
 from niuu.domain.services.realm import RealmService
-from niuu.ports.http_auth import HttpAuthPort
 from niuu.service_integrations import (
     has_seeded_linear_integration as _has_seeded_linear_integration,
 )
@@ -28,10 +23,7 @@ from niuu.service_integrations import (
     seed_configured_integrations as _seed_configured_integrations,
 )
 from niuu.service_integrations import seed_linear_integration as _seed_linear_integration
-from niuu.service_runtime import (
-    configure_logging,
-    create_workload_identity_service,
-)
+from niuu.service_runtime import create_workload_identity_service
 from niuu.service_runtime import (
     create_credential_store as _create_credential_store,
 )
@@ -93,10 +85,11 @@ from volundr.adapters.outbound.postgres_tokens import PostgresTokenTracker
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
+from volundr.app_shell import build_app_shell
 from volundr.catalog import build_catalog
 from volundr.config import Settings
 from volundr.domain.models import SessionStatus
-from volundr.domain.ports import OpenShellCredentialGrantPort, SessionContributor
+from volundr.domain.ports import OpenShellCredentialGrantPort
 from volundr.domain.services import (
     ChronicleService,
     ExternalSessionService,
@@ -181,215 +174,18 @@ async def _bootstrap_startup_schema(settings: Settings) -> None:
         await conn.close()
 
 
-def _create_pod_manager(settings: Settings) -> "PodManager":  # noqa: F821
-    """Create the PodManager adapter from dynamic config."""
-    pm_cfg = settings.pod_manager
-    cls = import_class(pm_cfg.adapter)
-    kwargs = resolve_secret_kwargs(pm_cfg.kwargs, pm_cfg.secret_kwargs_env)
-    kwargs.setdefault("server_public_host", settings.server_public_host)
-    kwargs.setdefault("server_host", settings.server_host)
-    kwargs.setdefault("server_port", settings.server_port)
-    kwargs.setdefault("gateway_endpoint", settings.openshell_gateway_endpoint)
-    kwargs.setdefault("gateway_public_url", settings.openshell_gateway_public_url)
-    kwargs.setdefault("token_url", settings.openshell_oidc_token_url)
-    kwargs.setdefault("client_id", settings.openshell_oidc_client_id)
-    if settings.openshell_oidc_client_secret:
-        kwargs.setdefault("client_secret", settings.openshell_oidc_client_secret)
-    instance = cls(**kwargs)
-    logger.info("Pod manager: %s", pm_cfg.adapter.rsplit(".", 1)[-1])
-    return instance
-
-
-def _runtime_backend(settings: Settings) -> str:
-    adapter = settings.pod_manager.adapter.rsplit(".", 1)[-1].lower()
-    if "openshell" in adapter:
-        return "openshell"
-    if mode := getattr(settings, "mode", None):
-        return mode
-    return "kubernetes"
-
-
-def _create_authorization_adapter(settings: Settings) -> "AuthorizationPort":  # noqa: F821
-    """Create the AuthorizationPort adapter from dynamic config."""
-    az_cfg = settings.authorization
-    cls = import_class(az_cfg.adapter)
-    kwargs = resolve_secret_kwargs(az_cfg.kwargs, az_cfg.secret_kwargs_env)
-    instance = cls(**kwargs)
-    logger.info("Authorization adapter: %s", az_cfg.adapter.rsplit(".", 1)[-1])
-    return instance
-
-
-def _create_gateway_adapter(settings: Settings) -> "GatewayPort":  # noqa: F821
-    """Create the GatewayPort adapter from dynamic config."""
-    gw_cfg = settings.gateway
-    cls = import_class(gw_cfg.adapter)
-    kwargs = resolve_secret_kwargs(gw_cfg.kwargs, gw_cfg.secret_kwargs_env)
-    instance = cls(**kwargs)
-    logger.info("Gateway adapter: %s", gw_cfg.adapter.rsplit(".", 1)[-1])
-    return instance
-
-
-def _create_http_auth_adapter(config) -> HttpAuthPort:
-    """Create a dynamic outbound HTTP auth adapter."""
-    cls = import_class(config.adapter)
-    kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
-    return cls(**kwargs)
-
-
-def _create_secret_injection_adapter(settings: Settings) -> "SecretInjectionPort":  # noqa: F821
-    """Create the SecretInjectionPort adapter from dynamic config."""
-    si_cfg = settings.secret_injection
-    cls = import_class(si_cfg.adapter)
-    kwargs = resolve_secret_kwargs(si_cfg.kwargs, si_cfg.secret_kwargs_env)
-    instance = cls(**kwargs)
-    logger.info("Secret injection: %s", si_cfg.adapter.rsplit(".", 1)[-1])
-    return instance
-
-
-def _create_resource_provider(settings: Settings) -> "ResourceProvider":  # noqa: F821
-    """Create the ResourceProvider adapter from dynamic config."""
-    rp_cfg = settings.resource_provider
-    cls = import_class(rp_cfg.adapter)
-    kwargs = resolve_secret_kwargs(rp_cfg.kwargs, rp_cfg.secret_kwargs_env)
-    instance = cls(**kwargs)
-    logger.info("Resource provider: %s", rp_cfg.adapter.rsplit(".", 1)[-1])
-    return instance
-
-
-def _create_archive_store(settings: Settings) -> "ArchiveStorePort":  # noqa: F821
-    """Create the ArchiveStorePort adapter from dynamic config."""
-    as_cfg = settings.archive_store
-    cls = import_class(as_cfg.adapter)
-    kwargs = resolve_secret_kwargs(as_cfg.kwargs, as_cfg.secret_kwargs_env)
-    instance = cls(**kwargs)
-    logger.info("Archive store: %s", as_cfg.adapter.rsplit(".", 1)[-1])
-    return instance
-
-
-def _create_external_session_providers(
-    settings: Settings,
-) -> list["ExternalSessionProvider"]:  # noqa: F821
-    """Create external session provider adapters from dynamic config.
-
-    Disabled unless ``external_sessions.enabled`` is true, or unset while
-    running in mini/local mode — host session stores are only reachable
-    when Volundr runs on the host.
-    """
-    es_cfg = settings.external_sessions
-    enabled = es_cfg.enabled if es_cfg.enabled is not None else settings.local_mounts.mini_mode
-    if not enabled:
-        return []
-
-    providers = []
-    for provider_cfg in es_cfg.providers:
-        cls = import_class(provider_cfg.adapter)
-        instance = cls(**provider_cfg.kwargs)
-        providers.append(instance)
-        logger.info("External session provider: %s", provider_cfg.adapter.rsplit(".", 1)[-1])
-    return providers
-
-
-def _create_contributors(
-    settings: Settings,
-    **ports: object,
-) -> list[SessionContributor]:
-    """Create session contributors from dynamic config.
-
-    Each contributor config specifies a fully-qualified class path.
-    Config kwargs are merged with injected port instances so contributors
-    can accept the ports they need and ignore others via **_extra.
-    """
-    from volundr.adapters.outbound.contributors.local_mount import LocalMountContributor
-    from volundr.adapters.outbound.contributors.session_def import SessionDefinitionContributor
-    from volundr.adapters.outbound.contributors.workload_config import WorkloadConfigContributor
-    from volundr.adapters.outbound.contributors.workload_identity import (
-        WorkloadIdentityContributor,
-    )
-
-    contributors: list[SessionContributor] = []
-
-    def _has_contributor(name: str) -> bool:
-        return any(contributor.name == name for contributor in contributors)
-
-    # Auto-wire SessionDefinitionContributor first so definition defaults
-    # (broker.cliType, transportAdapter, etc.) are the base layer that
-    # later contributors (templates, profiles, resources) can override.
-    if settings.session_definitions:
-        contributors.append(
-            SessionDefinitionContributor(
-                definitions=settings.session_definitions,
-                default_definition=settings.default_definition,
-            )
-        )
-        logger.info(
-            "Session contributor: session_definition (auto-wired, %d definitions, default=%s)",
-            len(settings.session_definitions),
-            settings.default_definition or "(none)",
-        )
-
-    for cfg in settings.session_contributors:
-        cls = import_class(cfg.adapter)
-        resolved_kwargs = resolve_secret_kwargs(cfg.kwargs, cfg.secret_kwargs_env)
-        kwargs = {**resolved_kwargs, **ports}
-        instance = cls(**kwargs)
-        contributors.append(instance)
-        logger.info(
-            "Session contributor: %s (%s)",
-            instance.name,
-            cfg.adapter.rsplit(".", 1)[-1],
-        )
-
-    if not _has_contributor("workload_config"):
-        contributors.append(WorkloadConfigContributor())
-        logger.info("Session contributor: workload_config (auto-wired)")
-
-    if not _has_contributor("workload_identity"):
-        contributors.append(WorkloadIdentityContributor())
-        logger.info("Session contributor: workload_identity (auto-wired)")
-
-    # Auto-wire LocalMountContributor from local_mounts config
-    lm = settings.local_mounts
-    local_mount_contributor = LocalMountContributor(
-        enabled=lm.enabled,
-        allow_root_mount=lm.allow_root_mount,
-        allowed_prefixes=lm.allowed_prefixes,
-    )
-    contributors.append(local_mount_contributor)
-    if lm.enabled:
-        logger.info("Session contributor: local_mount (enabled)")
-
-    # Always wire the prompt contributor so system_prompt/initial_prompt
-    # from the launch request (or dispatch) are injected into the spec.
-    from volundr.adapters.outbound.contributors.notification_channels import (
-        NotificationChannelContributor,
-    )
-    from volundr.adapters.outbound.contributors.prompt import PromptContributor
-
-    if not _has_contributor("notification_channels"):
-        contributors.append(NotificationChannelContributor(**ports))
-        logger.info("Session contributor: notification_channels (auto-wired)")
-
-    contributors.append(PromptContributor())
-
-    # Auto-wire RavnFlockContributor so ravn_flock workloads spawn
-    # multi-sidecar sessions (locally via ravn flock init/start).
-    from volundr.adapters.outbound.contributors.ravn_flock import RavnFlockContributor
-    from volundr.adapters.outbound.contributors.session_mcp import SessionMCPContributor
-
-    if not _has_contributor("ravn_flock"):
-        ravn_kwargs = dict(ports)
-        if settings.ravn_flock_image:
-            ravn_kwargs["ravn_image"] = settings.ravn_flock_image
-        if settings.ravn_flock_init_writer_image:
-            ravn_kwargs["init_writer_image"] = settings.ravn_flock_init_writer_image
-        contributors.append(RavnFlockContributor(**ravn_kwargs))
-        logger.info("Session contributor: ravn_flock (auto-wired)")
-
-    if not _has_contributor("session_mcp"):
-        contributors.append(SessionMCPContributor(**ports))
-        logger.info("Session contributor: session_mcp (auto-wired)")
-
-    return contributors
+from volundr.composition_builders import (  # noqa: F401
+    _create_archive_store,
+    _create_authorization_adapter,
+    _create_contributors,
+    _create_external_session_providers,
+    _create_gateway_adapter,
+    _create_http_auth_adapter,
+    _create_pod_manager,
+    _create_resource_provider,
+    _create_secret_injection_adapter,
+    _runtime_backend,
+)
 
 
 async def _broadcast_periodic_updates(
@@ -549,99 +345,7 @@ def create_app(
     if settings is None:
         settings = Settings()
 
-    # Configure logging from settings
-    configure_logging(settings.logging)
-
-    _meta = metadata("volundr")
-
-    app = FastAPI(
-        title="Volundr",
-        description=_meta["Summary"],
-        version=_meta["Version"],
-        openapi_tags=[
-            {
-                "name": "Sessions",
-                "description": "Session lifecycle management — create, start, stop, "
-                "delete sessions and report token usage.",
-            },
-            {
-                "name": "Chronicles",
-                "description": "Session history records — snapshots of completed or "
-                "in-progress sessions, reforge chains, and broker reports.",
-            },
-            {
-                "name": "Timeline",
-                "description": "Granular event timelines within a chronicle — "
-                "messages, file edits, git commits, and terminal activity.",
-            },
-            {
-                "name": "Models & Stats",
-                "description": "Available LLM models and aggregate usage statistics.",
-            },
-            {
-                "name": "Repositories",
-                "description": "Git providers and repository discovery.",
-            },
-            {
-                "name": "Launch Specs",
-                "description": "Launch specs — the unified session blueprint "
-                "(system-scope config-seeded + user-scope DB-stored).",
-            },
-            {
-                "name": "Session Definitions",
-                "description": "Session definitions — the runtime types a launch spec runs on.",
-            },
-            {
-                "name": "Git Workflow",
-                "description": "Git workflow operations — create PRs from sessions, "
-                "merge, check CI status, and calculate merge confidence.",
-            },
-            {
-                "name": "MCP Servers",
-                "description": "Available MCP server configurations for session setup.",
-            },
-            {
-                "name": "Secrets",
-                "description": "Kubernetes secret management — list and create "
-                "mountable secrets for sessions.",
-            },
-            {
-                "name": "Issue Tracker",
-                "description": "External issue tracker integration — search issues, "
-                "update status, and manage repo-to-project mappings.",
-            },
-        ],
-    )
-
-    # Store settings for lifespan access
-    app.state.settings = settings
-    app.state.admin_settings = {
-        "storage": {"home_enabled": True},
-    }
-
-    # Observability (FORGE tmux-reconnect bug): FastAPI returns 422 for request-body
-    # validation failures but logs NOTHING about what failed — which made the repeated
-    # tmux `/activity` 422s completely invisible server-side. Log the path + the exact
-    # validation errors + a bounded slice of the offending body so the next schema
-    # mismatch (on /activity, /log, or anything else) is self-documenting. Response
-    # shape is unchanged (still 422 + {"detail": [...]}).
-    @app.exception_handler(RequestValidationError)
-    async def _log_request_validation_error(
-        request: Request, exc: RequestValidationError
-    ) -> JSONResponse:
-        try:
-            raw_body = (await request.body())[:2000]
-            body_preview = raw_body.decode("utf-8", "replace")
-        except Exception:  # noqa: BLE001 — best-effort diagnostics, never mask the 422
-            body_preview = "<unreadable>"
-        logger.warning(
-            "422 request validation: %s %s errors=%s body=%s",
-            request.method,
-            request.url.path,
-            exc.errors(),
-            body_preview,
-        )
-        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
+    app = build_app_shell(settings)
 
     # Bifrost is its own service/plugin. Volundr no longer co-hosts it; it consumes
     # the model catalog over HTTP from settings.bifrost.url for cost/pricing only.

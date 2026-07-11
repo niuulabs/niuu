@@ -202,4 +202,3 @@ class ActivityReportingMixin:
                 state,
                 extra_metadata={**self._activity_extra, "heartbeat": True},
             )
-

@@ -484,4 +484,3 @@ class ChronicleMixin:
         topic_name = " · ".join(piece for piece in pieces if piece).strip()
         topic_name = " ".join(topic_name.split())
         return topic_name[:128] or "Volundr session"
-

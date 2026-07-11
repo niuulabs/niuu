@@ -16,6 +16,7 @@ from ravn.ports.executor import ExecutorPort
 
 logger = logging.getLogger(__name__)
 
+
 def _import_class(dotted_path: str) -> type:
     """Dynamically import a class from a fully-qualified dotted path."""
 
@@ -664,7 +665,10 @@ def _build_mimir(settings: Settings) -> Any:
                     auth = _build_mimir_auth(settings, inst.auth)
                 port = HttpMimirAdapter(base_url=inst.url, auth=auth)
             else:
-                logger.warning("Mímir instance %r has neither path nor url — skipping", inst.name)
+                logger.warning(
+                    "Mímir instance %r has neither path nor url — skipping",
+                    inst.name,
+                )
                 continue
             mounts.append(
                 MimirMount(
@@ -712,6 +716,3 @@ def _build_workflow_capability_sources(settings: Settings) -> list[Any]:
                 exc,
             )
     return sources
-
-
-

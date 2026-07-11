@@ -337,4 +337,3 @@ def _merge_workflow_terminal_outcomes(outcomes: list[dict[str, Any]]) -> dict[st
     if scope_values:
         merged["scope_adherence"] = min(scope_values)
     return merged
-

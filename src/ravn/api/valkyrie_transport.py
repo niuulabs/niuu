@@ -428,5 +428,3 @@ def build_nats_review_command_publisher_from_env(
         publisher,
         start_timeout_seconds=loaded.start_timeout_seconds,
     )
-
-

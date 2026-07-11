@@ -212,5 +212,3 @@ async def _shutdown_mcp(manager: Any | None) -> None:
         await manager.shutdown()
     except Exception as exc:
         logger.warning("MCP shutdown error: %s", exc)
-
-

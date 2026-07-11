@@ -289,4 +289,3 @@ async def _run_peers(settings: Settings, *, verbose: bool, force_scan: bool) -> 
         typer.echo(line)
 
     await discovery.stop()
-

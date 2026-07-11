@@ -94,6 +94,9 @@ test:
 
 verify: lint test
 
+review-modules:
+	uv run python scripts/module_review.py
+
 # --------------------------------------------------------------------------
 # Integration & E2E tests
 # --------------------------------------------------------------------------

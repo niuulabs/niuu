@@ -879,4 +879,3 @@ class EventLogMixin:
             )
         self._trace_assistant_tool_spans.clear()
         self._assistant_pending_commands.clear()
-
