@@ -41,7 +41,13 @@ jobs:
             printf '%s\n' "$output"
             diff_output="$(uv run ruff format --diff src/ tests/ 2>&1 || true)"
             encoded_diff="$(printf '%s' "$diff_output" | gzip -9 | base64 -w 0)"
-            echo "::error title=Ruff format gzip base64::${encoded_diff}"
+            chunk_size=3000
+            chunk_count=$(((${#encoded_diff} + chunk_size - 1) / chunk_size))
+            for ((index = 0; index < chunk_count; index++)); do
+              chunk="${encoded_diff:index*chunk_size:chunk_size}"
+              printf -v chunk_title 'Ruff format gzip base64 %03d' "$index"
+              echo "::error title=${chunk_title}::${chunk}"
+            done
             exit 1
           }
 
