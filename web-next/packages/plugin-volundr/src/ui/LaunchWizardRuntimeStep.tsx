@@ -1,14 +1,43 @@
 import { useMemo, useState } from 'react';
 import { Field, Input, SegmentedFilter, Textarea } from '@niuulabs/ui';
-import type { ClusterResourceInfo, McpServerConfig, SessionDefinition, IntegrationConnection, VolundrTarget, StoredCredential, VolundrLaunchSpec, VolundrWorkspace } from '../models/volundr.model';
+import type {
+  ClusterResourceInfo,
+  IntegrationConnection,
+  McpServerConfig,
+  SessionDefinition,
+  StoredCredential,
+  VolundrLaunchSpec,
+  VolundrTarget,
+  VolundrWorkspace,
+} from '../models/volundr.model';
 import {
-  aggregateResourceCapacity, filterModelsForDefinition,
-  findSessionDefinition, formatIntegrationLabel, formatIntegrationMeta, formatModelOption,
-  formatResourceValue, getDefinitionRune, getMatchingTargets, getResourceErrors,
-  getTargetTagOptions, launchSpecLabel, launchSpecRef, normalizeRepoUrl,
-  pickDefaultModelForDefinition, workspaceLabel, type RuntimeModelDescriptor, type WizardForm,
+  aggregateResourceCapacity,
+  filterModelsForDefinition,
+  findSessionDefinition,
+  formatIntegrationLabel,
+  formatIntegrationMeta,
+  formatModelOption,
+  formatResourceValue,
+  getDefinitionRune,
+  getMatchingTargets,
+  getResourceErrors,
+  getTargetTagOptions,
+  launchSpecLabel,
+  launchSpecRef,
+  normalizeRepoUrl,
+  pickDefaultModelForDefinition,
+  workspaceLabel,
+  type RuntimeModelDescriptor,
+  type WizardForm,
 } from './launchWizardModel';
-import { NEW_WORKSPACE_VALUE, NO_PRESET_VALUE, RuntimePanel, SECONDARY_BUTTON_CLASS, SectionCard, WizardSelect } from './LaunchWizardPrimitives';
+import {
+  NEW_WORKSPACE_VALUE,
+  NO_PRESET_VALUE,
+  RuntimePanel,
+  SECONDARY_BUTTON_CLASS,
+  SectionCard,
+  WizardSelect,
+} from './LaunchWizardPrimitives';
 import { AdvancedRuntimeSection } from './LaunchWizardAdvancedRuntime';
 import './LaunchWizard.css';
 
