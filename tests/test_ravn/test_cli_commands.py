@@ -340,6 +340,33 @@ class TestCliTransportHelpers:
             "sandbox": "danger-full-access",
         }
 
+    def test_build_executor_merges_runtime_controls_into_persona_transport(self) -> None:
+        persona = PersonaConfig(
+            name="product-steward",
+            system_prompt_template="hi",
+            executor=PersonaExecutorConfig(
+                adapter="ravn.adapters.executors.cli.CliTransportExecutor",
+                kwargs={
+                    "transport_adapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
+                    "transport_kwargs": {"sandbox": "workspace-write"},
+                },
+            ),
+        )
+        env = {
+            "SKULD__SKIP_PERMISSIONS": "true",
+            "SKULD__APPROVAL_POLICY": "never",
+            "SKULD__SANDBOX": "danger-full-access",
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            executor = _build_executor(persona)
+
+        assert executor._transport_kwargs == {
+            "skip_permissions": True,
+            "approval_policy": "never",
+            "sandbox": "workspace-write",
+        }
+
     def test_uses_cli_transport_executor_prefers_persona_executor(self) -> None:
         persona = PersonaConfig(
             name="coder",
