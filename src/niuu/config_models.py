@@ -135,8 +135,7 @@ def default_session_definitions() -> dict[str, SessionDefinitionConfig]:
             enabled=True,
             display_name="xAI Grok Build",
             description=(
-                "xAI Grok Build — Agent Client Protocol (ACP) over stdio "
-                "(Scaldy pipeline)"
+                "xAI Grok Build — Agent Client Protocol (ACP) over stdio (Scaldy pipeline)"
             ),
             labels=["session", "grok"],
             default_model="grok-build",
@@ -278,4 +277,3 @@ class WorkloadIdentityConfig(BaseModel):
     )
     verifiers: list[WorkloadIdentityVerifierConfig] = Field(default_factory=list)
     mappings: list[WorkloadIdentityMappingConfig] = Field(default_factory=list)
-

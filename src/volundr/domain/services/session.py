@@ -59,7 +59,6 @@ def _sanitize_log(value: object) -> str:
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
 
-
 class SessionNotFoundError(Exception):
     """Raised when a session is not found."""
 

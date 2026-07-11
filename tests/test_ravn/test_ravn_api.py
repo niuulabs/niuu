@@ -1649,9 +1649,7 @@ def test_valkyrie_dashboard_accepts_typed_catalog_config(monkeypatch):
 
     dashboard = ValkyrieDashboardProjection(config).dashboard()
 
-    assert [environment["id"] for environment in dashboard["environments"]] == [
-        "env-midgard"
-    ]
+    assert [environment["id"] for environment in dashboard["environments"]] == ["env-midgard"]
 
 
 def test_valkyrie_dashboard_rejects_malformed_typed_catalog():

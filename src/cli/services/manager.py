@@ -205,8 +205,7 @@ class ServiceManager:
             if not service:
                 state = (
                     ServiceState.HOSTED
-                    if definition is not None
-                    and definition.lifecycle is ServiceLifecycle.HOSTED
+                    if definition is not None and definition.lifecycle is ServiceLifecycle.HOSTED
                     else ServiceState.HEALTHY
                 )
                 self._services[name] = ServiceStatus(name=name, state=state)
