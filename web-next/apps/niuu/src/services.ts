@@ -1307,7 +1307,9 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const repoCatalogService = repoCatalogBase
     ? buildRepoCatalogHttpAdapter(createApiClient(repoCatalogBase))
     : demoService(config, 'niuu.repos', createMockRepoCatalogService);
-  const sessionStore = forgeBase ? buildVolundrSessionStore(volundr) : demoService(config, 'volundr.sessions', createMockSessionStore);
+  const sessionStore = forgeBase
+    ? buildVolundrSessionStore(volundr)
+    : demoService(config, 'volundr.sessions', createMockSessionStore);
   const clusterAdapter = forgeBase
     ? buildVolundrClusterAdapter(volundr)
     : demoService(config, 'volundr.clusters', createMockClusterAdapter);
@@ -1383,7 +1385,9 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const researchClient = researchBase ? createApiClient(researchBase) : null;
   const specsBase = resolveTingServiceBase(config, 'ting.specs');
   const specsClient = specsBase ? createApiClient(specsBase) : null;
-  const tingService = tingClient ? buildTingHttpAdapter(tingClient) : demoService(config, 'ting', createMockTingService);
+  const tingService = tingClient
+    ? buildTingHttpAdapter(tingClient)
+    : demoService(config, 'ting', createMockTingService);
   const dispatcherService = dispatcherClient
     ? buildDispatcherHttpAdapter(dispatcherClient)
     : demoService(config, 'ting.dispatcher', createMockDispatcherService);
@@ -1399,7 +1403,9 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const researchService = researchClient
     ? buildResearchHttpAdapter(researchClient)
     : demoService(config, 'ting.research', createMockResearchService);
-  const specsService = specsClient ? buildSpecsHttpAdapter(specsClient) : demoService(config, 'ting.specs', createMockSpecsService);
+  const specsService = specsClient
+    ? buildSpecsHttpAdapter(specsClient)
+    : demoService(config, 'ting.specs', createMockSpecsService);
   const dispatchBus = dispatchClient
     ? buildDispatchBusHttpAdapter(dispatchClient)
     : demoService(config, 'ting.dispatch', createMockDispatchBus);

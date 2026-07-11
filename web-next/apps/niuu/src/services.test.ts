@@ -786,7 +786,6 @@ describe('buildServices', () => {
     ).toThrow('ravn.personas');
   });
 
-
   it('builds Ting tracker and audit services against the shared api base', () => {
     const services = buildServices({
       demoMode: true,

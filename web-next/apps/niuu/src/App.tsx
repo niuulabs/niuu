@@ -16,11 +16,7 @@ import { AuthProvider, useAuth } from '@niuulabs/auth';
 import { Shell } from '@niuulabs/shell';
 import { LogoKnot } from '@niuulabs/plugin-login';
 import { plugins } from './plugins';
-import {
-  buildServiceBackendStatus,
-  buildServices,
-  ServiceConfigurationError,
-} from './services';
+import { buildServiceBackendStatus, buildServices, ServiceConfigurationError } from './services';
 
 const DEFAULT_CONFIG_ENDPOINT = '/config.json';
 const LIVE_CONFIG_ENDPOINT = '/config.live.json';

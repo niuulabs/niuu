@@ -4,7 +4,8 @@ import type {
   ResearchCampaignDetail,
 } from '../domain/research';
 
-export type DerivedCampaignState = 'draft' | 'running' | 'blocked' | 'failed' | 'review' | 'published';
+export type DerivedCampaignState =
+  'draft' | 'running' | 'blocked' | 'failed' | 'review' | 'published';
 
 export type DrawerTab = 'files' | 'sources' | 'critiques' | 'operator';
 export type OperatorSubTab = 'activity' | 'run' | 'actions';
