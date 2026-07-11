@@ -57,10 +57,8 @@ from skuld.activity_reporting import ActivityReportingMixin
 from skuld.event_log import EventLogMixin
 from skuld.file_routes import (  # noqa: F401
     MkdirRequest,
-    _check_within_base,
     _parse_diff_output,
     _resolve_root,
-    _sanitize_relative,
     _validate_root,
     delete_file,
     download_file,

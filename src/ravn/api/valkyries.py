@@ -1,5 +1,8 @@
 """Compatibility façade for the resident Valkyrie dashboard API."""
 
+# Re-exports intentionally preserve the pre-decomposition API surface.
+# ruff: noqa: F401, I001
+
 from __future__ import annotations
 
 from ravn.api.valkyrie_event_projection import (
@@ -27,7 +30,7 @@ from ravn.api.valkyrie_event_projection import (
     _signals_from_events,
     _state_drift,
     _structured_log_entry,
-)  # noqa: F401
+)
 from ravn.api.valkyrie_inventory_projection import (
     _configured_environment_entries,
     _configured_flock_entries,
@@ -35,7 +38,7 @@ from ravn.api.valkyrie_inventory_projection import (
     _configured_valkyrie_entries,
     _initial_dashboard,
     _signal_events,
-)  # noqa: F401
+)
 from ravn.api.valkyrie_learning_projection import (
     _available_learning_scopes,
     _capability_from_signal_payload,
@@ -56,14 +59,14 @@ from ravn.api.valkyrie_learning_projection import (
     _previous_learning_scope,
     _raw_learning_id,
     _tool_need_entry,
-)  # noqa: F401
+)
 from ravn.api.valkyrie_projection import (
     CONTROL_TELEMETRY_LIMIT,
     LEARNING_SCOPES,
     RAW_SIGNAL_TELEMETRY_LIMIT,
     Dashboard,
     ValkyrieDashboardProjection,
-)  # noqa: F401
+)
 from ravn.api.valkyrie_projection_common import (
     _as_float,
     _as_int,
@@ -78,7 +81,7 @@ from ravn.api.valkyrie_projection_common import (
     _rollup_health,
     _slug,
     _valkyrie_id,
-)  # noqa: F401
+)
 from ravn.api.valkyrie_runtime_projection import (
     _huddle_role_for_action,
     _merge_observed_runtime,
@@ -88,11 +91,11 @@ from ravn.api.valkyrie_runtime_projection import (
     _runtime_event_key,
     _telemetry_activity,
     _validate_huddle_join_scope,
-)  # noqa: F401
+)
 from ravn.api.valkyrie_telemetry_projection import (
     _aggregate_telemetry,
     _environment_telemetry_entry,
-)  # noqa: F401
+)
 from ravn.api.valkyrie_requests import (
     LEARNING_FEEDBACK_VERDICTS,
     AutonomyUpdateRequest,
@@ -101,7 +104,7 @@ from ravn.api.valkyrie_requests import (
     LearningDecisionRequest,
     LearningFeedbackRequest,
     LearningReviseRequest,
-)  # noqa: F401
+)
 from ravn.api.valkyrie_routes import (
     OdinReviewCommandPublisher,
     ValkyrieRoomClient,
@@ -110,9 +113,9 @@ from ravn.api.valkyrie_routes import (
     _review_item_for_learning_action,
     build_skuld_room_client_from_env,
     create_valkyrie_router,
-)  # noqa: F401
+)
 from ravn.api.valkyrie_transport import (
     ValkyrieTelemetrySubscription,
     build_nats_review_command_publisher_from_env,
     build_nats_telemetry_subscription_from_env,
-)  # noqa: F401
+)

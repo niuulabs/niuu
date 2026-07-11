@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -20,11 +19,6 @@ from ravn.api.valkyrie_learning_projection import (
 )
 from ravn.api.valkyrie_projection import Dashboard, ValkyrieDashboardProjection
 from ravn.api.valkyrie_projection_common import _as_float, _as_string_list, _now
-from ravn.api.valkyrie_runtime_projection import (
-    _huddle_role_for_action,
-    _resolve_huddle_message_author,
-    _validate_huddle_join_scope,
-)
 from ravn.api.valkyrie_requests import (
     LEARNING_FEEDBACK_VERDICTS,
     AutonomyUpdateRequest,
@@ -33,6 +27,11 @@ from ravn.api.valkyrie_requests import (
     LearningDecisionRequest,
     LearningFeedbackRequest,
     LearningReviseRequest,
+)
+from ravn.api.valkyrie_runtime_projection import (
+    _huddle_role_for_action,
+    _resolve_huddle_message_author,
+    _validate_huddle_join_scope,
 )
 from ravn.config import Settings, ValkyrieRoomConfig
 from ravn.odin.review import ReviewItem, ReviewKind, review_decided_event
