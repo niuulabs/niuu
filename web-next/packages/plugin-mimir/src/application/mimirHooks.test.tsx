@@ -70,17 +70,15 @@ describe('Mimir application hooks', () => {
     );
     mocks.service = { pages: { listEntities }, mounts: {} };
 
-    let kind: 'person' | undefined;
-    const { result, rerender } = renderMimirHook(() => useEntities(kind));
+    const { result } = renderMimirHook(() => useEntities());
     expect(result.current.entities).toEqual([]);
     await waitFor(() => expect(result.current.entities).toHaveLength(2));
     expect(result.current.grouped.person).toHaveLength(1);
     expect(result.current.grouped.project).toHaveLength(1);
     expect(result.current.grouped.org).toEqual([]);
 
-    kind = 'person';
-    rerender();
-    await waitFor(() => expect(result.current.entities).toEqual([entities[0]]));
+    const filtered = renderMimirHook(() => useEntities('person'));
+    await waitFor(() => expect(filtered.result.current.entities).toEqual([entities[0]]));
     expect(listEntities).toHaveBeenLastCalledWith({ kind: 'person' });
   });
 
