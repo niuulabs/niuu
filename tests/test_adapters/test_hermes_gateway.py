@@ -19,6 +19,7 @@ from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.hermes_gateway import (
     HERMES_CREDENTIAL_NAME,
     HERMES_LEGACY_CREDENTIAL_NAME,
+    VOLUNDR_DELETED_END_REASON,
     HermesGatewayError,
     HermesResidentSessionController,
     _session_uuid,
@@ -167,16 +168,20 @@ async def test_session_lifecycle_uses_authenticated_resource_api() -> None:
         sessions[created_key] = session
         return web.json_response({"object": "hermes.session", "session": session}, status=201)
 
-    async def delete_session(request: web.Request) -> web.Response:
+    async def end_session(request: web.Request) -> web.Response:
         _assert_auth(request, token)
         requests.append((request.method, request.path))
-        sessions.pop(request.match_info["session_id"])
-        return web.json_response({"deleted": True})
+        body = await request.json()
+        assert body == {"end_reason": VOLUNDR_DELETED_END_REASON}
+        session = sessions[request.match_info["session_id"]]
+        session["ended_at"] = datetime(2026, 7, 11, tzinfo=UTC).timestamp()
+        session["end_reason"] = body["end_reason"]
+        return web.json_response({"object": "hermes.session", "session": session})
 
     app = web.Application()
     app.router.add_get("/api/sessions", list_sessions)
     app.router.add_post("/api/sessions", create_session)
-    app.router.add_delete("/api/sessions/{session_id}", delete_session)
+    app.router.add_patch("/api/sessions/{session_id}", end_session)
 
     async with _serve(app) as port:
         controller = HermesResidentSessionController(_Route(port), store)
@@ -189,15 +194,18 @@ async def test_session_lifecycle_uses_authenticated_resource_api() -> None:
             model=runtime.model,
         )
         await controller.delete_session(runtime, listed[0].id)
+        remaining = await controller.list_sessions(runtime)
 
     assert listed[0].id == _session_uuid(persistent_key)
     assert listed[0].model == runtime.model
     assert created.id == _session_uuid(created_key)
-    assert persistent_key not in sessions
+    assert sessions[persistent_key]["end_reason"] == VOLUNDR_DELETED_END_REASON
+    assert [session.id for session in remaining] == [created.id]
     assert requests == [
         ("GET", "/api/sessions"),
         ("POST", "/api/sessions"),
-        ("DELETE", f"/api/sessions/{persistent_key}"),
+        ("PATCH", f"/api/sessions/{persistent_key}"),
+        ("GET", "/api/sessions"),
     ]
 
 

@@ -31,6 +31,7 @@ _LEGACY_TOKEN_FIELD = "session_token"
 HERMES_REQUEST_TIMEOUT_SECONDS = 30
 HERMES_SESSION_PAGE_SIZE = 200
 NIUU_MODEL_PREFIX = "niuu/"
+VOLUNDR_DELETED_END_REASON = "volundr_deleted"
 
 
 class HermesGatewayError(RuntimeError):
@@ -564,6 +565,8 @@ class HermesResidentSessionController(ResidentSessionController):
             await api.close()
         sessions: list[ResidentSession] = []
         for row in rows:
+            if row.get("end_reason") == VOLUNDR_DELETED_END_REASON:
+                continue
             key = str(row.get("id") or "")
             if not key:
                 continue
@@ -636,7 +639,11 @@ class HermesResidentSessionController(ResidentSessionController):
         api = await self._connect(runtime)
         try:
             key = await self._resolve_key(api, session_id)
-            await api.request("DELETE", f"/api/sessions/{quote(key, safe='')}")
+            await api.request(
+                "PATCH",
+                f"/api/sessions/{quote(key, safe='')}",
+                json_body={"end_reason": VOLUNDR_DELETED_END_REASON},
+            )
         finally:
             await api.close()
         self._session_keys.pop(session_id, None)
