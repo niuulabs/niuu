@@ -18,10 +18,24 @@ target and preserve its response status.
 from __future__ import annotations
 
 import asyncio
+import logging
+from contextlib import suppress
 from typing import Any
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 import httpx
-from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    Response,
+    WebSocket,
+    status,
+)
 from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.auth import extract_principal
@@ -35,16 +49,114 @@ from niuu.adapters.inbound.rest_volundr import (
     _visible_instances,
     _with_instance,
 )
+from niuu.app import (
+    _bearer_token_from_ws,
+    _bridge_websocket,
+    _proxy_forward_headers,
+    _proxy_ws_identity,
+)
 from niuu.domain.models import Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
 
 _RAVN_REMOTE_PREFIX = "/api/v1/ravn"
+logger = logging.getLogger(__name__)
 
 
 def _ravn_base_url(instance: RegisteredInstance) -> str:
     """Resolve an optional Ravn service endpoint for split-service targets."""
     configured = instance.config.get("ravn_base_url") or instance.config.get("ravnBaseUrl")
     return str(configured).strip() if configured else instance.base_url
+
+
+def create_ravn_session_proxy_router(service: InstanceService) -> APIRouter:
+    """Proxy Yggdrasil Ravn chat sockets to their registry-owned target."""
+    router = APIRouter(tags=["Ravn"])
+
+    @router.websocket("/s/{session_id}/session")
+    async def proxy_ravn_session(websocket: WebSocket, session_id: str) -> None:
+        user_id, tenant_id, roles = _proxy_ws_identity(websocket)
+        if not user_id:
+            await websocket.close(code=1008, reason="Not authorized for this session")
+            return
+
+        principal = Principal(
+            user_id=user_id,
+            email="",
+            tenant_id=tenant_id or "",
+            roles=list(roles),
+        )
+        instance_hint = str(websocket.query_params.get("instance_id") or "").strip()
+        if instance_hint:
+            try:
+                instances = [await _resolve_target_instance(service, principal, instance_hint)]
+            except HTTPException:
+                await websocket.close(code=1008, reason="Target is not visible")
+                return
+        else:
+            instances = await _visible_instances(service, principal)
+
+        headers = _proxy_forward_headers(
+            websocket,
+            include_cookie=False,
+            forward_dev_params=True,
+        )
+        token = _bearer_token_from_ws(websocket)
+        if token and not any(key.lower() == "authorization" for key in headers):
+            headers["authorization"] = f"Bearer {token}"
+
+        owner: RegisteredInstance | None = None
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for instance in instances:
+                target_base = _ravn_base_url(instance).rstrip("/")
+                try:
+                    response = await client.get(
+                        f"{target_base}{_RAVN_REMOTE_PREFIX}/sessions/{quote(session_id, safe='')}",
+                        headers=headers,
+                    )
+                except httpx.HTTPError:
+                    continue
+                if response.status_code == status.HTTP_200_OK:
+                    owner = instance
+                    break
+
+        if owner is None:
+            await websocket.close(code=4410, reason="Session is no longer running")
+            return
+
+        parsed = urlsplit(owner.base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            await websocket.close(code=1011, reason="Target has no public endpoint")
+            return
+        query = urlencode(
+            [
+                (key, value)
+                for key, value in websocket.query_params.multi_items()
+                if key != "instance_id"
+            ]
+        )
+        connect_url = urlunsplit(
+            (
+                "wss" if parsed.scheme == "https" else "ws",
+                parsed.netloc,
+                f"/s/{quote(session_id, safe='')}/session",
+                query,
+                "",
+            )
+        )
+        try:
+            await _bridge_websocket(
+                websocket,
+                connect_url,
+                include_cookie=False,
+                forward_dev_params=True,
+            )
+        except Exception:
+            logger.debug("Remote Ravn socket ended for %s", session_id)
+        finally:
+            with suppress(Exception):
+                await websocket.close()
+
+    return router
 
 
 def create_ravn_router(
@@ -92,7 +204,11 @@ def create_ravn_router(
                 if not isinstance(item, dict):
                     continue
                 item_id = str(item.get("id") or "")
-                merged[f"{instance.id}:{item_id}"] = _with_instance(item, instance)
+                merged[f"{instance.id}:{item_id}"] = _with_instance(
+                    item,
+                    instance,
+                    rebase_chat_endpoint=False,
+                )
 
         items = [item for item in merged.values() if item.get("id")]
         items.sort(
@@ -145,7 +261,7 @@ def create_ravn_router(
                 ) from exc
             payload = response.json()
             if isinstance(payload, dict):
-                return _with_instance(payload, instance)
+                return _with_instance(payload, instance, rebase_chat_endpoint=False)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=not_found_detail,
@@ -193,7 +309,7 @@ def create_ravn_router(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Unexpected response from target Ravn instance",
             )
-        return _with_instance(payload, instance)
+        return _with_instance(payload, instance, rebase_chat_endpoint=False)
 
     @router.get("/sessions")
     async def list_ravn_sessions(
@@ -251,7 +367,7 @@ def create_ravn_router(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Unexpected response from target Ravn instance",
             )
-        return _with_instance(payload, instance)
+        return _with_instance(payload, instance, rebase_chat_endpoint=False)
 
     @router.post("/ravens/{ravn_id}/restart")
     async def restart_raven(

@@ -297,6 +297,56 @@ def _proxy_forward_headers(
     return headers
 
 
+async def _bridge_websocket(
+    websocket: WebSocket,
+    connect_url: str,
+    *,
+    connect_kwargs: dict[str, object] | None = None,
+    include_cookie: bool = False,
+    forward_dev_params: bool = False,
+    on_connected: Callable[[], None] | None = None,
+) -> None:
+    """Bridge one accepted browser socket to a resolved Skuld endpoint."""
+    import websockets.asyncio.client as ws_client
+
+    await websocket.accept()
+    async with ws_client.connect(
+        connect_url,
+        max_size=_WS_PROXY_MAX_FRAME_BYTES,
+        additional_headers=_proxy_forward_headers(
+            websocket,
+            include_cookie=include_cookie,
+            forward_dev_params=forward_dev_params,
+        ),
+        **(connect_kwargs or {}),
+    ) as broker_ws:
+        if on_connected is not None:
+            on_connected()
+
+        async def browser_to_broker() -> None:
+            with suppress(Exception):
+                async for msg in websocket.iter_text():
+                    await broker_ws.send(msg)
+
+        async def broker_to_browser() -> None:
+            with suppress(Exception):
+                async for msg in broker_ws:
+                    await websocket.send_text(str(msg))
+
+        done, pending = await asyncio.wait(
+            [
+                asyncio.create_task(browser_to_broker()),
+                asyncio.create_task(broker_to_browser()),
+            ],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        for task in done:
+            task.result()
+
+
 async def _proxy_ws(
     websocket: WebSocket,
     session_id: str,
@@ -330,10 +380,12 @@ async def _proxy_ws(
         await websocket.close(code=4410, reason="Session is no longer running")
         return
 
-    await websocket.accept()
-    import websockets.asyncio.client as ws_client
-
     connected = False
+
+    def _mark_connected() -> None:
+        nonlocal connected
+        connected = True
+
     try:
         connect_url = f"ws://127.0.0.1:{port}{broker_path}"
         connect_kwargs: dict[str, object] = {}
@@ -344,42 +396,14 @@ async def _proxy_ws(
                 "port": target.connect_port,
                 "proxy": None,
             }
-        async with ws_client.connect(
+        await _bridge_websocket(
+            websocket,
             connect_url,
-            max_size=_WS_PROXY_MAX_FRAME_BYTES,
-            additional_headers=_proxy_forward_headers(
-                websocket,
-                include_cookie=include_cookie,
-                forward_dev_params=forward_dev_params,
-            ),
-            **connect_kwargs,
-        ) as broker_ws:
-            connected = True
-
-            async def browser_to_broker() -> None:
-                with suppress(Exception):
-                    async for msg in websocket.iter_text():
-                        await broker_ws.send(msg)
-
-            async def broker_to_browser() -> None:
-                with suppress(Exception):
-                    async for msg in broker_ws:
-                        await websocket.send_text(str(msg))
-
-            done, pending = await asyncio.wait(
-                [
-                    asyncio.create_task(browser_to_broker()),
-                    asyncio.create_task(broker_to_browser()),
-                ],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in pending:
-                task.cancel()
-            # Await the cancelled tasks so neither is destroyed while pending,
-            # and surface any exception from the completed leg (fail loudly).
-            await asyncio.gather(*pending, return_exceptions=True)
-            for task in done:
-                task.result()
+            connect_kwargs=connect_kwargs,
+            include_cookie=include_cookie,
+            forward_dev_params=forward_dev_params,
+            on_connected=_mark_connected,
+        )
     except Exception:
         logger.debug("%s ended for session %s", log_label, _sanitize_log(session_id))
     finally:

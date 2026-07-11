@@ -6,6 +6,7 @@ from uuid import UUID
 
 import pytest
 
+from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.config_resident_profiles import (
     ConfigResidentDeploymentProfileProvider,
 )
@@ -22,7 +23,11 @@ from volundr.domain.models import (
     ResidentObservedState,
     ResidentRuntime,
 )
-from volundr.domain.ports import ResidentRuntimeLogReader, ResidentRuntimeObservation
+from volundr.domain.ports import (
+    ResidentRuntimeLogReader,
+    ResidentRuntimeObservation,
+    ResidentRuntimeProxyTargetResolver,
+)
 from volundr.domain.services.resident_runtime import (
     ResidentProfileNotFoundError,
     ResidentRuntimeAccessError,
@@ -138,6 +143,18 @@ class MemoryResidentRuntimeController:
 
     async def close(self):
         self.actions.append("close")
+
+
+class ProxyResidentRuntimeController(
+    MemoryResidentRuntimeController,
+    ResidentRuntimeProxyTargetResolver,
+):
+    def resident_proxy_target(self, runtime: ResidentRuntime) -> SessionProxyTarget | None:
+        return SessionProxyTarget(
+            service_url=f"http://resident-{runtime.id}.internal",
+            connect_host="gateway.internal",
+            connect_port=8080,
+        )
 
 
 def _principal(
@@ -429,6 +446,26 @@ async def test_logs_are_authorized_and_read_through_backend_port() -> None:
     )
 
     assert page.entries[0].message == "Muninn"
+
+
+async def test_proxy_target_is_resolved_through_runtime_backend_port() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    service = ResidentRuntimeService(
+        repository,
+        _profiles(),
+        [ProxyResidentRuntimeController()],
+    )
+    runtime = await service.create_record(
+        _principal(),
+        name="Muninn",
+        profile_id="ravn-openshell",
+    )
+
+    target = await service.proxy_target(runtime.id)
+
+    assert target is not None
+    assert target.service_url == f"http://resident-{runtime.id}.internal"
+    assert target.connect_host == "gateway.internal"
 
 
 async def test_usage_is_atomically_recorded_on_resident() -> None:

@@ -22,6 +22,7 @@ from niuu.ports.git import (
     GitWorkflowProvider,  # noqa: F401
 )
 from niuu.ports.integrations import IntegrationRepository  # noqa: F401
+from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.models import (
     Chronicle,
     ClusterResourceInfo,
@@ -625,6 +626,14 @@ class ResidentRuntimeLogReader(ABC):
         min_level: str,
     ) -> ResidentLogPage:
         """Return recent logs from the runtime-owning backend."""
+
+
+class ResidentRuntimeProxyTargetResolver(ABC):
+    """Optional backend port for routing resident Skuld traffic."""
+
+    @abstractmethod
+    def resident_proxy_target(self, runtime: ResidentRuntime) -> SessionProxyTarget | None:
+        """Resolve the backend service reached by the shared session proxy."""
 
 
 class ResidentRuntimeRepository(ABC):

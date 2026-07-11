@@ -66,6 +66,7 @@ from volundr.domain.ports import (
     ResidentRuntimeController,
     ResidentRuntimeLogReader,
     ResidentRuntimeObservation,
+    ResidentRuntimeProxyTargetResolver,
     ResidentRuntimeRepository,
     SessionRepository,
 )
@@ -601,6 +602,7 @@ class OpenShellGatewayPodManager(
     OpenShellCredentialGrantPort,
     ResidentRuntimeController,
     ResidentRuntimeLogReader,
+    ResidentRuntimeProxyTargetResolver,
 ):
     """Kubernetes OpenShell PodManager using OIDC and native gRPC."""
 
@@ -790,6 +792,16 @@ class OpenShellGatewayPodManager(
             if parsed.hostname and parsed.hostname.endswith(".openshell.localhost"):
                 path = parsed.path.removesuffix("/session")
                 base = urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
+        return self._proxy_target(base)
+
+    def resident_proxy_target(self, runtime: ResidentRuntime) -> SessionProxyTarget | None:
+        """Resolve an OpenShell resident service through the same gateway."""
+        base = self._service_urls.get(str(runtime.id)) or str(
+            runtime.backend_ref.get("service_url") or ""
+        )
+        return self._proxy_target(base)
+
+    def _proxy_target(self, base: str | None) -> SessionProxyTarget | None:
         if not base:
             return None
         return SessionProxyTarget(
@@ -1291,7 +1303,7 @@ class OpenShellGatewayPodManager(
                 ResidentEndpoint(
                     kind="chat",
                     protocol="skuld-v1",
-                    url=_service_ws_url(service_url, "/session"),
+                    url=f"/s/{runtime.id}/session",
                 )
             )
         return ResidentRuntimeObservation(

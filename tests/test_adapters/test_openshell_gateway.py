@@ -558,7 +558,7 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
     expected_name = f"resident-{runtime.id.hex[:19]}"
     assert observation.backend_ref["name"] == expected_name
     assert len(expected_name) == adapter.MAX_SANDBOX_ROUTING_NAME_LENGTH
-    assert observation.endpoints[0].url == "ws://openshell.example/proxy/session-1/session"
+    assert observation.endpoints[0].url == f"/s/{runtime.id}/session"
     assert client.created is not None
     assert client.created["image"] == ("ghcr.io/niuulabs/openshell:niu-1099-openshell-resident")
     assert client.created["labels"] == {
@@ -694,6 +694,28 @@ def test_session_proxy_target_preserves_service_route_and_uses_gateway(
     assert target.connect_host == "openshell.openshell.svc.cluster.local"
     assert target.connect_port == 8080
     assert target.connect_secure is False
+
+
+def test_resident_proxy_target_preserves_service_route_and_uses_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    adapter = _import_adapter(monkeypatch)
+    runtime = _resident_runtime().model_copy(
+        update={
+            "backend_ref": {"service_url": "ws://resident-example--skuld.openshell.localhost:8080"}
+        }
+    )
+    manager = adapter.OpenShellGatewayPodManager(
+        client=_FakeOpenShellGatewayClient(adapter),
+        gateway_endpoint="openshell.openshell.svc.cluster.local:8080",
+    )
+
+    target = manager.resident_proxy_target(runtime)
+
+    assert target is not None
+    assert target.service_url == ("ws://resident-example--skuld.openshell.localhost:8080")
+    assert target.connect_host == "openshell.openshell.svc.cluster.local"
+    assert target.connect_port == 8080
 
 
 def test_workspace_bootstrap_strips_embedded_git_credentials(

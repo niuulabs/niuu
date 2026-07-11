@@ -4,13 +4,19 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import patch
 
+import pytest
 import respx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
+from starlette.websockets import WebSocketDisconnect
 
-from niuu.adapters.inbound.rest_ravn import create_ravn_router
+from niuu.adapters.inbound.rest_ravn import (
+    create_ravn_router,
+    create_ravn_session_proxy_router,
+)
 from niuu.domain.models import InstanceKind, InstanceVisibility, Principal, RegisteredInstance
 
 
@@ -86,12 +92,14 @@ def _client(
     embedded_forge_app: FastAPI | None = None,
 ) -> TestClient:
     app = FastAPI()
+    service = StubInstanceService(instances)
     app.include_router(  # type: ignore[arg-type]
         create_ravn_router(
-            StubInstanceService(instances),
+            service,
             embedded_forge_app=embedded_forge_app,
         )
     )
+    app.include_router(create_ravn_session_proxy_router(service))  # type: ignore[arg-type]
     return TestClient(app)
 
 
@@ -133,6 +141,54 @@ def test_list_ravens_merges_visible_instances_and_forwards_auth() -> None:
     ]
     assert ravens_route.calls.last.request.headers["authorization"] == "Bearer test-token"
     assert ravens_route.calls.last.request.headers["x-auth-tenant"] == "tenant-a"
+
+
+@respx.mock
+def test_ravn_aggregate_keeps_relative_chat_endpoint_on_yggdrasil() -> None:
+    client = _client([_instance("noatun", base_url="https://niuu.noatun.test")])
+    respx.get("https://niuu.noatun.test/api/v1/ravn/sessions").mock(
+        return_value=Response(
+            200,
+            json=[
+                {
+                    "id": "resident-id",
+                    "chat_endpoint": "/s/resident-id/session",
+                }
+            ],
+        )
+    )
+
+    response = client.get("/api/v1/ravn/sessions", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()[0]["chat_endpoint"] == "/s/resident-id/session"
+
+
+@respx.mock
+def test_ravn_session_proxy_finds_owner_and_relays_browser_auth() -> None:
+    client = _client([_instance("noatun", base_url="https://niuu.noatun.test")])
+    owner = respx.get("https://niuu.noatun.test/api/v1/ravn/sessions/resident-id").mock(
+        return_value=Response(200, json={"id": "resident-id"})
+    )
+    captured: dict[str, Any] = {}
+
+    def _connect(url: str, **kwargs: Any):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        raise OSError("target unavailable after route resolution")
+
+    with patch("websockets.asyncio.client.connect", side_effect=_connect):
+        with client.websocket_connect(
+            "/s/resident-id/session?access_token=browser-token",
+            headers=_headers(),
+        ) as websocket:
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+
+    assert captured["url"] == (
+        "wss://niuu.noatun.test/s/resident-id/session?access_token=browser-token"
+    )
+    assert owner.calls.last.request.headers["authorization"] == "Bearer test-token"
 
 
 @respx.mock
@@ -549,9 +605,7 @@ def test_get_raven_logs_searches_visible_targets_without_instance_hint() -> None
             _instance("beta", base_url="http://beta"),
         ]
     )
-    respx.get("http://alpha/api/v1/ravn/ravens/resident-id/logs").mock(
-        return_value=Response(404)
-    )
+    respx.get("http://alpha/api/v1/ravn/ravens/resident-id/logs").mock(return_value=Response(404))
     beta = respx.get("http://beta/api/v1/ravn/ravens/resident-id/logs").mock(
         return_value=Response(200, json={"entries": [], "bufferTotal": 0})
     )

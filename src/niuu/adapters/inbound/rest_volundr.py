@@ -65,14 +65,19 @@ def _strip_instance_hints(payload: Any) -> Any:
     return sanitized
 
 
-def _with_instance(payload: Any, instance: RegisteredInstance) -> Any:
+def _with_instance(
+    payload: Any,
+    instance: RegisteredInstance,
+    *,
+    rebase_chat_endpoint: bool = True,
+) -> Any:
     if not isinstance(payload, dict):
         return payload
     enriched = dict(payload)
     enriched["instance_id"] = instance.id
     enriched["instance_name"] = instance.name
     enriched["instance_slug"] = instance.slug
-    if not _uses_embedded_transport(instance):
+    if rebase_chat_endpoint and not _uses_embedded_transport(instance):
         for key in ("chat_endpoint", "chatEndpoint"):
             value = enriched.get(key)
             if isinstance(value, str) and value.startswith("/"):

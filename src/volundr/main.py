@@ -125,7 +125,10 @@ from volundr.domain.services.communication_ingress import CommunicationIngressSe
 from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.event_ingestion import EventIngestionService
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
-from volundr.domain.services.resident_runtime import ResidentRuntimeService
+from volundr.domain.services.resident_runtime import (
+    ResidentRuntimeNotFoundError,
+    ResidentRuntimeService,
+)
 from volundr.domain.services.telegram_ingress import TelegramIngressService
 from volundr.domain.services.tracker import TrackerService
 from volundr.domain.services.tracker_factory import TrackerFactory
@@ -988,12 +991,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
                 async def _resolve_session_proxy_target(session_id: str):
                     try:
-                        session = await repository.get(UUID(session_id))
+                        resource_id = UUID(session_id)
                     except ValueError:
                         return None
-                    if session is None:
-                        return None
-                    return pod_manager.session_proxy_target(session)
+                    session = await repository.get(resource_id)
+                    if session is not None:
+                        return pod_manager.session_proxy_target(session)
+                    return await resident_runtime_service.proxy_target(resource_id)
 
                 skuld_reg.set_target_resolver(_resolve_session_proxy_target)
 
@@ -1012,10 +1016,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     roles: tuple[str, ...],
                 ) -> bool:
                     try:
-                        session = await repository.get(UUID(session_id))
+                        resource_id = UUID(session_id)
                     except ValueError:
                         return False
-                    if session is None or not session.owner_id:
+                    session = await repository.get(resource_id)
+                    if session is None:
+                        principal = Principal(
+                            user_id=user_id or "",
+                            email="",
+                            tenant_id=tenant_id or "",
+                            roles=list(roles),
+                        )
+                        try:
+                            await resident_runtime_service.get(principal, resource_id)
+                        except ResidentRuntimeNotFoundError:
+                            return False
+                        return True
+                    if not session.owner_id:
                         # Unknown or unowned (legacy/dev) session: not the
                         # proxy's job to invent a policy — stay permissive.
                         return True

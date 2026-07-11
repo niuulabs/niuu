@@ -10,7 +10,10 @@ from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.rest_instances import create_instances_router
 from niuu.adapters.inbound.rest_pats import create_workload_identity_jwks_router
-from niuu.adapters.inbound.rest_ravn import create_ravn_router
+from niuu.adapters.inbound.rest_ravn import (
+    create_ravn_router,
+    create_ravn_session_proxy_router,
+)
 from niuu.adapters.inbound.rest_volundr import create_volundr_router
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_instances import PostgresInstanceRepository
@@ -101,6 +104,7 @@ def create_app(
                     embedded_forge_app=embedded_forge_app,
                 )
             )
+            app.include_router(create_ravn_session_proxy_router(instance_service))
             app.include_router(create_workload_identity_jwks_router())
 
             yield

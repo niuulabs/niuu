@@ -6,6 +6,7 @@ import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
+from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.models import (
     Principal,
     ResidentCapability,
@@ -22,6 +23,7 @@ from volundr.domain.ports import (
     ResidentRuntimeController,
     ResidentRuntimeLogReader,
     ResidentRuntimeObservation,
+    ResidentRuntimeProxyTargetResolver,
     ResidentRuntimeRepository,
 )
 
@@ -352,6 +354,16 @@ class ResidentRuntimeService:
             raise ResidentRuntimeDeploymentError(
                 f"Failed to read resident {runtime.name} logs: {exc}"
             ) from exc
+
+    async def proxy_target(self, runtime_id: UUID) -> SessionProxyTarget | None:
+        """Resolve a resident's chat service through its configured backend."""
+        runtime = await self._repository.get(runtime_id)
+        if runtime is None:
+            return None
+        controller = self._controllers.get(runtime.backend)
+        if not isinstance(controller, ResidentRuntimeProxyTargetResolver):
+            return None
+        return controller.resident_proxy_target(runtime)
 
     async def record_usage(
         self,
