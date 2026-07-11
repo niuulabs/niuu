@@ -960,7 +960,7 @@ class OpenShellGatewayPodManager(
             sandbox = await asyncio.to_thread(
                 self._client.create_sandbox,
                 name=sandbox_name,
-                image=str(values.get("image") or self._sandbox_image),
+                image=_image_from_values(values, default=self._sandbox_image),
                 env=env,
                 labels={
                     "app.kubernetes.io/managed-by": "volundr",
@@ -2363,6 +2363,19 @@ def _resources_from_values(
         limits.update(_compact({"cpu": cpu, "memory": memory}))
         result["limits"] = limits
     return result
+
+
+def _image_from_values(values: dict[str, Any], *, default: str) -> str:
+    configured = values.get("image")
+    if isinstance(configured, str):
+        return configured or default
+    if not isinstance(configured, dict):
+        return default
+    repository = str(configured.get("repository") or "").rstrip(":")
+    tag = str(configured.get("tag") or "")
+    if not repository:
+        return default
+    return f"{repository}:{tag}" if tag else repository
 
 
 def _driver_config_from_values(values: dict[str, Any]) -> dict[str, Any]:

@@ -400,6 +400,11 @@ def _resident_profile() -> ResidentDeploymentProfile:
         allowed_models=["gpt-5.6-sol"],
         deployment={
             "values": {
+                "image": {
+                    "repository": "ghcr.io/niuulabs/openshell",
+                    "tag": "niu-1099-openshell-resident",
+                    "pullPolicy": "Always",
+                },
                 "broker": {
                     "cliType": "codex-ws",
                     "transportAdapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
@@ -553,6 +558,7 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
     assert observation.backend_ref["name"] == f"resident-{runtime.id.hex[:22]}"
     assert observation.endpoints[0].url == "ws://openshell.example/proxy/session-1/session"
     assert client.created is not None
+    assert client.created["image"] == ("ghcr.io/niuulabs/openshell:niu-1099-openshell-resident")
     assert client.created["labels"] == {
         "app.kubernetes.io/managed-by": "volundr",
         "volundr.niuu.io/resident": str(runtime.id),
