@@ -3269,16 +3269,18 @@ def create_router(
                 detail="Resolved transcript artifact has an unexpected name",
             )
         download_root = os.path.realpath(os.path.abspath(os.fspath(path.parent)))
-        safe_path = os.path.realpath(os.path.abspath(os.fspath(path)), strict=True)
+        checked_path = os.path.realpath(os.path.abspath(os.fspath(path)), strict=True)
         download_prefix = download_root.rstrip(os.sep) + os.sep
-        if safe_path == download_root:
-            safe_path = download_root
-        elif not safe_path.startswith(download_prefix):
+        if checked_path == download_root:
+            safe_download_path = download_root
+        elif checked_path.startswith(download_prefix):
+            safe_download_path = checked_path
+        else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Resolved transcript artifact escapes its archive directory",
             )
-        return FileResponse(safe_path, media_type=media_type, filename=filename)
+        return FileResponse(safe_download_path, media_type=media_type, filename=filename)
 
     @router.get(
         "/sessions/{session_id}/archive",

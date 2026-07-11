@@ -215,27 +215,31 @@ class SessionArchiveService:
                     workspace_dir=candidate,
                 )
                 root_path = os.path.realpath(os.path.abspath(os.fspath(archive_root)))
-                existing_path = os.path.realpath(os.path.abspath(os.fspath(existing)))
+                checked_existing_path = os.path.realpath(os.path.abspath(os.fspath(existing)))
                 root_prefix = root_path.rstrip(os.sep) + os.sep
-                if existing_path == root_path:
-                    existing_path = root_path
-                elif not existing_path.startswith(root_prefix):
+                if checked_existing_path == root_path:
+                    safe_existing_path = root_path
+                elif checked_existing_path.startswith(root_prefix):
+                    safe_existing_path = checked_existing_path
+                else:
                     raise ArchivePathError(f"Transcript path escapes archive root: {existing}")
-                if os.path.exists(existing_path):
-                    return Path(existing_path)
+                if os.path.exists(safe_existing_path):
+                    return Path(safe_existing_path)
 
         existing = self._transcript_artifact_path(session_id_str, fmt)
         if existing is not None:
             archive_root = self._archive_store.archive_root(session_id=session_id_str)
             root_path = os.path.realpath(os.path.abspath(os.fspath(archive_root)))
-            existing_path = os.path.realpath(os.path.abspath(os.fspath(existing)))
+            checked_existing_path = os.path.realpath(os.path.abspath(os.fspath(existing)))
             root_prefix = root_path.rstrip(os.sep) + os.sep
-            if existing_path == root_path:
-                existing_path = root_path
-            elif not existing_path.startswith(root_prefix):
+            if checked_existing_path == root_path:
+                safe_existing_path = root_path
+            elif checked_existing_path.startswith(root_prefix):
+                safe_existing_path = checked_existing_path
+            else:
                 raise ArchivePathError(f"Transcript path escapes archive root: {existing}")
-            if os.path.exists(existing_path):
-                return Path(existing_path)
+            if os.path.exists(safe_existing_path):
+                return Path(safe_existing_path)
 
         workspace_dir = await self.resolve_workspace_dir(session_id)
         await self.build_archive(session_id)
