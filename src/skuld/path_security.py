@@ -36,10 +36,7 @@ def resolve_contained_path(
         lexical_root = os.path.abspath(os.fspath(base))
         lexical_candidate = os.path.abspath(os.path.join(lexical_root, normalised))
         lexical_prefix = lexical_root.rstrip(os.sep) + os.sep
-        if (
-            lexical_candidate != lexical_root
-            and not lexical_candidate.startswith(lexical_prefix)
-        ):
+        if lexical_candidate != lexical_root and not lexical_candidate.startswith(lexical_prefix):
             raise UnsafePathError("path traversal not allowed")
 
         canonical_root = os.path.realpath(lexical_root, strict=True)
@@ -71,9 +68,8 @@ def resolve_path_in_roots(
         try:
             lexical_root = os.path.abspath(os.fspath(root))
             lexical_prefix = lexical_root.rstrip(os.sep) + os.sep
-            if (
-                lexical_candidate != lexical_root
-                and not lexical_candidate.startswith(lexical_prefix)
+            if lexical_candidate != lexical_root and not lexical_candidate.startswith(
+                lexical_prefix
             ):
                 continue
 

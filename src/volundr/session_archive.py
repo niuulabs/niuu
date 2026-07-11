@@ -518,9 +518,7 @@ def _copy_event_streams(
 ) -> list[str]:
     if event_source_dir is None:
         return []
-    source_path = os.path.realpath(
-        os.path.abspath(os.path.expanduser(os.fspath(event_source_dir)))
-    )
+    source_path = os.path.realpath(os.path.abspath(os.path.expanduser(os.fspath(event_source_dir))))
     source_parent = os.path.realpath(os.path.abspath(os.path.dirname(source_path)))
     source_parent_prefix = source_parent.rstrip(os.sep) + os.sep
     if source_path == source_parent:
