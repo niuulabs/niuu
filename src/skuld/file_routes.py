@@ -182,9 +182,7 @@ async def upload_files(
     base = _resolve_root(root)
     candidate_target_dir = _resolve_user_path(base, path)
     canonical_base = os.path.realpath(os.path.abspath(os.fspath(base)))
-    checked_target_dir = os.path.realpath(
-        os.path.abspath(os.fspath(candidate_target_dir))
-    )
+    checked_target_dir = os.path.realpath(os.path.abspath(os.fspath(candidate_target_dir)))
     canonical_prefix = canonical_base.rstrip(os.sep) + os.sep
     if checked_target_dir == canonical_base:
         safe_target_dir = Path(canonical_base)
@@ -203,12 +201,8 @@ async def upload_files(
             continue
         # Prevent path traversal in filenames
         safe_name = os.path.basename(upload.filename)
-        candidate_destination = _resolve_user_path(
-            safe_target_dir, safe_name, allow_root=False
-        )
-        checked_destination = os.path.realpath(
-            os.path.abspath(os.fspath(candidate_destination))
-        )
+        candidate_destination = _resolve_user_path(safe_target_dir, safe_name, allow_root=False)
+        checked_destination = os.path.realpath(os.path.abspath(os.fspath(candidate_destination)))
         if checked_destination.startswith(canonical_prefix):
             safe_destination = Path(checked_destination)
         else:

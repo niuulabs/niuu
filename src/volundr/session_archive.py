@@ -156,18 +156,14 @@ def load_workspace_transcript(workspace_dir: str | Path, session_id: str) -> dic
     """Load the persisted workspace transcript in API response shape."""
     workspace_path = os.path.realpath(os.path.abspath(os.path.expanduser(os.fspath(workspace_dir))))
     transcript_candidate = transcript_source_path(Path(workspace_path), session_id)
-    checked_transcript_path = os.path.realpath(
-        os.path.abspath(os.fspath(transcript_candidate))
-    )
+    checked_transcript_path = os.path.realpath(os.path.abspath(os.fspath(transcript_candidate)))
     workspace_prefix = workspace_path.rstrip(os.sep) + os.sep
     if checked_transcript_path == workspace_path:
         safe_transcript_path = workspace_path
     elif checked_transcript_path.startswith(workspace_prefix):
         safe_transcript_path = checked_transcript_path
     else:
-        raise ArchivePathError(
-            f"Transcript path escapes workspace: {transcript_candidate}"
-        )
+        raise ArchivePathError(f"Transcript path escapes workspace: {transcript_candidate}")
     if not os.path.exists(safe_transcript_path):
         return {"turns": [], "is_active": False, "last_activity": ""}
 
@@ -446,9 +442,7 @@ def write_session_archive(
     elif checked_transcript_path.startswith(root_prefix):
         safe_transcript_path = checked_transcript_path
     else:
-        raise ArchivePathError(
-            f"Transcript path escapes archive root: {transcript_candidate}"
-        )
+        raise ArchivePathError(f"Transcript path escapes archive root: {transcript_candidate}")
     Path(safe_transcript_path).write_text(
         render_transcript_markdown(transcript_payload),
         encoding="utf-8",
@@ -466,18 +460,14 @@ def write_session_archive(
     raw_events = _copy_event_streams(event_source_dir, raw_events_root)
 
     source_candidate = transcript_source_path(workspace, session_id)
-    checked_source_path = os.path.realpath(
-        os.path.abspath(os.fspath(source_candidate))
-    )
+    checked_source_path = os.path.realpath(os.path.abspath(os.fspath(source_candidate)))
     workspace_prefix = workspace_path.rstrip(os.sep) + os.sep
     if checked_source_path == workspace_path:
         safe_source_path = workspace_path
     elif checked_source_path.startswith(workspace_prefix):
         safe_source_path = checked_source_path
     else:
-        raise ArchivePathError(
-            f"Transcript source escapes workspace: {source_candidate}"
-        )
+        raise ArchivePathError(f"Transcript source escapes workspace: {source_candidate}")
 
     manifest = {
         "version": ARCHIVE_VERSION,
@@ -533,15 +523,11 @@ def _copy_workspace_logs(workspace: Path, destination_root: Path) -> list[str]:
     elif checked_destination_path.startswith(destination_parent_prefix):
         safe_destination_root = checked_destination_path
     else:
-        raise ArchivePathError(
-            f"Log destination escapes its parent: {destination_root}"
-        )
+        raise ArchivePathError(f"Log destination escapes its parent: {destination_root}")
 
     copied: list[str] = []
     for source, relative in _workspace_log_sources(Path(safe_workspace_root)):
-        checked_source_path = os.path.realpath(
-            os.path.abspath(os.fspath(source)), strict=True
-        )
+        checked_source_path = os.path.realpath(os.path.abspath(os.fspath(source)), strict=True)
         workspace_prefix = safe_workspace_root.rstrip(os.sep) + os.sep
         if checked_source_path == safe_workspace_root:
             safe_source_path = safe_workspace_root
@@ -557,9 +543,7 @@ def _copy_workspace_logs(workspace: Path, destination_root: Path) -> list[str]:
         elif checked_target_path.startswith(destination_prefix):
             safe_target_path = checked_target_path
         else:
-            raise ArchivePathError(
-                f"Log destination escapes archive root: {relative}"
-            )
+            raise ArchivePathError(f"Log destination escapes archive root: {relative}")
         os.makedirs(os.path.dirname(safe_target_path), exist_ok=True)
         shutil.copy2(safe_source_path, safe_target_path)
         copied.append(str((Path("logs") / "raw" / relative).as_posix()))
@@ -573,9 +557,7 @@ def _copy_event_streams(
     if event_source_dir is None:
         return []
 
-    source_candidate = os.path.abspath(
-        os.path.expanduser(os.fspath(event_source_dir))
-    )
+    source_candidate = os.path.abspath(os.path.expanduser(os.fspath(event_source_dir)))
     checked_source_root = os.path.realpath(source_candidate)
     source_parent = os.path.dirname(checked_source_root)
     source_parent_prefix = source_parent.rstrip(os.sep) + os.sep
@@ -597,25 +579,19 @@ def _copy_event_streams(
     elif checked_destination_root.startswith(destination_parent_prefix):
         safe_destination_root = checked_destination_root
     else:
-        raise ArchivePathError(
-            f"Event destination escapes its parent: {destination_root}"
-        )
+        raise ArchivePathError(f"Event destination escapes its parent: {destination_root}")
     os.makedirs(safe_destination_root, exist_ok=True)
 
     copied: list[str] = []
     for source in sorted(Path(safe_source_root).glob("*.jsonl")):
-        checked_file_path = os.path.realpath(
-            os.path.abspath(os.fspath(source)), strict=True
-        )
+        checked_file_path = os.path.realpath(os.path.abspath(os.fspath(source)), strict=True)
         source_prefix = safe_source_root.rstrip(os.sep) + os.sep
         if checked_file_path == safe_source_root:
             safe_file_path = safe_source_root
         elif checked_file_path.startswith(source_prefix):
             safe_file_path = checked_file_path
         else:
-            raise ArchivePathError(
-                f"Event source escapes source directory: {source}"
-            )
+            raise ArchivePathError(f"Event source escapes source directory: {source}")
         target_candidate = os.path.join(safe_destination_root, source.name)
         checked_target_path = os.path.realpath(os.path.abspath(target_candidate))
         destination_prefix = safe_destination_root.rstrip(os.sep) + os.sep
@@ -624,9 +600,7 @@ def _copy_event_streams(
         elif checked_target_path.startswith(destination_prefix):
             safe_target_path = checked_target_path
         else:
-            raise ArchivePathError(
-                f"Event destination escapes archive root: {source.name}"
-            )
+            raise ArchivePathError(f"Event destination escapes archive root: {source.name}")
         shutil.copy2(safe_file_path, safe_target_path)
         copied.append(str((Path("events") / "claude-jsonl" / source.name).as_posix()))
     return copied
@@ -679,9 +653,7 @@ def _workspace_log_sources(workspace: Path) -> list[tuple[Path, Path]]:
 
 def _read_json(root: Path, path: Path) -> dict[str, Any]:
     root_path = os.path.realpath(os.path.abspath(os.fspath(root)))
-    checked_json_path = os.path.realpath(
-        os.path.abspath(os.fspath(path)), strict=True
-    )
+    checked_json_path = os.path.realpath(os.path.abspath(os.fspath(path)), strict=True)
     root_prefix = root_path.rstrip(os.sep) + os.sep
     if checked_json_path == root_path:
         safe_json_path = root_path
