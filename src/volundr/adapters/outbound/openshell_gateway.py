@@ -1011,6 +1011,7 @@ class OpenShellGatewayPodManager(
             platform_providers = await self._resolve_platform_provider(
                 subject,
                 api_urls=_resident_api_urls(values),
+                binaries=_resident_platform_binaries(runtime),
             )
             credential_context = await self._resolve_credential_context(subject, values)
             provider_names = (*platform_providers, *credential_context.providers)
@@ -1822,6 +1823,7 @@ class OpenShellGatewayPodManager(
         workload: Session | OpenShellWorkloadSubject,
         *,
         api_urls: Sequence[str] = (),
+        binaries: Sequence[str] = (),
     ) -> tuple[str, ...]:
         subject = self._session_subject(workload) if isinstance(workload, Session) else workload
         if not self._volundr_api_url:
@@ -1841,6 +1843,7 @@ class OpenShellGatewayPodManager(
             profile_id=provider_name,
             token_endpoint=self._credential_token_endpoint,
             api_urls=(self._volundr_api_url, *api_urls),
+            additional_binaries=binaries,
         )
         await asyncio.to_thread(
             self._client.create_provider_grant,
@@ -2630,6 +2633,12 @@ def _resident_api_urls(values: dict[str, Any]) -> tuple[str, ...]:
     return tuple(urls)
 
 
+def _resident_platform_binaries(runtime: ResidentRuntime) -> tuple[str, ...]:
+    if runtime.engine is ResidentEngine.OPENCLAW:
+        return ("/usr/bin/node",)
+    return ()
+
+
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> None:
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(base.get(key), dict):
@@ -2888,6 +2897,7 @@ def _platform_provider_profile(
     profile_id: str,
     token_endpoint: str,
     api_urls: Sequence[str],
+    additional_binaries: Sequence[str] = (),
 ) -> Any:
     parsed_urls = []
     seen: set[tuple[str, int]] = set()
@@ -2928,13 +2938,14 @@ def _platform_provider_profile(
         )
         for parsed, port in parsed_urls
     ]
-    binaries = [
-        sandbox_pb2.NetworkBinary(path=path)
-        for path in (
+    binary_paths = dict.fromkeys(
+        (
             "/opt/niuu/**",
             "/sandbox/.uv/python/**",
+            *additional_binaries,
         )
-    ]
+    )
+    binaries = [sandbox_pb2.NetworkBinary(path=path) for path in binary_paths]
     return openshell_pb2.ProviderProfile(
         id=profile_id,
         display_name="Niuu Völundr workload reporting",

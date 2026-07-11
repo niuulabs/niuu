@@ -577,6 +577,28 @@ def test_openclaw_profile_requires_complete_process_and_service_plan(
         }
     )
     assert manager.supports(complete) is True
+    assert adapter._resident_platform_binaries(
+        _resident_runtime().model_copy(update={"engine": ResidentEngine.OPENCLAW})
+    ) == ("/usr/bin/node",)
+
+
+def test_platform_provider_adds_resident_engine_binary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+
+    profile = adapter._platform_provider_profile(
+        profile_id="resident-platform",
+        token_endpoint="https://volundr.example.test/token",
+        api_urls=("http://niuu-bifrost.volundr.svc.cluster.local/v1",),
+        additional_binaries=("/usr/bin/node",),
+    )
+
+    assert [binary.path for binary in profile.binaries] == [
+        "/opt/niuu/**",
+        "/sandbox/.uv/python/**",
+        "/usr/bin/node",
+    ]
 
 
 @pytest.mark.asyncio
