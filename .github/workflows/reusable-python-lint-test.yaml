@@ -111,7 +111,9 @@ jobs:
           status=${PIPESTATUS[0]}
           set -e
           if (( status != 0 )); then
-            failure_output="$(tail -n 40 "$output_file")"
+            failure_summary="$(grep -E '^(FAILED|ERROR) ' "$output_file" | tail -n 60 || true)"
+            failure_tail="$(tail -n 20 "$output_file")"
+            failure_output="${failure_summary}"$'\n'"${failure_tail}"
             failure_output="${failure_output//'%'/'%25'}"
             failure_output="${failure_output//$'\n'/'%0A'}"
             failure_output="${failure_output//$'\r'/'%0D'}"
