@@ -211,11 +211,7 @@ describe('ChatInput', () => {
       ['p2', { peerId: 'p2', persona: 'Human', participantType: 'user' }],
     ]);
     render(
-      <ChatInput
-        {...defaultProps}
-        onSendDirected={onSendDirected}
-        participants={participants}
-      />,
+      <ChatInput {...defaultProps} onSendDirected={onSendDirected} participants={participants} />,
     );
     fireEvent.change(screen.getByTestId('chat-textarea'), {
       target: { value: '@Ada @Ada @Human @Unknown check this' },
@@ -236,7 +232,7 @@ describe('ChatInput', () => {
     expect(onSend).toHaveBeenCalledWith('@Ada hello', []);
   });
 
-  it('handles attach clicks, empty file selections, and removable files', () => {
+  it('handles attach clicks, empty file selections, and removable files', async () => {
     const { rerender } = render(<ChatInput {...defaultProps} />);
     const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
     const click = vi.spyOn(fileInput, 'click');
@@ -246,7 +242,7 @@ describe('ChatInput', () => {
     fireEvent.change(fileInput, { target: { files: null } });
     const file = new File(['notes'], 'notes.txt', { type: 'text/plain' });
     fireEvent.change(fileInput, { target: { files: [file] } });
-    expect(screen.getByText('notes.txt')).toBeInTheDocument();
+    expect(await screen.findByText('notes.txt')).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText('Remove notes.txt'));
     expect(screen.queryByText('notes.txt')).not.toBeInTheDocument();
 
