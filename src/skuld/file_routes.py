@@ -96,21 +96,25 @@ async def list_files(path: str = "", root: str = "workspace") -> dict:
     """List files and directories in a session root (workspace or home)."""
     _validate_root(root)
     base = _resolve_root(root)
-    target = _resolve_user_path(base, path)
+    candidate_target = _resolve_user_path(base, path)
     canonical_base = os.path.realpath(os.path.abspath(os.fspath(base)))
-    checked_target = os.path.realpath(os.path.abspath(os.fspath(target)))
+    checked_target = os.path.realpath(os.path.abspath(os.fspath(candidate_target)))
     canonical_prefix = canonical_base.rstrip(os.sep) + os.sep
     if checked_target == canonical_base:
-        checked_target = canonical_base
-    elif not checked_target.startswith(canonical_prefix):
+        safe_target = Path(canonical_base)
+    elif checked_target.startswith(canonical_prefix):
+        safe_target = Path(checked_target)
+    else:
         raise HTTPException(400, "Path traversal not allowed")
-    target = Path(checked_target)
 
-    if not target.is_dir():
+    if not safe_target.is_dir():
         raise HTTPException(404, "Directory not found")
 
     try:
-        items = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        items = sorted(
+            safe_target.iterdir(),
+            key=lambda p: (not p.is_dir(), p.name.lower()),
+        )
     except PermissionError:
         raise HTTPException(403, "Permission denied")
 
@@ -176,17 +180,20 @@ async def upload_files(
     """Upload files to a target directory in the session."""
     _validate_root(root)
     base = _resolve_root(root)
-    target_dir = _resolve_user_path(base, path)
+    candidate_target_dir = _resolve_user_path(base, path)
     canonical_base = os.path.realpath(os.path.abspath(os.fspath(base)))
-    checked_target_dir = os.path.realpath(os.path.abspath(os.fspath(target_dir)))
+    checked_target_dir = os.path.realpath(
+        os.path.abspath(os.fspath(candidate_target_dir))
+    )
     canonical_prefix = canonical_base.rstrip(os.sep) + os.sep
     if checked_target_dir == canonical_base:
-        checked_target_dir = canonical_base
-    elif not checked_target_dir.startswith(canonical_prefix):
+        safe_target_dir = Path(canonical_base)
+    elif checked_target_dir.startswith(canonical_prefix):
+        safe_target_dir = Path(checked_target_dir)
+    else:
         raise HTTPException(400, "Path traversal not allowed")
-    target_dir = Path(checked_target_dir)
 
-    if not target_dir.is_dir():
+    if not safe_target_dir.is_dir():
         raise HTTPException(404, "Target directory not found")
 
     max_size = broker._settings.max_upload_size_bytes
@@ -196,11 +203,16 @@ async def upload_files(
             continue
         # Prevent path traversal in filenames
         safe_name = os.path.basename(upload.filename)
-        destination = _resolve_user_path(target_dir, safe_name, allow_root=False)
-        checked_destination = os.path.realpath(os.path.abspath(os.fspath(destination)))
-        if not checked_destination.startswith(canonical_prefix):
+        candidate_destination = _resolve_user_path(
+            safe_target_dir, safe_name, allow_root=False
+        )
+        checked_destination = os.path.realpath(
+            os.path.abspath(os.fspath(candidate_destination))
+        )
+        if checked_destination.startswith(canonical_prefix):
+            safe_destination = Path(checked_destination)
+        else:
             raise HTTPException(400, "Path traversal not allowed")
-        destination = Path(checked_destination)
 
         content = await upload.read()
         if len(content) > max_size:
@@ -208,13 +220,13 @@ async def upload_files(
                 413,
                 f"File {safe_name} exceeds maximum upload size ({max_size} bytes)",
             )
-        with destination.open("wb") as destination_file:
+        with safe_destination.open("wb") as destination_file:
             destination_file.write(content)
-        stat = destination.stat()
+        stat = safe_destination.stat()
         uploaded.append(
             {
                 "name": safe_name,
-                "path": destination.relative_to(base).as_posix(),
+                "path": safe_destination.relative_to(base).as_posix(),
                 "type": "file",
                 "size": stat.st_size,
                 "modified": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),

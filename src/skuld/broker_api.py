@@ -548,38 +548,37 @@ async def present_file(body: dict) -> dict:
 
     workspace_root = os.path.realpath(os.path.abspath(broker.workspace_dir))
     home_root = os.path.realpath(os.path.abspath(broker._settings.home_path))
-    source_path = os.path.realpath(os.path.abspath(os.path.expanduser(raw_path)))
+    candidate_source = os.path.realpath(os.path.abspath(os.path.expanduser(raw_path)))
     workspace_prefix = workspace_root.rstrip(os.sep) + os.sep
     home_prefix = home_root.rstrip(os.sep) + os.sep
-    if source_path == workspace_root:
-        checked_source = workspace_root
-    elif source_path.startswith(workspace_prefix):
-        checked_source = source_path
-    elif source_path == home_root:
-        checked_source = home_root
-    elif source_path.startswith(home_prefix):
-        checked_source = source_path
+    if candidate_source == workspace_root:
+        safe_source = Path(workspace_root)
+    elif candidate_source.startswith(workspace_prefix):
+        safe_source = Path(candidate_source)
+    elif candidate_source == home_root:
+        safe_source = Path(home_root)
+    elif candidate_source.startswith(home_prefix):
+        safe_source = Path(candidate_source)
     else:
         raise HTTPException(400, "path is outside the session roots")
-    src_real = Path(checked_source)
-    if not src_real.exists():
+    if not safe_source.exists():
         raise HTTPException(404, "no such file")
-    if not src_real.is_file():
+    if not safe_source.is_file():
         raise HTTPException(400, "not a regular file")
-    size = src_real.stat().st_size
+    size = safe_source.stat().st_size
     if size > broker._settings.max_presented_file_bytes:
         raise HTTPException(413, "file exceeds max_presented_file_bytes")
 
     file_id = "pf_" + uuid.uuid4().hex
-    name = title or src_real.name
-    mime = mimetypes.guess_type(src_real.name)[0] or "application/octet-stream"
+    name = title or safe_source.name
+    mime = mimetypes.guess_type(safe_source.name)[0] or "application/octet-stream"
 
     # Stage a COPY so a later /tmp GC or edit cannot change/lose what the user tapped.
     try:
         dest_dir = _presented_staging_dir() / file_id
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = resolve_contained_path(dest_dir, "content", allow_root=False)
-        shutil.copyfile(src_real, dest)
+        shutil.copyfile(safe_source, dest)
     except (OSError, UnsafePathError) as exc:
         logger.warning("present-file: staging copy failed: %s", repr(exc))
         raise HTTPException(500, "could not stage file") from None
