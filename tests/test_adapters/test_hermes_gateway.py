@@ -43,7 +43,7 @@ def _runtime() -> ResidentRuntime:
         model="openrouter/anthropic/claude-sonnet-4.6",
         backend=ResidentBackend.OPENSHELL,
         engine=ResidentEngine.HERMES,
-        profile_id="hermes-openshell",
+        profile_id="nemohermes-openshell",
     )
 
 

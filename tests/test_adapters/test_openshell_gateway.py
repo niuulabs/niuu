@@ -469,7 +469,7 @@ def _hermes_runtime() -> ResidentRuntime:
     return _resident_runtime().model_copy(
         update={
             "engine": ResidentEngine.HERMES,
-            "profile_id": "hermes-openshell",
+            "profile_id": "nemohermes-openshell",
             "capabilities": [
                 ResidentCapability.CHAT,
                 ResidentCapability.SESSION_LIST,
@@ -488,7 +488,7 @@ def _hermes_runtime() -> ResidentRuntime:
 
 def _hermes_profile() -> ResidentDeploymentProfile:
     return ResidentDeploymentProfile(
-        id="hermes-openshell",
+        id="nemohermes-openshell",
         display_name="Hermes on OpenShell",
         backend=ResidentBackend.OPENSHELL,
         engine=ResidentEngine.HERMES,
@@ -498,8 +498,8 @@ def _hermes_profile() -> ResidentDeploymentProfile:
         deployment={
             "values": {
                 "image": (
-                    "nousresearch/hermes-agent@"
-                    "sha256:0ddf22d30943d39cbab35525f0a4423f9a3c936ad4e00acda331de7022e9a8e8"
+                    "ghcr.io/nvidia/nemoclaw/hermes-sandbox-base@"
+                    "sha256:7e9378c50f291e6dd80b922e8b89e0e7edf21e4e3a80b8c2664be01976f59aa8"
                 ),
                 "resident": {
                     "llm": {
@@ -516,17 +516,20 @@ def _hermes_profile() -> ResidentDeploymentProfile:
                 },
                 "openshell": {
                     "processMode": "replace",
-                    "service": {"name": "hermes", "port": 9119},
+                    "service": {"name": "hermes", "port": 18789},
                     "processes": [
                         {
                             "name": "hermes",
                             "command": [
-                                "/opt/hermes/bin/hermes",
-                                "serve",
+                                "/usr/local/bin/hermes",
+                                "dashboard",
                                 "--host",
                                 "127.0.0.1",
                                 "--port",
-                                "9119",
+                                "18789",
+                                "--skip-build",
+                                "--no-open",
+                                "--tui",
                             ],
                             "logPath": "/sandbox/.volundr/hermes.log",
                         }
@@ -709,7 +712,7 @@ async def test_hermes_deploy_uses_persisted_process_only_credential_and_generic_
     assert client.execs[0]["pid_path"] == "/sandbox/.volundr/hermes.pid"
     assert client.exposed == {
         "sandbox_name": f"resident-{runtime.id.hex[:19]}",
-        "target_port": 9119,
+        "target_port": 18789,
         "service": "hermes",
     }
     assert store.stores[0]["name"] == HERMES_CREDENTIAL_NAME
@@ -727,7 +730,7 @@ async def test_hermes_deploy_uses_persisted_process_only_credential_and_generic_
     )
     health = client.bootstrap_execs[-1]["script"]
     assert "/sandbox/.volundr/hermes.pid" in health
-    assert "/:239F$/" in health
+    assert "/:4965$/" in health
 
 
 @pytest.mark.asyncio

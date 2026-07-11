@@ -20,7 +20,6 @@ jobs:
           - agent
           - skuld
           - openshell
-          - hermes-openshell
           - devrunner
           - volundr-web
           - niuu-web
