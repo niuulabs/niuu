@@ -595,7 +595,21 @@ jobs:
             --wait --timeout 120s
 
       - name: Verify Volundr pods are ready
-        run: kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=volundr --timeout=60s
+        run: |
+          output="$(kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=volundr --timeout=60s 2>&1)" || {
+            diagnostics="$(
+              kubectl get pods -l app.kubernetes.io/name=volundr -o wide 2>&1
+              kubectl describe pods -l app.kubernetes.io/name=volundr 2>&1
+              kubectl logs -l app.kubernetes.io/name=volundr --all-containers=true --tail=100 --prefix 2>&1
+            )"
+            combined="${output}
+          ${diagnostics}"
+            printf "%s\n" "$combined"
+            annotation="$(printf "%s" "$combined" | tail -c 8000 | sed -z "s/%/%25/g; s/\n/%0A/g; s/\r/%0D/g")"
+            echo "::error title=Volundr pod readiness failure::${annotation}"
+            exit 1
+          }
+          printf "%s\n" "$output"
 
       - name: Verify Guild pods are ready
         run: kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=guild --timeout=60s
