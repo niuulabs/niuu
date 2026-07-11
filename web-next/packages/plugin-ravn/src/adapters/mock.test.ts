@@ -43,6 +43,25 @@ describe('createMockPersonaStore', () => {
     expect(detail.yamlSource).toBe('[mock]');
   });
 
+  it('builds reviewer defaults and exposes configured override sources', async () => {
+    const store = createMockPersonaStore();
+    const reviewer = await store.getPersona('reviewer');
+    expect(reviewer).toMatchObject({
+      forbiddenTools: ['write', 'bash', 'apply_patch'],
+      llm: { thinkingEnabled: true, maxTokens: 8192 },
+      produces: { schemaDef: { verdict: 'string', confidence: 'number', findings: 'array' } },
+      consumes: { schemaDef: { diff: 'string', scope: 'string' } },
+      fanIn: { strategy: 'merge', params: { mode: 'review.final' } },
+      mimirWriteRouting: 'local',
+    });
+    expect(reviewer.description).toContain('Careful code reviewer');
+    expect(reviewer.systemPromptTemplate).toContain('operational risk');
+    expect(reviewer.consumes.events).toHaveLength(2);
+
+    const architect = await store.getPersona('architect');
+    expect(architect.overrideSource).toContain('overrides/architect.yaml');
+  });
+
   it('getPersona throws for unknown persona', async () => {
     const store = createMockPersonaStore();
     await expect(store.getPersona('nonexistent')).rejects.toThrow('Persona not found');
@@ -52,6 +71,12 @@ describe('createMockPersonaStore', () => {
     const store = createMockPersonaStore();
     const yaml = await store.getPersonaYaml('coder');
     expect(yaml).toContain('name: coder');
+  });
+
+  it('serializes an empty produced event as null', async () => {
+    const store = createMockPersonaStore();
+    const yaml = await store.getPersonaYaml('autonomous-agent');
+    expect(yaml).toContain('event: null');
   });
 
   it('getPersonaYaml throws for unknown persona', async () => {
@@ -75,15 +100,22 @@ describe('createMockPersonaStore', () => {
       iterationBudget: 10,
       llmThinkingEnabled: false,
       llmMaxTokens: 4096,
+      llmTemperature: 0.2,
       producesEventType: 'custom.done',
       producesSchema: {},
       consumesEvents: [{ name: 'custom.requested' }],
       consumesSchema: {},
+      fanInStrategy: 'quorum',
+      fanInParams: { quorum: 2 },
+      mimirWriteRouting: 'shared' as const,
     };
     const detail = await store.createPersona(req);
     expect(detail.name).toBe('my-custom');
     expect(detail.isBuiltin).toBe(false);
     expect(detail.llm.maxTokens).toBe(4096);
+    expect(detail.llm.temperature).toBe(0.2);
+    expect(detail.fanIn).toEqual({ strategy: 'quorum', params: { quorum: 2 } });
+    expect(detail.mimirWriteRouting).toBe('shared');
 
     const all = await store.listPersonas();
     expect(all.some((p) => p.name === 'my-custom')).toBe(true);
@@ -352,6 +384,54 @@ describe('createMockWardenStore', () => {
     expect(seen).toEqual(['offline', 'idle', 'active', 'idle', 'offline']);
   });
 
+  it('preserves explicit creation options and handles slug fallbacks', async () => {
+    const store = createMockWardenStore();
+    const explicit = await store.createWarden({
+      name: ' -- Keeper 42 -- ',
+      persona: 'reviewer',
+      profile: 'strict',
+      deployment: 'systemd',
+      deploymentKwargs: { unit: 'keeper.service' },
+      model: 'gpt-5.5',
+      mountNames: ['shared'],
+      writeMount: 'shared',
+      readMountNames: ['local'],
+      writeMountNames: ['shared'],
+      categoryScope: ['reviews'],
+      features: { dreamCycleEnabled: false },
+      schedules: { dreamCyclePollIntervalSeconds: 30 },
+      console: { enabled: false },
+      autostart: false,
+      createdBy: 'test-operator',
+    });
+    expect(explicit).toMatchObject({
+      id: 'keeper-42',
+      persona: 'reviewer',
+      profile: 'strict',
+      deployment: 'systemd',
+      deploymentKwargs: { unit: 'keeper.service' },
+      model: 'gpt-5.5',
+      readMountNames: ['local'],
+      writeMountNames: ['shared'],
+      categoryScope: ['reviews'],
+      autostart: false,
+      createdBy: 'test-operator',
+    });
+    expect(explicit.features.dreamCycleEnabled).toBe(false);
+    expect(explicit.schedules.dreamCyclePollIntervalSeconds).toBe(30);
+    expect(explicit.console.enabled).toBe(false);
+
+    const fallback = await store.createWarden({ name: ' --- ', writeMount: 'shared' });
+    expect(fallback.id).toBe('warden');
+    expect(fallback.readMountNames).toEqual([]);
+    expect(fallback.writeMountNames).toEqual(['shared']);
+
+    const listener = () => undefined;
+    const unsubscribe = store.subscribeWarden(explicit.id, listener);
+    unsubscribe();
+    unsubscribe();
+  });
+
   it('observes deployment sources and handles install/start/stop/uninstall transitions', async () => {
     const store = createMockWardenStore();
     const created = await store.createWarden({
@@ -367,6 +447,8 @@ describe('createMockWardenStore', () => {
     const installed = await store.installWarden(created.id);
     expect(installed.supervisor?.installed).toBe(true);
     expect(installed.runtime?.state).toBe('idle');
+    const observedIdle = await store.observeWarden(created.id);
+    expect(observedIdle.supervisor?.observation?.status).toBe('idle');
 
     const started = await store.startWarden(created.id);
     expect(started.runtime?.state).toBe('active');
@@ -374,6 +456,8 @@ describe('createMockWardenStore', () => {
 
     const observedActive = await store.observeWarden(created.id);
     expect(observedActive.supervisor?.observation?.status).toBe('running');
+    const reinstalledActive = await store.installWarden(created.id);
+    expect(reinstalledActive.runtime?.state).toBe('active');
 
     const stopped = await store.stopWarden(created.id);
     expect(stopped.runtime?.state).toBe('idle');
@@ -403,6 +487,8 @@ describe('createMockWardenStore', () => {
       source: 'stderr',
       logger: 'ravn.daemon',
     });
+    const defaultLogs = await store.getWardenLogs(created.id);
+    expect(defaultLogs[0]).toMatchObject({ source: 'stdout', id: created.id + '-stdout-1' });
 
     const activeActivity = await store.getWardenActivity(created.id);
     expect(activeActivity[0]).toMatchObject({
@@ -419,5 +505,13 @@ describe('createMockWardenStore', () => {
 
     await expect(store.getWardenLogs('missing')).rejects.toThrow(/Warden not found/i);
     await expect(store.getWardenActivity('missing')).rejects.toThrow(/Warden not found/i);
+  });
+  it('rejects every state operation for a missing warden', async () => {
+    const store = createMockWardenStore();
+    await expect(store.observeWarden('missing')).rejects.toThrow(/Warden not found/i);
+    await expect(store.installWarden('missing')).rejects.toThrow(/Warden not found/i);
+    await expect(store.startWarden('missing')).rejects.toThrow(/Warden not found/i);
+    await expect(store.stopWarden('missing')).rejects.toThrow(/Warden not found/i);
+    await expect(store.uninstallWarden('missing')).rejects.toThrow(/Warden not found/i);
   });
 });
