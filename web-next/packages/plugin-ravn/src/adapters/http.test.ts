@@ -447,6 +447,26 @@ describe('buildRavnSessionAdapter', () => {
     expect(client.get).toHaveBeenCalledWith(`/sessions/${rawSession.id}`);
   });
 
+  it('maps resident usage and title fields', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      ...rawSession,
+      title: 'resident coder',
+      message_count: 3,
+      tokens_used: 54729,
+      cost: '0.094503',
+    });
+
+    const result = await buildRavnSessionAdapter(client).getSession(rawSession.id);
+
+    expect(result).toMatchObject({
+      title: 'resident coder',
+      messageCount: 3,
+      tokenCount: 54729,
+      costUsd: 0.094503,
+    });
+  });
+
   it('fetches messages for a session', async () => {
     const client = makeClient();
     client.get.mockResolvedValue([rawMsg]);

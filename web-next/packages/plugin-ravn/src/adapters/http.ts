@@ -249,6 +249,10 @@ interface RawSession {
   status: string;
   model: string;
   created_at: string;
+  title?: string;
+  message_count?: number;
+  tokens_used?: number;
+  cost?: number | string;
   chat_endpoint?: string | null;
 }
 
@@ -410,6 +414,10 @@ function toSession(raw: RawSession): Session {
     status: raw.status as SessionStatus,
     model: raw.model,
     createdAt: raw.created_at,
+    title: raw.title,
+    messageCount: raw.message_count,
+    tokenCount: raw.tokens_used,
+    costUsd: raw.cost === undefined ? undefined : Number(raw.cost),
     chatEndpoint: raw.chat_endpoint,
   };
 }
