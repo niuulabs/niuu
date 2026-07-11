@@ -521,7 +521,8 @@ def _hermes_profile() -> ResidentDeploymentProfile:
                         {
                             "name": "hermes",
                             "command": [
-                                "/usr/local/bin/hermes",
+                                "/opt/hermes/.venv/bin/python",
+                                "/opt/hermes/.venv/bin/hermes",
                                 "dashboard",
                                 "--host",
                                 "127.0.0.1",
