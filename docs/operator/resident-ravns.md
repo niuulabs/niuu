@@ -29,6 +29,14 @@ HelmReleases. The profile's private `deployment.values` are merged with the
 runtime identity and passed to the existing skuld chart; no second Flux client,
 chart, state store, CRD, or Session row is involved.
 
+On a target configured with `OpenShellGatewayPodManager`, an enabled `openshell`
++ `ravn` profile is handled by that same adapter instance. It creates one native
+OpenShell sandbox, attaches owner-bound dynamic credential providers, starts the
+existing Skuld and Ravn processes, and exposes Skuld through the gateway. It does
+not create a Forge Session row or a parallel OpenShell client. OpenShell profiles
+support chat, restart, gateway logs, and Skuld usage reporting; they must not
+advertise suspend or metrics.
+
 Configure persistent storage in the profile when suspend/resume must retain
 workspace data. Suspension sets the existing chart's `replicaCount` to `0` and
 resume restores it to `1`; `emptyDir` data does not survive that transition.

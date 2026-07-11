@@ -1,8 +1,8 @@
 # OpenShell Runtime
 
-OpenShell mode creates Forge sessions through the OpenShell gateway API. Völundr
-does not shell out to the OpenShell CLI; it mints a Keycloak client-credentials
-token and calls the gateway gRPC service directly.
+OpenShell mode creates Forge sessions and long-lived resident Ravns through the
+OpenShell gateway API. Völundr does not shell out to the OpenShell CLI; it mints
+a Keycloak client-credentials token and calls the gateway gRPC service directly.
 
 The Niuu Kubernetes deployment installs SPIRE on every managed cluster except
 `local`. SPIRE gives each OpenShell sandbox a workload identity used for dynamic
@@ -16,7 +16,7 @@ Völundr
   -> OpenShell gateway gRPC API
   -> Kubernetes compute driver
   -> OpenShell Sandbox
-  -> Skuld broker (+ Ravn processes for flock sessions)
+  -> Skuld broker (+ Ravn processes for flock sessions and residents)
 ```
 
 The sandbox starts with the OpenShell supervisor. Völundr then runs the Skuld
@@ -161,13 +161,63 @@ podManager:
       secretKey: "client-secret"
 ```
 
-The adapter also honors these environment variables:
+All gateway and OIDC settings enter through adapter kwargs and secret kwargs.
+There are no implicit process-environment fallbacks.
 
-- `OPENSHELL_GATEWAY_ENDPOINT`
-- `OPENSHELL_GATEWAY_PUBLIC_URL`
-- `OPENSHELL_OIDC_TOKEN_URL`
-- `OPENSHELL_OIDC_CLIENT_ID`
-- `OPENSHELL_OIDC_CLIENT_SECRET`
+## Configure Resident Ravns
+
+The same `OpenShellGatewayPodManager` implements the resident runtime controller
+port. When it is the configured pod manager, Völundr registers it automatically;
+do not configure a second OpenShell controller or credential-grant broker.
+
+```yaml
+residentRuntimeProfiles:
+  - id: ravn-openshell
+    enabled: true
+    displayName: Resident Ravn (OpenShell)
+    backend: openshell
+    engine: ravn
+    capabilities: [chat, runtime.restart, logs, usage]
+    defaultModel: gpt-5.6-sol
+    allowedModels: [gpt-5.6-sol]
+    deployment:
+      values:
+        image:
+          repository: ghcr.io/niuulabs/openshell
+          tag: niu-1099-openshell-resident
+        broker:
+          cliType: codex-ws
+          transportAdapter: skuld.transports.codex_ws.CodexWebSocketTransport
+        session:
+          reasoningEffort: high
+        openshell:
+          codexAuth:
+            credentialName: codex-credentials
+            authField: auth.json
+        resident:
+          platform:
+            enabled: true
+            baseUrl: https://yggdrasil.niuu.world
+        mimir:
+          instances:
+            - name: mimir-yggdrasil
+              role: shared
+              url: https://mimir.yggdrasil.niuu.world/api/v1
+              auth:
+                type: workload
+                audiences: [mimir]
+```
+
+The adapter translates the existing resident `deployment.values` contract into
+one sandbox, generated Skuld/Ravn configuration, dynamic Provider v2 grants,
+and detached supervised processes. Restart reconstructs the complete process
+plan from the same profile while retaining the sandbox workspace. Delete removes
+the exposed service, sandbox, provider instances, and provider profiles.
+
+OpenShell does not currently implement resident suspend/resume or a native usage
+API, so those capabilities must not be advertised. `usage` is the existing Skuld
+model-usage report sent with the resident-bound platform token. `logs` uses the
+gateway's bounded `GetSandboxLogs` API.
 
 ## Supported Session Inputs
 
