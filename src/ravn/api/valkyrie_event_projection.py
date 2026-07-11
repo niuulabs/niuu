@@ -5,29 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from ravn.api.valkyrie_projection_common import (  # noqa: F401
-    _as_float,
-    _as_int,
+from ravn.api.valkyrie_projection_common import (
     _as_string_list,
     _canonical_environment_id,
-    _empty_telemetry,
-    _environment_id,
-    _field,
-    _first_transport_value,
-    _live_report,
     _now,
-    _rollup_health,
-    _slug,
-    _valkyrie_id,
 )
 from sleipnir.domain import registry
 from sleipnir.domain.events import SleipnirEvent
-
-Dashboard = dict[str, Any]
-RAW_SIGNAL_TELEMETRY_LIMIT = 1_000
-CONTROL_TELEMETRY_LIMIT = 2_000
-LEARNING_SCOPES = ("private", "environment", "domain", "flock", "shared")
-
 
 def _event_dict(event: SleipnirEvent | dict[str, Any]) -> dict[str, Any]:
     if isinstance(event, SleipnirEvent):

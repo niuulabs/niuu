@@ -3,16 +3,39 @@
 from __future__ import annotations
 
 import json
-import re
 from copy import deepcopy
-from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
 
-from ravn.api.valkyrie_config import (
-    ValkyrieDashboardConfig,
-    configured_environment_records,
+from ravn.api.valkyrie_config import ValkyrieDashboardConfig
+from ravn.api.valkyrie_event_projection import (
+    _court_decisions_from_events,
+    _event_dict,
+    _event_log_entry,
+    _is_raw_signal_event,
+    _is_runtime_event,
+    _operational_states_from_events,
+    _signals_from_events,
+)
+from ravn.api.valkyrie_inventory_projection import _initial_dashboard, _signal_events
+from ravn.api.valkyrie_learning_projection import (
+    _available_learning_scopes,
+    _capability_from_signal_payload,
+    _dashboard_learning_from_telemetry,
+    _decision_request_for_learning,
+    _decision_summary,
+    _learning_active_for_status,
+    _learning_capability,
+    _learning_edits,
+    _merge_learning_record,
+    _next_learning_scope,
+    _previous_learning_scope,
+)
+from ravn.api.valkyrie_projection_common import (
+    _canonical_environment_id,
+    _live_report,
+    _now,
 )
 from ravn.api.valkyrie_requests import (
     AutonomyUpdateRequest,
@@ -22,6 +45,13 @@ from ravn.api.valkyrie_requests import (
     LearningFeedbackRequest,
     LearningReviseRequest,
 )
+from ravn.api.valkyrie_runtime_projection import (
+    _merge_observed_runtime,
+    _resolve_huddle_message_author,
+    _runtime_event_key,
+    _validate_huddle_join_scope,
+)
+from ravn.api.valkyrie_telemetry_projection import _aggregate_telemetry
 from ravn.domain.valkyrie_history import canonical_environment_id
 from sleipnir.domain import registry
 from sleipnir.domain.events import SleipnirEvent
@@ -30,96 +60,6 @@ Dashboard = dict[str, Any]
 RAW_SIGNAL_TELEMETRY_LIMIT = 1_000
 CONTROL_TELEMETRY_LIMIT = 2_000
 LEARNING_SCOPES = ("private", "environment", "domain", "flock", "shared")
-from ravn.api.valkyrie_projection_common import (  # noqa: F401
-    _now,
-    _as_int,
-    _as_float,
-    _as_string_list,
-    _field,
-    _slug,
-    _environment_id,
-    _canonical_environment_id,
-    _valkyrie_id,
-    _rollup_health,
-    _first_transport_value,
-    _live_report,
-    _empty_telemetry,
-)
-
-from ravn.api.valkyrie_event_projection import (  # noqa: F401
-    _event_dict,
-    _is_raw_signal_event,
-    _is_runtime_event,
-    _event_timestamp,
-    _payload_int,
-    _payload_float,
-    _event_environment_id,
-    _event_valkyrie_id,
-    _event_valkyrie_name,
-    _event_kind,
-    _event_tier,
-    _event_log_entry,
-    _signal_severity,
-    _signal_subject,
-    _signal_entry,
-    _signals_from_events,
-    _state_drift,
-    _operational_state_entry,
-    _operational_states_from_events,
-    _court_decision_status,
-    _court_decision_risk,
-    _court_decision_entry,
-    _court_decisions_from_events,
-    _structured_log_entry,
-)
-
-from ravn.api.valkyrie_learning_projection import (  # noqa: F401
-    _learning_entry,
-    _learning_status_rank,
-    _merge_learning_entries,
-    _tool_need_entry,
-    _capability_gap_from_details,
-    _learning_status_for_event,
-    _next_learning_scope,
-    _raw_learning_id,
-    _previous_learning_scope,
-    _available_learning_scopes,
-    _learning_active_for_status,
-    _decision_summary,
-    _decision_request_for_learning,
-    _learning_feedback_action,
-    _learning_edits,
-    _capability_from_signal_payload,
-    _learning_capability,
-    _merge_learning_record,
-    _dashboard_learning_from_telemetry,
-)
-
-from ravn.api.valkyrie_runtime_projection import (  # noqa: F401
-    _runtime_entry,
-    _merge_runtime_entry,
-    _telemetry_activity,
-    _runtime_event_key,
-    _huddle_role_for_action,
-    _validate_huddle_join_scope,
-    _resolve_huddle_message_author,
-    _merge_observed_runtime,
-)
-
-from ravn.api.valkyrie_telemetry_projection import (  # noqa: F401
-    _environment_telemetry_entry,
-    _aggregate_telemetry,
-)
-
-from ravn.api.valkyrie_inventory_projection import (  # noqa: F401
-    _configured_environment_entries,
-    _configured_valkyrie_entries,
-    _configured_flock_entries,
-    _configured_huddle_entries,
-    _initial_dashboard,
-    _signal_events,
-)
-
 
 class ValkyrieDashboardProjection:
     def __init__(self, config: ValkyrieDashboardConfig | None = None) -> None:

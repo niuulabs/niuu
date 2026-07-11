@@ -4,110 +4,24 @@ from __future__ import annotations
 
 from typing import Any
 
-# Compatibility exports are grouped by projection lifecycle.
-# isort: off
 from ravn.api.valkyrie_config import (
     ValkyrieDashboardConfig,
     configured_environment_records,
 )
-from ravn.api.valkyrie_requests import (
-    HuddleJoinRequest,
-    HuddleSendRequest,
-    LearningDecisionRequest,
-    LearningFeedbackRequest,
-    LearningReviseRequest,
-)
-from ravn.domain.valkyrie_history import canonical_environment_id
-from sleipnir.domain import registry
-from sleipnir.domain.events import SleipnirEvent
-
-from ravn.api.valkyrie_projection_common import (  # noqa: F401
-    _now,
-    _as_int,
+from ravn.api.valkyrie_projection_common import (
     _as_float,
+    _as_int,
     _as_string_list,
-    _field,
-    _slug,
-    _environment_id,
-    _canonical_environment_id,
-    _valkyrie_id,
-    _rollup_health,
-    _first_transport_value,
-    _live_report,
     _empty_telemetry,
+    _environment_id,
+    _field,
+    _live_report,
+    _now,
+    _rollup_health,
+    _valkyrie_id,
 )
-
-from ravn.api.valkyrie_event_projection import (  # noqa: F401
-    _event_dict,
-    _is_raw_signal_event,
-    _is_runtime_event,
-    _event_timestamp,
-    _payload_int,
-    _payload_float,
-    _event_environment_id,
-    _event_valkyrie_id,
-    _event_valkyrie_name,
-    _event_kind,
-    _event_tier,
-    _event_log_entry,
-    _signal_severity,
-    _signal_subject,
-    _signal_entry,
-    _signals_from_events,
-    _state_drift,
-    _operational_state_entry,
-    _operational_states_from_events,
-    _court_decision_status,
-    _court_decision_risk,
-    _court_decision_entry,
-    _court_decisions_from_events,
-    _structured_log_entry,
-)
-
-from ravn.api.valkyrie_learning_projection import (  # noqa: F401
-    _learning_entry,
-    _learning_status_rank,
-    _merge_learning_entries,
-    _tool_need_entry,
-    _capability_gap_from_details,
-    _learning_status_for_event,
-    _next_learning_scope,
-    _raw_learning_id,
-    _previous_learning_scope,
-    _available_learning_scopes,
-    _learning_active_for_status,
-    _decision_summary,
-    _decision_request_for_learning,
-    _learning_feedback_action,
-    _learning_edits,
-    _capability_from_signal_payload,
-    _learning_capability,
-    _merge_learning_record,
-    _dashboard_learning_from_telemetry,
-)
-
-from ravn.api.valkyrie_runtime_projection import (  # noqa: F401
-    _runtime_entry,
-    _merge_runtime_entry,
-    _telemetry_activity,
-    _runtime_event_key,
-    _huddle_role_for_action,
-    _validate_huddle_join_scope,
-    _resolve_huddle_message_author,
-    _merge_observed_runtime,
-)
-
-from ravn.api.valkyrie_telemetry_projection import (  # noqa: F401
-    _environment_telemetry_entry,
-    _aggregate_telemetry,
-)
-# isort: on
 
 Dashboard = dict[str, Any]
-RAW_SIGNAL_TELEMETRY_LIMIT = 1_000
-CONTROL_TELEMETRY_LIMIT = 2_000
-LEARNING_SCOPES = ("private", "environment", "domain", "flock", "shared")
-
 
 def _configured_environment_entries(
     records: list[dict[str, Any]],
