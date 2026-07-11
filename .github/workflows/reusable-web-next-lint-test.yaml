@@ -108,7 +108,21 @@ jobs:
         run: pnpm -r --filter='./packages/*' build
 
       - name: Run tests with coverage (fail under 85%)
-        run: pnpm test
+        run: |
+          set -o pipefail
+          set +e
+          output_file="$(mktemp)"
+          pnpm test 2>&1 | tee "$output_file"
+          status=${PIPESTATUS[0]}
+          set -e
+          if (( status != 0 )); then
+            failure_output="$(tail -n 60 "$output_file")"
+            failure_output="${failure_output//'%'/'%25'}"
+            failure_output="${failure_output//$'\n'/'%0A'}"
+            failure_output="${failure_output//$'\r'/'%0D'}"
+            echo "::error title=Web test failure::${failure_output}"
+          fi
+          exit "$status"
 
       - name: Upload coverage to Codecov
         if: always() && hashFiles('web-next/coverage/lcov.info') != ''
