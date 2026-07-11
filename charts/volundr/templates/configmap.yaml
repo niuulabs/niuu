@@ -60,6 +60,20 @@ data:
 
     resident_runtimes:
       reconciliation_interval_seconds: {{ .Values.residentRuntimeReconciliationIntervalSeconds | default 10.0 }}
+      controllers:{{ if not .Values.residentRuntimeControllers }} []{{ else }}
+        {{- range $index, $controller := .Values.residentRuntimeControllers }}
+        - adapter: {{ $controller.adapter | quote }}
+          kwargs: {{ $controller.kwargs | default dict | toJson }}
+          {{- if $controller.secretKwargs }}
+          secret_kwargs_env:
+            {{- range $controller.secretKwargs }}
+            {{ .kwarg }}: RESIDENT_CONTROLLER_{{ $index }}_SK_{{ .kwarg | upper }}
+            {{- end }}
+          {{- else }}
+          secret_kwargs_env: {}
+          {{- end }}
+        {{- end }}
+        {{- end }}
       profiles:{{ if not .Values.residentRuntimeProfiles }} []{{ else }}
         {{- range .Values.residentRuntimeProfiles }}
         - id: {{ .id | quote }}

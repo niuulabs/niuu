@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
@@ -16,6 +16,7 @@ from volundr.domain.models import (
     ResidentDeploymentProfile,
     ResidentDesiredState,
     ResidentEngine,
+    ResidentLogPage,
     ResidentRuntime,
 )
 from volundr.domain.services.resident_runtime import (
@@ -59,6 +60,16 @@ class CreateResidentRuntimeRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     profile_id: str = Field(min_length=1, max_length=100)
     persona_name: str = Field(default="", max_length=255)
+    model: str = Field(default="", max_length=255)
+
+
+class ResidentUsageRequest(BaseModel):
+    """One real token/cost report emitted by a resident engine."""
+
+    tokens: int = Field(gt=0)
+    cost: float = Field(default=0, ge=0)
+    message_count: int = Field(default=1, ge=0)
+    provider: str = Field(default="", max_length=100)
     model: str = Field(default="", max_length=255)
 
 
@@ -135,6 +146,42 @@ def create_resident_runtimes_router(service: ResidentRuntimeService) -> APIRoute
     ) -> ResidentRuntime:
         try:
             return await service.restart(principal, runtime_id)
+        except Exception as exc:
+            raise _resident_error(exc) from exc
+
+    @router.get("/resident-runtimes/{runtime_id}/logs", response_model=ResidentLogPage)
+    async def get_resident_runtime_logs(
+        runtime_id: UUID,
+        lines: int = Query(default=200, ge=1, le=5000),
+        source: list[str] = Query(default_factory=list),
+        min_level: str = Query(default="", max_length=32),
+        principal: Principal = Depends(extract_principal),
+    ) -> ResidentLogPage:
+        try:
+            return await service.logs(
+                principal,
+                runtime_id,
+                lines=lines,
+                sources=tuple(source),
+                min_level=min_level,
+            )
+        except Exception as exc:
+            raise _resident_error(exc) from exc
+
+    @router.post("/resident-runtimes/{runtime_id}/usage", response_model=ResidentRuntime)
+    async def record_resident_runtime_usage(
+        runtime_id: UUID,
+        body: ResidentUsageRequest,
+        principal: Principal = Depends(extract_principal),
+    ) -> ResidentRuntime:
+        try:
+            return await service.record_usage(
+                principal,
+                runtime_id,
+                tokens=body.tokens,
+                cost=body.cost,
+                message_count=body.message_count,
+            )
         except Exception as exc:
             raise _resident_error(exc) from exc
 

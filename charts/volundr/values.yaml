@@ -344,6 +344,13 @@ residentRuntimeProfiles: []
 #           enabled: true
 #           baseUrl: http://niuu-volundr.volundr.svc.cluster.local
 
+# Additional resident backend adapters. A PodManager that also implements the
+# resident controller port is registered automatically and should not be repeated.
+residentRuntimeControllers: []
+# - adapter: volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager
+#   kwargs: {}
+#   secretKwargs: []
+
 # -- Seconds between resident HelmRelease/Deployment reconciliation passes
 residentRuntimeReconciliationIntervalSeconds: 10.0
 

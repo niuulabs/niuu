@@ -453,7 +453,7 @@ class TestResidentWorkloadIdentityConfigFirst:
         assert broker_cfg["session"]["model"] == "gpt-5.6-sol"
         assert broker_cfg["session"]["reasoning_effort"] == "high"
 
-    def test_resident_broker_does_not_report_as_forge_session(self, rendered):
+    def test_resident_broker_reports_usage_to_resident_runtime(self, rendered):
         configmaps = self._configmaps(rendered)
         broker_cfg = next(
             yaml.safe_load(cm["data"]["config.yaml"])
@@ -461,7 +461,8 @@ class TestResidentWorkloadIdentityConfigFirst:
             if "config.yaml" in cm.get("data", {})
             and "transport_adapter" in cm["data"]["config.yaml"]
         )
-        assert "volundr_api_url" not in broker_cfg
+        assert broker_cfg["volundr_api_url"] == "https://volundr.example"
+        assert broker_cfg["usage_report_path"] == ("/api/v1/forge/resident-runtimes/muninn/usage")
 
     def test_resident_replica_count_supports_real_suspend_and_resume(self, tmp_path):
         suspended = dict(self.RESIDENT_VALUES)
@@ -471,9 +472,7 @@ class TestResidentWorkloadIdentityConfigFirst:
         assert _deployment_from_rendered(rendered)["spec"]["replicas"] == 0
 
     def test_resident_restart_never_overlaps_agent_replicas(self, rendered):
-        assert _deployment_from_rendered(rendered)["spec"]["strategy"] == {
-            "type": "Recreate"
-        }
+        assert _deployment_from_rendered(rendered)["spec"]["strategy"] == {"type": "Recreate"}
 
     def test_resident_name_annotation_can_be_supplied_by_control_plane(self, tmp_path):
         values = dict(self.RESIDENT_VALUES)

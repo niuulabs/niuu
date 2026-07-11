@@ -12,7 +12,6 @@ import hashlib
 import io
 import json
 import logging
-import os
 import re
 import shlex
 import tarfile
@@ -29,22 +28,45 @@ from uuid import UUID
 import grpc
 import httpx
 import jwt
+import yaml
 from google.protobuf import struct_pb2
 from openshell._proto import datamodel_pb2, openshell_pb2, openshell_pb2_grpc, sandbox_pb2
 
 from niuu.adapters.workload_identity.jwt import JwtWorkloadIdentityVerifier
 from niuu.domain.models import Principal
-from niuu.domain.services.token_scope import OPENSHELL_SESSION_TOKEN_USE
+from niuu.domain.services.token_scope import (
+    OPENSHELL_RESIDENT_TOKEN_USE,
+    OPENSHELL_SESSION_TOKEN_USE,
+)
 from niuu.ports.session_proxy import SessionProxyTarget
 from niuu.ports.workload_identity import WorkloadTokenIssuer
 from volundr.adapters.outbound.local_process import LocalProcessPodManager
-from volundr.domain.models import Session, SessionSpec, SessionStatus
+from volundr.domain.models import (
+    ResidentBackend,
+    ResidentCapability,
+    ResidentCondition,
+    ResidentConditionStatus,
+    ResidentDeploymentProfile,
+    ResidentEndpoint,
+    ResidentEngine,
+    ResidentLogEntry,
+    ResidentLogPage,
+    ResidentObservedState,
+    ResidentRuntime,
+    Session,
+    SessionSpec,
+    SessionStatus,
+)
 from volundr.domain.ports import (
     CredentialStorePort,
     OpenShellCredentialGrantPort,
     OpenShellCredentialGrantToken,
     PodManager,
     PodStartResult,
+    ResidentRuntimeController,
+    ResidentRuntimeLogReader,
+    ResidentRuntimeObservation,
+    ResidentRuntimeRepository,
     SessionRepository,
 )
 
@@ -133,6 +155,17 @@ class OpenShellRuntimeProcess:
     log_path: str
 
 
+@dataclass(frozen=True)
+class OpenShellWorkloadSubject:
+    """Authenticated owner binding shared by Forge and resident workloads."""
+
+    id: UUID
+    kind: str
+    name: str
+    owner_id: str
+    tenant_id: str
+
+
 class ClientCredentialsTokenProvider:
     """Small synchronous client-credentials token cache for gRPC metadata."""
 
@@ -146,10 +179,6 @@ class ClientCredentialsTokenProvider:
         refresh_skew_seconds: int = 60,
         client: httpx.Client | None = None,
     ) -> None:
-        token_url = os.environ.get("OPENSHELL_OIDC_TOKEN_URL", token_url)
-        client_id = os.environ.get("OPENSHELL_OIDC_CLIENT_ID", client_id)
-        if not client_secret:
-            client_secret = os.environ.get("OPENSHELL_OIDC_CLIENT_SECRET", "")
         if not client_secret:
             raise RuntimeError("OpenShell OIDC client secret is required")
         self._token_url = token_url
@@ -438,11 +467,13 @@ class OpenShellGatewayClient:
         command: Sequence[str],
         env: dict[str, str],
         log_path: str,
+        pid_path: str = "",
     ) -> int:
         command_line = shlex.join([str(part) for part in command])
         log_dir = shlex.quote(str(Path(log_path).parent))
         quoted_log_path = shlex.quote(log_path)
-        script = f"mkdir -p {log_dir}\nnohup {command_line} >{quoted_log_path} 2>&1 &\n"
+        pid_write = f"echo $! > {shlex.quote(pid_path)}\n" if pid_path else ""
+        script = f"mkdir -p {log_dir}\nnohup {command_line} >{quoted_log_path} 2>&1 &\n{pid_write}"
         stream = self._stub.ExecSandbox(
             openshell_pb2.ExecSandboxRequest(
                 sandbox_id=sandbox_id,
@@ -459,6 +490,47 @@ class OpenShellGatewayClient:
             if event.HasField("exit"):
                 exit_code = int(event.exit.exit_code)
         return exit_code
+
+    def get_provider_environment(self, sandbox_id: str) -> dict[str, str]:
+        response = self._stub.GetSandboxProviderEnvironment(
+            openshell_pb2.GetSandboxProviderEnvironmentRequest(sandbox_id=sandbox_id),
+            timeout=self._timeout,
+            metadata=self._metadata(),
+        )
+        return {str(key): str(value) for key, value in response.environment.items()}
+
+    def get_sandbox_logs(
+        self,
+        sandbox_id: str,
+        *,
+        lines: int,
+        sources: Sequence[str],
+        min_level: str,
+    ) -> ResidentLogPage:
+        response = self._stub.GetSandboxLogs(
+            openshell_pb2.GetSandboxLogsRequest(
+                sandbox_id=sandbox_id,
+                lines=lines,
+                sources=list(sources),
+                min_level=min_level,
+            ),
+            timeout=self._timeout,
+            metadata=self._metadata(),
+        )
+        return ResidentLogPage(
+            entries=[
+                ResidentLogEntry(
+                    timestamp_ms=int(entry.timestamp_ms),
+                    level=str(entry.level),
+                    source=str(entry.source),
+                    target=str(entry.target),
+                    message=str(entry.message),
+                    fields={str(key): str(value) for key, value in entry.fields.items()},
+                )
+                for entry in response.logs
+            ],
+            buffer_total=int(response.buffer_total),
+        )
 
     def exec_script(
         self,
@@ -512,7 +584,12 @@ class OpenShellGatewayClient:
         return (("authorization", f"Bearer {self._token_provider.token()}"),)
 
 
-class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
+class OpenShellGatewayPodManager(
+    PodManager,
+    OpenShellCredentialGrantPort,
+    ResidentRuntimeController,
+    ResidentRuntimeLogReader,
+):
     """Kubernetes OpenShell PodManager using OIDC and native gRPC."""
 
     def __init__(
@@ -538,6 +615,7 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
         credential_token_endpoint: str = DEFAULT_CREDENTIAL_TOKEN_ENDPOINT,
         volundr_api_url: str = "",
         workload_audience: str = "volundr-api",
+        workload_audiences: list[str] | None = None,
         workload_roles: list[str] | None = None,
         spiffe_jwks_uri: str = DEFAULT_SPIFFE_JWKS_URI,
         spiffe_issuer: str = DEFAULT_SPIFFE_ISSUER,
@@ -552,8 +630,6 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
         client: OpenShellGatewayClient | None = None,
         **_extra: object,
     ) -> None:
-        gateway_endpoint = os.environ.get("OPENSHELL_GATEWAY_ENDPOINT", gateway_endpoint)
-        gateway_public_url = os.environ.get("OPENSHELL_GATEWAY_PUBLIC_URL", gateway_public_url)
         self._gateway_public_url = gateway_public_url.rstrip("/")
         gateway_hostport = _endpoint_hostport(gateway_endpoint)
         gateway_host, separator, gateway_port = gateway_hostport.rpartition(":")
@@ -575,6 +651,7 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
         self._credential_token_endpoint = credential_token_endpoint
         self._volundr_api_url = volundr_api_url.rstrip("/")
         self._workload_audience = workload_audience
+        self._workload_audiences = tuple(workload_audiences or [workload_audience])
         self._workload_roles = tuple(workload_roles or ["volundr:developer"])
         self._codex_oauth_token_url = codex_oauth_token_url
         self._codex_oauth_client_id = codex_oauth_client_id
@@ -604,6 +681,7 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
         self._provider_grants: dict[str, tuple[OpenShellProviderGrant, ...]] = {}
         self._credential_store: CredentialStorePort | None = None
         self._session_repository: SessionRepository | None = None
+        self._resident_runtime_repository: ResidentRuntimeRepository | None = None
         self._workload_token_issuer: WorkloadTokenIssuer | None = None
 
     def set_credential_store(self, store: CredentialStorePort) -> None:
@@ -614,9 +692,80 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
         """Inject session persistence for sandbox-to-owner grant authorization."""
         self._session_repository = repository
 
+    def set_resident_runtime_repository(
+        self,
+        repository: ResidentRuntimeRepository,
+    ) -> None:
+        """Inject resident persistence for sandbox grant authorization."""
+        self._resident_runtime_repository = repository
+
     def set_workload_token_issuer(self, issuer: WorkloadTokenIssuer) -> None:
         """Inject the configured issuer for session-bound platform tokens."""
         self._workload_token_issuer = issuer
+
+    @staticmethod
+    def _session_subject(session: Session) -> OpenShellWorkloadSubject:
+        return OpenShellWorkloadSubject(
+            id=session.id,
+            kind="session",
+            name=session.name,
+            owner_id=session.owner_id or "",
+            tenant_id=session.tenant_id or "default",
+        )
+
+    @staticmethod
+    def _resident_subject(runtime: ResidentRuntime) -> OpenShellWorkloadSubject:
+        return OpenShellWorkloadSubject(
+            id=runtime.id,
+            kind="resident",
+            name=runtime.name,
+            owner_id=runtime.owner_id,
+            tenant_id=runtime.tenant_id,
+        )
+
+    @staticmethod
+    def _grant_binding(
+        subject: OpenShellWorkloadSubject,
+        **values: str,
+    ) -> dict[str, str]:
+        if subject.kind == "session":
+            return {"volundr_session_id": str(subject.id), **values}
+        return {
+            "volundr_subject_kind": subject.kind,
+            "volundr_subject_id": str(subject.id),
+            **values,
+        }
+
+    async def _grant_subject(
+        self,
+        config: dict[str, Any],
+        labels: dict[str, str],
+    ) -> OpenShellWorkloadSubject:
+        kind = str(config.get("volundr_subject_kind") or "session")
+        subject_id = str(config.get("volundr_subject_id") or config.get("volundr_session_id") or "")
+        if kind not in {"session", "resident"}:
+            raise ValueError("credential provider workload kind is invalid")
+        try:
+            workload_id = UUID(subject_id)
+        except ValueError as exc:
+            raise ValueError("credential provider workload binding is invalid") from exc
+        if labels.get(f"volundr.niuu.io/{kind}") != subject_id:
+            raise ValueError("credential provider workload binding does not match sandbox")
+
+        if kind == "session":
+            if self._session_repository is None:
+                raise ValueError("credential grant session repository is unavailable")
+            session = await self._session_repository.get(workload_id)
+            if session is None or not session.owner_id:
+                raise ValueError("credential grant session does not exist")
+            return self._session_subject(session)
+
+        if self._resident_runtime_repository is None:
+            raise ValueError("credential grant resident repository is unavailable")
+        runtime = await self._resident_runtime_repository.get(workload_id)
+        if runtime is None:
+            raise ValueError("credential grant resident does not exist")
+        return self._resident_subject(runtime)
 
     def initial_chat_endpoint(self, session: Session) -> str | None:
         return None
@@ -769,6 +918,386 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
             return SessionStatus.STOPPED
         return _status_from_sandbox(sandbox)
 
+    @property
+    def backend(self) -> ResidentBackend:
+        return ResidentBackend.OPENSHELL
+
+    def supports(self, profile: ResidentDeploymentProfile) -> bool:
+        """OpenShell currently supports running Ravn residents without suspension."""
+        return (
+            profile.backend is ResidentBackend.OPENSHELL
+            and profile.engine is ResidentEngine.RAVN
+            and ResidentCapability.RUNTIME_SUSPEND not in profile.capabilities
+        )
+
+    async def deploy(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        if not self.supports(profile):
+            raise RuntimeError(f"OpenShell does not support resident profile {profile.id!r}")
+        values = _resident_profile_values(profile)
+        subject = self._resident_subject(runtime)
+        sandbox_name = self._resident_sandbox_name(runtime)
+        env = self._resident_environment(runtime, values)
+        credential_context = OpenShellCredentialContext(files={}, providers=(), environment={})
+        grants: tuple[OpenShellProviderGrant, ...] = ()
+        try:
+            platform_providers = await self._resolve_platform_provider(
+                subject,
+                api_urls=_resident_api_urls(values),
+            )
+            credential_context = await self._resolve_credential_context(subject, values)
+            provider_names = (*platform_providers, *credential_context.providers)
+            grants = tuple(
+                OpenShellProviderGrant(provider_name=name, profile_id=name)
+                for name in provider_names
+            )
+            if grants:
+                await asyncio.to_thread(self._client.ensure_providers_v2)
+            env.update(credential_context.environment)
+            sandbox = await asyncio.to_thread(
+                self._client.create_sandbox,
+                name=sandbox_name,
+                image=str(values.get("image") or self._sandbox_image),
+                env=env,
+                labels={
+                    "app.kubernetes.io/managed-by": "volundr",
+                    "volundr.niuu.io/resident": str(runtime.id),
+                    "volundr.niuu.io/runtime": runtime.engine.value,
+                },
+                annotations={},
+                resources=_resources_from_values(values, cpu=self._cpu, memory=self._memory),
+                driver_config=_driver_config_from_values(values),
+                providers=provider_names,
+            )
+            ready = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
+            files = {
+                **credential_context.files,
+                **self._resident_config_files(runtime, values),
+            }
+            processes = _runtime_processes_from_values(values)
+            for process in processes:
+                files.update(process.files)
+            await asyncio.to_thread(
+                self._client.write_files,
+                sandbox_id=ready.id,
+                files=files,
+            )
+            await self._launch_resident_processes(ready.id, runtime, env, processes)
+            await self._wait_for_resident_processes(ready.id)
+            service_url = await asyncio.to_thread(
+                self._client.expose_service,
+                sandbox_name=sandbox_name,
+                target_port=self._service_port,
+                service=self._service_name,
+            )
+            if not service_url and not self._gateway_public_url:
+                raise RuntimeError("OpenShell did not return a resident service URL")
+        except Exception:
+            try:
+                await self._cleanup_resources(sandbox_name, grants)
+            except Exception:
+                logger.exception("OpenShell resident rollback failed for %s", runtime.id)
+            raise
+
+        resolved_service_url = (service_url or self._gateway_public_url).rstrip("/")
+        self._service_urls[str(runtime.id)] = resolved_service_url
+        self._provider_grants[str(runtime.id)] = grants
+        return self._resident_observation(
+            runtime,
+            ready,
+            service_url=resolved_service_url,
+            processes_ready=True,
+        )
+
+    async def reconcile(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        if not self.supports(profile):
+            raise RuntimeError(f"OpenShell does not support resident profile {profile.id!r}")
+        sandbox = await asyncio.to_thread(
+            self._client.get_sandbox,
+            self._resident_sandbox_name(runtime),
+        )
+        if sandbox is None:
+            return ResidentRuntimeObservation(
+                observed_state=ResidentObservedState.FAILED,
+                backend_ref=dict(runtime.backend_ref),
+                conditions=[
+                    ResidentCondition(
+                        type="SandboxReady",
+                        status=ResidentConditionStatus.FALSE,
+                        reason="NotFound",
+                        message="OpenShell sandbox does not exist",
+                    )
+                ],
+            )
+        processes_ready = False
+        if sandbox.ready:
+            processes_ready = await self._resident_processes_ready(sandbox.id)
+        service_url = str(runtime.backend_ref.get("service_url") or "")
+        return self._resident_observation(
+            runtime,
+            sandbox,
+            service_url=service_url,
+            processes_ready=processes_ready,
+        )
+
+    async def restart(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        if not self.supports(profile):
+            raise RuntimeError(f"OpenShell does not support resident profile {profile.id!r}")
+        values = _resident_profile_values(profile)
+        sandbox = await asyncio.to_thread(
+            self._client.get_sandbox,
+            self._resident_sandbox_name(runtime),
+        )
+        if sandbox is None or not sandbox.ready:
+            raise RuntimeError("OpenShell resident sandbox is not ready")
+        exit_code, output = await asyncio.to_thread(
+            self._client.exec_script,
+            sandbox_id=sandbox.id,
+            script=_resident_stop_script(),
+            env={},
+        )
+        if exit_code != 0:
+            raise RuntimeError(f"OpenShell resident process stop failed: {output.strip()}")
+        provider_env = await asyncio.to_thread(
+            self._client.get_provider_environment,
+            sandbox.id,
+        )
+        env = {**self._resident_environment(runtime, values), **provider_env}
+        await self._launch_resident_processes(
+            sandbox.id,
+            runtime,
+            env,
+            _runtime_processes_from_values(values),
+        )
+        await self._wait_for_resident_processes(sandbox.id)
+        return self._resident_observation(
+            runtime,
+            sandbox,
+            service_url=str(runtime.backend_ref.get("service_url") or ""),
+            processes_ready=True,
+        )
+
+    async def suspend(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
+        raise RuntimeError("OpenShell resident suspension is unsupported")
+
+    async def resume(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
+        raise RuntimeError("OpenShell resident suspension is unsupported")
+
+    async def delete(self, runtime: ResidentRuntime) -> bool:
+        runtime_id = str(runtime.id)
+        self._service_urls.pop(runtime_id, None)
+        sandbox_name = self._resident_sandbox_name(runtime)
+        grants = self._provider_grants.pop(runtime_id, ())
+        if not grants:
+            sandbox = await asyncio.to_thread(self._client.get_sandbox, sandbox_name)
+            if sandbox is not None:
+                grants = tuple(
+                    OpenShellProviderGrant(provider_name=name, profile_id=name)
+                    for name in sandbox.providers
+                    if name.startswith("volundr-")
+                )
+        return await self._cleanup_resources(sandbox_name, grants)
+
+    async def logs(
+        self,
+        runtime: ResidentRuntime,
+        *,
+        lines: int,
+        sources: tuple[str, ...],
+        min_level: str,
+    ) -> ResidentLogPage:
+        sandbox = await asyncio.to_thread(
+            self._client.get_sandbox,
+            self._resident_sandbox_name(runtime),
+        )
+        if sandbox is None:
+            raise RuntimeError("OpenShell resident sandbox does not exist")
+        return await asyncio.to_thread(
+            self._client.get_sandbox_logs,
+            sandbox.id,
+            lines=lines,
+            sources=sources,
+            min_level=min_level,
+        )
+
+    async def close(self) -> None:
+        await asyncio.to_thread(self._client.close)
+
+    async def _launch_resident_processes(
+        self,
+        sandbox_id: str,
+        runtime: ResidentRuntime,
+        env: dict[str, str],
+        extra_processes: Sequence[OpenShellRuntimeProcess],
+    ) -> None:
+        processes = [
+            OpenShellRuntimeProcess(
+                name="skuld",
+                command=tuple(self._sandbox_command),
+                env={"SKULD_CONFIG": "/sandbox/.volundr/skuld.yaml"},
+                files={},
+                log_path="/sandbox/.volundr/skuld.log",
+            ),
+            OpenShellRuntimeProcess(
+                name="ravn",
+                command=(
+                    "sh",
+                    "-lc",
+                    'export RAVN__GATEWAY__PLATFORM__PAT_TOKEN="$NIUU_VOLUNDR_ACCESS_TOKEN"; '
+                    "exec /opt/niuu/bin/python -m ravn daemon "
+                    "--config /sandbox/.volundr/ravn.yaml "
+                    f"--persona {shlex.quote(runtime.persona_name or 'product-steward')}",
+                ),
+                env={},
+                files={},
+                log_path="/sandbox/.volundr/ravn.log",
+            ),
+            *extra_processes,
+        ]
+        for process in processes:
+            exit_code = await asyncio.to_thread(
+                self._client.exec_detached,
+                sandbox_id=sandbox_id,
+                command=process.command,
+                env={**env, **process.env},
+                log_path=process.log_path,
+                pid_path=f"/sandbox/.volundr/{process.name}.pid",
+            )
+            if exit_code != 0:
+                raise RuntimeError(
+                    f"OpenShell resident process {process.name!r} failed with exit {exit_code}"
+                )
+
+    async def _resident_processes_ready(self, sandbox_id: str) -> bool:
+        exit_code, _ = await asyncio.to_thread(
+            self._client.exec_script,
+            sandbox_id=sandbox_id,
+            script=_resident_health_script(),
+            env={},
+        )
+        return exit_code == 0
+
+    async def _wait_for_resident_processes(self, sandbox_id: str) -> None:
+        deadline = time.monotonic() + self._ready_timeout
+        while time.monotonic() < deadline:
+            if await self._resident_processes_ready(sandbox_id):
+                return
+            await asyncio.sleep(READY_POLL_INTERVAL)
+        raise TimeoutError(
+            f"OpenShell resident processes were not ready within {self._ready_timeout}s"
+        )
+
+    def _resident_config_files(
+        self,
+        runtime: ResidentRuntime,
+        values: dict[str, Any],
+    ) -> dict[str, bytes]:
+        return {
+            "/sandbox/.volundr/skuld.yaml": yaml.safe_dump(
+                _resident_skuld_config(
+                    runtime,
+                    values,
+                    self._service_port,
+                    self._volundr_api_url,
+                ),
+                sort_keys=False,
+            ).encode(),
+            "/sandbox/.volundr/ravn.yaml": yaml.safe_dump(
+                _resident_ravn_config(runtime, values, self._service_port),
+                sort_keys=False,
+            ).encode(),
+        }
+
+    def _resident_environment(
+        self,
+        runtime: ResidentRuntime,
+        values: dict[str, Any],
+    ) -> dict[str, str]:
+        env = {
+            "HOME": self._sandbox_home,
+            "CODEX_HOME": f"{self._sandbox_home}/.codex",
+            "CLAUDE_CONFIG_DIR": f"{self._sandbox_home}/.claude",
+            "SKULD__SESSION__ID": str(runtime.id),
+            "SKULD__SESSION__NAME": runtime.name,
+            "SKULD__SESSION__OWNER_ID": runtime.owner_id,
+            "SKULD__SESSION__TENANT_ID": runtime.tenant_id,
+            "SKULD__SESSION__MODEL": runtime.model,
+            "SKULD__SESSION__WORKSPACE_DIR": self._sandbox_workspace,
+            "SKULD__PERSISTENCE_MOUNT_PATH": self._sandbox_workspace,
+            "SKULD__HOST": "0.0.0.0",
+            "SKULD__PORT": str(self._service_port),
+            "RAVN_STATE_DIR": f"{self._sandbox_workspace}/.ravn",
+        }
+        extra_env = values.get("env")
+        if isinstance(extra_env, dict):
+            env.update(_string_dict(extra_env))
+        for secret_key in SECRET_ENV_KEYS:
+            env.pop(secret_key, None)
+        return env
+
+    def _resident_observation(
+        self,
+        runtime: ResidentRuntime,
+        sandbox: OpenShellSandbox,
+        *,
+        service_url: str,
+        processes_ready: bool,
+    ) -> ResidentRuntimeObservation:
+        observed_state = _resident_state_from_sandbox(sandbox, processes_ready)
+        conditions = [
+            ResidentCondition(
+                type="SandboxReady",
+                status=(
+                    ResidentConditionStatus.TRUE if sandbox.ready else ResidentConditionStatus.FALSE
+                ),
+                reason="Ready" if sandbox.ready else "Provisioning",
+            ),
+            ResidentCondition(
+                type="ProcessesReady",
+                status=(
+                    ResidentConditionStatus.TRUE
+                    if processes_ready
+                    else ResidentConditionStatus.FALSE
+                ),
+                reason="Healthy" if processes_ready else "Unavailable",
+            ),
+        ]
+        endpoints = []
+        if service_url:
+            endpoints.append(
+                ResidentEndpoint(
+                    kind="chat",
+                    protocol="skuld-v1",
+                    url=_service_ws_url(service_url, "/session"),
+                )
+            )
+        return ResidentRuntimeObservation(
+            observed_state=observed_state,
+            backend_ref={
+                "kind": "OpenShellSandbox",
+                "id": sandbox.id,
+                "name": sandbox.name,
+                "service_url": service_url,
+            },
+            endpoints=endpoints,
+            conditions=conditions,
+        )
+
+    @staticmethod
+    def _resident_sandbox_name(runtime: ResidentRuntime) -> str:
+        return f"resident-{runtime.id.hex[:22]}"
+
     async def exchange_credential_grant(
         self,
         *,
@@ -816,24 +1345,12 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
             raise ValueError("credential provider does not authorize this audience")
 
         config = dict(provider.config)
-        session_id = str(config.get("volundr_session_id") or "")
+        workload = await self._grant_subject(config, sandbox.labels or {})
         credential_name = str(config.get("volundr_credential_name") or "")
         credential_field = str(config.get("volundr_credential_field") or "")
-        labels = sandbox.labels or {}
-        if labels.get("volundr.niuu.io/session") != session_id:
-            raise ValueError("credential provider session binding does not match sandbox")
-        if self._session_repository is None:
-            raise ValueError("credential grant session repository is unavailable")
-        try:
-            session_uuid = UUID(session_id)
-        except ValueError as exc:
-            raise ValueError("credential provider session binding is invalid") from exc
-        session = await self._session_repository.get(session_uuid)
-        if session is None or not session.owner_id:
-            raise ValueError("credential grant session does not exist")
         if is_platform_grant:
             return self._issue_platform_token(
-                session=session,
+                workload=workload,
                 workload_subject=subject,
                 sandbox_id=sandbox_id,
             )
@@ -843,12 +1360,12 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
         credential_format = str(config.get("volundr_credential_format") or "")
         if credential_format == CODEX_AUTH_FORMAT:
             return await self._exchange_codex_credential(
-                session=session,
+                workload=workload,
                 credential_name=credential_name,
                 credential_field=credential_field,
             )
 
-        values = await self._credential_store.get_value("user", session.owner_id, credential_name)
+        values = await self._credential_store.get_value("user", workload.owner_id, credential_name)
         value = values.get(credential_field) if values else None
         if not value or "\x00" in value or "\r" in value or "\n" in value:
             raise ValueError("credential field is unavailable for this session")
@@ -857,7 +1374,7 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
     def _issue_platform_token(
         self,
         *,
-        session: Session,
+        workload: OpenShellWorkloadSubject,
         workload_subject: str,
         sandbox_id: str,
     ) -> OpenShellCredentialGrantToken:
@@ -865,17 +1382,21 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
             raise ValueError("workload token issuer is unavailable")
         issued = self._workload_token_issuer.issue_token(
             principal=Principal(
-                user_id=session.owner_id or "",
+                user_id=workload.owner_id,
                 email="",
-                tenant_id=session.tenant_id or "default",
+                tenant_id=workload.tenant_id,
                 roles=list(self._workload_roles),
             ),
             workload_subject=workload_subject,
-            workload_name=f"openshell-session-{session.id}",
-            audiences=[self._workload_audience],
-            token_use=OPENSHELL_SESSION_TOKEN_USE,
+            workload_name=f"openshell-{workload.kind}-{workload.id}",
+            audiences=list(self._workload_audiences),
+            token_use=(
+                OPENSHELL_SESSION_TOKEN_USE
+                if workload.kind == "session"
+                else OPENSHELL_RESIDENT_TOKEN_USE
+            ),
             claims={
-                "session_id": str(session.id),
+                f"{workload.kind}_id": str(workload.id),
                 "sandbox_id": sandbox_id,
             },
         )
@@ -888,19 +1409,19 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
     async def _exchange_codex_credential(
         self,
         *,
-        session: Session,
+        workload: OpenShellWorkloadSubject,
         credential_name: str,
         credential_field: str,
     ) -> OpenShellCredentialGrantToken:
-        if self._credential_store is None or not session.owner_id:
+        if self._credential_store is None or not workload.owner_id:
             raise ValueError("credential grant dependencies are unavailable")
 
-        lock_key = (session.owner_id, credential_name)
+        lock_key = (workload.owner_id, credential_name)
         lock = self._codex_refresh_locks.setdefault(lock_key, asyncio.Lock())
         async with lock:
-            stored = await self._credential_store.get("user", session.owner_id, credential_name)
+            stored = await self._credential_store.get("user", workload.owner_id, credential_name)
             values = await self._credential_store.get_value(
-                "user", session.owner_id, credential_name
+                "user", workload.owner_id, credential_name
             )
             raw_auth = values.get(credential_field) if values else None
             auth = _parse_codex_auth_document(raw_auth)
@@ -917,7 +1438,7 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
                 updated_values[credential_field] = json.dumps(auth, separators=(",", ":"))
                 await self._credential_store.store(
                     "user",
-                    session.owner_id,
+                    workload.owner_id,
                     credential_name,
                     stored.secret_type,
                     updated_values,
@@ -1004,12 +1525,22 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
         session: Session,
         spec: SessionSpec,
     ) -> OpenShellCredentialContext:
-        mappings = _credential_mappings_from_spec(spec)
-        codex_auth = _codex_auth_from_spec(spec)
+        return await self._resolve_credential_context(
+            self._session_subject(session),
+            spec.values,
+        )
+
+    async def _resolve_credential_context(
+        self,
+        subject: OpenShellWorkloadSubject,
+        values: dict[str, Any],
+    ) -> OpenShellCredentialContext:
+        mappings = _credential_mappings_from_values(values)
+        codex_auth = _codex_auth_from_values(values)
         if not mappings and not codex_auth:
             return OpenShellCredentialContext(files={}, providers=(), environment={})
-        if not session.owner_id:
-            raise RuntimeError("OpenShell credential mappings require a session owner")
+        if not subject.owner_id:
+            raise RuntimeError("OpenShell credential mappings require a workload owner")
         if self._credential_store is None:
             raise RuntimeError("OpenShell credential mappings require a credential store")
 
@@ -1019,7 +1550,7 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
         try:
             if codex_auth:
                 await self._resolve_codex_auth(
-                    session,
+                    subject,
                     codex_auth,
                     providers=providers,
                     environment=environment,
@@ -1034,7 +1565,7 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
                     mapping.pop("env_mappings", None)
                     mapping["envMappings"] = {}
                 await self._resolve_credential_mapping(
-                    session,
+                    subject,
                     mapping,
                     files=files,
                     providers=providers,
@@ -1057,16 +1588,22 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
             environment=environment,
         )
 
-    async def _resolve_platform_provider(self, session: Session) -> tuple[str, ...]:
+    async def _resolve_platform_provider(
+        self,
+        workload: Session | OpenShellWorkloadSubject,
+        *,
+        api_urls: Sequence[str] = (),
+    ) -> tuple[str, ...]:
+        subject = self._session_subject(workload) if isinstance(workload, Session) else workload
         if not self._volundr_api_url:
             return ()
-        if not session.owner_id:
-            raise RuntimeError("OpenShell platform reporting requires a session owner")
+        if not subject.owner_id:
+            raise RuntimeError("OpenShell platform reporting requires a workload owner")
         if self._workload_token_issuer is None or not self._workload_token_issuer.enabled:
             raise RuntimeError("OpenShell platform reporting requires a workload token issuer")
 
         provider_name = _provider_grant_name(
-            session_id=str(session.id),
+            session_id=str(subject.id),
             credential_name="volundr-platform",
             field_name="access-token",
             env_name=PLATFORM_ACCESS_TOKEN_ENV,
@@ -1074,38 +1611,35 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
         profile = _platform_provider_profile(
             profile_id=provider_name,
             token_endpoint=self._credential_token_endpoint,
-            api_url=self._volundr_api_url,
+            api_urls=(self._volundr_api_url, *api_urls),
         )
         await asyncio.to_thread(
             self._client.create_provider_grant,
             profile=profile,
             provider_name=provider_name,
-            config={
-                "volundr_session_id": str(session.id),
-                "volundr_grant_kind": "platform",
-            },
+            config=self._grant_binding(subject, volundr_grant_kind="platform"),
         )
         return (provider_name,)
 
     async def _resolve_codex_auth(
         self,
-        session: Session,
+        subject: OpenShellWorkloadSubject,
         config: dict[str, str],
         *,
         providers: list[str],
         environment: dict[str, str],
     ) -> None:
-        if self._credential_store is None or not session.owner_id:
-            raise RuntimeError("OpenShell Codex auth requires an owned session")
+        if self._credential_store is None or not subject.owner_id:
+            raise RuntimeError("OpenShell Codex auth requires an owned workload")
         credential_name = config["credential_name"]
         credential_field = config["auth_field"]
-        values = await self._credential_store.get_value("user", session.owner_id, credential_name)
+        values = await self._credential_store.get_value("user", subject.owner_id, credential_name)
         raw_auth = values.get(credential_field) if values else None
         auth = _parse_codex_auth_document(raw_auth)
         account_id = str(auth["tokens"]["account_id"])
 
         provider_name = _provider_grant_name(
-            session_id=str(session.id),
+            session_id=str(subject.id),
             credential_name=credential_name,
             field_name=credential_field,
             env_name=CODEX_ACCESS_TOKEN_ENV,
@@ -1121,19 +1655,19 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
             self._client.create_provider_grant,
             profile=profile,
             provider_name=provider_name,
-            config={
-                "volundr_session_id": str(session.id),
-                "volundr_credential_name": credential_name,
-                "volundr_credential_field": credential_field,
-                "volundr_credential_format": CODEX_AUTH_FORMAT,
-            },
+            config=self._grant_binding(
+                subject,
+                volundr_credential_name=credential_name,
+                volundr_credential_field=credential_field,
+                volundr_credential_format=CODEX_AUTH_FORMAT,
+            ),
         )
         environment[CODEX_ACCESS_TOKEN_ENV] = CODEX_ACCESS_TOKEN_REFERENCE
         environment[CODEX_ACCOUNT_ID_ENV] = account_id
 
     async def _resolve_credential_mapping(
         self,
-        session: Session,
+        subject: OpenShellWorkloadSubject,
         mapping: dict[str, Any],
         *,
         files: dict[str, bytes],
@@ -1157,7 +1691,7 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
             return
         stored = await self._credential_store.get(
             "user",
-            session.owner_id or "",
+            subject.owner_id,
             credential_name,
         )
         if stored is None:
@@ -1177,7 +1711,7 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
                     f"Credential {credential_name!r} maps to invalid env var {env_name!r}"
                 )
             provider_name = _provider_grant_name(
-                session_id=str(session.id),
+                session_id=str(subject.id),
                 credential_name=credential_name,
                 field_name=field_name,
                 env_name=env_name,
@@ -1194,17 +1728,17 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
                 self._client.create_provider_grant,
                 profile=profile,
                 provider_name=provider_name,
-                config={
-                    "volundr_session_id": str(session.id),
-                    "volundr_credential_name": credential_name,
-                    "volundr_credential_field": field_name,
-                },
+                config=self._grant_binding(
+                    subject,
+                    volundr_credential_name=credential_name,
+                    volundr_credential_field=field_name,
+                ),
             )
 
         if file_mappings:
             values = await self._credential_store.get_value(
                 "user",
-                session.owner_id or "",
+                subject.owner_id,
                 credential_name,
             )
             if not values:
@@ -1397,50 +1931,11 @@ echo "Workspace ready at $WORKSPACE"
 """
 
     def _resources_from_spec(self, spec: SessionSpec) -> dict[str, Any]:
-        resources = spec.values.get("resources")
-        if not isinstance(resources, dict):
-            resources = {}
-        result: dict[str, Any] = {}
-        for key in ("requests", "limits"):
-            values = resources.get(key)
-            if isinstance(values, dict):
-                clean = {
-                    str(resource): str(quantity)
-                    for resource, quantity in values.items()
-                    if resource and quantity
-                }
-                if clean:
-                    result[key] = clean
-        if self._cpu or self._memory:
-            limits = dict(result.get("limits") or {})
-            limits.update(_compact({"cpu": self._cpu, "memory": self._memory}))
-            if limits:
-                result["limits"] = limits
-        return result
+        return _resources_from_values(spec.values, cpu=self._cpu, memory=self._memory)
 
     @staticmethod
     def _driver_config_from_spec(spec: SessionSpec) -> dict[str, Any]:
-        pod: dict[str, Any] = {}
-        if isinstance(spec.values.get("nodeSelector"), dict):
-            pod["node_selector"] = {
-                str(key): str(value)
-                for key, value in spec.values["nodeSelector"].items()
-                if key and value
-            }
-        tolerations = spec.values.get("tolerations")
-        if isinstance(tolerations, list) and tolerations:
-            pod["tolerations"] = tolerations
-        runtime_class_name = spec.values.get("runtimeClassName")
-        if runtime_class_name:
-            pod["runtime_class_name"] = str(runtime_class_name)
-        priority_class_name = spec.values.get("priorityClassName")
-        if priority_class_name:
-            pod["priority_class_name"] = str(priority_class_name)
-
-        config: dict[str, Any] = {}
-        if pod:
-            config["pod"] = pod
-        return config
+        return _driver_config_from_values(spec.values)
 
     def _chat_endpoint(self, session: Session) -> str:
         base = self._service_urls.get(str(session.id)) or self._gateway_public_url
@@ -1516,7 +2011,13 @@ def _provider_grant_name(
 
 
 def _runtime_processes_from_spec(spec: SessionSpec) -> tuple[OpenShellRuntimeProcess, ...]:
-    openshell_values = spec.values.get("openshell")
+    return _runtime_processes_from_values(spec.values)
+
+
+def _runtime_processes_from_values(
+    values: dict[str, Any],
+) -> tuple[OpenShellRuntimeProcess, ...]:
+    openshell_values = values.get("openshell")
     if not isinstance(openshell_values, dict):
         return ()
     raw_processes = openshell_values.get("processes")
@@ -1562,6 +2063,358 @@ def _runtime_processes_from_spec(spec: SessionSpec) -> tuple[OpenShellRuntimePro
     return tuple(processes)
 
 
+def _resident_profile_values(profile: ResidentDeploymentProfile) -> dict[str, Any]:
+    values = profile.deployment.get("values")
+    if not isinstance(values, dict):
+        raise RuntimeError(f"OpenShell resident profile {profile.id!r} requires deployment.values")
+    return values
+
+
+def _resident_skuld_config(
+    runtime: ResidentRuntime,
+    values: dict[str, Any],
+    service_port: int,
+    volundr_api_url: str,
+) -> dict[str, Any]:
+    persona = runtime.persona_name or "product-steward"
+    route_id = runtime.id.hex[:12]
+    ravn_peer = f"flock-{persona}"
+    skuld_peer = f"skuld-{route_id}"
+    broker = values.get("broker") if isinstance(values.get("broker"), dict) else {}
+    session_values = values.get("session") if isinstance(values.get("session"), dict) else {}
+    config: dict[str, Any] = {
+        "session": {
+            "id": str(runtime.id),
+            "name": runtime.name,
+            "model": runtime.model,
+            "reasoning_effort": str(
+                session_values.get("reasoningEffort")
+                or session_values.get("reasoning_effort")
+                or "high"
+            ),
+            "owner_id": runtime.owner_id,
+            "tenant_id": runtime.tenant_id,
+            "workspace_dir": "/sandbox/workspace",
+        },
+        "transport": str(broker.get("transport") or "sdk"),
+        "transport_adapter": str(
+            broker.get("transportAdapter")
+            or broker.get("transport_adapter")
+            or "skuld.transports.codex_ws.CodexWebSocketTransport"
+        ),
+        "cli_type": str(broker.get("cliType") or broker.get("cli_type") or "codex-ws"),
+        "host": "0.0.0.0",
+        "port": service_port,
+        "persistence_mount_path": "/sandbox/workspace",
+        "volundr_api_url": volundr_api_url,
+        "usage_report_path": f"/api/v1/forge/resident-runtimes/{runtime.id}/usage",
+        "room": {
+            "enabled": True,
+            "max_participants": 2,
+            "presence_sweep_interval_s": 0,
+            "default_target_peer_id": ravn_peer,
+        },
+        "mesh": {
+            "enabled": True,
+            "transport": "nng",
+            "peer_id": skuld_peer,
+            "nng": {
+                "pub_sub_address": "tcp://0.0.0.0:7480",
+                "req_rep_address": "tcp://0.0.0.0:7481",
+            },
+            "adapters": [
+                {
+                    "adapter": "static",
+                    "poll_interval_s": 0,
+                    "peers": _resident_mesh_peers(skuld_peer, ravn_peer, persona),
+                }
+            ],
+        },
+    }
+    openshell = values.get("openshell")
+    if isinstance(openshell, dict):
+        overlay = openshell.get("skuldConfig") or openshell.get("skuld_config")
+        if overlay is not None and not isinstance(overlay, dict):
+            raise RuntimeError("OpenShell resident skuldConfig must be an object")
+        if isinstance(overlay, dict):
+            _deep_merge(config, overlay)
+    return config
+
+
+def _resident_ravn_config(
+    runtime: ResidentRuntime,
+    values: dict[str, Any],
+    service_port: int,
+) -> dict[str, Any]:
+    persona = runtime.persona_name or "product-steward"
+    route_id = runtime.id.hex[:12]
+    ravn_peer = f"flock-{persona}"
+    skuld_peer = f"skuld-{route_id}"
+    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
+    platform = resident.get("platform") if isinstance(resident.get("platform"), dict) else {}
+    gateway_platform: dict[str, Any] = {
+        "enabled": bool(platform.get("enabled", True)),
+        "base_url": str(platform.get("baseUrl") or platform.get("base_url") or ""),
+        "workflow_aliases": platform.get("workflowAliases")
+        or platform.get("workflow_aliases")
+        or {},
+    }
+    config: dict[str, Any] = {
+        "persona": persona,
+        "mesh": {
+            "enabled": True,
+            "adapter": "nng",
+            "own_peer_id": ravn_peer,
+            "nng": {
+                "pub_sub_address": "tcp://0.0.0.0:7482",
+                "req_rep_address": "tcp://0.0.0.0:7483",
+            },
+            "peers": [{"peer_id": skuld_peer}],
+        },
+        "discovery": {
+            "enabled": True,
+            "adapters": [
+                {
+                    "adapter": "static",
+                    "peers": _resident_mesh_peers(skuld_peer, ravn_peer, persona),
+                    "poll_interval_s": 0,
+                }
+            ],
+        },
+        "cascade": {"enabled": True},
+        "gateway": {
+            "enabled": True,
+            "channels": {"http": {"enabled": True, "host": "0.0.0.0", "port": 7781}},
+            "platform": gateway_platform,
+        },
+        "initiative": {
+            "enabled": True,
+            "max_concurrent_tasks": int(
+                resident.get("maxConcurrentTasks") or resident.get("max_concurrent_tasks") or 4
+            ),
+        },
+        "permission": {"workspace_root": "/sandbox/workspace"},
+        "logging": {"level": "INFO"},
+        "skuld": {
+            "enabled": True,
+            "broker_url": f"ws://127.0.0.1:{service_port}/ws/ravn",
+            "display_name": runtime.name,
+            "reconnect_delay_seconds": int(
+                (resident.get("skuld") or {}).get("reconnectDelaySeconds", 2)
+            ),
+            "max_reconnect_attempts": int(
+                (resident.get("skuld") or {}).get("maxReconnectAttempts", 300)
+            ),
+            "session_ready_timeout_seconds": int(
+                (resident.get("skuld") or {}).get("sessionReadyTimeoutSeconds", 900)
+            ),
+        },
+        "environment": {"resident_name": runtime.name},
+    }
+    llm = dict(resident.get("llm") or {})
+    if runtime.model:
+        llm["model"] = runtime.model
+    if llm:
+        config["llm"] = llm
+    if isinstance(resident.get("wakefulness"), dict):
+        config["wakefulness"] = resident["wakefulness"]
+    if resident.get("dailyBudgetUsd") or resident.get("daily_budget_usd"):
+        config["budget"] = {
+            "daily_cap_usd": float(
+                resident.get("dailyBudgetUsd") or resident.get("daily_budget_usd")
+            )
+        }
+    mimir = _resident_mimir_config(values)
+    if mimir:
+        config["mimir"] = mimir
+    openshell = values.get("openshell")
+    if isinstance(openshell, dict):
+        overlay = openshell.get("ravnConfig") or openshell.get("ravn_config")
+        if overlay is not None and not isinstance(overlay, dict):
+            raise RuntimeError("OpenShell resident ravnConfig must be an object")
+        if isinstance(overlay, dict):
+            _deep_merge(config, overlay)
+    return config
+
+
+def _resident_mesh_peers(
+    skuld_peer: str,
+    ravn_peer: str,
+    persona: str,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "peer_id": skuld_peer,
+            "persona": "Skuld",
+            "pub_address": "tcp://127.0.0.1:7480",
+            "rep_address": "tcp://127.0.0.1:7481",
+            "handshake_port": 7580,
+            "consumes_event_types": [],
+            "emits_event_types": ["code.changed"],
+        },
+        {
+            "peer_id": ravn_peer,
+            "persona": persona,
+            "pub_address": "tcp://127.0.0.1:7482",
+            "rep_address": "tcp://127.0.0.1:7483",
+            "handshake_port": 7581,
+            "consumes_event_types": [],
+            "emits_event_types": [],
+        },
+    ]
+
+
+def _resident_mimir_config(values: dict[str, Any]) -> dict[str, Any]:
+    raw = values.get("mimir")
+    if not isinstance(raw, dict) or not isinstance(raw.get("instances"), list):
+        return {}
+    instances = []
+    for item in raw["instances"]:
+        if not isinstance(item, dict):
+            continue
+        instance = dict(item)
+        auth = instance.get("auth")
+        if isinstance(auth, dict) and auth.get("type") == "workload":
+            instance["auth"] = {
+                "type": "bearer",
+                "token_env": PLATFORM_ACCESS_TOKEN_ENV,
+            }
+        instances.append(instance)
+    write_default = [
+        str(item.get("name"))
+        for item in instances
+        if item.get("role", "shared") == "local" and item.get("name")
+    ][:1]
+    if not write_default and len(instances) == 1 and instances[0].get("name"):
+        write_default = [str(instances[0]["name"])]
+    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
+    resident_mimir = resident.get("mimir") if isinstance(resident.get("mimir"), dict) else {}
+    source = resident_mimir.get("sourceTrigger") or resident_mimir.get("source_trigger") or {}
+    stale = resident_mimir.get("stalenessTrigger") or resident_mimir.get("staleness_trigger") or {}
+    return {
+        "enabled": True,
+        "instances": instances,
+        "source_trigger": {
+            "enabled": bool(source.get("enabled", False)),
+            "poll_interval_seconds": int(
+                source.get("pollIntervalSeconds") or source.get("poll_interval_seconds") or 60
+            ),
+        },
+        "staleness_trigger": {
+            "enabled": bool(stale.get("enabled", False)),
+            "schedule_hours": int(stale.get("scheduleHours") or stale.get("schedule_hours") or 6),
+        },
+        "write_routing": {"rules": [], "default": write_default},
+    }
+
+
+def _resident_api_urls(values: dict[str, Any]) -> tuple[str, ...]:
+    urls: list[str] = []
+    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
+    platform = resident.get("platform") if isinstance(resident.get("platform"), dict) else {}
+    platform_url = platform.get("baseUrl") or platform.get("base_url")
+    if platform_url:
+        urls.append(str(platform_url))
+    mimir = values.get("mimir")
+    if isinstance(mimir, dict) and isinstance(mimir.get("instances"), list):
+        urls.extend(
+            str(instance["url"])
+            for instance in mimir["instances"]
+            if isinstance(instance, dict) and instance.get("url")
+        )
+    llm = resident.get("llm") if isinstance(resident.get("llm"), dict) else {}
+    provider = llm.get("provider") if isinstance(llm.get("provider"), dict) else {}
+    kwargs = provider.get("kwargs") if isinstance(provider.get("kwargs"), dict) else {}
+    if kwargs.get("base_url") or kwargs.get("baseUrl"):
+        urls.append(str(kwargs.get("base_url") or kwargs.get("baseUrl")))
+    return tuple(urls)
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> None:
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge(base[key], value)
+            continue
+        base[key] = value
+
+
+def _resources_from_values(
+    values: dict[str, Any],
+    *,
+    cpu: str = "",
+    memory: str = "",
+) -> dict[str, Any]:
+    resources = values.get("resources")
+    if not isinstance(resources, dict):
+        resources = {}
+    result: dict[str, Any] = {}
+    for key in ("requests", "limits"):
+        configured = resources.get(key)
+        if isinstance(configured, dict):
+            clean = {
+                str(resource): str(quantity)
+                for resource, quantity in configured.items()
+                if resource and quantity
+            }
+            if clean:
+                result[key] = clean
+    if cpu or memory:
+        limits = dict(result.get("limits") or {})
+        limits.update(_compact({"cpu": cpu, "memory": memory}))
+        result["limits"] = limits
+    return result
+
+
+def _driver_config_from_values(values: dict[str, Any]) -> dict[str, Any]:
+    pod: dict[str, Any] = {}
+    if isinstance(values.get("nodeSelector"), dict):
+        pod["node_selector"] = _string_dict(values["nodeSelector"])
+    if isinstance(values.get("tolerations"), list) and values["tolerations"]:
+        pod["tolerations"] = values["tolerations"]
+    if values.get("runtimeClassName"):
+        pod["runtime_class_name"] = str(values["runtimeClassName"])
+    if values.get("priorityClassName"):
+        pod["priority_class_name"] = str(values["priorityClassName"])
+    return {"pod": pod} if pod else {}
+
+
+def _resident_state_from_sandbox(
+    sandbox: OpenShellSandbox,
+    processes_ready: bool,
+) -> ResidentObservedState:
+    if sandbox.phase == openshell_pb2.SANDBOX_PHASE_ERROR:
+        return ResidentObservedState.FAILED
+    if sandbox.phase == openshell_pb2.SANDBOX_PHASE_DELETING:
+        return ResidentObservedState.DELETING
+    if sandbox.ready and processes_ready:
+        return ResidentObservedState.ACTIVE
+    return ResidentObservedState.DEPLOYING
+
+
+def _resident_health_script() -> str:
+    return """\
+set -eu
+for name in skuld ravn; do
+  pid_file="/sandbox/.volundr/$name.pid"
+  test -s "$pid_file"
+  kill -0 "$(cat "$pid_file")"
+done
+"""
+
+
+def _resident_stop_script() -> str:
+    return """\
+set -eu
+for name in ravn skuld; do
+  pid_file="/sandbox/.volundr/$name.pid"
+  if [ -s "$pid_file" ]; then
+    kill "$(cat "$pid_file")" 2>/dev/null || true
+    rm -f "$pid_file"
+  fi
+done
+"""
+
+
 def _provider_profile(
     *,
     profile_id: str,
@@ -1601,7 +2454,7 @@ def _provider_profile(
     return openshell_pb2.ProviderProfile(
         id=profile_id,
         display_name=f"Niuu runtime credential for {env_name}",
-        description="OpenBao-backed dynamic credential scoped to one Volundr session",
+        description="OpenBao-backed dynamic credential scoped to one Volundr workload",
         category=target["category"],
         credentials=[credential],
         endpoints=endpoints,
@@ -1613,16 +2466,24 @@ def _platform_provider_profile(
     *,
     profile_id: str,
     token_endpoint: str,
-    api_url: str,
+    api_urls: Sequence[str],
 ) -> Any:
-    parsed = urlparse(api_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise RuntimeError("OpenShell Völundr API URL must be an absolute HTTP URL")
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    parsed_urls = []
+    seen: set[tuple[str, int]] = set()
+    for api_url in api_urls:
+        parsed = urlparse(str(api_url))
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise RuntimeError("OpenShell platform API URLs must be absolute HTTP URLs")
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        key = (parsed.hostname, port)
+        if key in seen:
+            continue
+        seen.add(key)
+        parsed_urls.append((parsed, port))
     audience = f"{PLATFORM_GRANT_AUDIENCE_PREFIX}{profile_id}"
     credential = openshell_pb2.ProviderProfileCredential(
         name="access_token",
-        description="Session-bound Völundr workload token",
+        description="Workload-bound Völundr token",
         env_vars=[PLATFORM_ACCESS_TOKEN_ENV],
         required=False,
         auth_style="bearer",
@@ -1635,14 +2496,17 @@ def _platform_provider_profile(
             cache_ttl_seconds=0,
         ),
     )
-    endpoint = sandbox_pb2.NetworkEndpoint(
-        host=parsed.hostname,
-        port=port,
-        protocol="rest",
-        tls="terminate" if parsed.scheme == "https" else "",
-        enforcement="enforce",
-        access="full",
-    )
+    endpoints = [
+        sandbox_pb2.NetworkEndpoint(
+            host=parsed.hostname,
+            port=port,
+            protocol="rest",
+            tls="terminate" if parsed.scheme == "https" else "",
+            enforcement="enforce",
+            access="full",
+        )
+        for parsed, port in parsed_urls
+    ]
     binaries = [
         sandbox_pb2.NetworkBinary(path=path)
         for path in (
@@ -1652,11 +2516,11 @@ def _platform_provider_profile(
     ]
     return openshell_pb2.ProviderProfile(
         id=profile_id,
-        display_name="Niuu Völundr session reporting",
-        description="SPIFFE-authenticated platform reporting for one Völundr session",
+        display_name="Niuu Völundr workload reporting",
+        description="SPIFFE-authenticated platform access for one Völundr workload",
         category=openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
         credentials=[credential],
-        endpoints=[endpoint],
+        endpoints=endpoints,
         binaries=binaries,
     )
 
@@ -1919,7 +2783,11 @@ def _compact(value: dict[str, str]) -> dict[str, str]:
 
 
 def _credential_mappings_from_spec(spec: SessionSpec) -> list[dict[str, Any]]:
-    openshell_values = spec.values.get("openshell")
+    return _credential_mappings_from_values(spec.values)
+
+
+def _credential_mappings_from_values(values: dict[str, Any]) -> list[dict[str, Any]]:
+    openshell_values = values.get("openshell")
     if not isinstance(openshell_values, dict):
         return []
     raw_mappings = openshell_values.get("credentialMappings") or openshell_values.get(
@@ -1931,7 +2799,11 @@ def _credential_mappings_from_spec(spec: SessionSpec) -> list[dict[str, Any]]:
 
 
 def _codex_auth_from_spec(spec: SessionSpec) -> dict[str, str]:
-    openshell_values = spec.values.get("openshell")
+    return _codex_auth_from_values(spec.values)
+
+
+def _codex_auth_from_values(values: dict[str, Any]) -> dict[str, str]:
+    openshell_values = values.get("openshell")
     if not isinstance(openshell_values, dict):
         return {}
     raw = openshell_values.get("codexAuth") or openshell_values.get("codex_auth")

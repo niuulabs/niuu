@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
@@ -422,6 +422,28 @@ def create_app(
         _: Principal = Depends(extract_principal),
     ) -> dict:
         return await control_raven_endpoint(ravn_id, "restart", request)
+
+    @app.get("/api/v1/ravn/ravens/{ravn_id}/logs")
+    async def raven_logs_endpoint(
+        ravn_id: str,
+        request: Request,
+        lines: int = Query(default=200, ge=1, le=5000),
+        source: list[str] = Query(default_factory=list),
+        min_level: str = Query(default="", max_length=32),
+        _: Principal = Depends(extract_principal),
+    ) -> dict:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            return await resident_directory.get_raven_logs(
+                ravn_id,
+                lines=lines,
+                sources=tuple(source),
+                min_level=min_level,
+                auth_headers=auth_headers,
+                auth_params=auth_params,
+            )
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
 
     @app.post("/api/v1/ravn/ravens/{ravn_id}/suspend")
     async def suspend_raven_endpoint(

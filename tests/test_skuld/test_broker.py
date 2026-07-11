@@ -2887,6 +2887,28 @@ class TestReportUsage:
         assert payload["cost"] == 0.05
 
     @pytest.mark.asyncio
+    async def test_report_usage_uses_configured_resident_path(self, tmp_path):
+        settings = SkuldSettings(
+            session={"id": "resident-abc", "workspace_dir": str(tmp_path)},
+            volundr_api_url="http://volundr.test:80",
+            usage_report_path=("/api/v1/forge/resident-runtimes/resident-abc/usage"),
+        )
+        broker = Broker(settings=settings)
+        mock_response = MagicMock(status_code=200)
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        broker._http_client = mock_client
+
+        await broker._report_usage(
+            {"modelUsage": {"gpt-5.6-sol": {"inputTokens": 10, "outputTokens": 5}}}
+        )
+
+        mock_client.post.assert_awaited_once()
+        assert mock_client.post.call_args.args[0] == (
+            "/api/v1/forge/resident-runtimes/resident-abc/usage"
+        )
+
+    @pytest.mark.asyncio
     async def test_report_activity_state_posts_to_forge_route(self, test_broker):
         mock_response = MagicMock()
         mock_response.status_code = 201

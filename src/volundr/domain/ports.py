@@ -45,6 +45,7 @@ from volundr.domain.models import (
     ResidentCondition,
     ResidentDeploymentProfile,
     ResidentEndpoint,
+    ResidentLogPage,
     ResidentObservedState,
     ResidentRuntime,
     RoomParticipantInfo,
@@ -591,7 +592,11 @@ class ResidentRuntimeController(ABC):
         """Converge and observe the backend resources owned by a resident."""
 
     @abstractmethod
-    async def restart(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
+    async def restart(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
         """Restart a running resident without replacing its durable storage."""
 
     @abstractmethod
@@ -605,6 +610,21 @@ class ResidentRuntimeController(ABC):
     @abstractmethod
     async def delete(self, runtime: ResidentRuntime) -> bool:
         """Delete backend resources, returning whether a resource existed."""
+
+
+class ResidentRuntimeLogReader(ABC):
+    """Optional backend port for normalized resident logs."""
+
+    @abstractmethod
+    async def logs(
+        self,
+        runtime: ResidentRuntime,
+        *,
+        lines: int,
+        sources: tuple[str, ...],
+        min_level: str,
+    ) -> ResidentLogPage:
+        """Return recent logs from the runtime-owning backend."""
 
 
 class ResidentRuntimeRepository(ABC):
@@ -638,6 +658,17 @@ class ResidentRuntimeRepository(ABC):
     @abstractmethod
     async def update(self, runtime: ResidentRuntime) -> ResidentRuntime:
         """Persist the current resident runtime state."""
+
+    @abstractmethod
+    async def add_usage(
+        self,
+        runtime_id: UUID,
+        *,
+        tokens: int,
+        cost: float,
+        message_count: int,
+    ) -> ResidentRuntime | None:
+        """Atomically add usage totals and return the updated resident."""
 
     @abstractmethod
     async def delete(self, runtime_id: UUID) -> bool:

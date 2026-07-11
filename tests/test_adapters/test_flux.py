@@ -1089,7 +1089,7 @@ class TestFluxResidentRuntimeController:
         ):
             await pod_manager.suspend(runtime)
             await pod_manager.resume(runtime)
-            await pod_manager.restart(runtime)
+            await pod_manager.restart(runtime, _resident_profile())
             assert await pod_manager.delete(runtime)
 
         release_name = f"resident-{runtime.id}"

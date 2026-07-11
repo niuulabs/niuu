@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 #: The claim value that marks a token as a scoped Valkyrie build credential.
 VALKYRIE_BUILD_TOKEN_USE = "valkyrie_build"
 OPENSHELL_SESSION_TOKEN_USE = "openshell_session"
+OPENSHELL_RESIDENT_TOKEN_USE = "openshell_resident"
 
 #: The build scopes a Valkyrie build token may ever be granted. A caller
 #: cannot self-grant anything outside this allowlist — unknown scopes are
@@ -171,6 +172,7 @@ def require_build_scope(scope: str) -> Callable[..., Awaitable[None]]:
 __all__ = [
     "KNOWN_BUILD_SCOPES",
     "OPENSHELL_SESSION_TOKEN_USE",
+    "OPENSHELL_RESIDENT_TOKEN_USE",
     "VALKYRIE_BUILD_TOKEN_USE",
     "bound_build_scopes",
     "require_build_scope",

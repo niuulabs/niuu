@@ -17,10 +17,12 @@ from volundr.domain.models import (
     ResidentDesiredState,
     ResidentEndpoint,
     ResidentEngine,
+    ResidentLogEntry,
+    ResidentLogPage,
     ResidentObservedState,
     ResidentRuntime,
 )
-from volundr.domain.ports import ResidentRuntimeObservation
+from volundr.domain.ports import ResidentRuntimeLogReader, ResidentRuntimeObservation
 from volundr.domain.services.resident_runtime import (
     ResidentProfileNotFoundError,
     ResidentRuntimeAccessError,
@@ -69,6 +71,20 @@ class MemoryResidentRuntimeRepository:
         self.items[runtime.id] = runtime
         return runtime
 
+    async def add_usage(self, runtime_id, *, tokens, cost, message_count):
+        runtime = self.items.get(runtime_id)
+        if runtime is None:
+            return None
+        updated = runtime.model_copy(
+            update={
+                "tokens_used": runtime.tokens_used + tokens,
+                "cost": runtime.cost + type(runtime.cost)(str(cost)),
+                "message_count": runtime.message_count + message_count,
+            }
+        )
+        self.items[runtime_id] = updated
+        return updated
+
     async def list_for_reconciliation(self) -> list[ResidentRuntime]:
         return list(self.items.values())
 
@@ -104,7 +120,7 @@ class MemoryResidentRuntimeController:
         self.actions.append("reconcile")
         return self._observation(runtime)
 
-    async def restart(self, runtime):
+    async def restart(self, runtime, profile):
         self.actions.append("restart")
         return self._observation(runtime)
 
@@ -374,3 +390,73 @@ def test_profile_provider_hides_disabled_and_keeps_deployment_private() -> None:
     assert profile is not None
     assert profile.deployment["image"].endswith("@sha256:real")
     assert "deployment" not in profile.model_dump()
+
+
+def test_duplicate_backend_controllers_fail_at_composition_boundary() -> None:
+    with pytest.raises(ValueError, match="backends must be unique"):
+        ResidentRuntimeService(
+            MemoryResidentRuntimeRepository(),
+            _profiles(),
+            [MemoryResidentRuntimeController(), MemoryResidentRuntimeController()],
+        )
+
+
+async def test_logs_are_authorized_and_read_through_backend_port() -> None:
+    class LogController(MemoryResidentRuntimeController, ResidentRuntimeLogReader):
+        async def logs(self, runtime, *, lines, sources, min_level):
+            assert lines == 25
+            assert sources == ("sandbox",)
+            assert min_level == "WARN"
+            return ResidentLogPage(
+                entries=[ResidentLogEntry(timestamp_ms=1, message=runtime.name)],
+                buffer_total=1,
+            )
+
+    repository = MemoryResidentRuntimeRepository()
+    service = ResidentRuntimeService(repository, _profiles(), [LogController()])
+    runtime = await service.create_record(
+        _principal(),
+        name="Muninn",
+        profile_id="ravn-openshell",
+    )
+
+    page = await service.logs(
+        _principal(),
+        runtime.id,
+        lines=25,
+        sources=("sandbox",),
+        min_level="WARN",
+    )
+
+    assert page.entries[0].message == "Muninn"
+
+
+async def test_usage_is_atomically_recorded_on_resident() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    service = ResidentRuntimeService(
+        repository,
+        _profiles(),
+        [MemoryResidentRuntimeController()],
+    )
+    principal = _principal()
+    runtime = await service.create_record(
+        principal,
+        name="Muninn",
+        profile_id="ravn-openshell",
+    )
+    runtime = runtime.model_copy(
+        update={"capabilities": [*runtime.capabilities, ResidentCapability.USAGE]}
+    )
+    await repository.update(runtime)
+
+    updated = await service.record_usage(
+        principal,
+        runtime.id,
+        tokens=123,
+        cost=0.42,
+        message_count=1,
+    )
+
+    assert updated.tokens_used == 123
+    assert float(updated.cost) == pytest.approx(0.42)
+    assert updated.message_count == 1

@@ -78,6 +78,19 @@ class PlatformRuntimePort(Protocol):
         """Delete one resident and its owned backend resources."""
         raise NotImplementedError
 
+    async def get_resident_logs(
+        self,
+        runtime_id: str,
+        *,
+        lines: int,
+        sources: tuple[str, ...],
+        min_level: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any]:
+        """Return normalized backend logs for one resident."""
+        raise NotImplementedError
+
     async def aclose(self) -> None:
         """Release transport resources."""
         raise NotImplementedError

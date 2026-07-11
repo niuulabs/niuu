@@ -314,6 +314,32 @@ class TestManagedResidentCommands:
 
         assert route.called
 
+    @respx.mock
+    async def test_logs_use_target_platform_adapter(self):
+        runtime_id = _managed_runtime()["id"]
+        route = respx.get(f"{_BASE}/api/v1/forge/resident-runtimes/{runtime_id}/logs").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "entries": [{"timestampMs": 1, "message": "PROC:LAUNCH ravn"}],
+                    "bufferTotal": 1,
+                },
+            )
+        )
+        directory = _directory()
+
+        logs = await directory.get_raven_logs(
+            runtime_id,
+            lines=25,
+            sources=("sandbox",),
+            min_level="INFO",
+            auth_headers={"x-auth-user-id": "user-a"},
+            auth_params={},
+        )
+
+        assert logs["bufferTotal"] == 1
+        assert route.calls.last.request.url.params.get("source") == "sandbox"
+
 
 class TestStandaloneMerge:
     @respx.mock

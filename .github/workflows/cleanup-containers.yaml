@@ -19,6 +19,7 @@ jobs:
         container:
           - agent
           - skuld
+          - openshell
           - devrunner
           - volundr-web
           - niuu-web

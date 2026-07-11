@@ -300,6 +300,13 @@ class ResidentProfileConfig(BaseModel):
 class ResidentRuntimesConfig(BaseModel):
     """Configured resident deployment profiles for this Volundr target."""
 
+    controllers: list[PodManagerConfig] = Field(
+        default_factory=list,
+        description=(
+            "Additional dynamically configured resident runtime controllers. "
+            "A resident-capable pod manager is registered automatically."
+        ),
+    )
     profiles: list[ResidentProfileConfig] = Field(default_factory=list)
     reconciliation_interval_seconds: float = Field(
         default=10.0,

@@ -1,3 +1,9 @@
+{{- $hasFluxController := contains "FluxPodManager" .Values.podManager.adapter -}}
+{{- range .Values.residentRuntimeControllers -}}
+{{- if contains "FluxPodManager" .adapter -}}
+{{- $hasFluxController = true -}}
+{{- end -}}
+{{- end -}}
 {{- if .Values.rbac.create -}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -6,7 +12,7 @@ metadata:
   labels:
     {{- include "volundr.labels" . | nindent 4 }}
 rules:
-  {{- if and (contains "FluxPodManager" .Values.podManager.adapter) (not .Values.rbac.clusterWide) }}
+  {{- if and $hasFluxController (not .Values.rbac.clusterWide) }}
   # Access to Flux HelmReleases (FluxPodManager only, same-namespace)
   # NOTE: If sessions run in a different namespace, enable rbac.clusterWide
   - apiGroups: ["helm.toolkit.fluxcd.io"]
@@ -71,7 +77,7 @@ metadata:
   labels:
     {{- include "volundr.labels" . | nindent 4 }}
 rules:
-  {{- if contains "FluxPodManager" .Values.podManager.adapter }}
+  {{- if $hasFluxController }}
   # Cluster-wide access to Flux HelmReleases (cross-namespace)
   - apiGroups: ["helm.toolkit.fluxcd.io"]
     resources: ["helmreleases"]

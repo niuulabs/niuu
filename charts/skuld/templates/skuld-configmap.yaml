@@ -40,6 +40,10 @@ data:
     {{- if and .Values.volundr.apiUrl (not (include "skuld.residentEnabled" .)) }}
     volundr_api_url: {{ .Values.volundr.apiUrl | quote }}
     {{- end }}
+    {{- if include "skuld.residentEnabled" . }}
+    volundr_api_url: {{ .Values.volundr.apiUrl | quote }}
+    usage_report_path: {{ printf "/api/v1/forge/resident-runtimes/%s/usage" (include "skuld.sessionId" .) | quote }}
+    {{- end }}
     service_user_id: {{ .Values.volundr.serviceUserId | default "skuld-broker" | quote }}
     service_tenant_id: {{ .Values.volundr.serviceTenantId | default "default" | quote }}
     {{- if and (include "skuld.residentEnabled" .) .Values.resident.platform.enabled }}

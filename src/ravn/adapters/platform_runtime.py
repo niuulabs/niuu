@@ -117,6 +117,34 @@ class HttpPlatformRuntimeAdapter:
         )
         response.raise_for_status()
 
+    async def get_resident_logs(
+        self,
+        runtime_id: str,
+        *,
+        lines: int,
+        sources: tuple[str, ...],
+        min_level: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any]:
+        params: list[tuple[str, str]] = [
+            *[(key, value) for key, value in auth_params.items()],
+            ("lines", str(lines)),
+            *[("source", source) for source in sources],
+        ]
+        if min_level:
+            params.append(("min_level", min_level))
+        response = await self._client.get(
+            f"/api/v1/forge/resident-runtimes/{runtime_id}/logs",
+            headers=auth_headers,
+            params=params,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("Platform resident logs returned an unexpected payload")
+        return payload
+
     async def aclose(self) -> None:
         await self._client.aclose()
 

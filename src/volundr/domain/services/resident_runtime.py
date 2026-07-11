@@ -13,12 +13,14 @@ from volundr.domain.models import (
     ResidentDeploymentProfile,
     ResidentDesiredState,
     ResidentEndpoint,
+    ResidentLogPage,
     ResidentObservedState,
     ResidentRuntime,
 )
 from volundr.domain.ports import (
     ResidentDeploymentProfileProvider,
     ResidentRuntimeController,
+    ResidentRuntimeLogReader,
     ResidentRuntimeObservation,
     ResidentRuntimeRepository,
 )
@@ -209,9 +211,10 @@ class ResidentRuntimeService:
             )
         if runtime.desired_state is not ResidentDesiredState.RUNNING:
             raise ResidentRuntimeValidationError("Only running residents can be restarted")
-        controller = self._require_controller_for_runtime(runtime)
+        profile = self._require_profile(runtime.profile_id)
+        controller = self._require_controller(profile)
         try:
-            observation = await controller.restart(runtime)
+            observation = await controller.restart(runtime, profile)
         except Exception as exc:
             await self._record_backend_failure(runtime, "RestartFailed", str(exc))
             raise ResidentRuntimeDeploymentError(
@@ -317,6 +320,63 @@ class ResidentRuntimeService:
             ) from exc
         await self._repository.delete(runtime_id)
         return existed
+
+    async def logs(
+        self,
+        principal: Principal,
+        runtime_id: UUID,
+        *,
+        lines: int,
+        sources: tuple[str, ...] = (),
+        min_level: str = "",
+    ) -> ResidentLogPage:
+        """Read backend-native logs for an authorized resident."""
+        runtime = await self.get(principal, runtime_id)
+        if ResidentCapability.LOGS not in runtime.capabilities:
+            raise ResidentRuntimeValidationError(
+                f"Resident profile {runtime.profile_id} does not provide logs"
+            )
+        controller = self._require_controller_for_runtime(runtime)
+        if not isinstance(controller, ResidentRuntimeLogReader):
+            raise ResidentRuntimeDeploymentError(
+                f"Resident backend does not implement logs: {runtime.backend.value}"
+            )
+        try:
+            return await controller.logs(
+                runtime,
+                lines=lines,
+                sources=sources,
+                min_level=min_level,
+            )
+        except Exception as exc:
+            raise ResidentRuntimeDeploymentError(
+                f"Failed to read resident {runtime.name} logs: {exc}"
+            ) from exc
+
+    async def record_usage(
+        self,
+        principal: Principal,
+        runtime_id: UUID,
+        *,
+        tokens: int,
+        cost: float,
+        message_count: int,
+    ) -> ResidentRuntime:
+        """Atomically add real engine usage to an authorized resident."""
+        runtime = await self.get(principal, runtime_id)
+        if ResidentCapability.USAGE not in runtime.capabilities:
+            raise ResidentRuntimeValidationError(
+                f"Resident profile {runtime.profile_id} does not report usage"
+            )
+        updated = await self._repository.add_usage(
+            runtime.id,
+            tokens=tokens,
+            cost=cost,
+            message_count=message_count,
+        )
+        if updated is None:
+            raise ResidentRuntimeNotFoundError(f"Resident runtime not found: {runtime_id}")
+        return updated
 
     def _require_profile(self, profile_id: str) -> ResidentDeploymentProfile:
         profile = self._profiles.get(profile_id)

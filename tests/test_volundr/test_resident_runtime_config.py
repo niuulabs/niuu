@@ -36,6 +36,31 @@ def test_settings_parse_resident_profiles() -> None:
     ]
 
 
+def test_settings_parse_additional_resident_controllers() -> None:
+    settings = Settings.model_validate(
+        {
+            "resident_runtimes": {
+                "controllers": [
+                    {
+                        "adapter": (
+                            "volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager"
+                        ),
+                        "kwargs": {"gateway_endpoint": "openshell.example.test:443"},
+                        "secret_kwargs_env": {
+                            "client_secret": "RESIDENT_CONTROLLER_0_SK_CLIENT_SECRET"
+                        },
+                    }
+                ]
+            }
+        }
+    )
+
+    controller = settings.resident_runtimes.controllers[0]
+    assert controller.adapter.endswith("OpenShellGatewayPodManager")
+    assert controller.kwargs["gateway_endpoint"] == "openshell.example.test:443"
+    assert controller.secret_kwargs_env["client_secret"].startswith("RESIDENT_CONTROLLER_0")
+
+
 def test_duplicate_profile_ids_fail_configuration() -> None:
     with pytest.raises(ValidationError, match="ids must be unique"):
         ResidentRuntimesConfig.model_validate(
@@ -63,9 +88,13 @@ def test_chart_contains_profile_config_and_dual_migration() -> None:
     configmap = (root / "charts/volundr/templates/configmap.yaml").read_text()
     migrations = (root / "charts/volundr/templates/migrations-configmap.yaml").read_text()
     migration = (root / "migrations/000055_resident_runtimes.up.sql").read_text()
+    usage_migration = (root / "migrations/000056_resident_usage.up.sql").read_text()
 
     assert "resident_runtimes:" in configmap
     assert "residentRuntimeProfiles" in configmap
+    assert "residentRuntimeControllers" in configmap
     assert "000055_resident_runtimes.up.sql" in migrations
     assert "CREATE TABLE IF NOT EXISTS resident_runtimes" in migration
     assert "CREATE TABLE IF NOT EXISTS resident_runtimes" in migrations
+    assert "ADD COLUMN IF NOT EXISTS tokens_used" in usage_migration
+    assert "000056_resident_usage.up.sql" in migrations

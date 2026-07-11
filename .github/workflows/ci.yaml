@@ -74,7 +74,9 @@ jobs:
               regex = re.compile(pattern)
               return any(regex.search(path) for path in changed)
 
-          all_containers = ["agent", "skuld", "devrunner", "volundr-web", "niuu-web", "niuu"]
+          all_containers = [
+              "agent", "skuld", "openshell", "devrunner", "volundr-web", "niuu-web", "niuu"
+          ]
 
           if full_tier:
               outputs = {
@@ -92,6 +94,7 @@ jobs:
               container_triggers = {
                   "agent": r"^containers/agent/|^(src/|pyproject\.toml$|uv\.lock$)",
                   "skuld": r"^containers/skuld/|^(src/|pyproject\.toml$|uv\.lock$)",
+                  "openshell": r"^containers/openshell/|^(src/|pyproject\.toml$|uv\.lock$)",
                   "devrunner": r"^containers/devrunner/",
                   "volundr-web": r"^containers/volundr-web/|^web-next/",
                   "niuu-web": r"^containers/niuu-web/|^web-next/",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -62,6 +63,9 @@ def _row(runtime: ResidentRuntime) -> dict:
         "endpoints": [endpoint.model_dump(mode="json") for endpoint in runtime.endpoints],
         "capabilities": [capability.value for capability in runtime.capabilities],
         "conditions": [condition.model_dump(mode="json") for condition in runtime.conditions],
+        "message_count": runtime.message_count,
+        "tokens_used": runtime.tokens_used,
+        "cost": runtime.cost,
         "created_at": runtime.created_at,
         "updated_at": runtime.updated_at,
     }
@@ -123,3 +127,24 @@ async def test_reconciliation_list_excludes_deleted_intent() -> None:
 
     assert await repository.list_for_reconciliation() == [runtime]
     assert "desired_state <> 'deleted'" in pool.fetch.await_args.args[0]
+
+
+async def test_add_usage_is_atomic_and_returns_updated_runtime() -> None:
+    runtime = _runtime().model_copy(
+        update={"message_count": 1, "tokens_used": 42, "cost": Decimal("0.12")}
+    )
+    pool = AsyncMock()
+    pool.fetchrow.return_value = _row(runtime)
+    repository = PostgresResidentRuntimeRepository(pool)
+
+    updated = await repository.add_usage(
+        runtime.id,
+        tokens=42,
+        cost=0.12,
+        message_count=1,
+    )
+
+    assert updated == runtime
+    query = pool.fetchrow.await_args.args[0]
+    assert "tokens_used = tokens_used + $2" in query
+    assert "message_count = message_count + $4" in query

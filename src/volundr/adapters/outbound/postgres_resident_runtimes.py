@@ -126,6 +126,31 @@ class PostgresResidentRuntimeRepository(ResidentRuntimeRepository):
         )
         return runtime
 
+    async def add_usage(
+        self,
+        runtime_id: UUID,
+        *,
+        tokens: int,
+        cost: float,
+        message_count: int,
+    ) -> ResidentRuntime | None:
+        row = await self._pool.fetchrow(
+            """
+            UPDATE resident_runtimes
+            SET tokens_used = tokens_used + $2,
+                cost = cost + $3,
+                message_count = message_count + $4,
+                updated_at = NOW()
+            WHERE id = $1
+            RETURNING *
+            """,
+            runtime_id,
+            tokens,
+            cost,
+            message_count,
+        )
+        return self._row_to_runtime(row) if row is not None else None
+
     async def list_for_reconciliation(self) -> list[ResidentRuntime]:
         rows = await self._pool.fetch(
             """
@@ -170,6 +195,9 @@ class PostgresResidentRuntimeRepository(ResidentRuntimeRepository):
             endpoints=[ResidentEndpoint.model_validate(endpoint) for endpoint in endpoints],
             capabilities=[ResidentCapability(capability) for capability in capabilities],
             conditions=[ResidentCondition.model_validate(condition) for condition in conditions],
+            message_count=row.get("message_count", 0),
+            tokens_used=row.get("tokens_used", 0),
+            cost=row.get("cost", 0),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

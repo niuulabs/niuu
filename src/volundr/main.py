@@ -203,6 +203,28 @@ def _create_pod_manager(settings: Settings) -> "PodManager":  # noqa: F821
     return instance
 
 
+def _create_resident_controllers(
+    settings: Settings,
+    pod_manager: "PodManager",  # noqa: F821
+) -> list[ResidentRuntimeController]:
+    """Create configured resident backend adapters through the shared port."""
+    controllers: list[ResidentRuntimeController] = []
+    if isinstance(pod_manager, ResidentRuntimeController):
+        controllers.append(pod_manager)
+
+    for config in settings.resident_runtimes.controllers:
+        cls = import_class(config.adapter)
+        kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
+        instance = cls(**kwargs)
+        if not isinstance(instance, ResidentRuntimeController):
+            raise TypeError(
+                f"Resident controller {config.adapter} must implement ResidentRuntimeController"
+            )
+        controllers.append(instance)
+        logger.info("Resident controller: %s", config.adapter.rsplit(".", 1)[-1])
+    return controllers
+
+
 def _runtime_backend(settings: Settings) -> str:
     adapter = settings.pod_manager.adapter.rsplit(".", 1)[-1].lower()
     if "openshell" in adapter:
@@ -714,9 +736,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.persona_registry = persona_registry
             workload_identity_service = WorkloadIdentityService(settings.workload_identity)
             pod_manager = _create_pod_manager(settings)
-            resident_controllers = (
-                [pod_manager] if isinstance(pod_manager, ResidentRuntimeController) else []
-            )
+            resident_controllers = _create_resident_controllers(settings, pod_manager)
             resident_runtime_service = ResidentRuntimeService(
                 resident_runtime_repository,
                 resident_profile_provider,
@@ -726,6 +746,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 pod_manager.set_session_repository(repository)
             if hasattr(pod_manager, "set_workload_token_issuer"):
                 pod_manager.set_workload_token_issuer(workload_identity_service)
+            for controller in resident_controllers:
+                if hasattr(controller, "set_resident_runtime_repository"):
+                    controller.set_resident_runtime_repository(resident_runtime_repository)
+                if controller is not pod_manager and hasattr(
+                    controller, "set_workload_token_issuer"
+                ):
+                    controller.set_workload_token_issuer(workload_identity_service)
 
             # Inject Skuld port registry for mini mode proxy routing
             skuld_reg = None
@@ -838,6 +865,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Inject credential store into pod manager for envSecrets resolution
             if hasattr(pod_manager, "set_credential_store"):
                 pod_manager.set_credential_store(credential_store)
+            for controller in resident_controllers:
+                if controller is not pod_manager and hasattr(controller, "set_credential_store"):
+                    controller.set_credential_store(credential_store)
             if hasattr(pod_manager, "set_persona_registry"):
                 pod_manager.set_persona_registry(persona_registry)
 
@@ -1085,8 +1115,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.include_router(forge_router)
             app.include_router(create_resident_runtimes_router(resident_runtime_service))
             app.state.resident_runtime_service = resident_runtime_service
-            if isinstance(pod_manager, OpenShellCredentialGrantPort):
-                app.include_router(create_openshell_credentials_router(pod_manager))
+            credential_grant_brokers = {
+                id(adapter): adapter
+                for adapter in [pod_manager, *resident_controllers]
+                if isinstance(adapter, OpenShellCredentialGrantPort)
+            }
+            if len(credential_grant_brokers) > 1:
+                raise RuntimeError(
+                    "Only one OpenShell credential grant broker may be configured per target"
+                )
+            if credential_grant_brokers:
+                app.include_router(
+                    create_openshell_credentials_router(
+                        next(iter(credential_grant_brokers.values()))
+                    )
+                )
 
             app.include_router(catalog.router)
 
@@ -1443,6 +1486,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await event_ingestion.close_all()
                 if hasattr(pod_manager, "close"):
                     await pod_manager.close()
+                for controller in resident_controllers:
+                    if controller is not pod_manager and hasattr(controller, "close"):
+                        await controller.close()
                 if hasattr(gateway_adapter, "close"):
                     await gateway_adapter.close()
                 await git_registry.close()

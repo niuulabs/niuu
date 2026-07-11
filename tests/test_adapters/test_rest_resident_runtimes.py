@@ -17,6 +17,8 @@ from volundr.domain.models import (
     ResidentCapability,
     ResidentDeploymentProfile,
     ResidentEngine,
+    ResidentLogEntry,
+    ResidentLogPage,
     ResidentRuntime,
 )
 from volundr.domain.services.resident_runtime import (
@@ -104,6 +106,78 @@ def test_hidden_runtime_returns_not_found() -> None:
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Resident runtime not found"
+
+
+def test_reads_normalized_resident_logs() -> None:
+    runtime_id = uuid4()
+    service = Mock()
+    service.logs = AsyncMock(
+        return_value=ResidentLogPage(
+            entries=[
+                ResidentLogEntry(
+                    timestamp_ms=1234,
+                    level="OCSF",
+                    source="sandbox",
+                    message="PROC:LAUNCH ravn",
+                )
+            ],
+            buffer_total=1,
+        )
+    )
+
+    response = _client(service).get(
+        f"/api/v1/forge/resident-runtimes/{runtime_id}/logs",
+        params=[("lines", "25"), ("source", "sandbox"), ("min_level", "INFO")],
+    )
+
+    assert response.status_code == 200
+    assert response.json()["entries"][0]["message"] == "PROC:LAUNCH ravn"
+    service.logs.assert_awaited_once_with(
+        _PRINCIPAL,
+        runtime_id,
+        lines=25,
+        sources=("sandbox",),
+        min_level="INFO",
+    )
+
+
+def test_records_resident_usage() -> None:
+    runtime = ResidentRuntime(
+        id=uuid4(),
+        owner_id="user-a",
+        tenant_id="tenant-a",
+        name="Muninn",
+        backend=ResidentBackend.OPENSHELL,
+        engine=ResidentEngine.RAVN,
+        profile_id="ravn-openshell",
+        capabilities=[ResidentCapability.USAGE],
+        tokens_used=42,
+        message_count=1,
+        cost=0.12,
+    )
+    service = Mock()
+    service.record_usage = AsyncMock(return_value=runtime)
+
+    response = _client(service).post(
+        f"/api/v1/forge/resident-runtimes/{runtime.id}/usage",
+        json={
+            "tokens": 42,
+            "cost": 0.12,
+            "message_count": 1,
+            "provider": "cloud",
+            "model": "gpt-5.6-sol",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["tokensUsed"] == 42
+    service.record_usage.assert_awaited_once_with(
+        _PRINCIPAL,
+        runtime.id,
+        tokens=42,
+        cost=0.12,
+        message_count=1,
+    )
 
 
 def test_create_and_lifecycle_routes_use_authenticated_service() -> None:

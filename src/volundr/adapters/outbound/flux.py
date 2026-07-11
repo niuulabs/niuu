@@ -563,7 +563,11 @@ class FluxPodManager(PodManager, ResidentRuntimeController):
             conditions=self._normalized_conditions(helmrelease, deployment),
         )
 
-    async def restart(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
+    async def restart(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
         restarted_at = datetime.now(UTC).isoformat()
         await self._patch_helmrelease(
             self._resident_release_name(runtime),

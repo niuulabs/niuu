@@ -1579,6 +1579,28 @@ class ResidentCondition(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
+class ResidentLogEntry(BaseModel):
+    """One normalized backend log entry for a resident runtime."""
+
+    timestamp_ms: int = Field(ge=0)
+    level: str = ""
+    source: str = ""
+    target: str = ""
+    message: str = ""
+    fields: dict[str, str] = Field(default_factory=dict)
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class ResidentLogPage(BaseModel):
+    """Bounded resident log result returned by a backend adapter."""
+
+    entries: list[ResidentLogEntry] = Field(default_factory=list)
+    buffer_total: int = Field(default=0, ge=0)
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
 class ResidentDeploymentProfile(BaseModel):
     """Operator-owned valid resident backend and engine combination."""
 
@@ -1614,6 +1636,9 @@ class ResidentRuntime(BaseModel):
     endpoints: list[ResidentEndpoint] = Field(default_factory=list)
     capabilities: list[ResidentCapability] = Field(default_factory=list)
     conditions: list[ResidentCondition] = Field(default_factory=list)
+    message_count: int = Field(default=0, ge=0)
+    tokens_used: int = Field(default=0, ge=0)
+    cost: Decimal = Field(default=Decimal("0"), ge=0)
     created_at: datetime = Field(default_factory=_utc_now)
     updated_at: datetime = Field(default_factory=_utc_now)
 

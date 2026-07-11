@@ -196,6 +196,26 @@ class ResidentDirectory:
             auth_params,
         )
 
+    async def get_raven_logs(
+        self,
+        ravn_id: str,
+        *,
+        lines: int,
+        sources: tuple[str, ...],
+        min_level: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any]:
+        """Return target-native logs for one managed resident."""
+        return await self._platform.get_resident_logs(
+            ravn_id,
+            lines=lines,
+            sources=sources,
+            min_level=min_level,
+            auth_headers=auth_headers,
+            auth_params=auth_params,
+        )
+
     async def list_sessions(
         self,
         principal: Principal,
@@ -394,6 +414,9 @@ class ResidentDirectory:
             "backend_ref": runtime.get("backend_ref") or runtime.get("backendRef") or {},
             "capabilities": runtime.get("capabilities") or [],
             "conditions": runtime.get("conditions") or [],
+            "message_count": runtime.get("message_count") or runtime.get("messageCount") or 0,
+            "tokens_used": runtime.get("tokens_used") or runtime.get("tokensUsed") or 0,
+            "cost": runtime.get("cost") or 0,
             "managed": True,
         }
 
@@ -411,6 +434,9 @@ class ResidentDirectory:
             "title": raven["resident_name"],
             "engine": raven["engine"],
             "capabilities": raven["capabilities"],
+            "message_count": raven["message_count"],
+            "tokens_used": raven["tokens_used"],
+            "cost": raven["cost"],
         }
 
     @staticmethod

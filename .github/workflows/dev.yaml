@@ -170,7 +170,7 @@ jobs:
       packages: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
-      containers: '["agent","skuld","devrunner","volundr-web","niuu-web","niuu"]'
+      containers: '["agent","skuld","openshell","devrunner","volundr-web","niuu-web","niuu"]'
       platforms: '["amd64","arm64"]'
       tag-prefix: ${{ github.sha }}
       manifest-tags: "dev dev-${{ github.sha }}"
@@ -194,7 +194,7 @@ jobs:
       security-events: write
     uses: ./.github/workflows/reusable-container-scan.yaml
     with:
-      containers: '["agent","skuld","devrunner","volundr-web","niuu-web","niuu"]'
+      containers: '["agent","skuld","openshell","devrunner","volundr-web","niuu-web","niuu"]'
       tag: dev
 
   # ---------------------------------------------------------------------------
