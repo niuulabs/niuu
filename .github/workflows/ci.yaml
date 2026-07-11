@@ -597,9 +597,9 @@ jobs:
       - name: Verify Volundr pods are ready
         run: |
           output="$(kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=volundr --timeout=60s 2>&1)" || {
-            previous_logs="$(kubectl logs -l app.kubernetes.io/name=volundr --all-containers=true --previous --tail=200 --prefix 2>&1 || true)"
+            previous_logs="$(kubectl logs -l app.kubernetes.io/name=volundr --all-containers=true --previous --tail=80 2>&1 || true)"
             printf "%s\n" "$previous_logs"
-            previous_annotation="$(printf "%s" "$previous_logs" | tail -c 7000 | sed -z "s/%/%25/g; s/\n/%0A/g; s/\r/%0D/g")"
+            previous_annotation="$(printf "%s" "$previous_logs" | tail -c 3500 | sed -z "s/%/%25/g; s/\n/%0A/g; s/\r/%0D/g")"
             echo "::error title=Volundr previous container traceback::${previous_annotation}"
             diagnostics="$(
               kubectl get pods -l app.kubernetes.io/name=volundr -o wide 2>&1
