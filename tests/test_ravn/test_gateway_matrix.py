@@ -95,24 +95,13 @@ async def test_start_returns_early_when_no_token(caplog):
 
 
 # ---------------------------------------------------------------------------
-# start() — e2e warning
+# Configuration validation
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_start_warns_for_e2e(monkeypatch, caplog):
-    import logging
-
-    monkeypatch.setenv("MX_TOKEN", "tok")
-    cfg = _make_config(e2e=True)
-    adapter = MatrixGateway(cfg, _make_gateway_mock())
-
-    with caplog.at_level(logging.WARNING):
-        await adapter.start()
-
-    warning_text = caplog.text.lower()
-    assert "e2e" in warning_text or "encryption" in warning_text
-    await adapter.stop()
+def test_e2e_is_rejected_instead_of_sending_plaintext():
+    with pytest.raises(ValueError, match="e2e"):
+        _make_config(e2e=True)
 
 
 # ---------------------------------------------------------------------------

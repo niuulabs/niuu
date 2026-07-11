@@ -1,0 +1,717 @@
+"""Runtime adapter and infrastructure builders for the Ravn CLI."""
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import inspect
+import logging
+import os
+from collections.abc import Awaitable
+from pathlib import Path
+from typing import Any
+
+from ravn.config import Settings, ToolGroupConfig
+from ravn.ports.executor import ExecutorPort
+
+logger = logging.getLogger(__name__)
+
+def _import_class(dotted_path: str) -> type:
+    """Dynamically import a class from a fully-qualified dotted path."""
+
+    module_path, class_name = dotted_path.rsplit(".", 1)
+    module = importlib.import_module(module_path)
+    return getattr(module, class_name)
+
+
+def _inject_secrets(kwargs: dict[str, Any], secret_map: dict[str, str]) -> dict[str, Any]:
+    """Resolve env var names from *secret_map* and merge into *kwargs*."""
+    merged = dict(kwargs)
+    for kwarg_name, env_var in secret_map.items():
+        value = os.environ.get(env_var, "")
+        if value:
+            merged[kwarg_name] = value
+    return merged
+
+
+def _resolve_workspace(settings: Settings) -> Path:
+    """Return the workspace root from config, defaulting to cwd."""
+    ws = settings.permission.workspace_root
+    return Path(ws).resolve() if ws else Path.cwd()
+
+
+def _resident_ravn_state_dir(
+    workspace: Path, settings: Settings | None = None
+) -> Path:
+    """Return the writable resident Ravn state directory for skills/metadata."""
+    override = (settings or Settings()).state_dir.strip()
+    if override:
+        return Path(override).expanduser()
+    if os.access(workspace, os.W_OK):
+        return workspace / ".ravn"
+    return Path.home() / ".ravn"
+
+
+def _attach_signal_build_tool(
+    agent: Any,
+    workspace: Path,
+    *,
+    triggered_by: str | None,
+    settings: Settings,
+    publisher: Any | None = None,
+    drive_loop: Any | None = None,
+) -> Any:
+    """Attach build_tool to RavnAgent signal investigations when supported."""
+    if not triggered_by or not triggered_by.startswith("signal:"):
+        return agent
+
+    def _investigation_context() -> str:
+        # Lazily read the running task's prompt at build time — the drive loop
+        # sets the current-task contextvar while the session executes, so a
+        # filed review carries the exact ticket the resident was working.
+        task = drive_loop.current_task() if drive_loop is not None else None
+        return getattr(task, "initiative_context", "") if task is not None else ""
+
+    try:
+        from ravn.adapters.tools.build_tool import attach_build_tool  # noqa: PLC0415
+        from ravn.odin.review import JsonReviewStore, ReviewRequester  # noqa: PLC0415
+        from ravn.valkyrie_evolution.learned_tools import learned_tool_storage  # noqa: PLC0415
+
+        state_dir = _resident_ravn_state_dir(workspace, settings)
+        valkyrie_id = settings.mesh.own_peer_id or f"valkyrie:{settings.environment.id}"
+        review_requester = (
+            ReviewRequester(
+                publisher=publisher,
+                store=JsonReviewStore(state_dir / "review_outbox.json"),
+                source=valkyrie_id,
+            )
+            if publisher is not None
+            else None
+        )
+        code_dir, artifacts_dir = learned_tool_storage(state_dir)
+        realm_config = _resolve_realm_build_config(settings)
+        attach_build_tool(
+            agent,
+            tools_dir=code_dir,
+            artifacts_dir=artifacts_dir,
+            publisher=publisher,
+            review_requester=review_requester,
+            autonomy_mode=realm_config.autonomy_mode,
+            environment_id=settings.environment.id,
+            valkyrie_id=valkyrie_id,
+            flock_id=settings.environment.flocks[0] if settings.environment.flocks else "",
+            domain=settings.environment.type,
+            execution_backend=settings.resident_evolution.learned_tool_execution_backend,
+            workspace_root=workspace,
+            build_backend=_build_tool_build_backend(
+                settings, workflow_selector=realm_config.workflow_selector
+            ),
+            investigation_context=_investigation_context,
+            max_repair_attempts=settings.resident_evolution.build_repair_attempts,
+            flock_confidence=settings.resident_evolution.self_registered_tool_confidence,
+        )
+    except TypeError:
+        logger.debug("build_tool not attached: executor does not support dynamic tools")
+    except Exception as exc:
+        logger.warning("Failed to attach build_tool to signal investigation: %s", exc)
+    return agent
+
+
+def _build_tool_build_backend(
+    settings: Settings,
+    *,
+    workflow_selector: dict[str, Any] | None = None,
+) -> Any | None:
+    """Construct the configured tool build adapter, or None for inline authoring.
+
+    ``workflow_selector``, when provided (resolved from a realm build grant),
+    overrides the static ``tool_builder_workflow`` config for this backend.
+    """
+    cfg = settings.resident_evolution
+    if not cfg.tool_build_adapter:
+        return None
+    cls = _import_class(cfg.tool_build_adapter)
+    kwargs = dict(cfg.tool_build_kwargs)
+    selector_dict = workflow_selector
+    if selector_dict is None:
+        static_selector = cfg.tool_builder_workflow
+        if static_selector.names or static_selector.tags:
+            selector_dict = static_selector.model_dump()
+    if selector_dict and _constructor_accepts_kwarg(cls, "workflow_selector"):
+        kwargs["workflow_selector"] = selector_dict
+    return cls(**kwargs)
+
+
+class _RealmBuildConfig:
+    """Effective tool-build config after realm-grant resolution.
+
+    ``workflow_selector`` is ``None`` when no realm grant pins a workflow (the
+    static ``tool_builder_workflow`` then applies); ``autonomy_mode`` always
+    carries the effective mode (realm-derived or the static default).
+    """
+
+    def __init__(
+        self,
+        *,
+        autonomy_mode: str,
+        workflow_selector: dict[str, Any] | None,
+    ) -> None:
+        self.autonomy_mode = autonomy_mode
+        self.workflow_selector = workflow_selector
+
+
+def _run_coro_blocking(coro: Awaitable[Any]) -> Any:
+    """Run a coroutine to completion from sync wiring code, loop-safe.
+
+    Uses ``asyncio.run`` when no loop is running (plain CLI). Inside a running
+    loop — the daemon's agent factory is called from the async drive loop — a
+    dedicated thread runs the coroutine on its own loop, because
+    ``asyncio.run`` would raise RuntimeError there and realm resolution would
+    silently degrade to static config.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)  # type: ignore[arg-type]
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()  # type: ignore[arg-type]
+
+
+#: RealmClients cached per (base_url + auth kwargs): the daemon's agent factory
+#: resolves realm config per task, and a fresh client per call would mean a
+#: fresh auth adapter — and a token exchange — per task. The auth adapter
+#: caches its token with expiry skew, so a reused client only re-exchanges on
+#: expiry. Bounded by the number of distinct configs in one process (~1).
+_REALM_CLIENT_CACHE: dict[tuple, Any] = {}
+
+
+def _realm_client_for(settings: Settings) -> Any:
+    """The canonical RealmClient factory (cached), or None when unusable."""
+    from ravn.adapters.realm import RealmClient, build_realm_client_kwargs  # noqa: PLC0415
+
+    cfg = settings.resident_evolution
+    base_url = cfg.realm_api_base_url or str(cfg.tool_build_kwargs.get("base_url") or "")
+    if not base_url:
+        logger.warning(
+            "realm_slug %r is set but no realm_api_base_url or "
+            "tool_build_kwargs['base_url'] is configured; using static tool-build config",
+            cfg.realm_slug,
+        )
+        return None
+    auth_kwargs = build_realm_client_kwargs(
+        realm_api_kwargs=cfg.realm_api_kwargs,
+        tool_build_kwargs=cfg.tool_build_kwargs,
+    )
+    cache_key = (base_url, tuple(sorted((k, str(v)) for k, v in auth_kwargs.items())))
+    client = _REALM_CLIENT_CACHE.get(cache_key)
+    if client is None:
+        client = RealmClient(base_url=base_url, **auth_kwargs)
+        _REALM_CLIENT_CACHE[cache_key] = client
+    return client
+
+
+def _resolve_realm_build_config(settings: Settings) -> _RealmBuildConfig:
+    """Resolve tool-build workflow + autonomy from the realm's build trust grant.
+
+    Falls back to static config when ``realm_slug`` is empty, when the realm is
+    unreachable (logs WARNING — a realm outage must not brick the resident), or
+    when the realm has no build grant. NEVER pretends a grant exists. Reaches
+    the realm API at the same Volundr base_url Ravn uses for Forge sessions.
+    """
+    cfg = settings.resident_evolution
+    static = _RealmBuildConfig(autonomy_mode=cfg.autonomy_mode, workflow_selector=None)
+    if not cfg.realm_slug:
+        logger.info("no realm_slug configured; using static tool-build config")
+        return static
+
+    client = _realm_client_for(settings)
+    if client is None:
+        return static
+
+    try:
+        grant = _run_coro_blocking(client.resolve_build_grant(cfg.realm_slug))
+    except Exception as exc:  # noqa: BLE001 — realm outage must not brick the resident
+        logger.warning(
+            "realm %s build-grant resolution failed (%s); using static tool-build config",
+            cfg.realm_slug,
+            exc,
+        )
+        return static
+
+    if grant is None:
+        logger.info(
+            "realm %s has no build grant; using static tool-build config",
+            cfg.realm_slug,
+        )
+        return static
+
+    from ravn.adapters.realm import (  # noqa: PLC0415
+        autonomy_mode_for_trust_level,
+        workflow_selector_from_grant,
+    )
+
+    trust_table = cfg.trust_level_autonomy_table
+    autonomy_mode = autonomy_mode_for_trust_level(
+        grant.level,
+        autonomous_threshold=trust_table.autonomous,
+        yolo_threshold=trust_table.yolo,
+    )
+    workflow_selector = workflow_selector_from_grant(grant)
+    logger.info(
+        "realm %s build grant resolved: level=%d autonomy_mode=%s workflow_selector=%s",
+        cfg.realm_slug,
+        grant.level,
+        autonomy_mode,
+        workflow_selector,
+    )
+    return _RealmBuildConfig(
+        autonomy_mode=autonomy_mode,
+        workflow_selector=workflow_selector,
+    )
+
+
+def _constructor_accepts_kwarg(cls: type, name: str) -> bool:
+    signature = inspect.signature(cls)
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if parameter.name == name:
+            return True
+    return False
+
+# ---------------------------------------------------------------------------
+# Builder: LLM
+# ---------------------------------------------------------------------------
+
+
+def _build_llm(settings: Settings) -> Any:
+    """Build the LLM adapter (with optional fallback chain).
+
+    The primary adapter is loaded dynamically from ``llm.provider.adapter``
+    (defaults to ``AnthropicAdapter``).  Anthropic-specific defaults
+    (``api_key``, ``base_url``) are injected automatically when the default
+    adapter is used.
+    """
+    from ravn.ports.llm import LLMPort
+
+    prov = settings.llm.provider
+    cls = _import_class(prov.adapter)
+    kwargs = _inject_secrets(dict(prov.kwargs), prov.secret_kwargs_env)
+
+    kwargs.setdefault("model", settings.effective_model())
+    kwargs.setdefault("max_tokens", settings.effective_max_tokens())
+    kwargs.setdefault("max_retries", settings.llm.max_retries)
+    kwargs.setdefault("retry_base_delay", settings.llm.retry_base_delay)
+    kwargs.setdefault("timeout", settings.llm.timeout)
+
+    primary: LLMPort = cls(**kwargs)
+
+    if not settings.llm.fallbacks:
+        return primary
+
+    from ravn.adapters.llm.fallback import FallbackLLMAdapter
+
+    providers: list[LLMPort] = [primary]
+    for fb in settings.llm.fallbacks:
+        fb_cls = _import_class(fb.adapter)
+        fb_kwargs = _inject_secrets(dict(fb.kwargs), fb.secret_kwargs_env)
+        providers.append(fb_cls(**fb_kwargs))
+
+    return FallbackLLMAdapter(providers=providers)
+
+
+def _build_executor(
+    persona_config: Any | None = None,
+    settings: Settings | None = None,
+) -> ExecutorPort:
+    """Build the runtime-selected executor adapter.
+
+    Persona-level runtime overrides win so mixed-provider workflows can run
+    different transports in one flock. Session/workload transport settings are
+    used as the default when a persona does not override them.
+    """
+    loaded_settings = settings or Settings()
+    adapter_path = "ravn.adapters.executors.agent.AgentExecutor"
+    kwargs: dict[str, Any] = {}
+
+    executor_cfg = getattr(persona_config, "executor", None)
+    if executor_cfg is not None and getattr(executor_cfg, "adapter", ""):
+        adapter_path = str(executor_cfg.adapter)
+        raw_kwargs = getattr(executor_cfg, "kwargs", {})
+        if isinstance(raw_kwargs, dict):
+            kwargs = dict(raw_kwargs)
+    else:
+        runtime_transport_adapter = (
+            loaded_settings.runtime_executor.transport_adapter.strip()
+        )
+        if runtime_transport_adapter:
+            adapter_path = "ravn.adapters.executors.cli.CliTransportExecutor"
+            kwargs = {"transport_adapter": runtime_transport_adapter}
+            transport_kwargs = _runtime_cli_transport_kwargs(
+                runtime_transport_adapter, loaded_settings
+            )
+            if transport_kwargs:
+                kwargs["transport_kwargs"] = transport_kwargs
+
+    cls = _import_class(adapter_path)
+    return cls(**kwargs)
+
+
+def _runtime_cli_transport_kwargs(
+    transport_adapter: str,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """Return explicit transport kwargs advertised by the runtime environment."""
+    if transport_adapter != "skuld.transports.codex_ws.CodexWebSocketTransport":
+        return {}
+
+    config = (settings or Settings()).runtime_executor
+    kwargs: dict[str, Any] = {}
+    if config.skip_permissions is not None:
+        kwargs["skip_permissions"] = config.skip_permissions
+    if config.approval_policy:
+        kwargs["approval_policy"] = config.approval_policy
+    if config.sandbox:
+        kwargs["sandbox"] = config.sandbox
+
+    return kwargs
+
+
+def _transport_mcp_servers(settings: Settings) -> list[dict[str, Any]]:
+    """Serialize enabled MCP server configs for CLI transports."""
+    servers: list[dict[str, Any]] = []
+    for server in settings.mcp_servers:
+        if isinstance(server, dict):
+            enabled = bool(server.get("enabled", True))
+            if not enabled:
+                continue
+            transport = str(server.get("transport") or server.get("type") or "stdio")
+            servers.append(
+                {
+                    "name": str(server.get("name") or ""),
+                    "type": transport,
+                    "command": str(server.get("command") or ""),
+                    "args": list(server.get("args") or []),
+                    "env": dict(server.get("env") or {}),
+                    "url": str(server.get("url") or ""),
+                }
+            )
+            continue
+        servers.append(
+            {
+                "name": server.name,
+                "type": server.transport,
+                "command": server.command,
+                "args": list(server.args),
+                "env": dict(server.env),
+                "url": server.url,
+            }
+        )
+    return servers
+
+
+def _uses_cli_transport_runtime(settings: Settings | None = None) -> bool:
+    """Return True when the daemon is configured to execute turns via CLI transport."""
+    return bool((settings or Settings()).runtime_executor.transport_adapter.strip())
+
+
+def _uses_cli_transport_executor(
+    persona_config: Any | None = None,
+    settings: Settings | None = None,
+) -> bool:
+    """Return True when the effective executor is the CLI transport wrapper."""
+    executor_cfg = getattr(persona_config, "executor", None)
+    adapter_path = str(getattr(executor_cfg, "adapter", "") or "").strip()
+    if adapter_path:
+        return adapter_path == "ravn.adapters.executors.cli.CliTransportExecutor"
+    return _uses_cli_transport_runtime(settings)
+
+
+# ---------------------------------------------------------------------------
+# Builder: Memory + Embedding
+# ---------------------------------------------------------------------------
+
+
+def _build_memory(settings: Settings, llm: Any = None) -> Any:
+    """Build the memory adapter (SQLite or Postgres), or None."""
+    backend = settings.memory.backend
+
+    if backend in {"", "none", "disabled", "off"}:
+        return None
+
+    embedding_port = None
+    if settings.embedding.enabled:
+        try:
+            cls = _import_class(settings.embedding.adapter)
+            kwargs = _inject_secrets(
+                settings.embedding.kwargs,
+                settings.embedding.secret_kwargs_env,
+            )
+            embedding_port = cls(**kwargs)
+        except Exception as exc:
+            logger.warning("Failed to load embedding adapter: %s — falling back to FTS-only", exc)
+
+    adapter = None
+
+    if backend == "sqlite":
+        from ravn.adapters.memory.sqlite import SqliteMemoryAdapter
+
+        adapter = SqliteMemoryAdapter(
+            path=settings.memory.path,
+            max_retries=settings.memory.max_retries,
+            min_jitter_ms=settings.memory.min_retry_jitter_ms,
+            max_jitter_ms=settings.memory.max_retry_jitter_ms,
+            checkpoint_interval=settings.memory.checkpoint_interval,
+            prefetch_budget=settings.memory.prefetch_budget,
+            prefetch_limit=settings.memory.prefetch_limit,
+            prefetch_min_relevance=settings.memory.prefetch_min_relevance,
+            recency_half_life_days=settings.memory.recency_half_life_days,
+            session_search_truncate_chars=settings.memory.session_search_truncate_chars,
+            embedding_port=embedding_port,
+            rrf_k=settings.embedding.rrf_k,
+            semantic_candidate_limit=settings.embedding.semantic_candidate_limit,
+        )
+
+    elif backend == "postgres":
+        from ravn.adapters.memory.postgres import PostgresMemoryAdapter
+
+        dsn = os.environ.get(settings.memory.dsn_env, "") if settings.memory.dsn_env else ""
+        dsn = dsn or settings.memory.dsn
+        if not dsn:
+            logger.warning(
+                "Postgres memory backend configured but no DSN provided — memory disabled",
+            )
+            return None
+        adapter = PostgresMemoryAdapter(dsn=dsn)
+
+    else:
+        # Custom backend via fully-qualified class path
+        try:
+            cls = _import_class(backend)
+            adapter = cls(path=settings.memory.path)
+        except Exception as exc:
+            logger.warning("Failed to load custom memory backend %r: %s", backend, exc)
+            return None
+
+    return adapter
+
+
+# ---------------------------------------------------------------------------
+# Builder: Permission
+# ---------------------------------------------------------------------------
+
+
+def _build_permission(
+    settings: Settings,
+    workspace: Path,
+    *,
+    no_tools: bool,
+    persona_config: Any | None,
+) -> Any:
+    """Build the permission adapter from config."""
+    from ravn.adapters.permission.allow_deny import AllowAllPermission, DenyAllPermission
+
+    if no_tools:
+        return DenyAllPermission()
+
+    # Determine effective permission mode: persona override takes precedence
+    mode = settings.permission.mode
+    if persona_config is not None and persona_config.permission_mode:
+        mode = persona_config.permission_mode
+
+    if mode in ("allow_all", "full_access"):
+        return AllowAllPermission()
+
+    if mode == "deny_all":
+        return DenyAllPermission()
+
+    # Rich permission enforcer for workspace_write, read_only, prompt modes
+    from ravn.adapters.memory.approval import ApprovalMemory
+    from ravn.adapters.permission.enforcer import PermissionEnforcer
+
+    # Override config mode with the effective mode (persona takes precedence)
+    effective_config = settings.permission.model_copy(update={"mode": mode})
+    return PermissionEnforcer(
+        config=effective_config,
+        workspace_root=workspace,
+        approval_memory=ApprovalMemory(project_root=workspace),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Builder: Tools — profile resolution and defaults
+# ---------------------------------------------------------------------------
+
+_DEFAULT_TOOL_GROUPS: dict[str, ToolGroupConfig] = {
+    "default": ToolGroupConfig(
+        include_groups=[
+            "core",
+            "extended",
+            "skill",
+            "platform",
+            "cascade",
+            "mimir",
+            "workflow",
+            "ravn",
+        ],
+        include_mcp=True,
+    ),
+    "worker": ToolGroupConfig(
+        include_groups=["core"],
+        include_mcp=False,
+    ),
+}
+
+
+def _get_tool_group(settings: Settings, name: str) -> ToolGroupConfig:
+    """Return the named tool group config, falling back to built-in defaults."""
+    if name in settings.tools.profiles:
+        return settings.tools.profiles[name]
+    if name in _DEFAULT_TOOL_GROUPS:
+        return _DEFAULT_TOOL_GROUPS[name]
+    logger.warning("Unknown tool group %r — using 'default'", name)
+    return _DEFAULT_TOOL_GROUPS["default"]
+
+
+# ---------------------------------------------------------------------------
+# Builder: Tools
+# ---------------------------------------------------------------------------
+
+
+def _resolve_mimir_auth_token(auth_config: Any) -> str | None:
+    """Resolve a Mimir bearer token from config without storing secrets in YAML."""
+    if auth_config is None:
+        return None
+    if auth_config.token:
+        return auth_config.token
+    token_env = getattr(auth_config, "token_env", None)
+    if token_env:
+        token = os.environ.get(str(token_env), "").strip()
+        if token:
+            return token
+    token_file = getattr(auth_config, "token_file", None)
+    if token_file:
+        try:
+            token = Path(str(token_file)).read_text(encoding="utf-8").strip()
+        except OSError:
+            logger.warning("Mímir auth token file is not readable: %s", token_file)
+            return None
+        if token:
+            return token
+    return None
+
+
+def _mimir_workload_platform_defaults(settings: Settings) -> tuple[str | None, str | None]:
+    """Workload-auth fallbacks for Mímir instances from ``gateway.platform``.
+
+    Config-first (``.claude/rules/config-first.md``): when a Mímir instance
+    uses ``type: workload`` auth without an explicit ``token_file`` /
+    ``exchange_url``, the values configured for the platform tools are the
+    canonical source. Returns ``(token_file, exchange_url)`` — either may be
+    ``None`` when the platform section is disabled or empty, in which case
+    the HTTP adapter keeps its legacy env-var fallback for compatibility.
+    """
+    platform = settings.gateway.platform
+    if not platform.enabled:
+        return None, None
+    token_file = platform.workload_token_file or None
+    exchange_url = platform.workload_exchange_url or None
+    if not exchange_url and platform.base_url:
+        exchange_url = f"{platform.base_url.rstrip('/')}/api/v1/tokens/workload/exchange"
+    return token_file, exchange_url
+
+
+def _build_mimir_auth(settings: Settings, auth_config: Any) -> Any:
+    """Build a MimirAuth domain object from a MimirAuthConfig section."""
+    from ravn.domain.mimir import MimirAuth
+
+    token_file = auth_config.token_file
+    exchange_url = auth_config.exchange_url
+    if auth_config.type == "workload":
+        fallback_token_file, fallback_exchange_url = _mimir_workload_platform_defaults(settings)
+        token_file = token_file or fallback_token_file
+        exchange_url = exchange_url or fallback_exchange_url
+    return MimirAuth(
+        type=auth_config.type,
+        token=_resolve_mimir_auth_token(auth_config) if auth_config.type == "bearer" else None,
+        token_file=token_file,
+        exchange_url=exchange_url,
+        audiences=tuple(auth_config.audiences),
+        trust_domain=auth_config.trust_domain,
+    )
+
+
+def _build_mimir(settings: Settings) -> Any:
+    """Build the Mímir adapter from config, or None if disabled."""
+    if not settings.mimir.enabled:
+        return None
+
+    if settings.mimir.instances:
+        from mimir.adapters.markdown import MarkdownMimirAdapter
+        from ravn.adapters.mimir.composite import CompositeMimirAdapter
+        from ravn.adapters.mimir.http import HttpMimirAdapter
+        from ravn.domain.mimir import MimirMount, WriteRouting
+
+        mounts: list[Any] = []
+        for inst in settings.mimir.instances:
+            if inst.path:
+                port: Any = MarkdownMimirAdapter(root=inst.path)
+            elif inst.url:
+                auth = None
+                if inst.auth is not None:
+                    auth = _build_mimir_auth(settings, inst.auth)
+                port = HttpMimirAdapter(base_url=inst.url, auth=auth)
+            else:
+                logger.warning("Mímir instance %r has neither path nor url — skipping", inst.name)
+                continue
+            mounts.append(
+                MimirMount(
+                    name=inst.name,
+                    port=port,
+                    role=inst.role,
+                    read_priority=inst.read_priority,
+                    categories=inst.categories,
+                )
+            )
+
+        if not mounts:
+            return None
+
+        wr = settings.mimir.write_routing
+        routing = WriteRouting(
+            rules=[(r["prefix"], r["mounts"]) for r in wr.rules],
+            default=wr.default,
+        )
+        return CompositeMimirAdapter(mounts=mounts, write_routing=routing)
+
+    # Single local instance
+    from mimir.adapters.markdown import MarkdownMimirAdapter
+
+    return MarkdownMimirAdapter(root=settings.mimir.path)
+
+
+def _build_workflow_capability_sources(settings: Settings) -> list[Any]:
+    """Build enabled workflow capability adapters from environment config."""
+    sources: list[Any] = []
+    for source_cfg in settings.environment.capability_sources:
+        if not source_cfg.enabled or not source_cfg.adapter:
+            continue
+        try:
+            cls = _import_class(source_cfg.adapter)
+            kwargs = _inject_secrets(
+                dict(source_cfg.kwargs),
+                source_cfg.secret_kwargs_env,
+            )
+            sources.append(cls(**kwargs))
+        except Exception as exc:
+            logger.warning(
+                "Failed to load workflow capability source %r: %s",
+                source_cfg.adapter,
+                exc,
+            )
+    return sources
+
+
+

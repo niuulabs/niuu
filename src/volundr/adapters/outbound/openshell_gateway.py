@@ -12,7 +12,6 @@ import hashlib
 import io
 import json
 import logging
-import os
 import re
 import shlex
 import tarfile
@@ -146,10 +145,6 @@ class ClientCredentialsTokenProvider:
         refresh_skew_seconds: int = 60,
         client: httpx.Client | None = None,
     ) -> None:
-        token_url = os.environ.get("OPENSHELL_OIDC_TOKEN_URL", token_url)
-        client_id = os.environ.get("OPENSHELL_OIDC_CLIENT_ID", client_id)
-        if not client_secret:
-            client_secret = os.environ.get("OPENSHELL_OIDC_CLIENT_SECRET", "")
         if not client_secret:
             raise RuntimeError("OpenShell OIDC client secret is required")
         self._token_url = token_url
@@ -552,8 +547,6 @@ class OpenShellGatewayPodManager(PodManager, OpenShellCredentialGrantPort):
         client: OpenShellGatewayClient | None = None,
         **_extra: object,
     ) -> None:
-        gateway_endpoint = os.environ.get("OPENSHELL_GATEWAY_ENDPOINT", gateway_endpoint)
-        gateway_public_url = os.environ.get("OPENSHELL_GATEWAY_PUBLIC_URL", gateway_public_url)
         self._gateway_public_url = gateway_public_url.rstrip("/")
         gateway_hostport = _endpoint_hostport(gateway_endpoint)
         gateway_host, separator, gateway_port = gateway_hostport.rpartition(":")

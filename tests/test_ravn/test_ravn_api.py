@@ -179,13 +179,43 @@ def client_with_personas(tmp_path) -> TestClient:
     return TestClient(create_app(persona_loader=loader))
 
 
-def test_status_endpoint(client: TestClient):
+@respx.mock
+def test_status_endpoint_reports_live_counts(client: TestClient):
+    respx.get("http://localhost:8080/api/v1/forge/sessions").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "ravn-flock",
+                    "name": "Ravn flock",
+                    "status": "running",
+                    "workload_type": "ravn_flock",
+                }
+            ],
+        )
+    )
+
     resp = client.get("/api/v1/ravn/status")
+
     assert resp.status_code == 200
-    data = resp.json()
-    assert data["service"] == "ravn"
-    assert data["healthy"] is True
-    assert "session_count" in data
+    assert resp.json() == {
+        "service": "ravn",
+        "session_count": 1,
+        "fleet_member_count": 0,
+        "healthy": True,
+    }
+
+
+@respx.mock
+def test_status_endpoint_reports_discovery_unavailable(client: TestClient):
+    respx.get("http://localhost:8080/api/v1/forge/sessions").mock(
+        return_value=httpx.Response(503)
+    )
+
+    resp = client.get("/api/v1/ravn/status")
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Ravn runtime discovery is unavailable"
 
 
 def test_valkyrie_dashboard_projection(client: TestClient):
@@ -197,7 +227,8 @@ def test_valkyrie_dashboard_projection(client: TestClient):
     assert data["flocks"][0]["natsSubject"] == "flock.k8s.>"
     assert data["liveReport"]["routeSubject"] == "obs.valhalla"
     assert data["telemetry"]["verified"] is False
-    assert "demo projection" in data["telemetry"]["gaps"][1]
+    assert data["telemetry"]["source"] == "unavailable"
+    assert "No runtime-derived" in data["telemetry"]["gaps"][1]
     assert data["signals"] == []
     assert data["learnings"] == []
 
@@ -2138,12 +2169,61 @@ def test_list_sessions_returns_live_ravn_sessions(client: TestClient):
     assert data[0]["chat_endpoint"] == "ws://host/s/1/session"
 
 
-def test_stop_session(client: TestClient):
-    resp = client.post("/api/v1/ravn/sessions/my-session-id/stop")
+@respx.mock
+def test_stop_session_forwards_to_forge_with_caller_identity(client: TestClient):
+    route = respx.post(
+        "http://localhost:8080/api/v1/forge/sessions/my-session-id/stop"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={"session_id": "my-session-id", "status": "stopped"},
+        )
+    )
+
+    resp = client.post(
+        "/api/v1/ravn/sessions/my-session-id/stop",
+        headers={"x-auth-user-id": "user-1"},
+    )
+
     assert resp.status_code == 200
-    data = resp.json()
-    assert data["session_id"] == "my-session-id"
-    assert data["status"] == "stopped"
+    assert resp.json() == {"session_id": "my-session-id", "status": "stopped"}
+    assert route.calls.last.request.headers["x-auth-user-id"] == "user-1"
+
+
+@respx.mock
+def test_stop_session_reports_forge_unavailable(client: TestClient):
+    respx.post("http://localhost:8080/api/v1/forge/sessions/my-session-id/stop").mock(
+        return_value=httpx.Response(503)
+    )
+
+    resp = client.post("/api/v1/ravn/sessions/my-session-id/stop")
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Forge session lifecycle is unavailable"
+
+
+@respx.mock
+def test_stop_session_preserves_forge_state_conflict(client: TestClient):
+    respx.post("http://localhost:8080/api/v1/forge/sessions/not-running/stop").mock(
+        return_value=httpx.Response(409, json={"detail": "Session cannot stop from created"})
+    )
+
+    resp = client.post("/api/v1/ravn/sessions/not-running/stop")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Session cannot stop from created"
+
+
+@respx.mock
+def test_stop_session_does_not_fake_success_for_unknown_session(client: TestClient):
+    respx.post("http://localhost:8080/api/v1/forge/sessions/unknown/stop").mock(
+        return_value=httpx.Response(404)
+    )
+
+    resp = client.post("/api/v1/ravn/sessions/unknown/stop")
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Forge-backed Ravn session not found"
 
 
 def test_personas_not_mounted_without_loader(client: TestClient):
@@ -2266,7 +2346,7 @@ def test_create_warden_persists_console_mount_and_schedule_config(tmp_path):
             "read_mount_names": ["scratch"],
             "write_mount_names": ["permanent"],
             "schedules": {"dream_cycle_cron_expression": "*/30 * * * *"},
-            "console": {"enabled": True, "host": "0.0.0.0", "port": 8610, "auth_mode": "token"},
+            "console": {"enabled": True, "host": "127.0.0.1", "port": 8610},
         },
     )
 
@@ -2279,6 +2359,36 @@ def test_create_warden_persists_console_mount_and_schedule_config(tmp_path):
     assert payload["schedules"]["dream_cycle_cron_expression"] == "*/30 * * * *"
     assert payload["console"]["enabled"] is True
     assert payload["console"]["port"] == 8610
+
+
+def test_create_warden_rejects_fake_token_console_auth(tmp_path):
+    client = TestClient(create_app(warden_store=_store(tmp_path)))
+
+    response = client.post(
+        "/api/v1/ravn/wardens",
+        json={
+            "name": "Unsafe Console",
+            "console": {"host": "127.0.0.1", "auth_mode": "token"},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "token authentication is not implemented" in response.text
+
+
+def test_create_warden_rejects_unauthenticated_remote_console(tmp_path):
+    client = TestClient(create_app(warden_store=_store(tmp_path)))
+
+    response = client.post(
+        "/api/v1/ravn/wardens",
+        json={
+            "name": "Remote Console",
+            "console": {"host": "0.0.0.0", "auth_mode": "noop"},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "only bind to a loopback host" in response.text
 
 
 def test_get_warden_returns_404_when_missing(tmp_path):

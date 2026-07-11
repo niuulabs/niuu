@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -1101,6 +1101,31 @@ class Settings(BaseSettings):
     event_triggers: EventTriggerConfig = Field(default_factory=EventTriggerConfig)
     ravn_outcome: RavnOutcomeConfig = Field(default_factory=RavnOutcomeConfig)
     flock_flows: FlockFlowsConfig = Field(default_factory=FlockFlowsConfig)
+    server_host: str = Field(
+        default="0.0.0.0",
+        validation_alias=AliasChoices("server_host", "HOST"),
+    )
+    server_port: int = Field(
+        default=8081,
+        ge=1,
+        le=65535,
+        validation_alias=AliasChoices("server_port", "PORT"),
+    )
+    server_workers: int = Field(
+        default=4,
+        ge=1,
+        validation_alias=AliasChoices("server_workers", "WORKERS"),
+    )
+    local_platform_host: str = Field(
+        default="127.0.0.1",
+        validation_alias=AliasChoices("local_platform_host", "NIUU_SERVER_HOST"),
+    )
+    local_platform_port: int = Field(
+        default=8080,
+        ge=1,
+        le=65535,
+        validation_alias=AliasChoices("local_platform_port", "NIUU_SERVER_PORT"),
+    )
 
     @classmethod
     def settings_customise_sources(

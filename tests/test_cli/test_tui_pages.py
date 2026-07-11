@@ -41,7 +41,6 @@ from volundr.tui.sessions import (
     SESSION_FILTERS,
     SessionData,
     SessionsPage,
-    _demo_sessions,
     _session_matches_search,
 )
 from volundr.tui.settings import (
@@ -163,10 +162,10 @@ def _sample_tenants() -> list[Tenant]:
 
 
 class TestSessionsPage:
-    def test_demo_sessions(self) -> None:
-        demos = _demo_sessions()
-        assert len(demos) >= 5
-        assert all(isinstance(s, SessionData) for s in demos)
+    def test_default_has_no_demo_sessions(self) -> None:
+        page = SessionsPage()
+        assert page._all_sessions == []
+        assert "unavailable" in page._unavailable_reason.lower()
 
     def test_format_count(self) -> None:
         assert format_count(500) == "500"
@@ -183,6 +182,14 @@ class TestSessionsPage:
 
     def test_filter_constants(self) -> None:
         assert SESSION_FILTERS == ("All", "Running", "Stopped", "Error")
+
+    async def test_sessions_page_shows_explicit_unavailable_state(self) -> None:
+        app = PageTestApp(SessionsPage)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            page = app.query_one(SessionsPage)
+            content = page.query_one("#sessions-list").query_one(Static)
+            assert "Session data unavailable" in str(content.render())
 
     async def test_sessions_page_renders(self) -> None:
         app = PageTestApp(SessionsPage, sessions=_sample_sessions())
@@ -249,6 +256,7 @@ class TestSessionsPage:
             assert len(page._filtered) == 0
             page.set_sessions(_sample_sessions())
             assert len(page._filtered) == 3
+            assert page._unavailable_reason == ""
 
     async def test_sessions_action_messages(self) -> None:
         sessions = _sample_sessions()

@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -217,14 +217,16 @@ class PermissionAutoApprovalConfig(BaseModel):
     )
 
 
-class LoggingConfig(BaseModel):
+class LoggingConfig(BaseSettings):
     """Logging configuration.
 
-    Reads LOG_LEVEL and LOG_FORMAT environment variables if set.
+    Supports legacy LOG_LEVEL and LOG_FORMAT aliases.
     """
 
-    level: str = Field(default_factory=lambda: os.environ.get("LOG_LEVEL", "info"))
-    format: str = Field(default_factory=lambda: os.environ.get("LOG_FORMAT", "text"))
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+
+    level: str = Field(default="info", validation_alias=AliasChoices("level", "LOG_LEVEL"))
+    format: str = Field(default="text", validation_alias=AliasChoices("format", "LOG_FORMAT"))
 
 
 class PodManagerConfig(BaseModel):
@@ -1432,6 +1434,77 @@ class Settings(BaseSettings):
     )
 
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    server_host: str = Field(
+        default="127.0.0.1",
+        validation_alias=AliasChoices("server_host", "NIUU_SERVER_HOST"),
+        description="Internal host used by locally spawned session brokers.",
+    )
+    server_public_host: str = Field(
+        default="127.0.0.1",
+        validation_alias=AliasChoices(
+            "server_public_host",
+            "NIUU_SERVER_PUBLIC_HOST",
+            "NIUU_SERVER_HOST",
+        ),
+        description="Host published in browser-facing local session endpoints.",
+    )
+    server_port: int = Field(
+        default=8080,
+        ge=1,
+        le=65535,
+        validation_alias=AliasChoices("server_port", "NIUU_SERVER_PORT"),
+        description="Port of the shared Niuu host used by local session brokers.",
+    )
+    openshell_internal_gateway_url: str = Field(
+        default="http://openshell.openshell.svc.cluster.local:8080",
+        validation_alias=AliasChoices(
+            "openshell_internal_gateway_url",
+            "OPENSHELL_INTERNAL_GATEWAY_URL",
+        ),
+        description="Internal OpenShell gateway URL used for server-side session proxying.",
+    )
+    openshell_gateway_endpoint: str = Field(
+        default="openshell.openshell.svc.cluster.local:8080",
+        validation_alias=AliasChoices(
+            "openshell_gateway_endpoint",
+            "OPENSHELL_GATEWAY_ENDPOINT",
+        ),
+        description="OpenShell gRPC gateway endpoint forwarded to its pod-manager adapter.",
+    )
+    openshell_gateway_public_url: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "openshell_gateway_public_url",
+            "OPENSHELL_GATEWAY_PUBLIC_URL",
+        ),
+        description="Browser-reachable OpenShell gateway URL.",
+    )
+    openshell_oidc_token_url: str = Field(
+        default="https://keycloak.niuu.world/realms/volundr/protocol/openid-connect/token",
+        validation_alias=AliasChoices(
+            "openshell_oidc_token_url",
+            "OPENSHELL_OIDC_TOKEN_URL",
+        ),
+        description="OIDC token endpoint used for OpenShell client credentials.",
+    )
+    openshell_oidc_client_id: str = Field(
+        default="openshell-volundr-agent",
+        validation_alias=AliasChoices(
+            "openshell_oidc_client_id",
+            "OPENSHELL_OIDC_CLIENT_ID",
+        ),
+        description="OIDC client id used for OpenShell client credentials.",
+    )
+    openshell_oidc_client_secret: str = Field(
+        default="",
+        exclude=True,
+        repr=False,
+        validation_alias=AliasChoices(
+            "openshell_oidc_client_secret",
+            "OPENSHELL_OIDC_CLIENT_SECRET",
+        ),
+        description="OIDC client secret; prefer pod_manager.secret_kwargs_env.",
+    )
     cors: CorsConfig = Field(default_factory=CorsConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)

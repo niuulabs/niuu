@@ -186,6 +186,15 @@ def _create_pod_manager(settings: Settings) -> "PodManager":  # noqa: F821
     pm_cfg = settings.pod_manager
     cls = import_class(pm_cfg.adapter)
     kwargs = resolve_secret_kwargs(pm_cfg.kwargs, pm_cfg.secret_kwargs_env)
+    kwargs.setdefault("server_public_host", settings.server_public_host)
+    kwargs.setdefault("server_host", settings.server_host)
+    kwargs.setdefault("server_port", settings.server_port)
+    kwargs.setdefault("gateway_endpoint", settings.openshell_gateway_endpoint)
+    kwargs.setdefault("gateway_public_url", settings.openshell_gateway_public_url)
+    kwargs.setdefault("token_url", settings.openshell_oidc_token_url)
+    kwargs.setdefault("client_id", settings.openshell_oidc_client_id)
+    if settings.openshell_oidc_client_secret:
+        kwargs.setdefault("client_secret", settings.openshell_oidc_client_secret)
     instance = cls(**kwargs)
     logger.info("Pod manager: %s", pm_cfg.adapter.rsplit(".", 1)[-1])
     return instance
@@ -1041,6 +1050,8 @@ def create_app(
                 external_session_service=external_session_service,
                 device_repository=device_repository,
                 prefix="/api/v1/forge",
+                server_public_host=settings.server_public_host,
+                openshell_internal_gateway_url=settings.openshell_internal_gateway_url,
             )
             app.include_router(forge_router)
             if isinstance(pod_manager, OpenShellCredentialGrantPort):

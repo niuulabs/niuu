@@ -758,9 +758,10 @@ def create_app(
                     # forward succeeds. uvicorn typically binds to a single
                     # NIC, so 127.0.0.1 is unreachable when start-dev pinned
                     # the host to a LAN IP.
-                    host = os.environ.get("NIUU_SERVER_HOST", "127.0.0.1")
-                    port = os.environ.get("NIUU_SERVER_PORT", "8080")
-                    self_url = f"http://{host}:{port}"
+                    self_url = (
+                        f"http://{settings.local_platform_host}:"
+                        f"{settings.local_platform_port}"
+                    )
                 telegram_polling = TelegramPollingService(
                     bot_token=bot_token,
                     webhook_secret=settings.telegram.webhook_secret,
@@ -1003,19 +1004,16 @@ app = create_app()
 
 def main() -> None:  # pragma: no cover
     """Run the Ting API server."""
-    import os
-
     import uvicorn
 
-    host = os.environ.get("HOST", "0.0.0.0")
-    port = int(os.environ.get("PORT", "8081"))
-    workers = int(os.environ.get("WORKERS", "4"))
+    settings = Settings()
+
 
     uvicorn.run(
         "ting.main:app",
-        host=host,
-        port=port,
-        workers=workers,
+        host=settings.server_host,
+        port=settings.server_port,
+        workers=settings.server_workers,
         access_log=False,
     )
 

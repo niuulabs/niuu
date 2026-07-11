@@ -9,7 +9,6 @@ See: https://docs.browserbase.com/reference/api/create-a-session
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from ravn.adapters.browser._base import _PlaywrightBrowserBase
@@ -26,8 +25,8 @@ class BrowserbaseAdapter(_PlaywrightBrowserBase):
     project settings — no extra kwargs required here).
 
     Args:
-        api_key:    Browserbase API key. Falls back to ``BROWSERBASE_API_KEY`` env var.
-        project_id: Browserbase project ID. Falls back to ``BROWSERBASE_PROJECT_ID``.
+        api_key:    Browserbase API key injected by composition.
+        project_id: Browserbase project ID injected by composition.
         stealth:    Enable stealth mode (anti-bot fingerprint masking).
         headless:   Local browser headless flag (used for the CDP proxy connection).
         timeout_ms: Default navigation / action timeout in milliseconds.
@@ -43,8 +42,8 @@ class BrowserbaseAdapter(_PlaywrightBrowserBase):
         timeout_ms: int = 30_000,
     ) -> None:
         super().__init__(timeout_ms=timeout_ms)
-        self._api_key = api_key or os.environ.get("BROWSERBASE_API_KEY", "")
-        self._project_id = project_id or os.environ.get("BROWSERBASE_PROJECT_ID", "")
+        self._api_key = api_key
+        self._project_id = project_id
         self._stealth = stealth
         self._headless = headless
         self._session_id: str = ""
@@ -61,7 +60,8 @@ class BrowserbaseAdapter(_PlaywrightBrowserBase):
         if not self._api_key:
             raise RuntimeError(
                 "Browserbase API key is not set. "
-                "Set BROWSERBASE_API_KEY or configure browser.browserbase.api_key_env."
+                "Configure browser.browserbase.api_key_env and inject the resolved "
+                "secret at composition."
             )
 
         try:

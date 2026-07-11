@@ -80,7 +80,7 @@ def test_present_file_rejects_bad_input(client):
 def test_present_file_size_cap(client, tmp_path, monkeypatch):
     from skuld import broker as bmod
 
-    monkeypatch.setattr(bmod, "_MAX_PRESENTED_FILE_BYTES", 8)
+    monkeypatch.setattr(bmod.broker._settings, "max_presented_file_bytes", 8)
     big = tmp_path / "big.bin"
     big.write_bytes(b"x" * 100)
     assert client.post("/api/present-file", json={"path": str(big)}).status_code == 413

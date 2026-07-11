@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
 import re
 import time
 from datetime import UTC, datetime
@@ -90,13 +89,13 @@ OPENSHELL_SERVICE_HOST_SUFFIX = ".openshell.localhost"
 SEND_MESSAGE_ACK_GRACE_SECONDS = 3.0
 
 
-def _public_session_endpoint(endpoint: str | None, session_id: str = "") -> str | None:
+def _public_session_endpoint(
+    endpoint: str | None,
+    session_id: str = "",
+    *,
+    public_host: str = "127.0.0.1",
+) -> str | None:
     """Normalize loopback session endpoints for browser-facing clients."""
-    public_host = (
-        os.environ.get("NIUU_SERVER_PUBLIC_HOST")
-        or os.environ.get("NIUU_SERVER_HOST")
-        or "127.0.0.1"
-    )
     return public_session_endpoint(
         endpoint,
         session_id=session_id,
@@ -104,16 +103,17 @@ def _public_session_endpoint(endpoint: str | None, session_id: str = "") -> str 
     )
 
 
-def _server_side_ws_connect_overrides(ws_url: str) -> dict[str, object]:
+def _server_side_ws_connect_overrides(
+    ws_url: str,
+    *,
+    gateway_url: str = DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL,
+) -> dict[str, object]:
     try:
         parsed = urlsplit(ws_url)
     except ValueError:
         return {}
     if not parsed.hostname or not parsed.hostname.endswith(OPENSHELL_SERVICE_HOST_SUFFIX):
         return {}
-    gateway_url = (
-        os.environ.get("OPENSHELL_INTERNAL_GATEWAY_URL") or DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL
-    )
     try:
         gateway = urlsplit(gateway_url)
     except ValueError:
@@ -273,15 +273,16 @@ def _session_proxy_url(base_url: str, *path_segments: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
-def _server_side_http_proxy_target(url: str) -> tuple[str, dict[str, str]]:
+def _server_side_http_proxy_target(
+    url: str,
+    *,
+    gateway_url: str = DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL,
+) -> tuple[str, dict[str, str]]:
     """Route an OpenShell service URL through the in-cluster gateway."""
     parsed = urlsplit(url)
     if not parsed.hostname or not parsed.hostname.endswith(OPENSHELL_SERVICE_HOST_SUFFIX):
         return url, {}
 
-    gateway_url = (
-        os.environ.get("OPENSHELL_INTERNAL_GATEWAY_URL") or DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL
-    )
     gateway = urlsplit(gateway_url)
     if not gateway.scheme or not gateway.netloc:
         raise ValueError("OpenShell internal gateway must be an absolute URL")
@@ -821,7 +822,12 @@ class SessionResponse(BaseModel):
     }
 
     @classmethod
-    def from_session(cls, session: Session) -> "SessionResponse":
+    def from_session(
+        cls,
+        session: Session,
+        *,
+        public_host: str = "127.0.0.1",
+    ) -> "SessionResponse":
         """Create response from domain model."""
         return cls(
             id=session.id,
@@ -829,7 +835,11 @@ class SessionResponse(BaseModel):
             model=session.model,
             source=session.source,
             status=session.status,
-            chat_endpoint=_public_session_endpoint(session.chat_endpoint, str(session.id)),
+            chat_endpoint=_public_session_endpoint(
+                session.chat_endpoint,
+                str(session.id),
+                public_host=public_host,
+            ),
             code_endpoint=session.code_endpoint,
             created_at=session.created_at.isoformat(),
             updated_at=session.updated_at.isoformat(),
@@ -1322,9 +1332,20 @@ def create_router(
     external_session_service: ExternalSessionService | None = None,
     device_repository: DeviceTokenRepository | None = None,
     prefix: str = "/api/v1/forge",
+    server_public_host: str = "127.0.0.1",
+    openshell_internal_gateway_url: str = DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL,
 ) -> APIRouter:
     """Create FastAPI router with session, stats, token, repo, and SSE endpoints."""
     router = APIRouter(prefix=prefix)
+
+    def _session_response(session: Session) -> SessionResponse:
+        return SessionResponse.from_session(session, public_host=server_public_host)
+
+    def _http_proxy_target(url: str) -> tuple[str, dict[str, str]]:
+        return _server_side_http_proxy_target(
+            url,
+            gateway_url=openshell_internal_gateway_url,
+        )
 
     @router.get("/version", tags=["Forge"])
     async def forge_version() -> dict:
@@ -1459,7 +1480,7 @@ def create_router(
             include_archived=include_archived,
             principal=principal,
         )
-        return [SessionResponse.from_session(s) for s in sessions]
+        return [_session_response(s) for s in sessions]
 
     @router.get(
         "/sessions/stream",
@@ -1632,7 +1653,7 @@ def create_router(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(e),
             )
-        return SessionResponse.from_session(session)
+        return _session_response(session)
 
     @router.post(
         "/sessions",
@@ -1671,7 +1692,7 @@ def create_router(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(e),
             )
-        return SessionResponse.from_session(started)
+        return _session_response(started)
 
     @router.get(
         "/sessions/{session_id}",
@@ -1699,7 +1720,7 @@ def create_router(
                 detail=f"Access denied to session {session_id}",
             )
 
-        return SessionResponse.from_session(session)
+        return _session_response(session)
 
     @router.post(
         "/sessions/{session_id}/permissions/auto-approval/evaluate",
@@ -1769,7 +1790,7 @@ def create_router(
                 tracker_issue_id=data.tracker_issue_id,
                 principal=principal,
             )
-            return SessionResponse.from_session(session)
+            return _session_response(session)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -1850,7 +1871,7 @@ def create_router(
                 launch_spec=launch_spec,
                 principal=principal,
             )
-            return SessionResponse.from_session(session)
+            return _session_response(session)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -1883,7 +1904,7 @@ def create_router(
         principal = await _optional_principal(request)
         try:
             session = await forge.stop_session(session_id, principal=principal)
-            return SessionResponse.from_session(session)
+            return _session_response(session)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -2076,7 +2097,7 @@ def create_router(
                 session_id,
                 principal=principal,
             )
-            return SessionResponse.from_session(session)
+            return _session_response(session)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -2112,7 +2133,7 @@ def create_router(
                 session_id,
                 principal=principal,
             )
-            return SessionResponse.from_session(session)
+            return _session_response(session)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -2266,7 +2287,7 @@ def create_router(
             auth = request.headers.get("authorization")
             if auth:
                 headers["Authorization"] = auth
-            proxy_url, routing_headers = _server_side_http_proxy_target(
+            proxy_url, routing_headers = _http_proxy_target(
                 _session_proxy_url(base_url, "api", "logs")
             )
             headers.update(routing_headers)
@@ -2340,7 +2361,7 @@ def create_router(
                 auth = request.headers.get("authorization")
                 if auth:
                     headers["Authorization"] = auth
-                proxy_url, routing_headers = _server_side_http_proxy_target(
+                proxy_url, routing_headers = _http_proxy_target(
                     _session_proxy_url(base_url, "api", "logs", "aggregate")
                 )
                 headers.update(routing_headers)
@@ -2418,7 +2439,7 @@ def create_router(
                 headers[name] = value
         body = await request.body()
         try:
-            proxy_url, routing_headers = _server_side_http_proxy_target(
+            proxy_url, routing_headers = _http_proxy_target(
                 _session_proxy_url(base_url, "api", *path_segments)
             )
             headers.update(routing_headers)
@@ -2607,7 +2628,12 @@ def create_router(
             ssl_ctx.check_hostname = False
             ssl_ctx.verify_mode = ssl.CERT_NONE
             connect_kwargs["ssl"] = ssl_ctx
-        connect_kwargs.update(_server_side_ws_connect_overrides(ws_url))
+        connect_kwargs.update(
+            _server_side_ws_connect_overrides(
+                ws_url,
+                gateway_url=openshell_internal_gateway_url,
+            )
+        )
 
         # INV-7: correlate this message with the broker's delivery ACK so the response
         # distinguishes DELIVERED from NOT-delivered — a 200 means the transport actually
@@ -2815,7 +2841,7 @@ def create_router(
                     headers["Authorization"] = auth
 
                 t_fetch = time.perf_counter()
-                proxy_url, routing_headers = _server_side_http_proxy_target(
+                proxy_url, routing_headers = _http_proxy_target(
                     _session_proxy_url(base_url, "api", "conversation", "history")
                 )
                 headers.update(routing_headers)
@@ -2993,7 +3019,7 @@ def create_router(
                 auth = request.headers.get("authorization")
                 if auth:
                     headers["Authorization"] = auth
-                proxy_url, routing_headers = _server_side_http_proxy_target(
+                proxy_url, routing_headers = _http_proxy_target(
                     _session_proxy_url(base_url, "api", "conversation", "tool-result", tool_use_id)
                 )
                 headers.update(routing_headers)
@@ -3054,7 +3080,7 @@ def create_router(
             auth = request.headers.get("authorization")
             if auth:
                 headers["Authorization"] = auth
-            proxy_url, routing_headers = _server_side_http_proxy_target(
+            proxy_url, routing_headers = _http_proxy_target(
                 _session_proxy_url(base_url, "api", "workflow", "gates")
             )
             headers.update(routing_headers)
@@ -3137,7 +3163,7 @@ def create_router(
             headers[WORKFLOW_GATE_INTENT_HEADER] = intent
 
         try:
-            proxy_url, routing_headers = _server_side_http_proxy_target(
+            proxy_url, routing_headers = _http_proxy_target(
                 _session_proxy_url(base_url, "api", "workflow", "gates", gate_id, "resolve")
             )
             headers.update(routing_headers)
@@ -3485,7 +3511,7 @@ def create_router(
         """Relaunch a session from a chronicle entry."""
         try:
             session = await forge.reforge_chronicle(chronicle_id)
-            return SessionResponse.from_session(session)
+            return _session_response(session)
         except RuntimeError as e:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -3730,7 +3756,7 @@ def create_router(
             proxy_headers["Authorization"] = auth_header
 
         try:
-            proxy_url, routing_headers = _server_side_http_proxy_target(
+            proxy_url, routing_headers = _http_proxy_target(
                 _session_proxy_url(base_url, "api", "diff")
             )
             proxy_headers.update(routing_headers)

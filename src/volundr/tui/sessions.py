@@ -46,72 +46,6 @@ class SessionData:
     error: str = ""
 
 
-def _demo_sessions() -> list[SessionData]:
-    """Placeholder sessions for when no API is available."""
-    return [
-        SessionData(
-            id="a1b2c3d4",
-            name="feat/auth-flow",
-            status="running",
-            model="claude-sonnet-4",
-            repo="niuu/volundr",
-            branch="feat/auth-flow",
-            tokens_used=128_450,
-            context_key="demo",
-        ),
-        SessionData(
-            id="b2c3d4e5",
-            name="fix/ws-reconnect",
-            status="running",
-            model="claude-sonnet-4",
-            repo="niuu/volundr",
-            branch="fix/ws-reconnect",
-            tokens_used=67_200,
-            context_key="demo",
-        ),
-        SessionData(
-            id="c3d4e5f6",
-            name="refactor/api-client",
-            status="stopped",
-            model="claude-opus-4",
-            repo="niuu/hlidskjalf",
-            branch="refactor/api",
-            tokens_used=342_100,
-            context_key="demo",
-        ),
-        SessionData(
-            id="d4e5f6a7",
-            name="feat/tui-client",
-            status="running",
-            model="claude-opus-4",
-            repo="niuu/volundr",
-            branch="feat/niu-130-go-tui",
-            tokens_used=891_200,
-            context_key="demo",
-        ),
-        SessionData(
-            id="e5f6a7b8",
-            name="docs/api-reference",
-            status="completed",
-            model="claude-haiku-3.5",
-            repo="niuu/docs",
-            branch="docs/api",
-            tokens_used=15_800,
-            context_key="demo",
-        ),
-        SessionData(
-            id="f6a7b8c9",
-            name="fix/migration-lock",
-            status="error",
-            model="claude-sonnet-4",
-            repo="niuu/volundr",
-            branch="fix/migration",
-            tokens_used=23_400,
-            context_key="demo",
-            error="Pod OOMKilled after 4.2GB memory usage",
-        ),
-    ]
-
 
 class SessionRow(Widget):
     """A single session row with status badge."""
@@ -190,15 +124,16 @@ class SessionsPage(Widget):
     def __init__(
         self,
         sessions: list[SessionData] | None = None,
-        api_client: Any = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
-        self._all_sessions: list[SessionData] = (
-            sessions if sessions is not None else _demo_sessions()
-        )
+        self._all_sessions: list[SessionData] = list(sessions or [])
         self._filtered: list[SessionData] = list(self._all_sessions)
-        self._api_client = api_client
+        self._unavailable_reason = (
+            "Session data unavailable: no session provider is connected"
+            if sessions is None
+            else ""
+        )
         self._search_term = ""
         self._context_filter = ""
         self._mounted = False
@@ -223,6 +158,7 @@ class SessionsPage(Widget):
     def set_sessions(self, sessions: list[SessionData]) -> None:
         """Replace all sessions and refresh the view."""
         self._all_sessions = list(sessions)
+        self._unavailable_reason = ""
         self._apply_filter()
         self._rebuild_metrics()
 
@@ -254,7 +190,8 @@ class SessionsPage(Widget):
             return
         container.remove_children()
         if not self._filtered:
-            container.mount(Static("[#71717a]  No sessions found[/]"))
+            message = self._unavailable_reason or "No sessions found"
+            container.mount(Static(f"[#71717a]  {message}[/]"))
             return
         for i, sess in enumerate(self._filtered):
             container.mount(SessionRow(sess, selected=(i == self.cursor)))

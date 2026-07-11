@@ -19,14 +19,10 @@ from volundr.domain.ports import DeviceTokenRepository
 from volundr.domain.services import SessionService, StatsService
 
 
-def test_server_side_ws_connect_overrides_openshell_service_host(monkeypatch):
-    monkeypatch.setenv(
-        "OPENSHELL_INTERNAL_GATEWAY_URL",
-        "http://openshell.openshell.svc.cluster.local:8080",
-    )
-
+def test_server_side_ws_connect_overrides_openshell_service_host():
     overrides = _server_side_ws_connect_overrides(
-        "ws://forge-8093e93dc7634efeb2c382--skuld.openshell.localhost:8080/session"
+        "ws://forge-8093e93dc7634efeb2c382--skuld.openshell.localhost:8080/session",
+        gateway_url="http://openshell.openshell.svc.cluster.local:8080",
     )
 
     assert overrides == {
@@ -36,14 +32,10 @@ def test_server_side_ws_connect_overrides_openshell_service_host(monkeypatch):
     }
 
 
-def test_server_side_http_proxy_target_openshell_service_host(monkeypatch):
-    monkeypatch.setenv(
-        "OPENSHELL_INTERNAL_GATEWAY_URL",
-        "http://openshell.openshell.svc.cluster.local:8080",
-    )
-
+def test_server_side_http_proxy_target_openshell_service_host():
     url, headers = _server_side_http_proxy_target(
-        "http://forge-123--skuld.openshell.localhost:8080/api/conversation/history"
+        "http://forge-123--skuld.openshell.localhost:8080/api/conversation/history",
+        gateway_url="http://openshell.openshell.svc.cluster.local:8080",
     )
 
     assert url == ("http://openshell.openshell.svc.cluster.local:8080/api/conversation/history")

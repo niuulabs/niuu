@@ -842,9 +842,8 @@ class DriveLoop:
         self._session_join_manager = build_session_join_manager(settings)
 
         # Skuld channel for browser delivery (mesh cascade visualization)
-        # TODO(niu-activity-bus): Once direct Skuld streaming is stable again,
-        # split high-frequency live activity onto a dedicated activity bus/channel
-        # and leave workflow/outcome propagation on the mesh.
+        # Live activity and durable workflow outcomes intentionally share the mesh
+        # today so ordering and correlation remain consistent for all consumers.
         self._skuld_channel: SkuldChannel | None = None
         if settings.skuld.enabled:
             # peer_id is appended to the broker_url

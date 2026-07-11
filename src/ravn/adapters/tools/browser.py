@@ -16,7 +16,6 @@ import base64
 import fnmatch
 import json
 import logging
-import os
 from typing import Any
 from urllib.parse import urlparse
 
@@ -649,7 +648,7 @@ def build_browser_tools(
         allowed_origins:    Glob patterns for allowed hostnames (empty = all).
         blocked_origins:    Glob patterns for blocked hostnames.
         full_js:            Allow unrestricted JS via browser_evaluate.
-        browserbase_api_key:     Browserbase API key (or set BROWSERBASE_API_KEY env var).
+        browserbase_api_key:     Browserbase API key.
         browserbase_project_id:  Browserbase project ID.
         browserbase_stealth:     Enable Browserbase stealth mode.
 
@@ -659,7 +658,7 @@ def build_browser_tools(
     session_manager = BrowserSessionManager()
 
     def _browser_factory() -> BrowserPort:
-        if backend == "browserbase" or os.environ.get("BROWSERBASE_API_KEY"):
+        if backend == "browserbase":
             from ravn.adapters.browser.browserbase import BrowserbaseAdapter
 
             return BrowserbaseAdapter(

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.middleware.cors import CORSMiddleware
 
 from cli.shared_host import create_app as create_niuu_app
-from niuu.config import CorsConfig, GitConfig
+from niuu.config import CorsConfig, GitConfig, NiuuHostConfig
 from ting.config import Settings as TingSettings
 from ting.main import create_app as create_ting_app
 from volundr.config import Settings as NiuuSharedSettings
@@ -36,6 +37,64 @@ class TestCorsConfig:
         assert cors.allow_methods == ["GET", "POST"]
         assert cors.allow_headers == ["Authorization", "Content-Type"]
         assert cors.allow_credentials is False
+
+    def test_legacy_environment_aliases_are_typed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CORS_ORIGINS", "https://one.example,https://two.example")
+        monkeypatch.setenv("CORS_ALLOW_CREDENTIALS", "false")
+
+        cors = CorsConfig()
+
+        assert cors.allowed_origins == [
+            "https://one.example",
+            "https://two.example",
+        ]
+        assert cors.allow_credentials is False
+
+    def test_malformed_legacy_boolean_fails_loudly(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CORS_ALLOW_CREDENTIALS", "sometimes")
+
+        with pytest.raises(ValueError, match="allow_credentials"):
+            CorsConfig()
+
+
+class TestNiuuHostConfig:
+    def test_legacy_environment_aliases_are_typed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("NIUU_CORS_ORIGINS", "https://ui.example")
+        monkeypatch.setenv("NIUU_FORGE_STATE_FILE", "~/.niuu/custom-state.json")
+        monkeypatch.setenv("NIUU_NO_WEB", "true")
+        monkeypatch.setenv("NIUU_DATABASE_MODE", "external")
+        monkeypatch.setenv("NIUU_PGDATA_DIR", "/var/lib/niuu")
+        monkeypatch.setenv("DATABASE__HOST", "postgres")
+
+        config = NiuuHostConfig()
+
+        assert config.cors_origins == ["https://ui.example"]
+        assert config.forge_state_file == "~/.niuu/custom-state.json"
+        assert config.no_web is True
+        assert config.database_mode == "external"
+        assert config.pgdata_dir == "/var/lib/niuu"
+        assert config.external_database_host == "postgres"
+
+    def test_blank_legacy_database_mode_preserves_auto_mode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("NIUU_DATABASE_MODE", "")
+
+        assert NiuuHostConfig().database_mode == "auto"
+
+    def test_invalid_database_mode_fails_loudly(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("NIUU_DATABASE_MODE", "sometimes")
+
+        with pytest.raises(ValueError, match="database_mode"):
+            NiuuHostConfig()
 
 
 class TestServiceCorsWiring:

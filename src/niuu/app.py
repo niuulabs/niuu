@@ -21,7 +21,7 @@ from fastapi.openapi.utils import get_openapi
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from niuu.config import CorsConfig
+from niuu.config import CorsConfig, NiuuSettings
 from niuu.cors import apply_cors_middleware
 from niuu.ports.plugin import APIRouteDomain, Service
 from niuu.ports.session_proxy import SessionProxyTarget
@@ -44,10 +44,7 @@ logger = logging.getLogger(__name__)
 def _configured_cors_origins() -> list[str]:
     """Return explicitly configured CORS origins for the unified niuu host."""
 
-    raw = os.environ.get("NIUU_CORS_ORIGINS", "").strip()
-    if not raw:
-        return []
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return NiuuSettings().host.cors_origins
 
 
 def _sanitize_log(value: object) -> str:
@@ -61,10 +58,7 @@ class SkuldPortRegistry:
     def __init__(self, state_file: Path | None = None) -> None:
         self._ports: dict[str, int] = {}
         self._state_file = (
-            state_file
-            or Path(
-                os.environ.get("NIUU_FORGE_STATE_FILE", "~/.niuu/forge-state.json")
-            ).expanduser()
+            state_file or Path(NiuuSettings().host.forge_state_file).expanduser()
         )
         # Optional async hook invoked when the WS proxy cannot reach a live pod,
         # so the persisted Session row self-heals (status corrected, endpoint
@@ -838,7 +832,7 @@ def collect_route_inventory(
     active_mounts = resolve_enabled_mounts(
         host_profile,
         enabled_mounts,
-        no_web=os.environ.get("NIUU_NO_WEB") == "true",
+        no_web=NiuuSettings().host.no_web,
     )
     declared_domains = _declared_plugin_route_domains(registry)
 
@@ -991,7 +985,7 @@ def build_root_app(
     active_mounts = resolve_enabled_mounts(
         host_profile,
         enabled_mounts,
-        no_web=os.environ.get("NIUU_NO_WEB") == "true",
+        no_web=NiuuSettings().host.no_web,
     )
     route_inventory = collect_route_inventory(
         registry=registry,
@@ -1238,17 +1232,18 @@ class RootServer(Service):
 
     async def _start_embedded_db(self) -> None:
         """Start embedded PostgreSQL and set env vars for sub-apps."""
-        database_mode = os.environ.get("NIUU_DATABASE_MODE", "").strip().lower()
+        host_config = NiuuSettings().host
+        database_mode = host_config.database_mode
         if database_mode == "external":
             logger.info("Skipping embedded PostgreSQL because NIUU_DATABASE_MODE=external")
             return
-        if os.environ.get("DATABASE__HOST", "").strip():
+        if host_config.external_database_host.strip():
             logger.info("Skipping embedded PostgreSQL because DATABASE__HOST is already set")
             return
 
         from niuu.adapters.embedded_postgres import EmbeddedPostgresDatabase
 
-        data_dir = os.environ.get("NIUU_PGDATA_DIR") or str(Path.home() / ".niuu" / "pgdata")
+        data_dir = host_config.pgdata_dir or str(Path.home() / ".niuu" / "pgdata")
         db = EmbeddedPostgresDatabase()
         info = await db.start(data_dir)
         await db.ensure_databases(local_service_database_names())

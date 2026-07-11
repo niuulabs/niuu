@@ -1,34 +1,49 @@
-"""Unit tests for WebSearchTool and MockWebSearchProvider."""
+"""Unit tests for WebSearchTool and its real provider boundary."""
 
 from __future__ import annotations
 
 import pytest
 
-from ravn.adapters.tools.web_search import MockWebSearchProvider, WebSearchTool
+from ravn.adapters.tools.web_search import DuckDuckGoLiteSearchProvider, WebSearchTool
 from ravn.ports.web_search import SearchResult
 
 # ---------------------------------------------------------------------------
-# MockWebSearchProvider
+class FakeWebSearchProvider:
+    _DEFAULT_RESULTS = [
+        SearchResult(title="Example Domain", url="https://example.com", snippet="Example"),
+        SearchResult(title="Python", url="https://docs.python.org", snippet="Python docs"),
+        SearchResult(title="GitHub", url="https://github.com", snippet="Code hosting"),
+    ]
+
+    def __init__(self, results: list[SearchResult] | None = None) -> None:
+        self._results = list(self._DEFAULT_RESULTS if results is None else results)
+
+    async def search(self, _query: str, *, num_results: int) -> list[SearchResult]:
+        return self._results[:num_results]
+
+
+# ---------------------------------------------------------------------------
+# Test fake
 # ---------------------------------------------------------------------------
 
 
-class TestMockWebSearchProvider:
+class TestFakeWebSearchProvider:
     @pytest.mark.asyncio
     async def test_returns_default_results(self) -> None:
-        provider = MockWebSearchProvider()
+        provider = FakeWebSearchProvider()
         results = await provider.search("python", num_results=3)
         assert len(results) == 3
         assert all(isinstance(r, SearchResult) for r in results)
 
     @pytest.mark.asyncio
     async def test_respects_num_results(self) -> None:
-        provider = MockWebSearchProvider()
+        provider = FakeWebSearchProvider()
         results = await provider.search("test", num_results=1)
         assert len(results) == 1
 
     @pytest.mark.asyncio
     async def test_num_results_zero_returns_empty(self) -> None:
-        provider = MockWebSearchProvider()
+        provider = FakeWebSearchProvider()
         results = await provider.search("anything", num_results=0)
         assert results == []
 
@@ -37,14 +52,14 @@ class TestMockWebSearchProvider:
         custom = [
             SearchResult(title="Custom", url="https://custom.io", snippet="custom snippet"),
         ]
-        provider = MockWebSearchProvider(results=custom)
+        provider = FakeWebSearchProvider(results=custom)
         results = await provider.search("whatever", num_results=5)
         assert len(results) == 1
         assert results[0].title == "Custom"
 
     @pytest.mark.asyncio
     async def test_results_have_required_fields(self) -> None:
-        provider = MockWebSearchProvider()
+        provider = FakeWebSearchProvider()
         results = await provider.search("q", num_results=2)
         for r in results:
             assert r.title
@@ -53,7 +68,7 @@ class TestMockWebSearchProvider:
 
     @pytest.mark.asyncio
     async def test_query_does_not_affect_mock_results(self) -> None:
-        provider = MockWebSearchProvider()
+        provider = FakeWebSearchProvider()
         r1 = await provider.search("query one", num_results=2)
         r2 = await provider.search("query two", num_results=2)
         assert r1 == r2
@@ -86,9 +101,9 @@ class TestWebSearchToolProperties:
     def test_parallelisable_default(self) -> None:
         assert WebSearchTool().parallelisable is True
 
-    def test_uses_mock_provider_by_default(self) -> None:
+    def test_uses_real_provider_by_default(self) -> None:
         tool = WebSearchTool()
-        assert isinstance(tool._provider, MockWebSearchProvider)
+        assert isinstance(tool._provider, DuckDuckGoLiteSearchProvider)
 
 
 # ---------------------------------------------------------------------------
@@ -110,14 +125,14 @@ class TestWebSearchToolExecute:
         assert result.is_error
 
     async def test_returns_formatted_results(self) -> None:
-        tool = WebSearchTool()
+        tool = WebSearchTool(provider=FakeWebSearchProvider())
         result = await tool.execute({"query": "python asyncio"})
         assert not result.is_error
         assert "1." in result.content
         assert "https://" in result.content
 
     async def test_num_results_controls_output(self) -> None:
-        provider = MockWebSearchProvider(
+        provider = FakeWebSearchProvider(
             results=[
                 SearchResult(title=f"Result {i}", url=f"https://r{i}.io", snippet=f"Snippet {i}")
                 for i in range(5)
@@ -130,14 +145,14 @@ class TestWebSearchToolExecute:
         assert "Result 2" not in result.content
 
     async def test_no_results_returns_friendly_message(self) -> None:
-        provider = MockWebSearchProvider(results=[])
+        provider = FakeWebSearchProvider(results=[])
         tool = WebSearchTool(provider=provider)
         result = await tool.execute({"query": "xyzzy"})
         assert not result.is_error
         assert "no results" in result.content.lower()
 
     async def test_result_contains_title_url_snippet(self) -> None:
-        provider = MockWebSearchProvider(
+        provider = FakeWebSearchProvider(
             results=[
                 SearchResult(title="MyTitle", url="https://myurl.io", snippet="MySummary"),
             ]
@@ -153,7 +168,7 @@ class TestWebSearchToolExecute:
         results = [
             SearchResult(title=f"R{i}", url=f"https://r{i}.io", snippet="s") for i in range(10)
         ]
-        provider = MockWebSearchProvider(results=results)
+        provider = FakeWebSearchProvider(results=results)
         tool = WebSearchTool(provider=provider, num_results=3)
         result = await tool.execute({"query": "q"})
         assert not result.is_error

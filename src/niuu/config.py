@@ -10,9 +10,9 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -247,35 +247,38 @@ def has_enabled_instance_kind(settings: Any, kind: InstanceKind) -> bool:
     return False
 
 
-def _env_csv_list(name: str, default: list[str]) -> list[str]:
-    raw = os.environ.get(name)
-    if raw is None:
-        return list(default)
-    value = raw.strip()
-    if not value:
-        return []
-    return [item.strip() for item in value.split(",") if item.strip()]
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-class CorsConfig(BaseModel):
+class CorsConfig(BaseSettings):
     """Shared CORS configuration for Niuu HTTP services."""
 
-    allowed_origins: list[str] = Field(default_factory=lambda: _env_csv_list("CORS_ORIGINS", ["*"]))
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        del cls, settings_cls, dotenv_settings
+        return env_settings, init_settings, file_secret_settings
+
+    allowed_origins: list[str] = Field(
+        default_factory=lambda: ["*"],
+        validation_alias=AliasChoices("allowed_origins", "CORS_ORIGINS"),
+    )
     allow_credentials: bool = Field(
-        default_factory=lambda: _env_bool("CORS_ALLOW_CREDENTIALS", True)
+        default=True,
+        validation_alias=AliasChoices("allow_credentials", "CORS_ALLOW_CREDENTIALS"),
     )
     allow_methods: list[str] = Field(
-        default_factory=lambda: _env_csv_list("CORS_ALLOW_METHODS", ["*"])
+        default_factory=lambda: ["*"],
+        validation_alias=AliasChoices("allow_methods", "CORS_ALLOW_METHODS"),
     )
     allow_headers: list[str] = Field(
-        default_factory=lambda: _env_csv_list("CORS_ALLOW_HEADERS", ["*"])
+        default_factory=lambda: ["*"],
+        validation_alias=AliasChoices("allow_headers", "CORS_ALLOW_HEADERS"),
     )
 
     @field_validator("allowed_origins", "allow_methods", "allow_headers", mode="before")
@@ -304,11 +307,69 @@ def _config_paths() -> list[Path]:
     ]
 
 
+class NiuuHostConfig(BaseSettings):
+    """Typed behavior for the unified local Niuu host."""
+
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        del cls, settings_cls, dotenv_settings
+        return env_settings, init_settings, file_secret_settings
+
+    cors_origins: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("cors_origins", "NIUU_CORS_ORIGINS"),
+    )
+    forge_state_file: str = Field(
+        default="~/.niuu/forge-state.json",
+        validation_alias=AliasChoices("forge_state_file", "NIUU_FORGE_STATE_FILE"),
+    )
+    no_web: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("no_web", "NIUU_NO_WEB"),
+    )
+    database_mode: Literal["auto", "embedded", "external"] = Field(
+        default="auto",
+        validation_alias=AliasChoices("database_mode", "NIUU_DATABASE_MODE"),
+    )
+    pgdata_dir: str = Field(
+        default="",
+        validation_alias=AliasChoices("pgdata_dir", "NIUU_PGDATA_DIR"),
+    )
+    external_database_host: str = Field(
+        default="",
+        validation_alias=AliasChoices("external_database_host", "DATABASE__HOST"),
+    )
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _parse_cors_origins(cls, value: object) -> object:
+        del cls
+        if not isinstance(value, str):
+            return value
+        return [item.strip() for item in value.split(",") if item.strip()]
+
+    @field_validator("database_mode", mode="before")
+    @classmethod
+    def _normalize_database_mode(cls, value: object) -> object:
+        del cls
+        if isinstance(value, str) and not value.strip():
+            return "auto"
+        return value
+
+
 class NiuuSettings(BaseSettings):
     """Minimal settings for the niuu shared services.
 
-    Reads only the ``git:`` section from the shared YAML config files
-    (same paths as Volundr) so niuu can load git provider configuration
+    Reads the shared git, CORS, and host sections from the platform YAML config
     without depending on ``volundr.config.Settings``.
     """
 
@@ -321,6 +382,7 @@ class NiuuSettings(BaseSettings):
 
     git: GitConfig = Field(default_factory=GitConfig)
     cors: CorsConfig = Field(default_factory=CorsConfig)
+    host: NiuuHostConfig = Field(default_factory=NiuuHostConfig)
 
     @classmethod
     def settings_customise_sources(

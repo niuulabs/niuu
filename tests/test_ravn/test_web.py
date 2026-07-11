@@ -57,7 +57,15 @@ def test_config_endpoint_returns_ravn_only(client: TestClient) -> None:
 
 
 def test_ravn_status_available(client: TestClient) -> None:
-    resp = client.get("/api/v1/ravn/status")
+    import httpx
+    import respx
+
+    with respx.mock(assert_all_called=False):
+        respx.get("http://localhost:8080/api/v1/forge/sessions").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        resp = client.get("/api/v1/ravn/status")
+
     assert resp.status_code == 200
     assert resp.json()["service"] == "ravn"
 
@@ -91,6 +99,9 @@ def test_ravn_settings_available(client: TestClient) -> None:
     data = resp.json()
     assert data["title"] == "Ravn"
     assert data["sections"][0]["id"] == "runtime"
+    fields = {field["key"]: field for field in data["sections"][0]["fields"]}
+    assert fields["trigger_store_available"]["value"] is False
+    assert fields["budget_store_available"]["value"] is False
 
 
 def test_personas_list_available(client: TestClient) -> None:

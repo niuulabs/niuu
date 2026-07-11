@@ -346,9 +346,8 @@ def test_create_api_app_lists_ravens_sessions_and_triggers():
     assert sessions.json()[0]["chat_endpoint"]
 
     triggers = client.get("/api/v1/ravn/triggers")
-    assert triggers.status_code == 200
-    assert isinstance(triggers.json(), list)
-    assert triggers.json()[0]["persona_name"]
+    assert triggers.status_code == 503
+    assert triggers.json()["detail"] == "Ravn trigger persistence is unavailable"
 
 
 def test_create_api_app_supports_session_messages_and_budget_routes():
@@ -389,15 +388,15 @@ def test_create_api_app_supports_session_messages_and_budget_routes():
     assert messages.json() == []
 
     budget = client.get("/api/v1/ravn/budget/a3f1b2c4-8e7d-4a6f-9b0c-1d2e3f4a5b6c")
-    assert budget.status_code == 200
-    assert budget.json()["spent_usd"] > 0
+    assert budget.status_code == 503
+    assert budget.json()["detail"] == "Ravn budget persistence is unavailable"
 
     fleet = client.get("/api/v1/ravn/budget/fleet")
-    assert fleet.status_code == 200
-    assert fleet.json()["cap_usd"] > 0
+    assert fleet.status_code == 503
+    assert fleet.json()["detail"] == "Ravn budget persistence is unavailable"
 
 
-def test_create_api_app_supports_trigger_crud():
+def test_create_api_app_rejects_trigger_mutation_without_store():
     from pathlib import Path
 
     from fastapi.testclient import TestClient
@@ -419,8 +418,9 @@ def test_create_api_app_supports_trigger_crud():
             "enabled": True,
         },
     )
-    assert created.status_code == 201
-    created_id = created.json()["id"]
+    assert created.status_code == 503
+    assert created.json()["detail"] == "Ravn trigger persistence is unavailable"
 
-    deleted = client.delete(f"/api/v1/ravn/triggers/{created_id}")
-    assert deleted.status_code == 204
+    deleted = client.delete("/api/v1/ravn/triggers/missing")
+    assert deleted.status_code == 503
+    assert deleted.json()["detail"] == "Ravn trigger persistence is unavailable"
