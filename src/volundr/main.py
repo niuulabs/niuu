@@ -1024,7 +1024,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         principal = Principal(
                             user_id=user_id or "",
                             email="",
-                            tenant_id=tenant_id or "",
+                            tenant_id=tenant_id or "default",
                             roles=list(roles),
                         )
                         try:
@@ -1043,7 +1043,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     principal = Principal(
                         user_id=user_id or "",
                         email="",
-                        tenant_id=tenant_id or "",
+                        tenant_id=tenant_id or "default",
                         roles=list(roles),
                     )
                     resource = Resource(
