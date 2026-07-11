@@ -1324,6 +1324,14 @@ class OpenShellGatewayPodManager(
         )
         if exit_code != 0:
             raise RuntimeError(f"OpenShell resident process stop failed: {output.strip()}")
+        files = self._resident_config_files(runtime, values)
+        for process in processes:
+            files.update(process.files)
+        await asyncio.to_thread(
+            self._client.write_files,
+            sandbox_id=sandbox.id,
+            files=files,
+        )
         env = {
             **self._resident_environment(runtime, values),
             **await self._resident_credential_environment(runtime, values),

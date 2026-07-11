@@ -1011,6 +1011,11 @@ async def test_resident_restart_reuses_sandbox_and_dynamic_provider_environment(
     assert client.bootstrap_execs[0]["script"] == adapter._resident_stop_script(
         ("skuld", "ravn", "sidecar")
     )
+    assert len(client.written_files) == 1
+    assert set(client.written_files[0]["files"]) == {
+        "/sandbox/.volundr/ravn.yaml",
+        "/sandbox/.volundr/skuld.yaml",
+    }
     assert client.execs[-1]["env"][adapter.CODEX_ACCESS_TOKEN_ENV] == (
         adapter.CODEX_ACCESS_TOKEN_REFERENCE
     )
