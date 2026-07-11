@@ -80,6 +80,7 @@ DEFAULT_SANDBOX_IMAGE = "ghcr.io/niuulabs/skuld:openshell-codex-openbao-20260709
 DEFAULT_SANDBOX_COMMAND = ["/usr/local/bin/openshell-run-installed-skuld"]
 DEFAULT_SERVICE_PORT = 9200
 READY_POLL_INTERVAL = 1.0
+DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS = 30.0
 BOOTSTRAP_TIMEOUT_SECONDS = 600
 BOOTSTRAP_GIT_ATTEMPTS = 20
 MAX_SANDBOX_ROUTING_NAME_LENGTH = 28
@@ -626,6 +627,7 @@ class OpenShellGatewayPodManager(
         plaintext: bool = True,
         command_timeout: float = 30.0,
         ready_timeout: float = 300.0,
+        resource_delete_timeout: float = DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS,
         credential_token_endpoint: str = DEFAULT_CREDENTIAL_TOKEN_ENDPOINT,
         volundr_api_url: str = "",
         workload_audience: str = "volundr-api",
@@ -662,6 +664,7 @@ class OpenShellGatewayPodManager(
         self._cpu = cpu
         self._memory = memory
         self._ready_timeout = float(ready_timeout)
+        self._resource_delete_timeout = float(resource_delete_timeout)
         self._credential_token_endpoint = credential_token_endpoint
         self._volundr_api_url = volundr_api_url.rstrip("/")
         self._workload_audience = workload_audience
@@ -1556,6 +1559,11 @@ class OpenShellGatewayPodManager(
         except Exception as exc:
             errors.append(exc)
             deleted = False
+        else:
+            try:
+                await self._wait_for_sandbox_deleted(sandbox_name)
+            except Exception as exc:
+                errors.append(exc)
         for grant in reversed(grants):
             try:
                 await asyncio.to_thread(self._client.delete_provider_grant, grant)
@@ -1567,6 +1575,16 @@ class OpenShellGatewayPodManager(
                 + "; ".join(str(error) for error in errors)
             )
         return deleted
+
+    async def _wait_for_sandbox_deleted(self, sandbox_name: str) -> None:
+        deadline = time.monotonic() + self._resource_delete_timeout
+        while await asyncio.to_thread(self._client.get_sandbox, sandbox_name) is not None:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"OpenShell sandbox {sandbox_name!r} was not deleted within "
+                    f"{self._resource_delete_timeout:g}s"
+                )
+            await asyncio.sleep(READY_POLL_INTERVAL)
 
     async def _resolve_credential_env(
         self,

@@ -9,6 +9,7 @@ import sys
 import tarfile
 import time
 import types
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import jwt
@@ -175,6 +176,8 @@ class _FakeOpenShellGatewayClient:
         self.deleted_services: list[dict] = []
         self.provider_grants: list[dict] = []
         self.deleted_grants: list[object] = []
+        self.delete_polls_remaining = 0
+        self.cleanup_events: list[str] = []
         self.written_files: list[dict] = []
         self.providers_v2_enabled = False
         self.service_url = "http://openshell.example/proxy/session-1"
@@ -193,6 +196,13 @@ class _FakeOpenShellGatewayClient:
         )
 
     def get_sandbox(self, name: str):
+        if name in self.deleted:
+            if self.delete_polls_remaining:
+                self.delete_polls_remaining -= 1
+                self.cleanup_events.append("sandbox-present")
+            else:
+                self.cleanup_events.append("sandbox-gone")
+                return None
         return self._adapter.OpenShellSandbox(
             id="sandbox-id",
             name=name,
@@ -228,6 +238,7 @@ class _FakeOpenShellGatewayClient:
         self.provider_grants.append(kwargs)
 
     def delete_provider_grant(self, grant) -> None:
+        self.cleanup_events.append("grant-deleted")
         self.deleted_grants.append(grant)
 
     def write_files(self, **kwargs) -> None:
@@ -672,6 +683,8 @@ async def test_resident_delete_removes_service_sandbox_and_provider_grants(
     runtime = _resident_runtime()
     client = _FakeOpenShellGatewayClient(adapter)
     client.created = {"providers": ("volundr-provider",)}
+    client.delete_polls_remaining = 2
+    monkeypatch.setattr(adapter.asyncio, "sleep", AsyncMock())
     manager = adapter.OpenShellGatewayPodManager(client=client)
 
     assert await manager.delete(runtime)
@@ -680,6 +693,12 @@ async def test_resident_delete_removes_service_sandbox_and_provider_grants(
     ]
     assert client.deleted == [f"resident-{runtime.id.hex[:19]}"]
     assert [grant.provider_name for grant in client.deleted_grants] == ["volundr-provider"]
+    assert client.cleanup_events == [
+        "sandbox-present",
+        "sandbox-present",
+        "sandbox-gone",
+        "grant-deleted",
+    ]
 
 
 @pytest.mark.asyncio
