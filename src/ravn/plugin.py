@@ -90,9 +90,6 @@ class RavnPlugin(ServicePlugin):
             ),
         )
 
-    def depends_on(self) -> Sequence[str]:
-        return []
-
     def register_commands(self, app: typer.Typer) -> None:
         """Mount ravn commands on the main app."""
         plugin = self
