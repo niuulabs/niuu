@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
-
 from niuu.settings_schema import (
     SettingsCredentialsResourceSchema,
     SettingsProviderSchema,

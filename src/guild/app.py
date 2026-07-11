@@ -18,10 +18,13 @@ from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import InstanceKind, InstanceVisibility
 from niuu.domain.services.instances import InstanceService
-from niuu.service_runtime import create_workload_identity_service
 from niuu.service_databases import apply_service_database_settings, database_pool
 from niuu.service_instances import seed_configured_instances
-from niuu.service_runtime import configure_logging, create_pat_validator
+from niuu.service_runtime import (
+    configure_logging,
+    create_pat_validator,
+    create_workload_identity_service,
+)
 from volundr.config import Settings
 
 

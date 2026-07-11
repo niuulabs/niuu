@@ -6,14 +6,11 @@ import os
 import re
 from collections.abc import Iterable
 from contextlib import asynccontextmanager
-from typing import TypeVar
 
 import asyncpg
 from pydantic import BaseModel
 
 from niuu.config_models import DatabaseConfig
-
-SettingsT = TypeVar("SettingsT", bound=BaseModel)
 
 _DB_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -290,7 +287,7 @@ def validate_database_name(name: str) -> str:
     return normalized
 
 
-def apply_service_database_settings(settings: SettingsT, service_name: str) -> SettingsT:
+def apply_service_database_settings[SettingsT: BaseModel](settings: SettingsT, service_name: str) -> SettingsT:
     """Return a settings copy using the configured database for *service_name*."""
     database_config = getattr(settings, "database", None)
     if database_config is None or not hasattr(database_config, "model_copy"):

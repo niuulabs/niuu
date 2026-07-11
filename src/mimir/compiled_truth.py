@@ -21,7 +21,6 @@ import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import TypeVar
 
 import yaml
 
@@ -30,8 +29,6 @@ from niuu.domain.mimir import (
     PageConfidence,
     PageType,
 )
-
-_E = TypeVar("_E", bound=StrEnum)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -157,7 +154,7 @@ def _parse_timeline_entries(timeline_body: str) -> list[TimelineEntry]:
     return entries
 
 
-def _parse_enum_field(raw: dict, key: str, enum_cls: type[_E]) -> _E | None:
+def _parse_enum_field[_E: StrEnum](raw: dict, key: str, enum_cls: type[_E]) -> _E | None:
     value = raw.get(key)
     if value is None:
         return None

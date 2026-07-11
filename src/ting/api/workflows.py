@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from niuu.domain.models import Principal
 from niuu.domain.services.token_scope import require_build_scope
+from niuu.domain.session_endpoint import public_session_endpoint
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.dispatch import resolve_volundr_factory
 from ting.domain.models import WorkflowDefinition, WorkflowScope
@@ -26,7 +27,6 @@ from ting.domain.utils import _session_name, _slugify
 from ting.domain.workflow_snapshot import build_workflow_snapshot, workflow_mimir_from_snapshot
 from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrSession
 from ting.ports.workflow_repository import WorkflowRepository
-from niuu.domain.session_endpoint import public_session_endpoint
 
 _DEFAULT_WORKFLOW_LAUNCH_DEFINITION = "skuldCodex"
 

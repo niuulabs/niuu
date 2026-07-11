@@ -29,11 +29,11 @@ class ObservatoryPlugin(ServicePlugin):
 
     def create_api_app(self, *, base_url: str | None = None) -> Any:
         from niuu.adapters.outbound.http_auth import NoAuthHeaderAdapter
-        from volundr.config import Settings
         from niuu.utils import import_class, resolve_secret_kwargs
         from observatory.app import create_app
         from observatory.discovery import ObservatoryDiscoveryService
         from observatory.entity_discovery import build_discovery_adapter
+        from volundr.config import Settings
 
         settings = Settings()
         guild_cfg = settings.observatory.guild

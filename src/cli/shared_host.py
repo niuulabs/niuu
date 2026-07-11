@@ -21,7 +21,6 @@ from niuu.config import GitConfig
 from niuu.cors import apply_cors_middleware
 from niuu.domain.services.pat import PATService
 from niuu.domain.services.repo import RepoService
-from niuu.service_runtime import create_workload_identity_service
 from niuu.service_database import database_pool
 from niuu.service_databases import apply_service_database_settings
 from niuu.service_integrations import (
@@ -30,13 +29,13 @@ from niuu.service_integrations import (
     seed_linear_integration,
 )
 from niuu.service_runtime import (
+    create_workload_identity_service,
     create_credential_store,
     create_identity_adapter,
     create_pat_validator,
     create_storage_adapter,
     release_credential_store,
 )
-from volundr.config import Settings
 from niuu.utils import import_class
 from ravn.adapters.personas.postgres_registry import PostgresPersonaRegistry
 from volundr.adapters.inbound.rest_credentials import create_canonical_credentials_router
@@ -54,6 +53,7 @@ from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
 from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
 from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
+from volundr.config import Settings
 from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.feature import FeatureService
 from volundr.domain.services.integration_registry import (
