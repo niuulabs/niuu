@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Path,
+    Query,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
@@ -18,6 +30,7 @@ from volundr.domain.models import (
     ResidentEngine,
     ResidentLogPage,
     ResidentRuntime,
+    ResidentSession,
 )
 from volundr.domain.services.resident_runtime import (
     ResidentProfileNotFoundError,
@@ -70,6 +83,15 @@ class ResidentUsageRequest(BaseModel):
     cost: float = Field(default=0, ge=0)
     message_count: int = Field(default=1, ge=0)
     provider: str = Field(default="", max_length=100)
+    model: str = Field(default="", max_length=255)
+
+
+class CreateResidentSessionRequest(BaseModel):
+    """Input for one native session inside a resident engine."""
+
+    model_config = _CAMEL
+
+    title: str = Field(min_length=1, max_length=255)
     model: str = Field(default="", max_length=255)
 
 
@@ -184,6 +206,105 @@ def create_resident_runtimes_router(service: ResidentRuntimeService) -> APIRoute
             )
         except Exception as exc:
             raise _resident_error(exc) from exc
+
+    @router.get(
+        "/resident-runtimes/{runtime_id}/sessions",
+        response_model=list[ResidentSession],
+    )
+    async def list_resident_sessions(
+        runtime_id: UUID,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[ResidentSession]:
+        try:
+            return await service.list_sessions(principal, runtime_id)
+        except Exception as exc:
+            raise _resident_error(exc) from exc
+
+    @router.post(
+        "/resident-runtimes/{runtime_id}/sessions",
+        response_model=ResidentSession,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_resident_session(
+        runtime_id: UUID,
+        body: CreateResidentSessionRequest,
+        principal: Principal = Depends(extract_principal),
+    ) -> ResidentSession:
+        try:
+            return await service.create_session(
+                principal,
+                runtime_id,
+                title=body.title,
+                model=body.model,
+            )
+        except Exception as exc:
+            raise _resident_error(exc) from exc
+
+    @router.delete(
+        "/resident-runtimes/{runtime_id}/sessions/{session_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def delete_resident_session(
+        runtime_id: UUID,
+        session_id: UUID,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        try:
+            await service.delete_session(principal, runtime_id, session_id)
+        except Exception as exc:
+            raise _resident_error(exc) from exc
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @router.websocket("/resident-runtimes/{runtime_id}/sessions/{session_id}/chat")
+    async def resident_session_chat(
+        websocket: WebSocket,
+        runtime_id: UUID,
+        session_id: UUID,
+    ) -> None:
+        from niuu.app import _proxy_ws_identity
+
+        user_id, tenant_id, roles = _proxy_ws_identity(websocket)
+        if not user_id:
+            await websocket.close(code=1008, reason="Not authorized for this resident")
+            return
+        principal = Principal(
+            user_id=user_id,
+            email="",
+            tenant_id=tenant_id or "",
+            roles=list(roles),
+        )
+        try:
+            connection = await service.connect_chat(principal, runtime_id, session_id)
+        except Exception:
+            await websocket.close(code=1008, reason="Resident session is unavailable")
+            return
+        await websocket.accept()
+
+        async def browser_to_engine() -> None:
+            while True:
+                await connection.send(await websocket.receive_json())
+
+        async def engine_to_browser() -> None:
+            while True:
+                await websocket.send_json(await connection.receive())
+
+        tasks = [
+            asyncio.create_task(browser_to_engine()),
+            asyncio.create_task(engine_to_browser()),
+        ]
+        try:
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            for task in tasks:
+                task.cancel()
+            for task in tasks:
+                with suppress(Exception, asyncio.CancelledError):
+                    await task
+            await connection.close()
+            with suppress(Exception):
+                await websocket.close()
 
     @router.post("/resident-runtimes/{runtime_id}/suspend", response_model=ResidentRuntime)
     async def suspend_resident_runtime(

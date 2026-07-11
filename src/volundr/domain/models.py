@@ -1645,6 +1645,32 @@ class ResidentRuntime(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
+class ResidentSessionStatus(StrEnum):
+    """Normalized activity state for one engine-owned resident session."""
+
+    IDLE = "idle"
+    RUNNING = "running"
+    FAILED = "failed"
+
+
+class ResidentSession(BaseModel):
+    """Backend-neutral projection of an engine-owned resident session."""
+
+    id: UUID
+    resident_id: UUID
+    title: str = ""
+    model: str = ""
+    status: ResidentSessionStatus = ResidentSessionStatus.IDLE
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    message_count: int = Field(default=0, ge=0)
+    tokens_used: int = Field(default=0, ge=0)
+    cost: Decimal = Field(default=Decimal("0"), ge=0)
+    chat_endpoint: str = ""
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
 class ResourceCategory(StrEnum):
     """Category of a resource type."""
 

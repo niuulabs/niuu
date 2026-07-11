@@ -478,6 +478,57 @@ def create_app(
             _raise_platform_error(exc)
         return Response(status_code=http_status.HTTP_204_NO_CONTENT)
 
+    @app.get("/api/v1/ravn/ravens/{ravn_id}/sessions")
+    async def list_resident_sessions_endpoint(
+        ravn_id: str,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> list[dict]:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            return await resident_directory.list_resident_sessions(
+                ravn_id, auth_headers, auth_params
+            )
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+
+    @app.post(
+        "/api/v1/ravn/ravens/{ravn_id}/sessions",
+        status_code=http_status.HTTP_201_CREATED,
+    )
+    async def create_resident_session_endpoint(
+        ravn_id: str,
+        body: dict,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> dict:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            return await resident_directory.create_resident_session(
+                ravn_id, body, auth_headers, auth_params
+            )
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+
+    @app.delete(
+        "/api/v1/ravn/ravens/{ravn_id}/sessions/{session_id}",
+        status_code=http_status.HTTP_204_NO_CONTENT,
+    )
+    async def delete_resident_session_endpoint(
+        ravn_id: str,
+        session_id: str,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> Response:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            await resident_directory.delete_resident_session(
+                ravn_id, session_id, auth_headers, auth_params
+            )
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+        return Response(status_code=http_status.HTTP_204_NO_CONTENT)
+
     @app.get("/api/v1/ravn/deployment-profiles")
     async def list_resident_profiles_endpoint(
         request: Request,

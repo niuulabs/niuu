@@ -46,9 +46,11 @@ from volundr.domain.models import (
     ResidentCondition,
     ResidentDeploymentProfile,
     ResidentEndpoint,
+    ResidentEngine,
     ResidentLogPage,
     ResidentObservedState,
     ResidentRuntime,
+    ResidentSession,
     RoomParticipantInfo,
     SavedPrompt,
     SecretInfo,
@@ -634,6 +636,57 @@ class ResidentRuntimeProxyTargetResolver(ABC):
     @abstractmethod
     def resident_proxy_target(self, runtime: ResidentRuntime) -> SessionProxyTarget | None:
         """Resolve the backend service reached by the shared session proxy."""
+
+
+class ResidentChatConnection(ABC):
+    """One normalized shared-chat connection to a resident engine session."""
+
+    @abstractmethod
+    async def receive(self) -> dict[str, Any]:
+        """Receive the next shared-chat frame."""
+
+    @abstractmethod
+    async def send(self, frame: dict[str, Any]) -> None:
+        """Send one shared-chat command."""
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Close the engine connection."""
+
+
+class ResidentSessionController(ABC):
+    """Engine protocol port for sessions hosted by a resident runtime."""
+
+    @property
+    @abstractmethod
+    def engine(self) -> ResidentEngine:
+        """Return the resident engine implemented by this controller."""
+
+    @abstractmethod
+    async def list_sessions(self, runtime: ResidentRuntime) -> list[ResidentSession]:
+        """List engine-owned sessions for one resident."""
+
+    @abstractmethod
+    async def create_session(
+        self,
+        runtime: ResidentRuntime,
+        *,
+        title: str,
+        model: str,
+    ) -> ResidentSession:
+        """Create one durable engine-owned session."""
+
+    @abstractmethod
+    async def delete_session(self, runtime: ResidentRuntime, session_id: UUID) -> None:
+        """Delete one engine-owned session and transcript."""
+
+    @abstractmethod
+    async def connect_chat(
+        self,
+        runtime: ResidentRuntime,
+        session_id: UUID,
+    ) -> ResidentChatConnection:
+        """Open a normalized shared-chat connection."""
 
 
 class ResidentRuntimeRepository(ABC):

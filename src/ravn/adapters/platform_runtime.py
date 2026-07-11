@@ -145,6 +145,46 @@ class HttpPlatformRuntimeAdapter:
             raise RuntimeError("Platform resident logs returned an unexpected payload")
         return payload
 
+    async def list_resident_sessions(
+        self,
+        runtime_id: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        return await self._get_list(
+            f"/api/v1/forge/resident-runtimes/{runtime_id}/sessions",
+            auth_headers,
+            auth_params,
+        )
+
+    async def create_resident_session(
+        self,
+        runtime_id: str,
+        body: dict[str, Any],
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any]:
+        return await self._post_item(
+            f"/api/v1/forge/resident-runtimes/{runtime_id}/sessions",
+            body,
+            auth_headers,
+            auth_params,
+        )
+
+    async def delete_resident_session(
+        self,
+        runtime_id: str,
+        session_id: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> None:
+        response = await self._client.delete(
+            f"/api/v1/forge/resident-runtimes/{runtime_id}/sessions/{session_id}",
+            headers=auth_headers,
+            params=auth_params,
+        )
+        response.raise_for_status()
+
     async def aclose(self) -> None:
         await self._client.aclose()
 

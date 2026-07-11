@@ -442,6 +442,43 @@ class TestStandaloneMerge:
 
 class TestListSessions:
     @respx.mock
+    async def test_expands_engine_owned_sessions_instead_of_resident_shell(self):
+        runtime = _managed_runtime(
+            engine="openclaw",
+            capabilities=["chat", "session.list", "session.create"],
+            endpoints=[
+                {
+                    "kind": "sessions",
+                    "protocol": "openclaw-gateway-v4",
+                    "url": "/api/v1/forge/resident-runtimes/runtime/sessions",
+                }
+            ],
+        )
+        respx.get(f"{_BASE}/api/v1/forge/sessions").mock(return_value=httpx.Response(200, json=[]))
+        native_id = "11111111-2222-4333-8444-555555555555"
+        respx.get(f"{_BASE}/api/v1/forge/resident-runtimes/{runtime['id']}/sessions").mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": native_id,
+                        "residentId": runtime["id"],
+                        "title": "Persistent work",
+                        "status": "idle",
+                        "model": "openai/gpt-5.6",
+                    }
+                ],
+            )
+        )
+        directory = _directory(managed=[runtime])
+
+        sessions = await directory.list_sessions(_PRINCIPAL, {}, {})
+
+        assert [session["id"] for session in sessions] == [native_id]
+        assert sessions[0]["ravn_id"] == runtime["id"]
+        assert sessions[0]["chat_endpoint"] == (f"/s/{runtime['id']}/sessions/{native_id}/session")
+
+    @respx.mock
     async def test_lists_only_flock_sessions_with_chat(self):
         respx.get(f"{_BASE}/api/v1/forge/sessions").mock(
             return_value=httpx.Response(

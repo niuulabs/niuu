@@ -157,6 +157,93 @@ def create_ravn_session_proxy_router(service: InstanceService) -> APIRouter:
             with suppress(Exception):
                 await websocket.close()
 
+    @router.websocket("/s/{ravn_id}/sessions/{session_id}/session")
+    async def proxy_resident_session(
+        websocket: WebSocket,
+        ravn_id: str,
+        session_id: str,
+    ) -> None:
+        user_id, tenant_id, roles = _proxy_ws_identity(websocket)
+        if not user_id:
+            await websocket.close(code=1008, reason="Not authorized for this resident")
+            return
+        principal = Principal(
+            user_id=user_id,
+            email="",
+            tenant_id=tenant_id or "",
+            roles=list(roles),
+        )
+        instance_hint = str(websocket.query_params.get("instance_id") or "").strip()
+        if instance_hint:
+            try:
+                instances = [await _resolve_target_instance(service, principal, instance_hint)]
+            except HTTPException:
+                await websocket.close(code=1008, reason="Target is not visible")
+                return
+        else:
+            instances = await _visible_instances(service, principal)
+
+        headers = _proxy_forward_headers(
+            websocket,
+            include_cookie=False,
+            forward_dev_params=True,
+        )
+        token = _bearer_token_from_ws(websocket)
+        if token and not any(key.lower() == "authorization" for key in headers):
+            headers["authorization"] = f"Bearer {token}"
+
+        owner: RegisteredInstance | None = None
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for instance in instances:
+                try:
+                    response = await client.get(
+                        f"{_ravn_base_url(instance).rstrip('/')}{_RAVN_REMOTE_PREFIX}/ravens/"
+                        f"{quote(ravn_id, safe='')}",
+                        headers=headers,
+                    )
+                except httpx.HTTPError:
+                    continue
+                if response.status_code == status.HTTP_200_OK:
+                    owner = instance
+                    break
+        if owner is None:
+            await websocket.close(code=4410, reason="Resident is no longer available")
+            return
+
+        parsed = urlsplit(owner.base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            await websocket.close(code=1011, reason="Target has no public endpoint")
+            return
+        query = urlencode(
+            [
+                (key, value)
+                for key, value in websocket.query_params.multi_items()
+                if key != "instance_id"
+            ]
+        )
+        connect_url = urlunsplit(
+            (
+                "wss" if parsed.scheme == "https" else "ws",
+                parsed.netloc,
+                "/api/v1/forge/resident-runtimes/"
+                f"{quote(ravn_id, safe='')}/sessions/{quote(session_id, safe='')}/chat",
+                query,
+                "",
+            )
+        )
+        try:
+            await _bridge_websocket(
+                websocket,
+                connect_url,
+                include_cookie=False,
+                forward_dev_params=True,
+            )
+        except Exception:
+            logger.debug("Remote resident socket ended for %s/%s", ravn_id, session_id)
+        finally:
+            with suppress(Exception):
+                await websocket.close()
+
     return router
 
 
@@ -406,6 +493,102 @@ def create_ravn_router(
             instance_id,
             params,
         )
+
+    @router.get("/ravens/{ravn_id}/sessions")
+    async def list_resident_sessions(
+        request: Request,
+        ravn_id: str,
+        instance_id: str | None = Query(default=None),
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict[str, Any]]:
+        """List native sessions from the resident-owning target."""
+        if instance_id:
+            instance = await _resolve_target_instance(service, principal, instance_id)
+            response = await _request_remote(
+                instance,
+                request,
+                method="GET",
+                path=f"/ravens/{ravn_id}/sessions",
+                remote_prefix=_RAVN_REMOTE_PREFIX,
+                base_url=_ravn_base_url(instance),
+                embedded_app=embedded_forge_app,
+            )
+            _ensure_remote_success(response)
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Unexpected session payload")
+            return [
+                _with_instance(item, instance, rebase_chat_endpoint=False)
+                for item in payload
+                if isinstance(item, dict)
+            ]
+        raven = await _find_owner_payload(
+            request,
+            principal,
+            f"/ravens/{ravn_id}",
+            f"Ravn not found: {ravn_id}",
+            None,
+        )
+        return await list_resident_sessions(
+            request,
+            ravn_id,
+            str(raven.get("instance_id") or raven.get("instanceId") or ""),
+            principal,
+        )
+
+    @router.post(
+        "/ravens/{ravn_id}/sessions",
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_resident_session(
+        request: Request,
+        ravn_id: str,
+        body: dict[str, Any] = Body(default_factory=dict),
+        instance_id: str = Query(description="Owning target instance UUID"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance = await _resolve_target_instance(service, principal, instance_id)
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/ravens/{ravn_id}/sessions",
+            remote_prefix=_RAVN_REMOTE_PREFIX,
+            base_url=_ravn_base_url(instance),
+            json_body=body,
+            embedded_app=embedded_forge_app,
+            timeout=_RESIDENT_COMMAND_TIMEOUT_SECONDS,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Unexpected session payload")
+        return _with_instance(payload, instance, rebase_chat_endpoint=False)
+
+    @router.delete(
+        "/ravens/{ravn_id}/sessions/{session_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def delete_resident_session(
+        request: Request,
+        ravn_id: str,
+        session_id: str,
+        instance_id: str = Query(description="Owning target instance UUID"),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        instance = await _resolve_target_instance(service, principal, instance_id)
+        response = await _request_remote(
+            instance,
+            request,
+            method="DELETE",
+            path=f"/ravens/{ravn_id}/sessions/{session_id}",
+            remote_prefix=_RAVN_REMOTE_PREFIX,
+            base_url=_ravn_base_url(instance),
+            embedded_app=embedded_forge_app,
+            timeout=_RESIDENT_COMMAND_TIMEOUT_SECONDS,
+        )
+        _ensure_remote_success(response)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @router.post("/ravens/{ravn_id}/suspend")
     async def suspend_raven(

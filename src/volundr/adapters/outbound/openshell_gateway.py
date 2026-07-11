@@ -950,12 +950,28 @@ class OpenShellGatewayPodManager(
         return ResidentBackend.OPENSHELL
 
     def supports(self, profile: ResidentDeploymentProfile) -> bool:
-        """OpenShell currently supports running Ravn residents without suspension."""
-        return (
-            profile.backend is ResidentBackend.OPENSHELL
-            and profile.engine is ResidentEngine.RAVN
-            and ResidentCapability.RUNTIME_SUSPEND not in profile.capabilities
-        )
+        """Run declared resident engines without unsupported sandbox suspension."""
+        if (
+            profile.backend is not ResidentBackend.OPENSHELL
+            or ResidentCapability.RUNTIME_SUSPEND in profile.capabilities
+        ):
+            return False
+        if profile.engine is ResidentEngine.RAVN:
+            return True
+        if profile.engine is not ResidentEngine.OPENCLAW:
+            return False
+        try:
+            values = _resident_profile_values(profile)
+            openshell = values.get("openshell")
+            return (
+                isinstance(openshell, dict)
+                and openshell.get("processMode") == "replace"
+                and bool(_runtime_processes_from_values(values))
+                and isinstance(openshell.get("service"), dict)
+                and int(openshell["service"].get("port") or 0) > 0
+            )
+        except (RuntimeError, TypeError, ValueError):
+            return False
 
     async def deploy(
         self,
@@ -968,6 +984,21 @@ class OpenShellGatewayPodManager(
         subject = self._resident_subject(runtime)
         sandbox_name = self._resident_sandbox_name(runtime)
         env = self._resident_environment(runtime, values)
+        machine_credential: dict[str, str] | None = None
+        if runtime.engine is ResidentEngine.OPENCLAW:
+            if self._credential_store is None:
+                raise RuntimeError("OpenClaw residents require the configured credential store")
+            from volundr.adapters.outbound.openclaw_gateway import (
+                ensure_openclaw_machine_credential,
+            )
+
+            machine_credential = await ensure_openclaw_machine_credential(
+                self._credential_store, runtime
+            )
+            env.setdefault("OPENCLAW_STATE_DIR", f"{self._sandbox_workspace}/.openclaw")
+        service_name, service_port = _resident_service(
+            values, self._service_name, self._service_port
+        )
         credential_context = OpenShellCredentialContext(files={}, providers=(), environment={})
         grants: tuple[OpenShellProviderGrant, ...] = ()
         try:
@@ -1004,7 +1035,7 @@ class OpenShellGatewayPodManager(
                 **credential_context.files,
                 **self._resident_config_files(runtime, values),
             }
-            processes = _runtime_processes_from_values(values)
+            processes = self._resident_processes(runtime, values)
             for process in processes:
                 files.update(process.files)
             await asyncio.to_thread(
@@ -1012,21 +1043,26 @@ class OpenShellGatewayPodManager(
                 sandbox_id=ready.id,
                 files=files,
             )
-            await self._launch_resident_processes(ready.id, runtime, env, processes)
-            await self._wait_for_resident_processes(ready.id)
+            process_env = dict(env)
+            if machine_credential is not None:
+                process_env["OPENCLAW_GATEWAY_TOKEN"] = machine_credential["gateway_token"]
+            await self._launch_resident_processes(ready.id, process_env, processes)
+            await self._wait_for_resident_processes(ready.id, processes)
             service_url = await asyncio.to_thread(
                 self._client.expose_service,
                 sandbox_name=sandbox_name,
-                target_port=self._service_port,
-                service=self._service_name,
+                target_port=service_port,
+                service=service_name,
             )
             if not service_url and not self._gateway_public_url:
                 raise RuntimeError("OpenShell did not return a resident service URL")
         except Exception:
             try:
-                await self._cleanup_resources(sandbox_name, grants)
+                await self._cleanup_resources(sandbox_name, grants, service_name=service_name)
             except Exception:
                 logger.exception("OpenShell resident rollback failed for %s", runtime.id)
+            if runtime.engine is ResidentEngine.OPENCLAW and self._credential_store is not None:
+                await self._credential_store.delete("resident", str(runtime.id), "openclaw-gateway")
             raise
 
         resolved_service_url = (service_url or self._gateway_public_url).rstrip("/")
@@ -1037,6 +1073,9 @@ class OpenShellGatewayPodManager(
             ready,
             service_url=resolved_service_url,
             processes_ready=True,
+            service_name=service_name,
+            service_port=service_port,
+            process_names=tuple(process.name for process in processes),
         )
 
     async def reconcile(
@@ -1064,14 +1103,22 @@ class OpenShellGatewayPodManager(
                 ],
             )
         processes_ready = False
+        values = _resident_profile_values(profile)
+        processes = self._resident_processes(runtime, values)
         if sandbox.ready:
-            processes_ready = await self._resident_processes_ready(sandbox.id)
+            processes_ready = await self._resident_processes_ready(sandbox.id, processes)
         service_url = str(runtime.backend_ref.get("service_url") or "")
+        service_name, service_port = _resident_service(
+            values, self._service_name, self._service_port
+        )
         return self._resident_observation(
             runtime,
             sandbox,
             service_url=service_url,
             processes_ready=processes_ready,
+            service_name=service_name,
+            service_port=service_port,
+            process_names=tuple(process.name for process in processes),
         )
 
     async def restart(
@@ -1088,10 +1135,11 @@ class OpenShellGatewayPodManager(
         )
         if sandbox is None or not sandbox.ready:
             raise RuntimeError("OpenShell resident sandbox is not ready")
+        processes = self._resident_processes(runtime, values)
         exit_code, output = await asyncio.to_thread(
             self._client.exec_script,
             sandbox_id=sandbox.id,
-            script=_resident_stop_script(),
+            script=_resident_stop_script(tuple(process.name for process in processes)),
             env={},
         )
         if exit_code != 0:
@@ -1100,18 +1148,28 @@ class OpenShellGatewayPodManager(
             **self._resident_environment(runtime, values),
             **await self._resident_credential_environment(runtime, values),
         }
-        await self._launch_resident_processes(
-            sandbox.id,
-            runtime,
-            env,
-            _runtime_processes_from_values(values),
+        if runtime.engine is ResidentEngine.OPENCLAW:
+            if self._credential_store is None:
+                raise RuntimeError("OpenClaw residents require the configured credential store")
+            machine = await self._credential_store.get_value(
+                "resident", str(runtime.id), "openclaw-gateway"
+            )
+            if not machine or not machine.get("gateway_token"):
+                raise RuntimeError("OpenClaw resident machine credential is unavailable")
+            env["OPENCLAW_GATEWAY_TOKEN"] = machine["gateway_token"]
+        await self._launch_resident_processes(sandbox.id, env, processes)
+        await self._wait_for_resident_processes(sandbox.id, processes)
+        service_name, service_port = _resident_service(
+            values, self._service_name, self._service_port
         )
-        await self._wait_for_resident_processes(sandbox.id)
         return self._resident_observation(
             runtime,
             sandbox,
             service_url=str(runtime.backend_ref.get("service_url") or ""),
             processes_ready=True,
+            service_name=service_name,
+            service_port=service_port,
+            process_names=tuple(process.name for process in processes),
         )
 
     async def suspend(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
@@ -1133,7 +1191,14 @@ class OpenShellGatewayPodManager(
                     for name in sandbox.providers
                     if name.startswith("volundr-")
                 )
-        return await self._cleanup_resources(sandbox_name, grants)
+        deleted = await self._cleanup_resources(
+            sandbox_name,
+            grants,
+            service_name=str(runtime.backend_ref.get("service_name") or self._service_name),
+        )
+        if runtime.engine is ResidentEngine.OPENCLAW and self._credential_store is not None:
+            await self._credential_store.delete("resident", runtime_id, "openclaw-gateway")
+        return deleted
 
     async def logs(
         self,
@@ -1156,9 +1221,13 @@ class OpenShellGatewayPodManager(
             sources=sources,
             min_level=min_level,
         )
-        process_sources = tuple(
-            source for source in ("skuld", "ravn") if not sources or source in sources
+        configured_names = runtime.backend_ref.get("process_names") or (
+            ("openclaw",) if runtime.engine is ResidentEngine.OPENCLAW else ("skuld", "ravn")
         )
+        process_names = tuple(
+            str(source) for source in configured_names if not sources or str(source) in sources
+        )
+        process_sources = process_names
         if not process_sources:
             return native_page
         exit_code, output = await asyncio.to_thread(
@@ -1183,11 +1252,36 @@ class OpenShellGatewayPodManager(
     async def _launch_resident_processes(
         self,
         sandbox_id: str,
-        runtime: ResidentRuntime,
         env: dict[str, str],
-        extra_processes: Sequence[OpenShellRuntimeProcess],
+        processes: Sequence[OpenShellRuntimeProcess],
     ) -> None:
-        processes = [
+        for process in processes:
+            exit_code = await asyncio.to_thread(
+                self._client.exec_detached,
+                sandbox_id=sandbox_id,
+                command=process.command,
+                env={**env, **process.env},
+                log_path=process.log_path,
+                pid_path=f"/sandbox/.volundr/{process.name}.pid",
+            )
+            if exit_code != 0:
+                raise RuntimeError(
+                    f"OpenShell resident process {process.name!r} failed with exit {exit_code}"
+                )
+
+    def _resident_processes(
+        self,
+        runtime: ResidentRuntime,
+        values: dict[str, Any],
+    ) -> tuple[OpenShellRuntimeProcess, ...]:
+        configured = _runtime_processes_from_values(values)
+        openshell = values.get("openshell")
+        replace = isinstance(openshell, dict) and openshell.get("processMode") == "replace"
+        if replace:
+            if not configured:
+                raise RuntimeError("Replacing resident processes requires at least one process")
+            return configured
+        defaults = (
             OpenShellRuntimeProcess(
                 name="skuld",
                 command=tuple(self._sandbox_command),
@@ -1209,35 +1303,30 @@ class OpenShellGatewayPodManager(
                 files={},
                 log_path="/sandbox/.volundr/ravn.log",
             ),
-            *extra_processes,
-        ]
-        for process in processes:
-            exit_code = await asyncio.to_thread(
-                self._client.exec_detached,
-                sandbox_id=sandbox_id,
-                command=process.command,
-                env={**env, **process.env},
-                log_path=process.log_path,
-                pid_path=f"/sandbox/.volundr/{process.name}.pid",
-            )
-            if exit_code != 0:
-                raise RuntimeError(
-                    f"OpenShell resident process {process.name!r} failed with exit {exit_code}"
-                )
+        )
+        return (*defaults, *configured)
 
-    async def _resident_processes_ready(self, sandbox_id: str) -> bool:
+    async def _resident_processes_ready(
+        self,
+        sandbox_id: str,
+        processes: Sequence[OpenShellRuntimeProcess],
+    ) -> bool:
         exit_code, _ = await asyncio.to_thread(
             self._client.exec_script,
             sandbox_id=sandbox_id,
-            script=_resident_health_script(),
+            script=_resident_health_script(tuple(process.name for process in processes)),
             env={},
         )
         return exit_code == 0
 
-    async def _wait_for_resident_processes(self, sandbox_id: str) -> None:
+    async def _wait_for_resident_processes(
+        self,
+        sandbox_id: str,
+        processes: Sequence[OpenShellRuntimeProcess],
+    ) -> None:
         deadline = time.monotonic() + self._ready_timeout
         while time.monotonic() < deadline:
-            if await self._resident_processes_ready(sandbox_id):
+            if await self._resident_processes_ready(sandbox_id, processes):
                 return
             await asyncio.sleep(READY_POLL_INTERVAL)
         raise TimeoutError(
@@ -1249,6 +1338,8 @@ class OpenShellGatewayPodManager(
         runtime: ResidentRuntime,
         values: dict[str, Any],
     ) -> dict[str, bytes]:
+        if runtime.engine is not ResidentEngine.RAVN:
+            return {}
         return {
             "/sandbox/.volundr/skuld.yaml": yaml.safe_dump(
                 _resident_skuld_config(
@@ -1302,6 +1393,9 @@ class OpenShellGatewayPodManager(
         *,
         service_url: str,
         processes_ready: bool,
+        service_name: str,
+        service_port: int,
+        process_names: Sequence[str],
     ) -> ResidentRuntimeObservation:
         observed_state = _resident_state_from_sandbox(sandbox, processes_ready)
         conditions = [
@@ -1324,13 +1418,22 @@ class OpenShellGatewayPodManager(
         ]
         endpoints = []
         if service_url:
-            endpoints.append(
-                ResidentEndpoint(
-                    kind="chat",
-                    protocol="skuld-v1",
-                    url=f"/s/{runtime.id}/session",
+            if runtime.engine is ResidentEngine.RAVN:
+                endpoints.append(
+                    ResidentEndpoint(
+                        kind="chat",
+                        protocol="skuld-v1",
+                        url=f"/s/{runtime.id}/session",
+                    )
                 )
-            )
+            else:
+                endpoints.append(
+                    ResidentEndpoint(
+                        kind="sessions",
+                        protocol="openclaw-gateway-v4",
+                        url=f"/api/v1/forge/resident-runtimes/{runtime.id}/sessions",
+                    )
+                )
         return ResidentRuntimeObservation(
             observed_state=observed_state,
             backend_ref={
@@ -1338,10 +1441,38 @@ class OpenShellGatewayPodManager(
                 "id": sandbox.id,
                 "name": sandbox.name,
                 "service_url": service_url,
+                "service_name": service_name,
+                "service_port": service_port,
+                "process_names": list(process_names),
             },
             endpoints=endpoints,
             conditions=conditions,
         )
+
+    async def approve_resident_device(
+        self,
+        runtime: ResidentRuntime,
+        *,
+        request_id: str,
+        gateway_token: str,
+    ) -> None:
+        """Approve one challenged Volundr device from inside its owning sandbox."""
+        sandbox = await asyncio.to_thread(
+            self._client.get_sandbox, self._resident_sandbox_name(runtime)
+        )
+        if sandbox is None or not sandbox.ready:
+            raise RuntimeError("OpenClaw resident sandbox is not ready for device pairing")
+        exit_code, output = await asyncio.to_thread(
+            self._client.exec_script,
+            sandbox_id=sandbox.id,
+            script=f"openclaw devices approve {shlex.quote(request_id)}",
+            env={
+                "OPENCLAW_GATEWAY_TOKEN": gateway_token,
+                "OPENCLAW_STATE_DIR": f"{self._sandbox_workspace}/.openclaw",
+            },
+        )
+        if exit_code != 0:
+            raise RuntimeError(f"OpenClaw device pairing failed: {output.strip()}")
 
     @staticmethod
     def _resident_sandbox_name(runtime: ResidentRuntime) -> str:
@@ -1544,13 +1675,15 @@ class OpenShellGatewayPodManager(
         self,
         sandbox_name: str,
         grants: Sequence[OpenShellProviderGrant],
+        *,
+        service_name: str | None = None,
     ) -> bool:
         errors: list[Exception] = []
         try:
             await asyncio.to_thread(
                 self._client.delete_service,
                 sandbox_name=sandbox_name,
-                service=self._service_name,
+                service=service_name or self._service_name,
             )
         except Exception as exc:
             errors.append(exc)
@@ -2162,6 +2295,24 @@ def _resident_profile_values(profile: ResidentDeploymentProfile) -> dict[str, An
     return values
 
 
+def _resident_service(
+    values: dict[str, Any],
+    default_name: str,
+    default_port: int,
+) -> tuple[str, int]:
+    openshell = values.get("openshell")
+    if not isinstance(openshell, dict):
+        return default_name, default_port
+    service = openshell.get("service")
+    if not isinstance(service, dict):
+        return default_name, default_port
+    name = str(service.get("name") or default_name).strip()
+    port = int(service.get("port") or default_port)
+    if not name or port < 1 or port > 65535:
+        raise RuntimeError("OpenShell resident service configuration is invalid")
+    return name, port
+
+
 def _resident_skuld_config(
     runtime: ResidentRuntime,
     values: dict[str, Any],
@@ -2524,34 +2675,44 @@ def _resident_state_from_sandbox(
     return ResidentObservedState.DEPLOYING
 
 
-def _resident_health_script() -> str:
-    return """\
-set -eu
-pgrep -f '^/opt/niuu/bin/python -m skuld$' >/dev/null
-pgrep -f '^/opt/niuu/bin/python -m ravn daemon --config /sandbox/.volundr/ravn.yaml ' >/dev/null
-"""
+def _resident_health_script(
+    process_names: Sequence[str] = ("skuld", "ravn"),
+) -> str:
+    lines = ["set -eu"]
+    for name in process_names:
+        pid_path = f"/sandbox/.volundr/{name}.pid"
+        lines.append(f'test -s {shlex.quote(pid_path)} && kill -0 "$(cat {shlex.quote(pid_path)})"')
+    return "\n".join(lines)
 
 
-def _resident_stop_script() -> str:
-    return """\
+def _resident_stop_script(
+    process_names: Sequence[str] = ("skuld", "ravn"),
+) -> str:
+    quoted = " ".join(shlex.quote(name) for name in process_names)
+    return f"""\
 set -eu
-terminate() {
-  pattern="$1"
-  pids="$(pgrep -f "$pattern" || true)"
-  if [ -n "$pids" ]; then
-    kill $pids 2>/dev/null || true
-    for _ in 1 2 3 4 5; do
-      pgrep -f "$pattern" >/dev/null || return 0
-      sleep 1
-    done
-    pids="$(pgrep -f "$pattern" || true)"
-    [ -z "$pids" ] || kill -9 $pids 2>/dev/null || true
+for name in {quoted}; do
+  pid_file="/sandbox/.volundr/$name.pid"
+  [ -s "$pid_file" ] || continue
+  pid="$(cat "$pid_file")"
+  kill "$pid" 2>/dev/null || true
+done
+for _ in 1 2 3 4 5; do
+  alive=0
+  for name in {quoted}; do
+    pid_file="/sandbox/.volundr/$name.pid"
+    [ -s "$pid_file" ] || continue
+    kill -0 "$(cat "$pid_file")" 2>/dev/null && alive=1 || true
+  done
+  [ "$alive" -eq 1 ] || break
+  sleep 1
+done
+for name in {quoted}; do
+  pid_file="/sandbox/.volundr/$name.pid"
+  if [ -s "$pid_file" ]; then
+    kill -9 "$(cat "$pid_file")" 2>/dev/null || true
   fi
-}
-terminate '^/opt/niuu/bin/python -m ravn daemon --config /sandbox/.volundr/ravn.yaml '
-terminate '^/opt/niuu/bin/python -m skuld$'
-for name in ravn skuld; do
-  rm -f "/sandbox/.volundr/$name.pid"
+  rm -f "$pid_file"
 done
 """
 

@@ -558,6 +558,54 @@ def test_delete_raven_targets_selected_instance() -> None:
 
 
 @respx.mock
+def test_resident_session_commands_use_registered_instance_routing() -> None:
+    client = _client([_instance("noatun", base_url="http://noatun")])
+    session = {
+        "id": "11111111-2222-4333-8444-555555555555",
+        "ravn_id": "resident-id",
+        "status": "running",
+        "model": "niuu/gpt-5.6-sol",
+        "created_at": "2026-07-11T12:00:00Z",
+        "title": "Persistent work",
+        "chat_endpoint": "/s/resident-id/sessions/11111111-2222-4333-8444-555555555555/session",
+    }
+    list_route = respx.get("http://noatun/api/v1/ravn/ravens/resident-id/sessions").mock(
+        return_value=Response(200, json=[session])
+    )
+    create_route = respx.post("http://noatun/api/v1/ravn/ravens/resident-id/sessions").mock(
+        return_value=Response(201, json=session)
+    )
+    delete_route = respx.delete(
+        "http://noatun/api/v1/ravn/ravens/resident-id/sessions/11111111-2222-4333-8444-555555555555"
+    ).mock(return_value=Response(204))
+
+    listed = client.get(
+        "/api/v1/ravn/ravens/resident-id/sessions?instance_id=noatun",
+        headers=_headers(),
+    )
+    created = client.post(
+        "/api/v1/ravn/ravens/resident-id/sessions?instance_id=noatun",
+        headers=_headers(),
+        json={"title": "Persistent work", "model": "niuu/gpt-5.6-sol"},
+    )
+    deleted = client.delete(
+        "/api/v1/ravn/ravens/resident-id/sessions/"
+        "11111111-2222-4333-8444-555555555555?instance_id=noatun",
+        headers=_headers(),
+    )
+
+    assert listed.status_code == 200
+    assert listed.json()[0]["instance_id"] == "noatun"
+    assert created.status_code == 201
+    assert created.json()["instance_id"] == "noatun"
+    assert deleted.status_code == 204
+    assert list_route.called and create_route.called and delete_route.called
+    assert create_route.calls.last.request.read() == (
+        b'{"title":"Persistent work","model":"niuu/gpt-5.6-sol"}'
+    )
+
+
+@respx.mock
 def test_get_raven_with_instance_id_does_not_probe_other_targets() -> None:
     client = _client(
         [

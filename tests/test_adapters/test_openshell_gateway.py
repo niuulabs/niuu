@@ -542,6 +542,43 @@ async def test_start_uses_gateway_client_without_host_cli(monkeypatch: pytest.Mo
     }
 
 
+def test_openclaw_profile_requires_complete_process_and_service_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    manager = adapter.OpenShellGatewayPodManager(client=_FakeOpenShellGatewayClient(adapter))
+    profile = ResidentDeploymentProfile(
+        id="nemoclaw-openshell",
+        display_name="NemoClaw",
+        backend=ResidentBackend.OPENSHELL,
+        engine=ResidentEngine.OPENCLAW,
+        capabilities=[ResidentCapability.CHAT, ResidentCapability.SESSION_LIST],
+        deployment={"values": {"openshell": {}}},
+    )
+    assert manager.supports(profile) is False
+
+    complete = profile.model_copy(
+        update={
+            "deployment": {
+                "values": {
+                    "openshell": {
+                        "processMode": "replace",
+                        "service": {"name": "openclaw", "port": 18789},
+                        "processes": [
+                            {
+                                "name": "openclaw",
+                                "command": ["openclaw", "gateway", "run"],
+                                "logPath": "/sandbox/.volundr/openclaw.log",
+                            }
+                        ],
+                    }
+                }
+            }
+        }
+    )
+    assert manager.supports(complete) is True
+
+
 @pytest.mark.asyncio
 async def test_resident_controller_deploys_real_sandbox_and_processes(
     monkeypatch: pytest.MonkeyPatch,
@@ -644,7 +681,9 @@ async def test_resident_restart_reuses_sandbox_and_dynamic_provider_environment(
 
     assert observation.observed_state is ResidentObservedState.ACTIVE
     assert client.deleted == []
-    assert client.bootstrap_execs[0]["script"] == adapter._resident_stop_script()
+    assert client.bootstrap_execs[0]["script"] == adapter._resident_stop_script(
+        ("skuld", "ravn", "sidecar")
+    )
     assert client.execs[-1]["env"][adapter.CODEX_ACCESS_TOKEN_ENV] == (
         adapter.CODEX_ACCESS_TOKEN_REFERENCE
     )
@@ -669,10 +708,10 @@ def test_resident_process_lifecycle_uses_in_sandbox_process_identity(
     health = adapter._resident_health_script()
     stop = adapter._resident_stop_script()
 
-    assert "pgrep -f '^/opt/niuu/bin/python -m skuld$'" in health
-    assert "pgrep -f '^/opt/niuu/bin/python -m ravn daemon" in health
-    assert "kill -9 $pids" in stop
-    assert "kill -0" not in health
+    assert "/sandbox/.volundr/skuld.pid" in health
+    assert "/sandbox/.volundr/ravn.pid" in health
+    assert 'kill -0 "$(cat ' in health
+    assert 'kill -9 "$(cat "$pid_file")"' in stop
 
 
 @pytest.mark.asyncio

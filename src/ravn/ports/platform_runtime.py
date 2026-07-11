@@ -91,6 +91,35 @@ class PlatformRuntimePort(Protocol):
         """Return normalized backend logs for one resident."""
         raise NotImplementedError
 
+    async def list_resident_sessions(
+        self,
+        runtime_id: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        """Return native sessions owned by one resident engine."""
+        raise NotImplementedError
+
+    async def create_resident_session(
+        self,
+        runtime_id: str,
+        body: dict[str, Any],
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any]:
+        """Create one native session in a resident engine."""
+        raise NotImplementedError
+
+    async def delete_resident_session(
+        self,
+        runtime_id: str,
+        session_id: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> None:
+        """Delete one native resident session."""
+        raise NotImplementedError
+
     async def aclose(self) -> None:
         """Release transport resources."""
         raise NotImplementedError

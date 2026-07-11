@@ -75,6 +75,7 @@ from volundr.adapters.outbound.config_resident_profiles import (
 from volundr.adapters.outbound.git_registry import create_git_registry
 from volundr.adapters.outbound.linear import LinearAdapter
 from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
+from volundr.adapters.outbound.openclaw_gateway import OpenClawResidentSessionController
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
 from volundr.adapters.outbound.postgres import PostgresSessionRepository
@@ -740,11 +741,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             workload_identity_service = WorkloadIdentityService(settings.workload_identity)
             pod_manager = _create_pod_manager(settings)
             resident_controllers = _create_resident_controllers(settings, pod_manager)
-            resident_runtime_service = ResidentRuntimeService(
-                resident_runtime_repository,
-                resident_profile_provider,
-                resident_controllers,
-            )
             if hasattr(pod_manager, "set_session_repository"):
                 pod_manager.set_session_repository(repository)
             if hasattr(pod_manager, "set_workload_token_issuer"):
@@ -871,6 +867,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for controller in resident_controllers:
                 if controller is not pod_manager and hasattr(controller, "set_credential_store"):
                     controller.set_credential_store(credential_store)
+            openclaw_session_controllers = [
+                OpenClawResidentSessionController(controller, credential_store)
+                for controller in resident_controllers
+                if hasattr(controller, "approve_resident_device")
+            ]
+            resident_runtime_service = ResidentRuntimeService(
+                resident_runtime_repository,
+                resident_profile_provider,
+                resident_controllers,
+                openclaw_session_controllers,
+            )
             if hasattr(pod_manager, "set_persona_registry"):
                 pod_manager.set_persona_registry(persona_registry)
 

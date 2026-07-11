@@ -216,6 +216,39 @@ class ResidentDirectory:
             auth_params=auth_params,
         )
 
+    async def list_resident_sessions(
+        self,
+        ravn_id: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        """Return native sessions from one managed resident."""
+        sessions = await self._platform.list_resident_sessions(ravn_id, auth_headers, auth_params)
+        return [self._native_session(session, ravn_id) for session in sessions]
+
+    async def create_resident_session(
+        self,
+        ravn_id: str,
+        body: dict[str, Any],
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any]:
+        """Create one native session through the resident engine adapter."""
+        session = await self._platform.create_resident_session(
+            ravn_id, body, auth_headers, auth_params
+        )
+        return self._native_session(session, ravn_id)
+
+    async def delete_resident_session(
+        self,
+        ravn_id: str,
+        session_id: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> None:
+        """Delete one native resident session."""
+        await self._platform.delete_resident_session(ravn_id, session_id, auth_headers, auth_params)
+
     async def list_sessions(
         self,
         principal: Principal,
@@ -242,7 +275,37 @@ class ResidentDirectory:
         managed = await self._platform.list_resident_runtimes(auth_headers, auth_params)
         for runtime in managed:
             runtime_id = str(runtime.get("id") or "")
-            if not runtime_id or runtime_id in known_ids:
+            if not runtime_id:
+                continue
+            capabilities = runtime.get("capabilities") or []
+            if "session.list" in capabilities:
+                try:
+                    native_sessions = await self._platform.list_resident_sessions(
+                        runtime_id, auth_headers, auth_params
+                    )
+                except Exception:
+                    logger.warning(
+                        "native resident session discovery failed for %s",
+                        runtime_id,
+                        exc_info=True,
+                    )
+                    continue
+                for native in native_sessions:
+                    mapped_native = self._native_session(
+                        native,
+                        runtime_id,
+                        str(
+                            runtime.get("persona_name")
+                            or runtime.get("personaName")
+                            or runtime.get("name")
+                            or "resident-agent"
+                        ),
+                    )
+                    if mapped_native["id"] and _is_live_session(mapped_native):
+                        ravn_sessions.append(mapped_native)
+                        known_ids.add(mapped_native["id"])
+                continue
+            if runtime_id in known_ids:
                 continue
             mapped = self._managed_to_session(runtime)
             if _is_live_session(mapped):
@@ -272,12 +335,39 @@ class ResidentDirectory:
             auth_params,
         )
         if session is None:
-            return await self._managed_or_standalone_session(
+            managed_or_standalone = await self._managed_or_standalone_session(
                 session_id,
                 principal,
                 auth_headers,
                 auth_params,
             )
+            if managed_or_standalone is not None:
+                return managed_or_standalone
+            managed = await self._platform.list_resident_runtimes(auth_headers, auth_params)
+            for runtime in managed:
+                capabilities = runtime.get("capabilities") or []
+                runtime_id = str(runtime.get("id") or "")
+                if not runtime_id or "session.list" not in capabilities:
+                    continue
+                try:
+                    native_sessions = await self._platform.list_resident_sessions(
+                        runtime_id, auth_headers, auth_params
+                    )
+                except Exception:
+                    continue
+                for native in native_sessions:
+                    if str(native.get("id") or "") == session_id:
+                        return self._native_session(
+                            native,
+                            runtime_id,
+                            str(
+                                runtime.get("persona_name")
+                                or runtime.get("personaName")
+                                or runtime.get("name")
+                                or "resident-agent"
+                            ),
+                        )
+            return None
         if (
             not isinstance(session, dict)
             or session.get("workload_type") not in _RAVN_SESSION_WORKLOADS
@@ -437,6 +527,29 @@ class ResidentDirectory:
             "message_count": raven["message_count"],
             "tokens_used": raven["tokens_used"],
             "cost": raven["cost"],
+        }
+
+    @staticmethod
+    def _native_session(
+        session: dict[str, Any],
+        ravn_id: str,
+        persona_name: str = "resident-agent",
+    ) -> dict[str, Any]:
+        session_id = str(session.get("id") or "")
+        engine_status = str(session.get("status") or "idle")
+        return {
+            "id": session_id,
+            "ravn_id": ravn_id,
+            "persona_name": persona_name,
+            "status": "failed" if engine_status == "failed" else "running",
+            "model": session.get("model") or "",
+            "created_at": session.get("created_at") or session.get("createdAt"),
+            "updated_at": session.get("updated_at") or session.get("updatedAt"),
+            "chat_endpoint": f"/s/{ravn_id}/sessions/{session_id}/session",
+            "title": session.get("title") or "",
+            "message_count": session.get("message_count") or session.get("messageCount") or 0,
+            "tokens_used": session.get("tokens_used") or session.get("tokensUsed") or 0,
+            "cost": session.get("cost") or 0,
         }
 
     @staticmethod

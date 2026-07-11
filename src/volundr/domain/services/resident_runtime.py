@@ -17,14 +17,17 @@ from volundr.domain.models import (
     ResidentLogPage,
     ResidentObservedState,
     ResidentRuntime,
+    ResidentSession,
 )
 from volundr.domain.ports import (
+    ResidentChatConnection,
     ResidentDeploymentProfileProvider,
     ResidentRuntimeController,
     ResidentRuntimeLogReader,
     ResidentRuntimeObservation,
     ResidentRuntimeProxyTargetResolver,
     ResidentRuntimeRepository,
+    ResidentSessionController,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,12 +65,18 @@ class ResidentRuntimeService:
         repository: ResidentRuntimeRepository,
         profiles: ResidentDeploymentProfileProvider,
         controllers: list[ResidentRuntimeController] | None = None,
+        session_controllers: list[ResidentSessionController] | None = None,
     ) -> None:
         self._repository = repository
         self._profiles = profiles
         self._controllers = {controller.backend: controller for controller in controllers or []}
         if len(self._controllers) != len(controllers or []):
             raise ValueError("Resident runtime controller backends must be unique")
+        self._session_controllers = {
+            controller.engine: controller for controller in session_controllers or []
+        }
+        if len(self._session_controllers) != len(session_controllers or []):
+            raise ValueError("Resident session controller engines must be unique")
 
     def list_profiles(self) -> list[ResidentDeploymentProfile]:
         """Return profiles that are actually enabled on this target."""
@@ -76,6 +85,7 @@ class ResidentRuntimeService:
             for profile in self._profiles.list()
             if (controller := self._controllers.get(profile.backend))
             and controller.supports(profile)
+            and self._profile_session_api_available(profile)
         ]
 
     async def create(
@@ -365,6 +375,83 @@ class ResidentRuntimeService:
             return None
         return controller.resident_proxy_target(runtime)
 
+    async def list_sessions(
+        self,
+        principal: Principal,
+        runtime_id: UUID,
+    ) -> list[ResidentSession]:
+        """List sessions from the authorized resident's native engine."""
+        runtime = await self.get(principal, runtime_id)
+        self._require_capability(runtime, ResidentCapability.SESSION_LIST)
+        try:
+            return await self._session_controller(runtime).list_sessions(runtime)
+        except Exception as exc:
+            raise ResidentRuntimeDeploymentError(
+                f"Failed to list sessions for resident {runtime.name}: {exc}"
+            ) from exc
+
+    async def create_session(
+        self,
+        principal: Principal,
+        runtime_id: UUID,
+        *,
+        title: str,
+        model: str = "",
+    ) -> ResidentSession:
+        """Create one session in the authorized resident's native engine."""
+        self._require_write_role(principal)
+        runtime = await self.get(principal, runtime_id)
+        self._require_capability(runtime, ResidentCapability.SESSION_CREATE)
+        resolved_model = model or runtime.model
+        profile = self._require_profile(runtime.profile_id)
+        if profile.allowed_models and resolved_model not in profile.allowed_models:
+            raise ResidentRuntimeValidationError(
+                f"Model {resolved_model!r} is not allowed by resident profile {profile.id}"
+            )
+        try:
+            return await self._session_controller(runtime).create_session(
+                runtime,
+                title=title,
+                model=resolved_model,
+            )
+        except Exception as exc:
+            raise ResidentRuntimeDeploymentError(
+                f"Failed to create a session for resident {runtime.name}: {exc}"
+            ) from exc
+
+    async def delete_session(
+        self,
+        principal: Principal,
+        runtime_id: UUID,
+        session_id: UUID,
+    ) -> None:
+        """Delete one session from the authorized resident's native engine."""
+        self._require_write_role(principal)
+        runtime = await self.get(principal, runtime_id)
+        self._require_capability(runtime, ResidentCapability.SESSION_DELETE)
+        try:
+            await self._session_controller(runtime).delete_session(runtime, session_id)
+        except Exception as exc:
+            raise ResidentRuntimeDeploymentError(
+                f"Failed to delete session {session_id} from resident {runtime.name}: {exc}"
+            ) from exc
+
+    async def connect_chat(
+        self,
+        principal: Principal,
+        runtime_id: UUID,
+        session_id: UUID,
+    ) -> ResidentChatConnection:
+        """Open shared chat for one session after resident ownership authorization."""
+        runtime = await self.get(principal, runtime_id)
+        self._require_capability(runtime, ResidentCapability.CHAT)
+        try:
+            return await self._session_controller(runtime).connect_chat(runtime, session_id)
+        except Exception as exc:
+            raise ResidentRuntimeDeploymentError(
+                f"Failed to connect to resident {runtime.name} session {session_id}: {exc}"
+            ) from exc
+
     async def record_usage(
         self,
         principal: Principal,
@@ -401,11 +488,25 @@ class ResidentRuntimeService:
         profile: ResidentDeploymentProfile,
     ) -> ResidentRuntimeController:
         controller = self._controllers.get(profile.backend)
-        if controller is None or not controller.supports(profile):
+        if (
+            controller is None
+            or not controller.supports(profile)
+            or not self._profile_session_api_available(profile)
+        ):
             raise ResidentProfileNotFoundError(
                 f"Resident profile is not deployable on this target: {profile.id}"
             )
         return controller
+
+    def _profile_session_api_available(self, profile: ResidentDeploymentProfile) -> bool:
+        session_capabilities = {
+            ResidentCapability.SESSION_LIST,
+            ResidentCapability.SESSION_CREATE,
+            ResidentCapability.SESSION_DELETE,
+        }
+        return not session_capabilities.intersection(profile.capabilities) or (
+            profile.engine in self._session_controllers
+        )
 
     def _require_controller_for_runtime(
         self,
@@ -417,6 +518,21 @@ class ResidentRuntimeService:
                 f"Resident backend is unavailable on this target: {runtime.backend.value}"
             )
         return controller
+
+    def _session_controller(self, runtime: ResidentRuntime) -> ResidentSessionController:
+        controller = self._session_controllers.get(runtime.engine)
+        if controller is None:
+            raise ResidentRuntimeDeploymentError(
+                f"Resident engine session API is unavailable: {runtime.engine.value}"
+            )
+        return controller
+
+    @staticmethod
+    def _require_capability(runtime: ResidentRuntime, capability: ResidentCapability) -> None:
+        if capability not in runtime.capabilities:
+            raise ResidentRuntimeValidationError(
+                f"Resident profile {runtime.profile_id} does not provide {capability.value}"
+            )
 
     async def _apply_observation(
         self,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
@@ -20,6 +21,7 @@ from volundr.domain.models import (
     ResidentLogEntry,
     ResidentLogPage,
     ResidentRuntime,
+    ResidentSession,
 )
 from volundr.domain.services.resident_runtime import (
     ResidentRuntimeConflictError,
@@ -178,6 +180,45 @@ def test_records_resident_usage() -> None:
         cost=0.12,
         message_count=1,
     )
+
+
+def test_native_resident_session_crud_uses_authenticated_service() -> None:
+    runtime_id = uuid4()
+    session = ResidentSession(
+        id=uuid4(),
+        resident_id=runtime_id,
+        title="Persistent work",
+        model="niuu/gpt-5.6-sol",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        chat_endpoint=f"/s/{runtime_id}/session",
+    )
+    service = Mock()
+    service.list_sessions = AsyncMock(return_value=[session])
+    service.create_session = AsyncMock(return_value=session)
+    service.delete_session = AsyncMock(return_value=None)
+    client = _client(service)
+
+    listed = client.get(f"/api/v1/forge/resident-runtimes/{runtime_id}/sessions")
+    created = client.post(
+        f"/api/v1/forge/resident-runtimes/{runtime_id}/sessions",
+        json={"title": "Persistent work", "model": "niuu/gpt-5.6-sol"},
+    )
+    deleted = client.delete(f"/api/v1/forge/resident-runtimes/{runtime_id}/sessions/{session.id}")
+
+    assert listed.status_code == 200
+    assert listed.json()[0]["id"] == str(session.id)
+    assert created.status_code == 201
+    assert created.json()["chatEndpoint"] == session.chat_endpoint
+    assert deleted.status_code == 204
+    service.list_sessions.assert_awaited_once_with(_PRINCIPAL, runtime_id)
+    service.create_session.assert_awaited_once_with(
+        _PRINCIPAL,
+        runtime_id,
+        title="Persistent work",
+        model="niuu/gpt-5.6-sol",
+    )
+    service.delete_session.assert_awaited_once_with(_PRINCIPAL, runtime_id, session.id)
 
 
 def test_create_and_lifecycle_routes_use_authenticated_service() -> None:
