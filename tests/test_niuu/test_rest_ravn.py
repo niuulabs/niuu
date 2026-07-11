@@ -547,7 +547,7 @@ def test_create_raven_uses_resident_command_timeout() -> None:
         )
 
     assert result.status_code == 201
-    assert request_remote.await_args.kwargs["timeout"] == 120.0
+    assert request_remote.await_args.kwargs["timeout"] == 900.0
 
 
 @respx.mock

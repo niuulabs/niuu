@@ -59,7 +59,7 @@ from niuu.domain.models import Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
 
 _RAVN_REMOTE_PREFIX = "/api/v1/ravn"
-_RESIDENT_COMMAND_TIMEOUT_SECONDS = 120.0
+_RESIDENT_COMMAND_TIMEOUT_SECONDS = 900.0
 logger = logging.getLogger(__name__)
 
 
