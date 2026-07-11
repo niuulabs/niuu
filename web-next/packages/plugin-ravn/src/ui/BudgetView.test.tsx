@@ -147,12 +147,13 @@ describe('BudgetView', () => {
     });
   });
 
-  it('recommendation rows show action buttons', async () => {
+  it('marks budget recommendation actions unavailable when updates are unsupported', async () => {
     render(<BudgetView />, { wrapper: wrap(services) });
     await waitFor(
       () => {
         const buttons = screen.getAllByTestId('rec-action');
         expect(buttons.length).toBeGreaterThan(0);
+        buttons.forEach((button) => expect(button).toBeDisabled());
       },
       { timeout: 3000 },
     );

@@ -116,9 +116,7 @@ function PhaseEditor({ phase, phaseIndex, onSave, onRemoveRun }: PhaseEditorProp
               className="niuu:rounded niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:grid niuu:items-center niuu:gap-x-3 niuu:gap-y-0"
               style={{ gridTemplateColumns: 'auto 1fr auto auto auto' }}
             >
-              {/* Col 1: Persona circle
-                  TODO: Replace with <PersonaAvatar role={...} letter={...} size={22} /> once
-                  RunSpec includes a personaRole field that maps to the PersonaRole enum. */}
+              {/* Col 1: Persona identity derived from the available run persona name. */}
               <span
                 className="niuu:w-6 niuu:h-6 niuu:rounded-full niuu:bg-bg-elevated niuu:flex niuu:items-center niuu:justify-center niuu:text-xs niuu:text-text-muted niuu:flex-shrink-0"
                 title={run.persona ?? 'raven'}
@@ -153,11 +151,12 @@ function PhaseEditor({ phase, phaseIndex, onSave, onRemoveRun }: PhaseEditorProp
                 <span />
               )}
 
-              {/* Col 4: Own saga (disabled stub — no backend yet) */}
+              {/* Col 4: Explicitly unavailable until saga promotion is supported. */}
               <button
                 type="button"
                 disabled
-                aria-label={`Promote run ${ri + 1} to own saga`}
+                aria-label={`Promote run ${ri + 1} to own saga unavailable`}
+                title="Unavailable: promoting a run to its own saga is not supported."
                 className="niuu:text-xs niuu:text-text-muted niuu:border niuu:border-border niuu:rounded niuu:px-1.5 niuu:py-0.5 niuu:opacity-40 niuu:cursor-not-allowed"
               >
                 Own saga
@@ -188,8 +187,8 @@ function PhaseEditor({ phase, phaseIndex, onSave, onRemoveRun }: PhaseEditorProp
  * Step 4 of the Plan wizard — review the decomposed saga structure with
  * per-phase edit buttons before approving.
  *
- * Includes: risk rows with kind badges, Re-plan button, Save as draft button,
- * and per-run promote (Own saga) + remove buttons.
+ * Includes risk rows, re-planning, in-wizard draft retention, and run removal.
+ * Saga promotion is displayed as explicitly unavailable until the service supports it.
  */
 export function PlanDraft({
   structure,
@@ -337,7 +336,7 @@ export function PlanDraft({
                 role="status"
                 aria-live="polite"
               >
-                Draft saved (local only)
+                Draft kept in this wizard
               </span>
             )}
             <button
@@ -346,7 +345,7 @@ export function PlanDraft({
               disabled={loading}
               className="ting-plan-secondary-btn niuu:disabled:opacity-40"
             >
-              Save as draft
+              Keep in wizard
             </button>
           </div>
         )}

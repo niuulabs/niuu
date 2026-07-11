@@ -550,7 +550,7 @@ describe('PlanDraft', () => {
     expect(onReplan).toHaveBeenCalled();
   });
 
-  it('calls onSaveDraft when save as draft button clicked', () => {
+  it('calls onSaveDraft when keep in wizard is clicked', () => {
     const onSaveDraft = vi.fn();
     render(
       <PlanDraft
@@ -563,7 +563,7 @@ describe('PlanDraft', () => {
         onEditPhase={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /save as draft/i }));
+    fireEvent.click(screen.getByRole('button', { name: /keep in wizard/i }));
     expect(onSaveDraft).toHaveBeenCalled();
   });
 
@@ -684,7 +684,7 @@ describe('PlanDraft', () => {
     expect(screen.getByText('M')).toBeInTheDocument();
   });
 
-  it('renders "Own saga" button for each run (disabled stub)', () => {
+  it('marks Own saga unavailable for each run', () => {
     render(
       <PlanDraft
         structure={MOCK_STRUCTURE}
@@ -695,7 +695,9 @@ describe('PlanDraft', () => {
         onEditPhase={vi.fn()}
       />,
     );
-    const ownSagaButtons = screen.getAllByRole('button', { name: /promote run .* to own saga/i });
+    const ownSagaButtons = screen.getAllByRole('button', {
+      name: /promote run .* to own saga unavailable/i,
+    });
     expect(ownSagaButtons.length).toBeGreaterThan(0);
     ownSagaButtons.forEach((btn) => expect(btn).toBeDisabled());
   });
@@ -733,7 +735,7 @@ describe('PlanDraft', () => {
     expect(screen.queryAllByRole('button', { name: /remove run/i })).toHaveLength(0);
   });
 
-  it('shows "Draft saved (local only)" feedback after clicking save as draft', async () => {
+  it('shows explicit in-wizard retention feedback', async () => {
     render(
       <PlanDraft
         structure={MOCK_STRUCTURE}
@@ -745,9 +747,9 @@ describe('PlanDraft', () => {
         onEditPhase={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /save as draft/i }));
+    fireEvent.click(screen.getByRole('button', { name: /keep in wizard/i }));
     await waitFor(() =>
-      expect(screen.getByText(/draft saved \(local only\)/i)).toBeInTheDocument(),
+      expect(screen.getByText(/draft kept in this wizard/i)).toBeInTheDocument(),
     );
   });
 });
@@ -918,7 +920,7 @@ describe('PlanWizard integration', () => {
     expect(screen.getByText('untested')).toBeInTheDocument();
   });
 
-  it('draft shows Re-plan and Save as draft buttons', async () => {
+  it('draft shows Re-plan and Keep in wizard buttons', async () => {
     const svc = makeSvc();
     render(<PlanWizard />, { wrapper: wrap(svc) });
 
@@ -934,7 +936,7 @@ describe('PlanWizard integration', () => {
     });
 
     expect(screen.getByRole('button', { name: /re-plan/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /save as draft/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /keep in wizard/i })).toBeInTheDocument();
   });
 
   it('re-plan button re-runs decomposition', async () => {

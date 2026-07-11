@@ -424,9 +424,9 @@ function RecommendedChanges({ recommendations }: { recommendations: Recommendati
                   type="button"
                   className="rv-budget-rec-action"
                   data-testid="rec-action"
-                  onClick={() => {
-                    /* stub */
-                  }}
+                  disabled
+                  title="Unavailable: budget cap updates are not supported by the budget service."
+                  aria-label="apply budget recommendation unavailable"
                 >
                   {rec.actionLabel}
                 </button>

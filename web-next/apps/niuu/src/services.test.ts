@@ -121,7 +121,9 @@ vi.mock('@niuulabs/plugin-volundr', () => volundrMocks);
 
 import {
   buildServices,
-  ServiceConfigurationError,
+  ServiceUnavailableError,
+  isUnavailableService,
+  UnsupportedSessionStoreOperationError,
   buildServiceBackendStatus,
   resolveCanonicalServiceBase,
   resolveForgeServiceBase,
@@ -453,6 +455,7 @@ describe('buildServices live base selection', () => {
     );
   });
 
+
   it('normalizes explicit Ting sub-service bases back to /api/v1/ting', () => {
     buildServices({
       demoMode: true,
@@ -549,7 +552,7 @@ describe('shared domain helpers', () => {
     });
   });
 
-  it('falls back to mock shared services when no shared api base exists', () => {
+  it('uses mock shared services only in explicit demo mode', () => {
     const config = {
       demoMode: true,
       services: {
@@ -649,21 +652,33 @@ describe('buildServiceBackendStatus', () => {
     });
   });
 
-  it('reports mock-only workflow and filesystem surfaces explicitly', () => {
-    const status = buildServiceBackendStatus({ services: {} } as any);
+  it('reports unavailable workflow and filesystem surfaces explicitly', () => {
+    const status = buildServiceBackendStatus({ demoMode: false, services: {} } as any);
 
     expect(status['ting.workflows']).toEqual({
-      mode: 'mock',
-      transport: 'mock',
+      mode: 'unavailable',
+      transport: 'none',
       target: null,
-      source: 'mock',
+      source: 'configuration',
     });
     expect(status.filesystem).toEqual({
-      mode: 'mock',
+      mode: 'unavailable',
+      transport: 'none',
+      target: null,
+      source: 'configuration',
+      note: 'No live filesystem API is wired yet.',
+    });
+  });
+
+  it('reports explicit demo adapters separately from unavailable services', () => {
+    const status = buildServiceBackendStatus({ demoMode: true, services: {} } as any);
+
+    expect(status['ting.workflows']).toEqual({
+      mode: 'demo',
       transport: 'mock',
       target: null,
-      source: 'mock',
-      note: 'No live filesystem API is wired yet.',
+      source: 'demo',
+      note: 'Explicit demo adapter; no live backend is connected.',
     });
   });
 
@@ -767,23 +782,18 @@ describe('buildServices', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
-  it('fails loudly when a live service adapter is not configured', () => {
-    expect(() =>
-      buildServices({
-        demoMode: false,
-        theme: 'ice',
-        plugins: {},
-        services: {},
-      } as any),
-    ).toThrow(ServiceConfigurationError);
-    expect(() =>
-      buildServices({
-        demoMode: false,
-        theme: 'ice',
-        plugins: {},
-        services: {},
-      } as any),
-    ).toThrow('ravn.personas');
+  it('builds typed unavailable services without aborting optional composition', () => {
+    const services = buildServices({
+      demoMode: false,
+      theme: 'ice',
+      plugins: {},
+      services: {},
+    } as any);
+
+    const personas = services['ravn.personas'];
+    expect(isUnavailableService(personas)).toBe(true);
+    expect(() => (personas as any).listPersonas()).toThrow(ServiceUnavailableError);
+    expect(() => (personas as any).listPersonas()).toThrow('ravn.personas');
   });
 
   it('builds Ting tracker and audit services against the shared api base', () => {
@@ -1642,8 +1652,12 @@ describe('buildServices', () => {
     await expect(sessionStore.listSessions({ ravnId: 'tenant-a' })).resolves.toEqual([
       expect.objectContaining({ id: 'sess-starting' }),
     ]);
-    await expect(sessionStore.createSession({})).rejects.toThrow(/not yet supported/);
-    await expect(sessionStore.updateSession('sess-idle', {})).rejects.toThrow(/not yet supported/);
+    await expect(sessionStore.createSession({})).rejects.toBeInstanceOf(
+      UnsupportedSessionStoreOperationError,
+    );
+    await expect(sessionStore.updateSession('sess-idle', {})).rejects.toBeInstanceOf(
+      UnsupportedSessionStoreOperationError,
+    );
 
     const unsubscribe = sessionStore.subscribe(vi.fn());
     unsubscribe();

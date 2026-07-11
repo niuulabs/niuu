@@ -87,33 +87,78 @@ import type { NiuuConfig, ServiceConfig, ServicesMap } from '@niuulabs/plugin-sd
 import { buildRepoCatalogHttpAdapter, createMockRepoCatalogService } from './repoCatalog';
 
 export interface ServiceBackendStatus {
-  mode: 'live' | 'mock';
-  transport: 'http' | 'ws' | 'mock';
+  mode: 'live' | 'demo' | 'unavailable';
+  transport: 'http' | 'ws' | 'mock' | 'none';
   target: string | null;
   source: string;
   note?: string;
 }
-export class ServiceConfigurationError extends Error {
+
+export class UnsupportedSessionStoreOperationError extends Error {
+  readonly operation: 'create' | 'update';
+
+  constructor(operation: 'create' | 'update') {
+    super(
+      `The app session-store adapter does not support session ${operation}. Use the Forge lifecycle service instead.`,
+    );
+    this.name = 'UnsupportedSessionStoreOperationError';
+    this.operation = operation;
+  }
+}
+
+export interface UnavailableServiceStatus {
+  available: false;
+  serviceName: string;
+  reason: string;
+}
+
+export class ServiceUnavailableError extends Error {
   readonly serviceName: string;
 
-  constructor(serviceName: string) {
-    super(
-      `Service "${serviceName}" has no live adapter. Configure its transport or enable demoMode.`,
-    );
-    this.name = 'ServiceConfigurationError';
+  constructor(serviceName: string, reason = 'No live backend is configured.') {
+    super(`Service "${serviceName}" is unavailable: ${reason}`);
+    this.name = 'ServiceUnavailableError';
     this.serviceName = serviceName;
   }
 }
 
+export const UNAVAILABLE_SERVICE = Symbol('niuu.unavailable-service');
+
+export function isUnavailableService(
+  service: unknown,
+): service is { [UNAVAILABLE_SERVICE]: UnavailableServiceStatus } {
+  return Boolean(
+    service &&
+      typeof service === 'object' &&
+      UNAVAILABLE_SERVICE in service &&
+      (service as { [UNAVAILABLE_SERVICE]?: UnavailableServiceStatus })[UNAVAILABLE_SERVICE]
+        ?.available === false,
+  );
+}
+
+function unavailableService<T>(serviceName: string): T {
+  const reason = 'No live backend is configured. Enable demoMode for synthetic data.';
+  const status: UnavailableServiceStatus = { available: false, serviceName, reason };
+  return new Proxy({ [UNAVAILABLE_SERVICE]: status } as T & Record<PropertyKey, unknown>, {
+    get(target, property, receiver) {
+      if (property === 'then') return undefined;
+      if (property in target) return Reflect.get(target, property, receiver);
+      return () => {
+        throw new ServiceUnavailableError(serviceName, reason);
+      };
+    },
+  });
+}
+
 function demoService<T>(config: Partial<NiuuConfig>, serviceName: string, factory: () => T): T {
   if (config.demoMode) return factory();
-  throw new ServiceConfigurationError(serviceName);
+  return unavailableService<T>(serviceName);
 }
 
 /**
  * A service config is "live" (i.e. should use a real transport) when its mode
  * is `http` or `ws` and a URL is present. Any other combination — missing
- * mode, `mock`, or missing URL — falls back to the mock adapter.
+ * mode or a missing URL is unavailable unless the runtime explicitly enables demo mode.
  */
 function hasHttpBackend(
   svc: ServiceConfig | undefined,
@@ -179,10 +224,10 @@ function resolveDirectServiceStatus(
     }
   }
   return {
-    mode: 'mock',
-    transport: 'mock',
+    mode: 'unavailable',
+    transport: 'none',
     target: null,
-    source: 'mock',
+    source: 'configuration',
   };
 }
 
@@ -252,10 +297,10 @@ function resolveRepoCatalogStatus(config: Pick<NiuuConfig, 'services'>): Service
   const base = resolveRepoCatalogBase(config);
   if (!base) {
     return {
-      mode: 'mock',
-      transport: 'mock',
+      mode: 'unavailable',
+      transport: 'none',
       target: null,
-      source: 'mock',
+      source: 'configuration',
     };
   }
 
@@ -343,10 +388,10 @@ function resolveFilesystemStatus(config: Pick<NiuuConfig, 'services'>): ServiceB
   }
 
   return {
-    mode: 'mock',
-    transport: 'mock',
+    mode: 'unavailable',
+    transport: 'none',
     target: null,
-    source: 'mock',
+    source: 'configuration',
     note: 'No live filesystem API is wired yet.',
   };
 }
@@ -440,10 +485,10 @@ function resolveRealmGovernanceStatus(config: Pick<NiuuConfig, 'services'>): Ser
   const bases = resolveRealmGovernanceBases(config);
   if (!bases) {
     return {
-      mode: 'mock',
-      transport: 'mock',
+      mode: 'unavailable',
+      transport: 'none',
       target: null,
-      source: 'mock',
+      source: 'configuration',
     };
   }
   return {
@@ -634,12 +679,12 @@ function resolveObservatoryServiceStatus(
 }
 
 export function buildServiceBackendStatus(
-  config: Pick<NiuuConfig, 'services'>,
+  config: Pick<NiuuConfig, 'services' | 'demoMode'>,
 ): Record<string, ServiceBackendStatus> {
   const forgePtyStatus = resolveDirectServiceStatus(config, 'ws', 'forge.pty');
   const derivedForgeBase = resolveForgeServiceBase(config);
 
-  return {
+  const resolved: Record<string, ServiceBackendStatus> = {
     identity: resolveCanonicalServiceStatus(config, 'identity'),
     features: resolveCanonicalServiceStatus(config, 'features'),
     tracker: resolveCanonicalServiceStatus(config, 'tracker'),
@@ -684,6 +729,22 @@ export function buildServiceBackendStatus(
     'ting.specs': resolveDirectServiceStatus(config, 'http', 'ting.specs', 'ting'),
     filesystem: resolveFilesystemStatus(config),
   };
+  if (!config.demoMode) return resolved;
+
+  return Object.fromEntries(
+    Object.entries(resolved).map(([serviceName, status]) => [
+      serviceName,
+      status.mode === 'unavailable'
+        ? {
+            ...status,
+            mode: 'demo',
+            transport: 'mock',
+            source: 'demo',
+            note: status.note ?? 'Explicit demo adapter; no live backend is connected.',
+          }
+        : status,
+    ]),
+  );
 }
 
 const EMPTY_SESSION_RESOURCES: Session['resources'] = {
@@ -886,14 +947,10 @@ function buildVolundrSessionStore(volundr: IVolundrService): ISessionStore {
       return applySessionFilters(await listAllVolundrSessions(volundr), filters);
     },
     async createSession() {
-      throw new Error(
-        'Session creation is not yet supported through the app session-store adapter.',
-      );
+      throw new UnsupportedSessionStoreOperationError('create');
     },
     async updateSession() {
-      throw new Error(
-        'Session updates are not yet supported through the app session-store adapter.',
-      );
+      throw new UnsupportedSessionStoreOperationError('update');
     },
     async deleteSession(id: string) {
       await volundr.deleteSession(id);

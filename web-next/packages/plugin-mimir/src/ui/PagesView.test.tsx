@@ -280,7 +280,7 @@ describe('PagesView', () => {
 
   // ── Action bar buttons ───────────────────────────────────────────────────
 
-  it('renders the action bar with Edit, Flag, Promote confidence, and Cite buttons', async () => {
+  it('marks unsupported page actions unavailable instead of exposing no-op controls', async () => {
     wrap(<PagesView />);
     await waitFor(() =>
       expect(screen.getAllByRole('button', { name: /overview/ }).length).toBeGreaterThan(0),
@@ -289,8 +289,8 @@ describe('PagesView', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /edit page/i })).toBeInTheDocument(),
     );
-    expect(screen.getByRole('button', { name: /flag for review/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /promote confidence/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /flag for review unavailable/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /promote confidence unavailable/i })).toBeDisabled();
     expect(screen.getByRole('button', { name: /cite page/i })).toBeInTheDocument();
   });
 
