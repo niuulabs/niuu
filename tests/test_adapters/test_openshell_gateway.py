@@ -605,10 +605,10 @@ async def test_resident_restart_reuses_sandbox_and_dynamic_provider_environment(
     )
     client = _FakeOpenShellGatewayClient(adapter)
     client.created = {"providers": ()}
-    client.provider_environment = {
-        adapter.PLATFORM_ACCESS_TOKEN_ENV: "openshell:resolve:env:platform"
-    }
     manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    manager.set_credential_store(
+        _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
+    )
     profile = _resident_profile()
     values = profile.deployment["values"]
     values["env"] = {"RESIDENT_MODE": "active"}
@@ -625,9 +625,10 @@ async def test_resident_restart_reuses_sandbox_and_dynamic_provider_environment(
     assert observation.observed_state is ResidentObservedState.ACTIVE
     assert client.deleted == []
     assert client.bootstrap_execs[0]["script"] == adapter._resident_stop_script()
-    assert client.execs[-1]["env"][adapter.PLATFORM_ACCESS_TOKEN_ENV].startswith(
-        "openshell:resolve"
+    assert client.execs[-1]["env"][adapter.CODEX_ACCESS_TOKEN_ENV] == (
+        adapter.CODEX_ACCESS_TOKEN_REFERENCE
     )
+    assert client.execs[-1]["env"][adapter.CODEX_ACCOUNT_ID_ENV] == "account-from-openbao"
     assert client.execs[-1]["env"]["RESIDENT_MODE"] == "active"
     assert [process["pid_path"] for process in client.execs] == [
         "/sandbox/.volundr/skuld.pid",

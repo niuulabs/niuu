@@ -1093,11 +1093,10 @@ class OpenShellGatewayPodManager(
         )
         if exit_code != 0:
             raise RuntimeError(f"OpenShell resident process stop failed: {output.strip()}")
-        provider_env = await asyncio.to_thread(
-            self._client.get_provider_environment,
-            sandbox.id,
-        )
-        env = {**self._resident_environment(runtime, values), **provider_env}
+        env = {
+            **self._resident_environment(runtime, values),
+            **await self._resident_credential_environment(runtime, values),
+        }
         await self._launch_resident_processes(
             sandbox.id,
             runtime,
@@ -1655,14 +1654,9 @@ class OpenShellGatewayPodManager(
         providers: list[str],
         environment: dict[str, str],
     ) -> None:
-        if self._credential_store is None or not subject.owner_id:
-            raise RuntimeError("OpenShell Codex auth requires an owned workload")
         credential_name = config["credential_name"]
         credential_field = config["auth_field"]
-        values = await self._credential_store.get_value("user", subject.owner_id, credential_name)
-        raw_auth = values.get(credential_field) if values else None
-        auth = _parse_codex_auth_document(raw_auth)
-        account_id = str(auth["tokens"]["account_id"])
+        environment.update(await self._codex_runtime_environment(subject, config))
 
         provider_name = _provider_grant_name(
             session_id=str(subject.id),
@@ -1688,8 +1682,38 @@ class OpenShellGatewayPodManager(
                 volundr_credential_format=CODEX_AUTH_FORMAT,
             ),
         )
-        environment[CODEX_ACCESS_TOKEN_ENV] = CODEX_ACCESS_TOKEN_REFERENCE
-        environment[CODEX_ACCOUNT_ID_ENV] = account_id
+
+    async def _resident_credential_environment(
+        self,
+        runtime: ResidentRuntime,
+        values: dict[str, Any],
+    ) -> dict[str, str]:
+        codex_auth = _codex_auth_from_values(values)
+        if not codex_auth:
+            return {}
+        return await self._codex_runtime_environment(
+            self._resident_subject(runtime),
+            codex_auth,
+        )
+
+    async def _codex_runtime_environment(
+        self,
+        subject: OpenShellWorkloadSubject,
+        config: dict[str, str],
+    ) -> dict[str, str]:
+        if self._credential_store is None or not subject.owner_id:
+            raise RuntimeError("OpenShell Codex auth requires an owned workload")
+        values = await self._credential_store.get_value(
+            "user",
+            subject.owner_id,
+            config["credential_name"],
+        )
+        raw_auth = values.get(config["auth_field"]) if values else None
+        auth = _parse_codex_auth_document(raw_auth)
+        return {
+            CODEX_ACCESS_TOKEN_ENV: CODEX_ACCESS_TOKEN_REFERENCE,
+            CODEX_ACCOUNT_ID_ENV: str(auth["tokens"]["account_id"]),
+        }
 
     async def _resolve_credential_mapping(
         self,
