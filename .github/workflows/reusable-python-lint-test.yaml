@@ -36,7 +36,14 @@ jobs:
         run: uv run ruff check --output-format=github src/ tests/
 
       - name: Check ruff formatting
-        run: uv run ruff format --check src/ tests/
+        run: |
+          output="$(uv run ruff format --check src/ tests/ 2>&1)" || {
+            printf '%s\n' "$output"
+            printf '%s\n' "$output" | sed -n 's/^Would reformat: //p' | while IFS= read -r file; do
+              echo "::error file=${file}::Ruff formatting required"
+            done
+            exit 1
+          }
 
   test:
     name: "Python: Test ${{ matrix.pkg.name }}"
