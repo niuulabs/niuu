@@ -13,6 +13,7 @@ from niuu.domain.outcome import parse_outcome_block
 from niuu.utils import import_class
 from skuld.channels import TelegramChannel
 from skuld.conversation_models import CHRONICLE_SUMMARY_PROMPT, SUMMARY_TIMEOUT_SECONDS
+from skuld.event_log import FORGE_SESSIONS_PATH
 from sleipnir.domain.catalog import ravn_session_ended
 from volundr.log_aggregate import aggregate_workspace_logs
 

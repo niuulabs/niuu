@@ -7,11 +7,12 @@ import shutil
 import time
 import uuid
 from collections import deque
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket

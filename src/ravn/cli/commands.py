@@ -85,6 +85,8 @@ def approvals_main() -> None:
 # ---------------------------------------------------------------------------
 
 
+# Compatibility exports remain late because the Typer apps must exist first.
+# isort: off
 from ravn.cli.runtime_builders import (  # noqa: E402, F401
     _RealmBuildConfig,
     _attach_signal_build_tool,
@@ -112,6 +114,7 @@ from ravn.cli.runtime_builders import (  # noqa: E402, F401
     _uses_cli_transport_runtime,
 )
 from ravn.cli.tool_builders import (  # noqa: E402, F401
+    _MIMIR_TOOL_NAMES,
     _apply_trust_filter,
     _build_compressor,
     _build_hooks,
@@ -124,6 +127,7 @@ from ravn.cli.tool_builders import (  # noqa: E402, F401
     _in_groups,
     _load_resident_learned_tools,
 )
+# isort: on
 
 
 # Agent/session composition remains here because its symbols are public CLI patch points.

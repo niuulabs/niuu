@@ -39,13 +39,14 @@ from niuu.mesh.discovery_builder import build_discovery_adapters
 from niuu.mesh.identity import MeshIdentity
 from niuu.ports.cli import CLITransport
 from niuu.utils import import_class
+from skuld.activity_reporting import ActivityReportingMixin
 from skuld.channels import (
     ChannelRegistry,
     WebSocketChannel,
 )
+from skuld.chronicle import ChronicleMixin
 from skuld.chronicle_watcher import ChronicleWatcher
 from skuld.config import SkuldSettings
-from skuld.chronicle import ChronicleMixin
 from skuld.conversation_models import (  # noqa: F401
     CHRONICLE_SUMMARY_PROMPT,
     CONVERSATION_HISTORY_DIR,
@@ -53,7 +54,6 @@ from skuld.conversation_models import (  # noqa: F401
     SUMMARY_TIMEOUT_SECONDS,
     ConversationTurn,
 )
-from skuld.activity_reporting import ActivityReportingMixin
 from skuld.event_log import EventLogMixin
 from skuld.file_routes import (  # noqa: F401
     MkdirRequest,
@@ -88,6 +88,7 @@ from skuld.session_artifacts import (  # noqa: F401
     _is_git_push,
     _resolve_git_workspace_root,
 )
+from skuld.transport_lifecycle import TransportLifecycleMixin
 from skuld.websocket_auth import (  # noqa: F401
     WsPrincipal,
     _claims_to_ws_principal,
@@ -99,7 +100,6 @@ from skuld.websocket_auth import (  # noqa: F401
     _split_roles,
     _ws_query_param,
 )
-from skuld.transport_lifecycle import TransportLifecycleMixin
 from skuld.websocket_lifecycle import WebSocketLifecycleMixin
 from skuld.workflow_runtime import (
     WorkflowGateNode,
@@ -110,8 +110,6 @@ from skuld.workflow_runtime import (
     _workflow_join_satisfied,
     _workflow_terminal_nodes,
 )
-
-
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher
@@ -3752,13 +3750,14 @@ class Broker(
             logger.warning("Failed to extract outcome block from transcript", exc_info=True)
 
 
-
 # Global broker instance
 broker = Broker()
 
 
-import skuld.broker_api as _broker_api
-from skuld.broker_api import (  # noqa: F401
+# API imports remain late because they bind the completed Broker instance.
+# isort: off
+import skuld.broker_api as _broker_api  # noqa: E402
+from skuld.broker_api import (  # noqa: E402, F401
     lifespan,
     health,
     ready,
@@ -3814,6 +3813,7 @@ from skuld.broker_api import (  # noqa: F401
     app,
     _presented_registry,
 )
+# isort: on
 
 _broker_api.bind_broker(lambda: broker, _log_buffer)
 

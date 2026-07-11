@@ -6,6 +6,7 @@ from typing import Any
 
 from ravn.config import Settings
 
+
 def _split_workflow_edge_label(label: Any) -> tuple[str, str]:
     if not isinstance(label, str):
         return "", ""

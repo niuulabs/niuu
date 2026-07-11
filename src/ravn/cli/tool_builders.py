@@ -15,7 +15,7 @@ from ravn.cli.runtime_builders import (
     _inject_secrets,
     _resident_ravn_state_dir,
 )
-from ravn.config import Settings, ToolGroupConfig, resolve_trust_tools
+from ravn.config import Settings, resolve_trust_tools
 from ravn.domain.models import Session, ToolCall, ToolResult
 
 logger = logging.getLogger(__name__)
