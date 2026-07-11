@@ -44,6 +44,8 @@ jobs:
               printf '%s\n' "$diff_output"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            encoded_diff="$(printf '%s' "$diff_output" | base64 -w 0)"
+            echo "::error file=src/volundr/main.py,line=1,title=Ruff fix base64::${encoded_diff}"
             annotation="${fix_output}"$'\n'"${diff_output}"
             annotation="${annotation: -4000}"
             annotation="${annotation//'%'/'%25'}"
