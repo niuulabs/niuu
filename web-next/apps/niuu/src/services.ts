@@ -129,25 +129,28 @@ export function isUnavailableService(
 ): service is { [UNAVAILABLE_SERVICE]: UnavailableServiceStatus } {
   return Boolean(
     service &&
-      typeof service === 'object' &&
-      UNAVAILABLE_SERVICE in service &&
-      (service as { [UNAVAILABLE_SERVICE]?: UnavailableServiceStatus })[UNAVAILABLE_SERVICE]
-        ?.available === false,
+    typeof service === 'object' &&
+    UNAVAILABLE_SERVICE in service &&
+    (service as { [UNAVAILABLE_SERVICE]?: UnavailableServiceStatus })[UNAVAILABLE_SERVICE]
+      ?.available === false,
   );
 }
 
 function unavailableService<T>(serviceName: string): T {
   const reason = 'No live backend is configured. Enable demoMode for synthetic data.';
   const status: UnavailableServiceStatus = { available: false, serviceName, reason };
-  return new Proxy({ [UNAVAILABLE_SERVICE]: status } as unknown as T & Record<PropertyKey, unknown>, {
-    get(target, property, receiver) {
-      if (property === 'then') return undefined;
-      if (property in target) return Reflect.get(target, property, receiver);
-      return () => {
-        throw new ServiceUnavailableError(serviceName, reason);
-      };
+  return new Proxy(
+    { [UNAVAILABLE_SERVICE]: status } as unknown as T & Record<PropertyKey, unknown>,
+    {
+      get(target, property, receiver) {
+        if (property === 'then') return undefined;
+        if (property in target) return Reflect.get(target, property, receiver);
+        return () => {
+          throw new ServiceUnavailableError(serviceName, reason);
+        };
+      },
     },
-  });
+  );
 }
 
 function demoService<T>(config: Partial<NiuuConfig>, serviceName: string, factory: () => T): T {

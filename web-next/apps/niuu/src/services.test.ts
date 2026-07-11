@@ -455,7 +455,6 @@ describe('buildServices live base selection', () => {
     );
   });
 
-
   it('normalizes explicit Ting sub-service bases back to /api/v1/ting', () => {
     buildServices({
       demoMode: true,

@@ -38,9 +38,7 @@ function normalizeConfigMode(value: string | null): ConfigMode | null {
   return null;
 }
 
-export function listUnavailableServiceNames(
-  backends: Record<string, { mode?: string }>,
-): string[] {
+export function listUnavailableServiceNames(backends: Record<string, { mode?: string }>): string[] {
   return Object.entries(backends)
     .filter(([, status]) => status.mode === 'unavailable')
     .map(([serviceName]) => serviceName);
@@ -98,8 +96,8 @@ function AppInner() {
                   className="niuu:border-b niuu:border-amber-400/30 niuu:bg-amber-400/10 niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:text-amber-200"
                 >
                   {unavailableServices.length} optional service backend
-                  {unavailableServices.length === 1 ? ' is' : 's are'} unavailable. Features
-                  without a live backend will report unavailable instead of showing demo data.
+                  {unavailableServices.length === 1 ? ' is' : 's are'} unavailable. Features without
+                  a live backend will report unavailable instead of showing demo data.
                 </div>
               ) : null}
               <Shell

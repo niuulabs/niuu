@@ -4,7 +4,11 @@ import { ResearchCampaignHeader } from './ResearchCampaignHeader';
 import { ResearchCampaignOverview } from './ResearchCampaignOverview';
 import { ResearchCampaignSections } from './ResearchCampaignSections';
 
-export function ResearchCampaignView({ controller }: { controller: ResearchCampaignPageController }) {
+export function ResearchCampaignView({
+  controller,
+}: {
+  controller: ResearchCampaignPageController;
+}) {
   return (
     <div className="ting-research-detail">
       <ResearchCampaignHeader controller={controller} />

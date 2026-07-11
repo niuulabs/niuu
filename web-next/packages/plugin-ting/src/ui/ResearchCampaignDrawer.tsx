@@ -128,9 +128,7 @@ export function ResearchCampaignDrawer({
                   )}
                   onClick={() => setDrawer((current) => ({ ...current, sourceId: source.id }))}
                 >
-                  <span className="ting-research-detail__master-citation">
-                    [{source.citation}]
-                  </span>
+                  <span className="ting-research-detail__master-citation">[{source.citation}]</span>
                   <span className="ting-research-detail__master-title">{source.title}</span>
                   <span className="ting-research-detail__master-quality">
                     <QualityDots score={source.quality} />
@@ -167,9 +165,7 @@ export function ResearchCampaignDrawer({
                   </div>
                 </div>
                 <div className="ting-research-detail__drawer-subheading">Excerpt</div>
-                <div className="ting-research-detail__drawer-quote">
-                  {selectedSource.excerpt}
-                </div>
+                <div className="ting-research-detail__drawer-quote">{selectedSource.excerpt}</div>
                 <div className="ting-research-detail__drawer-subheading">Cited in</div>
                 <div className="ting-research-detail__drawer-linked-list">
                   {selectedSource.compiledInto.map((path) => (
@@ -226,19 +222,14 @@ export function ResearchCampaignDrawer({
                     'ting-research-detail__master-row',
                     selectedCritique?.id === critique.id && 'is-active',
                   )}
-                  onClick={() =>
-                    setDrawer((current) => ({ ...current, critiqueId: critique.id }))
-                  }
+                  onClick={() => setDrawer((current) => ({ ...current, critiqueId: critique.id }))}
                 >
                   <span className="ting-research-detail__master-citation">
                     [{critique.citation}]
                   </span>
                   <span className="ting-research-detail__master-title">{critique.claim}</span>
                   <span
-                    className={cx(
-                      'ting-research-detail__severity-pill',
-                      `is-${critique.severity}`,
-                    )}
+                    className={cx('ting-research-detail__severity-pill', `is-${critique.severity}`)}
                   >
                     {critique.severity}
                   </span>
@@ -256,9 +247,7 @@ export function ResearchCampaignDrawer({
                 <div className="ting-research-detail__drawer-detail-domain">
                   against {selectedCritique.against}
                 </div>
-                <div className="ting-research-detail__drawer-quote">
-                  {selectedCritique.note}
-                </div>
+                <div className="ting-research-detail__drawer-quote">{selectedCritique.note}</div>
                 <div className="ting-research-detail__drawer-subheading">Linked artifacts</div>
                 <div className="ting-research-detail__drawer-linked-list">
                   {selectedCritique.linkedArtifacts.map((path) => (

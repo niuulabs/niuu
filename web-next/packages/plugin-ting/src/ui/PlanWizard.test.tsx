@@ -748,9 +748,7 @@ describe('PlanDraft', () => {
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: /keep in wizard/i }));
-    await waitFor(() =>
-      expect(screen.getByText(/draft kept in this wizard/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/draft kept in this wizard/i)).toBeInTheDocument());
   });
 });
 

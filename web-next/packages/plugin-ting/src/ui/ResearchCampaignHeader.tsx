@@ -2,7 +2,11 @@ import { cx, normalizeStageLabel, sentenceCase, stageTickClass } from './researc
 import { ConfidenceBadge } from './ResearchCampaignPresentation';
 import type { ResearchCampaignPageController } from './useResearchCampaignPage';
 
-export function ResearchCampaignHeader({ controller }: { controller: ResearchCampaignPageController }) {
+export function ResearchCampaignHeader({
+  controller,
+}: {
+  controller: ResearchCampaignPageController;
+}) {
   const {
     campaign,
     derivedState,

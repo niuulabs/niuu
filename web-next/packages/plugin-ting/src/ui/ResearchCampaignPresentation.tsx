@@ -59,7 +59,13 @@ export function QualityDots({ score }: { score: number }) {
   );
 }
 
-export function ConfidenceBadge({ percent, label }: { percent: number; label: 'low' | 'med' | 'high' }) {
+export function ConfidenceBadge({
+  percent,
+  label,
+}: {
+  percent: number;
+  label: 'low' | 'med' | 'high';
+}) {
   return (
     <div className="ting-research-detail__confidence">
       <div className="ting-research-detail__confidence-bar">
