@@ -111,7 +111,7 @@ jobs:
           status=${PIPESTATUS[0]}
           set -e
           if (( status != 0 )); then
-            failure_output="$(tail -n 200 "$output_file")"
+            failure_output="$(tail -n 40 "$output_file")"
             failure_output="${failure_output//'%'/'%25'}"
             failure_output="${failure_output//$'\n'/'%0A'}"
             failure_output="${failure_output//$'\r'/'%0D'}"
