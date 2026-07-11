@@ -38,9 +38,7 @@ class TestCorsConfig:
         assert cors.allow_headers == ["Authorization", "Content-Type"]
         assert cors.allow_credentials is False
 
-    def test_legacy_environment_aliases_are_typed(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_legacy_environment_aliases_are_typed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("CORS_ORIGINS", "https://one.example,https://two.example")
         monkeypatch.setenv("CORS_ALLOW_CREDENTIALS", "false")
 
@@ -52,9 +50,7 @@ class TestCorsConfig:
         ]
         assert cors.allow_credentials is False
 
-    def test_malformed_legacy_boolean_fails_loudly(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_malformed_legacy_boolean_fails_loudly(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("CORS_ALLOW_CREDENTIALS", "sometimes")
 
         with pytest.raises(ValueError, match="allow_credentials"):
@@ -62,9 +58,7 @@ class TestCorsConfig:
 
 
 class TestNiuuHostConfig:
-    def test_legacy_environment_aliases_are_typed(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_legacy_environment_aliases_are_typed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("NIUU_CORS_ORIGINS", "https://ui.example")
         monkeypatch.setenv("NIUU_FORGE_STATE_FILE", "~/.niuu/custom-state.json")
         monkeypatch.setenv("NIUU_NO_WEB", "true")
@@ -88,9 +82,7 @@ class TestNiuuHostConfig:
 
         assert NiuuHostConfig().database_mode == "auto"
 
-    def test_invalid_database_mode_fails_loudly(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_invalid_database_mode_fails_loudly(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("NIUU_DATABASE_MODE", "sometimes")
 
         with pytest.raises(ValueError, match="database_mode"):

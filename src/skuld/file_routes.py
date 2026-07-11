@@ -117,10 +117,7 @@ async def list_files(path: str = "", root: str = "workspace") -> dict:
         try:
             relative_item = item.relative_to(base).as_posix()
             canonical_item = _resolve_user_path(base, relative_item, strict=True)
-            if (
-                os.path.commonpath((os.fspath(base), os.fspath(canonical_item)))
-                != os.fspath(base)
-            ):
+            if os.path.commonpath((os.fspath(base), os.fspath(canonical_item))) != os.fspath(base):
                 continue
         except HTTPException:
             # Hide symlinks that escape the selected root.
@@ -182,10 +179,7 @@ async def upload_files(
         # Prevent path traversal in filenames
         safe_name = os.path.basename(upload.filename)
         destination = _resolve_user_path(target_dir, safe_name, allow_root=False)
-        if (
-            os.path.commonpath((os.fspath(base), os.fspath(destination)))
-            != os.fspath(base)
-        ):
+        if os.path.commonpath((os.fspath(base), os.fspath(destination))) != os.fspath(base):
             raise HTTPException(400, "Path traversal not allowed")
 
         content = await upload.read()
@@ -470,8 +464,6 @@ async def get_diff_files(
         files.append({"path": path, "status": "mod", "ins": ins, "del": del_})
 
     return {"files": files}
-
-
 
 
 def register_file_routes(app: FastAPI, broker_getter: Callable[[], _BrokerLike]) -> None:

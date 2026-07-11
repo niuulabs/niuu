@@ -524,16 +524,12 @@ def _rebuild_presented_registry() -> None:
             except UnsafePathError:
                 continue
             files = [
-                item
-                for item in safe_entry.iterdir()
-                if item.is_file() and not item.is_symlink()
+                item for item in safe_entry.iterdir() if item.is_file() and not item.is_symlink()
             ]
             if files:
                 _presented_registry[entry.name] = str(files[0])
     except (OSError, UnsafePathError) as exc:  # pragma: no cover - best-effort recovery
-        logger.warning(
-            "present-file: registry rebuild failed: %s", repr(exc)
-        )
+        logger.warning("present-file: registry rebuild failed: %s", repr(exc))
 
 
 @app.post("/api/present-file")
@@ -576,9 +572,7 @@ async def present_file(body: dict) -> dict:
         dest = resolve_contained_path(dest_dir, src_real.name, allow_root=False)
         shutil.copyfile(src_real, dest)
     except (OSError, UnsafePathError) as exc:
-        logger.warning(
-            "present-file: staging copy failed: %s", repr(exc)
-        )
+        logger.warning("present-file: staging copy failed: %s", repr(exc))
         raise HTTPException(500, "could not stage file") from None
     _presented_registry[file_id] = str(dest)
 

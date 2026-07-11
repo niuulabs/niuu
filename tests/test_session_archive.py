@@ -319,9 +319,7 @@ def test_resolve_archive_member_path_accepts_nested_member(tmp_path):
     root = tmp_path / "extract"
     root.mkdir()
 
-    assert resolve_archive_member_path(
-        root, "logs/nested.json"
-    ) == root / "logs" / "nested.json"
+    assert resolve_archive_member_path(root, "logs/nested.json") == root / "logs" / "nested.json"
 
 
 def test_archive_root_rejects_workspace_path_traversal(tmp_path):

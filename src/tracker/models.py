@@ -18,9 +18,7 @@ class TrackerIssue(BaseModel):
     """Issue from an external issue tracker."""
 
     id: str = Field(description="Internal issue ID from the tracker backend")
-    identifier: str = Field(
-        description="Human-readable issue identifier (e.g. NIU-57)"
-    )
+    identifier: str = Field(description="Human-readable issue identifier (e.g. NIU-57)")
     title: str = Field(description="Issue title")
     status: str = Field(description="Current issue status (e.g. In Progress, Done)")
     assignee: str | None = Field(

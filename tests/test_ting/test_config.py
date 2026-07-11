@@ -45,9 +45,7 @@ class TestSettings:
         settings = Settings(database=DatabaseConfig(host="custom-host"))
         assert settings.database.host == "custom-host"
 
-    def test_server_and_platform_legacy_aliases(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_server_and_platform_legacy_aliases(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HOST", "127.0.0.2")
         monkeypatch.setenv("PORT", "8181")
         monkeypatch.setenv("WORKERS", "2")

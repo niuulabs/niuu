@@ -46,7 +46,6 @@ class SessionData:
     error: str = ""
 
 
-
 class SessionRow(Widget):
     """A single session row with status badge."""
 
@@ -130,9 +129,7 @@ class SessionsPage(Widget):
         self._all_sessions: list[SessionData] = list(sessions or [])
         self._filtered: list[SessionData] = list(self._all_sessions)
         self._unavailable_reason = (
-            "Session data unavailable: no session provider is connected"
-            if sessions is None
-            else ""
+            "Session data unavailable: no session provider is connected" if sessions is None else ""
         )
         self._search_term = ""
         self._context_filter = ""

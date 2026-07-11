@@ -585,15 +585,13 @@ class TestInMemoryEventBroadcaster:
             type=TimelineEventType.SESSION,
             label="session started",
         )
-        timeline = TimelineResponse(
-            events=[timeline_event], files=[], commits=[], token_burn=[]
-        )
+        timeline = TimelineResponse(events=[timeline_event], files=[], commits=[], token_burn=[])
 
-        with caplog.at_level(
-            logging.INFO, logger="volundr.adapters.outbound.broadcaster"
-        ):
+        with caplog.at_level(logging.INFO, logger="volundr.adapters.outbound.broadcaster"):
             await broadcaster.publish_chronicle_event(
-                session_id, timeline_event, timeline  # type: ignore[arg-type]
+                session_id,
+                timeline_event,
+                timeline,  # type: ignore[arg-type]
             )
 
         message = next(

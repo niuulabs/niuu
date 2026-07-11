@@ -187,9 +187,7 @@ class TestGitProviderRegistry:
 
         assert result is False
         messages = [
-            record.getMessage()
-            for record in caplog.records
-            if "forged" in record.getMessage()
+            record.getMessage() for record in caplog.records if "forged" in record.getMessage()
         ]
         assert messages
         assert all(repr(repo_url) in message for message in messages)

@@ -160,7 +160,6 @@ class TestSweepKill:
         assert seen == [101]
 
 
-
 class TestProcessIteration:
     def test_ps_fallback_parses_pid_and_command(self):
         fake_ps = "  101 claude remote-control --name volundr-tok\n  bad line\n 103 claude daemon\n"

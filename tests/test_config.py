@@ -1034,5 +1034,6 @@ def test_runtime_routing_rejects_invalid_port(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("NIUU_SERVER_PORT", "not-a-port")
     import pytest
+
     with pytest.raises(ValueError):
         Settings()

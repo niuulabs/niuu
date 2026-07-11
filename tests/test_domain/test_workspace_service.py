@@ -82,9 +82,7 @@ class TestWorkspaceServiceDelete:
         remaining = await service.list_workspaces("user-1")
         assert len(remaining) == 0
 
-    async def test_session_id_escapes_control_characters_in_log(
-        self, service, storage, caplog
-    ):
+    async def test_session_id_escapes_control_characters_in_log(self, service, storage, caplog):
         session_id = "session\r\nforged\tentry\x1b[31m"
         await storage.create_session_workspace(session_id, "user-1", "tenant-1")
 

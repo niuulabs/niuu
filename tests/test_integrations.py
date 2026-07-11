@@ -910,7 +910,6 @@ class TestIntegrationTestEndpointBranches:
         assert resp.json()["error"] == "tracker exploded"
 
 
-
 class TestHTTPIntegrationRepositoryContract:
     """Owner-scoped HTTP repositories fail explicitly for global queries."""
 

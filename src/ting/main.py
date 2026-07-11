@@ -758,8 +758,7 @@ def create_app(
                     # NIC, so 127.0.0.1 is unreachable when start-dev pinned
                     # the host to a LAN IP.
                     self_url = (
-                        f"http://{settings.local_platform_host}:"
-                        f"{settings.local_platform_port}"
+                        f"http://{settings.local_platform_host}:{settings.local_platform_port}"
                     )
                 telegram_polling = TelegramPollingService(
                     bot_token=bot_token,
@@ -1006,7 +1005,6 @@ def main() -> None:  # pragma: no cover
     import uvicorn
 
     settings = Settings()
-
 
     uvicorn.run(
         "ting.main:app",

@@ -76,9 +76,7 @@ class WardenConsoleConfig(BaseModel):
                 "use a loopback-only console behind an authenticated proxy"
             )
         if self.enabled and self.host not in {"127.0.0.1", "::1", "localhost"}:
-            raise ValueError(
-                "unauthenticated warden consoles may only bind to a loopback host"
-            )
+            raise ValueError("unauthenticated warden consoles may only bind to a loopback host")
         return self
 
 

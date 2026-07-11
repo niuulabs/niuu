@@ -932,9 +932,7 @@ class TestApplyTrustFilter:
 
 
 class TestRuntimeOverrides:
-    def test_legacy_executor_and_persona_aliases(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_legacy_executor_and_persona_aliases(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(
             "SKULD__TRANSPORT_ADAPTER",
             "skuld.transports.codex_ws.CodexWebSocketTransport",
@@ -946,17 +944,13 @@ class TestRuntimeOverrides:
 
         settings = Settings()
 
-        assert settings.runtime_executor.transport_adapter.endswith(
-            "CodexWebSocketTransport"
-        )
+        assert settings.runtime_executor.transport_adapter.endswith("CodexWebSocketTransport")
         assert settings.runtime_executor.skip_permissions is False
         assert settings.runtime_executor.approval_policy == "on-request"
         assert settings.runtime_executor.sandbox == "workspace-write"
         assert settings.runtime_persona == "coordinator"
 
-    def test_malformed_executor_boolean_fails_loudly(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_malformed_executor_boolean_fails_loudly(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SKULD__SKIP_PERMISSIONS", "sometimes")
 
         with pytest.raises(ValueError, match="skip_permissions"):
@@ -973,9 +967,7 @@ class TestValkyrieRuntimeConfig:
         assert settings.valkyrie.room.url == ""
         assert settings.valkyrie.brief_interval_seconds == 86_400.0
 
-    def test_legacy_environment_aliases_are_typed(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_legacy_environment_aliases_are_typed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_URL", "tls://nats:4222")
         monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_RETRY_SECONDS", "17")
         monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_TLS_HANDSHAKE_FIRST", "true")
@@ -1015,9 +1007,7 @@ class TestValkyrieRuntimeConfig:
         assert settings.valkyrie.room.url == "http://room:8081"
         assert settings.valkyrie.brief_interval_seconds == 0
 
-    def test_odin_review_legacy_aliases_are_typed(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_odin_review_legacy_aliases_are_typed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("RAVN_ODIN_REVIEW_DEFAULT_TTL_SECONDS", "12.5")
         monkeypatch.setenv("RAVN_ODIN_REVIEW_TTL_SECONDS_FLOCK_LEARNING", "7")
         monkeypatch.setenv("RAVN_ODIN_REVIEW_SWEEP_INTERVAL_SECONDS", "2")
@@ -1036,9 +1026,7 @@ class TestValkyrieRuntimeConfig:
         with pytest.raises(ValueError, match="sweep_interval_seconds"):
             Settings()
 
-    def test_malformed_legacy_value_fails_loudly(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_malformed_legacy_value_fails_loudly(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_REPLAY_SECONDS", "not-an-int")
 
         with pytest.raises(ValueError, match="replay_seconds"):
@@ -1053,8 +1041,6 @@ class TestValkyrieRuntimeConfig:
             ("room", "timeout_seconds", -1),
         ],
     )
-    def test_invalid_canonical_ranges_fail(
-        self, section: str, field: str, value: int
-    ) -> None:
+    def test_invalid_canonical_ranges_fail(self, section: str, field: str, value: int) -> None:
         with pytest.raises(ValueError, match=field):
             Settings(valkyrie={section: {field: value}})

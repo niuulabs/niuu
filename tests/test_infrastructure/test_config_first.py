@@ -24,8 +24,10 @@ OS_KEYS = {
 BUILD_KEYS = {"NIUU_BUILD_REF", "NIUU_BUILD_SHA", "NIUU_NUITKA_EXTRA_ARGS"}
 SECRET_MARKERS = ("API_KEY", "DATABASE_URL", "DSN", "PASSWORD", "SECRET", "TOKEN")
 ALLOWLIST = {
-    ("niuu/adapters/embedded_postgres.py", "NIUU_PG_BIN_DIR"):
-        "embedded PostgreSQL executable discovery",
+    (
+        "niuu/adapters/embedded_postgres.py",
+        "NIUU_PG_BIN_DIR",
+    ): "embedded PostgreSQL executable discovery",
     ("ravn/cli/mimir_bridge.py", "RAVN_MIMIR_PATH"): "CLI companion executable discovery",
     ("ravn/cli/mimir_bridge.py", "RAVN_WORKSPACE_DIR"): "CLI workspace bootstrap",
     ("ravn/main.py", "LOG_LEVEL"): "entrypoint logging bootstrap",
@@ -34,14 +36,20 @@ ALLOWLIST = {
     ("skuld/transports/claude_env.py", "SKULD__CLAUDE_AUTH"): "child auth environment filtering",
     ("skuld/transports/codex.py", "SKULD_CODEX_SANDBOX"): "Codex child compatibility override",
     ("skuld/transports/tmux_interactive.py", "SKULD__CLAUDE_AUTH"): "tmux child auth filtering",
-    ("skuld/transports/tmux_interactive.py", "SKULD__SESSION__NAME"):
-        "supervisor-injected tmux identity",
+    (
+        "skuld/transports/tmux_interactive.py",
+        "SKULD__SESSION__NAME",
+    ): "supervisor-injected tmux identity",
     ("skuld/transports/tmux_interactive.py", "SKULD__TMUX_BIN"): "tmux executable discovery",
-    ("skuld/transports/tmux_interactive.py", "SKULD__TMUX_REPL_READY_MARKER"):
-        "tmux child protocol marker",
+    (
+        "skuld/transports/tmux_interactive.py",
+        "SKULD__TMUX_REPL_READY_MARKER",
+    ): "tmux child protocol marker",
     ("skuld/transports/tmux_interactive.py", "SKULD__TMUX_SOCKET_DIR"): "tmux OS socket bootstrap",
-    ("volundr/adapters/outbound/skuld_room.py", "OPENSHELL_INTERNAL_GATEWAY_URL"):
-        "provider-injected runtime endpoint",
+    (
+        "volundr/adapters/outbound/skuld_room.py",
+        "OPENSHELL_INTERNAL_GATEWAY_URL",
+    ): "provider-injected runtime endpoint",
 }
 
 
@@ -59,20 +67,13 @@ def _reads(path: Path) -> list[tuple[int, str]]:
         environ_get = (
             node.func.attr == "get"
             and isinstance(owner, ast.Attribute)
-            and isinstance(owner.value, ast.Name) and owner.value.id == "os"
+            and isinstance(owner.value, ast.Name)
+            and owner.value.id == "os"
             and owner.attr == "environ"
         )
-        getenv = (
-            node.func.attr == "getenv"
-            and isinstance(owner, ast.Name)
-            and owner.id == "os"
-        )
+        getenv = node.func.attr == "getenv" and isinstance(owner, ast.Name) and owner.id == "os"
         key = node.args[0]
-        if (
-            (environ_get or getenv)
-            and isinstance(key, ast.Constant)
-            and isinstance(key.value, str)
-        ):
+        if (environ_get or getenv) and isinstance(key, ast.Constant) and isinstance(key.value, str):
             result.append((node.lineno, key.value))
     return result
 
@@ -111,8 +112,6 @@ def test_hardened_modules_have_no_literal_environment_reads() -> None:
         "skuld/transports/remote_control.py",
     )
     violations = {
-        target: _reads(SRC_ROOT / target)
-        for target in targets
-        if _reads(SRC_ROOT / target)
+        target: _reads(SRC_ROOT / target) for target in targets if _reads(SRC_ROOT / target)
     }
     assert violations == {}

@@ -656,7 +656,8 @@ class TestMCPManager:
 
     @pytest.mark.asyncio
     async def test_auth_error_refuses_unauthenticated_connection(
-        self, caplog: pytest.LogCaptureFixture,
+        self,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Authentication failures skip the server instead of silently connecting without auth."""
         _client, transport = _make_healthy_client(["tool_x"])

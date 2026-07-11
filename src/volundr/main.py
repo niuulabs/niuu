@@ -597,9 +597,7 @@ def create_app(
                     try:
                         await session_service.mark_session_dead(UUID(session_id))
                     except ValueError:
-                        logger.warning(
-                            "Broker death for non-UUID session id %s", repr(session_id)
-                        )
+                        logger.warning("Broker death for non-UUID session id %s", repr(session_id))
 
                 pod_manager.set_death_callback(_on_broker_death)
 

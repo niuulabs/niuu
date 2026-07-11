@@ -210,9 +210,7 @@ def test_status_endpoint_reports_live_counts(client: TestClient):
 
 @respx.mock
 def test_status_endpoint_reports_discovery_unavailable(client: TestClient):
-    respx.get("http://localhost:8080/api/v1/forge/sessions").mock(
-        return_value=httpx.Response(503)
-    )
+    respx.get("http://localhost:8080/api/v1/forge/sessions").mock(return_value=httpx.Response(503))
 
     resp = client.get("/api/v1/ravn/status")
 
@@ -2173,9 +2171,7 @@ def test_list_sessions_returns_live_ravn_sessions(client: TestClient):
 
 @respx.mock
 def test_stop_session_forwards_to_forge_with_caller_identity(client: TestClient):
-    route = respx.post(
-        "http://localhost:8080/api/v1/forge/sessions/my-session-id/stop"
-    ).mock(
+    route = respx.post("http://localhost:8080/api/v1/forge/sessions/my-session-id/stop").mock(
         return_value=httpx.Response(
             200,
             json={"session_id": "my-session-id", "status": "stopped"},

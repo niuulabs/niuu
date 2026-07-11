@@ -79,9 +79,7 @@ def test_present_file_log_escapes_forged_newline(client, tmp_path, caplog):
 
     assert response.status_code == 200
     message = next(
-        record.getMessage()
-        for record in caplog.records
-        if "staged" in record.getMessage()
+        record.getMessage() for record in caplog.records if "staged" in record.getMessage()
     )
     assert title not in message
     assert "report\\nFORGED" in message
