@@ -52,9 +52,10 @@ def _runtime() -> ResidentRuntime:
 
 
 @pytest.mark.asyncio
-async def test_openclaw_sessions_and_shared_chat_use_gateway_v4() -> None:
+async def test_openclaw_sessions_and_shared_chat_use_native_gateway_contract() -> None:
     resident_session_id = UUID("11111111-2222-4333-8444-555555555555")
     methods: list[str] = []
+    requests: list[dict] = []
     connect_params: dict = {}
 
     async def gateway(websocket) -> None:
@@ -102,6 +103,7 @@ async def test_openclaw_sessions_and_shared_chat_use_gateway_v4() -> None:
         )
         async for raw in websocket:
             request = json.loads(raw)
+            requests.append(request)
             method = request["method"]
             methods.append(method)
             if method == "agents.list":
@@ -148,8 +150,8 @@ async def test_openclaw_sessions_and_shared_chat_use_gateway_v4() -> None:
                     }
                 )
             )
-            if method == "sessions.send":
-                key = request["params"]["key"]
+            if method == "chat.send":
+                key = request["params"]["sessionKey"]
                 await websocket.send(
                     json.dumps(
                         {
@@ -160,7 +162,10 @@ async def test_openclaw_sessions_and_shared_chat_use_gateway_v4() -> None:
                                 "sessionKey": key,
                                 "seq": 1,
                                 "state": "delta",
-                                "deltaText": "Hello",
+                                "message": {
+                                    "role": "assistant",
+                                    "content": [{"type": "text", "text": "Hello"}],
+                                },
                             },
                         }
                     )
@@ -224,10 +229,19 @@ async def test_openclaw_sessions_and_shared_chat_use_gateway_v4() -> None:
     assert connect_params["maxProtocol"] == 4
     assert "sessions.list" in methods
     assert "agents.list" in methods
-    assert "sessions.create" in methods
-    assert "sessions.messages.subscribe" in methods
-    assert "sessions.send" in methods
-    assert "sessions.abort" in methods
+    assert "sessions.patch" in methods
+    assert "chat.history" in methods
+    assert "chat.send" in methods
+    assert "chat.abort" in methods
+    patch_request = next(request for request in requests if request["method"] == "sessions.patch")
+    assert patch_request["params"]["label"] == "New work"
+    assert patch_request["params"]["model"] == runtime.model
+    assert patch_request["params"]["key"].startswith("agent:main:niuu-")
+    history_request = next(request for request in requests if request["method"] == "chat.history")
+    assert history_request["params"] == {
+        "sessionKey": f"agent:main:niuu-{resident_session_id}",
+        "limit": 1000,
+    }
     credential = await store.get_value("resident", str(runtime.id), "openclaw-gateway")
     assert credential is not None
     assert credential["device_token"] == "paired-device-token"

@@ -334,6 +334,7 @@ class OpenClawChatConnection(ResidentChatConnection):
         )
         self._initial.put_nowait({"type": "conversation_history", "turns": history})
         self._active_runs: set[str] = set()
+        self._run_text: dict[str, str] = {}
 
     async def receive(self) -> dict[str, Any]:
         while True:
@@ -362,6 +363,10 @@ class OpenClawChatConnection(ResidentChatConnection):
                 run_id = str(payload.get("runId") or "")
                 state = payload.get("state")
                 if state == "delta":
+                    text = _message_text(payload.get("message"))
+                    previous = self._run_text.get(run_id, "")
+                    delta = text[len(previous) :] if text.startswith(previous) else text
+                    self._run_text[run_id] = text
                     if run_id not in self._active_runs:
                         self._active_runs.add(run_id)
                         self._initial.put_nowait(
@@ -369,7 +374,7 @@ class OpenClawChatConnection(ResidentChatConnection):
                                 "type": "content_block_delta",
                                 "delta": {
                                     "type": "text_delta",
-                                    "text": payload.get("deltaText") or "",
+                                    "text": delta,
                                 },
                             }
                         )
@@ -379,7 +384,7 @@ class OpenClawChatConnection(ResidentChatConnection):
                         }
                     return {
                         "type": "content_block_delta",
-                        "delta": {"type": "text_delta", "text": payload.get("deltaText") or ""},
+                        "delta": {"type": "text_delta", "text": delta},
                     }
                 if state == "final":
                     if run_id not in self._active_runs:
@@ -398,9 +403,11 @@ class OpenClawChatConnection(ResidentChatConnection):
                             "message": {"role": "assistant", "model": self._model, "content": []},
                         }
                     self._active_runs.discard(run_id)
+                    self._run_text.pop(run_id, None)
                     return {"type": "result", "result": ""}
                 if state in {"error", "aborted"}:
                     self._active_runs.discard(run_id)
+                    self._run_text.pop(run_id, None)
                     return {
                         "type": "error",
                         "error": payload.get("errorMessage") or state,
@@ -409,7 +416,7 @@ class OpenClawChatConnection(ResidentChatConnection):
     async def send(self, frame: dict[str, Any]) -> None:
         frame_type = frame.get("type")
         if frame_type == "interrupt":
-            await self._gateway.request("sessions.abort", {"key": self._session_key})
+            await self._gateway.request("chat.abort", {"sessionKey": self._session_key})
             return
         if frame_type != "user":
             raise OpenClawGatewayError(f"Unsupported shared chat command: {frame_type}")
@@ -438,9 +445,9 @@ class OpenClawChatConnection(ResidentChatConnection):
             text = str(content or "")
         request_id = str(frame.get("request_id") or uuid4())
         await self._gateway.request(
-            "sessions.steer" if self._active_runs else "sessions.send",
+            "chat.send",
             {
-                "key": self._session_key,
+                "sessionKey": self._session_key,
                 "message": text,
                 "idempotencyKey": request_id,
                 **({"attachments": attachments} if attachments else {}),
@@ -457,8 +464,6 @@ class OpenClawChatConnection(ResidentChatConnection):
         )
 
     async def close(self) -> None:
-        with suppress(Exception):
-            await self._gateway.request("sessions.messages.unsubscribe", {"key": self._session_key})
         await self._gateway.close()
 
 
@@ -569,10 +574,9 @@ class OpenClawResidentSessionController(ResidentSessionController):
                     f"OpenClaw Gateway does not advertise the {_AGENT_ID!r} resident agent"
                 )
             await connection.request(
-                "sessions.create",
+                "sessions.patch",
                 {
                     "key": _session_key(session_id),
-                    "agentId": _AGENT_ID,
                     "label": title or runtime.name,
                     **({"model": model} if model else {}),
                 },
@@ -609,9 +613,8 @@ class OpenClawResidentSessionController(ResidentSessionController):
         key = _session_key(session_id)
         try:
             history = await connection.request(
-                "chat.history", {"sessionKey": key, "limit": 1000, "maxChars": 500_000}
+                "chat.history", {"sessionKey": key, "limit": 1000}
             )
-            await connection.request("sessions.messages.subscribe", {"key": key})
         except Exception:
             await connection.close()
             raise
