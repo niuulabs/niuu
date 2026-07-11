@@ -217,7 +217,7 @@ export function sentenceCase(value: string): string {
 export function normalizeStageLabel(stage: CampaignStageState | undefined): string {
   if (!stage) return 'Research';
   const label = stage.label.toLowerCase();
-  if (label.includes('frame')) return 'Frame';
+  if (label.includes('fram')) return 'Frame';
   if (label.includes('explore')) return 'Explore';
   if (label.includes('challenge')) return 'Challenge';
   if (label.includes('synth')) return 'Synthesize';
@@ -345,7 +345,9 @@ export function parseCritiques(content: string, linkedArtifacts: string[]): Crit
 
   for (const [index, section] of sections.entries()) {
     const lines = section.split('\n').map((line) => line.trim());
-    const heading = lines[0]?.replace(/^##\s+/, '') ?? '';
+    const rawHeading = lines[0] ?? '';
+    if (!rawHeading.startsWith('## ')) continue;
+    const heading = rawHeading.replace(/^##\s+/, '');
     if (!heading) continue;
     const againstLine = lines.find((line) => /^against:/i.test(line)) ?? '';
     const severityLine = lines.find((line) => /^severity:/i.test(line)) ?? '';

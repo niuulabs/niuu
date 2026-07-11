@@ -161,10 +161,9 @@ describe('research campaign model', () => {
       deriveCampaignState(campaign('completed'), [artifact({ publishState: 'published' })]),
     ).toBe('published');
     expect(
-      deriveCampaignState(
-        campaign('completed'),
-        [artifact({ kind: 'manifest', publishState: 'published' })],
-      ),
+      deriveCampaignState(campaign('completed'), [
+        artifact({ kind: 'manifest', publishState: 'published' }),
+      ]),
     ).toBe('published');
     expect(deriveCampaignState(campaign('completed'), [artifact()])).toBe('review');
     expect(deriveCampaignState(campaign('running', [{ label: 'x', status: 'active' }]), [])).toBe(
@@ -187,28 +186,15 @@ describe('research campaign model', () => {
 
   it('derives confidence from explicit metadata, state, and evidence volume', () => {
     expect(
-      confidenceFromArtifacts(
-        'running',
-        artifact({ frontmatter: { confidence: 'HIGH' } }),
-        0,
-        0,
-      ),
+      confidenceFromArtifacts('running', artifact({ frontmatter: { confidence: 'HIGH' } }), 0, 0),
     ).toEqual({ percent: 78, label: 'high', raw: 'high' });
     expect(
-      confidenceFromArtifacts(
-        'running',
-        artifact({ frontmatter: { confidence: 'medium' } }),
-        0,
-        0,
-      ).label,
+      confidenceFromArtifacts('running', artifact({ frontmatter: { confidence: 'medium' } }), 0, 0)
+        .label,
     ).toBe('med');
     expect(
-      confidenceFromArtifacts(
-        'running',
-        artifact({ frontmatter: { confidence: 'low' } }),
-        0,
-        0,
-      ).label,
+      confidenceFromArtifacts('running', artifact({ frontmatter: { confidence: 'low' } }), 0, 0)
+        .label,
     ).toBe('low');
     expect(confidenceFromArtifacts('published', null, 0, 0).percent).toBe(84);
     expect(confidenceFromArtifacts('review', null, 0, 0).percent).toBe(78);
