@@ -13,7 +13,6 @@ from fastapi.responses import StreamingResponse
 
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.service_databases import apply_service_database_settings, database_pool
-from niuu.service_settings import Settings
 from niuu.settings_schema import (
     SettingsFieldSchema,
     SettingsProviderSchema,
@@ -29,6 +28,7 @@ from observatory.registry import (
     RegistryNotFoundError,
     RegistryValidationError,
 )
+from volundr.config import Settings
 
 KEEPALIVE_INTERVAL = 15.0
 FORWARDED_AUTH_HEADERS = (

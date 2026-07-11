@@ -237,6 +237,12 @@ broker:
   #   "skuld.transports.codex.CodexSubprocessTransport"         # OpenAI Codex
   #   "skuld.transports.grok.GrokACPTransport"                  # xAI Grok Build (ACP / Scaldy)
   transportAdapter: "skuld.transports.sdk.SDKTransport"
+  # -- CLI executable used by subprocess-based transports.
+  cliBinary: "claude"
+  # -- Claude Remote Control permission-mode override. Empty follows skipPermissions.
+  remoteControlPermissionMode: ""
+  # -- Maximum size, in bytes, accepted by the present-file endpoint.
+  maxPresentedFileBytes: 52428800
   # -- Skip tool permission prompts (true = --dangerously-skip-permissions for Claude,
   # --full-auto for Codex)
   skipPermissions: false
@@ -252,6 +258,11 @@ volundr:
   serviceUserId: "skuld-broker"
   # -- Tenant ID for internal API calls (x-auth-tenant header)
   serviceTenantId: "default"
+  # -- Existing Secret reference for the outbound Volundr service token.
+  # Keep empty when workload identity or the normal authenticated path is used.
+  externalApiTokenSecret:
+    name: ""
+    key: "token"
 
 # -- Secrets injected as environment variables into the skuld broker container.
 # Each entry maps one key from a Kubernetes Secret to an env var.

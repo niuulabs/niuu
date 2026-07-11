@@ -96,12 +96,12 @@ def test_complete_layout_returns_subcommands() -> None:
     assert "save" in completions
     assert "load" in completions
     assert "list" in completions
+    assert "delete" in completions
 
 
-def test_complete_filter_returns_event_types() -> None:
-    completions = complete_command(":filter ")
-    assert "thought" in completions
-    assert "all" in completions
+def test_removed_dead_commands_are_not_advertised() -> None:
+    completions = complete_command(":")
+    assert all(command not in completions for command in (":spawn", ":pipe", ":yank", ":filter"))
 
 
 # ---------------------------------------------------------------------------

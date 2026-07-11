@@ -403,34 +403,6 @@ class TestAuth:
 
 
 # ---------------------------------------------------------------------------
-# Write operations — NotImplementedError
-# ---------------------------------------------------------------------------
-
-
-class TestReadOnly:
-    def test_save_raises_not_implemented(self) -> None:
-        adapter = _adapter()
-        config = PersonaConfig(name="x")
-        with pytest.raises(NotImplementedError, match="read-only"):
-            adapter.save(config)
-
-    def test_delete_raises_not_implemented(self) -> None:
-        adapter = _adapter()
-        with pytest.raises(NotImplementedError, match="read-only"):
-            adapter.delete("x")
-
-    def test_save_error_message_mentions_rest_api(self) -> None:
-        adapter = _adapter()
-        with pytest.raises(NotImplementedError, match="volundr REST API"):
-            adapter.save(PersonaConfig(name="x"))
-
-    def test_delete_error_message_mentions_rest_api(self) -> None:
-        adapter = _adapter()
-        with pytest.raises(NotImplementedError, match="volundr REST API"):
-            adapter.delete("x")
-
-
-# ---------------------------------------------------------------------------
 # PersonaPort compliance
 # ---------------------------------------------------------------------------
 
@@ -441,3 +413,5 @@ class TestPortCompliance:
 
         adapter = _adapter()
         assert isinstance(adapter, PersonaPort)
+        assert not hasattr(adapter, "save")
+        assert not hasattr(adapter, "delete")

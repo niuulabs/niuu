@@ -40,11 +40,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_NOT_IMPLEMENTED_MSG = (
-    "Personas are backed by a mounted volume; "
-    "edit via the volundr REST API or edit the source ConfigMap."
-)
-
 
 class MountedVolumePersonaAdapter(PersonaPort):
     """Read-only :class:`~ravn.ports.persona.PersonaPort` backed by a mounted volume.
@@ -169,13 +164,3 @@ class MountedVolumePersonaAdapter(PersonaPort):
     def is_builtin(self, name: str) -> bool:  # noqa: ARG002
         """Always ``False`` — nothing on a mounted volume is a bundled built-in."""
         return False
-
-    # ------------------------------------------------------------------
-    # Write operations — not supported
-    # ------------------------------------------------------------------
-
-    def save(self, config: PersonaConfig) -> None:
-        raise NotImplementedError(_NOT_IMPLEMENTED_MSG)
-
-    def delete(self, name: str) -> bool:
-        raise NotImplementedError(_NOT_IMPLEMENTED_MSG)

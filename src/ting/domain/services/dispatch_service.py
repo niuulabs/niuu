@@ -27,6 +27,7 @@ except ImportError:
     _catalog_saga_completed = None  # type: ignore[assignment]
 
 from mimir.registry import MimirRegistryStore
+from niuu.config_models import default_session_definitions
 from niuu.domain.model_runtime import (
     session_definition_for_model,
     transport_adapter_for_session_definition,
@@ -62,7 +63,6 @@ from ting.ports.saga_repository import SagaRepository
 from ting.ports.tracker import TrackerFactory, TrackerPort
 from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrPort
 from ting.ports.workflow_repository import WorkflowRepository
-from volundr.config import _default_session_definitions
 
 logger = logging.getLogger(__name__)
 
@@ -561,7 +561,7 @@ class DispatchConfig:
     flock_llm_config: dict = field(default_factory=dict)
     flock_daily_budget_usd: float = 25.0
     live_flock: object | None = field(default=None, repr=False)
-    session_definitions: dict[str, Any] = field(default_factory=_default_session_definitions)
+    session_definitions: dict[str, Any] = field(default_factory=default_session_definitions)
     configured_models: list[Any] = field(default_factory=list)
 
     def __getattribute__(self, name: str) -> object:

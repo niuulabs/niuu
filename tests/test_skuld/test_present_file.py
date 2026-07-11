@@ -12,17 +12,19 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     from skuld import broker as bmod
+    from skuld import broker_api as api_mod
 
     # Stage into a temp dir (not the real session home) and capture emitted frames instead of
     # persisting/broadcasting them.
-    monkeypatch.setattr(bmod, "_presented_staging_dir", lambda: tmp_path / "staging")
+    monkeypatch.setattr(api_mod, "_presented_staging_dir", lambda: tmp_path / "staging")
+    monkeypatch.setattr(bmod.broker, "workspace_dir", str(tmp_path))
     captured: list = []
 
     async def _fake_emit(frame):
         captured.append(frame)
 
     monkeypatch.setattr(bmod.broker, "_emit_broker_frame", _fake_emit)
-    bmod._presented_registry.clear()
+    api_mod._presented_registry.clear()
     c = TestClient(bmod.app)
     c.captured = captured  # type: ignore[attr-defined]
     return c
@@ -68,9 +70,26 @@ def test_title_overrides_name(client, tmp_path):
     assert r.json()["name"] == "Pretty Name.bin"
 
 
+def test_present_file_log_escapes_forged_newline(client, tmp_path, caplog):
+    src = tmp_path / "raw.bin"
+    src.write_bytes(b"x")
+    title = "report\nFORGED"
+    caplog.set_level("INFO", logger="skuld.broker")
+
+    response = client.post("/api/present-file", json={"path": str(src), "title": title})
+
+    assert response.status_code == 200
+    message = next(
+        record.getMessage() for record in caplog.records if "staged" in record.getMessage()
+    )
+    assert title not in message
+    assert "report\\nFORGED" in message
+
+
 def test_present_file_rejects_bad_input(client):
     assert client.post("/api/present-file", json={}).status_code == 400
-    assert client.post("/api/present-file", json={"path": "/no/such/file/xyz"}).status_code == 404
+    response = client.post("/api/present-file", json={"path": "/no/such/file/xyz"})
+    assert response.status_code == 400
     # opaque-id guard: a client-supplied path can never reach the filesystem
     assert client.get("/api/files/presented/not-an-id").status_code == 400
     assert client.get("/api/files/presented/../../etc/passwd").status_code in (400, 404)
@@ -80,20 +99,20 @@ def test_present_file_rejects_bad_input(client):
 def test_present_file_size_cap(client, tmp_path, monkeypatch):
     from skuld import broker as bmod
 
-    monkeypatch.setattr(bmod, "_MAX_PRESENTED_FILE_BYTES", 8)
+    monkeypatch.setattr(bmod.broker._settings, "max_presented_file_bytes", 8)
     big = tmp_path / "big.bin"
     big.write_bytes(b"x" * 100)
     assert client.post("/api/present-file", json={"path": str(big)}).status_code == 413
 
 
 def test_registry_rebuild_recovers_after_restart(client, tmp_path):
-    from skuld import broker as bmod
+    from skuld import broker_api as api_mod
 
     src = tmp_path / "doc.txt"
     src.write_bytes(b"recovered")
     fid = client.post("/api/present-file", json={"path": str(src)}).json()["file_id"]
     # Simulate a broker restart: the in-memory registry is lost, then rebuilt from the staging dir.
-    bmod._presented_registry.clear()
-    bmod._rebuild_presented_registry()
-    assert fid in bmod._presented_registry
+    api_mod._presented_registry.clear()
+    api_mod._rebuild_presented_registry()
+    assert fid in api_mod._presented_registry
     assert client.get(f"/api/files/presented/{fid}").content == b"recovered"

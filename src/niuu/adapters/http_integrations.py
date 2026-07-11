@@ -10,6 +10,10 @@ from niuu.domain.models import IntegrationConnection, IntegrationType
 from niuu.ports.integrations import IntegrationRepository
 
 
+class UnsupportedIntegrationQueryError(NotImplementedError):
+    """Raised when an HTTP repository cannot perform a global integration query."""
+
+
 class HTTPIntegrationRepository(IntegrationRepository):
     """Resolve integration connections from the shared niuu service over HTTP."""
 
@@ -53,7 +57,10 @@ class HTTPIntegrationRepository(IntegrationRepository):
         slug: str | None = None,
         enabled_only: bool = False,
     ) -> list[IntegrationConnection]:
-        raise NotImplementedError("Global shared integration listing is not supported over HTTP")
+        raise UnsupportedIntegrationQueryError(
+            "Global integration queries require a repository with shared-store access; "
+            "the HTTP integration API is owner-scoped."
+        )
 
     async def get_connection(self, connection_id: str) -> IntegrationConnection | None:
         response = await self._client.get(

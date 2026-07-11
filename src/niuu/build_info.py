@@ -16,7 +16,9 @@ import os
 import subprocess
 from pathlib import Path
 
-VERSION = "0.1.0"
+from niuu.version import package_version
+
+VERSION = package_version()
 _GIT_TIMEOUT_S = 2.0
 _SHORT_SHA_LEN = 12
 

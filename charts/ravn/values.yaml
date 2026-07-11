@@ -50,12 +50,20 @@ config:
   port: 8084
   logLevel: "info"
   # Ravn Settings (src/ravn/config.py schema) rendered to /etc/ravn/config.yaml
-  # and loaded via RAVN_CONFIG. Standard RAVN_* env vars still override
-  # individual fields. Example:
+  # and loaded via RAVN_CONFIG. Canonical YAML settings are preferred;
+  # documented legacy environment aliases remain supported. Example:
   #   settings:
   #     gateway:
   #       platform:
   #         base_url: "http://niuu-volundr.volundr.svc.cluster.local:80"
+  #     valkyrie:
+  #       telemetry:
+  #         nats_url: "nats://sleipnir:4222"
+  #         retry_seconds: 30
+  #       command:
+  #         subject_prefix: "ravn.environment"
+  #       room:
+  #         url: "http://skuld:8081"
   settings: {}
 
 persistence:

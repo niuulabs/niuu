@@ -62,7 +62,7 @@ class GitProviderRegistry:
         if cached is not None:
             logger.debug(
                 "Reverse lookup hit for URL %s: %s (%s)",
-                repo_url,
+                repr(repo_url),
                 cached.name,
                 cached.provider_type.value,
             )
@@ -70,7 +70,7 @@ class GitProviderRegistry:
 
         logger.debug(
             "Looking for provider that supports URL: %s (checking %d providers)",
-            repo_url,
+            repr(repo_url),
             len(self._providers),
         )
         for provider in self._providers:
@@ -82,7 +82,7 @@ class GitProviderRegistry:
             if provider.supports(repo_url):
                 logger.info(
                     "Found provider for URL %s: %s (%s)",
-                    repo_url,
+                    repr(repo_url),
                     provider.name,
                     provider.provider_type.value,
                 )
@@ -90,11 +90,11 @@ class GitProviderRegistry:
             logger.debug(
                 "Provider %s does not support URL: %s",
                 provider.name,
-                repo_url,
+                repr(repo_url),
             )
         logger.warning(
             "No provider found for URL: %s (checked %d providers: %s)",
-            repo_url,
+            repr(repo_url),
             len(self._providers),
             ", ".join(p.name for p in self._providers) if self._providers else "none registered",
         )
@@ -137,30 +137,30 @@ class GitProviderRegistry:
         Returns:
             True if the repository exists and is accessible.
         """
-        logger.info("Validating repository: %s", repo_url)
+        logger.info("Validating repository: %s", repr(repo_url))
         provider = self.get_provider(repo_url)
         if provider is None:
             logger.error(
                 "Cannot validate repository %s: no provider supports this URL",
-                repo_url,
+                repr(repo_url),
             )
             return False
         logger.debug(
             "Using provider %s to validate repository %s",
             provider.name,
-            repo_url,
+            repr(repo_url),
         )
         is_valid = await provider.validate_repo(repo_url)
         if is_valid:
             logger.info(
                 "Repository validation successful: %s (provider: %s)",
-                repo_url,
+                repr(repo_url),
                 provider.name,
             )
         else:
             logger.warning(
                 "Repository validation failed: %s (provider: %s)",
-                repo_url,
+                repr(repo_url),
                 provider.name,
             )
         return is_valid

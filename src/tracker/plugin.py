@@ -4,20 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from niuu.ports.plugin import APIRouteDomain, Service, ServiceDefinition, ServicePlugin
-
-
-class _TrackerStub(Service):
-    """Stub service while tracker remains co-hosted in the niuu API."""
-
-    async def start(self) -> None:
-        pass
-
-    async def stop(self) -> None:
-        pass
-
-    async def health_check(self) -> bool:
-        return True
+from niuu.ports.plugin import APIRouteDomain, ServiceDefinition, ServicePlugin
 
 
 class TrackerPlugin(ServicePlugin):
@@ -32,17 +19,13 @@ class TrackerPlugin(ServicePlugin):
         return "Tracker issue, status, and repo mapping routes"
 
     def register_service(self) -> ServiceDefinition:
-        return ServiceDefinition(
+        return ServiceDefinition.hosted(
             name="tracker",
             description="Tracker issue, status, and repo mapping service",
-            factory=_TrackerStub,
             default_enabled=True,
             depends_on=["postgres"],
             default_port=8087,
         )
-
-    def create_service(self) -> Service:
-        return self.register_service().factory()
 
     def create_api_app(self) -> Any:
         from tracker.app import create_app

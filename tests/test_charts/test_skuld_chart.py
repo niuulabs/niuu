@@ -56,6 +56,20 @@ class TestValuesDefaults:
         """Test broker cliType defaults to claude."""
         assert values_yaml["broker"]["cliType"] == "claude"
 
+    def test_behavior_settings_have_documented_defaults(self, values_yaml):
+        """Runtime behavior is discoverable through canonical chart values."""
+        broker = values_yaml["broker"]
+        assert broker["cliBinary"] == "claude"
+        assert broker["remoteControlPermissionMode"] == ""
+        assert broker["maxPresentedFileBytes"] == 52_428_800
+
+    def test_external_api_token_uses_secret_reference(self, values_yaml):
+        """Outbound service credentials are references, never inline values."""
+        assert values_yaml["volundr"]["externalApiTokenSecret"] == {
+            "name": "",
+            "key": "token",
+        }
+
     def test_env_secrets_default_has_anthropic_key(self, values_yaml):
         """Test envSecrets defaults to a list with ANTHROPIC_API_KEY."""
         env_secrets = values_yaml["envSecrets"]
@@ -161,6 +175,17 @@ class TestConfigMapTemplate:
         assert "service_user_id" in configmap_yaml
         assert "service_tenant_id" in configmap_yaml
 
+    def test_configmap_renders_typed_behavior_settings(self, configmap_yaml):
+        """Typed behavior settings are rendered from their canonical values."""
+        expected = {
+            "cli_binary": ".Values.broker.cliBinary",
+            "remote_control_permission_mode": ".Values.broker.remoteControlPermissionMode",
+            "max_presented_file_bytes": ".Values.broker.maxPresentedFileBytes",
+        }
+        for field, value in expected.items():
+            assert field in configmap_yaml
+            assert value in configmap_yaml
+
 
 class TestDeploymentTemplate:
     """Tests for deployment.yaml template structure."""
@@ -215,6 +240,13 @@ class TestDeploymentTemplate:
     def test_deployment_uses_env_vars_range_loop(self, deployment_yaml):
         """Test deployment injects plain env vars via generic range loop."""
         assert "range .Values.envVars" in deployment_yaml
+
+    def test_external_api_token_is_loaded_from_secret(self, deployment_yaml):
+        """The control-plane token is never rendered into a ConfigMap or plain env value."""
+        assert "SKULD__EXTERNAL_API_TOKEN" in deployment_yaml
+        assert ".Values.volundr.externalApiTokenSecret.name" in deployment_yaml
+        assert ".Values.volundr.externalApiTokenSecret.key" in deployment_yaml
+        assert "secretKeyRef" in deployment_yaml
 
     def test_deployment_renders_flock_pod_additions(self, tmp_path):
         """Render proof for Flux-provided flock sidecars and config writers."""
@@ -629,6 +661,56 @@ class TestVolundrReportingConfig:
 
         assert broker_cfg["volundr_api_url"] == "https://volundr.example"
         assert volundr_env["value"] == "https://volundr.example"
+
+
+class TestBehaviorSettingsRendering:
+    """Typed behavior values render to config while credentials stay in Secrets."""
+
+    def test_config_and_external_token_secret_render(self, tmp_path):
+        rendered = _render_skuld_chart(
+            tmp_path,
+            {
+                "broker": {
+                    "cliBinary": "claude-custom",
+                    "remoteControlPermissionMode": "acceptEdits",
+                    "maxPresentedFileBytes": 4096,
+                },
+                "volundr": {
+                    "externalApiTokenSecret": {
+                        "name": "skuld-control-plane",
+                        "key": "service-token",
+                    }
+                },
+            },
+        )
+        configmaps = [
+            doc
+            for doc in yaml.safe_load_all(rendered)
+            if isinstance(doc, dict) and doc.get("kind") == "ConfigMap"
+        ]
+        broker_cfg = next(
+            yaml.safe_load(doc["data"]["config.yaml"])
+            for doc in configmaps
+            if "transport_adapter" in doc.get("data", {}).get("config.yaml", "")
+        )
+        assert broker_cfg["cli_binary"] == "claude-custom"
+        assert broker_cfg["remote_control_permission_mode"] == "acceptEdits"
+        assert broker_cfg["max_presented_file_bytes"] == 4096
+        assert "external_api_token" not in broker_cfg
+
+        deployment = _deployment_from_rendered(rendered)
+        broker = next(
+            container
+            for container in deployment["spec"]["template"]["spec"]["containers"]
+            if container["name"] == "skuld"
+        )
+        token_env = next(
+            entry for entry in broker["env"] if entry["name"] == "SKULD__EXTERNAL_API_TOKEN"
+        )
+        assert token_env["valueFrom"]["secretKeyRef"] == {
+            "name": "skuld-control-plane",
+            "key": "service-token",
+        }
 
 
 def _render_skuld_chart(tmp_path: Path, values: dict) -> str:

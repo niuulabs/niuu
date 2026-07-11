@@ -7,11 +7,12 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
+from niuu.domain.models import IntegrationType, Principal
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
+from niuu.ports.integrations import IntegrationRepository
+from tracker.factory import TrackerFactory
+from tracker.models import TrackerIssue
 from volundr.adapters.inbound.auth import extract_principal
-from volundr.domain.models import IntegrationType, Principal, TrackerIssue
-from volundr.domain.ports import IntegrationRepository
-from volundr.domain.services.tracker_factory import TrackerFactory
 
 logger = logging.getLogger(__name__)
 

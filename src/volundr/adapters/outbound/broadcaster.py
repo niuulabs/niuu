@@ -423,7 +423,7 @@ class InMemoryEventBroadcaster(EventBroadcaster):
         )
         logger.info(
             "SSE broadcast chronicle_event: session=%s, type=%s, t=%d",
-            session_id,
+            repr(session_id),
             event.type.value,
             event.t,
         )

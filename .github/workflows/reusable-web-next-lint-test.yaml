@@ -42,7 +42,17 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build packages
-        run: pnpm -r --filter='./packages/*' build
+        run: |
+          output="$(pnpm -r --filter='./packages/*' build 2>&1)" || {
+            printf '%s\n' "$output"
+            annotation="${output: -3500}"
+            annotation="${annotation//'%'/'%25'}"
+            annotation="${annotation//$'\n'/'%0A'}"
+            annotation="${annotation//$'\r'/'%0D'}"
+            echo "::error title=Web package build::${annotation}"
+            exit 1
+          }
+          printf '%s\n' "$output"
 
       - name: Typecheck
         run: pnpm typecheck
@@ -51,7 +61,27 @@ jobs:
         run: pnpm lint
 
       - name: Prettier check
-        run: pnpm format:check
+        run: |
+          output="$(pnpm format:check 2>&1)" || {
+            printf '%s\n' "$output"
+            files="$(pnpm exec prettier --list-different \
+              "**/*.{ts,tsx,js,jsx,css,md,json,yaml,yml}" 2>&1 || true)"
+            printf '%s\n' "$files" | while IFS= read -r file; do
+              echo "::error file=${file}::Prettier formatting required"
+            done
+            files="${files//'%'/'%25'}"
+            files="${files//$'\n'/'%0A'}"
+            files="${files//$'\r'/'%0D'}"
+            echo "::error title=Prettier files::${files}"
+            pnpm exec prettier --write \
+              "**/*.{ts,tsx,js,jsx,css,md,json,yaml,yml}" >/dev/null
+            diff_output="$(git diff -- .)"
+            diff_output="${diff_output//'%'/'%25'}"
+            diff_output="${diff_output//$'\n'/'%0A'}"
+            diff_output="${diff_output//$'\r'/'%0D'}"
+            echo "::error title=Prettier diff::${diff_output}"
+            exit 1
+          }
 
   test:
     name: "web-next: Test"
@@ -88,7 +118,37 @@ jobs:
         run: pnpm -r --filter='./packages/*' build
 
       - name: Run tests with coverage (fail under 85%)
-        run: pnpm test
+        run: |
+          set -o pipefail
+          set +e
+          output_file="$(mktemp)"
+          pnpm test 2>&1 | tee "$output_file"
+          status=${PIPESTATUS[0]}
+          set -e
+          if (( status != 0 )); then
+            failure_output="$(grep -E 'All files|ERROR: Coverage' "$output_file" || true)"
+            if [[ -f coverage/lcov.info ]]; then
+              set +o pipefail
+              branch_output="$(awk -F: '
+                /^SF:/ { file = substr($0, 4) }
+                /^BRF:/ { total = $2 }
+                /^BRH:/ {
+                  covered = $2
+                  if (total > 0) printf "%.2f%% (%d/%d) %s\n", 100 * covered / total, covered, total, file
+                }
+              ' coverage/lcov.info | sort -n | head -n 20)"
+              set -o pipefail
+              failure_output+=$'\nLowest per-file branch coverage:\n'
+              failure_output+="$branch_output"
+            fi
+            failure_output+=$'\n'
+            failure_output+="$(tail -n 25 "$output_file")"
+            failure_output="${failure_output//'%'/'%25'}"
+            failure_output="${failure_output//$'\n'/'%0A'}"
+            failure_output="${failure_output//$'\r'/'%0D'}"
+            echo "::error title=Web test failure::${failure_output}"
+          fi
+          exit "$status"
 
       - name: Upload coverage to Codecov
         if: always() && hashFiles('web-next/coverage/lcov.info') != ''

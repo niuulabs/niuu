@@ -25,6 +25,15 @@ class PlatformRuntimePort(Protocol):
         """Return one caller-visible Forge session."""
         raise NotImplementedError
 
+    async def stop_forge_session(
+        self,
+        session_id: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any] | None:
+        """Stop one caller-visible Forge session."""
+        raise NotImplementedError
+
     async def list_resident_runtimes(
         self,
         auth_headers: dict[str, str],

@@ -71,13 +71,9 @@ DEFAULT_ALLOWED_MOUNT_PREFIXES: list[str] = []
 READY_POLL_INTERVAL = 0.5
 
 
-def _public_loopback_host() -> str:
-    """Return the loopback host we publish to browser-facing clients."""
-    host = (
-        os.environ.get("NIUU_SERVER_PUBLIC_HOST")
-        or os.environ.get("NIUU_SERVER_HOST")
-        or "127.0.0.1"
-    ).strip() or "127.0.0.1"
+def _public_loopback_host(host: str) -> str:
+    """Normalize the configured host published to browser-facing clients."""
+    host = host.strip() or "127.0.0.1"
     return "localhost" if host == "127.0.0.1" else host
 
 
@@ -439,6 +435,9 @@ class LocalProcessPodManager(PodManager):
         stop_timeout: int = DEFAULT_STOP_TIMEOUT,
         state_file: str = DEFAULT_STATE_FILE,
         allowed_mount_prefixes: list[str] | None = None,
+        server_public_host: str = "127.0.0.1",
+        server_host: str = "127.0.0.1",
+        server_port: int = 8080,
         **_extra: object,
     ):
         self._workspaces_dir = Path(str(workspaces_dir)).expanduser()
@@ -446,6 +445,9 @@ class LocalProcessPodManager(PodManager):
         self._max_concurrent = int(max_concurrent)
         self._stop_timeout = int(stop_timeout)
         self._state_file = Path(str(state_file)).expanduser()
+        self._server_public_host = str(server_public_host)
+        self._server_host = str(server_host)
+        self._server_port = int(server_port)
         if isinstance(allowed_mount_prefixes, str):
             allowed_mount_prefixes = [
                 prefix.strip() for prefix in allowed_mount_prefixes.split(",") if prefix.strip()
@@ -590,8 +592,8 @@ class LocalProcessPodManager(PodManager):
             raise
 
         # Chat endpoint routes through the root server's proxy
-        server_host = _public_loopback_host()
-        server_port = os.environ.get("NIUU_SERVER_PORT", "8080")
+        server_host = _public_loopback_host(self._server_public_host)
+        server_port = self._server_port
         chat_endpoint = f"ws://{server_host}:{server_port}/s/{session_id}/session"
         code_endpoint = f"file://{workspace}"
         pod_name = f"local-{session_id[:8]}"
@@ -982,8 +984,8 @@ class LocalProcessPodManager(PodManager):
         env["SKULD__PERSISTENCE_MOUNT_PATH"] = str(self._workspaces_dir)
 
         # Volundr API URL so Skuld can post chronicles/timeline events back
-        server_host = os.environ.get("NIUU_SERVER_HOST", "127.0.0.1")
-        server_port = os.environ.get("NIUU_SERVER_PORT", "8080")
+        server_host = self._server_host
+        server_port = self._server_port
         env["SKULD__VOLUNDR_API_URL"] = f"http://{server_host}:{server_port}"
 
         session_vals = spec.values.get("session", {})
@@ -1294,7 +1296,10 @@ class LocalProcessPodManager(PodManager):
             platform_cfg = gateway_cfg.setdefault("platform", {})
             platform_cfg["enabled"] = True
             platform_cfg.setdefault("timeout", 30.0)
-            platform_cfg.setdefault("base_url", f"http://{_public_loopback_host()}:8080")
+            platform_cfg.setdefault(
+                "base_url",
+                f"http://{_public_loopback_host(self._server_host)}:{self._server_port}",
+            )
 
             persona_runtime_overrides: dict[str, Any] = {}
             system_prompt_extra = persona_override.get("system_prompt_extra")

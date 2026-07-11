@@ -25,6 +25,9 @@ data:
       level: {{ .Values.config.logLevel | default "info" | quote }}
       format: {{ .Values.config.logFormat | default "json" | quote }}
 
+    notification:
+      public_origin: {{ .Values.config.publicOrigin | default "" | quote }}
+
     cors:
       allowed_origins:
         {{- range .Values.config.cors.allowedOrigins }}

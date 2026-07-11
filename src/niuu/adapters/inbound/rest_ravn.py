@@ -49,14 +49,14 @@ from niuu.adapters.inbound.rest_volundr import (
     _visible_instances,
     _with_instance,
 )
-from niuu.app import (
-    _bearer_token_from_ws,
-    _bridge_websocket,
-    _proxy_forward_headers,
-    _proxy_ws_identity,
-)
 from niuu.domain.models import Principal, RegisteredInstance
 from niuu.domain.services.instances import InstanceService
+from niuu.session_proxy import (
+    _bearer_token_from_ws,
+    _proxy_forward_headers,
+    _proxy_ws_identity,
+    bridge_websocket,
+)
 
 _RAVN_REMOTE_PREFIX = "/api/v1/ravn"
 _RESIDENT_COMMAND_TIMEOUT_SECONDS = 900.0
@@ -145,7 +145,7 @@ def create_ravn_session_proxy_router(service: InstanceService) -> APIRouter:
             )
         )
         try:
-            await _bridge_websocket(
+            await bridge_websocket(
                 websocket,
                 connect_url,
                 additional_headers=headers,
@@ -233,7 +233,7 @@ def create_ravn_session_proxy_router(service: InstanceService) -> APIRouter:
             )
         )
         try:
-            await _bridge_websocket(
+            await bridge_websocket(
                 websocket,
                 connect_url,
                 additional_headers=headers,

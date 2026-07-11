@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import re
 
-from volundr.domain.models import SecretInfo
-from volundr.domain.ports import (
+from credentials.models import SecretInfo
+from credentials.ports import (
     SecretAlreadyExistsError,
     SecretManager,
     SecretValidationError,

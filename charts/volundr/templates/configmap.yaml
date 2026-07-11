@@ -27,6 +27,11 @@ data:
       level: {{ .Values.config.logLevel | default "info" | quote }}
       format: {{ .Values.config.logFormat | default "json" | quote }}
 
+    server_host: {{ .Values.config.serverHost | default "127.0.0.1" | quote }}
+    server_public_host: {{ .Values.config.serverPublicHost | default "127.0.0.1" | quote }}
+    server_port: {{ .Values.service.targetPort | default 8080 }}
+    openshell_internal_gateway_url: {{ .Values.config.openshellInternalGatewayUrl | default "http://openshell.openshell.svc.cluster.local:8080" | quote }}
+
     cors:
       allowed_origins:
         {{- range .Values.config.cors.allowedOrigins }}

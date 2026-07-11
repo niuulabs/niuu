@@ -63,11 +63,21 @@ class WardenConsoleConfig(BaseModel):
     """Live operator console settings for a warden daemon."""
 
     enabled: bool = True
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 0
     public_host: str = ""
-    # TODO: enforce real operator/daemon attach validation for remote consoles.
     auth_mode: Literal["noop", "token"] = "noop"
+
+    @model_validator(mode="after")
+    def _reject_unsupported_remote_exposure(self) -> WardenConsoleConfig:
+        if self.auth_mode == "token":
+            raise ValueError(
+                "warden console token authentication is not implemented; "
+                "use a loopback-only console behind an authenticated proxy"
+            )
+        if self.enabled and self.host not in {"127.0.0.1", "::1", "localhost"}:
+            raise ValueError("unauthenticated warden consoles may only bind to a loopback host")
+        return self
 
 
 class WardenDreamSummary(BaseModel):

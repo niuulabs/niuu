@@ -11,7 +11,15 @@ from cli.services.manager import (
     ServiceState,
     StartupError,
 )
+from niuu.ports.plugin import ServiceDefinition
 from tests.test_cli.conftest import FakePlugin, StubService
+
+
+class HostedFakePlugin(FakePlugin):
+    """Plugin whose API lifecycle belongs to the root host."""
+
+    def register_service(self) -> ServiceDefinition:
+        return ServiceDefinition.hosted(name=self.name, description=self.description)
 
 
 @pytest.fixture
@@ -200,6 +208,13 @@ class TestServiceLifecycle:
         registry.register(FakePlugin(name="a"))
         await manager.start_all()
         assert manager.services["a"].state == ServiceState.HEALTHY
+
+    async def test_host_mounted_plugin_reports_hosted(
+        self, registry: PluginRegistry, manager: ServiceManager
+    ) -> None:
+        registry.register(HostedFakePlugin(name="a"))
+        await manager.start_all()
+        assert manager.services["a"].state == ServiceState.HOSTED
 
     async def test_stop_handles_errors(
         self, registry: PluginRegistry, manager: ServiceManager

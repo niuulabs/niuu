@@ -131,7 +131,7 @@ class SessionMessageResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Dependency stubs -- overridden by main.py lifespan
+# Explicit unavailable dependency defaults -- overridden by main.py lifespan
 # ---------------------------------------------------------------------------
 
 

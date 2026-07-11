@@ -4,20 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from niuu.ports.plugin import APIRouteDomain, Service, ServiceDefinition, ServicePlugin
-
-
-class _NiuuStub(Service):
-    """Stub — the niuu API is hosted by the root server."""
-
-    async def start(self) -> None:
-        pass
-
-    async def stop(self) -> None:
-        pass
-
-    async def health_check(self) -> bool:
-        return True
+from niuu.ports.plugin import APIRouteDomain, ServiceDefinition, ServicePlugin
 
 
 class NiuuPlugin(ServicePlugin):
@@ -32,19 +19,15 @@ class NiuuPlugin(ServicePlugin):
         return "Shared platform services — repos, PATs, identity, features, personas"
 
     def register_service(self) -> ServiceDefinition:
-        return ServiceDefinition(
+        return ServiceDefinition.hosted(
             name="niuu",
             description="Shared platform services",
-            factory=_NiuuStub,
             default_enabled=True,
             depends_on=["postgres"],
         )
 
-    def create_service(self) -> Service:
-        return self.register_service().factory()
-
     def create_api_app(self) -> Any:
-        from niuu.main import create_app
+        from cli.shared_host import create_app
 
         return create_app()
 

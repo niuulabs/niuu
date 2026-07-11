@@ -10,8 +10,8 @@ from base64 import b64encode
 
 import httpx
 
-from volundr.domain.models import TrackerConnectionStatus, TrackerIssue
-from volundr.domain.ports import IssueTrackerProvider
+from tracker.models import TrackerConnectionStatus, TrackerIssue
+from tracker.ports import IssueTrackerProvider
 
 logger = logging.getLogger(__name__)
 

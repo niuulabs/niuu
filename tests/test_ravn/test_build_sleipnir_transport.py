@@ -106,8 +106,8 @@ class TestResolveTransportKwargs:
         assert kwargs == {"amqp_url": "amqp://host"}
 
     def test_nats_kwargs(self):
-        settings = _make_settings()
         with patch.dict("os.environ", {"NATS_URL": "nats://custom:4222"}):
+            settings = _make_settings()
             kwargs = _resolve_transport_kwargs(settings, "nats")
         assert kwargs == _default_nats_kwargs(["nats://custom:4222"])
 
@@ -120,7 +120,7 @@ class TestResolveTransportKwargs:
     def test_nats_kwargs_supports_multiple_servers_and_replay(self):
         settings = _make_settings(
             **{
-                "mesh.nats.servers_env": "VALKYRIE_NATS_URLS",
+                "mesh.nats.servers": ["nats://a:4222", "nats://b:4222"],
                 "mesh.nats.stream_name": "valkyrie_signals",
                 "mesh.nats.subject_prefix": "odin.valkyrie",
                 "mesh.nats.consumer_group": "k8s-watchers",
@@ -128,12 +128,7 @@ class TestResolveTransportKwargs:
                 "mesh.nats.ring_buffer_depth": 2048,
             }
         )
-        with patch.dict(
-            "os.environ",
-            {"VALKYRIE_NATS_URLS": "nats://a:4222, nats://b:4222"},
-            clear=True,
-        ):
-            kwargs = _resolve_transport_kwargs(settings, "nats")
+        kwargs = _resolve_transport_kwargs(settings, "nats")
         assert kwargs == {
             **_default_nats_kwargs(["nats://a:4222", "nats://b:4222"]),
             "stream_name": "valkyrie_signals",
@@ -146,7 +141,7 @@ class TestResolveTransportKwargs:
     def test_nats_kwargs_supports_gitops_managed_tls_and_auth(self):
         settings = _make_settings(
             **{
-                "mesh.nats.servers_env": "VALKYRIE_NATS_URL",
+                "mesh.nats.servers": ["tls://nats-valhalla.nats.svc.cluster.local:4222"],
                 "mesh.nats.ensure_stream": False,
                 "mesh.nats.tls_ca_file": "/etc/nats/ca.crt",
                 "mesh.nats.tls_hostname": "nats-valhalla.nats.svc.cluster.local",
@@ -160,7 +155,6 @@ class TestResolveTransportKwargs:
         with patch.dict(
             "os.environ",
             {
-                "VALKYRIE_NATS_URL": "tls://nats-valhalla.nats.svc.cluster.local:4222",
                 "VALKYRIE_NATS_PASSWORD": "secret",
             },
             clear=True,

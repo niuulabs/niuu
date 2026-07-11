@@ -21,6 +21,7 @@ from niuu.domain.services.workload_identity import (
     WorkloadIdentityError,
     WorkloadIdentityService,
 )
+from niuu.service_runtime import create_workload_identity_service
 
 OWNER_ID = "76475334-b685-4299-b91d-1ec37f57e10f"
 WORKLOAD_SUBJECT = "system:serviceaccount:valkyrie:ravn"
@@ -67,7 +68,7 @@ def _workload_token(key: rsa.RSAPrivateKey, *, subject: str = WORKLOAD_SUBJECT) 
 
 
 def _service(proof_key: rsa.RSAPrivateKey) -> WorkloadIdentityService:
-    return WorkloadIdentityService(
+    return create_workload_identity_service(
         SimpleNamespace(
             enabled=True,
             issuer=EXCHANGE_ISSUER,

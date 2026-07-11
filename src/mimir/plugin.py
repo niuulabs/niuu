@@ -10,20 +10,7 @@ from typing import Any
 
 from mimir.config import MimirServiceConfig
 from niuu.cli_api_client import CLIAPIClient
-from niuu.ports.plugin import APIRouteDomain, Service, ServiceDefinition, ServicePlugin
-
-
-class _MimirStub(Service):
-    """Stub — the Mimir API is hosted by the root server."""
-
-    async def start(self) -> None:
-        pass
-
-    async def stop(self) -> None:
-        pass
-
-    async def health_check(self) -> bool:
-        return True
+from niuu.ports.plugin import APIRouteDomain, ServiceDefinition, ServicePlugin
 
 
 class MimirPlugin(ServicePlugin):
@@ -38,15 +25,11 @@ class MimirPlugin(ServicePlugin):
         return "Knowledge service — search, pages, ingest, lint"
 
     def register_service(self) -> ServiceDefinition:
-        return ServiceDefinition(
+        return ServiceDefinition.hosted(
             name="mimir",
             description="Knowledge service",
-            factory=_MimirStub,
             default_enabled=True,
         )
-
-    def create_service(self) -> Service:
-        return self.register_service().factory()
 
     def create_api_app(self) -> Any:
         from mimir.app import create_app

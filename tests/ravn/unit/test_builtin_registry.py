@@ -226,15 +226,14 @@ class TestKwargsFn:
             result = td.kwargs_fn(settings, ctx)
             assert isinstance(result, dict), f"{key!r}: kwargs_fn did not return a dict"
 
-    def test_web_search_kwargs_uses_mock_by_default(
+    def test_web_search_kwargs_uses_real_provider_by_default(
         self, settings: Settings, tmp_path: Path
     ) -> None:
         ctx = _make_runtime_ctx(tmp_path)
         kwargs = BUILTIN_TOOLS["web_search"].kwargs_fn(settings, ctx)
         assert "provider" in kwargs
         assert "num_results" in kwargs
-        # Default is mock provider, so provider should be None
-        assert kwargs["provider"] is None
+        assert type(kwargs["provider"]).__name__ == "DuckDuckGoLiteSearchProvider"
 
     def test_ravn_state_kwargs_tool_names_empty(self, settings: Settings, tmp_path: Path) -> None:
         ctx = _make_runtime_ctx(tmp_path)
@@ -318,29 +317,28 @@ class TestBuildSkillPort:
 
 
 # ---------------------------------------------------------------------------
-# _build_web_search_kwargs with non-mock provider
+# _build_web_search_kwargs provider construction
 # ---------------------------------------------------------------------------
 
 
 class TestBuildWebSearchKwargs:
-    def test_mock_provider_returns_none(self, tmp_path: Path) -> None:
+    def test_default_provider_is_real(self, tmp_path: Path) -> None:
         from ravn.adapters.tools.builtin_registry import _build_web_search_kwargs
 
         s = Settings()
         ctx = _make_runtime_ctx(tmp_path)
         result = _build_web_search_kwargs(s, ctx)
-        assert result["provider"] is None
+        assert type(result["provider"]).__name__ == "DuckDuckGoLiteSearchProvider"
 
-    def test_nonexistent_provider_falls_back_to_none(self, tmp_path: Path) -> None:
+    def test_nonexistent_provider_fails_loudly(self, tmp_path: Path) -> None:
         from ravn.adapters.tools.builtin_registry import _build_web_search_kwargs
         from ravn.config import ToolAdapterConfig
 
         s = Settings()
         s.tools.web.search.provider = ToolAdapterConfig(adapter="nonexistent.module.Provider")
         ctx = _make_runtime_ctx(tmp_path)
-        result = _build_web_search_kwargs(s, ctx)
-        # On failure, provider falls back to None (mock)
-        assert result["provider"] is None
+        with pytest.raises(ModuleNotFoundError):
+            _build_web_search_kwargs(s, ctx)
 
     def test_num_results_passed_through(self, tmp_path: Path) -> None:
         from ravn.adapters.tools.builtin_registry import _build_web_search_kwargs

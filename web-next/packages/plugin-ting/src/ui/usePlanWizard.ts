@@ -303,7 +303,7 @@ export interface PlanWizardActions {
   clearError(): void;
   /** Re-run decomposition with the same prompt and answers. */
   replan(): void;
-  /** Persist the current draft state without creating the saga. No backend yet — dispatches SAVE_DRAFT. */
+  /** Keep the current draft state in this wizard without creating the saga. */
   saveDraft(): void;
 }
 
@@ -495,7 +495,6 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
   }
 
   function saveDraft() {
-    // TODO: send to backend when persistence endpoint is available.
     dispatch({ type: 'SAVE_DRAFT' });
   }
 

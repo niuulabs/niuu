@@ -1,4 +1,5 @@
 {
+  "demoMode": true,
   "theme": "ice",
   "plugins": {
     "ting": { "enabled": true, "order": 1 }

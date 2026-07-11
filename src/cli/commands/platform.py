@@ -117,6 +117,8 @@ def _print_status(name: str, state: ServiceState) -> None:
     match state:
         case ServiceState.STARTING:
             typer.echo(f"  Starting {name}...", nl=False)
+        case ServiceState.HOSTED:
+            typer.echo(f"  Hosted {name} by root server")
         case ServiceState.HEALTHY:
             typer.echo(" ok")
         case ServiceState.UNHEALTHY:

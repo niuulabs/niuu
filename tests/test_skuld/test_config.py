@@ -397,3 +397,25 @@ class TestWorkloadIdentityConfig:
 
         s = SkuldSettings(workload_identity={"exchange_url": "http://init/exchange"})
         assert s.workload_identity.exchange_url == "http://init/exchange"
+
+
+class TestBehaviorSettingsAliases:
+    def test_legacy_external_token_alias(self, monkeypatch):
+        monkeypatch.setenv("VOLUNDR_EXTERNAL_API_TOKEN", "legacy-token")
+        assert SkuldSettings().external_api_token == "legacy-token"
+
+    def test_presented_file_limit_alias_and_validation(self, monkeypatch):
+        monkeypatch.setenv("SKULD__MAX_PRESENTED_FILE_BYTES", "4096")
+        assert SkuldSettings().max_presented_file_bytes == 4096
+        monkeypatch.setenv("SKULD__MAX_PRESENTED_FILE_BYTES", "0")
+        with pytest.raises(ValueError):
+            SkuldSettings()
+
+    def test_remote_control_settings_are_typed(self, monkeypatch):
+        monkeypatch.setenv("SKULD__CLI_BINARY", "claude-custom")
+        monkeypatch.setenv("SKULD__REMOTE_CONTROL_PERMISSION_MODE", "acceptEdits")
+
+        settings = SkuldSettings()
+
+        assert settings.cli_binary == "claude-custom"
+        assert settings.remote_control_permission_mode == "acceptEdits"

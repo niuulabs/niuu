@@ -45,7 +45,7 @@ pytest -k "test_name"  # Run specific test
 ### Web Commands
 
 ```bash
-cd web
-npm test               # Run tests in watch mode
-npm run test:coverage  # Run tests with coverage report
+cd web-next
+pnpm test        # Run the coverage-gated unit suite
+pnpm test:watch  # Run tests in watch mode
 ```

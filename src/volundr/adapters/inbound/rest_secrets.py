@@ -7,14 +7,14 @@ import logging
 from fastapi import APIRouter, HTTPException, Path, Request, Response, status
 from pydantic import BaseModel, Field
 
-from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
-from volundr.domain.models import MCPServerConfig, SecretInfo
-from volundr.domain.ports import (
+from credentials.models import MCPServerConfig, SecretInfo
+from credentials.ports import (
     MCPServerProvider,
     SecretAlreadyExistsError,
     SecretManager,
     SecretValidationError,
 )
+from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 
 logger = logging.getLogger(__name__)
 

@@ -18,6 +18,7 @@ describe('FeatureCatalog — config-only (no service)', () => {
     render(
       <ConfigProvider
         value={{
+          demoMode: false,
           theme: 'ice',
           plugins: {
             ting: { enabled: true, order: 4 },
@@ -36,7 +37,7 @@ describe('FeatureCatalog — config-only (no service)', () => {
 
   it('defaults order to 100 and enabled to true when plugin is absent', () => {
     render(
-      <ConfigProvider value={{ theme: 'ice', plugins: {}, services: {} }}>
+      <ConfigProvider value={{ demoMode: false, theme: 'ice', plugins: {}, services: {} }}>
         <FeatureCatalogProvider>
           <Reader id="missing" />
         </FeatureCatalogProvider>
@@ -47,7 +48,7 @@ describe('FeatureCatalog — config-only (no service)', () => {
 
   it('respects overrides', () => {
     render(
-      <ConfigProvider value={{ theme: 'ice', plugins: {}, services: {} }}>
+      <ConfigProvider value={{ demoMode: false, theme: 'ice', plugins: {}, services: {} }}>
         <FeatureCatalogProvider overrides={{ isEnabled: () => false, order: () => 42 }}>
           <Reader id="anything" />
         </FeatureCatalogProvider>
@@ -61,7 +62,7 @@ describe('FeatureCatalog — config-only (no service)', () => {
     console.error = () => {};
     expect(() =>
       render(
-        <ConfigProvider value={{ theme: 'ice', plugins: {}, services: {} }}>
+        <ConfigProvider value={{ demoMode: false, theme: 'ice', plugins: {}, services: {} }}>
           <Reader id="x" />
         </ConfigProvider>,
       ),
@@ -95,7 +96,7 @@ describe('FeatureCatalog — service-driven', () => {
     ]);
 
     render(
-      <ConfigProvider value={{ theme: 'ice', plugins: {}, services: {} }}>
+      <ConfigProvider value={{ demoMode: false, theme: 'ice', plugins: {}, services: {} }}>
         <FeatureCatalogProvider service={service}>
           <Reader id="users" />
         </FeatureCatalogProvider>
@@ -110,7 +111,12 @@ describe('FeatureCatalog — service-driven', () => {
 
     render(
       <ConfigProvider
-        value={{ theme: 'ice', plugins: { ting: { enabled: true, order: 4 } }, services: {} }}
+        value={{
+          demoMode: false,
+          theme: 'ice',
+          plugins: { ting: { enabled: true, order: 4 } },
+          services: {},
+        }}
       >
         <FeatureCatalogProvider service={service}>
           <Reader id="ting" />
@@ -132,7 +138,12 @@ describe('FeatureCatalog — service-driven', () => {
 
     render(
       <ConfigProvider
-        value={{ theme: 'ice', plugins: { hello: { enabled: true, order: 1 } }, services: {} }}
+        value={{
+          demoMode: false,
+          theme: 'ice',
+          plugins: { hello: { enabled: true, order: 1 } },
+          services: {},
+        }}
       >
         <FeatureCatalogProvider service={service}>
           <Reader id="hello" />
@@ -148,7 +159,7 @@ describe('FeatureCatalog — service-driven', () => {
     const service = makeService([]);
 
     render(
-      <ConfigProvider value={{ theme: 'ice', plugins: {}, services: {} }}>
+      <ConfigProvider value={{ demoMode: false, theme: 'ice', plugins: {}, services: {} }}>
         <FeatureCatalogProvider service={service}>
           <Reader id="x" />
         </FeatureCatalogProvider>

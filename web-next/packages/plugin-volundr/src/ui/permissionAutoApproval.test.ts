@@ -61,4 +61,20 @@ describe('permission auto approval request helpers', () => {
       command: './start-dev',
     });
   });
+
+  it('normalizes missing, non-string, and whitespace-only command inputs', () => {
+    const base = {
+      requestId: 'perm-empty',
+      toolName: 'Read',
+      description: 'Read a file',
+    };
+    expect(getPermissionCommand({ ...base, command: '  ', input: { command: 42 } })).toBeNull();
+    expect(getPermissionCommand({ ...base, input: { command: '  ' } })).toBeNull();
+    expect(buildPermissionAutoApprovalRequest(base)).toEqual({
+      ...base,
+      command: undefined,
+      input: {},
+    });
+    expect(failedPermissionAutoApprovalDecision(base).command).toBeNull();
+  });
 });

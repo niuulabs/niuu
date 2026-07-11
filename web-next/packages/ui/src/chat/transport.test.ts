@@ -58,4 +58,54 @@ describe('chat transport', () => {
     expect(wsUrlToHttpBase('not-a-url')).toBeNull();
     expect(deriveTerminalWsUrl('not-a-url')).toBeNull();
   });
+
+  it('handles absent, invalid, and server-side session urls', () => {
+    expect(normalizeSessionUrl(null)).toBeNull();
+    expect(normalizeSessionUrl('not-a-url')).toBe('not-a-url');
+    expect(wsUrlToHttpBase('')).toBeNull();
+    expect(deriveTerminalWsUrl(null)).toBeNull();
+
+    const originalWindow = globalThis.window;
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: undefined });
+    expect(normalizeSessionUrl('/s/server/session')).toBe('/s/server/session');
+    expect(normalizeSessionUrl('ws://api.example.test/s/server/session')).toBe(
+      'ws://api.example.test/s/server/session',
+    );
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: originalWindow,
+    });
+  });
+
+  it('maps public protocols only for matching loopback endpoints', () => {
+    const originalWindow = globalThis.window;
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: { location: { origin: 'https://localhost:8443' } },
+    });
+
+    expect(normalizeSessionUrl('ws://127.0.0.1:8443/s/abc/session')).toBe(
+      'wss://localhost:8443/s/abc/session',
+    );
+    expect(normalizeSessionUrl('http://127.0.0.1:8443/s/abc/session')).toBe(
+      'https://localhost:8443/s/abc/session',
+    );
+    expect(normalizeSessionUrl('ftp://127.0.0.1:8443/archive')).toBe(
+      'ftp://localhost:8443/archive',
+    );
+    expect(normalizeSessionUrl('ws://127.0.0.1:9000/s/abc/session')).toBe(
+      'ws://127.0.0.1:9000/s/abc/session',
+    );
+    expect(normalizeSessionUrl('ws://api.example.test:8443/s/abc/session')).toBe(
+      'ws://api.example.test:8443/s/abc/session',
+    );
+    expect(deriveTerminalWsUrl('wss://api.example.test/s/abc/api/session')).toBe(
+      'wss://api.example.test/s/abc/terminal/ws',
+    );
+
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: originalWindow,
+    });
+  });
 });

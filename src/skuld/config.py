@@ -18,7 +18,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -540,6 +540,16 @@ class SkuldSettings(BaseSettings):
     skip_permissions: bool = Field(default=False)
     approval_policy: str = Field(default="")
     sandbox: str = Field(default="")
+    cli_binary: str = Field(
+        default="claude",
+        description="CLI executable for subprocess transports.",
+    )
+    remote_control_permission_mode: str = Field(
+        default="",
+        description=(
+            "Claude Remote Control permission-mode override; empty follows skip_permissions."
+        ),
+    )
     # Default ON: Claude tmux sessions launch with agent teams (--teammate-mode
     # tmux) so a session can spin up a team of agents. Only the tmux transport
     # consumes this; other transports ignore it. Override with SKULD__AGENT_TEAMS=0.
@@ -565,6 +575,18 @@ class SkuldSettings(BaseSettings):
         description=(
             "Absolute Volundr API path for token usage reports. Empty uses the "
             "Forge session usage endpoint."
+        ),
+    )
+    external_api_token: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "external_api_token",
+            "SKULD__EXTERNAL_API_TOKEN",
+            "VOLUNDR_EXTERNAL_API_TOKEN",
+        ),
+        description=(
+            "Explicit service token used for outbound Volundr API calls. "
+            "VOLUNDR_EXTERNAL_API_TOKEN remains a supported legacy alias."
         ),
     )
     workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
@@ -597,6 +619,16 @@ class SkuldSettings(BaseSettings):
     # Default ``False`` (internal tool_use/tool_result HIDDEN), matching ReplayConfig.
     default_show_internal: bool = Field(default=False)
     max_upload_size_bytes: int = Field(default=104_857_600)  # 100 MB
+    max_presented_file_bytes: int = Field(
+        default=52_428_800,
+        gt=0,
+        validation_alias=AliasChoices(
+            "max_presented_file_bytes",
+            "SKULD__MAX_PRESENTED_FILE_BYTES",
+            "MAX_PRESENTED_FILE_BYTES",
+        ),
+        description="Maximum size of a file staged by the present-file endpoint.",
+    )
     acp_prompt_timeout_s: float = Field(default=300.0)  # ACP (Grok Build) prompt turn timeout
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     reflex: ReflexConfig = Field(default_factory=ReflexConfig)

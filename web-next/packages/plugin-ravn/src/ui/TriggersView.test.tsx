@@ -56,4 +56,35 @@ describe('TriggersView', () => {
     render(<TriggersView />, { wrapper: wrap({ 'ravn.triggers': failing }) });
     await waitFor(() => expect(screen.getByText(/failed to load triggers/i)).toBeInTheDocument());
   });
+
+  it('renders empty state when the service returns no triggers', async () => {
+    const empty = { listTriggers: async () => [] };
+    render(<TriggersView />, { wrapper: wrap({ 'ravn.triggers': empty }) });
+    await waitFor(() => expect(screen.getByText(/no triggers configured/i)).toBeInTheDocument());
+    expect(document.querySelector('.rv-triggers-view__count')).toHaveTextContent(
+      '0 active · 0 total',
+    );
+  });
+
+  it('renders disabled triggers while omitting empty kind groups', async () => {
+    const disabled = {
+      listTriggers: async () => [
+        {
+          id: 'trigger-disabled',
+          kind: 'event' as const,
+          personaName: 'reviewer',
+          spec: 'review.requested',
+          enabled: false,
+          createdAt: '2026-07-11T12:00:00Z',
+        },
+      ],
+    };
+    render(<TriggersView />, { wrapper: wrap({ 'ravn.triggers': disabled }) });
+    await waitFor(() => expect(screen.getByText('disabled')).toBeInTheDocument());
+    expect(document.querySelector('.rv-triggers-view__count')).toHaveTextContent(
+      '0 active · 1 total',
+    );
+    expect(screen.getByRole('region', { name: /event triggers/i })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: /cron triggers/i })).not.toBeInTheDocument();
+  });
 });

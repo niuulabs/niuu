@@ -632,10 +632,11 @@ class TestSessionServiceStart:
         self,
         repository: Repo,
         pod_manager: Pods,
-        monkeypatch,
     ):
         """Browser-facing session URLs should prefer the configured public host."""
-        service = SessionService(repository, pod_manager)
+        service = SessionService(
+            repository, pod_manager, public_origin="http://100.66.123.128:8080"
+        )
         created = await service.create_session(
             name="test",
             model="claude-3-opus",
@@ -644,9 +645,6 @@ class TestSessionServiceStart:
                 branch="main",
             ),
         )
-
-        monkeypatch.setenv("NIUU_SERVER_HOST", "0.0.0.0")
-        monkeypatch.setenv("NIUU_SERVER_PUBLIC_HOST", "100.66.123.128")
 
         result = await service.start_session(created.id)
 

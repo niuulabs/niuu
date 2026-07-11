@@ -3,6 +3,7 @@ import { getOidcConfig, getUserManager, resetUserManager } from './oidc';
 import type { NiuuConfig } from '@niuulabs/plugin-sdk';
 
 const baseConfig: NiuuConfig = {
+  demoMode: false,
   theme: 'ice',
   plugins: {},
   services: {},

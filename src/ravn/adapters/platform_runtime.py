@@ -43,6 +43,25 @@ class HttpPlatformRuntimeAdapter:
             auth_params,
         )
 
+    async def stop_forge_session(
+        self,
+        session_id: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any] | None:
+        response = await self._client.post(
+            f"/api/v1/forge/sessions/{session_id}/stop",
+            headers=auth_headers,
+            params=auth_params,
+        )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("Platform Forge stop returned an unexpected payload")
+        return payload
+
     async def list_resident_runtimes(
         self,
         auth_headers: dict[str, str],

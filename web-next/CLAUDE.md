@@ -8,24 +8,6 @@ and the rationale — not a log of past work.
 
 ---
 
-## Scope for this branch
-
-While `feat/web-next-scaffold` (and any descendant branches) is active:
-
-- **Work happens inside `web-next/` only.** Do not modify `web/`, `src/` (Python
-  backend), `tests/` (Python), `containers/`, or other parts of the monorepo unless
-  explicitly asked. If a fix genuinely needs to cross the boundary, surface it and
-  wait for direction — don't silently edit.
-- **Python unit tests are disabled for this branch.** The backend test suite is
-  frozen while we focus on `web-next/`. Do not spend cycles getting them green.
-- **`web/` unit/e2e tests are disabled for this branch.** Same reason.
-- **Only `web-next/` tests run in CI.** See `.github/workflows/` for the gating.
-
-This is a speed play. When `web-next/` reaches parity on the first plugin vertical,
-we re-enable the other suites. Until then, green CI = `web-next` tests green.
-
----
-
 ## Non-negotiable architecture
 
 ### 1. Every plugin is its own publishable package
@@ -101,7 +83,7 @@ Tests and Storybook supply mock adapters. Adapter swap = zero component changes.
 
 ### 4. TanStack Query wraps services — it does not replace them
 
-The services abstraction (ports + adapters + DI) is unchanged from `web/`. TanStack
+The services abstraction (ports + adapters + DI) is the stable plugin boundary. TanStack
 Query is the client cache on top. Every API call looks like:
 
 ```ts
@@ -127,8 +109,7 @@ Three feature-flag tiers, any of which can hide a plugin:
 
 ### 6. Tailwind is the default styling layer, driven by design tokens
 
-Styling in `web-next/` uses **Tailwind CSS** mapped to our design tokens. `.claude/rules/web-styles.md`
-bans Tailwind — that ban applies to the legacy `web/` app only, not here.
+Styling in `web-next/` uses **Tailwind CSS** mapped to our design tokens.
 
 - **`@niuulabs/design-tokens` owns `tokens.css`** — ported from the earlier
   prototype system and now treated as the single source of truth for color,
@@ -156,39 +137,7 @@ TanStack Router routes are constructed in code and composed by the Shell from
 `PluginDescriptor.routes`. File-based routing cannot cross package boundaries, so it
 is incompatible with composability. This is a deliberate trade.
 
-### 8. `web-next/` never imports from `web/` — copy, don't cross-reference
-
-`web/` is going to be deleted. Any reuse from there is done by **copying files**
-into their new home in `web-next/`, not by importing across the boundary. This
-keeps `web-next/` self-contained and means deleting `web/` at M8 is a safe op.
-
-When a ticket says "copy from `web/...`", the workflow is:
-
-1. Open the source files under `web/src/...` as reference.
-2. Copy them (or their essence) into `web-next/packages/<pkg>/src/...`.
-3. Rewrite imports: `@/modules/shared/...` → `@niuulabs/...`.
-4. Migrate the tests alongside — they must pass in the new location.
-5. Verify `grep -r "from ['\"].*\\.\\./.*web/" web-next/` returns nothing.
-
-Known sources we'll copy (not exhaustive — see individual tickets):
-
-| From `web/`                                   | To (web-next)                   | Ticket  |
-| --------------------------------------------- | ------------------------------- | ------- |
-| `src/modules/shared/api/client.ts`            | `@niuulabs/query` (HTTP client) | NIU-688 |
-| `src/modules/shared/ports/identity.port.ts`   | `@niuulabs/plugin-sdk`          | NIU-688 |
-| `src/modules/shared/ports/feature-catalog..`  | `@niuulabs/plugin-sdk`          | NIU-688 |
-| `src/modules/shared/adapters/*.ts`            | `@niuulabs/plugin-sdk`          | NIU-688 |
-| `src/auth/*`                                  | `@niuulabs/auth`                | NIU-651 |
-| `src/modules/mimir/api/*`                     | `@niuulabs/plugin-mimir`        | NIU-667 |
-| `src/modules/ravn/api/*`                      | `@niuulabs/plugin-ravn`         | NIU-671 |
-| `src/modules/ting/{ports,adapters,models}/*`  | `@niuulabs/plugin-ting`         | NIU-679 |
-| `src/modules/volundr/{ports,adapters,models}` | `@niuulabs/plugin-volundr`      | NIU-675 |
-| `src/modules/shared/components/SessionChat/`  | `@niuulabs/ui/chat`             | NIU-660 |
-
-Nothing else should be dragged across — and especially no UI components outside
-`SessionChat`, which get rebuilt fresh against the design tokens.
-
-### 9. Module boundaries — what goes where
+### 8. Module boundaries — what goes where
 
 | Live in `@niuulabs/ui`                             | Live in a specific plugin              |
 | -------------------------------------------------- | -------------------------------------- |
@@ -263,8 +212,7 @@ web-next/
 - **Monaco / `@codingame/monaco-vscode-*`** — dropped. File manager covers file ops.
   If read-only syntax-highlighted viewing is needed later, reach for `shiki` or
   `prism-react-renderer` (~50KB).
-- **Vercel AI SDK UI** — we have our own `SessionChat/` implementation (to be ported
-  from `web/src/modules/shared/components/SessionChat/`).
+- **Vercel AI SDK UI** — we use the platform-owned `SessionChat/` implementation.
 - **File-based routing** — see rule 7.
 - **CSS-in-JS / styled-components / emotion** — runtime cost, not needed.
 - **Tailwind as a _consumer_ dependency** — we use Tailwind _inside_ our packages at
@@ -407,7 +355,7 @@ Edit `apps/niuu/public/config.json` and refresh the browser. No rebuild.
 
 ## References
 
-- Current production UI (reference for API adapters, OIDC, SessionChat): `../web/`
+- Current plugin examples: `packages/plugin-hello/`, `packages/plugin-volundr/`, and `apps/niuu/`
 - Project rules: `../.claude/rules/*.md`
 
 ---

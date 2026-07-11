@@ -151,8 +151,12 @@ Chat traffic flows directly from the browser to Skuld inside the session pod —
 ## Quick Start
 
 ```bash
-# Install dependencies
-uv sync --all-extras --dev
+# Install Python 3.12 dependencies
+uv sync --python 3.12 --extra dev
+
+# Install the pnpm-pinned web workspace
+corepack enable
+cd web-next && pnpm install --frozen-lockfile && cd ..
 
 # Start the local platform stack
 ./start-dev
@@ -164,6 +168,18 @@ uv sync --all-extras --dev
 The local Niuu stack serves at `http://localhost:8080`. Interactive API docs are available under `/docs` for the relevant services.
 
 If you want to run pieces manually instead of the dev stack, you can still start the individual services directly from their config files, but `./start-dev` and `./stop-dev` are the normal way to bring the platform up locally.
+
+### Cached and offline bootstrap
+
+The lockfiles are the source of truth. Warm a connected development cache once with `uv sync --frozen --python 3.12 --extra dev` and `cd web-next && pnpm fetch`. A machine with those caches can then reproduce the environment without registry access:
+
+```bash
+uv sync --frozen --offline --python 3.12 --extra dev
+cd web-next
+pnpm install --frozen-lockfile --offline
+```
+
+Offline installation fails explicitly when a locked artifact is absent from the cache; it never substitutes an unpinned package.
 
 ### Local and Deployment Modes
 
@@ -197,14 +213,19 @@ See the [configuration reference](https://niuulabs.github.io/volundr/reference/c
 ## Testing
 
 ```bash
-# Backend (85% coverage enforced)
-uv run pytest tests/ -v
+# Backend lint, format, tests, and 85% coverage
+make verify
 
-# Web UI (85% coverage enforced)
-cd web && npm run test:coverage
+# Web UI typecheck, lint, format, tests, and 85% coverage
+cd web-next
+pnpm typecheck
+pnpm lint
+pnpm format:check
+pnpm test
 
-# Lint
-uv run ruff check src/ tests/
+# Informational module-size and dependency-coupling review
+cd ..
+make review-modules
 ```
 
 ## Deployment
@@ -232,7 +253,7 @@ See the [deployment guide](https://niuulabs.github.io/volundr/operations/kuberne
 |-------|-----------|
 | API | FastAPI, Uvicorn, Pydantic |
 | Database | PostgreSQL via asyncpg (raw SQL, no ORM) |
-| Web UI | React 18, Vite, CSS Modules, Zustand |
+| Web UI | React 19, Vite, Tailwind CSS 4, shared design tokens, TanStack Query |
 | Broker | FastAPI WebSockets |
 | Transport | NNG (pynng), NATS, RabbitMQ via Sleipnir |
 | Orchestration | Kubernetes, Helm |

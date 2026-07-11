@@ -1,0 +1,595 @@
+"""Focused runtime implementation extracted from :mod:`ravn.cli.commands`."""
+
+from __future__ import annotations
+
+# Dependencies are supplied by the CLI compatibility facade immediately before
+# invocation so established command patch points remain effective.
+# ruff: noqa: F821
+
+
+async def _run_daemon(
+    settings: Settings,
+    *,
+    persona_config: Any | None = None,
+    profile: RavnProfile | None = None,
+    task_dispatch: bool = False,
+    resume: bool = False,
+) -> None:
+    """Build and run the gateway + drive loop until interrupted."""
+    from ravn.adapters.channels.gateway import RavnGateway
+    from ravn.adapters.channels.gateway_http import HttpGateway
+    from ravn.adapters.channels.gateway_telegram import TelegramGateway
+    from ravn.drive_loop import DriveLoop
+    from ravn.ports.channel import ChannelPort
+
+    if profile is not None:
+        system_prompt, max_iterations, _max_tokens_d = _apply_profile(
+            profile, settings, persona_config=persona_config
+        )
+    else:
+        system_prompt = settings.agent.system_prompt
+        max_iterations = settings.agent.max_iterations
+        if persona_config is not None:
+            if persona_config.system_prompt_template:
+                system_prompt = persona_config.system_prompt_template
+            if persona_config.iteration_budget is not None:
+                max_iterations = persona_config.iteration_budget
+    base_model = _resolve_persona_model(settings, persona_config)
+
+    workspace = _resolve_workspace(settings)
+    cli_transport_executor = _uses_cli_transport_executor(persona_config)
+    llm = None if cli_transport_executor else _build_llm(settings)
+    memory = _build_memory(settings)
+    compressor = None if cli_transport_executor else _build_compressor(settings, llm)
+    prompt_builder = _build_prompt_builder(settings)
+    pre_hooks, post_hooks = _build_hooks(settings)
+
+    extended_thinking = (
+        settings.llm.extended_thinking
+        if settings.llm.extended_thinking.enabled and not cli_transport_executor
+        else None
+    )
+
+    mcp_manager: Any | None = None
+    mcp_tools: list[Any] = []
+
+    # Build Mímir adapter early so _agent_factory closure can capture it.
+    daemon_mimir = _build_mimir(settings)
+    drive_loop: Any | None = None
+
+    # Populated by _wire_cron after drive_loop is created; captured by _agent_factory.
+    cron_tools: list[Any] = []
+
+    # NIU-598: shared in-process bus for post-session reflection (daemon mode).
+    # Captured by _agent_factory so each agent created by the daemon publishes to it.
+    daemon_bus: Any | None = None
+    sleipnir_catalog_publisher: Any | None = None
+    if settings.reflection.enabled:
+        from sleipnir.adapters.in_process import InProcessBus
+
+        daemon_bus = InProcessBus()
+
+    def _agent_factory(
+        channel: ChannelPort,
+        task_id: str | None = None,
+        task_persona: str | None = None,
+        triggered_by: str | None = None,
+    ) -> Any:
+        # Resolve per-task persona — triggered tasks may request a different persona.
+        resolved_persona = persona_config
+        resolved_system_prompt = system_prompt
+        resolved_max_iterations = max_iterations
+        resolved_max_tokens = settings.effective_max_tokens()
+        resolved_model = base_model
+        if task_persona and task_persona != (persona_config.name if persona_config else None):
+            task_persona_cfg = _resolve_persona(task_persona, None, settings=settings)
+            if task_persona_cfg is not None:
+                resolved_persona = task_persona_cfg
+                resolved_model = _resolve_persona_model(settings, resolved_persona)
+                if task_persona_cfg.system_prompt_template:
+                    resolved_system_prompt = task_persona_cfg.system_prompt_template
+                if task_persona_cfg.iteration_budget is not None:
+                    resolved_max_iterations = task_persona_cfg.iteration_budget
+                if task_persona_cfg.llm.max_tokens:
+                    resolved_max_tokens = task_persona_cfg.llm.max_tokens
+
+        session = Session()
+        budget = _build_iteration_budget(settings, resolved_max_iterations)
+        permission = _build_permission(
+            settings,
+            workspace,
+            no_tools=False,
+            persona_config=resolved_persona,
+        )
+
+        # Determine the profile for this task:
+        #   - Anonymous cascade subtasks (no persona, no task_persona) → "worker" (core only)
+        #   - Tasks on a node with a configured persona → derive include_groups from
+        #     the resolved persona's allowed_tools so the tool set matches exactly
+        #     what the persona permits, regardless of how the task was triggered.
+        #   - Everything else → "default"
+        is_anonymous_cascade = task_id is not None and not task_persona and resolved_persona is None
+        profile = "worker" if is_anonymous_cascade else "default"
+        profile_cfg = _get_tool_group(settings, profile)
+
+        async def _emit_mimir_ingest_event(
+            event_type: str,
+            fields: dict[str, Any],
+        ) -> None:
+            if drive_loop is None or resolved_persona is None:
+                return
+            current_task = drive_loop.resolve_task_context(task_id)
+            if current_task is None:
+                logger.warning(
+                    "mimir_ingest: no task context available for persona=%s task_id=%s",
+                    resolved_persona.name,
+                    task_id,
+                )
+                return
+            drive_loop.record_tool_outcome_fields(
+                task=current_task,
+                event_type=event_type,
+                fields=fields,
+            )
+
+        tools = _build_tools(
+            settings,
+            workspace,
+            session,
+            llm,
+            memory,
+            budget,
+            mimir=daemon_mimir,
+            persona_config=resolved_persona,
+            profile=profile,
+            discovery=_cascade_participant.discovery if _cascade_participant is not None else None,
+            mimir_event_emitter=(
+                _emit_mimir_ingest_event if resolved_persona is not None else None
+            ),
+            session_join_manager=(
+                drive_loop._session_join_manager if drive_loop is not None else None
+            ),
+        )
+        if profile_cfg.include_mcp:
+            tools.extend(_filter_tools(mcp_tools, settings, resolved_persona))
+        if "cascade" in profile_cfg.include_groups:
+            # Add cascade tools (parallel task execution) if wired
+            # NOTE: cascade_tools uses the same monkey-patch pattern as before —
+            # tracked as tech debt to align with the cron pattern.
+            # NIU-612: Apply persona's allowed_tools filter to cascade/cron tools.
+            cascade_tools = getattr(drive_loop, "_cascade_tools", [])
+            tools.extend(_filter_tools(cascade_tools, settings, resolved_persona))
+
+            # Add cron scheduling tools (also filtered by persona)
+            if cron_tools:
+                tools.extend(_filter_tools(cron_tools, settings, resolved_persona))
+
+        # NIU-571: Apply trust gradient constraints for thread-triggered tasks
+        tools = _apply_trust_filter(tools, settings, triggered_by)
+
+        # NIU-571: Apply trust gradient constraints for thread-triggered tasks
+        tools = _apply_trust_filter(tools, settings, triggered_by)
+
+        executor = _build_executor(resolved_persona)
+        agent = executor.build(
+            llm=llm,
+            tools=tools,
+            channel=channel,
+            permission=permission,
+            system_prompt=resolved_system_prompt,
+            model=resolved_model,
+            max_tokens=resolved_max_tokens,
+            max_iterations=resolved_max_iterations,
+            workspace_dir=str(workspace),
+            mcp_servers=_transport_mcp_servers(settings),
+            session=session,
+            pre_tool_hooks=pre_hooks or None,
+            post_tool_hooks=post_hooks or None,
+            user_input_fn=None,
+            memory=memory,
+            mimir=daemon_mimir,
+            episode_summary_max_chars=settings.agent.episode_summary_max_chars,
+            episode_task_max_chars=settings.agent.episode_task_max_chars,
+            iteration_budget=budget,
+            compressor=compressor,
+            prompt_builder=prompt_builder,
+            reflection_model=settings.effective_memory_reflection_model(),
+            reflection_max_tokens=settings.memory.reflection_max_tokens,
+            task_summary_max_chars=settings.memory.task_summary_max_chars,
+            input_token_cost_per_million=settings.memory.input_token_cost_per_million,
+            output_token_cost_per_million=settings.memory.output_token_cost_per_million,
+            extended_thinking=extended_thinking,
+            # NIU-598: session lifecycle events + learnings injection
+            sleipnir_publisher=daemon_bus,
+            reflection_config=settings.effective_post_session_reflection_config(),
+            persona=resolved_persona.name if resolved_persona else "",
+            # NIU-612: persona config for outcome parsing + early termination
+            persona_config=resolved_persona,
+            stop_on_outcome=resolved_persona.stop_on_outcome if resolved_persona else False,
+            session_join_manager=(
+                drive_loop._session_join_manager if drive_loop is not None else None
+            ),
+        )
+        # Reviews and flock proposals must cross the mesh, not stay on the
+        # daemon's in-process reflection bus — same precedence as the drive
+        # loop's sleipnir publisher (closure binds late; the signal publisher
+        # is built during daemon boot, before any task runs).
+        return _attach_signal_build_tool(
+            agent,
+            workspace,
+            triggered_by=triggered_by,
+            settings=settings,
+            publisher=environment_signal_publisher or sleipnir_catalog_publisher or daemon_bus,
+            drive_loop=drive_loop,
+        )
+
+    tasks: list[asyncio.Task] = []
+
+    # Create interaction tracker early so it can be shared between gateway
+    # channels (touch on operator message) and the wakefulness trigger (read).
+    from ravn.domain.interaction_tracker import LastInteractionTracker
+
+    interaction_tracker = LastInteractionTracker()
+
+    # Gateway channels (human-initiated turns)
+    gw_tasks: list[str] = []
+    channels_cfg = settings.gateway.channels
+    _any_channel = (
+        channels_cfg.telegram.enabled
+        or channels_cfg.http.enabled
+        or channels_cfg.discord.enabled
+        or channels_cfg.slack.enabled
+        or channels_cfg.matrix.enabled
+        or channels_cfg.whatsapp.enabled
+    )
+    if _any_channel:
+        gw = RavnGateway(
+            settings.gateway,
+            _agent_factory,
+            profile=profile,
+            interaction_tracker=interaction_tracker,
+        )
+
+        if channels_cfg.telegram.enabled:
+            tg = TelegramGateway(channels_cfg.telegram, gw)
+            tasks.append(asyncio.create_task(tg.run(), name="telegram"))
+            gw_tasks.append("telegram")
+
+        if channels_cfg.http.enabled:
+            ht = HttpGateway(channels_cfg.http, gw)
+            tasks.append(asyncio.create_task(ht.run(), name="http"))
+            gw_tasks.append("http")
+
+        for task, name in _make_channel_tasks(channels_cfg, gw):
+            tasks.append(task)
+            gw_tasks.append(name)
+
+    # Drive loop (initiative tasks)
+    from ravn.adapters.events.noop_publisher import NoOpEventPublisher
+    from ravn.adapters.events.rabbitmq_publisher import RabbitMQEventPublisher
+    from ravn.ports.event_publisher import EventPublisherPort
+
+    event_publisher: EventPublisherPort = NoOpEventPublisher()
+    trigger_names: list[str] = []
+    drive_loop: Any = None
+    _cascade_participant: Any = None
+    environment_signal_runtime: Any | None = None
+    resident_learning_runtime: Any | None = None
+    resident_wakefulness: Any | None = None
+    odin_court: Any | None = None
+    feedback_recorder: Any | None = None
+    huddle_archiver: Any | None = None
+    environment_signal_publisher_started = False
+    environment_signal_publisher: Any | None = _build_environment_signal_publisher(settings)
+    if settings.initiative.enabled or task_dispatch:
+        if settings.sleipnir.enabled:
+            event_publisher = RabbitMQEventPublisher(settings.sleipnir)
+            amqp_url = os.environ.get(settings.sleipnir.amqp_url_env, "").strip()
+            if amqp_url:
+                try:
+                    from sleipnir.adapters.rabbitmq import RabbitMQPublisher
+
+                    sleipnir_catalog_publisher = RabbitMQPublisher(
+                        url=amqp_url,
+                        exchange_name=settings.sleipnir.exchange,
+                    )
+                    await sleipnir_catalog_publisher.start()
+                except Exception as exc:
+                    logger.warning(
+                        "sleipnir: catalog publisher unavailable; "
+                        "mimir.dream.completed emission will be skipped: %s",
+                        exc,
+                    )
+                    sleipnir_catalog_publisher = None
+            else:
+                logger.warning(
+                    "sleipnir: %s is not set; catalog events will not be published",
+                    settings.sleipnir.amqp_url_env,
+                )
+
+        drive_loop = DriveLoop(
+            agent_factory=_agent_factory,
+            config=settings.initiative,
+            settings=settings,
+            event_publisher=event_publisher,
+            resume=resume,
+            mimir=daemon_mimir,
+            sleipnir_publisher=environment_signal_publisher
+            or sleipnir_catalog_publisher
+            or daemon_bus,
+        )
+        _cron_jobs = _wire_triggers(drive_loop, settings.initiative)
+        cron_tools[:] = _wire_cron(drive_loop, _cron_jobs, settings.initiative)
+
+        # Wire Mímir triggers (source synthesis + staleness refresh + threads)
+        if daemon_mimir is not None:
+            _wire_mimir_triggers(
+                drive_loop,
+                daemon_mimir,
+                settings,
+                llm=llm,
+                interaction_tracker=interaction_tracker,
+                agent_factory=_agent_factory,
+            )
+
+        # Wire task dispatch subscription when requested (--listen / --daemon)
+        if task_dispatch and settings.sleipnir.enabled:
+            _wire_task_dispatch(drive_loop, settings.sleipnir)
+        elif task_dispatch:
+            logger.warning(
+                "task_dispatch: Sleipnir not enabled — ravn.task.dispatch subscription"
+                " requires sleipnir.enabled: true and %s to be set",
+                settings.sleipnir.amqp_url_env,
+            )
+
+        # Wire cascade tools when enabled (Mode 1 local + optional mesh/spawn)
+        if settings.cascade.enabled:
+            _active_profile_name = profile.name if profile else "default"
+            _cascade_participant = _wire_cascade(
+                drive_loop, settings, persona_config, _active_profile_name
+            )
+            if _cascade_participant is not None:
+                await _cascade_participant.start()
+                _cascade_mesh = _cascade_participant.mesh
+                pending = getattr(_cascade_mesh, "_pending_outcome_subscriptions", [])
+                for event_type, handler in pending:
+                    logger.info("mesh: subscribing to event_type=%s", event_type)
+                    await _cascade_mesh.subscribe(event_type, handler)
+
+        trigger_names = [t.name for t in drive_loop._triggers]
+        tasks.append(asyncio.create_task(drive_loop.run(), name="drive_loop"))
+
+    if environment_signal_publisher is not None and hasattr(
+        environment_signal_publisher,
+        "start",
+    ):
+        await environment_signal_publisher.start()
+        environment_signal_publisher_started = True
+
+    resident_learning_runtime = _build_resident_learning_runtime(
+        settings,
+        publisher=environment_signal_publisher,
+        workspace=_resolve_workspace(settings),
+    )
+    if resident_learning_runtime is not None:
+        await resident_learning_runtime.start()
+        tasks.append(asyncio.create_task(asyncio.Event().wait(), name="resident_learning"))
+        typer.echo("  Resident learning: subscribed")
+
+    realm_capability_sync = _build_realm_capability_sync(
+        settings,
+        subscriber=environment_signal_publisher,
+    )
+    if realm_capability_sync is not None:
+        await realm_capability_sync.start()
+        typer.echo("  Realm capability sync: subscribed")
+
+    resident_wakefulness = _build_resident_wakefulness(
+        settings,
+        resident_learning_runtime=resident_learning_runtime,
+        publisher=environment_signal_publisher,
+        memory=memory,
+    )
+    if resident_wakefulness is not None:
+        await resident_wakefulness.start()
+        typer.echo("  Resident wakefulness: started")
+
+    odin_court = _build_odin_court(
+        settings,
+        publisher=environment_signal_publisher,
+        memory=memory,
+        review_requester=(
+            resident_learning_runtime.review_requester
+            if resident_learning_runtime is not None
+            else None
+        ),
+    )
+    if odin_court is not None:
+        await odin_court.start()
+        tasks.append(
+            asyncio.create_task(
+                _run_odin_court_sweep(
+                    odin_court,
+                    settings.odin_court.sweep_interval_seconds,
+                ),
+                name="odin_court_sweep",
+            )
+        )
+        typer.echo("  ODIN court: subscribed")
+
+    feedback_recorder = _build_feedback_recorder(
+        settings,
+        publisher=environment_signal_publisher,
+        memory=memory,
+    )
+    if feedback_recorder is not None:
+        await feedback_recorder.start()
+        typer.echo("  Feedback recorder: subscribed")
+
+    if (
+        daemon_mimir is not None
+        and environment_signal_publisher is not None
+        and hasattr(environment_signal_publisher, "subscribe")
+        and (settings.environment.flocks or settings.environment.signal_sources)
+    ):
+        from ravn.huddle_archiver import HuddleTranscriptArchiver  # noqa: PLC0415
+
+        huddle_archiver = HuddleTranscriptArchiver(
+            subscriber=environment_signal_publisher,
+            mimir=daemon_mimir,
+        )
+        await huddle_archiver.start()
+        typer.echo("  Huddle transcript archiver: subscribed")
+
+    environment_signal_runtime = _build_environment_signal_runtime(
+        settings,
+        drive_loop=drive_loop,
+        persona_config=persona_config,
+        publisher=environment_signal_publisher,
+        mimir=daemon_mimir,
+        resident_learning_runtime=resident_learning_runtime,
+        resident_wakefulness=resident_wakefulness,
+        owns_publisher=not environment_signal_publisher_started,
+    )
+    if environment_signal_runtime is not None:
+        await environment_signal_runtime.start()
+        tasks.append(
+            asyncio.create_task(environment_signal_runtime.wait(), name="environment_signals")
+        )
+
+    async def _handle_mcp_tool_result(
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        result: ToolResult,
+    ) -> None:
+        if tool_name not in {"mimir_ingest", "mimir_write"} or drive_loop is None:
+            return
+        current_task = drive_loop.resolve_task_context()
+        if current_task is None:
+            logger.warning(
+                "%s MCP hook: no task context available for server=%s",
+                tool_name,
+                server_name,
+            )
+            return
+        if tool_name == "mimir_ingest":
+            fields = _mimir_ingest_event_fields_from_mcp_result(
+                server_name=server_name,
+                arguments=arguments,
+                result=result,
+            )
+            if fields is None:
+                return
+            drive_loop.record_tool_outcome_fields(
+                task=current_task,
+                event_type="mimir.source.ingested",
+                fields=fields,
+            )
+            return
+
+        fields = _mimir_write_event_fields_from_mcp_result(
+            server_name=server_name,
+            arguments=arguments,
+            result=result,
+        )
+        if fields is None:
+            return
+        drive_loop.record_tool_outcome_fields(
+            task=current_task,
+            event_type="mimir.page.written",
+            fields=fields,
+        )
+
+    mcp_manager, mcp_tools = await _start_mcp_shared(
+        settings,
+        tool_result_hook=_handle_mcp_tool_result,
+    )
+
+    # NIU-598: start post-session reflection service for daemon mode.
+    daemon_reflection_svc: Any | None = None
+    if daemon_bus is not None and daemon_mimir is not None:
+        from ravn.adapters.reflection.post_session import PostSessionReflectionService
+
+        daemon_reflection_svc = PostSessionReflectionService(
+            subscriber=daemon_bus,
+            mimir=daemon_mimir,
+            llm=llm,
+            config=settings.effective_post_session_reflection_config(),
+        )
+        await daemon_reflection_svc.start()
+
+    channels_str = ", ".join(gw_tasks) if gw_tasks else "none"
+    triggers_str = ", ".join(trigger_names) if trigger_names else "none"
+    concurrent = settings.initiative.max_concurrent_tasks if settings.initiative.enabled else 0
+
+    typer.echo("ravn daemon started.")
+    typer.echo(f"  Channels: {channels_str}")
+    typer.echo(f"  Triggers: {triggers_str}")
+    typer.echo(
+        f"  Drive loop: {'running' if settings.initiative.enabled else 'disabled'}"
+        + (f" (max {concurrent} concurrent tasks)" if settings.initiative.enabled else "")
+    )
+    typer.echo("Press Ctrl+C to stop.")
+
+    if not tasks:
+        typer.echo("No channels or triggers enabled — daemon has nothing to do.", err=True)
+        if daemon_bus is not None:
+            with suppress(Exception):
+                await daemon_bus.flush()
+        if daemon_reflection_svc is not None:
+            await daemon_reflection_svc.stop()
+        if sleipnir_catalog_publisher is not None:
+            await sleipnir_catalog_publisher.stop()
+        if environment_signal_runtime is not None:
+            await environment_signal_runtime.stop()
+        if resident_wakefulness is not None:
+            await resident_wakefulness.stop()
+        if odin_court is not None:
+            await odin_court.stop()
+        if feedback_recorder is not None:
+            await feedback_recorder.stop()
+        if huddle_archiver is not None:
+            await huddle_archiver.stop()
+        if resident_learning_runtime is not None:
+            await resident_learning_runtime.stop()
+        if environment_signal_publisher_started and environment_signal_publisher is not None:
+            await environment_signal_publisher.stop()
+        return
+
+    try:
+        await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        return
+    except KeyboardInterrupt:
+        return
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if _cascade_participant is not None:
+            await _cascade_participant.stop()
+        if resident_wakefulness is not None:
+            await resident_wakefulness.stop()
+        if odin_court is not None:
+            await odin_court.stop()
+        if feedback_recorder is not None:
+            await feedback_recorder.stop()
+        if huddle_archiver is not None:
+            await huddle_archiver.stop()
+        if resident_learning_runtime is not None:
+            await resident_learning_runtime.stop()
+        if environment_signal_runtime is not None:
+            await environment_signal_runtime.stop()
+        if environment_signal_publisher_started and environment_signal_publisher is not None:
+            await environment_signal_publisher.stop()
+        await event_publisher.close()
+        await _shutdown_mcp(mcp_manager)
+        # NIU-598: flush pending events before tearing down daemon reflection service.
+        if daemon_bus is not None:
+            with suppress(Exception):
+                await daemon_bus.flush()
+        if daemon_reflection_svc is not None:
+            await daemon_reflection_svc.stop()
+        if sleipnir_catalog_publisher is not None:
+            await sleipnir_catalog_publisher.stop()

@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from typing import TypeVar
 
 from ravn.ports.mimir import MimirPort
 
-T = TypeVar("T")
 
-
-async def collect_pages(
+async def collect_pages[T](
     mimir: MimirPort,
     prefix: str,
     parse: Callable[[str], T | None],
@@ -55,7 +52,7 @@ async def collect_pages(
     return items
 
 
-def _parse_contents(
+def _parse_contents[T](
     results: list[str | BaseException],
     parse: Callable[[str], T | None],
 ) -> list[T]:

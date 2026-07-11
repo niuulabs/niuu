@@ -13,7 +13,8 @@ Use one Environment stream and subject prefix per deployment boundary:
 mesh:
   adapter: nats
   nats:
-    servers_env: NATS_URL
+    servers:
+      - nats://nats:4222
     stream_name: ravn_environment
     subject_prefix: ravn.environment
 ```

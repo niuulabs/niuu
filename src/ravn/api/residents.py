@@ -383,6 +383,34 @@ class ResidentDirectory:
             return None
         return mapped
 
+    async def stop_session(
+        self,
+        session_id: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any] | None:
+        """Stop one Forge-backed Ravn session, returning its live response.
+
+        Standalone residents are discovery-managed and do not expose a Forge
+        lifecycle endpoint. A downstream 4xx therefore means this directory
+        cannot stop the requested session and is reported to the caller rather
+        than being converted into a synthetic stopped state.
+        """
+        if not _RAVN_ID_RE.fullmatch(session_id):
+            return None
+        result = await self._platform.stop_forge_session(
+            session_id,
+            auth_headers,
+            auth_params,
+        )
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            raise RuntimeError(
+                f"Forge stop API returned unexpected payload: {type(result).__name__}"
+            )
+        return result
+
     @staticmethod
     def _to_session(session: dict[str, Any]) -> dict[str, Any]:
         return {

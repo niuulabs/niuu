@@ -9,6 +9,7 @@ import { test, expect } from '@playwright/test';
  */
 
 const STUB_AUTH_CONFIG = {
+  demoMode: false,
   theme: 'ice',
   plugins: {
     login: { enabled: true, order: 0 },

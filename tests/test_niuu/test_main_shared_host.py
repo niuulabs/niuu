@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
-import niuu.main as niuu_main
+import cli.shared_host as niuu_main
 from niuu.config import GitConfig
-from niuu.service_settings import Settings
+from volundr.config import Settings
 
 
 class _DummyGitRegistry:

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from niuu.ports.plugin import ServiceDefinition
-from observatory.plugin import ObservatoryPlugin, _ObservatoryStub
+from niuu.ports.plugin import ServiceDefinition, ServiceLifecycle
+from observatory.plugin import ObservatoryPlugin
 
 
 def test_plugin_name() -> None:
@@ -26,16 +26,12 @@ def test_register_service_returns_definition() -> None:
     assert definition.depends_on == ["postgres"]
 
 
-async def test_stub_lifecycle_and_health_check() -> None:
-    service = _ObservatoryStub()
-    await service.start()
-    await service.stop()
-    assert await service.health_check() is True
-
-
-def test_create_service_returns_stub() -> None:
+def test_service_is_host_mounted() -> None:
     plugin = ObservatoryPlugin()
-    assert isinstance(plugin.create_service(), _ObservatoryStub)
+    definition = plugin.register_service()
+    assert definition.lifecycle is ServiceLifecycle.HOSTED
+    assert definition.factory is None
+    assert plugin.create_service() is None
 
 
 def test_create_api_app_returns_fastapi(monkeypatch) -> None:

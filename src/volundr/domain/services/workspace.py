@@ -40,5 +40,5 @@ class WorkspaceService:
         if ws is None:
             return False
         await self._storage.delete_workspace(session_id)
-        logger.info("Deleted workspace for session %s", session_id)
+        logger.info("Deleted workspace for session %s", repr(session_id))
         return True

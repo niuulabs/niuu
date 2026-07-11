@@ -9,7 +9,11 @@ from urllib.parse import urlsplit
 from volundr.domain.models import LocalMountSource
 from volundr.domain.services.transcript_rebuild import rebuild_turns
 from volundr.log_aggregate import aggregate_workspace_logs
-from volundr.session_archive import load_workspace_transcript
+from volundr.session_archive import (
+    ArchivePathError,
+    load_workspace_transcript,
+    resolve_contained_path,
+)
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -195,21 +199,31 @@ class SessionArchiveService:
 
     async def get_transcript_download_path(self, session_id: UUID, fmt: str) -> Path:
         """Return a local file path for transcript download."""
+        if fmt not in {"json", "md"}:
+            raise ValueError(f"Unsupported transcript format: {fmt}")
         session_id_str = str(session_id)
         _, candidates = await self._workspace_dir_candidates(session_id)
 
         for candidate in candidates:
+            manifest = self._archive_store.load_manifest(
+                session_id=session_id_str,
+                workspace_dir=candidate,
+            )
+            if not self._manifest_declares_transcript(manifest, fmt):
+                continue
             existing = self._transcript_artifact_path(
                 session_id_str,
                 fmt,
                 workspace_dir=candidate,
             )
-            if existing is not None and existing.exists():
+            if existing is not None:
                 return existing
 
-        existing = self._transcript_artifact_path(session_id_str, fmt)
-        if existing is not None and existing.exists():
-            return existing
+        manifest = self._archive_store.load_manifest(session_id=session_id_str)
+        if self._manifest_declares_transcript(manifest, fmt):
+            existing = self._transcript_artifact_path(session_id_str, fmt)
+            if existing is not None:
+                return existing
 
         workspace_dir = await self.resolve_workspace_dir(session_id)
         await self.build_archive(session_id)
@@ -224,6 +238,23 @@ class SessionArchiveService:
                 f"No transcript artifact available for session {session_id}"
             )
         return final_path
+
+    @staticmethod
+    def _manifest_declares_transcript(manifest: dict[str, Any] | None, fmt: str) -> bool:
+        """Return whether a trusted manifest declares the requested fixed artifact."""
+        if not isinstance(manifest, dict):
+            return False
+        artifacts = manifest.get("artifacts")
+        if not isinstance(artifacts, dict):
+            return False
+        expected = {
+            "json": ("transcript_json", "transcript.json"),
+            "md": ("transcript_md", "transcript.md"),
+        }.get(fmt)
+        if expected is None:
+            return False
+        key, filename = expected
+        return artifacts.get(key) == filename
 
     async def get_archive_root(self, session_id: UUID) -> Path:
         """Return the archive root after ensuring it exists."""
@@ -339,27 +370,32 @@ class SessionArchiveService:
         *,
         workspace_dir: Path | None = None,
     ) -> Path | None:
-        if fmt == "json":
-            try:
-                return self._archive_store.transcript_json_path(
+        if fmt not in {"json", "md"}:
+            raise ValueError(f"Unsupported transcript format: {fmt}")
+        try:
+            root = self._archive_store.archive_root(
+                session_id=session_id,
+                workspace_dir=workspace_dir,
+            )
+            if fmt == "json":
+                artifact = self._archive_store.transcript_json_path(
                     session_id=session_id,
                     workspace_dir=workspace_dir,
                 )
-            except ValueError:
-                if workspace_dir is None:
-                    return None
-                raise
-        if fmt == "md":
-            try:
-                return self._archive_store.transcript_markdown_path(
+                return resolve_contained_path(root, artifact)
+            if fmt == "md":
+                artifact = self._archive_store.transcript_markdown_path(
                     session_id=session_id,
                     workspace_dir=workspace_dir,
                 )
-            except ValueError:
-                if workspace_dir is None:
-                    return None
-                raise
-        raise ValueError(f"Unsupported transcript format: {fmt}")
+                return resolve_contained_path(root, artifact)
+        except ArchivePathError:
+            raise
+        except ValueError:
+            if workspace_dir is None:
+                return None
+            raise
+        raise AssertionError("Unreachable transcript format fallthrough")
 
     async def _load_chronicle_payload(self, session_id: UUID) -> dict[str, Any] | None:
         if self._chronicle_service is None:

@@ -14,6 +14,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from ravn.api import create_app
+from ravn.api.valkyrie_config import (
+    ValkyrieDashboardConfig,
+    configured_environment_records,
+)
 from ravn.api.valkyries import (
     HuddleJoinRequest,
     HuddleSendRequest,
@@ -28,6 +32,7 @@ from ravn.api.valkyries import (
     create_valkyrie_router,
 )
 from ravn.api.warden_stream import WardenStreamBroker
+from ravn.config import ValkyrieTelemetryConfig
 from ravn.ports.warden_deployer import (
     WardenDeploymentError,
     WardenDeploymentResult,
@@ -40,7 +45,8 @@ from sleipnir.domain.events import SleipnirEvent
 
 
 class FakeWardenDeployer:
-    def __init__(self, *, fail_on: str = "") -> None:
+    def __init__(self, *, service_path: Path, fail_on: str = "") -> None:
+        self._service_path = service_path
         self._fail_on = fail_on
 
     def install(self, spec: WardenSpec, *, warden_dir: Path, workspace_root: Path | None = None):
@@ -51,13 +57,12 @@ class FakeWardenDeployer:
             warden_dir=warden_dir,
             workspace_root=workspace_root,
         )
-        service_path = warden_dir / "warden.plist"
-        service_path.write_text("service", encoding="utf-8")
+        self._service_path.write_text("service", encoding="utf-8")
         return WardenDeploymentResult(
             supervisor=WardenSupervisor(
                 installed=True,
                 service_label=service_label(spec.id),
-                service_file=str(service_path),
+                service_file=str(self._service_path),
                 config_file=str(config_path),
                 start_command=start_command(spec, config_path=config_path),
                 last_install_at=datetime.now(UTC),
@@ -120,7 +125,9 @@ class FakeSleipnirPublisher:
 def _store(tmp_path: Path, *, fail_on: str = "") -> WardenStore:
     return WardenStore(
         root=tmp_path,
-        deployer_factory=lambda spec: FakeWardenDeployer(fail_on=fail_on),
+        deployer_factory=lambda spec: FakeWardenDeployer(
+            service_path=tmp_path / "warden.plist", fail_on=fail_on
+        ),
     )
 
 
@@ -175,13 +182,47 @@ def client_with_personas(tmp_path) -> TestClient:
     return TestClient(create_app(persona_loader=loader))
 
 
-def test_status_endpoint(client: TestClient):
+@respx.mock
+def test_status_endpoint_reports_live_counts(client: TestClient):
+    respx.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    respx.get("http://localhost:8080/api/v1/forge/sessions").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "ravn-flock",
+                    "name": "Ravn flock",
+                    "status": "running",
+                    "workload_type": "ravn_flock",
+                }
+            ],
+        )
+    )
+
     resp = client.get("/api/v1/ravn/status")
+
     assert resp.status_code == 200
-    data = resp.json()
-    assert data["service"] == "ravn"
-    assert data["healthy"] is True
-    assert "session_count" in data
+    assert resp.json() == {
+        "service": "ravn",
+        "session_count": 1,
+        "fleet_member_count": 0,
+        "healthy": True,
+    }
+
+
+@respx.mock
+def test_status_endpoint_reports_discovery_unavailable(client: TestClient):
+    respx.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    respx.get("http://localhost:8080/api/v1/forge/sessions").mock(return_value=httpx.Response(503))
+
+    resp = client.get("/api/v1/ravn/status")
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Ravn runtime discovery is unavailable"
 
 
 def test_valkyrie_dashboard_projection(client: TestClient):
@@ -193,7 +234,8 @@ def test_valkyrie_dashboard_projection(client: TestClient):
     assert data["flocks"][0]["natsSubject"] == "flock.k8s.>"
     assert data["liveReport"]["routeSubject"] == "obs.valhalla"
     assert data["telemetry"]["verified"] is False
-    assert "demo projection" in data["telemetry"]["gaps"][1]
+    assert data["telemetry"]["source"] == "unavailable"
+    assert "No runtime-derived" in data["telemetry"]["gaps"][1]
     assert data["signals"] == []
     assert data["learnings"] == []
 
@@ -1637,11 +1679,40 @@ def test_valkyrie_dashboard_uses_configured_environment_catalog(monkeypatch):
     assert dashboard["learnings"] == []
 
 
+def test_valkyrie_dashboard_accepts_typed_catalog_config(monkeypatch):
+    monkeypatch.delenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", raising=False)
+    config = ValkyrieDashboardConfig(
+        environments_json=json.dumps([{"id": "midgard", "name": "Midgard"}])
+    )
+
+    dashboard = ValkyrieDashboardProjection(config).dashboard()
+
+    assert [environment["id"] for environment in dashboard["environments"]] == ["env-midgard"]
+
+
+def test_valkyrie_dashboard_rejects_malformed_typed_catalog():
+    with pytest.raises(ValueError, match="invalid Valkyrie dashboard catalog JSON"):
+        ValkyrieDashboardConfig(environments_json="{not-json")
+
+
+def test_valkyrie_dashboard_rejects_unreadable_catalog_file(tmp_path):
+    config = ValkyrieDashboardConfig(environments_file=str(tmp_path / "missing.json"))
+
+    with pytest.raises(ValueError, match="cannot read Valkyrie dashboard catalog"):
+        configured_environment_records(config)
+
+
 def test_valkyrie_dashboard_telemetry_nats_subscription_is_explicit_opt_in(monkeypatch):
     monkeypatch.setenv("NATS_URL", "nats://should-not-be-used:4222")
     monkeypatch.delenv("RAVN_VALKYRIE_TELEMETRY_NATS_URL", raising=False)
 
-    assert build_nats_telemetry_subscription_from_env(ValkyrieDashboardProjection()) is None
+    assert (
+        build_nats_telemetry_subscription_from_env(
+            ValkyrieDashboardProjection(),
+            config=ValkyrieTelemetryConfig(),
+        )
+        is None
+    )
 
 
 def test_valkyrie_dashboard_telemetry_nats_subscription_supports_multiple_streams(
@@ -2158,12 +2229,59 @@ def test_resident_create_lifecycle_and_delete_proxy_target_control_plane(client:
     assert create_route.called and suspend_route.called and delete_route.called
 
 
-def test_stop_session(client: TestClient):
-    resp = client.post("/api/v1/ravn/sessions/my-session-id/stop")
+@respx.mock
+def test_stop_session_forwards_to_forge_with_caller_identity(client: TestClient):
+    route = respx.post("http://localhost:8080/api/v1/forge/sessions/my-session-id/stop").mock(
+        return_value=httpx.Response(
+            200,
+            json={"session_id": "my-session-id", "status": "stopped"},
+        )
+    )
+
+    resp = client.post(
+        "/api/v1/ravn/sessions/my-session-id/stop",
+        headers={"x-auth-user-id": "user-1"},
+    )
+
     assert resp.status_code == 200
-    data = resp.json()
-    assert data["session_id"] == "my-session-id"
-    assert data["status"] == "stopped"
+    assert resp.json() == {"session_id": "my-session-id", "status": "stopped"}
+    assert route.calls.last.request.headers["x-auth-user-id"] == "user-1"
+
+
+@respx.mock
+def test_stop_session_reports_forge_unavailable(client: TestClient):
+    respx.post("http://localhost:8080/api/v1/forge/sessions/my-session-id/stop").mock(
+        return_value=httpx.Response(503)
+    )
+
+    resp = client.post("/api/v1/ravn/sessions/my-session-id/stop")
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Forge session lifecycle is unavailable"
+
+
+@respx.mock
+def test_stop_session_preserves_forge_state_conflict(client: TestClient):
+    respx.post("http://localhost:8080/api/v1/forge/sessions/not-running/stop").mock(
+        return_value=httpx.Response(409, json={"detail": "Session cannot stop from created"})
+    )
+
+    resp = client.post("/api/v1/ravn/sessions/not-running/stop")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Session cannot stop from created"
+
+
+@respx.mock
+def test_stop_session_does_not_fake_success_for_unknown_session(client: TestClient):
+    respx.post("http://localhost:8080/api/v1/forge/sessions/unknown/stop").mock(
+        return_value=httpx.Response(404)
+    )
+
+    resp = client.post("/api/v1/ravn/sessions/unknown/stop")
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Forge-backed Ravn session not found"
 
 
 def test_personas_not_mounted_without_loader(client: TestClient):
@@ -2290,7 +2408,7 @@ def test_create_warden_persists_console_mount_and_schedule_config(tmp_path):
             "read_mount_names": ["scratch"],
             "write_mount_names": ["permanent"],
             "schedules": {"dream_cycle_cron_expression": "*/30 * * * *"},
-            "console": {"enabled": True, "host": "0.0.0.0", "port": 8610, "auth_mode": "token"},
+            "console": {"enabled": True, "host": "127.0.0.1", "port": 8610},
         },
     )
 
@@ -2303,6 +2421,36 @@ def test_create_warden_persists_console_mount_and_schedule_config(tmp_path):
     assert payload["schedules"]["dream_cycle_cron_expression"] == "*/30 * * * *"
     assert payload["console"]["enabled"] is True
     assert payload["console"]["port"] == 8610
+
+
+def test_create_warden_rejects_fake_token_console_auth(tmp_path):
+    client = TestClient(create_app(warden_store=_store(tmp_path)))
+
+    response = client.post(
+        "/api/v1/ravn/wardens",
+        json={
+            "name": "Unsafe Console",
+            "console": {"host": "127.0.0.1", "auth_mode": "token"},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "token authentication is not implemented" in response.text
+
+
+def test_create_warden_rejects_unauthenticated_remote_console(tmp_path):
+    client = TestClient(create_app(warden_store=_store(tmp_path)))
+
+    response = client.post(
+        "/api/v1/ravn/wardens",
+        json={
+            "name": "Remote Console",
+            "console": {"host": "0.0.0.0", "auth_mode": "noop"},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "only bind to a loopback host" in response.text
 
 
 def test_get_warden_returns_404_when_missing(tmp_path):
@@ -2361,7 +2509,9 @@ def test_install_warden_generates_service_artifacts(tmp_path):
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["supervisor"]["installed"] is True
-    assert payload["supervisor"]["service_file"].endswith(".plist")
+    service_path = tmp_path / "warden.plist"
+    assert payload["supervisor"]["service_file"] == str(service_path)
+    assert service_path.read_text(encoding="utf-8") == "service"
     assert payload["runtime"]["state"] == "idle"
 
 

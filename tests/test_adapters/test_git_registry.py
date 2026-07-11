@@ -1,5 +1,6 @@
 """Tests for the git provider registry."""
 
+import logging
 from unittest.mock import AsyncMock, PropertyMock
 
 import pytest
@@ -173,6 +174,25 @@ class TestGitProviderRegistry:
         result = await registry.validate_repo("https://unknown.com/org/repo")
 
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_repository_urls_escape_control_characters_in_logs(
+        self, registry: GitProviderRegistry, caplog
+    ):
+        """Repository URL logs cannot inject forged log entries."""
+        repo_url = "https://unknown.example/repo\r\nforged\tentry\x1b[31m"
+
+        with caplog.at_level(logging.DEBUG, logger="niuu.adapters.outbound.git_registry"):
+            result = await registry.validate_repo(repo_url)
+
+        assert result is False
+        messages = [
+            record.getMessage() for record in caplog.records if "forged" in record.getMessage()
+        ]
+        assert messages
+        assert all(repr(repo_url) in message for message in messages)
+        assert all("\r" not in message and "\n" not in message for message in messages)
+        assert all("\t" not in message and "\x1b" not in message for message in messages)
 
     @pytest.mark.asyncio
     async def test_close(self, registry: GitProviderRegistry):

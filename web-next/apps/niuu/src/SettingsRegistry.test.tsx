@@ -5,6 +5,7 @@ import { buildMountedSettingsProviders } from './SettingsRegistry';
 describe('buildMountedSettingsProviders', () => {
   it('includes remote providers for enabled plugins', () => {
     const providers = buildMountedSettingsProviders({
+      demoMode: false,
       theme: 'ice',
       plugins: {
         login: { enabled: true, order: 0 },
@@ -66,6 +67,7 @@ describe('buildMountedSettingsProviders', () => {
 
   it('omits disabled plugin providers', () => {
     const providers = buildMountedSettingsProviders({
+      demoMode: false,
       theme: 'ice',
       plugins: {
         ting: { enabled: false, order: 2 },

@@ -89,9 +89,13 @@ lint:
 	uv run ruff format --check src/ tests/
 
 test:
-	uv run pytest tests/ -v --tb=short
+	uv run pytest tests/ -v --tb=short \
+		--cov=src --cov-report=term-missing --cov-fail-under=85
 
 verify: lint test
+
+review-modules:
+	uv run python scripts/module_review.py
 
 # --------------------------------------------------------------------------
 # Integration & E2E tests

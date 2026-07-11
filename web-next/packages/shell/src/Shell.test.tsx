@@ -82,6 +82,7 @@ function wrap(
   return render(
     <ConfigProvider
       value={{
+        demoMode: false,
         theme: 'ice',
         plugins: pluginOverrides,
         services: {},

@@ -6,17 +6,9 @@ refresh task for any page whose source content has changed.
 
 Implements ``TriggerPort`` (``ravn.ports.trigger``).
 
-TODO (dynamic trigger loading): This trigger should eventually be loadable
-from config YAML using the same fully-qualified class path pattern as adapters:
-
-    mimir:
-      triggers:
-        - trigger: "ravn.adapters.triggers.mimir_staleness.MimirStalenessTrigger"
-          schedule_hours: 6
-          top_n: 20
-
-See ``rules/dynamic-adapters.md`` for the pattern.  Until dynamic loading is
-implemented, this trigger is wired explicitly in ``cli/commands.py``.
+The trigger is composed explicitly by the Ravn daemon because it shares the
+live Mimir and usage ports with sibling triggers. Its behavior is fully typed by
+``MimirStalenessTriggerConfig``.
 """
 
 from __future__ import annotations

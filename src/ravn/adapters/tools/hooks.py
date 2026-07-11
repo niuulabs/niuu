@@ -122,7 +122,8 @@ class EnforcerHook(PreToolHookPort):
             return args
 
         if isinstance(decision, NeedsApproval):
-            # TODO(NIU-429): wire interactive prompt through the channel
+            # Hooks cannot safely prompt without a channel-bound approval port.
+            # Fail closed and let the caller retry through an approval-aware surface.
             raise PermissionDeniedError(tool_name, f"needs_approval:{decision.question}")
 
         # isinstance(decision, Deny)

@@ -4,31 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from niuu.ports.plugin import Service, ServiceDefinition, TUIPageSpec
-from ravn.plugin import RavnPlugin, _RavnService
-
-# ---------------------------------------------------------------------------
-# _RavnService lifecycle
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_ravn_service_start_is_noop():
-    svc = _RavnService()
-    await svc.start()  # Should not raise
-
-
-@pytest.mark.asyncio
-async def test_ravn_service_stop_is_noop():
-    svc = _RavnService()
-    await svc.stop()  # Should not raise
-
-
-@pytest.mark.asyncio
-async def test_ravn_service_health_check_returns_true():
-    svc = _RavnService()
-    assert await svc.health_check() is True
-
+from niuu.ports.plugin import ServiceDefinition, ServiceLifecycle, TUIPageSpec
+from ravn.plugin import RavnPlugin
 
 # ---------------------------------------------------------------------------
 # RavnPlugin identity
@@ -57,22 +34,17 @@ def test_register_service_returns_definition():
     assert defn.name == "ravn"
 
 
-def test_register_service_factory_creates_service():
+def test_service_is_host_mounted():
     plugin = RavnPlugin()
-    defn = plugin.register_service()
-    svc = defn.factory()
-    assert isinstance(svc, Service)
+    definition = plugin.register_service()
+    assert definition.lifecycle is ServiceLifecycle.HOSTED
+    assert definition.factory is None
+    assert plugin.create_service() is None
 
 
-def test_create_service_returns_service():
+def test_depends_on_returns_postgres():
     plugin = RavnPlugin()
-    svc = plugin.create_service()
-    assert isinstance(svc, Service)
-
-
-def test_depends_on_returns_empty():
-    plugin = RavnPlugin()
-    assert list(plugin.depends_on()) == []
+    assert list(plugin.depends_on()) == ["postgres"]
 
 
 def test_register_service_depends_on_postgres():
@@ -372,9 +344,8 @@ def test_create_api_app_lists_ravens_sessions_and_triggers():
     assert sessions.json()[0]["chat_endpoint"]
 
     triggers = client.get("/api/v1/ravn/triggers")
-    assert triggers.status_code == 200
-    assert isinstance(triggers.json(), list)
-    assert triggers.json()[0]["persona_name"]
+    assert triggers.status_code == 503
+    assert triggers.json()["detail"] == "Ravn trigger persistence is unavailable"
 
 
 def test_create_api_app_supports_session_messages_and_budget_routes():
@@ -415,15 +386,15 @@ def test_create_api_app_supports_session_messages_and_budget_routes():
     assert messages.json() == []
 
     budget = client.get("/api/v1/ravn/budget/a3f1b2c4-8e7d-4a6f-9b0c-1d2e3f4a5b6c")
-    assert budget.status_code == 200
-    assert budget.json()["spent_usd"] > 0
+    assert budget.status_code == 503
+    assert budget.json()["detail"] == "Ravn budget persistence is unavailable"
 
     fleet = client.get("/api/v1/ravn/budget/fleet")
-    assert fleet.status_code == 200
-    assert fleet.json()["cap_usd"] > 0
+    assert fleet.status_code == 503
+    assert fleet.json()["detail"] == "Ravn budget persistence is unavailable"
 
 
-def test_create_api_app_supports_trigger_crud():
+def test_create_api_app_rejects_trigger_mutation_without_store():
     from pathlib import Path
 
     from fastapi.testclient import TestClient
@@ -445,8 +416,9 @@ def test_create_api_app_supports_trigger_crud():
             "enabled": True,
         },
     )
-    assert created.status_code == 201
-    created_id = created.json()["id"]
+    assert created.status_code == 503
+    assert created.json()["detail"] == "Ravn trigger persistence is unavailable"
 
-    deleted = client.delete(f"/api/v1/ravn/triggers/{created_id}")
-    assert deleted.status_code == 204
+    deleted = client.delete("/api/v1/ravn/triggers/missing")
+    assert deleted.status_code == 503
+    assert deleted.json()["detail"] == "Ravn trigger persistence is unavailable"

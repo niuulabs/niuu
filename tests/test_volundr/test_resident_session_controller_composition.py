@@ -62,7 +62,10 @@ def test_resident_session_controller_receives_bound_backend_and_ports(
 ) -> None:
     runtime_controller = SimpleNamespace(backend=ResidentBackend.OPENSHELL)
     credential_store = object()
-    monkeypatch.setattr("volundr.main.import_class", lambda _path: _SessionController)
+    monkeypatch.setattr(
+        "volundr.composition_builders.import_class",
+        lambda _path: _SessionController,
+    )
 
     controllers = _create_resident_session_controllers(
         _settings(),

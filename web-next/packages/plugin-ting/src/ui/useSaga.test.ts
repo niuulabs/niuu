@@ -20,6 +20,13 @@ const MOCK_SAGA: Saga = {
   createdAt: '2026-01-10T09:00:00Z',
   phaseSummary: { total: 3, completed: 1 },
 };
+const OTHER_SAGA: Saga = {
+  ...MOCK_SAGA,
+  id: '00000000-0000-0000-0000-000000000002',
+  trackerId: 'NIU-501',
+  slug: 'other-saga',
+  name: 'Other Saga',
+};
 
 function makeWrapper(
   service: Record<string, unknown>,
@@ -92,7 +99,7 @@ describe('useSaga', () => {
     const svc = { assignRepos: vi.fn().mockResolvedValue(updatedSaga) };
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     client.setQueryData(['ting', 'sagas', MOCK_SAGA.id], MOCK_SAGA);
-    client.setQueryData(['ting', 'sagas'], [MOCK_SAGA]);
+    client.setQueryData(['ting', 'sagas'], [OTHER_SAGA, MOCK_SAGA]);
 
     const { result } = renderHook(() => useAssignSagaRepos(MOCK_SAGA.id), {
       wrapper: makeWrapper({ ting: svc }, client),
@@ -102,14 +109,14 @@ describe('useSaga', () => {
 
     expect(svc.assignRepos).toHaveBeenCalledWith(MOCK_SAGA.id, updatedSaga.repoRefs);
     expect(client.getQueryData(['ting', 'sagas', MOCK_SAGA.id])).toEqual(updatedSaga);
-    expect(client.getQueryData(['ting', 'sagas'])).toEqual([updatedSaga]);
+    expect(client.getQueryData(['ting', 'sagas'])).toEqual([OTHER_SAGA, updatedSaga]);
   });
 
   it('assigns workflow and updates cached saga data', async () => {
     const updatedSaga: Saga = { ...MOCK_SAGA, workflowId: 'workflow-1', workflow: 'Ship' };
     const svc = { assignWorkflow: vi.fn().mockResolvedValue(updatedSaga) };
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    client.setQueryData(['ting', 'sagas'], [MOCK_SAGA]);
+    client.setQueryData(['ting', 'sagas'], [OTHER_SAGA, MOCK_SAGA]);
 
     const { result } = renderHook(() => useAssignSagaWorkflow(MOCK_SAGA.id), {
       wrapper: makeWrapper({ ting: svc }, client),
@@ -119,7 +126,7 @@ describe('useSaga', () => {
 
     expect(svc.assignWorkflow).toHaveBeenCalledWith(MOCK_SAGA.id, 'workflow-1');
     expect(client.getQueryData(['ting', 'sagas', MOCK_SAGA.id])).toEqual(updatedSaga);
-    expect(client.getQueryData(['ting', 'sagas'])).toEqual([updatedSaga]);
+    expect(client.getQueryData(['ting', 'sagas'])).toEqual([OTHER_SAGA, updatedSaga]);
   });
 
   it('assigns target and updates cached saga data', async () => {
@@ -127,7 +134,7 @@ describe('useSaga', () => {
     const updatedSaga: Saga = { ...MOCK_SAGA, targetTags: ['k8s'] };
     const svc = { assignTarget: vi.fn().mockResolvedValue(updatedSaga) };
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    client.setQueryData(['ting', 'sagas'], [MOCK_SAGA]);
+    client.setQueryData(['ting', 'sagas'], [OTHER_SAGA, MOCK_SAGA]);
 
     const { result } = renderHook(() => useAssignSagaTarget(MOCK_SAGA.id), {
       wrapper: makeWrapper({ ting: svc }, client),
@@ -137,20 +144,31 @@ describe('useSaga', () => {
 
     expect(svc.assignTarget).toHaveBeenCalledWith(MOCK_SAGA.id, target);
     expect(client.getQueryData(['ting', 'sagas', MOCK_SAGA.id])).toEqual(updatedSaga);
-    expect(client.getQueryData(['ting', 'sagas'])).toEqual([updatedSaga]);
+    expect(client.getQueryData(['ting', 'sagas'])).toEqual([OTHER_SAGA, updatedSaga]);
   });
 
-  it('leaves non-list saga cache entries alone after assignment', async () => {
+  it('leaves non-list saga cache entries alone for every assignment', async () => {
     const updatedSaga: Saga = { ...MOCK_SAGA, workflowId: 'workflow-1' };
-    const svc = { assignWorkflow: vi.fn().mockResolvedValue(updatedSaga) };
+    const svc = {
+      assignWorkflow: vi.fn().mockResolvedValue(updatedSaga),
+      assignTarget: vi.fn().mockResolvedValue(updatedSaga),
+      assignRepos: vi.fn().mockResolvedValue(updatedSaga),
+    };
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     client.setQueryData(['ting', 'sagas'], { stale: true });
 
-    const { result } = renderHook(() => useAssignSagaWorkflow(MOCK_SAGA.id), {
-      wrapper: makeWrapper({ ting: svc }, client),
-    });
+    const { result } = renderHook(
+      () => ({
+        workflow: useAssignSagaWorkflow(MOCK_SAGA.id),
+        target: useAssignSagaTarget(MOCK_SAGA.id),
+        repos: useAssignSagaRepos(MOCK_SAGA.id),
+      }),
+      { wrapper: makeWrapper({ ting: svc }, client) },
+    );
 
-    await result.current.mutateAsync('workflow-1');
+    await result.current.workflow.mutateAsync('workflow-1');
+    await result.current.target.mutateAsync({ mode: 'cluster', cluster: 'ymir', targetTags: [] });
+    await result.current.repos.mutateAsync([{ repo: 'niuulabs/niuu', branch: 'dev' }]);
 
     expect(client.getQueryData(['ting', 'sagas'])).toEqual({ stale: true });
   });

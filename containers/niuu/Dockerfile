@@ -49,4 +49,4 @@ WORKDIR /app
 
 EXPOSE 8082
 
-ENTRYPOINT ["/usr/local/bin/python3", "-m", "uvicorn", "niuu.main:app", "--host", "0.0.0.0", "--port", "8082"]
+ENTRYPOINT ["/usr/local/bin/python3", "-m", "uvicorn", "cli.shared_host:app", "--host", "0.0.0.0", "--port", "8082"]

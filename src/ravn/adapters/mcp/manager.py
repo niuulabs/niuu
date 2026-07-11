@@ -116,7 +116,10 @@ class MCPManager:
 
         logger.debug("Starting %d MCP server(s)", len(self._configs))
         tasks = [self._start_one(cfg) for cfg in self._configs]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for cfg, result in zip(self._configs, results, strict=True):
+            if isinstance(result, BaseException):
+                logger.error("MCP server %r is unavailable: %s", cfg.name, result)
         return list(self._tools)
 
     async def shutdown(self) -> None:
@@ -142,13 +145,13 @@ class MCPManager:
         if cfg.auth.auth_type:
             try:
                 headers = await self._resolve_auth_headers(cfg)
-                transport.set_auth_headers(headers)
             except Exception as exc:
-                logger.warning(
-                    "MCP server %r: auth failed (%s) — connecting without auth",
-                    cfg.name,
-                    exc,
+                message = (
+                    f"MCP server {cfg.name!r} authentication failed; "
+                    "refusing an unauthenticated connection"
                 )
+                raise RuntimeError(message) from exc
+            transport.set_auth_headers(headers)
 
         client = MCPServerClient(name=cfg.name, transport=transport)
         self._clients.append(client)
@@ -224,9 +227,7 @@ class MCPManager:
                 )
                 return {auth.api_key_header: token.auth_header_value()}
             case _:
-                logger.warning(
-                    "MCP auth type %r not yet supported at startup — skipping",
-                    auth.auth_type,
+                raise ValueError(
+                    f"MCP auth type {auth.auth_type!r} is not supported during startup"
                 )
-                return {}
         raise AssertionError("Unreachable _resolve_auth_headers fallthrough")

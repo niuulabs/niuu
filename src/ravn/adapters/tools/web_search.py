@@ -13,42 +13,6 @@ from ravn.ports.web_search import SearchResult, WebSearchPort
 
 _DEFAULT_NUM_RESULTS = 5
 
-# ---------------------------------------------------------------------------
-# Mock provider (default / testing)
-# ---------------------------------------------------------------------------
-
-
-class MockWebSearchProvider(WebSearchPort):
-    """In-memory search provider for tests and offline environments.
-
-    Returns a fixed list of canned results regardless of the query.
-    Callers may pass a custom ``results`` list to control the output.
-    """
-
-    _DEFAULT_RESULTS: list[SearchResult] = [
-        SearchResult(
-            title="Example Domain",
-            url="https://example.com",
-            snippet="This domain is for use in illustrative examples.",
-        ),
-        SearchResult(
-            title="Python Documentation",
-            url="https://docs.python.org",
-            snippet="The official Python programming language documentation.",
-        ),
-        SearchResult(
-            title="GitHub",
-            url="https://github.com",
-            snippet="Where the world builds software.",
-        ),
-    ]
-
-    def __init__(self, results: list[SearchResult] | None = None) -> None:
-        self._results = results if results is not None else list(self._DEFAULT_RESULTS)
-
-    async def search(self, query: str, *, num_results: int) -> list[SearchResult]:
-        return self._results[:num_results]
-
 
 class _DuckDuckGoHTMLParser(HTMLParser):
     """Extract result links and snippets from DuckDuckGo's simple HTML page."""
@@ -154,7 +118,7 @@ class WebSearchTool(ToolPort):
         *,
         num_results: int = _DEFAULT_NUM_RESULTS,
     ) -> None:
-        self._provider: WebSearchPort = provider or MockWebSearchProvider()
+        self._provider: WebSearchPort = provider or DuckDuckGoLiteSearchProvider()
         self._num_results = num_results
 
     @property
