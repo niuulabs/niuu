@@ -401,5 +401,8 @@ export function useResearchCampaignPage() {
   };
 }
 
+type ResearchCampaignPageResult = ReturnType<typeof useResearchCampaignPage>;
 
-export type ResearchCampaignPageController = ReturnType<typeof useResearchCampaignPage>;
+export type ResearchCampaignPageController = Omit<ResearchCampaignPageResult, 'campaign'> & {
+  campaign: NonNullable<ResearchCampaignPageResult['campaign']>;
+};

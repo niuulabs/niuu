@@ -21,5 +21,5 @@ export function ResearchCampaignPage() {
     );
   }
 
-  return <ResearchCampaignView controller={controller} />;
+  return <ResearchCampaignView controller={{ ...controller, campaign }} />;
 }
