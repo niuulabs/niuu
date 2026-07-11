@@ -289,11 +289,58 @@ describe('SessionsView — live chat', () => {
     });
     expect(await screen.findByTestId('sessions-live-chat')).toBeInTheDocument();
     expect(screen.getByTestId('session-chat')).toBeInTheDocument();
-    expect(useSkuldChatMock).toHaveBeenCalledWith(LIVE_CHAT_ENDPOINT);
+    expect(useSkuldChatMock).toHaveBeenCalledWith(LIVE_CHAT_ENDPOINT, {
+      historyMode: 'none',
+    });
     // The synthesized read-only transcript must NOT be present.
     expect(screen.queryByTestId('sessions-composer')).not.toBeInTheDocument();
     expect(screen.queryByRole('log', { name: /session transcript/i })).not.toBeInTheDocument();
     expect(screen.queryByTestId('sessions-context')).not.toBeInTheDocument();
+  });
+
+  it('uses websocket-owned history for engine-native resident sessions', async () => {
+    const resident = {
+      id: 'a3f1b2c4-8e7d-4a6f-9b0c-1d2e3f4a5b6c',
+      personaName: '',
+      residentName: 'valaskjalf-qwen-proof',
+      kind: 'resident' as const,
+      status: 'active' as const,
+      model: 'niuu/Qwen/Qwen3.6-35B-A3B-FP8',
+      createdAt: '2026-07-11T15:04:14Z',
+    };
+    const ravenStream = {
+      async listRavens() {
+        return [resident];
+      },
+      async getRaven() {
+        return resident;
+      },
+    };
+    const personaStore = createMockPersonaStore();
+    const getPersona = vi.spyOn(personaStore, 'getPersona');
+    const sessionStream = singleSessionStream(
+      liveRunningSession({
+        personaName: 'valaskjalf-qwen-proof',
+        model: resident.model,
+      }),
+    );
+    const getMessages = vi.spyOn(sessionStream, 'getMessages');
+
+    render(<SessionsView />, {
+      wrapper: wrap({
+        'ravn.sessions': sessionStream,
+        'ravn.ravens': ravenStream,
+        'ravn.personas': personaStore,
+        'ravn.budget': createMockBudgetStream(),
+      }),
+    });
+
+    expect(await screen.findByTestId('sessions-live-chat')).toBeInTheDocument();
+    expect(useSkuldChatMock).toHaveBeenCalledWith(LIVE_CHAT_ENDPOINT, {
+      historyMode: 'none',
+    });
+    expect(getPersona).not.toHaveBeenCalled();
+    expect(getMessages).not.toHaveBeenCalled();
   });
 
   it('mounts Volundr trace and logs tabs for the selected live session', async () => {

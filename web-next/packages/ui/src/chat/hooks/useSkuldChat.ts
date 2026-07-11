@@ -1096,7 +1096,10 @@ export function useSkuldChat(
             break;
           }
           case 'result': {
-            finalizeStreaming(event.is_error ? 'error' : 'done', event.result ?? undefined);
+            finalizeStreaming(
+              event.is_error ? 'error' : 'done',
+              event.result ? event.result : undefined,
+            );
             break;
           }
           case 'error': {

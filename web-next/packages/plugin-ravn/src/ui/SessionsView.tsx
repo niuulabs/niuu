@@ -923,15 +923,19 @@ function Composer({ session }: { session: Session }) {
 function LiveSessionChat({
   chatEndpoint,
   sessionName,
+  socketHistory,
   showInternalMessages,
   onInternalVisibilitySender,
 }: {
   chatEndpoint: string;
   sessionName: string;
+  socketHistory: boolean;
   showInternalMessages: boolean;
   onInternalVisibilitySender: (sender: ((visible: boolean) => void) | null) => void;
 }) {
-  const chat = useSkuldChat(chatEndpoint);
+  const chat = useSkuldChat(chatEndpoint, {
+    historyMode: socketHistory ? 'none' : 'session',
+  });
 
   useEffect(() => {
     onInternalVisibilitySender(chat.sendSetInternalVisibility);
@@ -1194,22 +1198,25 @@ export function SessionsView() {
     sortedSessions[0] ??
     null;
 
+  const hasLiveChat =
+    selectedSession?.status === 'running' &&
+    Boolean(normalizeSessionUrl(selectedSession.chatEndpoint ?? null));
+
   const {
     data: rawMessages,
     isLoading: messagesLoading,
     isError: messagesError,
-  } = useMessages(selectedSession?.id ?? '');
+  } = useMessages(selectedSession?.id ?? '', !hasLiveChat);
 
   const ravnById = useMemo(() => new Map((ravens ?? []).map((ravn) => [ravn.id, ravn])), [ravens]);
 
   const selectedRavn = selectedSession ? (ravnById.get(selectedSession.ravnId) ?? null) : null;
-  const hasLiveChat =
-    selectedSession?.status === 'running' &&
-    Boolean(normalizeSessionUrl(selectedSession.chatEndpoint ?? null));
   const personaKey = selectedSession
-    ? hasLiveChat
-      ? selectedSession.personaName
-      : derivePersonaKey(selectedSession)
+    ? selectedRavn?.kind === 'resident' && !selectedRavn.personaName
+      ? ''
+      : hasLiveChat
+        ? selectedSession.personaName
+        : derivePersonaKey(selectedSession)
     : '';
   const { data: persona } = usePersona(personaKey);
   const { data: budget } = useRavnBudget(selectedSession?.ravnId ?? '');
@@ -1364,6 +1371,7 @@ export function SessionsView() {
                 <LiveSessionChat
                   chatEndpoint={liveChatEndpoint}
                   sessionName={selectedRavn?.personaName ?? selectedSession.personaName}
+                  socketHistory={selectedRavn?.kind === 'resident'}
                   showInternalMessages={showInternalMessages}
                   onInternalVisibilitySender={(sender) => {
                     setInternalVisibilityRef.current = sender;

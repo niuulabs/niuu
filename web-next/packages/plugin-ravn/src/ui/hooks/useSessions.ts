@@ -19,12 +19,12 @@ export function useSession(id: string) {
   });
 }
 
-export function useMessages(sessionId: string) {
+export function useMessages(sessionId: string, enabled = true) {
   const service = useService<ISessionStream>('ravn.sessions');
   return useQuery({
     queryKey: ['ravn', 'messages', sessionId],
     queryFn: () => service.getMessages(sessionId),
-    enabled: !!sessionId,
+    enabled: !!sessionId && enabled,
   });
 }
 
@@ -41,7 +41,7 @@ export function useRavnActivity(ravnId: string) {
   });
 
   const ravnSessionIds = (sessionsQuery.data ?? [])
-    .filter((s) => s.ravnId === ravnId)
+    .filter((s) => s.ravnId === ravnId && !s.chatEndpoint)
     .map((s) => s.id);
 
   const messageQueries = useQueries({

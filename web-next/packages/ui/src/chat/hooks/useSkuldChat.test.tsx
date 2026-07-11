@@ -1908,6 +1908,38 @@ page_path: council/demo/opinion-b.md
     expect(result.current.messages.at(-1)?.participant?.persona).toBe('Skuld');
   });
 
+  it('keeps streamed text when the completion frame has an empty result', async () => {
+    const { result } = renderHook(() =>
+      useSkuldChat('ws://localhost:8080/s/resident/sessions/thread/session', {
+        historyMode: 'none',
+      }),
+    );
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'assistant',
+          message: { model: 'Qwen/Qwen3.6-35B-A3B-FP8', content: [] },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'content_block_delta',
+          delta: { type: 'text_delta', text: 'VALASKJALF_RESIDENT_CHAT_OK' },
+        }),
+      );
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'result', result: '' }));
+    });
+
+    expect(result.current.messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      content: 'VALASKJALF_RESIDENT_CHAT_OK',
+      status: 'done',
+    });
+  });
+
   it('surfaces single-agent tool use while streaming', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 
