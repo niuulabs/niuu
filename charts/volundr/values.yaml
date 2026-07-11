@@ -806,6 +806,12 @@ config:
   logFormat: json
   # -- Host to bind to
   host: "0.0.0.0"
+  # -- Internal shared-host address injected into local Skuld brokers
+  serverHost: "127.0.0.1"
+  # -- Browser-reachable shared-host address used in local session endpoints
+  serverPublicHost: "127.0.0.1"
+  # -- Internal OpenShell gateway used for server-side session proxying
+  openshellInternalGatewayUrl: "http://openshell.openshell.svc.cluster.local:8080"
   # -- Number of uvicorn workers
   workers: 4
   # -- Session timeout in seconds

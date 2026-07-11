@@ -44,7 +44,13 @@ POD_MANAGER__KWARGS__GATEWAY_ENDPOINT=openshell.openshell.svc.cluster.local:8080
 ```
 
 The local `niuu platform` CLI uses the `NIUU_` prefix for its own config and
-then exports service-level settings when it starts Völundr.
+then exports service-level settings when it starts Völundr. The canonical
+service fields are `server_host`, `server_public_host`, `server_port`, and
+`openshell_internal_gateway_url`; the legacy `NIUU_SERVER_*` and
+`OPENSHELL_INTERNAL_GATEWAY_URL` names remain typed environment aliases.
+OpenShell endpoint and OIDC values belong in `pod_manager.kwargs`, with secrets
+resolved explicitly through `secret_kwargs_env`; the former flat `OPENSHELL_*`
+variables remain compatibility aliases at the Settings boundary.
 
 Deployments can use mini mode, cluster mode, or OpenShell mode. OpenShell mode
 keeps the normal Skuld broker/session protocol but creates each session through

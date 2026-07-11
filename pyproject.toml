@@ -5,7 +5,7 @@ description = "Volundr — self-hosted AI-native development platform"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 keywords = ["development-platform", "remote-coding", "ai", "kubernetes", "self-hosted"]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
@@ -164,7 +164,7 @@ markers = [
 ]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]

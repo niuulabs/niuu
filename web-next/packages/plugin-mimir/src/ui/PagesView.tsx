@@ -121,16 +121,6 @@ export function PagesView() {
     await navigator.clipboard.writeText(`${page.path} — ${page.title}`);
   }
 
-  /** Flag the page for re-synthesis (stub — service method not yet implemented). */
-  function handleFlag() {
-    // no-op: flagging service method not yet available on IPageStore
-  }
-
-  /** Promote the page's confidence level (stub — service method not yet implemented). */
-  function handlePromote() {
-    // no-op: confidence promotion service method not yet available on IPageStore
-  }
-
   const breadcrumbs = activePagePath ? activePagePath.split('/').filter(Boolean) : [];
 
   return (
@@ -272,8 +262,6 @@ export function PagesView() {
                     onSave={handleSave}
                     onCancel={handleCancel}
                     onEditFirstZone={handleEditFirstZone}
-                    onFlag={handleFlag}
-                    onPromote={handlePromote}
                     onCite={handleCite}
                   />
                 </div>
@@ -294,8 +282,6 @@ export function PagesView() {
                   onSave={handleSave}
                   onCancel={handleCancel}
                   onEditFirstZone={handleEditFirstZone}
-                  onFlag={handleFlag}
-                  onPromote={handlePromote}
                   onCite={handleCite}
                 />
               </div>
@@ -337,8 +323,6 @@ interface PageContentProps {
   onSave: (text: string) => Promise<void>;
   onCancel: () => void;
   onEditFirstZone: () => void;
-  onFlag: () => void;
-  onPromote: () => void;
   onCite: () => Promise<void>;
 }
 
@@ -352,8 +336,6 @@ function PageContent({
   onSave,
   onCancel,
   onEditFirstZone,
-  onFlag,
-  onPromote,
   onCite,
 }: PageContentProps) {
   return (
@@ -390,14 +372,21 @@ function PageContent({
         >
           ✎ Edit
         </button>
-        <button type="button" className="mm-btn" onClick={onFlag} aria-label="flag for review">
+        <button
+          type="button"
+          className="mm-btn"
+          disabled
+          title="Unavailable: page flagging is not supported by the page service."
+          aria-label="flag for review unavailable"
+        >
           ⚑ Flag
         </button>
         <button
           type="button"
           className="mm-btn"
-          onClick={onPromote}
-          aria-label="promote confidence"
+          disabled
+          title="Unavailable: confidence promotion is not supported by the page service."
+          aria-label="promote confidence unavailable"
         >
           Promote confidence
         </button>

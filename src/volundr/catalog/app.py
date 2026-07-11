@@ -6,8 +6,8 @@ from fastapi import FastAPI
 
 from niuu.cors import apply_cors_middleware
 from niuu.service_runtime import configure_logging
-from niuu.service_settings import Settings
 from volundr.catalog.assembly import build_catalog
+from volundr.config import Settings
 
 
 def create_catalog_app(settings: Settings | None = None) -> FastAPI:

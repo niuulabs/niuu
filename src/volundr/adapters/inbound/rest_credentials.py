@@ -8,10 +8,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
+from credentials.service import CredentialService, CredentialValidationError
+from niuu.domain.models import Principal, SecretType
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from volundr.adapters.inbound.auth import extract_principal, require_role
-from volundr.domain.models import Principal, SecretType
-from volundr.domain.services.credential import CredentialService, CredentialValidationError
 
 logger = logging.getLogger(__name__)
 

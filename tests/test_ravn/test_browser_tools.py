@@ -1023,17 +1023,6 @@ class TestBuildBrowserToolsBackendSelection:
             navigate_tool._browser_factory()  # type: ignore[attr-defined]
         mock_adapter.assert_called_once()
 
-    def test_browserbase_backend_env_var_activates_browserbase(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("BROWSERBASE_API_KEY", "test-key")
-        tools = build_browser_tools("t", backend="local")  # env var overrides
-        navigate_tool = next(t for t in tools if t.name == "browser_navigate")
-        with patch("ravn.adapters.browser.browserbase.BrowserbaseAdapter") as mock_bb:
-            mock_bb.return_value = make_mock_browser()
-            navigate_tool._browser_factory()  # type: ignore[attr-defined]
-        mock_bb.assert_called_once()
-
 
 # ---------------------------------------------------------------------------
 # BrowserbaseAdapter — mocked page state (no real browser required)

@@ -18,11 +18,14 @@ from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import InstanceKind, InstanceVisibility
 from niuu.domain.services.instances import InstanceService
-from niuu.domain.services.workload_identity import WorkloadIdentityService
 from niuu.service_databases import apply_service_database_settings, database_pool
 from niuu.service_instances import seed_configured_instances
-from niuu.service_runtime import configure_logging, create_pat_validator
-from niuu.service_settings import Settings
+from niuu.service_runtime import (
+    configure_logging,
+    create_pat_validator,
+    create_workload_identity_service,
+)
+from volundr.config import Settings
 
 
 def _load_settings() -> Settings:
@@ -71,7 +74,7 @@ def create_app(
 
             app.state.instance_service = instance_service
             app.state.pat_validator = pat_validator
-            app.state.workload_identity_service = WorkloadIdentityService(
+            app.state.workload_identity_service = create_workload_identity_service(
                 loaded_settings.workload_identity
             )
 

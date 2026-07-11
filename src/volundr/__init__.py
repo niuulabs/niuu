@@ -1,3 +1,5 @@
 """Völundr - Self-hosted Claude Code session manager."""
 
-__version__ = "0.1.0"
+from niuu.version import package_version
+
+__version__ = package_version()

@@ -1936,8 +1936,8 @@ class TestStartStop:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Browser-facing session endpoints should use NIUU_SERVER_PUBLIC_HOST when set."""
-        monkeypatch.setenv("NIUU_SERVER_HOST", "0.0.0.0")
-        monkeypatch.setenv("NIUU_SERVER_PUBLIC_HOST", "100.66.123.128")
+        manager._server_host = "0.0.0.0"
+        manager._server_public_host = "100.66.123.128"
 
         with (
             _mock_provision(manager),
@@ -2730,7 +2730,7 @@ class TestLocalFlockMeshMode:
         git_session: Session,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("NIUU_SERVER_HOST", "192.168.1.106")
+        manager._server_host = "192.168.1.106"
 
         workspace = tmp_workspaces / "session-with-platform-gateway"
         repo_workspace = workspace / "repo"

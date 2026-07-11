@@ -48,12 +48,41 @@ export const authConfigSchema = z.object({
   clientId: z.string().optional(),
 });
 
-export const niuuConfigSchema = z.object({
-  theme: z.enum(['ice', 'amber', 'spring']).default('ice'),
-  plugins: z.record(z.string(), pluginConfigSchema).default({}),
-  services: z.record(z.string(), serviceConfigSchema).default({}),
-  auth: authConfigSchema.optional(),
-});
+export const niuuConfigSchema = z
+  .object({
+    demoMode: z.boolean().default(false),
+    theme: z.enum(['ice', 'amber', 'spring']).default('ice'),
+    plugins: z.record(z.string(), pluginConfigSchema).default({}),
+    services: z.record(z.string(), serviceConfigSchema).default({}),
+    auth: authConfigSchema.optional(),
+  })
+  .superRefine((config, ctx) => {
+    for (const [serviceName, service] of Object.entries(config.services)) {
+      if (service.mode === 'mock' && !config.demoMode) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['services', serviceName, 'mode'],
+          message: 'Mock services require demoMode: true',
+        });
+      }
+
+      if (service.mode === 'http' && !service.baseUrl) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['services', serviceName, 'baseUrl'],
+          message: 'HTTP services require baseUrl',
+        });
+      }
+
+      if (service.mode === 'ws' && !service.wsUrl) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['services', serviceName, 'wsUrl'],
+          message: 'WebSocket services require wsUrl',
+        });
+      }
+    }
+  });
 
 export type NiuuConfig = z.infer<typeof niuuConfigSchema>;
 export type PluginConfig = z.infer<typeof pluginConfigSchema>;

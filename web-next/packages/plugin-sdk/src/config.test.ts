@@ -82,4 +82,39 @@ describe('niuuConfigSchema', () => {
       }),
     ).toThrow('Invalid websocket url');
   });
+  it('requires explicit demo mode for mock services', () => {
+    expect(() =>
+      niuuConfigSchema.parse({
+        services: {
+          ting: { mode: 'mock' },
+        },
+      }),
+    ).toThrow('Mock services require demoMode: true');
+
+    const parsed = niuuConfigSchema.parse({
+      demoMode: true,
+      services: {
+        ting: { mode: 'mock' },
+      },
+    });
+    expect(parsed.demoMode).toBe(true);
+  });
+
+  it('requires the URL for each live transport', () => {
+    expect(() =>
+      niuuConfigSchema.parse({
+        services: {
+          ting: { mode: 'http' },
+        },
+      }),
+    ).toThrow('HTTP services require baseUrl');
+
+    expect(() =>
+      niuuConfigSchema.parse({
+        services: {
+          'forge.pty': { mode: 'ws' },
+        },
+      }),
+    ).toThrow('WebSocket services require wsUrl');
+  });
 });

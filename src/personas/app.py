@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from niuu.service_runtime import configure_logging
 from ravn.adapters.personas.postgres_registry import PostgresPersonaRegistry
 from volundr.adapters.inbound.rest_ravn_personas import create_ravn_personas_router
 from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
@@ -18,7 +19,6 @@ from volundr.main import (
     _create_authorization_adapter,
     _create_identity_adapter,
     _create_storage_adapter,
-    configure_logging,
 )
 
 

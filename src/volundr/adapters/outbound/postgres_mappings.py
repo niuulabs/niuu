@@ -6,8 +6,8 @@ from uuid import UUID
 
 import asyncpg
 
-from volundr.domain.models import ProjectMapping
-from volundr.domain.ports import ProjectMappingRepository
+from tracker.models import ProjectMapping
+from tracker.ports import ProjectMappingRepository
 
 
 class PostgresMappingRepository(ProjectMappingRepository):

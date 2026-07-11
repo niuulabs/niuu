@@ -16,7 +16,7 @@ import { AuthProvider, useAuth } from '@niuulabs/auth';
 import { Shell } from '@niuulabs/shell';
 import { LogoKnot } from '@niuulabs/plugin-login';
 import { plugins } from './plugins';
-import { buildServiceBackendStatus, buildServices } from './services';
+import { buildServiceBackendStatus, buildServices, isUnavailableService } from './services';
 
 const DEFAULT_CONFIG_ENDPOINT = '/config.json';
 const LIVE_CONFIG_ENDPOINT = '/config.live.json';
@@ -38,6 +38,12 @@ function normalizeConfigMode(value: string | null): ConfigMode | null {
   return null;
 }
 
+export function listUnavailableServiceNames(backends: Record<string, { mode?: string }>): string[] {
+  return Object.entries(backends)
+    .filter(([, status]) => status.mode === 'unavailable')
+    .map(([serviceName]) => serviceName);
+}
+
 export function publishServiceBackends(
   backends: Record<string, unknown>,
   target: Record<string, unknown> = globalThis as Record<string, unknown>,
@@ -47,27 +53,62 @@ export function publishServiceBackends(
 
 function AppInner() {
   const config = useConfig();
-  const services = useMemo(() => buildServices(config), [config]);
-  const backendStatus = useMemo(() => buildServiceBackendStatus(config), [config]);
-  const featureCatalogService = services.features as IFeatureCatalogService | undefined;
+  const serviceState = useMemo(() => {
+    try {
+      return {
+        services: buildServices(config),
+        backendStatus: buildServiceBackendStatus(config),
+        error: null,
+      };
+    } catch (error: unknown) {
+      return {
+        services: null,
+        backendStatus: {},
+        error: error instanceof Error ? error : new Error(String(error)),
+      };
+    }
+  }, [config]);
 
   useEffect(() => {
-    publishServiceBackends(backendStatus);
-  }, [backendStatus]);
+    publishServiceBackends(serviceState.backendStatus);
+  }, [serviceState.backendStatus]);
+
+  if (serviceState.error) {
+    return <BootScreen label={`service bootstrap error: ${serviceState.error.message}`} />;
+  }
+
+  const services = serviceState.services;
+  const featureCatalogService = isUnavailableService(services.features)
+    ? undefined
+    : (services.features as IFeatureCatalogService | undefined);
+  const unavailableServices = listUnavailableServiceNames(serviceState.backendStatus);
 
   return (
     <AuthProvider>
       <AuthGate>
         <ServicesProvider services={services}>
           <FeatureCatalogProvider service={featureCatalogService}>
-            <Shell
-              plugins={plugins}
-              brand={
-                <span className="niuu:inline-flex niuu:items-center niuu:justify-center niuu:text-sky-300">
-                  <LogoKnot size={22} stroke={1.8} />
-                </span>
-              }
-            />
+            <div className="niuu:flex niuu:h-full niuu:min-h-0 niuu:flex-col">
+              {unavailableServices.length > 0 ? (
+                <div
+                  role="status"
+                  title={unavailableServices.join(', ')}
+                  className="niuu:border-b niuu:border-amber-400/30 niuu:bg-amber-400/10 niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:text-amber-200"
+                >
+                  {unavailableServices.length} optional service backend
+                  {unavailableServices.length === 1 ? ' is' : 's are'} unavailable. Features without
+                  a live backend will report unavailable instead of showing demo data.
+                </div>
+              ) : null}
+              <Shell
+                plugins={plugins}
+                brand={
+                  <span className="niuu:inline-flex niuu:items-center niuu:justify-center niuu:text-sky-300">
+                    <LogoKnot size={22} stroke={1.8} />
+                  </span>
+                }
+              />
+            </div>
           </FeatureCatalogProvider>
         </ServicesProvider>
       </AuthGate>

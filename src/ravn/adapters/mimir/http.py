@@ -18,7 +18,6 @@ SPIFFE mTLS (production)::
 from __future__ import annotations
 
 import logging
-import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -106,9 +105,7 @@ class HttpMimirAdapter(MimirPort):
         if not proof:
             return ""
 
-        exchange_url = self._auth.exchange_url or os.environ.get(
-            "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", ""
-        )
+        exchange_url = self._auth.exchange_url
         if not exchange_url:
             return ""
         audiences = list(self._auth.audiences or ("mimir",))

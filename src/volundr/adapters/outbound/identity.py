@@ -191,8 +191,8 @@ class EnvoyHeaderIdentityAdapter(IdentityPort):
         user = await self._user_repository.create(user)
 
         try:
-            # TODO: Provision OpenBao paths (NIU-99)
-
+            # Secret namespaces are provisioned lazily by the configured secret
+            # manager; user JIT provisioning owns durable home storage only.
             # Provision home PVC (NIU-101)
             if self._storage is not None:
                 pvc_ref = await self._storage.provision_user_storage(

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from credentials.models import MCPServerConfig
+from credentials.ports import MCPServerProvider
 from volundr.config import MCPServerEntry
-from volundr.domain.models import MCPServerConfig
-from volundr.domain.ports import MCPServerProvider
 
 
 class ConfigMCPServerProvider(MCPServerProvider):

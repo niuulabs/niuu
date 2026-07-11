@@ -142,7 +142,7 @@ class TestBroker:
         )
         b = Broker(settings=settings)
 
-        with patch("skuld.broker.import_class") as mock_import:
+        with patch("skuld.transport_lifecycle.import_class") as mock_import:
             mock_import.return_value = SubprocessTransport
             transport = b._create_transport()
 
@@ -2984,12 +2984,12 @@ class TestReportUsage:
         await client.aclose()
 
     @pytest.mark.asyncio
-    async def test_get_http_client_uses_external_token_for_auth(self, tmp_path, monkeypatch):
+    async def test_get_http_client_uses_external_token_for_auth(self, tmp_path):
         """HTTP client uses explicit external bearer token auth."""
-        monkeypatch.setenv("VOLUNDR_EXTERNAL_API_TOKEN", "test-external-token")
         settings = SkuldSettings(
             session={"id": "s1", "workspace_dir": str(tmp_path)},
             volundr_api_url="http://volundr-internal.volundr.svc",
+            external_api_token="test-external-token",
         )
         b = Broker(settings=settings)
         headers = b._build_auth_headers()

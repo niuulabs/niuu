@@ -20,6 +20,9 @@
     "web-next/packages/domain": {
       "component": "@niuulabs/domain"
     },
+    "web-next/packages/plugin-bifrost": {
+      "component": "@niuulabs/plugin-bifrost"
+    },
     "web-next/packages/plugin-hello": {
       "component": "@niuulabs/plugin-hello"
     },
@@ -40,6 +43,9 @@
     },
     "web-next/packages/plugin-ting": {
       "component": "@niuulabs/plugin-ting"
+    },
+    "web-next/packages/plugin-valkyrie": {
+      "component": "@niuulabs/plugin-valkyrie"
     },
     "web-next/packages/plugin-volundr": {
       "component": "@niuulabs/plugin-volundr"

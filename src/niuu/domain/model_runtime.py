@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from volundr.config import SessionDefinitionConfig
+    from niuu.config_models import SessionDefinitionConfig
 
 
 def _model_field(model_config: Any | None, field_name: str) -> str:

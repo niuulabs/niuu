@@ -108,7 +108,8 @@ mesh:
   rpc_timeout_s: 10.0
   own_peer_id: ""                        # auto: hostname
   nats:
-    servers_env: NATS_URL
+    servers:
+      - nats://localhost:4222
     stream_name: ravn_environment
     subject_prefix: ravn.environment
     consumer_group: ""                   # set for active/active load-sharing

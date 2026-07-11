@@ -246,17 +246,3 @@ class HttpPersonaAdapter(PersonaPort):
         names = sorted(item["name"] for item in response.json())
         self._names_cache = CacheEntry(names, self._ttl)
         return list(names)
-
-    # ------------------------------------------------------------------
-    # Write operations — not supported
-    # ------------------------------------------------------------------
-
-    def save(self, config: PersonaConfig) -> None:
-        raise NotImplementedError(
-            "Use the volundr REST API to edit personas; this adapter is read-only."
-        )
-
-    def delete(self, name: str) -> bool:
-        raise NotImplementedError(
-            "Use the volundr REST API to edit personas; this adapter is read-only."
-        )

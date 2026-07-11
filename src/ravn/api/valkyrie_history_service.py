@@ -168,7 +168,7 @@ class ValkyrieHistoryService:
                 "valkyrie history: stamped %s outcome onto %d decision(s) via %s",
                 status,
                 updated,
-                record.get("correlationId"),
+                repr(record.get("correlationId")),
             )
 
     async def _file_pending_review(self, item: ReviewItem) -> bool:

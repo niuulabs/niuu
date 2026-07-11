@@ -12,27 +12,10 @@ import typer
 
 from niuu.cli_api_client import CLIAPIClient
 from niuu.cli_output import print_json, print_success, print_table
-from niuu.ports.plugin import APIRouteDomain, Service, ServiceDefinition, ServicePlugin, TUIPageSpec
+from niuu.ports.plugin import APIRouteDomain, ServiceDefinition, ServicePlugin, TUIPageSpec
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-
-class _RavnService(Service):
-    """Ravn lifecycle stub — agent runs in-process alongside the CLI.
-
-    Ravn is embedded directly into the platform rather than running as a
-    separate HTTP service, so lifecycle management is a no-op here.
-    """
-
-    async def start(self) -> None:
-        pass
-
-    async def stop(self) -> None:
-        pass
-
-    async def health_check(self) -> bool:
-        return True
 
 
 class RavnPlugin(ServicePlugin):
@@ -47,16 +30,12 @@ class RavnPlugin(ServicePlugin):
         return "AI agent with tool calling — sessions, platform tools, gateway"
 
     def register_service(self) -> ServiceDefinition:
-        return ServiceDefinition(
+        return ServiceDefinition.hosted(
             name="ravn",
             description="Agent runtime and session management",
-            factory=_RavnService,
             default_enabled=True,
             depends_on=["postgres"],
         )
-
-    def create_service(self) -> Service:
-        return self.register_service().factory()
 
     def create_api_app(self) -> Any:
         from ravn.api import create_app
@@ -110,9 +89,6 @@ class RavnPlugin(ServicePlugin):
                 description="All currently mounted Ravn API routes.",
             ),
         )
-
-    def depends_on(self) -> Sequence[str]:
-        return []
 
     def register_commands(self, app: typer.Typer) -> None:
         """Mount ravn commands on the main app."""

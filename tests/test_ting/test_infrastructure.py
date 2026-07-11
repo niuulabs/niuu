@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from ting.config import DatabaseConfig
-from ting.infrastructure.database import create_pool, database_pool, init_db
+from ting.infrastructure.database import create_pool, database_pool
 
 
 class TestCreatePool:
@@ -36,14 +36,6 @@ class TestCreatePool:
             min_size=2,
             max_size=10,
         )
-
-
-class TestInitDb:
-    @pytest.mark.asyncio
-    async def test_init_db_is_noop(self) -> None:
-        mock_pool = MagicMock()
-        # Should not raise
-        await init_db(mock_pool)
 
 
 class TestDatabasePool:

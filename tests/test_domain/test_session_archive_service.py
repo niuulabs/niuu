@@ -620,3 +620,36 @@ async def test_session_archive_service_reads_config_archive_without_workspace_lo
     assert logs["lines"][0]["message"] == "archived replay"
     assert manifest["session_id"] == str(session.id)
     assert download_path.name == "transcript.json"
+
+
+@pytest.mark.asyncio
+async def test_download_rejects_archive_store_artifact_outside_root(
+    tmp_path,
+    storage,
+    session_repository,
+    session_service,
+):
+    session = Session(
+        name="escaping-artifact",
+        model="claude-sonnet-4",
+        status=SessionStatus.STOPPED,
+    )
+    await session_repository.create(session)
+    await storage.create_session_workspace(str(session.id), user_id="u1", tenant_id="t1")
+    workspace_path = storage.resolve_session_workspace_path(str(session.id))
+    assert workspace_path is not None
+    outside = tmp_path / "outside.md"
+    outside.write_text("sensitive", encoding="utf-8")
+
+    class EscapingArchiveStore(FileSystemArchiveStore):
+        def transcript_markdown_path(self, **_kwargs):
+            return outside
+
+    archive_service = SessionArchiveService(
+        session_service,
+        storage,
+        EscapingArchiveStore(),
+    )
+
+    with pytest.raises(ValueError, match="escapes configured root"):
+        await archive_service.get_transcript_download_path(session.id, "md")

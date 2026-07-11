@@ -27,12 +27,15 @@ data:
 
     transport: {{ .Values.broker.transport | default "sdk" | quote }}
     transport_adapter: {{ .Values.broker.transportAdapter | default "skuld.transports.sdk.SDKTransport" | quote }}
+    cli_binary: {{ .Values.broker.cliBinary | default "claude" | quote }}
+    remote_control_permission_mode: {{ .Values.broker.remoteControlPermissionMode | default "" | quote }}
     skip_permissions: {{ .Values.broker.skipPermissions | default false }}
     agent_teams: {{ .Values.broker.agentTeams | default false }}
     cli_type: {{ .Values.broker.cliType | default "claude" | quote }}
     host: "0.0.0.0"
     port: 8081
     persistence_mount_path: {{ .Values.persistence.mountPath | default "/volundr/sessions" | quote }}
+    max_presented_file_bytes: {{ .Values.broker.maxPresentedFileBytes | default 52428800 }}
 
     {{- if and .Values.volundr.apiUrl (not (include "skuld.residentEnabled" .)) }}
     volundr_api_url: {{ .Values.volundr.apiUrl | quote }}

@@ -33,11 +33,22 @@ jobs:
         uses: ./.github/actions/setup-python-env
 
       - name: Run ruff linting
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check --output-format=github src/ tests/
 
       - name: Check ruff formatting
-        run: uv run ruff format --check src/ tests/ || echo "::warning::Formatting issues found - consider running 'ruff format src/ tests/'"
-        continue-on-error: true
+        run: |
+          output="$(uv run ruff format --check src/ tests/ 2>&1)" || {
+            printf '%s\n' "$output"
+            printf '%s\n' "$output" | sed -n 's/^Would reformat: //p' | while IFS= read -r file; do
+              echo "::error file=${file}::Ruff formatting required"
+            done
+            diff_output="$(uv run ruff format --diff src/ tests/ 2>&1 || true)"
+            diff_output="${diff_output//'%'/'%25'}"
+            diff_output="${diff_output//$'\n'/'%0A'}"
+            diff_output="${diff_output//$'\r'/'%0D'}"
+            echo "::error title=Ruff formatting diff::${diff_output}"
+            exit 1
+          }
 
   test:
     name: "Python: Test ${{ matrix.pkg.name }}"
@@ -88,12 +99,27 @@ jobs:
 
       - name: Run tests with coverage
         run: |
+          set -o pipefail
+          set +e
+          output_file="$(mktemp)"
           uv run pytest ${{ matrix.pkg.paths }} -v --tb=short \
             --override-ini="addopts=" \
             ${{ matrix.pkg.cov }} \
             --cov-report=term-missing \
             --cov-report=xml \
-            --cov-fail-under=85
+            --cov-fail-under=85 2>&1 | tee "$output_file"
+          status=${PIPESTATUS[0]}
+          set -e
+          if (( status != 0 )); then
+            failure_summary="$(grep -E '^(FAILED|ERROR) ' "$output_file" | tail -n 60 || true)"
+            failure_tail="$(tail -n 20 "$output_file")"
+            failure_output="${failure_summary}"$'\n'"${failure_tail}"
+            failure_output="${failure_output//'%'/'%25'}"
+            failure_output="${failure_output//$'\n'/'%0A'}"
+            failure_output="${failure_output//$'\r'/'%0D'}"
+            echo "::error title=Python test failure (${{ matrix.pkg.name }})::${failure_output}"
+          fi
+          exit "$status"
 
       - name: Upload coverage to Codecov
         if: always() && hashFiles('coverage.xml') != ''

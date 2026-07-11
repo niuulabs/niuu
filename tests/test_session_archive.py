@@ -265,3 +265,144 @@ def test_workspace_archive_not_served_to_a_different_session(tmp_path):
     # Legacy archive without a manifest stays readable (no regression).
     mpath.unlink()
     assert load_archive_transcript(tmp_path, session_id=stranger) is not None
+
+
+def test_resolve_contained_path_accepts_only_descendants(tmp_path):
+    from volundr.session_archive import resolve_contained_path
+
+    root = tmp_path / "root"
+    root.mkdir()
+
+    assert resolve_contained_path(root, "nested/file.json") == root / "nested" / "file.json"
+    for candidate in ("../escape", "nested/../file.json", tmp_path / "root-prefix" / "file"):
+        with pytest.raises(ValueError, match="Path (contains traversal|escapes configured root)"):
+            resolve_contained_path(root, candidate)
+
+
+def test_resolve_contained_path_rejects_symlink_escape(tmp_path):
+    from volundr.session_archive import resolve_contained_path
+
+    root = tmp_path / "root"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (root / "link").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="escapes configured root"):
+        resolve_contained_path(root, "link/artifact.json")
+
+
+@pytest.mark.parametrize(
+    "member_name",
+    [
+        "../escape.json",
+        "nested/../escape.json",
+        "/absolute.json",
+        r"..\escape.json",
+        r"C:\escape.json",
+        r"\\server\share\escape.json",
+    ],
+)
+def test_resolve_archive_member_path_rejects_archive_slip(tmp_path, member_name):
+    from volundr.session_archive import resolve_archive_member_path
+
+    root = tmp_path / "extract"
+    root.mkdir()
+
+    with pytest.raises(ValueError, match="Archive member path"):
+        resolve_archive_member_path(root, member_name)
+
+
+def test_resolve_archive_member_path_accepts_nested_member(tmp_path):
+    from volundr.session_archive import resolve_archive_member_path
+
+    root = tmp_path / "extract"
+    root.mkdir()
+
+    assert resolve_archive_member_path(root, "logs/nested.json") == root / "logs" / "nested.json"
+
+
+def test_archive_root_rejects_workspace_path_traversal(tmp_path):
+    from volundr.session_archive import archive_root
+
+    for archive_path in ("../archive", tmp_path / "absolute-archive"):
+        with pytest.raises(ValueError):
+            archive_root(tmp_path / "workspace", archive_path=archive_path)
+
+
+def test_archive_root_rejects_config_session_traversal(tmp_path, monkeypatch):
+    from volundr.session_archive import archive_root
+
+    monkeypatch.setenv("NIUU_HOME", str(tmp_path / ".niuu"))
+
+    with pytest.raises(ValueError, match="traversal"):
+        archive_root(
+            None,
+            session_id="../escaped-session",
+            archive_location="config",
+        )
+
+
+def test_load_workspace_transcript_rejects_symlink_escape(tmp_path):
+    workspace = tmp_path / "workspace"
+    transcript_dir = workspace / ".skuld"
+    outside = tmp_path / "outside.json"
+    transcript_dir.mkdir(parents=True)
+    outside.write_text(json.dumps({"turns": [{"content": "secret"}]}), encoding="utf-8")
+    (transcript_dir / "conversation_sess-link.json").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="escapes configured root"):
+        load_workspace_transcript(workspace, "sess-link")
+
+
+def test_write_session_archive_rejects_archive_root_symlink_escape(tmp_path):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    (workspace / ".volundr").mkdir(parents=True)
+    outside.mkdir()
+    (workspace / ".volundr" / "archive").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="escapes configured root"):
+        write_session_archive(
+            session_id="sess-link",
+            workspace_dir=workspace,
+            transcript_payload={"turns": []},
+            aggregated_logs={"lines": []},
+        )
+
+    assert list(outside.iterdir()) == []
+
+
+def test_write_session_archive_rejects_workspace_log_symlink_escape(tmp_path):
+    workspace = tmp_path / "workspace"
+    outside_log = tmp_path / "outside.log"
+    workspace.mkdir()
+    outside_log.write_text("secret", encoding="utf-8")
+    (workspace / ".skuld.log").symlink_to(outside_log)
+
+    with pytest.raises(ValueError, match="escapes configured root"):
+        write_session_archive(
+            session_id="sess-log-link",
+            workspace_dir=workspace,
+            transcript_payload={"turns": []},
+            aggregated_logs={"lines": []},
+        )
+
+
+def test_write_session_archive_rejects_event_symlink_escape(tmp_path):
+    workspace = tmp_path / "workspace"
+    events = tmp_path / "events"
+    outside_event = tmp_path / "outside.jsonl"
+    workspace.mkdir()
+    events.mkdir()
+    outside_event.write_text("{}\n", encoding="utf-8")
+    (events / "escaped.jsonl").symlink_to(outside_event)
+
+    with pytest.raises(ValueError, match="escapes configured root"):
+        write_session_archive(
+            session_id="sess-event-link",
+            workspace_dir=workspace,
+            transcript_payload={"turns": []},
+            aggregated_logs={"lines": []},
+            event_source_dir=events,
+        )

@@ -239,7 +239,7 @@ async def test_adopted_tool_skill_feeds_ravn_context_and_skill_discovery(tmp_pat
         environment_id=peer.id,
         flock_id="k8s-valkyries",
     )
-    ui = exchange.ui_fixture(flock_id="k8s-valkyries")
+    ui = exchange.ui_snapshot(flock_id="k8s-valkyries")
 
     assert "OOM restart watch" in context
     assert metadata == [

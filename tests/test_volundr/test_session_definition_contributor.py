@@ -2,10 +2,10 @@
 
 import pytest
 
+from niuu.config_models import SessionDefinitionConfig, default_session_definitions
 from volundr.adapters.outbound.contributors.session_def import (
     SessionDefinitionContributor,
 )
-from volundr.config import SessionDefinitionConfig, _default_session_definitions
 from volundr.domain.ports import SessionContext
 
 
@@ -168,25 +168,25 @@ class TestSessionDefinitionConfig:
 
 class TestDefaultSessionDefinitions:
     def test_returns_three_definitions(self):
-        defs = _default_session_definitions()
+        defs = default_session_definitions()
         assert "skuldClaude" in defs
         assert "skuldClaudeInteractive" in defs
         assert "skuldCodex" in defs
         assert "skuldOpenCode" in defs
 
     def test_all_enabled(self):
-        for defn in _default_session_definitions().values():
+        for defn in default_session_definitions().values():
             assert defn.enabled is True
 
     def test_claude_defaults(self):
-        claude = _default_session_definitions()["skuldClaude"]
+        claude = default_session_definitions()["skuldClaude"]
         assert claude.display_name == "Claude Code"
         assert claude.defaults["broker"]["cliType"] == "claude"
         assert claude.defaults["broker"]["transport"] == "sdk"
         assert claude.defaults["broker"]["transportAdapter"] == "skuld.transports.sdk.SDKTransport"
 
     def test_claude_interactive_defaults(self):
-        interactive = _default_session_definitions()["skuldClaudeInteractive"]
+        interactive = default_session_definitions()["skuldClaudeInteractive"]
         assert interactive.display_name == "Claude Code Interactive"
         assert interactive.default_model == "claude-sonnet-4-6"
         assert interactive.defaults["broker"]["cliType"] == "claude"
@@ -198,19 +198,19 @@ class TestDefaultSessionDefinitions:
         assert interactive.defaults["broker"]["skipPermissions"] is True
 
     def test_codex_defaults(self):
-        codex = _default_session_definitions()["skuldCodex"]
+        codex = default_session_definitions()["skuldCodex"]
         assert codex.display_name == "OpenAI Codex"
         assert codex.defaults["broker"]["cliType"] == "codex-ws"
 
     def test_opencode_defaults(self):
-        opencode = _default_session_definitions()["skuldOpenCode"]
+        opencode = default_session_definitions()["skuldOpenCode"]
         assert opencode.display_name == "OpenCode"
         assert opencode.defaults["broker"]["cliType"] == "opencode"
 
     @pytest.mark.asyncio
     async def test_default_definitions_work_with_contributor(self):
         """Default definitions integrate correctly with the contributor."""
-        defs = _default_session_definitions()
+        defs = default_session_definitions()
         contributor = SessionDefinitionContributor(
             definitions=defs, default_definition="skuldClaude"
         )

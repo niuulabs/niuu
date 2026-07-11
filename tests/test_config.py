@@ -1007,14 +1007,33 @@ class TestEventPipelineConfig:
 def test_builtin_remote_control_definitions_present():
     """Remote Control session types ship as built-ins like the other skuld*
     definitions, wired to the remote-control transports."""
-    from volundr.config import _default_session_definitions
+    from niuu.config_models import default_session_definitions
 
-    defs = _default_session_definitions()
+    defs = default_session_definitions()
     claude_rc = defs["skuldClaudeRemote"]
     assert claude_rc.defaults["broker"]["transportAdapter"] == (
         "skuld.transports.remote_control.RemoteControlTransport"
     )
-    codex_rc = defs["skuldCodexRemote"]
-    assert codex_rc.defaults["broker"]["transportAdapter"] == (
-        "skuld.transports.remote_control.CodexRemoteControlTransport"
-    )
+    assert "skuldCodexRemote" not in defs
+
+
+def test_runtime_routing_legacy_aliases(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NIUU_SERVER_HOST", "10.0.0.8")
+    monkeypatch.setenv("NIUU_SERVER_PUBLIC_HOST", "forge.example.test")
+    monkeypatch.setenv("NIUU_SERVER_PORT", "9443")
+    monkeypatch.setenv("OPENSHELL_INTERNAL_GATEWAY_URL", "http://gateway.internal:8080")
+    settings = Settings()
+    assert settings.server_host == "10.0.0.8"
+    assert settings.server_public_host == "forge.example.test"
+    assert settings.server_port == 9443
+    assert settings.openshell_internal_gateway_url == "http://gateway.internal:8080"
+
+
+def test_runtime_routing_rejects_invalid_port(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NIUU_SERVER_PORT", "not-a-port")
+    import pytest
+
+    with pytest.raises(ValueError):
+        Settings()

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -11,20 +10,12 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ravn.adapters.review import FileReviewQueueStore
-from ravn.odin.review import ReviewKind, ReviewStatus, capability_for_kind
+from ravn.config import OdinReviewConfig
+from ravn.odin.review import ReviewStatus, capability_for_kind
 from ravn.odin.review_service import OdinReviewService, ReviewDecisionError
 from ravn.ports.review_queue import ReviewQueueStore
 
 logger = logging.getLogger(__name__)
-
-REVIEW_DATABASE_URL_ENV = "RAVN_ODIN_REVIEW_DATABASE_URL"
-REVIEW_STORE_PATH_ENV = "RAVN_ODIN_REVIEW_STORE_PATH"
-REVIEW_DEFAULT_TTL_ENV = "RAVN_ODIN_REVIEW_DEFAULT_TTL_SECONDS"
-REVIEW_TTL_KIND_ENV_PREFIX = "RAVN_ODIN_REVIEW_TTL_SECONDS_"
-REVIEW_SWEEP_INTERVAL_ENV = "RAVN_ODIN_REVIEW_SWEEP_INTERVAL_SECONDS"
-
-DEFAULT_REVIEW_STORE_PATH = "~/.ravn/odin_review_queue.json"
-DEFAULT_REVIEW_SWEEP_INTERVAL_SECONDS = 60.0
 
 
 class ReviewDecisionRequest(BaseModel):
@@ -33,33 +24,14 @@ class ReviewDecisionRequest(BaseModel):
     participantId: str = ""  # noqa: N815
 
 
-def build_review_queue_store_from_env() -> ReviewQueueStore:
+def build_review_queue_store(config: OdinReviewConfig) -> ReviewQueueStore:
     """Postgres when a DSN is configured, otherwise a durable local file."""
-    dsn = os.environ.get(REVIEW_DATABASE_URL_ENV, "").strip()
+    dsn = config.database_url.strip()
     if dsn:
         from ravn.adapters.review import PostgresReviewQueueStore  # noqa: PLC0415
 
         return _LazyPostgresReviewQueueStore(dsn, PostgresReviewQueueStore)
-    path = os.environ.get(REVIEW_STORE_PATH_ENV, "").strip() or DEFAULT_REVIEW_STORE_PATH
-    return FileReviewQueueStore(Path(path).expanduser())
-
-
-def build_review_ttls_from_env() -> tuple[dict[str, float], float]:
-    """Per-kind TTLs plus the default; 0 means a kind never expires."""
-    default_ttl = _env_float(os.environ.get(REVIEW_DEFAULT_TTL_ENV), 0.0)
-    ttls: dict[str, float] = {}
-    for kind in ReviewKind:
-        raw = os.environ.get(f"{REVIEW_TTL_KIND_ENV_PREFIX}{kind.value.upper()}")
-        if raw is not None:
-            ttls[kind.value] = _env_float(raw, default_ttl)
-    return ttls, default_ttl
-
-
-def review_sweep_interval_from_env() -> float:
-    return _env_float(
-        os.environ.get(REVIEW_SWEEP_INTERVAL_ENV),
-        DEFAULT_REVIEW_SWEEP_INTERVAL_SECONDS,
-    )
+    return FileReviewQueueStore(Path(config.store_path).expanduser())
 
 
 class _LazyPostgresReviewQueueStore(ReviewQueueStore):
@@ -171,10 +143,3 @@ def create_odin_review_router(
         return {"item": decided.to_payload(), "commandDelivery": delivery}
 
     return router
-
-
-def _env_float(value: str | None, default: float) -> float:
-    try:
-        return float(str(value).strip())
-    except (TypeError, ValueError):
-        return default

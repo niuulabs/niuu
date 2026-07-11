@@ -929,3 +929,118 @@ class TestApplyTrustFilter:
 
         s = Settings()
         assert _apply_trust_filter([], s, "thread:test") == []
+
+
+class TestRuntimeOverrides:
+    def test_legacy_executor_and_persona_aliases(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(
+            "SKULD__TRANSPORT_ADAPTER",
+            "skuld.transports.codex_ws.CodexWebSocketTransport",
+        )
+        monkeypatch.setenv("SKULD__SKIP_PERMISSIONS", "false")
+        monkeypatch.setenv("SKULD__APPROVAL_POLICY", "on-request")
+        monkeypatch.setenv("SKULD__SANDBOX", "workspace-write")
+        monkeypatch.setenv("RAVN_PERSONA", "coordinator")
+
+        settings = Settings()
+
+        assert settings.runtime_executor.transport_adapter.endswith("CodexWebSocketTransport")
+        assert settings.runtime_executor.skip_permissions is False
+        assert settings.runtime_executor.approval_policy == "on-request"
+        assert settings.runtime_executor.sandbox == "workspace-write"
+        assert settings.runtime_persona == "coordinator"
+
+    def test_malformed_executor_boolean_fails_loudly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SKULD__SKIP_PERMISSIONS", "sometimes")
+
+        with pytest.raises(ValueError, match="skip_permissions"):
+            Settings()
+
+
+class TestValkyrieRuntimeConfig:
+    def test_defaults_are_explicit_and_safe(self) -> None:
+        settings = Settings()
+
+        assert settings.valkyrie.telemetry.nats_url == ""
+        assert settings.valkyrie.telemetry.retry_seconds == 30
+        assert settings.valkyrie.command.nats_url == ""
+        assert settings.valkyrie.room.url == ""
+        assert settings.valkyrie.brief_interval_seconds == 86_400.0
+
+    def test_legacy_environment_aliases_are_typed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_NATS_URL", "tls://nats:4222")
+        monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_RETRY_SECONDS", "17")
+        monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_TLS_HANDSHAKE_FIRST", "true")
+        monkeypatch.setenv("RAVN_VALKYRIE_COMMAND_NATS_ENSURE_STREAM", "yes")
+        monkeypatch.setenv("RAVN_VALKYRIE_COMMAND_NATS_START_TIMEOUT_SECONDS", "2.5")
+        monkeypatch.setenv("RAVN_VALKYRIE_SKULD_ROOM_URL", "http://skuld:8081")
+        monkeypatch.setenv("RAVN_VALKYRIE_SKULD_ROOM_TIMEOUT_SECONDS", "4")
+        monkeypatch.setenv("RAVN_VALKYRIE_BRIEF_INTERVAL_SECONDS", "0")
+
+        settings = Settings()
+
+        assert settings.valkyrie.telemetry.nats_url == "tls://nats:4222"
+        assert settings.valkyrie.telemetry.retry_seconds == 17
+        assert settings.valkyrie.telemetry.tls_handshake_first is True
+        assert settings.valkyrie.command.ensure_stream is True
+        assert settings.valkyrie.command.start_timeout_seconds == 2.5
+        assert settings.valkyrie.room.url == "http://skuld:8081"
+        assert settings.valkyrie.room.timeout_seconds == 4.0
+        assert settings.valkyrie.brief_interval_seconds == 0
+
+    def test_canonical_nested_configuration(self) -> None:
+        settings = Settings(
+            valkyrie={
+                "telemetry": {
+                    "nats_url": "nats://configured:4222",
+                    "replay_seconds": 120,
+                },
+                "command": {"subject_prefix": "ravn.commands"},
+                "room": {"url": "http://room:8081"},
+                "brief_interval_seconds": 0,
+            }
+        )
+
+        assert settings.valkyrie.telemetry.nats_url == "nats://configured:4222"
+        assert settings.valkyrie.telemetry.replay_seconds == 120
+        assert settings.valkyrie.command.subject_prefix == "ravn.commands"
+        assert settings.valkyrie.room.url == "http://room:8081"
+        assert settings.valkyrie.brief_interval_seconds == 0
+
+    def test_odin_review_legacy_aliases_are_typed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("RAVN_ODIN_REVIEW_DEFAULT_TTL_SECONDS", "12.5")
+        monkeypatch.setenv("RAVN_ODIN_REVIEW_TTL_SECONDS_FLOCK_LEARNING", "7")
+        monkeypatch.setenv("RAVN_ODIN_REVIEW_SWEEP_INTERVAL_SECONDS", "2")
+
+        config = Settings().valkyrie.odin_reviews
+
+        assert config.default_ttl_seconds == 12.5
+        assert config.ttl_seconds_by_kind() == {"flock_learning": 7.0}
+        assert config.sweep_interval_seconds == 2.0
+
+    def test_malformed_odin_review_value_fails_loudly(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("RAVN_ODIN_REVIEW_SWEEP_INTERVAL_SECONDS", "never")
+
+        with pytest.raises(ValueError, match="sweep_interval_seconds"):
+            Settings()
+
+    def test_malformed_legacy_value_fails_loudly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("RAVN_VALKYRIE_TELEMETRY_REPLAY_SECONDS", "not-an-int")
+
+        with pytest.raises(ValueError, match="replay_seconds"):
+            Settings()
+
+    @pytest.mark.parametrize(
+        ("section", "field", "value"),
+        [
+            ("telemetry", "retry_seconds", 0),
+            ("telemetry", "connect_timeout_seconds", 0),
+            ("command", "start_timeout_seconds", 0),
+            ("room", "timeout_seconds", -1),
+        ],
+    )
+    def test_invalid_canonical_ranges_fail(self, section: str, field: str, value: int) -> None:
+        with pytest.raises(ValueError, match=field):
+            Settings(valkyrie={section: {field: value}})

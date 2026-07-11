@@ -21,7 +21,7 @@ from niuu.domain.services.workload_identity import (
     WorkloadIdentityService,
 )
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
-from volundr.domain.ports import IdentityPort, UserProvisioningError
+from niuu.ports.identity import IdentityPort, UserProvisioningError
 
 logger = logging.getLogger(__name__)
 

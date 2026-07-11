@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import sys
 import uuid
 from collections.abc import AsyncGenerator
@@ -17,8 +16,8 @@ from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
 from niuu.domain.services.pat_validator import PATValidator
-from niuu.domain.services.workload_identity import WorkloadIdentityService
 from niuu.ports.integrations import IntegrationRepository
+from niuu.service_runtime import create_workload_identity_service
 from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ravn.ports.persona import PersonaPort
@@ -333,7 +332,11 @@ async def _seed_linear_integration(
     await integration_repo.save_connection(connection)
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    public_origin: str | None = None,
+) -> FastAPI:
     """Create and configure the FastAPI application."""
     if settings is None:
         settings = Settings()
@@ -347,7 +350,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     app.state.settings = settings
-    app.state.workload_identity_service = WorkloadIdentityService(settings.workload_identity)
+    app.state.workload_identity_service = create_workload_identity_service(
+        settings.workload_identity
+    )
 
     # -- Routers --
     app.include_router(create_health_router())
@@ -752,9 +757,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     # forward succeeds. uvicorn typically binds to a single
                     # NIC, so 127.0.0.1 is unreachable when start-dev pinned
                     # the host to a LAN IP.
-                    host = os.environ.get("NIUU_SERVER_HOST", "127.0.0.1")
-                    port = os.environ.get("NIUU_SERVER_PORT", "8080")
-                    self_url = f"http://{host}:{port}"
+                    self_url = (
+                        f"http://{settings.local_platform_host}:{settings.local_platform_port}"
+                    )
                 telegram_polling = TelegramPollingService(
                     bot_token=bot_token,
                     webhook_secret=settings.telegram.webhook_secret,
@@ -817,6 +822,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             notification_service = NotificationService(
                 event_bus=event_bus,
                 channel_factory=channel_factory,
+                public_origin=public_origin or settings.notification.public_origin,
                 confidence_threshold=settings.notification.confidence_threshold,
             )
             app.state.notification_service = notification_service
@@ -996,19 +1002,15 @@ app = create_app()
 
 def main() -> None:  # pragma: no cover
     """Run the Ting API server."""
-    import os
-
     import uvicorn
 
-    host = os.environ.get("HOST", "0.0.0.0")
-    port = int(os.environ.get("PORT", "8081"))
-    workers = int(os.environ.get("WORKERS", "4"))
+    settings = Settings()
 
     uvicorn.run(
         "ting.main:app",
-        host=host,
-        port=port,
-        workers=workers,
+        host=settings.server_host,
+        port=settings.server_port,
+        workers=settings.server_workers,
         access_log=False,
     )
 

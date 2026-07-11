@@ -1,4 +1,4 @@
-"""Coverage for extracted niuu service app factories."""
+"""Coverage for service-owned application factories."""
 
 from __future__ import annotations
 
@@ -9,13 +9,13 @@ from unittest.mock import AsyncMock
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
-from niuu.service_settings import Settings
 from volundr.config import (
     FeatureModuleConfig,
     IntegrationsConfig,
     LinearConfig,
     LocalMountsConfig,
     SeededIntegrationConnectionConfig,
+    Settings,
 )
 
 
@@ -50,7 +50,7 @@ class DummyTokenIssuer:
 
 
 def test_identity_service_app_initializes_state_and_routes(monkeypatch) -> None:
-    from niuu.service_apps import identity as identity_app
+    from identity import app as identity_app
 
     settings = Settings()
     identity_adapter = object()
@@ -134,7 +134,7 @@ def test_identity_service_app_initializes_state_and_routes(monkeypatch) -> None:
 
 
 def test_features_service_app_applies_mini_mode_feature_defaults(monkeypatch) -> None:
-    from niuu.service_apps import features as features_app
+    from features import app as features_app
 
     settings = Settings(
         local_mounts=LocalMountsConfig(mini_mode=True),
@@ -199,7 +199,7 @@ def test_features_service_app_applies_mini_mode_feature_defaults(monkeypatch) ->
 
 
 def test_credentials_service_app_releases_credential_store(monkeypatch) -> None:
-    from niuu.service_apps import credentials as credentials_app
+    from credentials import app as credentials_app
 
     settings = Settings()
     credential_store = object()
@@ -266,7 +266,7 @@ def test_credentials_service_app_releases_credential_store(monkeypatch) -> None:
 
 
 def test_integrations_service_app_seeds_connections_and_linear(monkeypatch) -> None:
-    from niuu.service_apps import integrations as integrations_app
+    from integrations import app as integrations_app
 
     settings = Settings(
         integrations=IntegrationsConfig(
@@ -360,7 +360,7 @@ def test_integrations_service_app_seeds_connections_and_linear(monkeypatch) -> N
 
 
 def test_tracker_service_app_uses_linear_default_tracker(monkeypatch) -> None:
-    from niuu.service_apps import tracker as tracker_app
+    from tracker import app as tracker_app
 
     settings = Settings(linear=LinearConfig(enabled=True, api_key="linear-key"))
     seed_linear = AsyncMock()
@@ -434,7 +434,7 @@ def test_tracker_service_app_uses_linear_default_tracker(monkeypatch) -> None:
 
 
 def test_audit_service_app_starts_and_stops_subscriber(monkeypatch) -> None:
-    from niuu.service_apps import audit as audit_app
+    from audit import app as audit_app
 
     settings = Settings()
     settings.sleipnir.enabled = True
@@ -479,7 +479,7 @@ def test_audit_service_app_starts_and_stops_subscriber(monkeypatch) -> None:
 
 
 def test_audit_service_app_swallows_subscriber_start_failures(monkeypatch) -> None:
-    from niuu.service_apps import audit as audit_app
+    from audit import app as audit_app
 
     settings = Settings()
     settings.sleipnir.enabled = True

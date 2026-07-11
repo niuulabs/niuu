@@ -110,21 +110,12 @@ def _build_web_search_kwargs(settings: Settings, _ctx: dict[str, Any]) -> dict[s
     from ravn.cli.commands import _import_class, _inject_secrets  # noqa: PLC0415
 
     ws_cfg = settings.tools.web.search
-    provider = None
-    mock_path = "ravn.adapters.tools.web_search.MockWebSearchProvider"
-    if ws_cfg.provider.adapter != mock_path:
-        import logging  # noqa: PLC0415
-
-        logger = logging.getLogger(__name__)
-        try:
-            cls = _import_class(ws_cfg.provider.adapter)
-            merged = _inject_secrets(
-                dict(ws_cfg.provider.kwargs),
-                ws_cfg.provider.secret_kwargs_env,
-            )
-            provider = cls(**merged)
-        except Exception as exc:
-            logger.warning("Failed to load web search provider: %s — using mock", exc)
+    cls = _import_class(ws_cfg.provider.adapter)
+    merged = _inject_secrets(
+        dict(ws_cfg.provider.kwargs),
+        ws_cfg.provider.secret_kwargs_env,
+    )
+    provider = cls(**merged)
     return {"provider": provider, "num_results": ws_cfg.num_results}
 
 

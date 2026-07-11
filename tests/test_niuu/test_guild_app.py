@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 from fastapi.testclient import TestClient
 
 import guild.app as guild_app
-from niuu.service_settings import Settings
+from volundr.config import Settings
 
 
 class _DummyPATValidator:

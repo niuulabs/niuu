@@ -198,6 +198,38 @@ class ResidentDirectory:
             return None
         return mapped
 
+    async def stop_session(
+        self,
+        session_id: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any] | None:
+        """Stop one Forge-backed Ravn session, returning its live response.
+
+        Standalone residents are discovery-managed and do not expose a Forge
+        lifecycle endpoint. A downstream 4xx therefore means this directory
+        cannot stop the requested session and is reported to the caller rather
+        than being converted into a synthetic stopped state.
+        """
+        if not _RAVN_ID_RE.fullmatch(session_id):
+            return None
+        try:
+            result = await self._request_json(
+                "POST",
+                f"/api/v1/forge/sessions/{session_id}/stop",
+                auth_headers,
+                auth_params,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+        if not isinstance(result, dict):
+            raise RuntimeError(
+                f"Forge stop API returned unexpected payload: {type(result).__name__}"
+            )
+        return result
+
     @staticmethod
     def _to_session(session: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -228,9 +260,23 @@ class ResidentDirectory:
         auth_headers: dict[str, str],
         auth_params: dict[str, str],
     ) -> Any:
+        return await self._request_json("GET", path, auth_headers, auth_params)
+
+    async def _request_json(
+        self,
+        method: str,
+        path: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> Any:
         url = f"{self._base_url}{path}"
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.get(url, headers=auth_headers, params=auth_params)
+            response = await client.request(
+                method,
+                url,
+                headers=auth_headers,
+                params=auth_params,
+            )
             response.raise_for_status()
             return response.json()
 

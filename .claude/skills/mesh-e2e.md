@@ -155,4 +155,4 @@ The browser sends `targetPeerId` (camelCase) to the broker, which routes via
 - `src/skuld/broker.py` — WebSocket broker, ravn registration, directed messages
 - `src/ravn/adapters/channels/skuld_channel.py` — ravn→Skuld WebSocket channel
 - `src/ravn/drive_loop.py` — task execution, Skuld eager connect
-- `web/src/modules/shared/hooks/useSkuldChat.ts` — browser-side event handling
+- `web-next/packages/plugin-volundr/src/ui/hooks/useSkuldChat.ts` — browser-side event handling

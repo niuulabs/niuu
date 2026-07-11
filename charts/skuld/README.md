@@ -218,11 +218,14 @@ Core Skuld broker configuration controlling which AI CLI backend to use and how 
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `broker.transportAdapter` | string | `"skuld.transports.sdk_websocket.SdkWebSocketTransport"` | Fully-qualified class path of the transport adapter. Replaces `broker.cliType` + `broker.transport` with a single, extensible field |
+| `broker.transportAdapter` | string | `"skuld.transports.sdk.SDKTransport"` | Fully-qualified class path of the transport adapter. Replaces `broker.cliType` + `broker.transport` with a single, extensible field |
+| `broker.cliBinary` | string | `"claude"` | CLI executable used by subprocess-based transports |
+| `broker.remoteControlPermissionMode` | string | `""` | Claude Remote Control permission mode; empty follows `broker.skipPermissions` |
+| `broker.maxPresentedFileBytes` | int | `52428800` | Maximum file size accepted by the present-file endpoint |
 | `broker.cliType` | string | `"claude"` | **(DEPRECATED)** AI CLI backend: `"claude"` (Claude Code) or `"codex"` (OpenAI Codex). Use `broker.transportAdapter` instead |
 | `broker.transport` | string | `"sdk"` | **(DEPRECATED)** CLI transport mode: `"sdk"` (WebSocket, default) or `"subprocess"` (legacy). Use `broker.transportAdapter` instead |
 | `broker.skipPermissions` | bool | `false` | Skip tool permission prompts (`--dangerously-skip-permissions` for Claude, `--full-auto` for Codex) |
-| `broker.agentTeams` | bool | `true` | Enable Claude Code experimental Agent Teams (Claude only) |
+| `broker.agentTeams` | bool | `false` | Enable Claude Code experimental Agent Teams (Claude only) |
 
 ### Volundr API
 
@@ -233,6 +236,8 @@ Configuration for reporting token usage and session events back to the Volundr c
 | `volundr.apiUrl` | string | `""` | Envoy-routed Volundr API origin for session event, trace, and usage reporting |
 | `volundr.serviceUserId` | string | `"skuld-broker"` | Service identity header for control-plane callbacks (`x-auth-user-id`) |
 | `volundr.serviceTenantId` | string | `"default"` | Tenant header for control-plane callbacks (`x-auth-tenant`) |
+| `volundr.externalApiTokenSecret.name` | string | `""` | Existing Kubernetes Secret containing the outbound service token; empty disables token injection |
+| `volundr.externalApiTokenSecret.key` | string | `"token"` | Key within the referenced Secret |
 
 ### Environment Variables
 

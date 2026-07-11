@@ -32,6 +32,7 @@ test('OIDC callback: handles code in URL and cleans up query string', async ({ p
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
+        demoMode: false,
         theme: 'ice',
         plugins: {
           login: { enabled: true, order: 0 },

@@ -7,10 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from ravn.adapters.personas.mounted_volume import (
-    _NOT_IMPLEMENTED_MSG,
-    MountedVolumePersonaAdapter,
-)
+from ravn.adapters.personas.mounted_volume import MountedVolumePersonaAdapter
 from ravn.ports.persona import PersonaPort
 
 # ---------------------------------------------------------------------------
@@ -351,31 +348,8 @@ class TestMalformedFiles:
         names = {p.name for p in personas}
         assert names == {"agent-a", "agent-b"}
 
-
-# ---------------------------------------------------------------------------
-# Write operations — must raise NotImplementedError
-# ---------------------------------------------------------------------------
-
-
-class TestWriteOperationsNotImplemented:
-    def test_save_raises_not_implemented(self, tmp_path: Path) -> None:
-        from ravn.adapters.personas.loader import PersonaConfig
-
+    def test_exposes_only_the_read_only_persona_contract(self, tmp_path: Path) -> None:
         adapter = MountedVolumePersonaAdapter(mount_path=str(tmp_path))
-        config = PersonaConfig(name="dummy")
-        with pytest.raises(NotImplementedError, match=_NOT_IMPLEMENTED_MSG):
-            adapter.save(config)
-
-    def test_delete_raises_not_implemented(self, tmp_path: Path) -> None:
-        adapter = MountedVolumePersonaAdapter(mount_path=str(tmp_path))
-        with pytest.raises(NotImplementedError, match=_NOT_IMPLEMENTED_MSG):
-            adapter.delete("dummy")
-
-    def test_not_implemented_message_content(self, tmp_path: Path) -> None:
-        from ravn.adapters.personas.loader import PersonaConfig
-
-        adapter = MountedVolumePersonaAdapter(mount_path=str(tmp_path))
-        with pytest.raises(NotImplementedError) as exc_info:
-            adapter.save(PersonaConfig(name="dummy"))
-        assert "volundr REST API" in str(exc_info.value)
-        assert "ConfigMap" in str(exc_info.value)
+        assert isinstance(adapter, PersonaPort)
+        assert not hasattr(adapter, "save")
+        assert not hasattr(adapter, "delete")

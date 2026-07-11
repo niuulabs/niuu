@@ -87,17 +87,81 @@ import type { NiuuConfig, ServiceConfig, ServicesMap } from '@niuulabs/plugin-sd
 import { buildRepoCatalogHttpAdapter, createMockRepoCatalogService } from './repoCatalog';
 
 export interface ServiceBackendStatus {
-  mode: 'live' | 'mock';
-  transport: 'http' | 'ws' | 'mock';
+  mode: 'live' | 'demo' | 'unavailable';
+  transport: 'http' | 'ws' | 'mock' | 'none';
   target: string | null;
   source: string;
   note?: string;
 }
 
+export class UnsupportedSessionStoreOperationError extends Error {
+  readonly operation: 'create' | 'update';
+
+  constructor(operation: 'create' | 'update') {
+    super(
+      `The app session-store adapter does not support session ${operation}. Use the Forge lifecycle service instead.`,
+    );
+    this.name = 'UnsupportedSessionStoreOperationError';
+    this.operation = operation;
+  }
+}
+
+export interface UnavailableServiceStatus {
+  available: false;
+  serviceName: string;
+  reason: string;
+}
+
+export class ServiceUnavailableError extends Error {
+  readonly serviceName: string;
+
+  constructor(serviceName: string, reason = 'No live backend is configured.') {
+    super(`Service "${serviceName}" is unavailable: ${reason}`);
+    this.name = 'ServiceUnavailableError';
+    this.serviceName = serviceName;
+  }
+}
+
+export const UNAVAILABLE_SERVICE = Symbol('niuu.unavailable-service');
+
+export function isUnavailableService(
+  service: unknown,
+): service is { [UNAVAILABLE_SERVICE]: UnavailableServiceStatus } {
+  return Boolean(
+    service &&
+    typeof service === 'object' &&
+    UNAVAILABLE_SERVICE in service &&
+    (service as { [UNAVAILABLE_SERVICE]?: UnavailableServiceStatus })[UNAVAILABLE_SERVICE]
+      ?.available === false,
+  );
+}
+
+function unavailableService<T>(serviceName: string): T {
+  const reason = 'No live backend is configured. Enable demoMode for synthetic data.';
+  const status: UnavailableServiceStatus = { available: false, serviceName, reason };
+  return new Proxy(
+    { [UNAVAILABLE_SERVICE]: status } as unknown as T & Record<PropertyKey, unknown>,
+    {
+      get(target, property, receiver) {
+        if (property === 'then') return undefined;
+        if (property in target) return Reflect.get(target, property, receiver);
+        return () => {
+          throw new ServiceUnavailableError(serviceName, reason);
+        };
+      },
+    },
+  );
+}
+
+function demoService<T>(config: Partial<NiuuConfig>, serviceName: string, factory: () => T): T {
+  if (config.demoMode) return factory();
+  return unavailableService<T>(serviceName);
+}
+
 /**
  * A service config is "live" (i.e. should use a real transport) when its mode
  * is `http` or `ws` and a URL is present. Any other combination — missing
- * mode, `mock`, or missing URL — falls back to the mock adapter.
+ * mode or a missing URL is unavailable unless the runtime explicitly enables demo mode.
  */
 function hasHttpBackend(
   svc: ServiceConfig | undefined,
@@ -163,10 +227,10 @@ function resolveDirectServiceStatus(
     }
   }
   return {
-    mode: 'mock',
-    transport: 'mock',
+    mode: 'unavailable',
+    transport: 'none',
     target: null,
-    source: 'mock',
+    source: 'configuration',
   };
 }
 
@@ -236,10 +300,10 @@ function resolveRepoCatalogStatus(config: Pick<NiuuConfig, 'services'>): Service
   const base = resolveRepoCatalogBase(config);
   if (!base) {
     return {
-      mode: 'mock',
-      transport: 'mock',
+      mode: 'unavailable',
+      transport: 'none',
       target: null,
-      source: 'mock',
+      source: 'configuration',
     };
   }
 
@@ -327,10 +391,10 @@ function resolveFilesystemStatus(config: Pick<NiuuConfig, 'services'>): ServiceB
   }
 
   return {
-    mode: 'mock',
-    transport: 'mock',
+    mode: 'unavailable',
+    transport: 'none',
     target: null,
-    source: 'mock',
+    source: 'configuration',
     note: 'No live filesystem API is wired yet.',
   };
 }
@@ -424,10 +488,10 @@ function resolveRealmGovernanceStatus(config: Pick<NiuuConfig, 'services'>): Ser
   const bases = resolveRealmGovernanceBases(config);
   if (!bases) {
     return {
-      mode: 'mock',
-      transport: 'mock',
+      mode: 'unavailable',
+      transport: 'none',
       target: null,
-      source: 'mock',
+      source: 'configuration',
     };
   }
   return {
@@ -563,13 +627,13 @@ export function buildSharedFeatureCatalogService(
   config: Pick<NiuuConfig, 'services'>,
 ): IFeatureCatalogService {
   const featuresBase = resolveCanonicalServiceBase(config, 'features');
-  if (!featuresBase) return createMockFeatureCatalogService();
+  if (!featuresBase) return demoService(config, 'features', createMockFeatureCatalogService);
   return buildFeatureCatalogAdapter(createApiClient(featuresBase));
 }
 
 export function buildSharedIdentityService(config: Pick<NiuuConfig, 'services'>): IIdentityService {
   const identityBase = resolveCanonicalServiceBase(config, 'identity');
-  if (!identityBase) return createMockIdentityService();
+  if (!identityBase) return demoService(config, 'identity', createMockIdentityService);
   return buildIdentityAdapter(createApiClient(identityBase));
 }
 
@@ -618,12 +682,12 @@ function resolveObservatoryServiceStatus(
 }
 
 export function buildServiceBackendStatus(
-  config: Pick<NiuuConfig, 'services'>,
+  config: Pick<NiuuConfig, 'services' | 'demoMode'>,
 ): Record<string, ServiceBackendStatus> {
   const forgePtyStatus = resolveDirectServiceStatus(config, 'ws', 'forge.pty');
   const derivedForgeBase = resolveForgeServiceBase(config);
 
-  return {
+  const resolved: Record<string, ServiceBackendStatus> = {
     identity: resolveCanonicalServiceStatus(config, 'identity'),
     features: resolveCanonicalServiceStatus(config, 'features'),
     tracker: resolveCanonicalServiceStatus(config, 'tracker'),
@@ -668,6 +732,22 @@ export function buildServiceBackendStatus(
     'ting.specs': resolveDirectServiceStatus(config, 'http', 'ting.specs', 'ting'),
     filesystem: resolveFilesystemStatus(config),
   };
+  if (!config.demoMode) return resolved;
+
+  return Object.fromEntries(
+    Object.entries(resolved).map(([serviceName, status]) => [
+      serviceName,
+      status.mode === 'unavailable'
+        ? {
+            ...status,
+            mode: 'demo',
+            transport: 'mock',
+            source: 'demo',
+            note: status.note ?? 'Explicit demo adapter; no live backend is connected.',
+          }
+        : status,
+    ]),
+  );
 }
 
 const EMPTY_SESSION_RESOURCES: Session['resources'] = {
@@ -870,14 +950,10 @@ function buildVolundrSessionStore(volundr: IVolundrService): ISessionStore {
       return applySessionFilters(await listAllVolundrSessions(volundr), filters);
     },
     async createSession() {
-      throw new Error(
-        'Session creation is not yet supported through the app session-store adapter.',
-      );
+      throw new UnsupportedSessionStoreOperationError('create');
     },
     async updateSession() {
-      throw new Error(
-        'Session updates are not yet supported through the app session-store adapter.',
-      );
+      throw new UnsupportedSessionStoreOperationError('update');
     },
     async deleteSession(id: string) {
       await volundr.deleteSession(id);
@@ -1247,31 +1323,31 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const ravnWardenBase = resolveRavnServiceBase(config, 'ravn.wardens');
   const ravnPersonas = ravnPersonaBase
     ? buildRavnPersonaAdapter(createApiClient(ravnPersonaBase))
-    : createMockPersonaStore();
+    : demoService(config, 'ravn.personas', createMockPersonaStore);
   const ravnRavens = ravnRavenBase
     ? buildRavnRavenAdapter(createApiClient(ravnRavenBase))
-    : createMockRavenStream();
+    : demoService(config, 'ravn.ravens', createMockRavenStream);
   const ravnSessions = ravnSessionBase
     ? buildRavnSessionAdapter(createApiClient(ravnSessionBase))
-    : createMockSessionStream();
+    : demoService(config, 'ravn.sessions', createMockSessionStream);
   const ravnTriggers = ravnTriggerBase
     ? buildRavnTriggerAdapter(createApiClient(ravnTriggerBase))
-    : createMockTriggerStore();
+    : demoService(config, 'ravn.triggers', createMockTriggerStore);
   const ravnBudget = ravnBudgetBase
     ? buildRavnBudgetAdapter(createApiClient(ravnBudgetBase))
-    : createMockBudgetStream();
+    : demoService(config, 'ravn.budget', createMockBudgetStream);
   const ravnWardens = ravnWardenBase
     ? buildRavnWardenAdapter(createApiClient(ravnWardenBase))
-    : createMockWardenStore();
+    : demoService(config, 'ravn.wardens', createMockWardenStore);
 
   // ── Mímir ──
   const mimir = hasHttpBackend(mimirSvc)
     ? buildMimirHttpAdapter(createApiClient(mimirSvc.baseUrl))
-    : createMimirMockAdapter();
+    : demoService(config, 'mimir', createMimirMockAdapter);
   const bifrostBase = resolveBifrostServiceBase(config);
   const bifrost: IBifrostService = bifrostBase
     ? buildBifrostHttpAdapter(createApiClient(bifrostBase))
-    : createMockBifrostService();
+    : demoService(config, 'bifrost', createMockBifrostService);
 
   // ── Völundr catalog + Forge runtime ──
   const forgeBase = resolveForgeServiceBase(config);
@@ -1280,21 +1356,23 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     ? buildVolundrHttpAdapter(createApiClient(forgeBase), undefined, {
         niuuBasePath: resolveNiuuRegistryBase(config),
       })
-    : createMockVolundrService();
+    : demoService(config, 'forge', createMockVolundrService);
   const catalogVolundr = volundrBase
     ? buildVolundrHttpAdapter(createApiClient(volundrBase), undefined, {
         niuuBasePath: resolveNiuuRegistryBase(config),
       })
-    : createMockVolundrService();
+    : demoService(config, 'volundr', createMockVolundrService);
   const volundr = buildSplitVolundrService(catalogVolundr, forgeVolundr);
   const repoCatalogBase = resolveRepoCatalogBase(config);
   const repoCatalogService = repoCatalogBase
     ? buildRepoCatalogHttpAdapter(createApiClient(repoCatalogBase))
-    : createMockRepoCatalogService();
-  const sessionStore = forgeBase ? buildVolundrSessionStore(volundr) : createMockSessionStore();
+    : demoService(config, 'niuu.repos', createMockRepoCatalogService);
+  const sessionStore = forgeBase
+    ? buildVolundrSessionStore(volundr)
+    : demoService(config, 'volundr.sessions', createMockSessionStore);
   const clusterAdapter = forgeBase
     ? buildVolundrClusterAdapter(volundr)
-    : createMockClusterAdapter();
+    : demoService(config, 'volundr.clusters', createMockClusterAdapter);
   // ── Völundr streams: keyed as separate services so they can be flipped
   //    independently (e.g. mock PTY with live metrics during bring-up). ──
   const forgePtyWsUrl = resolveForgeStreamWsUrl(config);
@@ -1302,13 +1380,13 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const filesystemBase = resolveFilesystemBase(config);
   const ptyStream = forgePtyWsUrl
     ? buildVolundrPtyWsAdapter({ urlTemplate: forgePtyWsUrl })
-    : createMockPtyStream();
+    : demoService(config, 'forge.pty', createMockPtyStream);
   const metricsStream = forgeMetricsBase
     ? buildVolundrMetricsSseAdapter({ urlTemplate: forgeMetricsBase })
-    : createMockMetricsStream();
+    : demoService(config, 'forge.metrics', createMockMetricsStream);
   const filesystem = filesystemBase
     ? buildVolundrFileSystemHttpAdapter({ baseUrl: filesystemBase })
-    : createMockFileSystemPort();
+    : demoService(config, 'filesystem', createMockFileSystemPort);
 
   // ── Observatory ──
   const observatoryRegistryBase = resolveObservatoryServiceBase(config, 'observatory.registry');
@@ -1316,33 +1394,33 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const observatoryEventsBase = resolveObservatoryServiceBase(config, 'observatory.events');
   const observatoryRegistry = observatoryRegistryBase
     ? buildObservatoryRegistryHttpAdapter(createApiClient(observatoryRegistryBase))
-    : createMockRegistryRepository();
+    : demoService(config, 'observatory.registry', createMockRegistryRepository);
   const observatoryTopology = observatoryTopologyBase
     ? buildObservatoryTopologySseStream(observatoryTopologyBase)
-    : createMockTopologyStream();
+    : demoService(config, 'observatory.topology', createMockTopologyStream);
   const observatoryEvents = observatoryEventsBase
     ? buildObservatoryEventsSseStream(observatoryEventsBase)
-    : createMockEventStream();
+    : demoService(config, 'observatory.events', createMockEventStream);
   // ── Valkyrie ──
   const valkyrieBase = resolveValkyrieServiceBase(config, 'valkyrie');
   const valkyrieReviewsBase = resolveValkyrieServiceBase(config, 'valkyrie.reviews');
   const valkyrie = valkyrieBase
     ? buildValkyrieHttpAdapter(createApiClient(valkyrieBase))
-    : createMockValkyrieService();
+    : demoService(config, 'valkyrie', createMockValkyrieService);
   const valkyrieReviews = valkyrieReviewsBase
     ? buildOdinReviewHttpAdapter(createApiClient(valkyrieReviewsBase))
-    : createMockOdinReviewService();
+    : demoService(config, 'valkyrie.reviews', createMockOdinReviewService);
   const valkyrieSkillsBase = resolveValkyrieServiceBase(config, 'valkyrie.skills');
   const valkyrieSkills = valkyrieSkillsBase
     ? buildValkyrieSkillsHttpAdapter(createApiClient(valkyrieSkillsBase))
-    : createMockValkyrieSkillsService();
+    : demoService(config, 'valkyrie.skills', createMockValkyrieSkillsService);
   const realmGovernanceBases = resolveRealmGovernanceBases(config);
   const valkyrieRealms = realmGovernanceBases
     ? buildRealmGovernanceHttpAdapter(
         createApiClient(realmGovernanceBases.realmsBase),
         createApiClient(realmGovernanceBases.workflowsBase),
       )
-    : createMockRealmGovernanceService();
+    : demoService(config, 'valkyrie.realms', createMockRealmGovernanceService);
   const featureCatalogService = buildSharedFeatureCatalogService(config);
   const identityService = buildSharedIdentityService(config);
 
@@ -1367,32 +1445,36 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const researchClient = researchBase ? createApiClient(researchBase) : null;
   const specsBase = resolveTingServiceBase(config, 'ting.specs');
   const specsClient = specsBase ? createApiClient(specsBase) : null;
-  const tingService = tingClient ? buildTingHttpAdapter(tingClient) : createMockTingService();
+  const tingService = tingClient
+    ? buildTingHttpAdapter(tingClient)
+    : demoService(config, 'ting', createMockTingService);
   const dispatcherService = dispatcherClient
     ? buildDispatcherHttpAdapter(dispatcherClient)
-    : createMockDispatcherService();
+    : demoService(config, 'ting.dispatcher', createMockDispatcherService);
   const tingSessionService = tingSessionsClient
     ? buildTingSessionHttpAdapter(tingSessionsClient)
-    : createMockTingSessionService();
+    : demoService(config, 'ting.sessions', createMockTingSessionService);
   const trackerService = trackerClient
     ? buildTrackerHttpAdapter(trackerClient)
-    : createMockTrackerService();
+    : demoService(config, 'ting.tracker', createMockTrackerService);
   const workflowService = workflowClient
     ? buildWorkflowHttpAdapter(workflowClient)
-    : createMockWorkflowService();
+    : demoService(config, 'ting.workflows', createMockWorkflowService);
   const researchService = researchClient
     ? buildResearchHttpAdapter(researchClient)
-    : createMockResearchService();
-  const specsService = specsClient ? buildSpecsHttpAdapter(specsClient) : createMockSpecsService();
+    : demoService(config, 'ting.research', createMockResearchService);
+  const specsService = specsClient
+    ? buildSpecsHttpAdapter(specsClient)
+    : demoService(config, 'ting.specs', createMockSpecsService);
   const dispatchBus = dispatchClient
     ? buildDispatchBusHttpAdapter(dispatchClient)
-    : createMockDispatchBus();
+    : demoService(config, 'ting.dispatch', createMockDispatchBus);
   const tingSettingsService = tingSettingsClient
     ? buildTingSettingsHttpAdapter(tingSettingsClient)
-    : createMockTingSettingsService();
+    : demoService(config, 'ting.settings', createMockTingSettingsService);
   const tingAuditLogService = auditClient
     ? buildTingAuditLogHttpAdapter(auditClient)
-    : createMockAuditLogService();
+    : demoService(config, 'ting.audit', createMockAuditLogService);
 
   return {
     ting: tingService,

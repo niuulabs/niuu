@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
+from niuu.adapters.inbound.auth import extract_principal
+from niuu.domain.models import Principal
 from niuu.settings_schema import (
     SettingsCredentialsResourceSchema,
     SettingsProviderSchema,
     SettingsSectionSchema,
 )
-from volundr.adapters.inbound.auth import extract_principal
-from volundr.domain.models import Principal
 
 
 def create_credentials_settings_router(prefix: str = "/api/v1/credentials") -> APIRouter:

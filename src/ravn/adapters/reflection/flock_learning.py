@@ -531,8 +531,8 @@ class FlockLearningExchange:
             )
         return metadata
 
-    def ui_fixture(self, *, flock_id: str) -> dict:
-        """Return mock data for Valkyrie UI Flock learning panels."""
+    def ui_snapshot(self, *, flock_id: str) -> dict:
+        """Return a UI snapshot derived from persisted flock-learning state."""
         records = self._store.list(flock_id=flock_id)
         return {
             "flock_id": flock_id,

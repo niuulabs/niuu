@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from contextlib import suppress
 from typing import Any
 
@@ -68,10 +67,12 @@ class NotificationService:
         channel_factory: ChannelResolverPort,
         *,
         confidence_threshold: float,
+        public_origin: str = "http://localhost:8080",
     ) -> None:
         self._event_bus = event_bus
         self._channel_factory = channel_factory
         self._confidence_threshold = confidence_threshold
+        self._public_origin = public_origin
         self._running = False
         self._task: asyncio.Task[None] | None = None
         self._queue: asyncio.Queue[TingEvent] | None = None
@@ -297,8 +298,7 @@ class NotificationService:
             event_type="phase.unlocked",
         )
 
-    @staticmethod
-    def _map_run_feedback_requested(data: dict[str, Any]) -> Notification | None:
+    def _map_run_feedback_requested(self, data: dict[str, Any]) -> Notification | None:
         owner_id = str(data.get("owner_id") or "").strip()
         if not owner_id:
             return None
@@ -306,7 +306,7 @@ class NotificationService:
         summary = str(data.get("summary") or "A council member needs your feedback.")
         reason = str(data.get("reason") or "").strip()
         ui_path = str(data.get("ui_path") or "").strip()
-        ui_url = _ui_url(ui_path)
+        ui_url = _ui_url(ui_path, self._public_origin)
 
         body = f'We need your feedback on "{run_name}".\n{summary}'
         if reason:
@@ -332,19 +332,13 @@ class NotificationService:
         )
 
 
-def _ui_url(path: str) -> str:
+def _ui_url(path: str, public_origin: str) -> str:
     normalized = path.strip()
     if not normalized:
         return ""
-    if normalized.startswith("http://") or normalized.startswith("https://"):
+    if normalized.startswith(("http://", "https://")):
         return normalized
 
-    origin = os.environ.get("NIUU_PUBLIC_ORIGIN", "").strip().rstrip("/")
-    if not origin:
-        host = os.environ.get("NIUU_SERVER_HOST", "").strip()
-        port = os.environ.get("NIUU_SERVER_PORT", "").strip() or "8080"
-        if host:
-            origin = f"http://{host}:{port}"
-        else:
-            origin = "http://localhost:8080"
-    return f"{origin}{normalized if normalized.startswith('/') else f'/{normalized}'}"
+    origin = public_origin.strip().rstrip("/") or "http://localhost:8080"
+    suffix = normalized if normalized.startswith("/") else f"/{normalized}"
+    return f"{origin}{suffix}"

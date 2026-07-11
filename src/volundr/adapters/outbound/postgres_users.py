@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncpg
 
-from volundr.domain.models import TenantMembership, TenantRole, User, UserStatus
-from volundr.domain.ports import UserRepository
+from identity.models import TenantMembership, TenantRole, User, UserStatus
+from identity.ports import UserRepository
 
 
 class PostgresUserRepository(UserRepository):

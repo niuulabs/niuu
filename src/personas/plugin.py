@@ -5,20 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from niuu.cli_api_client import CLIAPIClient
-from niuu.ports.plugin import APIRouteDomain, Service, ServiceDefinition, ServicePlugin
-
-
-class _PersonasStub(Service):
-    """Stub — actual persona registry is hosted by the shared root server."""
-
-    async def start(self) -> None:
-        pass
-
-    async def stop(self) -> None:
-        pass
-
-    async def health_check(self) -> bool:
-        return True
+from niuu.ports.plugin import APIRouteDomain, ServiceDefinition, ServicePlugin
 
 
 class PersonasPlugin(ServicePlugin):
@@ -33,16 +20,12 @@ class PersonasPlugin(ServicePlugin):
         return "Canonical persona registry — CRUD, overrides, and source resolution"
 
     def register_service(self) -> ServiceDefinition:
-        return ServiceDefinition(
+        return ServiceDefinition.hosted(
             name="personas",
             description="Canonical persona registry service",
-            factory=_PersonasStub,
             default_enabled=True,
             depends_on=["postgres"],
         )
-
-    def create_service(self) -> Service:
-        return self.register_service().factory()
 
     def create_api_app(self) -> Any:
         from personas.app import create_app
