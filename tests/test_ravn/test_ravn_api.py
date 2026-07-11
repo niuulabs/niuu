@@ -32,6 +32,7 @@ from ravn.api.valkyries import (
     create_valkyrie_router,
 )
 from ravn.api.warden_stream import WardenStreamBroker
+from ravn.config import ValkyrieTelemetryConfig
 from ravn.ports.warden_deployer import (
     WardenDeploymentError,
     WardenDeploymentResult,
@@ -1699,7 +1700,13 @@ def test_valkyrie_dashboard_telemetry_nats_subscription_is_explicit_opt_in(monke
     monkeypatch.setenv("NATS_URL", "nats://should-not-be-used:4222")
     monkeypatch.delenv("RAVN_VALKYRIE_TELEMETRY_NATS_URL", raising=False)
 
-    assert build_nats_telemetry_subscription_from_env(ValkyrieDashboardProjection()) is None
+    assert (
+        build_nats_telemetry_subscription_from_env(
+            ValkyrieDashboardProjection(),
+            config=ValkyrieTelemetryConfig(),
+        )
+        is None
+    )
 
 
 def test_valkyrie_dashboard_telemetry_nats_subscription_supports_multiple_streams(
