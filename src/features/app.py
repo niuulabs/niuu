@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from features.service import FeatureService
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.cors import apply_cors_middleware
@@ -16,7 +17,6 @@ from niuu.service_runtime import configure_logging, create_identity_adapter, cre
 from volundr.adapters.inbound.rest_features import create_features_router
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.config import Settings
-from volundr.domain.services.feature import FeatureService
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

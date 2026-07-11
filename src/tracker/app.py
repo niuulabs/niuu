@@ -26,14 +26,14 @@ from niuu.service_runtime import (
     create_pat_validator,
     release_credential_store,
 )
+from tracker.factory import TrackerFactory
+from tracker.service import TrackerService
 from volundr.adapters.inbound.rest_issues import create_canonical_issues_router
 from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_router
 from volundr.adapters.outbound.linear import LinearAdapter
 from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.config import Settings
-from volundr.domain.services.tracker import TrackerService
-from volundr.domain.services.tracker_factory import TrackerFactory
 
 logger = logging.getLogger(__name__)
 

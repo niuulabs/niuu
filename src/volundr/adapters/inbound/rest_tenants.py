@@ -7,6 +7,13 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_serializer
 
+from identity.application import IdentityService, TenantCreateCommand, TenantUpdateCommand
+from identity.models import Principal, TenantRole, TenantTier
+from identity.service import (
+    TenantAlreadyExistsError,
+    TenantNotFoundError,
+    TenantService,
+)
 from niuu.settings_schema import (
     SettingsFieldSchema,
     SettingsProviderSchema,
@@ -14,17 +21,6 @@ from niuu.settings_schema import (
     SettingsTokensResourceSchema,
 )
 from volundr.adapters.inbound.auth import extract_principal, require_role
-from volundr.domain.models import Principal, TenantRole, TenantTier
-from volundr.domain.services.identity import (
-    IdentityService,
-    TenantCreateCommand,
-    TenantUpdateCommand,
-)
-from volundr.domain.services.tenant import (
-    TenantAlreadyExistsError,
-    TenantNotFoundError,
-    TenantService,
-)
 
 logger = logging.getLogger(__name__)
 

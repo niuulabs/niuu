@@ -12,7 +12,20 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
+from credentials.models import MCPServerConfig, MountType, SecretInfo, SecretMountSpec
+from identity.models import (
+    ProvisioningResult,
+    QuotaCheck,
+    StorageQuota,
+    Tenant,
+    TenantMembership,
+    TenantRole,
+    TenantTier,
+    User,
+    UserStatus,
+)
 from niuu.domain import models as shared_models
+from tracker.models import ProjectMapping, TrackerConnectionStatus, TrackerIssue
 
 CIStatus = shared_models.CIStatus
 GitProviderType = shared_models.GitProviderType
@@ -41,79 +54,6 @@ def flock_peer_id(persona: str) -> str:
     registered. Keep every derivation routed through here.
     """
     return f"flock-{persona}"
-
-
-class UserStatus(StrEnum):
-    """Status of a user account."""
-
-    PROVISIONING = "provisioning"
-    ACTIVE = "active"
-    SUSPENDED = "suspended"
-    FAILED = "failed"
-
-
-class TenantTier(StrEnum):
-    """Tier classification for a tenant."""
-
-    DEVELOPER = "developer"
-    TEAM = "team"
-    ENTERPRISE = "enterprise"
-
-
-class TenantRole(StrEnum):
-    """Role within a tenant."""
-
-    ADMIN = "volundr:admin"
-    DEVELOPER = "volundr:developer"
-    VIEWER = "volundr:viewer"
-
-
-@dataclass(frozen=True)
-class Tenant:
-    """A tenant in the hierarchy."""
-
-    id: str
-    path: str
-    name: str
-    parent_id: str | None = None
-    tier: TenantTier = TenantTier.DEVELOPER
-    max_sessions: int = 5
-    max_storage_gb: int = 50
-    created_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class User:
-    """A provisioned user."""
-
-    id: str  # IDP sub claim
-    email: str
-    display_name: str = ""
-    status: UserStatus = UserStatus.ACTIVE
-    home_pvc: str | None = None
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class TenantMembership:
-    """A user's membership in a tenant."""
-
-    user_id: str
-    tenant_id: str
-    role: TenantRole = TenantRole.DEVELOPER
-    granted_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class QuotaCheck:
-    """Result of a quota check along the tenant ancestor chain."""
-
-    allowed: bool
-    tenant_id: str
-    max_sessions: int
-    current_sessions: int
-    reason: str = ""
 
 
 class CleanupTarget(StrEnum):
@@ -1089,80 +1029,6 @@ class SavedPrompt(BaseModel):
     model_config = {"frozen": False}
 
 
-class TrackerIssue(BaseModel):
-    """Issue from an external issue tracker (Linear, Jira, GitHub Issues, etc.)."""
-
-    id: str = Field(
-        description="Internal issue ID from the tracker backend",
-    )
-    identifier: str = Field(
-        description="Human-readable issue identifier (e.g. NIU-57)",
-    )
-    title: str = Field(description="Issue title")
-    status: str = Field(
-        description="Current issue status (e.g. In Progress, Done)",
-    )
-    assignee: str | None = Field(
-        default=None,
-        description="Display name of the assigned user",
-    )
-    labels: list[str] = Field(
-        default_factory=list,
-        description="Labels attached to the issue",
-    )
-    priority: int = Field(
-        default=0,
-        description="Priority level (0=none, 1=urgent, 4=low)",
-    )
-    url: str = Field(
-        description="Web URL to view the issue in the tracker",
-    )
-
-    model_config = {"frozen": False}
-
-
-class ProjectMapping(BaseModel):
-    """Maps a git repo URL to an issue tracker project."""
-
-    id: UUID = Field(
-        default_factory=uuid4,
-        description="Unique mapping identifier",
-    )
-    repo_url: str = Field(description="Git repository URL to map")
-    project_id: str = Field(description="Issue tracker project ID")
-    project_name: str = Field(
-        default="",
-        description="Human-readable project name",
-    )
-    created_at: datetime = Field(
-        default_factory=_utc_now,
-        description="Timestamp when the mapping was created",
-    )
-
-    model_config = {"frozen": False}
-
-
-class TrackerConnectionStatus(BaseModel):
-    """Connection status for an issue tracker."""
-
-    connected: bool = Field(
-        description="Whether the tracker connection is active",
-    )
-    provider: str = Field(
-        description="Tracker provider name (e.g. linear, jira)",
-    )
-    workspace: str | None = Field(
-        default=None,
-        description="Workspace or organization name in the tracker",
-    )
-    user: str | None = Field(
-        default=None,
-        description="Authenticated user display name",
-    )
-
-    model_config = {"frozen": False}
-
-
 @dataclass(frozen=True)
 class MCPServerSpec:
     """MCP server specification for an integration.
@@ -1249,23 +1115,6 @@ class IntegrationDefinition:
 
 
 @dataclass(frozen=True)
-class MCPServerConfig:
-    """An available MCP server configuration."""
-
-    name: str
-    type: str = "stdio"
-    command: str | None = None
-    url: str | None = None
-    args: list[str] = ()  # type: ignore[assignment]
-    description: str = ""
-
-    def __post_init__(self) -> None:
-        # Ensure args is always a tuple for immutability
-        if not isinstance(self.args, tuple):
-            object.__setattr__(self, "args", tuple(self.args))
-
-
-@dataclass(frozen=True)
 class CredentialMapping:
     """Maps a stored credential to its injection targets.
 
@@ -1338,25 +1187,6 @@ class WorkloadPersonaOverride:
         return d
 
 
-class MountType(StrEnum):
-    """How a secret should be mounted into a session pod."""
-
-    ENV_FILE = "env_file"
-    FILE = "file"
-    TEMPLATE = "template"
-
-
-@dataclass(frozen=True)
-class SecretMountSpec:
-    """Specification for how a secret should be mounted."""
-
-    secret_path: str
-    mount_type: MountType
-    destination: str
-    template: str | None = None
-    renewal: bool = False
-
-
 @dataclass(frozen=True)
 class SecretProfile:
     """Named collection of secret mount specs for a tenant or user."""
@@ -1364,14 +1194,6 @@ class SecretProfile:
     owner_id: str
     owner_type: str  # "tenant" or "user"
     mounts: tuple[SecretMountSpec, ...] = ()
-
-
-@dataclass(frozen=True)
-class StorageQuota:
-    """Storage quota for a user."""
-
-    home_gb: int = 1
-    workspace_gb: int = 1
 
 
 class WorkspaceStatus(StrEnum):
@@ -1401,16 +1223,6 @@ class Workspace:
     source_ref: str | None = None
 
 
-@dataclass(frozen=True)
-class ProvisioningResult:
-    """Result of a user provisioning or reprovisioning operation."""
-
-    success: bool
-    user_id: str
-    home_pvc: str | None = None
-    errors: list[str] = field(default_factory=list)
-
-
 # Kubernetes label keys used for PVC isolation (Kyverno policy enforcement).
 # Keep in sync with charts/volundr/templates/kyverno-pvc-isolation.yaml.
 LABEL_OWNER = "volundr/owner"
@@ -1432,18 +1244,6 @@ class PVCRef:
 
     name: str
     namespace: str = "volundr-sessions"
-
-
-@dataclass(frozen=True)
-class SecretInfo:
-    """Metadata about an available Kubernetes secret."""
-
-    name: str
-    keys: list[str] = ()  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.keys, tuple):
-            object.__setattr__(self, "keys", tuple(self.keys))
 
 
 class LaunchScope(StrEnum):

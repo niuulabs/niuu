@@ -9,8 +9,8 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
-from volundr.domain.models import ProjectMapping, TrackerConnectionStatus, TrackerIssue
-from volundr.domain.services.tracker import (
+from tracker.models import ProjectMapping, TrackerConnectionStatus, TrackerIssue
+from tracker.service import (
     TrackerIssueNotFoundError,
     TrackerMappingNotFoundError,
     TrackerService,

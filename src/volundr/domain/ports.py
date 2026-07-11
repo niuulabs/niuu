@@ -14,6 +14,14 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from credentials.ports import (
+    MCPServerProvider,
+    SecretAlreadyExistsError,
+    SecretManager,
+    SecretMountStrategy,
+    SecretValidationError,
+)
+from identity.ports import TenantRepository, UserRepository
 from niuu.ports.credentials import CredentialStorePort  # noqa: F401
 from niuu.ports.git import (
     GitAuthError,  # noqa: F401
@@ -27,6 +35,7 @@ from niuu.ports.identity import (
     UserProvisioningError,  # noqa: F401
 )
 from niuu.ports.integrations import IntegrationRepository  # noqa: F401
+from tracker.ports import IssueTrackerProvider, ProjectMappingRepository
 from volundr.domain.models import (
     Chronicle,
     ClusterResourceInfo,
@@ -749,218 +758,6 @@ class SavedPromptRepository(ABC):
         """Search prompts by name and content (case-insensitive)."""
 
 
-class MCPServerProvider(ABC):
-    """Port for reading available MCP server configurations."""
-
-    @abstractmethod
-    def list(self) -> list[MCPServerConfig]:
-        """Return all available MCP server configurations."""
-
-    @abstractmethod
-    def get(self, name: str) -> MCPServerConfig | None:
-        """Return a specific MCP server config by name."""
-
-
-class SecretManager(ABC):
-    """Port for managing Kubernetes secrets available to sessions."""
-
-    @abstractmethod
-    async def list(self) -> list[SecretInfo]:
-        """List available secrets (filtered by label selector)."""
-
-    @abstractmethod
-    async def get(self, name: str) -> SecretInfo | None:
-        """Get a specific secret's metadata by name."""
-
-    @abstractmethod
-    async def create(self, name: str, data: dict[str, str]) -> SecretInfo:
-        """Create a new secret with the given key-value pairs.
-
-        Raises:
-            SecretAlreadyExistsError: If a secret with this name already exists.
-            SecretValidationError: If the name is invalid.
-        """
-
-
-class SecretAlreadyExistsError(Exception):
-    """Raised when attempting to create a secret that already exists."""
-
-
-class SecretValidationError(Exception):
-    """Raised when a secret name fails validation."""
-
-
-class IssueTrackerProvider(ABC):
-    """Port for external issue tracker integration.
-
-    Supports Linear, Jira, GitHub Issues, or any other tracker.
-    """
-
-    @property
-    @abstractmethod
-    def provider_name(self) -> str:
-        """Return the name of this provider (e.g., 'linear', 'jira')."""
-
-    @abstractmethod
-    async def check_connection(self) -> TrackerConnectionStatus:
-        """Check the connection status to the issue tracker."""
-
-    @abstractmethod
-    async def search_issues(
-        self,
-        query: str,
-        project_id: str | None = None,
-    ) -> list[TrackerIssue]:
-        """Search issues by query string."""
-
-    @abstractmethod
-    async def get_recent_issues(
-        self,
-        project_id: str,
-        limit: int = 10,
-    ) -> list[TrackerIssue]:
-        """Get recent issues for a project."""
-
-    @abstractmethod
-    async def get_issue(self, issue_id: str) -> TrackerIssue | None:
-        """Get a single issue by ID or identifier."""
-
-    @abstractmethod
-    async def update_issue_status(
-        self,
-        issue_id: str,
-        status: str,
-    ) -> TrackerIssue:
-        """Update the status of an issue."""
-
-
-class ProjectMappingRepository(ABC):
-    """Port for project mapping persistence (repo URL -> tracker project)."""
-
-    @abstractmethod
-    async def create(self, mapping: ProjectMapping) -> ProjectMapping:
-        """Persist a new project mapping."""
-
-    @abstractmethod
-    async def list(self) -> list[ProjectMapping]:
-        """Retrieve all project mappings."""
-
-    @abstractmethod
-    async def get_by_repo(self, repo_url: str) -> ProjectMapping | None:
-        """Retrieve a mapping by repo URL."""
-
-    @abstractmethod
-    async def delete(self, mapping_id: UUID) -> bool:
-        """Delete a mapping. Returns True if deleted."""
-
-
-class TenantRepository(ABC):
-    """Port for tenant persistence operations."""
-
-    @abstractmethod
-    async def create(self, tenant: Tenant) -> Tenant:
-        """Persist a new tenant."""
-
-    @abstractmethod
-    async def get(self, tenant_id: str) -> Tenant | None:
-        """Retrieve a tenant by ID."""
-
-    @abstractmethod
-    async def get_by_path(self, path: str) -> Tenant | None:
-        """Retrieve a tenant by its materialized path."""
-
-    @abstractmethod
-    async def list(self, parent_id: str | None = None) -> list[Tenant]:
-        """List tenants, optionally filtered by parent."""
-
-    @abstractmethod
-    async def get_ancestors(self, path: str) -> list[Tenant]:
-        """Get all ancestors of a tenant path (root first)."""
-
-    @abstractmethod
-    async def update(self, tenant: Tenant) -> Tenant:
-        """Update a tenant."""
-
-    @abstractmethod
-    async def delete(self, tenant_id: str) -> bool:
-        """Delete a tenant. Returns True if deleted."""
-
-
-class UserRepository(ABC):
-    """Port for user persistence operations."""
-
-    @abstractmethod
-    async def create(self, user: User) -> User:
-        """Persist a new user."""
-
-    @abstractmethod
-    async def get(self, user_id: str) -> User | None:
-        """Retrieve a user by ID (IDP sub)."""
-
-    @abstractmethod
-    async def get_by_email(self, email: str) -> User | None:
-        """Retrieve a user by email."""
-
-    @abstractmethod
-    async def list(self) -> list[User]:
-        """List all users."""
-
-    @abstractmethod
-    async def update(self, user: User) -> User:
-        """Update a user."""
-
-    @abstractmethod
-    async def delete(self, user_id: str) -> bool:
-        """Delete a user. Returns True if deleted."""
-
-    @abstractmethod
-    async def add_membership(self, membership: TenantMembership) -> TenantMembership:
-        """Add a user to a tenant with a role."""
-
-    @abstractmethod
-    async def get_memberships(self, user_id: str) -> list[TenantMembership]:
-        """Get all tenant memberships for a user."""
-
-    @abstractmethod
-    async def get_members(self, tenant_id: str) -> list[TenantMembership]:
-        """Get all members of a tenant."""
-
-    @abstractmethod
-    async def remove_membership(self, user_id: str, tenant_id: str) -> bool:
-        """Remove a user from a tenant. Returns True if removed."""
-
-
-@dataclass(frozen=True)
-class Resource:
-    """A resource for authorization checks."""
-
-    kind: str  # "session" | "secret" | "tenant" | "preset"
-    id: str
-    attr: dict
-
-
-class AuthorizationPort(ABC):
-    """Port for authorization decisions."""
-
-    @abstractmethod
-    async def is_allowed(
-        self,
-        principal: Principal,
-        action: str,
-        resource: Resource,
-    ) -> bool:
-        """Check if a principal is allowed to perform an action on a resource."""
-
-    @abstractmethod
-    async def filter_allowed(
-        self,
-        principal: Principal,
-        action: str,
-        resources: list[Resource],
-    ) -> list[Resource]:
-        """Filter a list of resources to only those the principal can access."""
-
-
 class SecretRepository(ABC):
     """Port for secrets storage (OpenBao / Vault compatible)."""
 
@@ -1205,26 +1002,6 @@ class GatewayPort(ABC):
             JWT/auth config needed by Skuld's HTTPRoute template.
             Empty dict when gateway routing is not configured.
         """
-
-
-class SecretMountStrategy(ABC):
-    """Strategy for mounting a specific secret type into a session pod."""
-
-    @abstractmethod
-    def secret_type(self) -> SecretType:
-        """Return the secret type this strategy handles."""
-
-    @abstractmethod
-    def default_mount_spec(
-        self,
-        secret_path: str,
-        secret_data: dict,
-    ) -> SecretMountSpec:
-        """Return the default mount spec for this secret type."""
-
-    @abstractmethod
-    def validate(self, secret_data: dict) -> list[str]:
-        """Validate secret data. Returns list of error messages (empty = valid)."""
 
 
 class SecretInjectionPort(ABC):

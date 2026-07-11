@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from identity.service import TenantService
 from niuu.adapters.inbound.auth import extract_principal
 from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
@@ -27,7 +28,6 @@ from volundr.adapters.inbound.rest_tenants import create_identity_router
 from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.config import Settings
-from volundr.domain.services.tenant import TenantService
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

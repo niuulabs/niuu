@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from credentials.mount_strategies import SecretMountStrategyRegistry
+from credentials.service import CredentialService
 from niuu.adapters.inbound.rest_credentials_settings import create_credentials_settings_router
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_pats import PostgresPATRepository
@@ -26,8 +28,6 @@ from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
 from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.config import Settings
-from volundr.domain.services.credential import CredentialService
-from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

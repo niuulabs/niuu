@@ -63,3 +63,101 @@ def test_domain_layers_do_not_read_process_environment() -> None:
                 violations.add(path.relative_to(SRC_ROOT).as_posix())
 
     assert violations == set()
+
+
+def test_shared_service_domains_do_not_depend_on_volundr() -> None:
+    """Only standalone composition roots may wire legacy Volundr adapters/settings."""
+    violations: set[str] = set()
+
+    for package in ("identity", "credentials", "tracker", "audit", "features"):
+        for path, imported in _external_package_imports(package):
+            if imported != "volundr":
+                continue
+            if path == "app.py":
+                continue
+            violations.add(f"{package}/{path}")
+
+    assert violations == set()
+
+
+def test_volundr_shared_service_modules_are_compatibility_exports() -> None:
+    expected_imports = {
+        "domain/services/credential.py": "credentials",
+        "domain/services/feature.py": "features",
+        "domain/services/identity.py": "identity",
+        "domain/services/mount_strategies.py": "credentials",
+        "domain/services/tenant.py": "identity",
+        "domain/services/tracker.py": "tracker",
+        "domain/services/tracker_factory.py": "tracker",
+    }
+    actual = _external_package_imports("volundr")
+
+    assert all((path, package) in actual for path, package in expected_imports.items())
+
+
+def test_volundr_contract_names_alias_canonical_shared_types() -> None:
+    from credentials.models import MCPServerConfig, MountType, SecretInfo, SecretMountSpec
+    from credentials.ports import (
+        MCPServerProvider,
+        SecretManager,
+        SecretMountStrategy,
+    )
+    from identity.models import (
+        Tenant,
+        TenantMembership,
+        TenantRole,
+        TenantTier,
+        User,
+        UserStatus,
+    )
+    from identity.ports import TenantRepository, UserRepository
+    from tracker.models import ProjectMapping, TrackerConnectionStatus, TrackerIssue
+    from tracker.ports import IssueTrackerProvider, ProjectMappingRepository
+    from volundr.domain import models as legacy_models
+    from volundr.domain import ports as legacy_ports
+
+    model_aliases = {
+        "MCPServerConfig": MCPServerConfig,
+        "MountType": MountType,
+        "ProjectMapping": ProjectMapping,
+        "SecretInfo": SecretInfo,
+        "SecretMountSpec": SecretMountSpec,
+        "Tenant": Tenant,
+        "TenantMembership": TenantMembership,
+        "TenantRole": TenantRole,
+        "TenantTier": TenantTier,
+        "TrackerConnectionStatus": TrackerConnectionStatus,
+        "TrackerIssue": TrackerIssue,
+        "User": User,
+        "UserStatus": UserStatus,
+    }
+    port_aliases = {
+        "IssueTrackerProvider": IssueTrackerProvider,
+        "MCPServerProvider": MCPServerProvider,
+        "ProjectMappingRepository": ProjectMappingRepository,
+        "SecretManager": SecretManager,
+        "SecretMountStrategy": SecretMountStrategy,
+        "TenantRepository": TenantRepository,
+        "UserRepository": UserRepository,
+    }
+
+    assert all(getattr(legacy_models, name) is value for name, value in model_aliases.items())
+    assert all(getattr(legacy_ports, name) is value for name, value in port_aliases.items())
+
+
+def test_scoped_api_and_adapters_have_no_behavioral_environment_reads() -> None:
+    """Configuration for hardened API/adapter modules must be constructor-injected."""
+    targets = (
+        "skuld/broker.py",
+        "volundr/adapters/inbound/rest.py",
+        "volundr/adapters/outbound/local_process.py",
+        "volundr/adapters/outbound/openshell_gateway.py",
+        "ravn/adapters/mimir/http.py",
+    )
+    forbidden = ("os.environ.get", "os.getenv", "os.environ[")
+    violations = {
+        target
+        for target in targets
+        if any(pattern in (SRC_ROOT / target).read_text(encoding="utf-8") for pattern in forbidden)
+    }
+    assert violations == set()
