@@ -36,6 +36,7 @@ from typing import Annotated, Any, Literal
 from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
+    EnvSettingsSource,
     NoDecode,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
@@ -3471,10 +3472,34 @@ class RuntimeExecutorConfig(_LegacyAliasSettings):
     )
 
 
+class _ValkyrieTelemetryEnvSource(EnvSettingsSource):
+    """Ignore generic NATS_URL while preserving explicit telemetry aliases."""
+
+    def __init__(self, settings_cls: type[BaseSettings]) -> None:
+        super().__init__(settings_cls)
+        self.env_vars.pop("nats_url", None)
+
+
 class ValkyrieTelemetryConfig(_LegacyAliasSettings):
     """Typed transport settings for Valkyrie dashboard telemetry."""
 
     model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        del cls, env_settings, dotenv_settings
+        return (
+            _ValkyrieTelemetryEnvSource(settings_cls),
+            init_settings,
+            file_secret_settings,
+        )
 
     nats_url: str = Field(
         default="",
