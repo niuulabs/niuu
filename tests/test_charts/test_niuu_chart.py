@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 CHART_DIR = Path(__file__).parent.parent.parent / "charts" / "niuu"
+GUILD_CHART_DIR = Path(__file__).parent.parent.parent / "charts" / "guild"
 
 
 class TestValuesDefaults:
@@ -84,6 +85,13 @@ class TestIngressTemplate:
         rendered = _render_niuu_chart()
 
         assert _service_for_path(rendered, "/s") == "niuu-test-volundr"
+
+
+def test_guild_envoy_accepts_websocket_upgrades() -> None:
+    envoy_template = (GUILD_CHART_DIR / "templates" / "envoy-configmap.yaml").read_text()
+
+    assert "upgrade_configs:" in envoy_template
+    assert "- upgrade_type: websocket" in envoy_template
 
 
 def _render_niuu_chart(*extra_args: str) -> str:
