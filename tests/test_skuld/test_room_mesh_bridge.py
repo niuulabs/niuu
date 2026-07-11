@@ -600,8 +600,8 @@ class TestUsageReporting:
                 "ravn_task_id": "task-1",
             }
         )
-        await bridge._handle_event(evt)
-        await bridge._handle_event(evt)
+        await bridge.report_usage(evt.payload["ravn_event"])
+        await bridge.report_usage(evt.payload["ravn_event"])
 
         report_usage.assert_awaited_once()
         await bridge.stop()

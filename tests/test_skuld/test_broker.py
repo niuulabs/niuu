@@ -5612,6 +5612,32 @@ class TestBrokerRoomBridge:
         assert call_args[1]["type"] == "response"
 
     @pytest.mark.asyncio
+    async def test_handle_ravn_websocket_routes_usage_to_existing_reporter(self, room_settings):
+        import json as _json
+
+        b = Broker(settings=room_settings)
+        mock_bridge = AsyncMock()
+        mock_bridge.register = AsyncMock(
+            return_value=MagicMock(peer_id="agent-1", persona="agent-1")
+        )
+        b._room_bridge = mock_bridge
+        b._room_mesh_bridge = AsyncMock()
+        usage = {
+            "model": "gpt-5.6-sol",
+            "inputTokens": 10,
+            "outputTokens": 5,
+            "usage_id": "usage-1",
+        }
+        frame = _json.dumps({"type": "usage", "data": usage, "metadata": {}}) + "\n"
+        mock_ws = AsyncMock()
+        mock_ws.receive_text = AsyncMock(side_effect=[frame, WebSocketDisconnect()])
+
+        await b.handle_ravn_websocket(mock_ws, "agent-1")
+
+        b._room_mesh_bridge.report_usage.assert_awaited_once_with(usage)
+        mock_bridge.handle_ravn_frame.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_handle_ravn_websocket_skips_invalid_json(self, room_settings):
         b = Broker(settings=room_settings)
         mock_bridge = AsyncMock()
