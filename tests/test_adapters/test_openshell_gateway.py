@@ -16,6 +16,7 @@ import jwt
 import pytest
 
 from niuu.ports.workload_identity import IssuedWorkloadToken
+from volundr.adapters.outbound.hermes_gateway import HERMES_CREDENTIAL_NAME
 from volundr.domain.models import (
     GitSource,
     PodSpecAdditions,
@@ -280,6 +281,7 @@ class _FakeCredentialStore:
         self.values = values
         self.gets: list[tuple[str, str, str]] = []
         self.stores: list[dict] = []
+        self.deletes: list[tuple[str, str, str]] = []
 
     async def store(self, owner_type, owner_id, name, secret_type, data, metadata=None):
         self.values[name] = dict(data)
@@ -312,6 +314,11 @@ class _FakeCredentialStore:
             secret_type=SecretType.GENERIC,
             metadata={},
         )
+
+    async def delete(self, owner_type: str, owner_id: str, name: str) -> bool:
+        self.deletes.append((owner_type, owner_id, name))
+        self.values.pop(name, None)
+        return True
 
 
 class _FakeWorkloadTokenIssuer:
@@ -458,6 +465,78 @@ def _resident_profile() -> ResidentDeploymentProfile:
     )
 
 
+def _hermes_runtime() -> ResidentRuntime:
+    return _resident_runtime().model_copy(
+        update={
+            "engine": ResidentEngine.HERMES,
+            "profile_id": "hermes-openshell",
+            "capabilities": [
+                ResidentCapability.CHAT,
+                ResidentCapability.SESSION_LIST,
+                ResidentCapability.SESSION_CREATE,
+                ResidentCapability.SESSION_DELETE,
+                ResidentCapability.STEER,
+                ResidentCapability.INTERRUPT,
+                ResidentCapability.APPROVALS,
+                ResidentCapability.RUNTIME_RESTART,
+                ResidentCapability.LOGS,
+                ResidentCapability.USAGE,
+            ],
+        }
+    )
+
+
+def _hermes_profile() -> ResidentDeploymentProfile:
+    return ResidentDeploymentProfile(
+        id="hermes-openshell",
+        display_name="Hermes on OpenShell",
+        backend=ResidentBackend.OPENSHELL,
+        engine=ResidentEngine.HERMES,
+        capabilities=_hermes_runtime().capabilities,
+        default_model="gpt-5.6-sol",
+        allowed_models=["gpt-5.6-sol"],
+        deployment={
+            "values": {
+                "image": (
+                    "nousresearch/hermes-agent@"
+                    "sha256:0ddf22d30943d39cbab35525f0a4423f9a3c936ad4e00acda331de7022e9a8e8"
+                ),
+                "resident": {
+                    "llm": {
+                        "provider": {
+                            "kwargs": {
+                                "base_url": "http://bifrost.volundr.svc.cluster.local/v1"
+                            }
+                        }
+                    },
+                    "platform": {
+                        "enabled": True,
+                        "baseUrl": "https://platform.example.test",
+                    }
+                },
+                "openshell": {
+                    "processMode": "replace",
+                    "service": {"name": "hermes", "port": 9119},
+                    "processes": [
+                        {
+                            "name": "hermes",
+                            "command": [
+                                "/opt/hermes/bin/hermes",
+                                "serve",
+                                "--host",
+                                "127.0.0.1",
+                                "--port",
+                                "9119",
+                            ],
+                            "logPath": "/sandbox/.volundr/hermes.log",
+                        }
+                    ],
+                },
+            }
+        },
+    )
+
+
 @pytest.mark.asyncio
 async def test_start_uses_gateway_client_without_host_cli(monkeypatch: pytest.MonkeyPatch):
     adapter = _import_adapter(monkeypatch)
@@ -580,6 +659,144 @@ def test_openclaw_profile_requires_complete_process_and_service_plan(
     assert adapter._resident_platform_binaries(
         _resident_runtime().model_copy(update={"engine": ResidentEngine.OPENCLAW})
     ) == ("/usr/bin/node",)
+
+
+def test_hermes_profile_requires_complete_replace_process_and_service_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    manager = adapter.OpenShellGatewayPodManager(client=_FakeOpenShellGatewayClient(adapter))
+    profile = _hermes_profile()
+
+    assert manager.supports(profile) is True
+    assert (
+        manager.supports(profile.model_copy(update={"deployment": {"values": {"openshell": {}}}}))
+        is False
+    )
+    assert adapter._resident_platform_binaries(_hermes_runtime()) == ("/opt/hermes/**",)
+
+
+@pytest.mark.asyncio
+async def test_hermes_deploy_uses_persisted_process_only_credential_and_generic_health(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _hermes_runtime()
+    profile = _hermes_profile()
+    client = _FakeOpenShellGatewayClient(adapter)
+    store = _FakeCredentialStore({})
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client,
+        ready_timeout=0.1,
+        volundr_api_url="https://volundr.example.test",
+    )
+    manager.set_credential_store(store)
+    manager.set_workload_token_issuer(_FakeWorkloadTokenIssuer())
+
+    observation = await manager.deploy(runtime, profile)
+
+    assert observation.observed_state is ResidentObservedState.ACTIVE
+    assert observation.endpoints[0].protocol == "hermes-tui-gateway-jsonrpc"
+    assert observation.backend_ref["process_names"] == ["hermes"]
+    assert client.created is not None
+    assert client.created["env"]["HERMES_HOME"] == "/sandbox/workspace/.hermes"
+    assert adapter.HERMES_DASHBOARD_SESSION_TOKEN_ENV not in client.created["env"]
+    assert client.execs[0]["env"][adapter.HERMES_DASHBOARD_SESSION_TOKEN_ENV]
+    assert client.execs[0]["env"]["HERMES_HOME"] == "/sandbox/workspace/.hermes"
+    assert client.execs[0]["pid_path"] == "/sandbox/.volundr/hermes.pid"
+    assert client.exposed == {
+        "sandbox_name": f"resident-{runtime.id.hex[:19]}",
+        "target_port": 9119,
+        "service": "hermes",
+    }
+    assert store.stores[0]["name"] == HERMES_CREDENTIAL_NAME
+    assert store.stores[0]["owner_id"] == str(runtime.id)
+    hermes_config = client.written_files[0]["files"][
+        "/sandbox/workspace/.hermes/config.yaml"
+    ].decode()
+    assert "provider: custom:niuu" in hermes_config
+    assert "key_env: NIUU_VOLUNDR_ACCESS_TOKEN" in hermes_config
+    assert "api_key:" not in hermes_config
+    assert any(
+        binary.path == "/opt/hermes/**"
+        for grant in client.provider_grants
+        for binary in grant["profile"].binaries
+    )
+    health = client.bootstrap_execs[-1]["script"]
+    assert "/sandbox/.volundr/hermes.pid" in health
+    assert "/:239F$/" in health
+
+
+@pytest.mark.asyncio
+async def test_hermes_restart_reuses_machine_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _hermes_runtime().model_copy(
+        update={
+            "backend_ref": {
+                "service_url": "https://hermes.example.test",
+                "service_name": "hermes",
+                "process_names": ["hermes"],
+            }
+        }
+    )
+    client = _FakeOpenShellGatewayClient(adapter)
+    token = "persisted-hermes-token"
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    manager.set_credential_store(
+        _FakeCredentialStore({HERMES_CREDENTIAL_NAME: {"session_token": token}})
+    )
+
+    observation = await manager.restart(runtime, _hermes_profile())
+
+    assert observation.observed_state is ResidentObservedState.ACTIVE
+    assert client.deleted == []
+    assert client.bootstrap_execs[0]["script"] == adapter._resident_stop_script(("hermes",))
+    assert client.execs[0]["env"][adapter.HERMES_DASHBOARD_SESSION_TOKEN_ENV] == token
+
+
+@pytest.mark.asyncio
+async def test_hermes_rollback_and_delete_cleanup_machine_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _hermes_runtime()
+    profile = _hermes_profile()
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.exec_detached = lambda **_kwargs: 1
+    store = _FakeCredentialStore({})
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    manager.set_credential_store(store)
+
+    with pytest.raises(RuntimeError, match="Hermes residents require"):
+        await adapter.OpenShellGatewayPodManager(client=client).deploy(runtime, profile)
+    with pytest.raises(RuntimeError, match="failed with exit 1"):
+        await manager.deploy(runtime, profile)
+
+    credential_key = ("resident", str(runtime.id), HERMES_CREDENTIAL_NAME)
+    assert store.deletes == [credential_key]
+
+    client.exec_detached = _FakeOpenShellGatewayClient.exec_detached.__get__(client)
+    client.deleted.clear()
+    client.created = {"providers": ()}
+    store.values[HERMES_CREDENTIAL_NAME] = {"session_token": "delete-me"}
+    assert await manager.delete(runtime)
+    assert store.deletes == [credential_key, credential_key]
+
+
+@pytest.mark.asyncio
+async def test_hermes_logs_default_to_hermes_process_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.created = {"providers": ()}
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+
+    await manager.logs(_hermes_runtime(), lines=20, sources=(), min_level="INFO")
+
+    assert "__VOLUNDR_LOG_SOURCE__=hermes" in client.bootstrap_execs[0]["script"]
 
 
 def test_platform_provider_adds_resident_engine_binary(

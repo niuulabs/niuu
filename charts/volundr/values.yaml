@@ -361,6 +361,13 @@ residentRuntimeControllers: []
 #   kwargs: {}
 #   secretKwargs: []
 
+# Engine-protocol adapters behind resident runtime backends.
+residentRuntimeSessionControllers: []
+# - adapter: volundr.adapters.outbound.openclaw_gateway.OpenClawResidentSessionController
+#   runtimeBackend: openshell
+#   kwargs: {}
+#   secretKwargs: []
+
 # -- Seconds between resident HelmRelease/Deployment reconciliation passes
 residentRuntimeReconciliationIntervalSeconds: 10.0
 

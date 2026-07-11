@@ -515,6 +515,45 @@ class TestConfigMapTemplate:
 
         assert config["resident_runtimes"]["profiles"] == []
 
+    def test_resident_session_controllers_render_with_backend_binding(self):
+        result = subprocess.run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                "--set",
+                (
+                    "residentRuntimeSessionControllers[0].adapter="
+                    "volundr.adapters.outbound.hermes_gateway.HermesResidentSessionController"
+                ),
+                "--set",
+                "residentRuntimeSessionControllers[0].runtimeBackend=openshell",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        configmap = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr"
+        )
+        config = yaml.safe_load(configmap["data"]["config.yaml"])
+
+        assert config["resident_runtimes"]["session_controllers"] == [
+            {
+                "adapter": (
+                    "volundr.adapters.outbound.hermes_gateway.HermesResidentSessionController"
+                ),
+                "runtime_backend": "openshell",
+                "kwargs": {},
+                "secret_kwargs_env": {},
+            }
+        ]
+
 
 class TestHpaTemplate:
     """Tests for hpa.yaml template."""

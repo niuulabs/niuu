@@ -4,6 +4,7 @@ import { SessionChat } from './SessionChat';
 import type {
   AgentInternalEvent,
   ChatMessage,
+  InputRequest,
   MeshOutcomeEvent,
   PermissionRequest,
   RoomParticipant,
@@ -634,6 +635,94 @@ describe('SessionChat', () => {
       />,
     );
     expect(screen.queryByTestId('perm-ui')).not.toBeInTheDocument();
+  });
+
+  it('renders the default approval UI and handles each approval behavior', () => {
+    const permissions: PermissionRequest[] = [
+      { requestId: 'perm-1', toolName: 'Bash', description: 'pnpm test' },
+    ];
+    const onPermissionRespond = vi.fn();
+
+    render(
+      <SessionChat
+        {...defaultProps}
+        pendingPermissions={permissions}
+        onPermissionRespond={onPermissionRespond}
+      />,
+    );
+
+    expect(screen.getByRole('region', { name: 'Pending approvals' })).toBeInTheDocument();
+    expect(screen.getByText('Bash')).toBeInTheDocument();
+    expect(screen.getByText('pnpm test')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Deny' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Allow once' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Always allow' }));
+
+    expect(onPermissionRespond).toHaveBeenNthCalledWith(1, 'perm-1', 'deny');
+    expect(onPermissionRespond).toHaveBeenNthCalledWith(2, 'perm-1', 'allow_once');
+    expect(onPermissionRespond).toHaveBeenNthCalledWith(3, 'perm-1', 'allow_always');
+  });
+
+  it('preserves the custom permission slot instead of rendering the default UI', () => {
+    const permissions: PermissionRequest[] = [
+      { requestId: 'perm-1', toolName: 'Bash', description: 'pnpm test' },
+    ];
+
+    render(
+      <SessionChat
+        {...defaultProps}
+        pendingPermissions={permissions}
+        renderPermissions={() => <div>Custom approval</div>}
+      />,
+    );
+
+    expect(screen.getByText('Custom approval')).toBeInTheDocument();
+    expect(screen.queryByText('Approval required')).not.toBeInTheDocument();
+  });
+
+  it('renders clarification choices and sends the selected value', () => {
+    const requests: InputRequest[] = [
+      {
+        requestId: 'input-1',
+        prompt: 'Which environment should be deployed?',
+        choices: ['Staging', 'Production'],
+      },
+    ];
+    const onInputRespond = vi.fn();
+
+    render(
+      <SessionChat
+        {...defaultProps}
+        pendingInputRequests={requests}
+        onInputRespond={onInputRespond}
+      />,
+    );
+
+    expect(screen.getByRole('region', { name: 'Pending input requests' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Which environment should be deployed?')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Production' }));
+    expect(onInputRespond).toHaveBeenCalledWith('input-1', 'Production');
+  });
+
+  it('submits trimmed free-text clarification responses and rejects blank input', () => {
+    const onInputRespond = vi.fn();
+    render(
+      <SessionChat
+        {...defaultProps}
+        pendingInputRequests={[{ requestId: 'input-2', prompt: 'Name the release' }]}
+        onInputRespond={onInputRespond}
+      />,
+    );
+
+    const input = screen.getByLabelText('Name the release');
+    const submit = screen.getByRole('button', { name: 'Submit' });
+    expect(submit).toBeDisabled();
+
+    fireEvent.change(input, { target: { value: '  July release  ' } });
+    expect(submit).toBeEnabled();
+    fireEvent.submit(input.closest('form')!);
+    expect(onInputRespond).toHaveBeenCalledWith('input-2', 'July release');
   });
 
   /* ── Room mode / MeshSidebar ── */

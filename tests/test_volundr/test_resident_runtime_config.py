@@ -61,6 +61,28 @@ def test_settings_parse_additional_resident_controllers() -> None:
     assert controller.secret_kwargs_env["client_secret"].startswith("RESIDENT_CONTROLLER_0")
 
 
+def test_settings_parse_resident_session_controllers() -> None:
+    settings = Settings.model_validate(
+        {
+            "resident_runtimes": {
+                "session_controllers": [
+                    {
+                        "adapter": (
+                            "volundr.adapters.outbound.hermes_gateway."
+                            "HermesResidentSessionController"
+                        ),
+                        "runtime_backend": "openshell",
+                    }
+                ]
+            }
+        }
+    )
+
+    controller = settings.resident_runtimes.session_controllers[0]
+    assert controller.adapter.endswith("HermesResidentSessionController")
+    assert controller.runtime_backend.value == "openshell"
+
+
 def test_duplicate_profile_ids_fail_configuration() -> None:
     with pytest.raises(ValidationError, match="ids must be unique"):
         ResidentRuntimesConfig.model_validate(
@@ -93,6 +115,7 @@ def test_chart_contains_profile_config_and_dual_migration() -> None:
     assert "resident_runtimes:" in configmap
     assert "residentRuntimeProfiles" in configmap
     assert "residentRuntimeControllers" in configmap
+    assert "residentRuntimeSessionControllers" in configmap
     assert "000055_resident_runtimes.up.sql" in migrations
     assert "CREATE TABLE IF NOT EXISTS resident_runtimes" in migration
     assert "CREATE TABLE IF NOT EXISTS resident_runtimes" in migrations

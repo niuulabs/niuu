@@ -165,7 +165,8 @@ def assert_ask_user_question_shape(frame: dict) -> None:
       * ``type == "ask_user_question"``
       * a non-empty ``request_id`` (the correlation id the answer is keyed by)
       * ``questions`` is a non-empty list; each question carries an ``options``
-        list; every option carries a ``label``.
+        list; every supplied option carries a ``label``. An empty list denotes
+        a supported free-text response.
     """
     assert frame.get("type") == "ask_user_question", f"not an ask_user_question frame: {frame}"
     request_id = frame.get("request_id")
@@ -179,9 +180,7 @@ def assert_ask_user_question_shape(frame: dict) -> None:
     for q in questions:
         assert isinstance(q, dict), f"each question must be a dict; got {q!r}"
         options = q.get("options")
-        assert isinstance(options, list) and options, (
-            f"each question must carry a non-empty options[]; got {options!r}"
-        )
+        assert isinstance(options, list), f"each question must carry options[]; got {options!r}"
         for opt in options:
             assert isinstance(opt, dict) and isinstance(opt.get("label"), str) and opt["label"], (
                 f"each option must carry a string label; got {opt!r}"

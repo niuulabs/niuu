@@ -74,6 +74,22 @@ data:
           {{- end }}
         {{- end }}
         {{- end }}
+      {{- if .Values.residentRuntimeSessionControllers }}
+      session_controllers:
+        {{- range $index, $controller := .Values.residentRuntimeSessionControllers }}
+        - adapter: {{ $controller.adapter | quote }}
+          runtime_backend: {{ $controller.runtimeBackend | quote }}
+          kwargs: {{ $controller.kwargs | default dict | toJson }}
+          {{- if $controller.secretKwargs }}
+          secret_kwargs_env:
+            {{- range $controller.secretKwargs }}
+            {{ .kwarg }}: RESIDENT_SESSION_CONTROLLER_{{ $index }}_SK_{{ .kwarg | upper }}
+            {{- end }}
+          {{- else }}
+          secret_kwargs_env: {}
+          {{- end }}
+        {{- end }}
+      {{- end }}
       profiles:{{ if not .Values.residentRuntimeProfiles }} []{{ else }}
         {{- range .Values.residentRuntimeProfiles }}
         - id: {{ .id | quote }}

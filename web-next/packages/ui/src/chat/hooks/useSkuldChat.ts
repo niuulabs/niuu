@@ -7,6 +7,7 @@ import type {
   ChatMessage,
   ChatMessagePart,
   ContentBlock,
+  InputRequest,
   MeshEvent,
   MeshOutcomeEvent,
   PermissionBehavior,
@@ -75,6 +76,10 @@ type CliStreamEvent = {
   is_error?: boolean;
   valid?: boolean;
   request_id?: string;
+  questions?: Array<{
+    question?: string;
+    options?: Array<{ label?: string } | unknown>;
+  }>;
   tool?: string;
   input?: Record<string, unknown>;
   participant?: WireParticipant;
@@ -151,6 +156,7 @@ interface UseSkuldChatResult {
   meshEvents: MeshEvent[];
   agentEvents: ReadonlyMap<string, readonly AgentInternalEvent[]>;
   pendingPermissions: PermissionRequest[];
+  pendingInputRequests: InputRequest[];
   availableCommands: SlashCommand[];
   capabilities: SessionCapabilities;
   sendMessage: (text: string, attachments: FileAttachment[]) => void;
@@ -161,6 +167,7 @@ interface UseSkuldChatResult {
   ) => void;
   sendResendPrompt: () => void;
   respondToPermission: (requestId: string, behavior: PermissionBehavior) => void;
+  respondToInput: (requestId: string, value: string) => void;
   sendInterrupt: () => void;
   sendSetModel: (model: string) => void;
   sendSetThinkingTokens: (tokens: number) => void;
@@ -631,6 +638,7 @@ export function useSkuldChat(
     () => initialPersistedState.agentEvents,
   );
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
+  const [pendingInputRequests, setPendingInputRequests] = useState<InputRequest[]>([]);
   const [availableCommandsState, setAvailableCommandsState] = useState<{
     url: string | null;
     commands: SlashCommand[];
@@ -1282,6 +1290,40 @@ export function useSkuldChat(
             );
             break;
           }
+          case 'ask_user_question': {
+            const questions = Array.isArray(event.questions) ? event.questions : [];
+            const question = questions[0];
+            if (!event.request_id || !question || typeof question !== 'object') break;
+            const prompt = typeof question.question === 'string' ? question.question : '';
+            if (!prompt) break;
+            const options = Array.isArray(question.options) ? question.options : [];
+            const inputRequest: InputRequest = {
+              requestId: event.request_id,
+              prompt,
+              choices: options
+                .map((option) =>
+                  option &&
+                  typeof option === 'object' &&
+                  'label' in option &&
+                  typeof option.label === 'string'
+                    ? option.label
+                    : '',
+                )
+                .filter(Boolean),
+            };
+            setPendingInputRequests((prev) => [
+              ...prev.filter((request) => request.requestId !== inputRequest.requestId),
+              inputRequest,
+            ]);
+            break;
+          }
+          case 'ask_user_resolved': {
+            if (!event.request_id) break;
+            setPendingInputRequests((prev) =>
+              prev.filter((request) => request.requestId !== event.request_id),
+            );
+            break;
+          }
           case 'participant_joined': {
             const participant = parseParticipantMeta(event.participant);
             if (!participant?.peerId) break;
@@ -1731,11 +1773,24 @@ export function useSkuldChat(
     [sendJson],
   );
 
+  const respondToInput = useCallback(
+    (requestId: string, value: string) => {
+      sendJson({
+        type: 'ask_user_answer',
+        request_id: requestId,
+        answers: [{ answer: value }],
+      });
+      setPendingInputRequests((prev) => prev.filter((request) => request.requestId !== requestId));
+    },
+    [sendJson],
+  );
+
   const clearMessages = useCallback(() => {
     setMessages([]);
     setMeshEvents([]);
     setAgentEvents(new Map());
     setPendingPermissions([]);
+    setPendingInputRequests([]);
     internalStreamsRef.current.clear();
     resetStreaming();
   }, [resetStreaming]);
@@ -1760,12 +1815,14 @@ export function useSkuldChat(
     meshEvents,
     agentEvents: stableAgentEvents,
     pendingPermissions,
+    pendingInputRequests,
     availableCommands,
     capabilities,
     sendMessage,
     sendDirectedMessages,
     sendResendPrompt,
     respondToPermission,
+    respondToInput,
     sendInterrupt: () => sendJson({ type: 'interrupt' }),
     sendSetModel: (model: string) => sendJson({ type: 'set_model', model }),
     sendSetThinkingTokens: (tokens: number) =>

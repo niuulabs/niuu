@@ -957,6 +957,7 @@ function LiveSessionChat({
         meshEvents={chat.meshEvents}
         agentEvents={chat.agentEvents}
         pendingPermissions={chat.pendingPermissions}
+        pendingInputRequests={chat.pendingInputRequests}
         availableCommands={chat.availableCommands}
         capabilities={chat.capabilities}
         chatEndpoint={chatEndpoint}
@@ -967,6 +968,7 @@ function LiveSessionChat({
         onSendDirected={chat.sendDirectedMessages}
         onStop={chat.sendInterrupt}
         onPermissionRespond={chat.respondToPermission}
+        onInputRespond={chat.respondToInput}
         onSetInternalVisibility={chat.sendSetInternalVisibility}
       />
     </div>

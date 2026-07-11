@@ -470,8 +470,8 @@ class OpenClawChatConnection(ResidentChatConnection):
 class OpenClawResidentSessionController(ResidentSessionController):
     """OpenClaw implementation of resident-native session lifecycle and chat."""
 
-    def __init__(self, openshell_controller: Any, credential_store: CredentialStorePort) -> None:
-        self._openshell = openshell_controller
+    def __init__(self, runtime_controller: Any, credential_store: CredentialStorePort) -> None:
+        self._openshell = runtime_controller
         self._credentials = credential_store
 
     @property

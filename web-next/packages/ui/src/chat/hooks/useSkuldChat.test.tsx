@@ -1080,6 +1080,86 @@ page_path: council/demo/opinion-b.md
     expect(result.current.pendingPermissions).toHaveLength(0);
   });
 
+  it('normalizes clarification requests and sends input responses', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'ask_user_question',
+          request_id: 'input-1',
+          questions: [{
+            question: 'Which environment should be deployed?',
+            options: [{ label: 'Staging' }, { label: 'Production' }],
+          }],
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'ask_user_question',
+          request_id: 'input-1',
+          questions: [{
+            question: 'Choose the target environment',
+            options: [{ label: 'Staging' }, 42, { label: 'Production' }],
+          }],
+        }),
+      );
+    });
+
+    expect(result.current.pendingInputRequests).toEqual([
+      {
+        requestId: 'input-1',
+        prompt: 'Choose the target environment',
+        choices: ['Staging', 'Production'],
+      },
+    ]);
+
+    act(() => {
+      result.current.respondToInput('input-1', 'Staging');
+    });
+
+    expect(sendJson).toHaveBeenCalledWith({
+      type: 'ask_user_answer',
+      request_id: 'input-1',
+      answers: [{ answer: 'Staging' }],
+    });
+    expect(result.current.pendingInputRequests).toHaveLength(0);
+  });
+
+  it('ignores malformed clarification requests and clears pending input', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'ask_user_question',
+          questions: [{ question: 'Missing ID', options: [] }],
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({ type: 'ask_user_question', request_id: 'missing-prompt' }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'ask_user_question',
+          request_id: 'input-clear',
+          questions: [{ question: 'Provide a release note', options: [] }],
+        }),
+      );
+    });
+
+    expect(result.current.pendingInputRequests).toEqual([
+      { requestId: 'input-clear', prompt: 'Provide a release note', choices: [] },
+    ]);
+
+    act(() => result.current.clearMessages());
+    expect(result.current.pendingInputRequests).toHaveLength(0);
+  });
+
   it('ignores blank directed replies and covers alternate permission behaviors', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 

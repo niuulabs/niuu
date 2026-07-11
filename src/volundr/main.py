@@ -21,6 +21,7 @@ from niuu.cors import apply_cors_middleware
 from niuu.domain.services.pat import PATService
 from niuu.domain.services.realm import RealmService
 from niuu.domain.services.workload_identity import WorkloadIdentityService
+from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.service_integrations import (
     has_seeded_linear_integration as _has_seeded_linear_integration,
@@ -75,7 +76,6 @@ from volundr.adapters.outbound.config_resident_profiles import (
 from volundr.adapters.outbound.git_registry import create_git_registry
 from volundr.adapters.outbound.linear import LinearAdapter
 from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
-from volundr.adapters.outbound.openclaw_gateway import OpenClawResidentSessionController
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
 from volundr.adapters.outbound.postgres import PostgresSessionRepository
@@ -107,6 +107,7 @@ from volundr.domain.models import SessionStatus
 from volundr.domain.ports import (
     OpenShellCredentialGrantPort,
     ResidentRuntimeController,
+    ResidentSessionController,
     SessionContributor,
 )
 from volundr.domain.services import (
@@ -227,6 +228,38 @@ def _create_resident_controllers(
         controllers.append(instance)
         logger.info("Resident controller: %s", config.adapter.rsplit(".", 1)[-1])
     return controllers
+
+
+def _create_resident_session_controllers(
+    settings: Settings,
+    runtime_controllers: list[ResidentRuntimeController],
+    credential_store: CredentialStorePort,
+) -> list[ResidentSessionController]:
+    """Create configured engine adapters against their owning runtime backend."""
+    controllers_by_backend = {controller.backend: controller for controller in runtime_controllers}
+    session_controllers: list[ResidentSessionController] = []
+    for config in settings.resident_runtimes.session_controllers:
+        runtime_controller = controllers_by_backend.get(config.runtime_backend)
+        if runtime_controller is None:
+            raise RuntimeError(
+                "Resident session controller "
+                f"{config.adapter} requires unavailable backend {config.runtime_backend.value}"
+            )
+        cls = import_class(config.adapter)
+        kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
+        instance = cls(
+            runtime_controller=runtime_controller,
+            credential_store=credential_store,
+            **kwargs,
+        )
+        if not isinstance(instance, ResidentSessionController):
+            raise TypeError(
+                f"Resident session controller {config.adapter} must implement "
+                "ResidentSessionController"
+            )
+        session_controllers.append(instance)
+        logger.info("Resident session controller: %s", config.adapter.rsplit(".", 1)[-1])
+    return session_controllers
 
 
 def _runtime_backend(settings: Settings) -> str:
@@ -867,16 +900,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for controller in resident_controllers:
                 if controller is not pod_manager and hasattr(controller, "set_credential_store"):
                     controller.set_credential_store(credential_store)
-            openclaw_session_controllers = [
-                OpenClawResidentSessionController(controller, credential_store)
-                for controller in resident_controllers
-                if hasattr(controller, "approve_resident_device")
-            ]
+            resident_session_controllers = _create_resident_session_controllers(
+                settings,
+                resident_controllers,
+                credential_store,
+            )
             resident_runtime_service = ResidentRuntimeService(
                 resident_runtime_repository,
                 resident_profile_provider,
                 resident_controllers,
-                openclaw_session_controllers,
+                resident_session_controllers,
             )
             if hasattr(pod_manager, "set_persona_registry"):
                 pod_manager.set_persona_registry(persona_registry)

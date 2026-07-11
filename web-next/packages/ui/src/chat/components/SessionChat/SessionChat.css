@@ -356,6 +356,113 @@
   gap: var(--space-3);
 }
 
+.niuu-chat-request-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.niuu-chat-request {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-secondary);
+}
+
+.niuu-chat-request-copy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.niuu-chat-request-title {
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+}
+
+.niuu-chat-request-tool {
+  color: var(--color-brand);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.niuu-chat-request-prompt {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+
+.niuu-chat-request-actions,
+.niuu-chat-request-choices,
+.niuu-chat-request-response {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.niuu-chat-request-choices {
+  margin-top: var(--space-1);
+}
+
+.niuu-chat-request-response {
+  margin-top: var(--space-1);
+}
+
+.niuu-chat-request-input {
+  flex: 1;
+  min-width: 12rem;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font: inherit;
+}
+
+.niuu-chat-request-input:focus {
+  border-color: var(--color-brand);
+}
+
+.niuu-chat-request-button {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.niuu-chat-request-button:hover:not(:disabled) {
+  border-color: var(--color-brand);
+  color: var(--color-text-primary);
+}
+
+.niuu-chat-request-button--primary {
+  border-color: var(--color-brand);
+  background-color: var(--color-brand);
+  color: var(--color-bg-primary);
+}
+
+.niuu-chat-request-button--deny {
+  color: var(--color-accent-red);
+}
+
+.niuu-chat-request-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .niuu-chat-outcome-dialog {
   width: min(1080px, calc(100vw - var(--space-8)));
 }
@@ -375,5 +482,10 @@
 
   .niuu-chat-input-area-inner {
     max-width: 100%;
+  }
+
+  .niuu-chat-request {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

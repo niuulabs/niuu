@@ -122,6 +122,12 @@ export interface PermissionRequest {
 
 export type PermissionBehavior = 'allow_once' | 'allow_always' | 'deny';
 
+export interface InputRequest {
+  requestId: string;
+  prompt: string;
+  choices?: string[];
+}
+
 export interface FileEntry {
   name: string;
   path: string;

@@ -297,6 +297,15 @@ class ResidentProfileConfig(BaseModel):
     )
 
 
+class ResidentSessionControllerConfig(BaseModel):
+    """One dynamically configured resident engine protocol adapter."""
+
+    adapter: str = Field(min_length=1)
+    runtime_backend: ResidentBackend
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+
 class ResidentRuntimesConfig(BaseModel):
     """Configured resident deployment profiles for this Volundr target."""
 
@@ -306,6 +315,10 @@ class ResidentRuntimesConfig(BaseModel):
             "Additional dynamically configured resident runtime controllers. "
             "A resident-capable pod manager is registered automatically."
         ),
+    )
+    session_controllers: list[ResidentSessionControllerConfig] = Field(
+        default_factory=list,
+        description="Dynamically configured resident engine protocol adapters.",
     )
     profiles: list[ResidentProfileConfig] = Field(default_factory=list)
     reconciliation_interval_seconds: float = Field(
