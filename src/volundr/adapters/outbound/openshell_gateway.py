@@ -1564,11 +1564,12 @@ class OpenShellGatewayPodManager(
                 await self._wait_for_sandbox_deleted(sandbox_name)
             except Exception as exc:
                 errors.append(exc)
-        for grant in reversed(grants):
-            try:
-                await asyncio.to_thread(self._client.delete_provider_grant, grant)
-            except Exception as exc:
-                errors.append(exc)
+            else:
+                for grant in reversed(grants):
+                    try:
+                        await asyncio.to_thread(self._client.delete_provider_grant, grant)
+                    except Exception as exc:
+                        errors.append(exc)
         if errors:
             raise RuntimeError(
                 f"OpenShell resource cleanup failed for {sandbox_name}: "

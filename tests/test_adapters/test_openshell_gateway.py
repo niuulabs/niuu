@@ -702,6 +702,27 @@ async def test_resident_delete_removes_service_sandbox_and_provider_grants(
 
 
 @pytest.mark.asyncio
+async def test_resident_delete_retains_provider_grants_until_sandbox_is_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _resident_runtime()
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.created = {"providers": ("volundr-provider",)}
+    client.delete_polls_remaining = 1
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client,
+        resource_delete_timeout=0,
+    )
+
+    with pytest.raises(RuntimeError, match="was not deleted within 0s"):
+        await manager.delete(runtime)
+
+    assert client.deleted_grants == []
+    assert client.cleanup_events == ["sandbox-present"]
+
+
+@pytest.mark.asyncio
 async def test_resident_logs_use_native_gateway_log_buffer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
