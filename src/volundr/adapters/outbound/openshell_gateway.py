@@ -1047,7 +1047,11 @@ class OpenShellGatewayPodManager(
             if machine_credential is not None:
                 process_env["OPENCLAW_GATEWAY_TOKEN"] = machine_credential["gateway_token"]
             await self._launch_resident_processes(ready.id, process_env, processes)
-            await self._wait_for_resident_processes(ready.id, processes)
+            await self._wait_for_resident_processes(
+                ready.id,
+                processes,
+                service_port=service_port,
+            )
             service_url = await asyncio.to_thread(
                 self._client.expose_service,
                 sandbox_name=sandbox_name,
@@ -1105,12 +1109,16 @@ class OpenShellGatewayPodManager(
         processes_ready = False
         values = _resident_profile_values(profile)
         processes = self._resident_processes(runtime, values)
-        if sandbox.ready:
-            processes_ready = await self._resident_processes_ready(sandbox.id, processes)
-        service_url = str(runtime.backend_ref.get("service_url") or "")
         service_name, service_port = _resident_service(
             values, self._service_name, self._service_port
         )
+        if sandbox.ready:
+            processes_ready = await self._resident_processes_ready(
+                sandbox.id,
+                processes,
+                service_port=service_port,
+            )
+        service_url = str(runtime.backend_ref.get("service_url") or "")
         return self._resident_observation(
             runtime,
             sandbox,
@@ -1158,9 +1166,13 @@ class OpenShellGatewayPodManager(
                 raise RuntimeError("OpenClaw resident machine credential is unavailable")
             env["OPENCLAW_GATEWAY_TOKEN"] = machine["gateway_token"]
         await self._launch_resident_processes(sandbox.id, env, processes)
-        await self._wait_for_resident_processes(sandbox.id, processes)
         service_name, service_port = _resident_service(
             values, self._service_name, self._service_port
+        )
+        await self._wait_for_resident_processes(
+            sandbox.id,
+            processes,
+            service_port=service_port,
         )
         return self._resident_observation(
             runtime,
@@ -1310,11 +1322,16 @@ class OpenShellGatewayPodManager(
         self,
         sandbox_id: str,
         processes: Sequence[OpenShellRuntimeProcess],
+        *,
+        service_port: int | None = None,
     ) -> bool:
         exit_code, _ = await asyncio.to_thread(
             self._client.exec_script,
             sandbox_id=sandbox_id,
-            script=_resident_health_script(tuple(process.name for process in processes)),
+            script=_resident_health_script(
+                tuple(process.name for process in processes),
+                service_port=service_port,
+            ),
             env={},
         )
         return exit_code == 0
@@ -1323,10 +1340,16 @@ class OpenShellGatewayPodManager(
         self,
         sandbox_id: str,
         processes: Sequence[OpenShellRuntimeProcess],
+        *,
+        service_port: int | None = None,
     ) -> None:
         deadline = time.monotonic() + self._ready_timeout
         while time.monotonic() < deadline:
-            if await self._resident_processes_ready(sandbox_id, processes):
+            if await self._resident_processes_ready(
+                sandbox_id,
+                processes,
+                service_port=service_port,
+            ):
                 return
             await asyncio.sleep(READY_POLL_INTERVAL)
         raise TimeoutError(
@@ -2677,11 +2700,19 @@ def _resident_state_from_sandbox(
 
 def _resident_health_script(
     process_names: Sequence[str] = ("skuld", "ravn"),
+    *,
+    service_port: int | None = None,
 ) -> str:
     lines = ["set -eu"]
     for name in process_names:
         pid_path = f"/sandbox/.volundr/{name}.pid"
         lines.append(f'test -s {shlex.quote(pid_path)} && kill -0 "$(cat {shlex.quote(pid_path)})"')
+    if service_port is not None:
+        port_hex = f"{service_port:04X}"
+        lines.append(
+            "awk '$2 ~ /:" + port_hex + "$/ && $4 == \"0A\" { found=1 } "
+            "END { exit !found }' /proc/net/tcp /proc/net/tcp6"
+        )
     return "\n".join(lines)
 
 

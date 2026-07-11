@@ -714,6 +714,18 @@ def test_resident_process_lifecycle_uses_in_sandbox_process_identity(
     assert 'kill -9 "$(cat "$pid_file")"' in stop
 
 
+def test_resident_process_health_requires_declared_service_listener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+
+    health = adapter._resident_health_script(("openclaw",), service_port=18789)
+
+    assert "/sandbox/.volundr/openclaw.pid" in health
+    assert "/:4965$/" in health
+    assert '$4 == "0A"' in health
+
+
 @pytest.mark.asyncio
 async def test_resident_delete_removes_service_sandbox_and_provider_grants(
     monkeypatch: pytest.MonkeyPatch,
