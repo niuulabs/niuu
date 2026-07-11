@@ -487,9 +487,9 @@ class TestRavnPlugin:
         client = plugin.create_api_client()
         assert client is not None
 
-    def test_depends_on_is_empty(self) -> None:
+    def test_depends_on_returns_postgres(self) -> None:
         plugin = RavnPlugin()
-        assert list(plugin.depends_on()) == []
+        assert list(plugin.depends_on()) == ["postgres"]
 
     def test_registers_ravn_group(self) -> None:
         plugin = RavnPlugin()
