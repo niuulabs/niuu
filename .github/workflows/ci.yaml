@@ -562,7 +562,8 @@ jobs:
             -f charts/volundr/ci-values.yaml \
             --set global.imagePullSecrets[0]=ghcr-pull-secret \
             --set image.tag="pr-${{ github.event.number }}" \
-            --wait --timeout 120s 2>&1)" || {
+            --qps 50 --burst-limit 100 \
+            --wait --timeout 180s 2>&1)" || {
             printf "%s\n" "$output"
             annotation="$(printf "%s" "$output" | tail -c 3000 | sed -z "s/%/%25/g; s/\n/%0A/g; s/\r/%0D/g")"
             echo "::error title=Volundr Helm install failure::${annotation}"
