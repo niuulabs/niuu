@@ -161,6 +161,7 @@ function wrap(children: ReactNode) {
   return render(
     <ConfigProvider
       value={{
+        demoMode: false,
         theme: 'ice',
         plugins: {
           login: { enabled: true, order: 0 },
@@ -586,6 +587,7 @@ describe('SettingsPage', () => {
     render(
       <ConfigProvider
         value={{
+          demoMode: false,
           theme: 'ice',
           plugins: {
             ting: { enabled: true, order: 2 },
@@ -667,6 +669,7 @@ describe('SettingsPage', () => {
     render(
       <ConfigProvider
         value={{
+          demoMode: false,
           theme: 'ice',
           plugins: {
             ting: { enabled: true, order: 1 },
