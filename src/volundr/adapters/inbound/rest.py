@@ -75,7 +75,7 @@ from volundr.domain.services.permission_auto_approval import (
     evaluate_permission_auto_approval,
 )
 from volundr.log_aggregate import aggregate_workspace_logs
-from volundr.session_archive import load_workspace_transcript
+from volundr.session_archive import load_workspace_transcript, resolve_contained_path
 
 logger = logging.getLogger(__name__)
 WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
@@ -3261,7 +3261,14 @@ def create_router(
 
         media_type = "text/markdown; charset=utf-8" if format == "md" else "application/json"
         filename = f"session-{session_id}-transcript.{format}"
-        return FileResponse(path, media_type=media_type, filename=filename)
+        expected_artifact = f"transcript.{format}"
+        if path.name != expected_artifact:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Resolved transcript artifact has an unexpected name",
+            )
+        safe_path = resolve_contained_path(path.parent, path, strict=True)
+        return FileResponse(safe_path, media_type=media_type, filename=filename)
 
     @router.get(
         "/sessions/{session_id}/archive",

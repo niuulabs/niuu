@@ -9,7 +9,11 @@ from urllib.parse import urlsplit
 from volundr.domain.models import LocalMountSource
 from volundr.domain.services.transcript_rebuild import rebuild_turns
 from volundr.log_aggregate import aggregate_workspace_logs
-from volundr.session_archive import load_workspace_transcript
+from volundr.session_archive import (
+    ArchivePathError,
+    load_workspace_transcript,
+    resolve_contained_path,
+)
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -339,27 +343,32 @@ class SessionArchiveService:
         *,
         workspace_dir: Path | None = None,
     ) -> Path | None:
-        if fmt == "json":
-            try:
-                return self._archive_store.transcript_json_path(
+        if fmt not in {"json", "md"}:
+            raise ValueError(f"Unsupported transcript format: {fmt}")
+        try:
+            root = self._archive_store.archive_root(
+                session_id=session_id,
+                workspace_dir=workspace_dir,
+            )
+            if fmt == "json":
+                artifact = self._archive_store.transcript_json_path(
                     session_id=session_id,
                     workspace_dir=workspace_dir,
                 )
-            except ValueError:
-                if workspace_dir is None:
-                    return None
-                raise
-        if fmt == "md":
-            try:
-                return self._archive_store.transcript_markdown_path(
+                return resolve_contained_path(root, artifact)
+            if fmt == "md":
+                artifact = self._archive_store.transcript_markdown_path(
                     session_id=session_id,
                     workspace_dir=workspace_dir,
                 )
-            except ValueError:
-                if workspace_dir is None:
-                    return None
-                raise
-        raise ValueError(f"Unsupported transcript format: {fmt}")
+                return resolve_contained_path(root, artifact)
+        except ArchivePathError:
+            raise
+        except ValueError:
+            if workspace_dir is None:
+                return None
+            raise
+        raise AssertionError("Unreachable transcript format fallthrough")
 
     async def _load_chronicle_payload(self, session_id: UUID) -> dict[str, Any] | None:
         if self._chronicle_service is None:

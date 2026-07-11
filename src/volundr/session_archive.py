@@ -6,13 +6,55 @@ import json
 import os
 import shutil
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 ARCHIVE_VERSION = 1
 DEFAULT_WORKSPACE_ARCHIVE_DIR = Path(".volundr") / "archive"
 DEFAULT_CONFIG_ARCHIVE_DIR = Path("archives")
 TRANSCRIPT_DIR = Path(".skuld")
+
+
+class ArchivePathError(ValueError):
+    """Raised when an archive path fails traversal or containment validation."""
+
+
+def resolve_contained_path(
+    root: str | Path,
+    candidate: str | Path,
+    *,
+    strict: bool = False,
+) -> Path:
+    """Resolve ``candidate`` and require it to remain below ``root``.
+
+    Resolving both paths before comparing them rejects lexical traversal and
+    symlink escapes. Callers must use the returned path for the filesystem
+    operation so the validated path, rather than unchecked input, reaches the
+    sink.
+    """
+    resolved_root = Path(root).expanduser().resolve(strict=strict)
+    candidate_path = Path(candidate).expanduser()
+    if not candidate_path.is_absolute() and ".." in candidate_path.parts:
+        raise ArchivePathError(f"Path contains traversal: {candidate}")
+    if not candidate_path.is_absolute():
+        candidate_path = resolved_root / candidate_path
+    resolved_candidate = candidate_path.resolve(strict=strict)
+    try:
+        resolved_candidate.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ArchivePathError(f"Path escapes configured root: {candidate}") from exc
+    return resolved_candidate
+
+
+def resolve_archive_member_path(root: str | Path, member_name: str) -> Path:
+    """Resolve an untrusted ZIP/TAR member name below an extraction root."""
+    posix_member = PurePosixPath(member_name.replace("\\", "/"))
+    windows_member = PureWindowsPath(member_name)
+    if posix_member.is_absolute() or windows_member.is_absolute():
+        raise ArchivePathError(f"Archive member path must be relative: {member_name}")
+    if ".." in posix_member.parts or ".." in windows_member.parts:
+        raise ArchivePathError(f"Archive member path contains traversal: {member_name}")
+    return resolve_contained_path(root, Path(*posix_member.parts))
 
 
 def config_root_dir() -> Path:
@@ -34,25 +76,28 @@ def archive_root(
             raise ValueError("workspace_dir is required for workspace-scoped archives")
         configured = Path(archive_path) if archive_path else DEFAULT_WORKSPACE_ARCHIVE_DIR
         if configured.is_absolute():
-            return configured.expanduser()
-        return Path(workspace_dir) / configured
+            raise ValueError("Workspace archive path must be relative to the workspace")
+        return resolve_contained_path(workspace_dir, configured)
 
     if archive_location == "config":
         configured = Path(archive_path) if archive_path else DEFAULT_CONFIG_ARCHIVE_DIR
         if configured.is_absolute():
-            base = configured.expanduser()
+            base = configured.expanduser().resolve()
         else:
-            base = config_root_dir() / configured
+            base = resolve_contained_path(config_root_dir(), configured)
         if not session_id:
             raise ValueError("session_id is required for config-scoped archives")
-        return base / session_id
+        return resolve_contained_path(base, session_id)
 
     raise ValueError(f"Unsupported archive location: {archive_location}")
 
 
 def transcript_source_path(workspace_dir: str | Path, session_id: str) -> Path:
     """Return the persisted transcript JSON path for a session."""
-    return Path(workspace_dir) / TRANSCRIPT_DIR / f"conversation_{session_id}.json"
+    return resolve_contained_path(
+        workspace_dir,
+        TRANSCRIPT_DIR / f"conversation_{session_id}.json",
+    )
 
 
 def archive_manifest_path(
@@ -63,15 +108,13 @@ def archive_manifest_path(
     archive_path: str | Path | None = None,
 ) -> Path:
     """Return the archive manifest path."""
-    return (
-        archive_root(
-            workspace_dir,
-            session_id=session_id,
-            archive_location=archive_location,
-            archive_path=archive_path,
-        )
-        / "manifest.json"
+    root = archive_root(
+        workspace_dir,
+        session_id=session_id,
+        archive_location=archive_location,
+        archive_path=archive_path,
     )
+    return resolve_contained_path(root, "manifest.json")
 
 
 def archive_transcript_json_path(
@@ -82,15 +125,13 @@ def archive_transcript_json_path(
     archive_path: str | Path | None = None,
 ) -> Path:
     """Return the archived transcript JSON path."""
-    return (
-        archive_root(
-            workspace_dir,
-            session_id=session_id,
-            archive_location=archive_location,
-            archive_path=archive_path,
-        )
-        / "transcript.json"
+    root = archive_root(
+        workspace_dir,
+        session_id=session_id,
+        archive_location=archive_location,
+        archive_path=archive_path,
     )
+    return resolve_contained_path(root, "transcript.json")
 
 
 def archive_transcript_markdown_path(
@@ -101,24 +142,23 @@ def archive_transcript_markdown_path(
     archive_path: str | Path | None = None,
 ) -> Path:
     """Return the archived transcript Markdown path."""
-    return (
-        archive_root(
-            workspace_dir,
-            session_id=session_id,
-            archive_location=archive_location,
-            archive_path=archive_path,
-        )
-        / "transcript.md"
+    root = archive_root(
+        workspace_dir,
+        session_id=session_id,
+        archive_location=archive_location,
+        archive_path=archive_path,
     )
+    return resolve_contained_path(root, "transcript.md")
 
 
 def load_workspace_transcript(workspace_dir: str | Path, session_id: str) -> dict[str, Any]:
     """Load the persisted workspace transcript in API response shape."""
-    path = transcript_source_path(workspace_dir, session_id)
+    workspace = Path(workspace_dir).expanduser().resolve()
+    path = resolve_contained_path(workspace, transcript_source_path(workspace, session_id))
     if not path.exists():
         return {"turns": [], "is_active": False, "last_activity": ""}
 
-    data = _read_json(path)
+    data = _read_json(workspace, path)
     return _normalise_transcript_payload(data)
 
 
@@ -168,6 +208,8 @@ def load_archive_transcript(
             archive_location=archive_location,
             archive_path=archive_path,
         )
+    except ArchivePathError:
+        raise
     except ValueError:
         return None
     if not path.exists():
@@ -179,7 +221,13 @@ def load_archive_transcript(
         archive_path=archive_path,
     ):
         return None
-    data = _read_json(path)
+    root = archive_root(
+        workspace_dir,
+        session_id=session_id,
+        archive_location=archive_location,
+        archive_path=archive_path,
+    )
+    data = _read_json(root, path)
     return _normalise_transcript_payload(data)
 
 
@@ -198,11 +246,19 @@ def load_archive_manifest(
             archive_location=archive_location,
             archive_path=archive_path,
         )
+    except ArchivePathError:
+        raise
     except ValueError:
         return None
     if not path.exists():
         return None
-    return _read_json(path)
+    root = archive_root(
+        workspace_dir,
+        session_id=session_id,
+        archive_location=archive_location,
+        archive_path=archive_path,
+    )
+    return _read_json(root, path)
 
 
 def archive_logs_aggregate_path(
@@ -213,16 +269,13 @@ def archive_logs_aggregate_path(
     archive_path: str | Path | None = None,
 ) -> Path:
     """Return the archived aggregated logs path."""
-    return (
-        archive_root(
-            workspace_dir,
-            session_id=session_id,
-            archive_location=archive_location,
-            archive_path=archive_path,
-        )
-        / "logs"
-        / "aggregate.json"
+    root = archive_root(
+        workspace_dir,
+        session_id=session_id,
+        archive_location=archive_location,
+        archive_path=archive_path,
     )
+    return resolve_contained_path(root, Path("logs") / "aggregate.json")
 
 
 def load_archive_logs(
@@ -240,6 +293,8 @@ def load_archive_logs(
             archive_location=archive_location,
             archive_path=archive_path,
         )
+    except ArchivePathError:
+        raise
     except ValueError:
         return None
     if not path.exists():
@@ -251,7 +306,13 @@ def load_archive_logs(
         archive_path=archive_path,
     ):
         return None
-    return _read_json(path)
+    root = archive_root(
+        workspace_dir,
+        session_id=session_id,
+        archive_location=archive_location,
+        archive_path=archive_path,
+    )
+    return _read_json(root, path)
 
 
 def render_transcript_markdown(payload: dict[str, Any]) -> str:
@@ -290,29 +351,34 @@ def write_session_archive(
     event_source_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Write a normalized archive snapshot into the workspace."""
-    workspace = Path(workspace_dir)
+    workspace = Path(workspace_dir).expanduser().resolve()
     root = archive_root(
         workspace,
         session_id=session_id,
         archive_location=archive_location,
         archive_path=archive_path,
     )
+    if archive_location == "workspace":
+        root = resolve_contained_path(workspace, root)
     root.mkdir(parents=True, exist_ok=True)
 
-    _write_json(root / "transcript.json", transcript_payload)
-    (root / "transcript.md").write_text(
+    _write_json(root, "transcript.json", transcript_payload)
+    transcript_markdown = resolve_contained_path(root, "transcript.md")
+    transcript_markdown.write_text(
         render_transcript_markdown(transcript_payload),
         encoding="utf-8",
     )
-    _write_json(root / "logs" / "aggregate.json", aggregated_logs)
+    _write_json(root, Path("logs") / "aggregate.json", aggregated_logs)
 
     if chronicle_payload is not None:
-        _write_json(root / "chronicle.json", chronicle_payload)
+        _write_json(root, "chronicle.json", chronicle_payload)
     if timeline_payload is not None:
-        _write_json(root / "timeline.json", timeline_payload)
+        _write_json(root, "timeline.json", timeline_payload)
 
-    raw_logs = _copy_workspace_logs(workspace, root / "logs" / "raw")
-    raw_events = _copy_event_streams(event_source_dir, root / "events" / "claude-jsonl")
+    raw_logs_root = resolve_contained_path(root, Path("logs") / "raw")
+    raw_events_root = resolve_contained_path(root, Path("events") / "claude-jsonl")
+    raw_logs = _copy_workspace_logs(workspace, raw_logs_root)
+    raw_events = _copy_event_streams(event_source_dir, raw_events_root)
 
     manifest = {
         "version": ARCHIVE_VERSION,
@@ -343,14 +409,16 @@ def write_session_archive(
             "event_streams": raw_events,
         },
     }
-    _write_json(root / "manifest.json", manifest)
+    _write_json(root, "manifest.json", manifest)
     return manifest
 
 
 def _copy_workspace_logs(workspace: Path, destination_root: Path) -> list[str]:
+    destination_root = destination_root.resolve()
     copied: list[str] = []
     for source, relative in _workspace_log_sources(workspace):
-        target = destination_root / relative
+        source = resolve_contained_path(workspace, source, strict=True)
+        target = resolve_contained_path(destination_root, relative)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
         copied.append(str((Path("logs") / "raw" / relative).as_posix()))
@@ -368,9 +436,12 @@ def _copy_event_streams(
         return []
 
     copied: list[str] = []
+    source_dir = source_dir.resolve(strict=True)
+    destination_root = destination_root.resolve()
     destination_root.mkdir(parents=True, exist_ok=True)
     for source in sorted(source_dir.glob("*.jsonl")):
-        target = destination_root / source.name
+        source = resolve_contained_path(source_dir, source, strict=True)
+        target = resolve_contained_path(destination_root, source.name)
         shutil.copy2(source, target)
         copied.append(str((Path("events") / "claude-jsonl" / source.name).as_posix()))
     return copied
@@ -378,24 +449,25 @@ def _copy_event_streams(
 
 def _workspace_log_sources(workspace: Path) -> list[tuple[Path, Path]]:
     sources: list[tuple[Path, Path]] = []
-    skuld_log = workspace / ".skuld.log"
+    skuld_log = resolve_contained_path(workspace, ".skuld.log")
     if skuld_log.is_file():
         sources.append((skuld_log, Path("skuld.log")))
 
-    flock_logs = workspace / ".flock" / "logs"
+    flock_logs = resolve_contained_path(workspace, Path(".flock") / "logs")
     if flock_logs.is_dir():
         for path in sorted(flock_logs.glob("*.log")):
             sources.append((path, Path("flock") / path.name))
 
-    service_logs = workspace / ".services" / "logs"
+    service_logs = resolve_contained_path(workspace, Path(".services") / "logs")
     if service_logs.is_dir():
         for path in sorted(service_logs.glob("*.log")):
             sources.append((path, Path("services") / path.name))
     return sources
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+def _read_json(root: Path, path: Path) -> dict[str, Any]:
+    safe_path = resolve_contained_path(root, path, strict=True)
+    data = json.loads(safe_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"Expected JSON object in {path}")
     return data
@@ -408,6 +480,7 @@ def _normalise_transcript_payload(data: dict[str, Any]) -> dict[str, Any]:
     return {"turns": turns, "is_active": False, "last_activity": ""}
 
 
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+def _write_json(root: Path, path: str | Path, payload: dict[str, Any]) -> None:
+    safe_path = resolve_contained_path(root, path)
+    safe_path.parent.mkdir(parents=True, exist_ok=True)
+    safe_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
