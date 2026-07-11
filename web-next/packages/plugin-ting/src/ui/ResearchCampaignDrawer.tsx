@@ -16,21 +16,25 @@ export function ResearchCampaignDrawer({
   controller: ResearchCampaignPageController;
 }) {
   const {
-    slug,
-    navigate,
     campaign,
     deleteCampaign,
     drawer,
     setDrawer,
+    popoverCitation,
+    setPopoverCitation,
     parsedArtifacts,
     openMimirPage,
     sourceList,
+    visibleCitationSourceLabels,
     critiques,
+    finalArtifact,
+    manifestArtifact,
     selectedFilePath,
     selectedFileArtifact,
     selectedSource,
     selectedCritique,
     filteredActivity,
+    sessionsCount,
     handleDeleteCampaign,
   } = controller;
 
@@ -387,4 +391,3 @@ export function ResearchCampaignDrawer({
     </aside>
   ) : null;
 }
-

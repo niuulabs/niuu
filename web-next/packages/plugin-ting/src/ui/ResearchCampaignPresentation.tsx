@@ -370,4 +370,3 @@ export function CitationPopover({
     </div>
   );
 }
-
