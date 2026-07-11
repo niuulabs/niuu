@@ -277,8 +277,16 @@ jobs:
           TEST_RABBITMQ_URL: "amqp://guest:guest@localhost:5672/"
           TEST_REDIS_URL: "redis://localhost:6379"
         run: |
-          uv run pytest tests/integration/sleipnir/ -v --tb=short -m broker \
-            --override-ini="addopts="
+          output="$(uv run pytest tests/integration/sleipnir/ -v --tb=short -m broker --override-ini="addopts=" 2>&1)" || {
+            printf '%s\n' "$output"
+            annotation="${output: -3500}"
+            annotation="${annotation//'%'/'%25'}"
+            annotation="${annotation//$'\n'/'%0A'}"
+            annotation="${annotation//$'\r'/'%0D'}"
+            echo "::error title=Sleipnir integration failure::${annotation}"
+            exit 1
+          }
+          printf '%s\n' "$output"
 
   # ---------------------------------------------------------------------------
   # End-to-end tests — full tier only
