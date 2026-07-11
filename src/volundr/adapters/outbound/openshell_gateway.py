@@ -260,6 +260,7 @@ class OpenShellGatewayClient:
         resources: dict[str, Any] | None = None,
         driver_config: dict[str, Any] | None = None,
         providers: Sequence[str] = (),
+        policy: Any | None = None,
     ) -> OpenShellSandbox:
         template = openshell_pb2.SandboxTemplate(image=image)
         template.labels.update(labels)
@@ -273,7 +274,7 @@ class OpenShellGatewayClient:
         spec = openshell_pb2.SandboxSpec(
             environment=env,
             template=template,
-            policy=_default_policy(),
+            policy=policy,
             providers=list(providers),
         )
         request = openshell_pb2.CreateSandboxRequest(spec=spec, name=name, labels=labels)
@@ -643,9 +644,12 @@ class OpenShellGatewayPodManager(
         codex_refresh_skew_seconds: int = DEFAULT_CODEX_REFRESH_SKEW_SECONDS,
         codex_oauth_timeout_seconds: float = DEFAULT_CODEX_OAUTH_TIMEOUT_SECONDS,
         codex_oauth_client: httpx.AsyncClient | None = None,
+        sandbox_policy: dict[str, Any] | None = None,
         client: OpenShellGatewayClient | None = None,
         **_extra: object,
     ) -> None:
+        if sandbox_policy is None and client is None:
+            raise ValueError("OpenShell sandbox_policy configuration is required")
         self._gateway_public_url = gateway_public_url.rstrip("/")
         gateway_hostport = _endpoint_hostport(gateway_endpoint)
         gateway_host, separator, gateway_port = gateway_hostport.rpartition(":")
@@ -658,6 +662,7 @@ class OpenShellGatewayPodManager(
         self._sandbox_command = _normalize_command(sandbox_command) or DEFAULT_SANDBOX_COMMAND
         self._sandbox_workspace = sandbox_workspace
         self._sandbox_home = sandbox_home.rstrip("/")
+        self._sandbox_policy = _sandbox_policy_from_config(sandbox_policy or {"version": 1})
         self._service_port = int(service_port)
         self._service_name = service_name
         self._command_log_path = command_log_path
@@ -858,6 +863,7 @@ class OpenShellGatewayPodManager(
                 resources=self._resources_from_spec(spec),
                 driver_config=self._driver_config_from_spec(spec),
                 providers=provider_names,
+                policy=self._sandbox_policy,
             )
             ready = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
             projected_files = dict(credential_context.files)
@@ -3110,78 +3116,28 @@ def _credential_file_archive(
     return output.getvalue()
 
 
-def _default_policy() -> sandbox_pb2.SandboxPolicy:
+def _sandbox_policy_from_config(config: dict[str, Any]) -> Any:
+    if int(config.get("version") or 0) != 1:
+        raise ValueError("OpenShell sandbox_policy.version must be 1")
+    filesystem = config.get("filesystem") or {}
+    process = config.get("process") or {}
+    network_policies = {
+        str(key): sandbox_pb2.NetworkPolicyRule(
+            name=str(value.get("name") or key),
+            endpoints=[
+                sandbox_pb2.NetworkEndpoint(**endpoint)
+                for endpoint in value.get("endpoints", [])
+            ],
+            binaries=[sandbox_pb2.NetworkBinary(**binary) for binary in value.get("binaries", [])],
+        )
+        for key, value in (config.get("network_policies") or {}).items()
+    }
     return sandbox_pb2.SandboxPolicy(
         version=1,
-        filesystem=sandbox_pb2.FilesystemPolicy(
-            include_workdir=True,
-            read_only=[
-                "/bin",
-                "/etc",
-                "/lib",
-                "/lib64",
-                "/opt",
-                "/proc",
-                "/sbin",
-                "/usr",
-                "/var/log",
-                "/dev/urandom",
-            ],
-            read_write=["/sandbox", "/run/secrets", "/tmp", "/dev/null"],
-        ),
-        landlock=sandbox_pb2.LandlockPolicy(),
-        process=sandbox_pb2.ProcessPolicy(run_as_user="sandbox", run_as_group="sandbox"),
-        network_policies={
-            "github_https": _network_policy_rule(
-                name="github-https",
-                hosts=(
-                    "github.com",
-                    "api.github.com",
-                    "codeload.github.com",
-                    "objects.githubusercontent.com",
-                    "raw.githubusercontent.com",
-                ),
-                binaries=(
-                    "/usr/bin/git",
-                    "/usr/lib/git-core/git-remote-http",
-                    "/usr/lib/git-core/git-remote-https",
-                    "/usr/bin/curl",
-                ),
-            ),
-            "openai_https": _network_policy_rule(
-                name="openai-https",
-                hosts=("api.openai.com",),
-                binaries=(
-                    "/usr/local/bin/codex",
-                    "/usr/bin/node",
-                    "/usr/local/bin/node",
-                    "/opt/venv/bin/python3",
-                ),
-            ),
-        },
-    )
-
-
-def _network_policy_rule(
-    *,
-    name: str,
-    hosts: Sequence[str],
-    binaries: Sequence[str],
-) -> sandbox_pb2.NetworkPolicyRule:
-    return sandbox_pb2.NetworkPolicyRule(
-        name=name,
-        endpoints=[
-            sandbox_pb2.NetworkEndpoint(
-                host=host,
-                port=443,
-                protocol="rest",
-                tls="terminate",
-                enforcement="enforce",
-                access="full",
-            )
-            for host in hosts
-        ],
-        binaries=[sandbox_pb2.NetworkBinary(path=binary) for binary in binaries],
+        filesystem=sandbox_pb2.FilesystemPolicy(**filesystem),
+        landlock=sandbox_pb2.LandlockPolicy(**(config.get("landlock") or {})),
+        process=sandbox_pb2.ProcessPolicy(**process),
+        network_policies=network_policies,
     )
 
 
