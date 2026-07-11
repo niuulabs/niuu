@@ -13,9 +13,9 @@ from niuu.cors import apply_cors_middleware
 from niuu.service_database import database_pool
 from niuu.service_databases import apply_service_database_settings
 from niuu.service_runtime import configure_logging, create_identity_adapter, create_pat_validator
-from volundr.config import Settings
 from volundr.adapters.inbound.rest_features import create_features_router
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
+from volundr.config import Settings
 from volundr.domain.services.feature import FeatureService
 
 

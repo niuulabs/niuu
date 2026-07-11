@@ -26,6 +26,7 @@ class ServiceSettings(Protocol):
     credential_store: Any
     pat: Any
 
+
 _SHARED_CREDENTIAL_STORES: dict[str, object] = {}
 _SHARED_CREDENTIAL_STORE_REFS: dict[str, int] = {}
 

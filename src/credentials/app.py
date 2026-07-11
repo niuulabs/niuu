@@ -20,12 +20,12 @@ from niuu.service_runtime import (
     create_pat_validator,
     release_credential_store,
 )
-from volundr.config import Settings
 from volundr.adapters.inbound.rest_credentials import create_canonical_credentials_router
 from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
 from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
 from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
+from volundr.config import Settings
 from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
 

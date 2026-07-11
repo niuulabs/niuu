@@ -11,7 +11,6 @@ from fastapi import FastAPI
 from niuu.cors import apply_cors_middleware
 from niuu.service_database import database_pool
 from niuu.service_runtime import configure_logging
-from volundr.config import Settings
 from niuu.utils import import_class
 from sleipnir.adapters.audit_postgres import PostgresAuditRepository
 from sleipnir.adapters.audit_subscriber import AuditSubscriber
@@ -19,6 +18,7 @@ from volundr.adapters.inbound.rest_audit import (
     create_audit_router,
     create_canonical_audit_router,
 )
+from volundr.config import Settings
 
 logger = logging.getLogger(__name__)
 

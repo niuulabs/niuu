@@ -13,7 +13,6 @@ from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.services.pat import PATService
-from niuu.service_runtime import create_workload_identity_service
 from niuu.service_database import database_pool
 from niuu.service_databases import apply_service_database_settings
 from niuu.service_runtime import (
@@ -21,12 +20,13 @@ from niuu.service_runtime import (
     create_identity_adapter,
     create_pat_validator,
     create_storage_adapter,
+    create_workload_identity_service,
 )
-from volundr.config import Settings
 from niuu.utils import import_class
 from volundr.adapters.inbound.rest_tenants import create_identity_router
 from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
+from volundr.config import Settings
 from volundr.domain.services.tenant import TenantService
 
 

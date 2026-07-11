@@ -27,10 +27,10 @@ from niuu.service_runtime import (
     create_pat_validator,
     release_credential_store,
 )
-from volundr.config import Settings
 from volundr.adapters.inbound.rest_integrations import create_canonical_integrations_router
 from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
+from volundr.config import Settings
 from volundr.domain.services.integration_registry import (
     IntegrationRegistry,
     definitions_from_config,

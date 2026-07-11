@@ -40,6 +40,8 @@ Dashboard = dict[str, Any]
 logger = logging.getLogger(__name__)
 RAW_SIGNAL_TELEMETRY_LIMIT = 1_000
 CONTROL_TELEMETRY_LIMIT = 2_000
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 

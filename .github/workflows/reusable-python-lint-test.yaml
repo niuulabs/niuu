@@ -33,7 +33,7 @@ jobs:
         uses: ./.github/actions/setup-python-env
 
       - name: Run ruff linting
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check --output-format=github src/ tests/
 
       - name: Check ruff formatting
         run: uv run ruff format --check src/ tests/

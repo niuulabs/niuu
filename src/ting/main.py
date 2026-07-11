@@ -351,7 +351,9 @@ def create_app(
     )
 
     app.state.settings = settings
-    app.state.workload_identity_service = create_workload_identity_service(settings.workload_identity)
+    app.state.workload_identity_service = create_workload_identity_service(
+        settings.workload_identity
+    )
 
     # -- Routers --
     app.include_router(create_health_router())

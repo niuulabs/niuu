@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import NAMESPACE_URL, uuid5
 from typing import Any, Protocol
+from uuid import NAMESPACE_URL, uuid5
 
 from niuu.domain.models import IntegrationConnection, IntegrationType, SecretType
 
