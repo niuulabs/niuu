@@ -152,6 +152,8 @@ async def list_files(path: str = "", root: str = "workspace") -> dict:
 async def download_file(path: str, root: str = "workspace") -> FileResponse:
     """Download a single file from the session."""
     _validate_root(root)
+    if not path:
+        raise HTTPException(400, "path must name a file, not a directory")
     base = _resolve_root(root)
     target = _resolve_user_path(base, path, allow_root=False)
     canonical_base = os.path.realpath(os.path.abspath(os.fspath(base)))
@@ -242,6 +244,8 @@ async def upload_file_raw(
     (not a directory), confined identically (reject absolute/.. + realpath guard).
     """
     _validate_root(root)
+    if not path:
+        raise HTTPException(400, "path must name a file, not a directory")
     base = _resolve_root(root)
     target = _resolve_user_path(base, path, allow_root=False)
     canonical_base = os.path.realpath(os.path.abspath(os.fspath(base)))

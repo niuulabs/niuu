@@ -12,10 +12,11 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     from skuld import broker as bmod
+    from skuld import broker_api as api_mod
 
     # Stage into a temp dir (not the real session home) and capture emitted frames instead of
     # persisting/broadcasting them.
-    monkeypatch.setattr(bmod, "_presented_staging_dir", lambda: tmp_path / "staging")
+    monkeypatch.setattr(api_mod, "_presented_staging_dir", lambda: tmp_path / "staging")
     monkeypatch.setattr(bmod.broker, "workspace_dir", str(tmp_path))
     captured: list = []
 
@@ -23,7 +24,7 @@ def client(tmp_path, monkeypatch):
         captured.append(frame)
 
     monkeypatch.setattr(bmod.broker, "_emit_broker_frame", _fake_emit)
-    bmod._presented_registry.clear()
+    api_mod._presented_registry.clear()
     c = TestClient(bmod.app)
     c.captured = captured  # type: ignore[attr-defined]
     return c
@@ -106,12 +107,13 @@ def test_present_file_size_cap(client, tmp_path, monkeypatch):
 
 def test_registry_rebuild_recovers_after_restart(client, tmp_path):
     from skuld import broker as bmod
+    from skuld import broker_api as api_mod
 
     src = tmp_path / "doc.txt"
     src.write_bytes(b"recovered")
     fid = client.post("/api/present-file", json={"path": str(src)}).json()["file_id"]
     # Simulate a broker restart: the in-memory registry is lost, then rebuilt from the staging dir.
-    bmod._presented_registry.clear()
-    bmod._rebuild_presented_registry()
-    assert fid in bmod._presented_registry
+    api_mod._presented_registry.clear()
+    api_mod._rebuild_presented_registry()
+    assert fid in api_mod._presented_registry
     assert client.get(f"/api/files/presented/{fid}").content == b"recovered"

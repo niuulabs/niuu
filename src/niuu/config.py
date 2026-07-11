@@ -265,7 +265,7 @@ class CorsConfig(BaseSettings):
         del cls, settings_cls, dotenv_settings
         return env_settings, init_settings, file_secret_settings
 
-    allowed_origins: list[str] = Field(
+    allowed_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["*"],
         validation_alias=AliasChoices("allowed_origins", "CORS_ORIGINS"),
     )
@@ -273,11 +273,11 @@ class CorsConfig(BaseSettings):
         default=True,
         validation_alias=AliasChoices("allow_credentials", "CORS_ALLOW_CREDENTIALS"),
     )
-    allow_methods: list[str] = Field(
+    allow_methods: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["*"],
         validation_alias=AliasChoices("allow_methods", "CORS_ALLOW_METHODS"),
     )
-    allow_headers: list[str] = Field(
+    allow_headers: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["*"],
         validation_alias=AliasChoices("allow_headers", "CORS_ALLOW_HEADERS"),
     )

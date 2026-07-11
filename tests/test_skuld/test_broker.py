@@ -142,7 +142,7 @@ class TestBroker:
         )
         b = Broker(settings=settings)
 
-        with patch("skuld.broker.import_class") as mock_import:
+        with patch("skuld.transport_lifecycle.import_class") as mock_import:
             mock_import.return_value = SubprocessTransport
             transport = b._create_transport()
 

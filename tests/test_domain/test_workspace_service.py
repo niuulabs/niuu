@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -82,9 +83,19 @@ class TestWorkspaceServiceDelete:
         remaining = await service.list_workspaces("user-1")
         assert len(remaining) == 0
 
-    async def test_session_id_escapes_control_characters_in_log(self, service, storage, caplog):
+    async def test_session_id_escapes_control_characters_in_log(
+        self,
+        service,
+        storage,
+        caplog,
+        monkeypatch,
+    ):
         session_id = "session\r\nforged\tentry\x1b[31m"
-        await storage.create_session_workspace(session_id, "user-1", "tenant-1")
+        monkeypatch.setattr(
+            storage,
+            "get_workspace_by_session",
+            AsyncMock(return_value=object()),
+        )
 
         with caplog.at_level(logging.INFO, logger="volundr.domain.services.workspace"):
             result = await service.delete_workspace_by_session(session_id)

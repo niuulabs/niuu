@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -19,10 +20,12 @@ from ravn.web import DEFAULT_WEB_PORT, create_standalone_app, serve
 @pytest.fixture(autouse=True)
 def _redirect_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    monkeypatch.delenv("RAVN_CONFIG", raising=False)
+    for name in tuple(os.environ):
+        if name.startswith("RAVN_"):
+            monkeypatch.delenv(name)
+    monkeypatch.setenv("RAVN_CONFIG", str(tmp_path / "missing-ravn.yaml"))
     monkeypatch.setenv("RAVN_GATEWAY__PLATFORM__BASE_URL", "http://localhost:8080")
     monkeypatch.setenv("RAVN_RESIDENT_DISCOVERY__ENABLED", "false")
-    monkeypatch.delenv("RAVN_RESIDENT_DISCOVERY__ADAPTERS_JSON", raising=False)
 
 
 @pytest.fixture()
@@ -64,8 +67,8 @@ def test_ravn_status_available(client: TestClient) -> None:
     import httpx
     import respx
 
-    with respx.mock(assert_all_called=False):
-        respx.get("http://localhost:8080/api/v1/forge/sessions").mock(
+    with respx.mock(assert_all_called=False) as router:
+        router.get("http://localhost:8080/api/v1/forge/sessions").mock(
             return_value=httpx.Response(200, json=[])
         )
         resp = client.get("/api/v1/ravn/status")
