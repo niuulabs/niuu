@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import io
 import json
+import socket
 import sys
 import tarfile
 import time
@@ -93,6 +94,9 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
 
+        def HasField(self, name):  # noqa: N802 - protobuf compatibility shim.
+            return getattr(self, name, None) is not None
+
     for name in (
         "Provider",
         "ObjectMeta",
@@ -106,6 +110,11 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
         "GetSandboxRequest",
         "DeleteSandboxRequest",
         "ExposeServiceRequest",
+        "CreateSshSessionRequest",
+        "RevokeSshSessionRequest",
+        "TcpForwardFrame",
+        "TcpForwardInit",
+        "TcpRelayTarget",
         "ExecSandboxRequest",
         "ProviderProfileCredential",
         "ProviderCredentialTokenGrant",
@@ -176,6 +185,8 @@ class _FakeOpenShellGatewayClient:
         self.bootstrap_execs: list[dict] = []
         self.execs: list[dict] = []
         self.exposed: dict | None = None
+        self.forwarded: list[dict] = []
+        self.closed_forwarders: list[dict] = []
         self.deleted: list[str] = []
         self.deleted_services: list[dict] = []
         self.provider_grants: list[dict] = []
@@ -226,6 +237,19 @@ class _FakeOpenShellGatewayClient:
     def expose_service(self, **kwargs) -> str:
         self.exposed = kwargs
         return self.service_url
+
+    def start_tcp_forward(self, **kwargs):
+        self.forwarded.append(kwargs)
+        closed_forwarders = self.closed_forwarders
+
+        class _Forwarder:
+            host = "127.0.0.1"
+            port = 43210
+
+            def close(self) -> None:
+                closed_forwarders.append(kwargs)
+
+        return _Forwarder()
 
     def delete_sandbox(self, name: str) -> bool:
         self.deleted.append(name)
@@ -322,6 +346,49 @@ class _FakeCredentialStore:
         self.deletes.append((owner_type, owner_id, name))
         self.values.pop(name, None)
         return True
+
+
+def test_native_tcp_forward_uses_authenticated_sandbox_relay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    requests: list[object] = []
+
+    def create_ssh_session(request, **_kwargs):
+        requests.append(request)
+        return types.SimpleNamespace(token="short-lived-forward-token")
+
+    def forward_tcp(frames, **_kwargs):
+        requests.extend(list(frames))
+        return [adapter.openshell_pb2.TcpForwardFrame(data=b"HTTP/1.1 204 OK\r\n\r\n")]
+
+    def revoke_ssh_session(request, **_kwargs):
+        requests.append(request)
+
+    client = object.__new__(adapter.OpenShellGatewayClient)
+    client._stub = types.SimpleNamespace(
+        CreateSshSession=create_ssh_session,
+        ForwardTcp=forward_tcp,
+        RevokeSshSession=revoke_ssh_session,
+    )
+    client._timeout = 30.0
+    client._metadata = lambda: (("authorization", "Bearer oidc"),)
+    bridge, caller = socket.socketpair()
+    caller.sendall(b"GET /health HTTP/1.1\r\nHost: hermes\r\n\r\n")
+    caller.shutdown(socket.SHUT_WR)
+
+    client._forward_tcp_connection(bridge, sandbox_id="sandbox-id", target_port=18789)
+
+    assert caller.recv(1024) == b"HTTP/1.1 204 OK\r\n\r\n"
+    init = requests[1].init
+    assert init.sandbox_id == "sandbox-id"
+    assert init.tcp.host == "127.0.0.1"
+    assert init.tcp.port == 18789
+    assert init.authorization_token == "short-lived-forward-token"
+    assert requests[2].data.startswith(b"GET /health")
+    assert requests[3].token == "short-lived-forward-token"
+    caller.close()
+    bridge.close()
 
 
 class _FakeWorkloadTokenIssuer:
@@ -715,11 +782,7 @@ async def test_hermes_deploy_uses_persisted_process_only_credential_and_generic_
     assert client.execs[0]["env"][adapter.HERMES_API_SERVER_KEY_ENV]
     assert client.execs[0]["env"]["HERMES_HOME"] == "/sandbox/workspace/.hermes"
     assert client.execs[0]["pid_path"] == "/sandbox/.volundr/hermes.pid"
-    assert client.exposed == {
-        "sandbox_name": f"resident-{runtime.id.hex[:19]}",
-        "target_port": 18789,
-        "service": "hermes",
-    }
+    assert client.exposed is None
     assert store.stores[0]["name"] == HERMES_CREDENTIAL_NAME
     assert store.stores[0]["owner_id"] == str(runtime.id)
     hermes_config = client.written_files[0]["files"][
@@ -738,6 +801,15 @@ async def test_hermes_deploy_uses_persisted_process_only_credential_and_generic_
     health = client.bootstrap_execs[-1]["script"]
     assert "/sandbox/.volundr/hermes.pid" in health
     assert "/:4965$/" in health
+
+    deployed_runtime = runtime.model_copy(update={"backend_ref": observation.backend_ref})
+    target = manager.resident_proxy_target(deployed_runtime)
+    assert target == adapter.SessionProxyTarget(
+        service_url=adapter.HERMES_INTERNAL_SERVICE_URL,
+        connect_host="127.0.0.1",
+        connect_port=43210,
+    )
+    assert client.forwarded == [{"sandbox_id": "sandbox-id", "target_port": 18789}]
 
 
 @pytest.mark.asyncio

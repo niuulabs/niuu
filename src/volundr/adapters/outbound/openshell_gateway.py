@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import shlex
+import socket
 import tarfile
 import threading
 import time
@@ -81,6 +82,7 @@ DEFAULT_SANDBOX_COMMAND = ["/usr/local/bin/openshell-run-installed-skuld"]
 DEFAULT_SERVICE_PORT = 9200
 READY_POLL_INTERVAL = 1.0
 DEFAULT_RESOURCE_DELETE_TIMEOUT_SECONDS = 30.0
+TCP_FORWARD_BUFFER_BYTES = 64 * 1024
 BOOTSTRAP_TIMEOUT_SECONDS = 600
 BOOTSTRAP_GIT_ATTEMPTS = 20
 MAX_SANDBOX_ROUTING_NAME_LENGTH = 28
@@ -108,6 +110,7 @@ CODEX_ACCOUNT_ID_ENV = "CODEX_AUTH_ACCOUNT_ID"
 CODEX_ACCESS_TOKEN_REFERENCE = f"openshell:resolve:env:{CODEX_ACCESS_TOKEN_ENV}"
 HERMES_API_SERVER_KEY_ENV = "API_SERVER_KEY"
 HERMES_API_SERVER_DEFAULT_PORT = 8642
+HERMES_INTERNAL_SERVICE_URL = "http://hermes-api.internal"
 SECRET_ENV_KEYS = {
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
@@ -467,6 +470,54 @@ class OpenShellGatewayClient:
         )
         return str(response.url or "")
 
+    def start_tcp_forward(self, *, sandbox_id: str, target_port: int) -> OpenShellTcpForwarder:
+        """Open a local listener backed by OpenShell's authenticated ForwardTcp RPC."""
+        return OpenShellTcpForwarder(self, sandbox_id=sandbox_id, target_port=target_port)
+
+    def _forward_tcp_connection(
+        self,
+        connection: socket.socket,
+        *,
+        sandbox_id: str,
+        target_port: int,
+    ) -> None:
+        session = self._stub.CreateSshSession(
+            openshell_pb2.CreateSshSessionRequest(sandbox_id=sandbox_id),
+            timeout=self._timeout,
+            metadata=self._metadata(),
+        )
+        token = str(session.token)
+
+        def frames():
+            yield openshell_pb2.TcpForwardFrame(
+                init=openshell_pb2.TcpForwardInit(
+                    sandbox_id=sandbox_id,
+                    service_id=f"volundr-resident:{sandbox_id}:{target_port}",
+                    tcp=openshell_pb2.TcpRelayTarget(host="127.0.0.1", port=target_port),
+                    authorization_token=token,
+                )
+            )
+            while True:
+                data = connection.recv(TCP_FORWARD_BUFFER_BYTES)
+                if not data:
+                    return
+                yield openshell_pb2.TcpForwardFrame(data=data)
+
+        try:
+            responses = self._stub.ForwardTcp(frames(), metadata=self._metadata())
+            for response in responses:
+                if response.HasField("data"):
+                    connection.sendall(response.data)
+        finally:
+            try:
+                self._stub.RevokeSshSession(
+                    openshell_pb2.RevokeSshSessionRequest(token=token),
+                    timeout=self._timeout,
+                    metadata=self._metadata(),
+                )
+            except grpc.RpcError:
+                logger.debug("OpenShell TCP forward session revocation failed", exc_info=True)
+
     def exec_detached(
         self,
         *,
@@ -602,6 +653,71 @@ class OpenShellGatewayClient:
         return (("authorization", f"Bearer {self._token_provider.token()}"),)
 
 
+class OpenShellTcpForwarder:
+    """Local TCP listener bridged to one sandbox loopback port over gRPC."""
+
+    def __init__(
+        self,
+        client: OpenShellGatewayClient,
+        *,
+        sandbox_id: str,
+        target_port: int,
+    ) -> None:
+        self._client = client
+        self._sandbox_id = sandbox_id
+        self._target_port = target_port
+        self._closed = threading.Event()
+        self._connections: set[socket.socket] = set()
+        self._connection_lock = threading.Lock()
+        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._listener.bind(("127.0.0.1", 0))
+        self._listener.listen()
+        self.host, self.port = self._listener.getsockname()
+        self._thread = threading.Thread(target=self._accept, daemon=True)
+        self._thread.start()
+
+    def _accept(self) -> None:
+        while not self._closed.is_set():
+            try:
+                connection, _ = self._listener.accept()
+            except OSError:
+                return
+            with self._connection_lock:
+                self._connections.add(connection)
+            threading.Thread(
+                target=self._bridge,
+                args=(connection,),
+                daemon=True,
+            ).start()
+
+    def _bridge(self, connection: socket.socket) -> None:
+        try:
+            self._client._forward_tcp_connection(
+                connection,
+                sandbox_id=self._sandbox_id,
+                target_port=self._target_port,
+            )
+        except (OSError, grpc.RpcError):
+            logger.debug("OpenShell TCP forward closed", exc_info=True)
+        finally:
+            with self._connection_lock:
+                self._connections.discard(connection)
+            connection.close()
+
+    def close(self) -> None:
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        self._listener.close()
+        with self._connection_lock:
+            connections = tuple(self._connections)
+            self._connections.clear()
+        for connection in connections:
+            connection.close()
+        self._thread.join(timeout=1)
+
+
 class OpenShellGatewayPodManager(
     PodManager,
     OpenShellCredentialGrantPort,
@@ -703,6 +819,7 @@ class OpenShellGatewayPodManager(
             timeout=command_timeout,
         )
         self._service_urls: dict[str, str] = {}
+        self._resident_forwarders: dict[str, OpenShellTcpForwarder] = {}
         self._provider_grants: dict[str, tuple[OpenShellProviderGrant, ...]] = {}
         self._credential_store: CredentialStorePort | None = None
         self._session_repository: SessionRepository | None = None
@@ -806,11 +923,34 @@ class OpenShellGatewayPodManager(
         return self._proxy_target(base)
 
     def resident_proxy_target(self, runtime: ResidentRuntime) -> SessionProxyTarget | None:
-        """Resolve an OpenShell resident service through the same gateway."""
+        """Resolve the resident service using its engine-supported OpenShell transport."""
+        if runtime.engine is ResidentEngine.HERMES:
+            return self._hermes_proxy_target(runtime)
         base = self._service_urls.get(str(runtime.id)) or str(
             runtime.backend_ref.get("service_url") or ""
         )
         return self._proxy_target(base)
+
+    def _hermes_proxy_target(self, runtime: ResidentRuntime) -> SessionProxyTarget | None:
+        runtime_id = str(runtime.id)
+        forwarder = self._resident_forwarders.get(runtime_id)
+        if forwarder is None:
+            sandbox_id = str(runtime.backend_ref.get("id") or "")
+            service_port = int(
+                runtime.backend_ref.get("service_port") or HERMES_API_SERVER_DEFAULT_PORT
+            )
+            if not sandbox_id:
+                return None
+            forwarder = self._client.start_tcp_forward(
+                sandbox_id=sandbox_id,
+                target_port=service_port,
+            )
+            self._resident_forwarders[runtime_id] = forwarder
+        return SessionProxyTarget(
+            service_url=HERMES_INTERNAL_SERVICE_URL,
+            connect_host=forwarder.host,
+            connect_port=forwarder.port,
+        )
 
     def _proxy_target(self, base: str | None) -> SessionProxyTarget | None:
         if not base:
@@ -1077,14 +1217,17 @@ class OpenShellGatewayPodManager(
                 processes,
                 service_port=service_port,
             )
-            service_url = await asyncio.to_thread(
-                self._client.expose_service,
-                sandbox_name=sandbox_name,
-                target_port=service_port,
-                service=service_name,
-            )
-            if not service_url and not self._gateway_public_url:
-                raise RuntimeError("OpenShell did not return a resident service URL")
+            if runtime.engine is ResidentEngine.HERMES:
+                service_url = HERMES_INTERNAL_SERVICE_URL
+            else:
+                service_url = await asyncio.to_thread(
+                    self._client.expose_service,
+                    sandbox_name=sandbox_name,
+                    target_port=service_port,
+                    service=service_name,
+                )
+                if not service_url and not self._gateway_public_url:
+                    raise RuntimeError("OpenShell did not return a resident service URL")
         except Exception:
             try:
                 await self._cleanup_resources(sandbox_name, grants, service_name=service_name)
@@ -1233,6 +1376,9 @@ class OpenShellGatewayPodManager(
     async def delete(self, runtime: ResidentRuntime) -> bool:
         runtime_id = str(runtime.id)
         self._service_urls.pop(runtime_id, None)
+        forwarder = self._resident_forwarders.pop(runtime_id, None)
+        if forwarder is not None:
+            await asyncio.to_thread(forwarder.close)
         sandbox_name = self._resident_sandbox_name(runtime)
         grants = self._provider_grants.pop(runtime_id, ())
         if not grants:
@@ -1313,6 +1459,10 @@ class OpenShellGatewayPodManager(
         )
 
     async def close(self) -> None:
+        forwarders = tuple(self._resident_forwarders.values())
+        self._resident_forwarders.clear()
+        for forwarder in forwarders:
+            await asyncio.to_thread(forwarder.close)
         await asyncio.to_thread(self._client.close)
 
     async def _launch_resident_processes(
