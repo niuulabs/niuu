@@ -1215,16 +1215,23 @@ def test_exec_script_sends_multiline_script_over_stdin(monkeypatch: pytest.Monke
     class _Exit:
         exit_code = 0
 
+    class _Data:
+        data = b"one\ntwo\n"
+
     class _Event:
         exit = _Exit()
+        stdout = _Data()
+
+        def __init__(self, field: str) -> None:
+            self._field = field
 
         def HasField(self, name: str) -> bool:  # noqa: N802 - protobuf shim.
-            return name == "exit"
+            return name == self._field
 
     class _Stub:
         def ExecSandbox(self, request, **_kwargs):  # noqa: N802 - protobuf shim.
             recorded["request"] = request
-            return [_Event()]
+            return [_Event("stdout"), _Event("exit")]
 
     adapter.openshell_pb2_grpc.OpenShellStub = lambda _channel: _Stub()
     client = adapter.OpenShellGatewayClient(
@@ -1240,7 +1247,7 @@ def test_exec_script_sends_multiline_script_over_stdin(monkeypatch: pytest.Monke
 
     request = recorded["request"]
     assert exit_code == 0
-    assert output == ""
+    assert output == "one\ntwo\n"
     assert request.command == ["sh", "-s"]
     assert request.stdin == b"echo one\necho two\n"
     assert all("\n" not in arg and "\r" not in arg for arg in request.command)
@@ -1252,7 +1259,7 @@ def test_write_files_includes_projection_stderr(monkeypatch: pytest.MonkeyPatch)
     recorded = {}
 
     class _Data:
-        data = "tar: cannot create sandbox/.volundr: permission denied\n"
+        data = b"tar: cannot create sandbox/.volundr: permission denied\n"
 
     class _Exit:
         exit_code = 2

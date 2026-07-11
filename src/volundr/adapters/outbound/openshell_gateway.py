@@ -557,9 +557,9 @@ class OpenShellGatewayClient:
         output: list[str] = []
         for event in stream:
             if event.HasField("stdout"):
-                output.append(str(event.stdout.data or ""))
+                output.append(_exec_output_text(event.stdout.data))
             elif event.HasField("stderr"):
-                output.append(str(event.stderr.data or ""))
+                output.append(_exec_output_text(event.stderr.data))
             elif event.HasField("exit"):
                 exit_code = int(event.exit.exit_code)
         return exit_code, "".join(output)
@@ -580,9 +580,9 @@ class OpenShellGatewayClient:
             exit_code = 0
             for event in stream:
                 if event.HasField("stdout"):
-                    output.append(str(event.stdout.data or ""))
+                    output.append(_exec_output_text(event.stdout.data))
                 elif event.HasField("stderr"):
-                    output.append(str(event.stderr.data or ""))
+                    output.append(_exec_output_text(event.stderr.data))
                 elif event.HasField("exit"):
                     exit_code = int(event.exit.exit_code)
             if exit_code != 0:
@@ -2548,6 +2548,12 @@ def _resident_process_log_script(lines: int, sources: Sequence[str]) -> str:
             )
         )
     return "\n".join(commands)
+
+
+def _exec_output_text(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value or "")
 
 
 def _resident_process_log_entries(output: str, *, min_level: str) -> list[ResidentLogEntry]:
