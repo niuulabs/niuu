@@ -503,3 +503,64 @@ def test_get_raven_with_instance_id_does_not_probe_other_targets() -> None:
     assert response.json()["instance_id"] == "beta"
     assert not alpha.called
     assert beta.called
+
+
+@respx.mock
+def test_get_raven_logs_forwards_filters_to_selected_target() -> None:
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha"),
+            _instance("beta", base_url="http://beta"),
+        ]
+    )
+    route = respx.get("http://beta/api/v1/ravn/ravens/resident-id/logs").mock(
+        return_value=Response(
+            200,
+            json={
+                "entries": [{"source": "ravn", "message": "ready"}],
+                "bufferTotal": 1,
+            },
+        )
+    )
+
+    response = client.get(
+        "/api/v1/ravn/ravens/resident-id/logs"
+        "?instance_id=beta&lines=25&source=ravn&source=skuld&min_level=info",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["instance_id"] == "beta"
+    assert response.json()["entries"][0]["message"] == "ready"
+    assert route.calls.last.request.url.params.multi_items() == [
+        ("lines", "25"),
+        ("source", "ravn"),
+        ("source", "skuld"),
+        ("min_level", "info"),
+    ]
+    assert route.calls.last.request.headers["authorization"] == "Bearer test-token"
+
+
+@respx.mock
+def test_get_raven_logs_searches_visible_targets_without_instance_hint() -> None:
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha"),
+            _instance("beta", base_url="http://beta"),
+        ]
+    )
+    respx.get("http://alpha/api/v1/ravn/ravens/resident-id/logs").mock(
+        return_value=Response(404)
+    )
+    beta = respx.get("http://beta/api/v1/ravn/ravens/resident-id/logs").mock(
+        return_value=Response(200, json={"entries": [], "bufferTotal": 0})
+    )
+
+    response = client.get(
+        "/api/v1/ravn/ravens/resident-id/logs?lines=10",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["instance_id"] == "beta"
+    assert beta.called

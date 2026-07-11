@@ -109,6 +109,7 @@ def create_ravn_router(
         path: str,
         not_found_detail: str,
         instance_id: str | None = None,
+        params: list[tuple[str, str]] | None = None,
     ) -> dict[str, Any]:
         if instance_id is not None:
             instances = [
@@ -128,6 +129,7 @@ def create_ravn_router(
                 path=path,
                 remote_prefix=_RAVN_REMOTE_PREFIX,
                 base_url=_ravn_base_url(instance),
+                params=params,
                 embedded_app=embedded_forge_app,
             )
             if response.status_code == status.HTTP_404_NOT_FOUND:
@@ -259,6 +261,32 @@ def create_ravn_router(
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
         return await _control_raven(request, principal, ravn_id, "restart", instance_id)
+
+    @router.get("/ravens/{ravn_id}/logs")
+    async def get_raven_logs(
+        request: Request,
+        ravn_id: str,
+        instance_id: str | None = Query(default=None),
+        lines: int = Query(default=200, ge=1, le=5000),
+        source: list[str] = Query(default_factory=list),
+        min_level: str = Query(default="", max_length=32),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        """Return normalized resident logs from the owning target."""
+        params = [
+            ("lines", str(lines)),
+            *[("source", value) for value in source],
+        ]
+        if min_level:
+            params.append(("min_level", min_level))
+        return await _find_owner_payload(
+            request,
+            principal,
+            f"/ravens/{ravn_id}/logs",
+            f"Ravn not found: {ravn_id}",
+            instance_id,
+            params,
+        )
 
     @router.post("/ravens/{ravn_id}/suspend")
     async def suspend_raven(
