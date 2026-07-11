@@ -27,9 +27,9 @@ from ravn.cli.mcp_runtime import (  # noqa: F401
 from ravn.config import ProjectConfig, Settings
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.models import (
-    AgentTask as AgentTask,
+    AgentTask,
     Message,
-    OutputMode as OutputMode,
+    OutputMode,
     Session,
     TodoItem,
     TodoStatus,
@@ -51,6 +51,8 @@ from ravn.workflow_runtime import (  # noqa: F401
 )
 
 logger = logging.getLogger(__name__)
+# Extracted runtime wrappers resolve these legacy module globals at call time.
+_RUNTIME_MODEL_EXPORTS = (AgentTask, OutputMode)
 
 app = typer.Typer(
     name="ravn",
