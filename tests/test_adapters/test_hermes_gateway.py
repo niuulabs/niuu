@@ -17,6 +17,7 @@ from volundr.adapters.outbound.hermes_gateway import (
     HermesChatConnection,
     HermesGatewayError,
     HermesResidentSessionController,
+    _hermes_model_id,
     ensure_hermes_dashboard_token,
 )
 from volundr.domain.models import ResidentBackend, ResidentEngine, ResidentRuntime
@@ -81,6 +82,13 @@ async def test_incomplete_dashboard_credential_fails_closed() -> None:
         await ensure_hermes_dashboard_token(store, runtime)
 
 
+def test_niuu_virtual_provider_prefix_is_removed_for_hermes() -> None:
+    assert _hermes_model_id("niuu/Qwen/Qwen3.6-35B-A3B-FP8") == "Qwen/Qwen3.6-35B-A3B-FP8"
+    assert _hermes_model_id("openrouter/anthropic/claude-sonnet-4.6") == (
+        "openrouter/anthropic/claude-sonnet-4.6"
+    )
+
+
 @pytest.mark.asyncio
 async def test_session_lifecycle_uses_persistent_keys_and_deterministic_uuids() -> None:
     persistent_key = "20260711_120000_abc123"
@@ -141,7 +149,9 @@ async def test_session_lifecycle_uses_persistent_keys_and_deterministic_uuids() 
         assert sessions[0].title == "Persistent work"
         assert sessions[0].message_count == 4
 
-        created = await controller.create_session(runtime, title="New work", model=runtime.model)
+        model = "niuu/Qwen/Qwen3.6-35B-A3B-FP8"
+        created = await controller.create_session(runtime, title="New work", model=model)
+        assert created.model == model
         assert created.id != sessions[0].id
         assert created in await controller.list_sessions(runtime)
         chat = await controller.connect_chat(runtime, created.id)
@@ -157,7 +167,7 @@ async def test_session_lifecycle_uses_persistent_keys_and_deterministic_uuids() 
     create = next(request for request in requests if request["method"] == "session.create")
     assert create["params"] == {
         "title": "New work",
-        "model": runtime.model,
+        "model": "Qwen/Qwen3.6-35B-A3B-FP8",
         "source": "desktop",
         "close_on_disconnect": False,
     }

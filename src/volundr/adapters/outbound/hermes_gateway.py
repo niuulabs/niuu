@@ -28,6 +28,7 @@ from volundr.domain.ports import ResidentChatConnection, ResidentSessionControll
 HERMES_CREDENTIAL_NAME = "hermes-dashboard"
 _TOKEN_FIELD = "session_token"
 PENDING_SESSION_TTL_SECONDS = 300
+NIUU_MODEL_PREFIX = "niuu/"
 
 
 class HermesGatewayError(RuntimeError):
@@ -157,6 +158,11 @@ class _HermesConnection:
 
 def _session_uuid(key: str) -> UUID:
     return uuid5(NAMESPACE_URL, f"hermes-resident-session:{key}")
+
+
+def _hermes_model_id(model: str) -> str:
+    """Translate Niuu's virtual provider namespace to the Bifrost model ID."""
+    return model.removeprefix(NIUU_MODEL_PREFIX)
 
 
 def _timestamp(value: Any) -> datetime | None:
@@ -598,7 +604,7 @@ class HermesResidentSessionController(ResidentSessionController):
                 "session.create",
                 {
                     "title": title or runtime.name,
-                    "model": model or runtime.model,
+                    "model": _hermes_model_id(model or runtime.model),
                     "source": "desktop",
                     "close_on_disconnect": False,
                 },
