@@ -81,3 +81,10 @@ def test_resident_session_controller_receives_bound_backend_and_ports(
 def test_resident_session_controller_requires_its_runtime_backend() -> None:
     with pytest.raises(RuntimeError, match="requires unavailable backend openshell"):
         _create_resident_session_controllers(_settings(), [], object())
+
+
+def test_default_openclaw_adapter_is_optional_without_openshell_backend() -> None:
+    settings = Settings()
+
+    assert settings.resident_runtimes.session_controllers[0].optional is True
+    assert _create_resident_session_controllers(settings, [], object()) == []

@@ -121,6 +121,10 @@ async def test_session_lifecycle_uses_persistent_keys_and_deterministic_uuids() 
                 }
             elif request["method"] == "session.title":
                 result = {"pending": False, "title": request["params"]["title"]}
+            elif request["method"] == "session.history":
+                result = {"messages": []}
+            elif request["method"] == "prompt.submit":
+                result = {"accepted": True}
             else:
                 result = {"deleted": request["params"]["session_id"]}
             await _reply(websocket, request, result)
@@ -139,6 +143,10 @@ async def test_session_lifecycle_uses_persistent_keys_and_deterministic_uuids() 
 
         created = await controller.create_session(runtime, title="New work", model=runtime.model)
         assert created.id != sessions[0].id
+        assert created in await controller.list_sessions(runtime)
+        chat = await controller.connect_chat(runtime, created.id)
+        await chat.send({"type": "user", "content": "First message"})
+        await chat.close()
         await controller.delete_session(runtime, sessions[0].id)
 
     token = (await store.get_value("resident", str(runtime.id), "hermes-dashboard"))[
@@ -155,6 +163,10 @@ async def test_session_lifecycle_uses_persistent_keys_and_deterministic_uuids() 
     }
     title = next(request for request in requests if request["method"] == "session.title")
     assert title["params"] == {"session_id": "live-created", "title": "New work"}
+    assert not any(
+        request["method"] == "session.resume" and request["params"].get("session_id") == created_key
+        for request in requests
+    )
     delete = next(request for request in requests if request["method"] == "session.delete")
     assert delete["params"] == {"session_id": persistent_key}
 
@@ -468,9 +480,24 @@ async def test_message_edge_cases_and_command_validation() -> None:
             "type": "user",
             "content": [
                 {"type": "text", "text": "hello"},
-                {"type": "image", "source": {"data": "ignored"}},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "aW1hZ2U=",
+                    },
+                },
             ],
         }
+    )
+    assert gateway.requests[-2] == (
+        "image.attach_bytes",
+        {
+            "session_id": "live",
+            "content_base64": "aW1hZ2U=",
+            "filename": "attachment-2.png",
+        },
     )
     assert gateway.requests[-1] == (
         "prompt.submit",

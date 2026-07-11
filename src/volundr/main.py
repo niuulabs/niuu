@@ -241,6 +241,8 @@ def _create_resident_session_controllers(
     for config in settings.resident_runtimes.session_controllers:
         runtime_controller = controllers_by_backend.get(config.runtime_backend)
         if runtime_controller is None:
+            if config.optional:
+                continue
             raise RuntimeError(
                 "Resident session controller "
                 f"{config.adapter} requires unavailable backend {config.runtime_backend.value}"

@@ -302,6 +302,7 @@ class ResidentSessionControllerConfig(BaseModel):
 
     adapter: str = Field(min_length=1)
     runtime_backend: ResidentBackend
+    optional: bool = False
     kwargs: dict[str, Any] = Field(default_factory=dict)
     secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
 
@@ -317,7 +318,15 @@ class ResidentRuntimesConfig(BaseModel):
         ),
     )
     session_controllers: list[ResidentSessionControllerConfig] = Field(
-        default_factory=list,
+        default_factory=lambda: [
+            ResidentSessionControllerConfig(
+                adapter=(
+                    "volundr.adapters.outbound.openclaw_gateway.OpenClawResidentSessionController"
+                ),
+                runtime_backend=ResidentBackend.OPENSHELL,
+                optional=True,
+            )
+        ],
         description="Dynamically configured resident engine protocol adapters.",
     )
     profiles: list[ResidentProfileConfig] = Field(default_factory=list)

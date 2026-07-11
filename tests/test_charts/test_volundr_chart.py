@@ -549,6 +549,7 @@ class TestConfigMapTemplate:
                     "volundr.adapters.outbound.hermes_gateway.HermesResidentSessionController"
                 ),
                 "runtime_backend": "openshell",
+                "optional": False,
                 "kwargs": {},
                 "secret_kwargs_env": {},
             }

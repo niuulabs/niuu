@@ -6,6 +6,7 @@ import asyncio
 import json
 import secrets
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
@@ -26,6 +27,7 @@ from volundr.domain.ports import ResidentChatConnection, ResidentSessionControll
 
 HERMES_CREDENTIAL_NAME = "hermes-dashboard"
 _TOKEN_FIELD = "session_token"
+PENDING_SESSION_TTL_SECONDS = 300
 
 
 class HermesGatewayError(RuntimeError):
@@ -188,6 +190,14 @@ def _history_turns(messages: Any) -> list[dict[str, Any]]:
 def _approval_request_id(live_session_id: str, payload: dict[str, Any]) -> str:
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return str(uuid5(NAMESPACE_URL, f"hermes-approval:{live_session_id}:{canonical}"))
+
+
+@dataclass
+class _PendingHermesSession:
+    connection: _HermesConnection
+    live_session_id: str
+    session: ResidentSession
+    expiry: asyncio.Task[None]
 
 
 class HermesChatConnection(ResidentChatConnection):
@@ -378,7 +388,13 @@ class HermesChatConnection(ResidentChatConnection):
         if frame_type != "user":
             raise HermesGatewayError(f"Unsupported shared chat command: {frame_type}")
 
-        text = _frame_text(frame.get("content"))
+        content = frame.get("content")
+        text = _frame_text(content)
+        for attachment in _image_attachments(content):
+            await self._gateway.request(
+                "image.attach_bytes",
+                {"session_id": self._live_session_id, **attachment},
+            )
         request_id = str(frame.get("request_id") or uuid4())
         await self._gateway.request(
             "prompt.submit",
@@ -453,6 +469,30 @@ def _frame_text(content: Any) -> str:
     )
 
 
+def _image_attachments(content: Any) -> list[dict[str, str]]:
+    if not isinstance(content, list):
+        return []
+    attachments: list[dict[str, str]] = []
+    for index, part in enumerate(content):
+        if not isinstance(part, dict) or part.get("type") != "image":
+            continue
+        source = part.get("source")
+        if not isinstance(source, dict) or source.get("type") != "base64":
+            continue
+        data = source.get("data")
+        if not isinstance(data, str) or not data:
+            continue
+        media_type = str(source.get("media_type") or "image/png")
+        extension = media_type.removeprefix("image/").replace("jpeg", "jpg")
+        attachments.append(
+            {
+                "content_base64": data,
+                "filename": f"attachment-{index + 1}.{extension}",
+            }
+        )
+    return attachments
+
+
 def _answer_text(answers: Any) -> str:
     if not isinstance(answers, list) or not answers:
         return ""
@@ -475,6 +515,7 @@ class HermesResidentSessionController(ResidentSessionController):
         self._routes = runtime_controller
         self._credentials = credential_store
         self._session_keys: dict[UUID, str] = {}
+        self._pending_sessions: dict[UUID, _PendingHermesSession] = {}
 
     @property
     def engine(self) -> ResidentEngine:
@@ -536,6 +577,12 @@ class HermesResidentSessionController(ResidentSessionController):
                     chat_endpoint=f"/s/{runtime.id}/sessions/{session_id}/session",
                 )
             )
+        known_ids = {session.id for session in sessions}
+        sessions.extend(
+            pending.session
+            for pending in self._pending_sessions.values()
+            if pending.session.id not in known_ids
+        )
         return sessions
 
     async def create_session(
@@ -565,15 +612,17 @@ class HermesResidentSessionController(ResidentSessionController):
                 "session.title",
                 {"session_id": live_session_id, "title": title or runtime.name},
             )
-        finally:
+        except Exception:
             await connection.close()
+            raise
         key = str(payload.get("stored_session_id") or "") if isinstance(payload, dict) else ""
         if not key:
+            await connection.close()
             raise HermesGatewayError("Hermes session.create returned no persistent session key")
         session_id = _session_uuid(key)
         self._session_keys[session_id] = key
         now = datetime.now(UTC)
-        return ResidentSession(
+        session = ResidentSession(
             id=session_id,
             resident_id=runtime.id,
             title=title or runtime.name,
@@ -582,8 +631,40 @@ class HermesResidentSessionController(ResidentSessionController):
             updated_at=now,
             chat_endpoint=f"/s/{runtime.id}/sessions/{session_id}/session",
         )
+        expiry = asyncio.create_task(self._expire_pending_session(session_id))
+        self._pending_sessions[session_id] = _PendingHermesSession(
+            connection=connection,
+            live_session_id=live_session_id,
+            session=session,
+            expiry=expiry,
+        )
+        return session
+
+    async def _expire_pending_session(self, session_id: UUID) -> None:
+        try:
+            await asyncio.sleep(PENDING_SESSION_TTL_SECONDS)
+            pending = self._pending_sessions.pop(session_id, None)
+            if pending is not None:
+                with suppress(Exception):
+                    await pending.connection.request(
+                        "session.close", {"session_id": pending.live_session_id}
+                    )
+                await pending.connection.close()
+        except asyncio.CancelledError:
+            return
 
     async def delete_session(self, runtime: ResidentRuntime, session_id: UUID) -> None:
+        pending = self._pending_sessions.pop(session_id, None)
+        if pending is not None:
+            pending.expiry.cancel()
+            try:
+                await pending.connection.request(
+                    "session.close", {"session_id": pending.live_session_id}
+                )
+            finally:
+                await pending.connection.close()
+            self._session_keys.pop(session_id, None)
+            return
         connection = await self._connect(runtime)
         try:
             key = await self._resolve_key(connection, session_id)
@@ -597,20 +678,28 @@ class HermesResidentSessionController(ResidentSessionController):
         runtime: ResidentRuntime,
         session_id: UUID,
     ) -> ResidentChatConnection:
-        connection = await self._connect(runtime)
+        pending = self._pending_sessions.pop(session_id, None)
+        if pending is not None:
+            pending.expiry.cancel()
+            connection = pending.connection
+            live_session_id = pending.live_session_id
+            payload: dict[str, Any] = {"info": {"model": pending.session.model}}
+        else:
+            connection = await self._connect(runtime)
         try:
-            key = await self._resolve_key(connection, session_id)
-            payload = await connection.request(
-                "session.resume",
-                {
-                    "session_id": key,
-                    "source": "desktop",
-                    "close_on_disconnect": False,
-                },
-            )
-            if not isinstance(payload, dict) or not payload.get("session_id"):
-                raise HermesGatewayError("Hermes session.resume returned no live session id")
-            live_session_id = str(payload["session_id"])
+            if pending is None:
+                key = await self._resolve_key(connection, session_id)
+                payload = await connection.request(
+                    "session.resume",
+                    {
+                        "session_id": key,
+                        "source": "desktop",
+                        "close_on_disconnect": False,
+                    },
+                )
+                if not isinstance(payload, dict) or not payload.get("session_id"):
+                    raise HermesGatewayError("Hermes session.resume returned no live session id")
+                live_session_id = str(payload["session_id"])
             history = await connection.request("session.history", {"session_id": live_session_id})
         except Exception:
             await connection.close()

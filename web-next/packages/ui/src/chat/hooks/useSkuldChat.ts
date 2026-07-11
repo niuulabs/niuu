@@ -167,7 +167,7 @@ interface UseSkuldChatResult {
   ) => void;
   sendResendPrompt: () => void;
   respondToPermission: (requestId: string, behavior: PermissionBehavior) => void;
-  respondToInput: (requestId: string, value: string) => void;
+  respondToInput: (requestId: string, values: string[]) => void;
   sendInterrupt: () => void;
   sendSetModel: (model: string) => void;
   sendSetThinkingTokens: (tokens: number) => void;
@@ -1292,24 +1292,32 @@ export function useSkuldChat(
           }
           case 'ask_user_question': {
             const questions = Array.isArray(event.questions) ? event.questions : [];
-            const question = questions[0];
-            if (!event.request_id || !question || typeof question !== 'object') break;
-            const prompt = typeof question.question === 'string' ? question.question : '';
-            if (!prompt) break;
-            const options = Array.isArray(question.options) ? question.options : [];
+            if (!event.request_id) break;
+            const normalizedQuestions = questions.flatMap((question) => {
+              if (!question || typeof question !== 'object') return [];
+              const prompt = typeof question.question === 'string' ? question.question : '';
+              if (!prompt) return [];
+              const options = Array.isArray(question.options) ? question.options : [];
+              return [
+                {
+                  prompt,
+                  choices: options
+                    .map((option) =>
+                      option &&
+                      typeof option === 'object' &&
+                      'label' in option &&
+                      typeof option.label === 'string'
+                        ? option.label
+                        : '',
+                    )
+                    .filter(Boolean),
+                },
+              ];
+            });
+            if (normalizedQuestions.length === 0) break;
             const inputRequest: InputRequest = {
               requestId: event.request_id,
-              prompt,
-              choices: options
-                .map((option) =>
-                  option &&
-                  typeof option === 'object' &&
-                  'label' in option &&
-                  typeof option.label === 'string'
-                    ? option.label
-                    : '',
-                )
-                .filter(Boolean),
+              questions: normalizedQuestions,
             };
             setPendingInputRequests((prev) => [
               ...prev.filter((request) => request.requestId !== inputRequest.requestId),
@@ -1774,11 +1782,11 @@ export function useSkuldChat(
   );
 
   const respondToInput = useCallback(
-    (requestId: string, value: string) => {
+    (requestId: string, values: string[]) => {
       sendJson({
         type: 'ask_user_answer',
         request_id: requestId,
-        answers: [{ answer: value }],
+        answers: values.map((answer) => ({ answer })),
       });
       setPendingInputRequests((prev) => prev.filter((request) => request.requestId !== requestId));
     },

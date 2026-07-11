@@ -79,6 +79,7 @@ data:
         {{- range $index, $controller := .Values.residentRuntimeSessionControllers }}
         - adapter: {{ $controller.adapter | quote }}
           runtime_backend: {{ $controller.runtimeBackend | quote }}
+          optional: {{ $controller.optional | default false }}
           kwargs: {{ $controller.kwargs | default dict | toJson }}
           {{- if $controller.secretKwargs }}
           secret_kwargs_env:

@@ -1090,20 +1090,28 @@ page_path: council/demo/opinion-b.md
         JSON.stringify({
           type: 'ask_user_question',
           request_id: 'input-1',
-          questions: [{
-            question: 'Which environment should be deployed?',
-            options: [{ label: 'Staging' }, { label: 'Production' }],
-          }],
+          questions: [
+            {
+              question: 'Which environment should be deployed?',
+              options: [{ label: 'Staging' }, { label: 'Production' }],
+            },
+          ],
         }),
       );
       wsHandlers.onMessage?.(
         JSON.stringify({
           type: 'ask_user_question',
           request_id: 'input-1',
-          questions: [{
-            question: 'Choose the target environment',
-            options: [{ label: 'Staging' }, 42, { label: 'Production' }],
-          }],
+          questions: [
+            {
+              question: 'Choose the target environment',
+              options: [{ label: 'Staging' }, 42, { label: 'Production' }],
+            },
+            {
+              question: 'Which region?',
+              options: [{ label: 'Canada' }, { label: 'Europe' }],
+            },
+          ],
         }),
       );
     });
@@ -1111,19 +1119,21 @@ page_path: council/demo/opinion-b.md
     expect(result.current.pendingInputRequests).toEqual([
       {
         requestId: 'input-1',
-        prompt: 'Choose the target environment',
-        choices: ['Staging', 'Production'],
+        questions: [
+          { prompt: 'Choose the target environment', choices: ['Staging', 'Production'] },
+          { prompt: 'Which region?', choices: ['Canada', 'Europe'] },
+        ],
       },
     ]);
 
     act(() => {
-      result.current.respondToInput('input-1', 'Staging');
+      result.current.respondToInput('input-1', ['Staging', 'Canada']);
     });
 
     expect(sendJson).toHaveBeenCalledWith({
       type: 'ask_user_answer',
       request_id: 'input-1',
-      answers: [{ answer: 'Staging' }],
+      answers: [{ answer: 'Staging' }, { answer: 'Canada' }],
     });
     expect(result.current.pendingInputRequests).toHaveLength(0);
   });
@@ -1153,7 +1163,10 @@ page_path: council/demo/opinion-b.md
     });
 
     expect(result.current.pendingInputRequests).toEqual([
-      { requestId: 'input-clear', prompt: 'Provide a release note', choices: [] },
+      {
+        requestId: 'input-clear',
+        questions: [{ prompt: 'Provide a release note', choices: [] }],
+      },
     ]);
 
     act(() => result.current.clearMessages());

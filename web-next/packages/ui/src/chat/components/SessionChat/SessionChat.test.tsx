@@ -685,8 +685,12 @@ describe('SessionChat', () => {
     const requests: InputRequest[] = [
       {
         requestId: 'input-1',
-        prompt: 'Which environment should be deployed?',
-        choices: ['Staging', 'Production'],
+        questions: [
+          {
+            prompt: 'Which environment should be deployed?',
+            choices: ['Staging', 'Production'],
+          },
+        ],
       },
     ];
     const onInputRespond = vi.fn();
@@ -702,7 +706,8 @@ describe('SessionChat', () => {
     expect(screen.getByRole('region', { name: 'Pending input requests' })).toBeInTheDocument();
     expect(screen.getByLabelText('Which environment should be deployed?')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Production' }));
-    expect(onInputRespond).toHaveBeenCalledWith('input-1', 'Production');
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    expect(onInputRespond).toHaveBeenCalledWith('input-1', ['Production']);
   });
 
   it('submits trimmed free-text clarification responses and rejects blank input', () => {
@@ -710,7 +715,12 @@ describe('SessionChat', () => {
     render(
       <SessionChat
         {...defaultProps}
-        pendingInputRequests={[{ requestId: 'input-2', prompt: 'Name the release' }]}
+        pendingInputRequests={[
+          {
+            requestId: 'input-2',
+            questions: [{ prompt: 'Name the release', choices: [] }],
+          },
+        ]}
         onInputRespond={onInputRespond}
       />,
     );
@@ -722,7 +732,7 @@ describe('SessionChat', () => {
     fireEvent.change(input, { target: { value: '  July release  ' } });
     expect(submit).toBeEnabled();
     fireEvent.submit(input.closest('form')!);
-    expect(onInputRespond).toHaveBeenCalledWith('input-2', 'July release');
+    expect(onInputRespond).toHaveBeenCalledWith('input-2', ['July release']);
   });
 
   /* ── Room mode / MeshSidebar ── */

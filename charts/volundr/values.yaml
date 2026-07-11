@@ -365,6 +365,7 @@ residentRuntimeControllers: []
 residentRuntimeSessionControllers: []
 # - adapter: volundr.adapters.outbound.openclaw_gateway.OpenClawResidentSessionController
 #   runtimeBackend: openshell
+#   optional: false
 #   kwargs: {}
 #   secretKwargs: []
 
