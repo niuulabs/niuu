@@ -36,16 +36,7 @@ jobs:
         run: uv run ruff check --output-format=github src/ tests/
 
       - name: Check ruff formatting
-        run: |
-          output="$(uv run ruff format --check src/ tests/ 2>&1)" || {
-            printf '%s\n' "$output"
-            printf '%s\n' "$output" | sed -n 's/^Would reformat: //p' | while IFS= read -r file; do
-              file_diff="$(uv run ruff format --diff "$file" 2>&1 || true)"
-              encoded_diff="$(printf '%s' "$file_diff" | base64 -w 0)"
-              echo "::error file=${file},title=Ruff format base64::${encoded_diff}"
-            done
-            exit 1
-          }
+        run: uv run ruff format --check src/ tests/
 
   test:
     name: "Python: Test ${{ matrix.pkg.name }}"
