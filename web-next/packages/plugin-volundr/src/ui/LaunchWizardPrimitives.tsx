@@ -60,19 +60,10 @@ export interface LaunchWizardProps {
   initialLaunchSpecRef?: string;
 }
 
-export function StepIndicator({
-  current,
-  steps,
-}: {
-  current: WizardStep;
-  steps: WizardStep[];
-}) {
+export function StepIndicator({ current, steps }: { current: WizardStep; steps: WizardStep[] }) {
   const idx = steps.indexOf(current);
   return (
-    <div
-      className="niuu:flex niuu:items-center niuu:gap-2 niuu:py-4"
-      data-testid="step-indicator"
-    >
+    <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:py-4" data-testid="step-indicator">
       {steps.map((step, i) => (
         <div key={step} className="niuu:flex niuu:items-center niuu:gap-2">
           <div

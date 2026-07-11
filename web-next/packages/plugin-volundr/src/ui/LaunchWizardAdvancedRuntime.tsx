@@ -133,357 +133,348 @@ export function AdvancedRuntimeSection({
     update,
   ]);
   return (
-      <SectionCard
-        title="Advanced"
-        description="Prompts, MCP wiring, environment variables, and setup scripts."
-      >
-        <div className="niuu:flex niuu:items-center niuu:gap-2">
+    <SectionCard
+      title="Advanced"
+      description="Prompts, MCP wiring, environment variables, and setup scripts."
+    >
+      <div className="niuu:flex niuu:items-center niuu:gap-2">
+        <button
+          type="button"
+          className={`niuu:self-start ${SECONDARY_BUTTON_CLASS}`}
+          onClick={() => setShowAdvanced((value) => !value)}
+        >
+          {showAdvanced ? 'hide advanced' : 'show advanced'}
+        </button>
+        {showAdvanced ? (
           <button
             type="button"
             className={`niuu:self-start ${SECONDARY_BUTTON_CLASS}`}
-            onClick={() => setShowAdvanced((value) => !value)}
+            onClick={handleToggleYaml}
           >
-            {showAdvanced ? 'hide advanced' : 'show advanced'}
+            {form.yamlMode ? 'form view' : 'edit as yaml'}
           </button>
-          {showAdvanced ? (
-            <button
-              type="button"
-              className={`niuu:self-start ${SECONDARY_BUTTON_CLASS}`}
-              onClick={handleToggleYaml}
-            >
-              {form.yamlMode ? 'form view' : 'edit as yaml'}
-            </button>
-          ) : null}
-        </div>
-        {showAdvanced && form.yamlMode ? (
-          <div className="niuu:flex niuu:flex-col niuu:gap-2">
-            <Textarea
-              value={form.yamlContent}
-              onChange={(e) => update({ yamlContent: e.target.value })}
-              rows={20}
-              spellCheck={false}
-              placeholder="Launch spec YAML"
-            />
-            {yamlError ? <div className="niuu:text-xs niuu:text-danger">{yamlError}</div> : null}
-          </div>
         ) : null}
-        {showAdvanced && !form.yamlMode ? (
-          <div className="niuu:flex niuu:flex-col niuu:gap-6">
-            <RuntimePanel
-              title="System prompt"
-              description="Override the default agent behavior for this run."
-            >
-              <Textarea
-                value={form.systemPrompt}
-                onChange={(e) => update({ systemPrompt: e.target.value })}
-                rows={5}
-                placeholder="Override the default system prompt"
-              />
-            </RuntimePanel>
+      </div>
+      {showAdvanced && form.yamlMode ? (
+        <div className="niuu:flex niuu:flex-col niuu:gap-2">
+          <Textarea
+            value={form.yamlContent}
+            onChange={(e) => update({ yamlContent: e.target.value })}
+            rows={20}
+            spellCheck={false}
+            placeholder="Launch spec YAML"
+          />
+          {yamlError ? <div className="niuu:text-xs niuu:text-danger">{yamlError}</div> : null}
+        </div>
+      ) : null}
+      {showAdvanced && !form.yamlMode ? (
+        <div className="niuu:flex niuu:flex-col niuu:gap-6">
+          <RuntimePanel
+            title="System prompt"
+            description="Override the default agent behavior for this run."
+          >
+            <Textarea
+              value={form.systemPrompt}
+              onChange={(e) => update({ systemPrompt: e.target.value })}
+              rows={5}
+              placeholder="Override the default system prompt"
+            />
+          </RuntimePanel>
 
-            <RuntimePanel
-              title="MCP servers"
-              description="Attach launch-spec tools and custom MCP definitions."
-            >
-              <div className="niuu:flex niuu:flex-col niuu:gap-2">
-                {form.mcpServers.length > 0 ? (
-                  <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2">
-                    {form.mcpServers.map((server) => (
-                      <div
-                        key={server.name}
-                        className="niuu:flex niuu:flex-col niuu:gap-1 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-xs"
-                      >
-                        <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-2">
-                          <span className="niuu:font-mono niuu:text-text-primary">
-                            {server.name}
-                          </span>
-                          <button
-                            type="button"
-                            className="niuu:text-text-faint niuu:hover:text-text-primary"
-                            onClick={() =>
-                              update({
-                                mcpServers: form.mcpServers.filter(
-                                  (item) => item.name !== server.name,
-                                ),
-                              })
-                            }
-                          >
-                            remove
-                          </button>
-                        </div>
-                        <span className="niuu:text-text-faint">
-                          {server.type === 'stdio'
-                            ? [server.command, ...(server.args ?? [])].filter(Boolean).join(' ')
-                            : (server.url ?? server.type)}
-                        </span>
+          <RuntimePanel
+            title="MCP servers"
+            description="Attach launch-spec tools and custom MCP definitions."
+          >
+            <div className="niuu:flex niuu:flex-col niuu:gap-2">
+              {form.mcpServers.length > 0 ? (
+                <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2">
+                  {form.mcpServers.map((server) => (
+                    <div
+                      key={server.name}
+                      className="niuu:flex niuu:flex-col niuu:gap-1 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-xs"
+                    >
+                      <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-2">
+                        <span className="niuu:font-mono niuu:text-text-primary">{server.name}</span>
+                        <button
+                          type="button"
+                          className="niuu:text-text-faint niuu:hover:text-text-primary"
+                          onClick={() =>
+                            update({
+                              mcpServers: form.mcpServers.filter(
+                                (item) => item.name !== server.name,
+                              ),
+                            })
+                          }
+                        >
+                          remove
+                        </button>
                       </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="niuu:rounded-md niuu:border niuu:border-dashed niuu:border-border-subtle niuu:bg-bg-primary niuu:p-3 niuu:text-xs niuu:text-text-faint">
-                    No MCP servers selected.
-                  </div>
-                )}
-                {availablePresetServers.length > 0 ? (
-                  <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2">
-                    {availablePresetServers.map((server) => (
-                      <button
-                        key={server.name}
-                        type="button"
-                        className={`${SECONDARY_BUTTON_CLASS} niuu:text-left`}
-                        onClick={() => update({ mcpServers: [...form.mcpServers, server] })}
-                      >
-                        <div className="niuu:font-mono niuu:text-text-primary">{server.name}</div>
-                        <div className="niuu:text-text-faint">{server.type}</div>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-                <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
-                  <button
-                    type="button"
-                    className={SECONDARY_BUTTON_CLASS}
-                    onClick={() => setShowCustomMcp((value) => !value)}
-                  >
-                    {showCustomMcp ? 'cancel custom server' : 'add custom server'}
-                  </button>
+                      <span className="niuu:text-text-faint">
+                        {server.type === 'stdio'
+                          ? [server.command, ...(server.args ?? [])].filter(Boolean).join(' ')
+                          : (server.url ?? server.type)}
+                      </span>
+                    </div>
+                  ))}
                 </div>
-                {showCustomMcp ? (
-                  <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:p-3">
-                    <Field label="Name">
-                      <Input
-                        value={customMcpName}
-                        onChange={(e) => setCustomMcpName(e.target.value)}
-                        placeholder="filesystem"
-                      />
-                    </Field>
-                    <Field label="Type">
-                      <WizardSelect
-                        options={[
-                          { value: 'stdio', label: 'stdio' },
-                          { value: 'sse', label: 'sse' },
-                          { value: 'http', label: 'http' },
-                        ]}
-                        value={customMcpType}
-                        onChange={(value) => setCustomMcpType(value as McpServerConfig['type'])}
-                      />
-                    </Field>
-                    {customMcpType === 'stdio' ? (
-                      <>
-                        <Field label="Command">
-                          <Input
-                            value={customMcpCommand}
-                            onChange={(e) => setCustomMcpCommand(e.target.value)}
-                            placeholder="uvx"
-                          />
-                        </Field>
-                        <Field label="Args">
-                          <Input
-                            value={customMcpArgs}
-                            onChange={(e) => setCustomMcpArgs(e.target.value)}
-                            placeholder="mcp-filesystem /workspace"
-                          />
-                        </Field>
-                      </>
-                    ) : (
-                      <Field label="URL">
+              ) : (
+                <div className="niuu:rounded-md niuu:border niuu:border-dashed niuu:border-border-subtle niuu:bg-bg-primary niuu:p-3 niuu:text-xs niuu:text-text-faint">
+                  No MCP servers selected.
+                </div>
+              )}
+              {availablePresetServers.length > 0 ? (
+                <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2">
+                  {availablePresetServers.map((server) => (
+                    <button
+                      key={server.name}
+                      type="button"
+                      className={`${SECONDARY_BUTTON_CLASS} niuu:text-left`}
+                      onClick={() => update({ mcpServers: [...form.mcpServers, server] })}
+                    >
+                      <div className="niuu:font-mono niuu:text-text-primary">{server.name}</div>
+                      <div className="niuu:text-text-faint">{server.type}</div>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
+                <button
+                  type="button"
+                  className={SECONDARY_BUTTON_CLASS}
+                  onClick={() => setShowCustomMcp((value) => !value)}
+                >
+                  {showCustomMcp ? 'cancel custom server' : 'add custom server'}
+                </button>
+              </div>
+              {showCustomMcp ? (
+                <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:p-3">
+                  <Field label="Name">
+                    <Input
+                      value={customMcpName}
+                      onChange={(e) => setCustomMcpName(e.target.value)}
+                      placeholder="filesystem"
+                    />
+                  </Field>
+                  <Field label="Type">
+                    <WizardSelect
+                      options={[
+                        { value: 'stdio', label: 'stdio' },
+                        { value: 'sse', label: 'sse' },
+                        { value: 'http', label: 'http' },
+                      ]}
+                      value={customMcpType}
+                      onChange={(value) => setCustomMcpType(value as McpServerConfig['type'])}
+                    />
+                  </Field>
+                  {customMcpType === 'stdio' ? (
+                    <>
+                      <Field label="Command">
                         <Input
-                          value={customMcpUrl}
-                          onChange={(e) => setCustomMcpUrl(e.target.value)}
-                          placeholder="http://localhost:3000/sse"
+                          value={customMcpCommand}
+                          onChange={(e) => setCustomMcpCommand(e.target.value)}
+                          placeholder="uvx"
                         />
                       </Field>
-                    )}
-                    <div className="niuu:col-span-2 niuu:flex niuu:flex-col niuu:gap-2">
-                      <span className="niuu:text-xs niuu:text-text-faint">Custom environment</span>
-                      {Object.entries(customMcpEnv).map(([key, value]) => (
-                        <div
-                          key={key}
-                          className="niuu:grid niuu:grid-cols-[1fr_1fr_auto] niuu:gap-2"
-                        >
-                          <Input value={key} readOnly />
-                          <Input value={value} readOnly />
-                          <button
-                            type="button"
-                            className={MUTED_BUTTON_CLASS}
-                            onClick={() => {
-                              const next = { ...customMcpEnv };
-                              delete next[key];
-                              setCustomMcpEnv(next);
-                            }}
-                          >
-                            remove
-                          </button>
-                        </div>
-                      ))}
-                      <div className="niuu:grid niuu:grid-cols-[1fr_1fr_auto] niuu:gap-2">
+                      <Field label="Args">
                         <Input
-                          value={customMcpEnvKey}
-                          onChange={(e) => setCustomMcpEnvKey(e.target.value)}
-                          placeholder="KEY"
+                          value={customMcpArgs}
+                          onChange={(e) => setCustomMcpArgs(e.target.value)}
+                          placeholder="mcp-filesystem /workspace"
                         />
-                        <Input
-                          value={customMcpEnvValue}
-                          onChange={(e) => setCustomMcpEnvValue(e.target.value)}
-                          placeholder="value"
-                        />
+                      </Field>
+                    </>
+                  ) : (
+                    <Field label="URL">
+                      <Input
+                        value={customMcpUrl}
+                        onChange={(e) => setCustomMcpUrl(e.target.value)}
+                        placeholder="http://localhost:3000/sse"
+                      />
+                    </Field>
+                  )}
+                  <div className="niuu:col-span-2 niuu:flex niuu:flex-col niuu:gap-2">
+                    <span className="niuu:text-xs niuu:text-text-faint">Custom environment</span>
+                    {Object.entries(customMcpEnv).map(([key, value]) => (
+                      <div key={key} className="niuu:grid niuu:grid-cols-[1fr_1fr_auto] niuu:gap-2">
+                        <Input value={key} readOnly />
+                        <Input value={value} readOnly />
                         <button
                           type="button"
                           className={MUTED_BUTTON_CLASS}
                           onClick={() => {
-                            if (!customMcpEnvKey.trim()) return;
-                            setCustomMcpEnv((current) => ({
-                              ...current,
-                              [customMcpEnvKey.trim()]: customMcpEnvValue,
-                            }));
-                            setCustomMcpEnvKey('');
-                            setCustomMcpEnvValue('');
+                            const next = { ...customMcpEnv };
+                            delete next[key];
+                            setCustomMcpEnv(next);
                           }}
                         >
-                          add
+                          remove
                         </button>
                       </div>
-                      <div className="niuu:flex niuu:gap-2">
-                        <button
-                          type="button"
-                          className={MUTED_BUTTON_CLASS}
-                          onClick={handleAddCustomMcp}
-                          disabled={
-                            !customMcpName.trim() ||
-                            (customMcpType === 'stdio'
-                              ? !customMcpCommand.trim()
-                              : !customMcpUrl.trim())
-                          }
-                        >
-                          add server
-                        </button>
-                        <button
-                          type="button"
-                          className={MUTED_BUTTON_CLASS}
-                          onClick={resetCustomMcp}
-                        >
-                          reset
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            </RuntimePanel>
-
-            <div className="niuu:grid niuu:grid-cols-2 niuu:gap-6">
-              <RuntimePanel
-                title="Environment variables"
-                description="Inline env overrides for the launched session."
-              >
-                {form.envVars.length === 0 ? (
-                  <div className="niuu:rounded-md niuu:border niuu:border-dashed niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-3 niuu:text-xs niuu:text-text-faint">
-                    No environment variables yet. Add one below.
-                  </div>
-                ) : null}
-                <div className="niuu:flex niuu:flex-col niuu:gap-2">
-                  {form.envVars.map((entry, index) => (
-                    <div
-                      key={`${entry.key}-${index}`}
-                      className="niuu:grid niuu:grid-cols-[1fr_1fr_auto] niuu:gap-2"
-                    >
+                    ))}
+                    <div className="niuu:grid niuu:grid-cols-[1fr_1fr_auto] niuu:gap-2">
                       <Input
-                        value={entry.key}
-                        onChange={(e) =>
-                          update({
-                            envVars: form.envVars.map((item, itemIndex) =>
-                              itemIndex === index ? { ...item, key: e.target.value } : item,
-                            ),
-                          })
-                        }
+                        value={customMcpEnvKey}
+                        onChange={(e) => setCustomMcpEnvKey(e.target.value)}
                         placeholder="KEY"
                       />
                       <Input
-                        value={entry.value}
-                        onChange={(e) =>
-                          update({
-                            envVars: form.envVars.map((item, itemIndex) =>
-                              itemIndex === index ? { ...item, value: e.target.value } : item,
-                            ),
-                          })
-                        }
+                        value={customMcpEnvValue}
+                        onChange={(e) => setCustomMcpEnvValue(e.target.value)}
                         placeholder="value"
                       />
                       <button
                         type="button"
-                        className={SECONDARY_BUTTON_CLASS}
-                        onClick={() =>
-                          update({
-                            envVars: form.envVars.filter((_, itemIndex) => itemIndex !== index),
-                          })
-                        }
+                        className={MUTED_BUTTON_CLASS}
+                        onClick={() => {
+                          if (!customMcpEnvKey.trim()) return;
+                          setCustomMcpEnv((current) => ({
+                            ...current,
+                            [customMcpEnvKey.trim()]: customMcpEnvValue,
+                          }));
+                          setCustomMcpEnvKey('');
+                          setCustomMcpEnvValue('');
+                        }}
                       >
-                        remove
+                        add
                       </button>
                     </div>
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  className={`niuu:self-start ${SECONDARY_BUTTON_CLASS}`}
-                  onClick={() => update({ envVars: [...form.envVars, { key: '', value: '' }] })}
-                >
-                  add env var
-                </button>
-              </RuntimePanel>
-              <RuntimePanel
-                title="Setup scripts"
-                description="Commands to run before the first prompt hits the pod."
-              >
-                {form.setupScripts.length === 0 ? (
-                  <div className="niuu:rounded-md niuu:border niuu:border-dashed niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-3 niuu:text-xs niuu:text-text-faint">
-                    No setup scripts yet. Add one below.
-                  </div>
-                ) : null}
-                <div className="niuu:flex niuu:flex-col niuu:gap-2">
-                  {form.setupScripts.map((script, index) => (
-                    <div
-                      key={`${index}-${script}`}
-                      className="niuu:grid niuu:grid-cols-[1fr_auto] niuu:gap-2"
-                    >
-                      <Input
-                        value={script}
-                        onChange={(e) =>
-                          update({
-                            setupScripts: form.setupScripts.map((item, itemIndex) =>
-                              itemIndex === index ? e.target.value : item,
-                            ),
-                          })
-                        }
-                        placeholder="pnpm install"
-                      />
+                    <div className="niuu:flex niuu:gap-2">
                       <button
                         type="button"
-                        className={SECONDARY_BUTTON_CLASS}
-                        onClick={() =>
-                          update({
-                            setupScripts: form.setupScripts.filter(
-                              (_, itemIndex) => itemIndex !== index,
-                            ),
-                          })
+                        className={MUTED_BUTTON_CLASS}
+                        onClick={handleAddCustomMcp}
+                        disabled={
+                          !customMcpName.trim() ||
+                          (customMcpType === 'stdio'
+                            ? !customMcpCommand.trim()
+                            : !customMcpUrl.trim())
                         }
                       >
-                        remove
+                        add server
+                      </button>
+                      <button type="button" className={MUTED_BUTTON_CLASS} onClick={resetCustomMcp}>
+                        reset
                       </button>
                     </div>
-                  ))}
+                  </div>
                 </div>
-                <button
-                  type="button"
-                  className={`niuu:self-start ${SECONDARY_BUTTON_CLASS}`}
-                  onClick={() => update({ setupScripts: [...form.setupScripts, ''] })}
-                >
-                  add script
-                </button>
-              </RuntimePanel>
+              ) : null}
             </div>
+          </RuntimePanel>
+
+          <div className="niuu:grid niuu:grid-cols-2 niuu:gap-6">
+            <RuntimePanel
+              title="Environment variables"
+              description="Inline env overrides for the launched session."
+            >
+              {form.envVars.length === 0 ? (
+                <div className="niuu:rounded-md niuu:border niuu:border-dashed niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-3 niuu:text-xs niuu:text-text-faint">
+                  No environment variables yet. Add one below.
+                </div>
+              ) : null}
+              <div className="niuu:flex niuu:flex-col niuu:gap-2">
+                {form.envVars.map((entry, index) => (
+                  <div
+                    key={`${entry.key}-${index}`}
+                    className="niuu:grid niuu:grid-cols-[1fr_1fr_auto] niuu:gap-2"
+                  >
+                    <Input
+                      value={entry.key}
+                      onChange={(e) =>
+                        update({
+                          envVars: form.envVars.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, key: e.target.value } : item,
+                          ),
+                        })
+                      }
+                      placeholder="KEY"
+                    />
+                    <Input
+                      value={entry.value}
+                      onChange={(e) =>
+                        update({
+                          envVars: form.envVars.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, value: e.target.value } : item,
+                          ),
+                        })
+                      }
+                      placeholder="value"
+                    />
+                    <button
+                      type="button"
+                      className={SECONDARY_BUTTON_CLASS}
+                      onClick={() =>
+                        update({
+                          envVars: form.envVars.filter((_, itemIndex) => itemIndex !== index),
+                        })
+                      }
+                    >
+                      remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button
+                type="button"
+                className={`niuu:self-start ${SECONDARY_BUTTON_CLASS}`}
+                onClick={() => update({ envVars: [...form.envVars, { key: '', value: '' }] })}
+              >
+                add env var
+              </button>
+            </RuntimePanel>
+            <RuntimePanel
+              title="Setup scripts"
+              description="Commands to run before the first prompt hits the pod."
+            >
+              {form.setupScripts.length === 0 ? (
+                <div className="niuu:rounded-md niuu:border niuu:border-dashed niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-3 niuu:text-xs niuu:text-text-faint">
+                  No setup scripts yet. Add one below.
+                </div>
+              ) : null}
+              <div className="niuu:flex niuu:flex-col niuu:gap-2">
+                {form.setupScripts.map((script, index) => (
+                  <div
+                    key={`${index}-${script}`}
+                    className="niuu:grid niuu:grid-cols-[1fr_auto] niuu:gap-2"
+                  >
+                    <Input
+                      value={script}
+                      onChange={(e) =>
+                        update({
+                          setupScripts: form.setupScripts.map((item, itemIndex) =>
+                            itemIndex === index ? e.target.value : item,
+                          ),
+                        })
+                      }
+                      placeholder="pnpm install"
+                    />
+                    <button
+                      type="button"
+                      className={SECONDARY_BUTTON_CLASS}
+                      onClick={() =>
+                        update({
+                          setupScripts: form.setupScripts.filter(
+                            (_, itemIndex) => itemIndex !== index,
+                          ),
+                        })
+                      }
+                    >
+                      remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button
+                type="button"
+                className={`niuu:self-start ${SECONDARY_BUTTON_CLASS}`}
+                onClick={() => update({ setupScripts: [...form.setupScripts, ''] })}
+              >
+                add script
+              </button>
+            </RuntimePanel>
           </div>
-        ) : null}
-      </SectionCard>
+        </div>
+      ) : null}
+    </SectionCard>
   );
 }
