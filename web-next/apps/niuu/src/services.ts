@@ -139,7 +139,7 @@ export function isUnavailableService(
 function unavailableService<T>(serviceName: string): T {
   const reason = 'No live backend is configured. Enable demoMode for synthetic data.';
   const status: UnavailableServiceStatus = { available: false, serviceName, reason };
-  return new Proxy({ [UNAVAILABLE_SERVICE]: status } as T & Record<PropertyKey, unknown>, {
+  return new Proxy({ [UNAVAILABLE_SERVICE]: status } as unknown as T & Record<PropertyKey, unknown>, {
     get(target, property, receiver) {
       if (property === 'then') return undefined;
       if (property in target) return Reflect.get(target, property, receiver);
