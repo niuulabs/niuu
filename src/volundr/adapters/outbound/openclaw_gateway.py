@@ -34,7 +34,8 @@ from volundr.domain.ports import (
 )
 
 _CREDENTIAL_NAME = "openclaw-gateway"
-_SESSION_KEY_PREFIX = "agent:main:niuu-"
+_AGENT_ID = "main"
+_SESSION_KEY_PREFIX = f"agent:{_AGENT_ID}:niuu-"
 _SCOPES = ["operator.read", "operator.write", "operator.admin"]
 _PROTOCOL_VERSION = 4
 
@@ -557,11 +558,20 @@ class OpenClawResidentSessionController(ResidentSessionController):
         session_id = uuid4()
         connection = await self._connect(runtime)
         try:
+            agents_payload = await connection.request("agents.list", {})
+            agents = agents_payload.get("agents") if isinstance(agents_payload, dict) else []
+            if not isinstance(agents, list) or not any(
+                isinstance(agent, dict) and str(agent.get("id") or "") == _AGENT_ID
+                for agent in agents
+            ):
+                raise OpenClawGatewayError(
+                    f"OpenClaw Gateway does not advertise the {_AGENT_ID!r} resident agent"
+                )
             await connection.request(
                 "sessions.create",
                 {
                     "key": _session_key(session_id),
-                    "agentId": "main",
+                    "agentId": _AGENT_ID,
                     "label": title or runtime.name,
                     **({"model": model} if model else {}),
                 },

@@ -104,7 +104,9 @@ async def test_openclaw_sessions_and_shared_chat_use_gateway_v4() -> None:
             request = json.loads(raw)
             method = request["method"]
             methods.append(method)
-            if method == "sessions.list":
+            if method == "agents.list":
+                payload = {"agents": [{"id": "main", "name": "NemoClaw"}]}
+            elif method == "sessions.list":
                 payload = {
                     "sessions": [
                         {
@@ -221,6 +223,7 @@ async def test_openclaw_sessions_and_shared_chat_use_gateway_v4() -> None:
     assert connect_params["minProtocol"] == 4
     assert connect_params["maxProtocol"] == 4
     assert "sessions.list" in methods
+    assert "agents.list" in methods
     assert "sessions.create" in methods
     assert "sessions.messages.subscribe" in methods
     assert "sessions.send" in methods
