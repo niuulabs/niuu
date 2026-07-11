@@ -13,6 +13,7 @@ from ravn.api.valkyrie_projection_common import (
 from sleipnir.domain import registry
 from sleipnir.domain.events import SleipnirEvent
 
+
 def _event_dict(event: SleipnirEvent | dict[str, Any]) -> dict[str, Any]:
     if isinstance(event, SleipnirEvent):
         return event.to_dict()

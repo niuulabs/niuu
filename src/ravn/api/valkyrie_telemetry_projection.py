@@ -25,6 +25,7 @@ from ravn.api.valkyrie_learning_projection import (
 from ravn.api.valkyrie_projection_common import _empty_telemetry
 from ravn.api.valkyrie_runtime_projection import _merge_runtime_entry, _runtime_entry
 
+
 def _environment_telemetry_entry(entries: dict[str, dict[str, Any]], env_id: str) -> dict[str, Any]:
     entry = entries.get(env_id)
     if entry is None:

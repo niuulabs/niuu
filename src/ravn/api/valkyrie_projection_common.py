@@ -7,6 +7,7 @@ from typing import Any
 
 from ravn.domain.valkyrie_history import canonical_environment_id
 
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 

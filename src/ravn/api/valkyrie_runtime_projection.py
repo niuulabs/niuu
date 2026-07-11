@@ -20,6 +20,7 @@ from ravn.api.valkyrie_requests import HuddleJoinRequest, HuddleSendRequest
 
 Dashboard = dict[str, Any]
 
+
 def _runtime_entry(
     event: dict[str, Any],
     payload: dict[str, Any],

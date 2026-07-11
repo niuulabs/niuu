@@ -60,6 +60,7 @@ RAW_SIGNAL_TELEMETRY_LIMIT = 1_000
 CONTROL_TELEMETRY_LIMIT = 2_000
 LEARNING_SCOPES = ("private", "environment", "domain", "flock", "shared")
 
+
 class ValkyrieDashboardProjection:
     def __init__(self, config: ValkyrieDashboardConfig | None = None) -> None:
         self._dashboard = _initial_dashboard(config)

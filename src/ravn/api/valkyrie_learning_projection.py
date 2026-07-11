@@ -29,6 +29,7 @@ from sleipnir.domain import registry
 
 LEARNING_SCOPES = ("private", "environment", "domain", "flock", "shared")
 
+
 def _learning_entry(
     event: dict[str, Any],
     payload: dict[str, Any],

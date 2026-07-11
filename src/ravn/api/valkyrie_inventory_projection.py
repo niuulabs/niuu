@@ -23,6 +23,7 @@ from ravn.api.valkyrie_projection_common import (
 
 Dashboard = dict[str, Any]
 
+
 def _configured_environment_entries(
     records: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
