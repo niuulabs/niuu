@@ -1740,7 +1740,7 @@ class MeshNatsCoreSubscriptionConfig(BaseModel):
 class MeshNatsConfig(BaseSettings):
     """NATS JetStream mesh settings for environment-resident Valkyries."""
 
-    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore", case_sensitive=True)
 
     @classmethod
     def settings_customise_sources(

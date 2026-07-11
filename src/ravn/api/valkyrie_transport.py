@@ -273,6 +273,8 @@ def build_nats_telemetry_subscription_from_env(
     config: ValkyrieTelemetryConfig | None = None,
 ) -> ValkyrieTelemetrySubscription | None:
     """Build optional dashboard telemetry from validated Ravn settings."""
+    if config is None and not os.environ.get("RAVN_VALKYRIE_TELEMETRY_NATS_URL", "").strip():
+        return None
     loaded = config or Settings().valkyrie.telemetry
     if not loaded.nats_url.strip():
         return None

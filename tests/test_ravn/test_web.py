@@ -19,6 +19,7 @@ from ravn.web import DEFAULT_WEB_PORT, create_standalone_app, serve
 @pytest.fixture(autouse=True)
 def _redirect_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.delenv("RAVN_CONFIG", raising=False)
 
 
 @pytest.fixture()
