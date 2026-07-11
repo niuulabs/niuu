@@ -121,6 +121,7 @@ vi.mock('@niuulabs/plugin-volundr', () => volundrMocks);
 
 import {
   buildServices,
+  ServiceConfigurationError,
   buildServiceBackendStatus,
   resolveCanonicalServiceBase,
   resolveForgeServiceBase,
@@ -425,6 +426,7 @@ describe('buildServices live base selection', () => {
 
   it('builds separate forge runtime and volundr catalog adapters', () => {
     buildServices({
+      demoMode: true,
       services: {
         forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
         volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
@@ -453,6 +455,7 @@ describe('buildServices live base selection', () => {
 
   it('normalizes explicit Ting sub-service bases back to /api/v1/ting', () => {
     buildServices({
+      demoMode: true,
       services: {
         ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
         'ting.dispatcher': {
@@ -548,6 +551,7 @@ describe('shared domain helpers', () => {
 
   it('falls back to mock shared services when no shared api base exists', () => {
     const config = {
+      demoMode: true,
       services: {
         ting: { mode: 'mock' },
         volundr: { mode: 'mock' },
@@ -763,9 +767,29 @@ describe('buildServices', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
+  it('fails loudly when a live service adapter is not configured', () => {
+    expect(() =>
+      buildServices({
+        demoMode: false,
+        theme: 'ice',
+        plugins: {},
+        services: {},
+      } as any),
+    ).toThrow(ServiceConfigurationError);
+    expect(() =>
+      buildServices({
+        demoMode: false,
+        theme: 'ice',
+        plugins: {},
+        services: {},
+      } as any),
+    ).toThrow('ravn.personas');
+  });
+
 
   it('builds Ting tracker and audit services against the shared api base', () => {
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -796,6 +820,7 @@ describe('buildServices', () => {
 
   it('prefers explicit tracker and audit domain configs over the derived shared base', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -815,6 +840,7 @@ describe('buildServices', () => {
 
   it('normalizes explicit Ting subdomain configs back to the shared Ting base', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -875,6 +901,7 @@ describe('buildServices', () => {
 
   it('falls back to the Volundr catalog host when Ting is not live', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -892,6 +919,7 @@ describe('buildServices', () => {
 
   it('falls back to canonical shared routes when only the Forge base is live', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -918,6 +946,7 @@ describe('buildServices', () => {
 
   it('builds niuu.repos against the shared repo catalog route', () => {
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -931,6 +960,7 @@ describe('buildServices', () => {
 
   it('routes runtime reads through the Forge facade', async () => {
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -960,6 +990,7 @@ describe('buildServices', () => {
 
   it('prefers an explicit filesystem base over the derived Volundr route', () => {
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -976,6 +1007,7 @@ describe('buildServices', () => {
 
   it('prefers explicit Ravn domain configs over the shared ravn base', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1011,6 +1043,7 @@ describe('buildServices', () => {
 
   it('uses the explicit personas service base for the persona adapter when present', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1084,6 +1117,7 @@ describe('buildServices', () => {
     volundrMocks.buildVolundrHttpAdapter.mockReturnValue(liveVolundr as any);
 
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1164,6 +1198,7 @@ describe('buildServices', () => {
     volundrMocks.buildVolundrHttpAdapter.mockReturnValue(liveVolundr as any);
 
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: { forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' } },
@@ -1177,6 +1212,7 @@ describe('buildServices', () => {
 
   it('prefers an explicit forge service base for the main Volundr http adapter', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1297,6 +1333,7 @@ describe('buildServices', () => {
     volundrMocks.buildVolundrHttpAdapter.mockReturnValue(liveVolundr as any);
 
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1364,6 +1401,7 @@ describe('buildServices', () => {
     volundrMocks.buildVolundrHttpAdapter.mockReturnValue(liveVolundr as any);
 
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1430,6 +1468,7 @@ describe('buildServices', () => {
     volundrMocks.buildVolundrHttpAdapter.mockReturnValue(liveVolundr as any);
 
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1458,6 +1497,7 @@ describe('buildServices', () => {
 
   it('keeps mock session stores when Volundr is not live', () => {
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {},
@@ -1555,6 +1595,7 @@ describe('buildServices', () => {
     volundrMocks.buildVolundrHttpAdapter.mockReturnValueOnce(liveVolundr as any);
 
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1611,6 +1652,7 @@ describe('buildServices', () => {
 
   it('builds live stream and observatory adapters when those backends are configured', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1656,6 +1698,7 @@ describe('buildServices', () => {
 
   it('derives the bundled host pty websocket path from the live forge base when no explicit pty config exists', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1670,6 +1713,7 @@ describe('buildServices', () => {
 
   it('lets a grouped observatory base drive all observatory adapters by default', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1693,6 +1737,7 @@ describe('buildServices', () => {
 
   it('prefers explicit observatory surface overrides over the grouped observatory base', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1714,6 +1759,7 @@ describe('buildServices', () => {
 
   it('normalizes an explicit observatory registry override back to the service root', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1731,6 +1777,7 @@ describe('buildServices', () => {
 
   it('registers Valkyrie mock services by default', () => {
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {},
@@ -1744,6 +1791,7 @@ describe('buildServices', () => {
 
   it('wires realm governance to the shared API and Ting workflow bases', () => {
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1760,6 +1808,7 @@ describe('buildServices', () => {
 
   it('keeps realm governance mocked without a Ting workflow base', () => {
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1772,6 +1821,7 @@ describe('buildServices', () => {
 
   it('lets a grouped Valkyrie base drive dashboard, review, and skills adapters', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1797,6 +1847,7 @@ describe('buildServices', () => {
 
   it('prefers an explicit Valkyrie skills override over the grouped base', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1815,6 +1866,7 @@ describe('buildServices', () => {
 
   it('prefers explicit Valkyrie review queue overrides over the grouped base', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {

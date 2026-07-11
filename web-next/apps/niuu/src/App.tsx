@@ -16,7 +16,11 @@ import { AuthProvider, useAuth } from '@niuulabs/auth';
 import { Shell } from '@niuulabs/shell';
 import { LogoKnot } from '@niuulabs/plugin-login';
 import { plugins } from './plugins';
-import { buildServiceBackendStatus, buildServices } from './services';
+import {
+  buildServiceBackendStatus,
+  buildServices,
+  ServiceConfigurationError,
+} from './services';
 
 const DEFAULT_CONFIG_ENDPOINT = '/config.json';
 const LIVE_CONFIG_ENDPOINT = '/config.live.json';
@@ -47,13 +51,36 @@ export function publishServiceBackends(
 
 function AppInner() {
   const config = useConfig();
-  const services = useMemo(() => buildServices(config), [config]);
-  const backendStatus = useMemo(() => buildServiceBackendStatus(config), [config]);
-  const featureCatalogService = services.features as IFeatureCatalogService | undefined;
+  const serviceState = useMemo(() => {
+    try {
+      return {
+        services: buildServices(config),
+        backendStatus: buildServiceBackendStatus(config),
+        error: null,
+      };
+    } catch (error: unknown) {
+      return {
+        services: null,
+        backendStatus: {},
+        error: error instanceof Error ? error : new Error(String(error)),
+      };
+    }
+  }, [config]);
 
   useEffect(() => {
-    publishServiceBackends(backendStatus);
-  }, [backendStatus]);
+    publishServiceBackends(serviceState.backendStatus);
+  }, [serviceState.backendStatus]);
+
+  if (serviceState.error) {
+    const prefix =
+      serviceState.error instanceof ServiceConfigurationError
+        ? 'service config error'
+        : 'service bootstrap error';
+    return <BootScreen label={`${prefix}: ${serviceState.error.message}`} />;
+  }
+
+  const services = serviceState.services;
+  const featureCatalogService = services.features as IFeatureCatalogService | undefined;
 
   return (
     <AuthProvider>

@@ -21,6 +21,7 @@ import { getOidcConfig, getUserManager } from './oidc';
 import { setTokenProvider } from '@niuulabs/query';
 
 const baseConfig: NiuuConfig = {
+  demoMode: false,
   theme: 'ice',
   plugins: {},
   services: {},
