@@ -103,6 +103,7 @@ def test_volundr_contract_names_alias_canonical_shared_types() -> None:
         SecretMountStrategy,
     )
     from identity.models import (
+        Resource,
         Tenant,
         TenantMembership,
         TenantRole,
@@ -110,7 +111,7 @@ def test_volundr_contract_names_alias_canonical_shared_types() -> None:
         User,
         UserStatus,
     )
-    from identity.ports import TenantRepository, UserRepository
+    from identity.ports import AuthorizationPort, TenantRepository, UserRepository
     from tracker.models import ProjectMapping, TrackerConnectionStatus, TrackerIssue
     from tracker.ports import IssueTrackerProvider, ProjectMappingRepository
     from volundr.domain import models as legacy_models
@@ -132,6 +133,8 @@ def test_volundr_contract_names_alias_canonical_shared_types() -> None:
         "UserStatus": UserStatus,
     }
     port_aliases = {
+        "AuthorizationPort": AuthorizationPort,
+        "Resource": Resource,
         "IssueTrackerProvider": IssueTrackerProvider,
         "MCPServerProvider": MCPServerProvider,
         "ProjectMappingRepository": ProjectMappingRepository,

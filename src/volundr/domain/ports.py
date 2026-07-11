@@ -21,7 +21,8 @@ from credentials.ports import (
     SecretMountStrategy,
     SecretValidationError,
 )
-from identity.ports import TenantRepository, UserRepository
+from identity.models import Resource
+from identity.ports import AuthorizationPort, TenantRepository, UserRepository
 from niuu.ports.credentials import CredentialStorePort  # noqa: F401
 from niuu.ports.git import (
     GitAuthError,  # noqa: F401
@@ -83,6 +84,7 @@ from volundr.domain.models import (
 )
 
 __all__ = [
+    "AuthorizationPort",
     "CredentialStorePort",
     "GitAuthError",
     "GitProvider",
@@ -90,6 +92,7 @@ __all__ = [
     "GitWorkflowProvider",
     "IntegrationRepository",
     "PATRepository",
+    "Resource",
 ]
 
 

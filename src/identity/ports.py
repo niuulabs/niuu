@@ -5,7 +5,14 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Protocol
 
-from identity.models import StorageQuota, Tenant, TenantMembership, User
+from identity.models import (
+    Principal,
+    Resource,
+    StorageQuota,
+    Tenant,
+    TenantMembership,
+    User,
+)
 
 
 class TenantRepository(ABC):
@@ -61,6 +68,28 @@ class UserRepository(ABC):
 
     @abstractmethod
     async def remove_membership(self, user_id: str, tenant_id: str) -> bool: ...
+
+
+class AuthorizationPort(ABC):
+    """Port for authorization decisions."""
+
+    @abstractmethod
+    async def is_allowed(
+        self,
+        principal: Principal,
+        action: str,
+        resource: Resource,
+    ) -> bool:
+        """Return whether a principal may perform an action on a resource."""
+
+    @abstractmethod
+    async def filter_allowed(
+        self,
+        principal: Principal,
+        action: str,
+        resources: list[Resource],
+    ) -> list[Resource]:
+        """Return only resources the principal may access."""
 
 
 class StorageReference(Protocol):

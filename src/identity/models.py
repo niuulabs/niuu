@@ -9,6 +9,15 @@ from enum import StrEnum
 from niuu.domain.models import Principal
 
 
+@dataclass(frozen=True)
+class Resource:
+    """A resource used for authorization decisions."""
+
+    kind: str
+    id: str
+    attr: dict[str, object]
+
+
 class UserStatus(StrEnum):
     PROVISIONING = "provisioning"
     ACTIVE = "active"
@@ -86,6 +95,7 @@ __all__ = [
     "Principal",
     "ProvisioningResult",
     "QuotaCheck",
+    "Resource",
     "StorageQuota",
     "Tenant",
     "TenantMembership",
