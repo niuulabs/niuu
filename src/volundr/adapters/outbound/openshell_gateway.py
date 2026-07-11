@@ -564,32 +564,33 @@ class OpenShellGatewayClient:
         return exit_code, "".join(output)
 
     def write_files(self, *, sandbox_id: str, files: dict[str, bytes]) -> None:
-        archive = _credential_file_archive(files)
-        stream = self._stub.ExecSandbox(
-            openshell_pb2.ExecSandboxRequest(
-                sandbox_id=sandbox_id,
-                command=["tar", "-xf", "-", "-C", "/"],
-                stdin=archive,
-                timeout_seconds=30,
-            ),
-            timeout=max(self._timeout, 30.0),
-            metadata=self._metadata(),
-        )
-        output: list[str] = []
-        exit_code = 0
-        for event in stream:
-            if event.HasField("stdout"):
-                output.append(str(event.stdout.data or ""))
-            elif event.HasField("stderr"):
-                output.append(str(event.stderr.data or ""))
-            elif event.HasField("exit"):
-                exit_code = int(event.exit.exit_code)
-        if exit_code != 0:
-            detail = _redact_secret_url("".join(output).strip())
-            suffix = f": {detail}" if detail else ""
-            raise RuntimeError(
-                f"OpenShell credential file projection failed with exit {exit_code}{suffix}"
+        for extraction_root, archive in _credential_file_archives(files):
+            stream = self._stub.ExecSandbox(
+                openshell_pb2.ExecSandboxRequest(
+                    sandbox_id=sandbox_id,
+                    command=["tar", "-xf", "-", "-C", extraction_root],
+                    stdin=archive,
+                    timeout_seconds=30,
+                ),
+                timeout=max(self._timeout, 30.0),
+                metadata=self._metadata(),
             )
+            output: list[str] = []
+            exit_code = 0
+            for event in stream:
+                if event.HasField("stdout"):
+                    output.append(str(event.stdout.data or ""))
+                elif event.HasField("stderr"):
+                    output.append(str(event.stderr.data or ""))
+                elif event.HasField("exit"):
+                    exit_code = int(event.exit.exit_code)
+            if exit_code != 0:
+                detail = _redact_secret_url("".join(output).strip())
+                suffix = f": {detail}" if detail else ""
+                raise RuntimeError(
+                    "OpenShell credential file projection failed "
+                    f"for {extraction_root} with exit {exit_code}{suffix}"
+                )
 
     def _metadata(self) -> tuple[tuple[str, str], ...]:
         return (("authorization", f"Bearer {self._token_provider.token()}"),)
@@ -2668,20 +2669,43 @@ def _sandbox_credential_path(destination: str, *, sandbox_home: str = "/sandbox"
     return normalized_path
 
 
-def _credential_file_archive(files: dict[str, bytes]) -> bytes:
+def _credential_file_archives(files: dict[str, bytes]) -> list[tuple[str, bytes]]:
+    grouped: dict[str, dict[str, bytes]] = {}
+    for destination, content in files.items():
+        path = _sandbox_credential_path(destination)
+        extraction_root = "/run/secrets" if path.startswith("/run/secrets/") else "/sandbox"
+        grouped.setdefault(extraction_root, {})[path] = content
+    return [
+        (root, _credential_file_archive(group, extraction_root=root))
+        for root, group in sorted(grouped.items())
+    ]
+
+
+def _credential_file_archive(
+    files: dict[str, bytes],
+    *,
+    extraction_root: str = "/",
+) -> bytes:
     output = io.BytesIO()
     directories: set[str] = set()
+    root = PurePosixPath(extraction_root)
     with tarfile.open(fileobj=output, mode="w", format=tarfile.USTAR_FORMAT) as archive:
         for destination in sorted(files):
             path = PurePosixPath(_sandbox_credential_path(destination))
-            parents = list(path.parents)
+            try:
+                archive_path = path.relative_to(root)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"OpenShell credential file path is outside extraction root: {destination!r}"
+                ) from exc
+            parents = list(archive_path.parents)
             for parent in reversed(parents):
                 parent_str = str(parent)
-                if parent_str in {"/", "/sandbox", "/run"}:
+                if parent_str == ".":
                     continue
                 if parent_str in directories:
                     continue
-                directory = tarfile.TarInfo(parent_str.lstrip("/"))
+                directory = tarfile.TarInfo(parent_str)
                 directory.type = tarfile.DIRTYPE
                 directory.mode = 0o700
                 directory.mtime = 0
@@ -2689,7 +2713,7 @@ def _credential_file_archive(files: dict[str, bytes]) -> bytes:
                 directories.add(parent_str)
 
             content = files[destination]
-            info = tarfile.TarInfo(str(path).lstrip("/"))
+            info = tarfile.TarInfo(str(archive_path))
             info.mode = 0o600
             info.size = len(content)
             info.mtime = 0
@@ -2714,7 +2738,7 @@ def _default_policy() -> sandbox_pb2.SandboxPolicy:
                 "/var/log",
                 "/dev/urandom",
             ],
-            read_write=["/sandbox", "/tmp", "/dev/null"],
+            read_write=["/sandbox", "/run/secrets", "/tmp", "/dev/null"],
         ),
         landlock=sandbox_pb2.LandlockPolicy(),
         process=sandbox_pb2.ProcessPolicy(run_as_user="sandbox", run_as_group="sandbox"),

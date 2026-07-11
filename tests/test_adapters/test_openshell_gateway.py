@@ -1165,6 +1165,7 @@ def test_exec_script_sends_multiline_script_over_stdin(monkeypatch: pytest.Monke
 
 def test_write_files_includes_projection_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _import_adapter(monkeypatch)
+    recorded = {}
 
     class _Data:
         data = "tar: cannot create sandbox/.volundr: permission denied\n"
@@ -1183,7 +1184,8 @@ def test_write_files_includes_projection_stderr(monkeypatch: pytest.MonkeyPatch)
             return name == self._field
 
     class _Stub:
-        def ExecSandbox(self, _request, **_kwargs):  # noqa: N802 - protobuf shim.
+        def ExecSandbox(self, request, **_kwargs):  # noqa: N802 - protobuf shim.
+            recorded["request"] = request
             return [_Event("stderr"), _Event("exit")]
 
     adapter.openshell_pb2_grpc.OpenShellStub = lambda _channel: _Stub()
@@ -1197,6 +1199,7 @@ def test_write_files_includes_projection_stderr(monkeypatch: pytest.MonkeyPatch)
             sandbox_id="sandbox-id",
             files={"/sandbox/.volundr/skuld.yaml": b"session: {}\n"},
         )
+    assert recorded["request"].command == ["tar", "-xf", "-", "-C", "/sandbox"]
 
 
 def test_exec_detached_sends_only_process_command_over_stdin(
@@ -1291,6 +1294,26 @@ def test_credential_file_archive_uses_private_modes(monkeypatch: pytest.MonkeyPa
         assert claude.mode == 0o600
         assert archive.getmember("sandbox/.codex").mode == 0o700
         assert archive.extractfile(auth).read() == b'{"tokens":{}}'
+
+
+def test_credential_file_archives_extract_within_writable_roots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+
+    payloads = dict(
+        adapter._credential_file_archives(
+            {
+                "/sandbox/.volundr/skuld.yaml": b"session: {}\n",
+                "/run/secrets/tool/token": b"secret",
+            }
+        )
+    )
+
+    with tarfile.open(fileobj=io.BytesIO(payloads["/sandbox"]), mode="r:") as archive:
+        assert archive.getnames() == [".volundr", ".volundr/skuld.yaml"]
+    with tarfile.open(fileobj=io.BytesIO(payloads["/run/secrets"]), mode="r:") as archive:
+        assert archive.getnames() == ["tool", "tool/token"]
 
 
 def test_credential_file_path_rejects_escape(monkeypatch: pytest.MonkeyPatch) -> None:
