@@ -243,12 +243,12 @@ describe('useActivityLog', () => {
   it('reflects trigger-only loading and error states', async () => {
     const sessionStream = {
       listSessions: async () => [] as Session[],
-      getSession: async () => ({} as Session),
+      getSession: async () => ({}) as Session,
       getMessages: async () => [],
     };
     const slowTriggers = {
       listTriggers: () => new Promise<Trigger[]>(() => undefined),
-      createTrigger: async () => ({} as Trigger),
+      createTrigger: async () => ({}) as Trigger,
       deleteTrigger: async () => undefined,
     };
     const loading = renderHook(() => useActivityLog(), {

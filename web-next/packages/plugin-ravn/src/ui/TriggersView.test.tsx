@@ -61,7 +61,9 @@ describe('TriggersView', () => {
     const empty = { listTriggers: async () => [] };
     render(<TriggersView />, { wrapper: wrap({ 'ravn.triggers': empty }) });
     await waitFor(() => expect(screen.getByText(/no triggers configured/i)).toBeInTheDocument());
-    expect(screen.getByText(/0 active · 0 total/i)).toBeInTheDocument();
+    expect(document.querySelector('.rv-triggers-view__count')).toHaveTextContent(
+      '0 active · 0 total',
+    );
   });
 
   it('renders disabled triggers while omitting empty kind groups', async () => {
@@ -79,7 +81,9 @@ describe('TriggersView', () => {
     };
     render(<TriggersView />, { wrapper: wrap({ 'ravn.triggers': disabled }) });
     await waitFor(() => expect(screen.getByText('disabled')).toBeInTheDocument());
-    expect(screen.getByText(/0 active · 1 total/i)).toBeInTheDocument();
+    expect(document.querySelector('.rv-triggers-view__count')).toHaveTextContent(
+      '0 active · 1 total',
+    );
     expect(screen.getByRole('region', { name: /event triggers/i })).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: /cron triggers/i })).not.toBeInTheDocument();
   });
