@@ -298,8 +298,7 @@ class NotificationService:
             event_type="phase.unlocked",
         )
 
-    @staticmethod
-    def _map_run_feedback_requested(data: dict[str, Any]) -> Notification | None:
+    def _map_run_feedback_requested(self, data: dict[str, Any]) -> Notification | None:
         owner_id = str(data.get("owner_id") or "").strip()
         if not owner_id:
             return None

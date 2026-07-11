@@ -27,6 +27,7 @@ except ImportError:
     _catalog_saga_completed = None  # type: ignore[assignment]
 
 from mimir.registry import MimirRegistryStore
+from niuu.config_models import default_session_definitions
 from niuu.domain.model_runtime import (
     session_definition_for_model,
     transport_adapter_for_session_definition,
@@ -62,7 +63,6 @@ from ting.ports.saga_repository import SagaRepository
 from ting.ports.tracker import TrackerFactory, TrackerPort
 from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrPort
 from ting.ports.workflow_repository import WorkflowRepository
-from niuu.config_models import default_session_definitions
 
 logger = logging.getLogger(__name__)
 

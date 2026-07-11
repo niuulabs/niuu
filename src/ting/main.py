@@ -17,8 +17,8 @@ from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
 from niuu.domain.services.pat_validator import PATValidator
-from niuu.service_runtime import create_workload_identity_service
 from niuu.ports.integrations import IntegrationRepository
+from niuu.service_runtime import create_workload_identity_service
 from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ravn.ports.persona import PersonaPort

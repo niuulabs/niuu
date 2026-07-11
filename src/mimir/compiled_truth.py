@@ -154,7 +154,7 @@ def _parse_timeline_entries(timeline_body: str) -> list[TimelineEntry]:
     return entries
 
 
-def _parse_enum_field[_E: StrEnum](raw: dict, key: str, enum_cls: type[_E]) -> _E | None:
+def _parse_enum_field[E: StrEnum](raw: dict, key: str, enum_cls: type[E]) -> E | None:
     value = raw.get(key)
     if value is None:
         return None

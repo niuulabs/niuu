@@ -18,8 +18,8 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Res
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from niuu.domain.session_endpoint import public_session_endpoint
 from niuu.domain.services.token_scope import OPENSHELL_SESSION_TOKEN_USE, require_build_scope
+from niuu.domain.session_endpoint import public_session_endpoint
 from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turns
 from volundr.adapters.inbound.auth import extract_principal, require_role
 from volundr.config import PermissionAutoApprovalConfig

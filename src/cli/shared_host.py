@@ -29,11 +29,11 @@ from niuu.service_integrations import (
     seed_linear_integration,
 )
 from niuu.service_runtime import (
-    create_workload_identity_service,
     create_credential_store,
     create_identity_adapter,
     create_pat_validator,
     create_storage_adapter,
+    create_workload_identity_service,
     release_credential_store,
 )
 from niuu.utils import import_class
