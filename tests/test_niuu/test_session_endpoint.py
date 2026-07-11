@@ -28,7 +28,4 @@ def test_public_session_endpoint_rewrites_loopback_for_browser_host() -> None:
         public_session_endpoint(endpoint, public_host="niuu.example.test")
         == "ws://niuu.example.test:9000/chat?token=abc#stream"
     )
-    assert (
-        public_session_endpoint(endpoint)
-        == "ws://localhost:9000/chat?token=abc#stream"
-    )
+    assert public_session_endpoint(endpoint) == "ws://localhost:9000/chat?token=abc#stream"

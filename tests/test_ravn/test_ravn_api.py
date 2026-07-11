@@ -1660,9 +1660,7 @@ def test_valkyrie_dashboard_rejects_malformed_typed_catalog():
 
 
 def test_valkyrie_dashboard_rejects_unreadable_catalog_file(tmp_path):
-    config = ValkyrieDashboardConfig(
-        environments_file=str(tmp_path / "missing.json")
-    )
+    config = ValkyrieDashboardConfig(environments_file=str(tmp_path / "missing.json"))
 
     with pytest.raises(ValueError, match="cannot read Valkyrie dashboard catalog"):
         configured_environment_records(config)

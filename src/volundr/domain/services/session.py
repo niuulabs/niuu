@@ -152,7 +152,6 @@ class SessionService:
         else:
             self._public_ws_origin = normalized_public_origin
 
-
     async def create_session(
         self,
         name: str,

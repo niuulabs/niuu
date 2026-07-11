@@ -584,6 +584,7 @@ def _plugin_api_base_url(host: str, port: int) -> str:
     """Return the intra-stack base URL used by host-mounted plugin apps."""
     return f"http://{_local_service_host(host)}:{port}"
 
+
 def _plugin_public_origin(public_host: str | None, host: str, port: int) -> str:
     """Return the browser-facing origin passed to hosted plugin apps."""
     normalized = str(public_host or host).strip() or "127.0.0.1"

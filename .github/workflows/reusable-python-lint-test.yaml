@@ -42,6 +42,11 @@ jobs:
             printf '%s\n' "$output" | sed -n 's/^Would reformat: //p' | while IFS= read -r file; do
               echo "::error file=${file}::Ruff formatting required"
             done
+            diff_output="$(uv run ruff format --diff src/ tests/ 2>&1 || true)"
+            diff_output="${diff_output//'%'/'%25'}"
+            diff_output="${diff_output//$'\n'/'%0A'}"
+            diff_output="${diff_output//$'\r'/'%0D'}"
+            echo "::error title=Ruff formatting diff::${diff_output}"
             exit 1
           }
 
