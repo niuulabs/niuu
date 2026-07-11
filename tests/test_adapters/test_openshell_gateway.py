@@ -555,7 +555,9 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
     assert manager.supports(profile)
     assert observation.observed_state is ResidentObservedState.ACTIVE
     assert observation.backend_ref["kind"] == "OpenShellSandbox"
-    assert observation.backend_ref["name"] == f"resident-{runtime.id.hex[:22]}"
+    expected_name = f"resident-{runtime.id.hex[:19]}"
+    assert observation.backend_ref["name"] == expected_name
+    assert len(expected_name) == adapter.MAX_SANDBOX_ROUTING_NAME_LENGTH
     assert observation.endpoints[0].url == "ws://openshell.example/proxy/session-1/session"
     assert client.created is not None
     assert client.created["image"] == ("ghcr.io/niuulabs/openshell:niu-1099-openshell-resident")
@@ -646,9 +648,9 @@ async def test_resident_delete_removes_service_sandbox_and_provider_grants(
 
     assert await manager.delete(runtime)
     assert client.deleted_services == [
-        {"sandbox_name": f"resident-{runtime.id.hex[:22]}", "service": "skuld"}
+        {"sandbox_name": f"resident-{runtime.id.hex[:19]}", "service": "skuld"}
     ]
-    assert client.deleted == [f"resident-{runtime.id.hex[:22]}"]
+    assert client.deleted == [f"resident-{runtime.id.hex[:19]}"]
     assert [grant.provider_name for grant in client.deleted_grants] == ["volundr-provider"]
 
 

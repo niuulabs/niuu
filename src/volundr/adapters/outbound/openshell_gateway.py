@@ -81,6 +81,7 @@ DEFAULT_SERVICE_PORT = 9200
 READY_POLL_INTERVAL = 1.0
 BOOTSTRAP_TIMEOUT_SECONDS = 600
 BOOTSTRAP_GIT_ATTEMPTS = 20
+MAX_SANDBOX_ROUTING_NAME_LENGTH = 28
 OAUTH_CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe"
 GRANT_AUDIENCE_PREFIX = "niuu:credential:"
 PLATFORM_GRANT_AUDIENCE_PREFIX = "niuu:platform:"
@@ -574,11 +575,21 @@ class OpenShellGatewayClient:
             timeout=max(self._timeout, 30.0),
             metadata=self._metadata(),
         )
+        output: list[str] = []
+        exit_code = 0
         for event in stream:
-            if event.HasField("exit") and int(event.exit.exit_code) != 0:
-                raise RuntimeError(
-                    f"OpenShell credential file projection failed with exit {event.exit.exit_code}"
-                )
+            if event.HasField("stdout"):
+                output.append(str(event.stdout.data or ""))
+            elif event.HasField("stderr"):
+                output.append(str(event.stderr.data or ""))
+            elif event.HasField("exit"):
+                exit_code = int(event.exit.exit_code)
+        if exit_code != 0:
+            detail = _redact_secret_url("".join(output).strip())
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(
+                f"OpenShell credential file projection failed with exit {exit_code}{suffix}"
+            )
 
     def _metadata(self) -> tuple[tuple[str, str], ...]:
         return (("authorization", f"Bearer {self._token_provider.token()}"),)
@@ -1296,7 +1307,9 @@ class OpenShellGatewayPodManager(
 
     @staticmethod
     def _resident_sandbox_name(runtime: ResidentRuntime) -> str:
-        return f"resident-{runtime.id.hex[:22]}"
+        prefix = "resident-"
+        suffix_length = MAX_SANDBOX_ROUTING_NAME_LENGTH - len(prefix)
+        return f"{prefix}{runtime.id.hex[:suffix_length]}"
 
     async def exchange_credential_grant(
         self,
