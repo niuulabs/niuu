@@ -12,17 +12,16 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from ravn.api.valkyrie_projection import (
-    Dashboard,
-    ValkyrieDashboardProjection,
-    _as_float,
-    _as_string_list,
+from ravn.api.valkyrie_learning_projection import (
     _decision_request_for_learning,
-    _huddle_role_for_action,
     _learning_edits,
     _learning_feedback_action,
-    _now,
     _raw_learning_id,
+)
+from ravn.api.valkyrie_projection import Dashboard, ValkyrieDashboardProjection
+from ravn.api.valkyrie_projection_common import _as_float, _as_string_list, _now
+from ravn.api.valkyrie_runtime_projection import (
+    _huddle_role_for_action,
     _resolve_huddle_message_author,
     _validate_huddle_join_scope,
 )
