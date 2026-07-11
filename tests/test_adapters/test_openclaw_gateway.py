@@ -220,7 +220,7 @@ async def test_openclaw_sessions_and_shared_chat_use_gateway_v4() -> None:
         await chat.send({"type": "interrupt"})
         await chat.close()
 
-    assert connect_params["minProtocol"] == 4
+    assert connect_params["minProtocol"] == 3
     assert connect_params["maxProtocol"] == 4
     assert "sessions.list" in methods
     assert "agents.list" in methods

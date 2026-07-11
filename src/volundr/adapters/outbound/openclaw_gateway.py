@@ -1,4 +1,4 @@
-"""Native OpenClaw Gateway v4 adapter for resident sessions and shared chat."""
+"""Native OpenClaw Gateway adapter for resident sessions and shared chat."""
 
 from __future__ import annotations
 
@@ -37,7 +37,8 @@ _CREDENTIAL_NAME = "openclaw-gateway"
 _AGENT_ID = "main"
 _SESSION_KEY_PREFIX = f"agent:{_AGENT_ID}:niuu-"
 _SCOPES = ["operator.read", "operator.write", "operator.admin"]
-_PROTOCOL_VERSION = 4
+_MIN_PROTOCOL_VERSION = 3
+_MAX_PROTOCOL_VERSION = 4
 
 
 class OpenClawGatewayError(RuntimeError):
@@ -173,8 +174,8 @@ class _GatewayConnection:
             "id": request_id,
             "method": "connect",
             "params": {
-                "minProtocol": _PROTOCOL_VERSION,
-                "maxProtocol": _PROTOCOL_VERSION,
+                "minProtocol": _MIN_PROTOCOL_VERSION,
+                "maxProtocol": _MAX_PROTOCOL_VERSION,
                 "client": {
                     "id": "gateway-client",
                     "displayName": "Volundr",
