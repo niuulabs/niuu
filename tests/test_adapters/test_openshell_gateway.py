@@ -639,6 +639,20 @@ async def test_resident_restart_reuses_sandbox_and_dynamic_provider_environment(
     ]
 
 
+def test_resident_process_lifecycle_uses_in_sandbox_process_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+
+    health = adapter._resident_health_script()
+    stop = adapter._resident_stop_script()
+
+    assert "pgrep -f '^/opt/niuu/bin/python -m skuld$'" in health
+    assert "pgrep -f '^/opt/niuu/bin/python -m ravn daemon" in health
+    assert "kill -9 $pids" in stop
+    assert "kill -0" not in health
+
+
 @pytest.mark.asyncio
 async def test_resident_delete_removes_service_sandbox_and_provider_grants(
     monkeypatch: pytest.MonkeyPatch,

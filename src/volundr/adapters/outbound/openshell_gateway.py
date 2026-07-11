@@ -2457,23 +2457,31 @@ def _resident_state_from_sandbox(
 def _resident_health_script() -> str:
     return """\
 set -eu
-for name in skuld ravn; do
-  pid_file="/sandbox/.volundr/$name.pid"
-  test -s "$pid_file"
-  kill -0 "$(cat "$pid_file")"
-done
+pgrep -f '^/opt/niuu/bin/python -m skuld$' >/dev/null
+pgrep -f '^/opt/niuu/bin/python -m ravn daemon --config /sandbox/.volundr/ravn.yaml ' >/dev/null
 """
 
 
 def _resident_stop_script() -> str:
     return """\
 set -eu
-for name in ravn skuld; do
-  pid_file="/sandbox/.volundr/$name.pid"
-  if [ -s "$pid_file" ]; then
-    kill "$(cat "$pid_file")" 2>/dev/null || true
-    rm -f "$pid_file"
+terminate() {
+  pattern="$1"
+  pids="$(pgrep -f "$pattern" || true)"
+  if [ -n "$pids" ]; then
+    kill $pids 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+      pgrep -f "$pattern" >/dev/null || return 0
+      sleep 1
+    done
+    pids="$(pgrep -f "$pattern" || true)"
+    [ -z "$pids" ] || kill -9 $pids 2>/dev/null || true
   fi
+}
+terminate '^/opt/niuu/bin/python -m ravn daemon --config /sandbox/.volundr/ravn.yaml '
+terminate '^/opt/niuu/bin/python -m skuld$'
+for name in ravn skuld; do
+  rm -f "/sandbox/.volundr/$name.pid"
 done
 """
 
