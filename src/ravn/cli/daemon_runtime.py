@@ -6,6 +6,7 @@ from __future__ import annotations
 # invocation so established command patch points remain effective.
 # ruff: noqa: F821
 
+
 async def _run_daemon(
     settings: Settings,
     *,

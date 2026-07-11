@@ -41,9 +41,7 @@ def _resolve_workspace(settings: Settings) -> Path:
     return Path(ws).resolve() if ws else Path.cwd()
 
 
-def _resident_ravn_state_dir(
-    workspace: Path, settings: Settings | None = None
-) -> Path:
+def _resident_ravn_state_dir(workspace: Path, settings: Settings | None = None) -> Path:
     """Return the writable resident Ravn state directory for skills/metadata."""
     override = (settings or Settings()).state_dir.strip()
     if override:
@@ -282,6 +280,7 @@ def _constructor_accepts_kwarg(cls: type, name: str) -> bool:
             return True
     return False
 
+
 # ---------------------------------------------------------------------------
 # Builder: LLM
 # ---------------------------------------------------------------------------
@@ -344,9 +343,7 @@ def _build_executor(
         if isinstance(raw_kwargs, dict):
             kwargs = dict(raw_kwargs)
     else:
-        runtime_transport_adapter = (
-            loaded_settings.runtime_executor.transport_adapter.strip()
-        )
+        runtime_transport_adapter = loaded_settings.runtime_executor.transport_adapter.strip()
         if runtime_transport_adapter:
             adapter_path = "ravn.adapters.executors.cli.CliTransportExecutor"
             kwargs = {"transport_adapter": runtime_transport_adapter}

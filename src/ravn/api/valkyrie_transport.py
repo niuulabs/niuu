@@ -215,9 +215,7 @@ def _telemetry_stream_specs(config: ValkyrieTelemetryConfig) -> list[dict[str, s
                 ),
                 "user": parts[2] if len(parts) > 2 and parts[2] else config.nats_user,
                 "password_env": (
-                    parts[3]
-                    if len(parts) > 3 and parts[3]
-                    else config.nats_password_env
+                    parts[3] if len(parts) > 3 and parts[3] else config.nats_password_env
                 ),
             }
         )
@@ -371,12 +369,16 @@ def build_nats_review_command_publisher_from_env(
         "tls_handshake_first": (
             loaded.tls_handshake_first
             if loaded.tls_handshake_first is not None
-            else telemetry.tls_handshake_first if command_inherits_telemetry else False
+            else telemetry.tls_handshake_first
+            if command_inherits_telemetry
+            else False
         ),
         "tls_insecure_skip_verify": (
             loaded.tls_insecure_skip_verify
             if loaded.tls_insecure_skip_verify is not None
-            else telemetry.tls_insecure_skip_verify if command_inherits_telemetry else False
+            else telemetry.tls_insecure_skip_verify
+            if command_inherits_telemetry
+            else False
         ),
         "token": _secret_value(loaded.nats_token_env)
         or (_secret_value(telemetry.nats_token_env) if command_inherits_telemetry else ""),

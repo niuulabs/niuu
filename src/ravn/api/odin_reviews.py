@@ -17,6 +17,7 @@ from ravn.ports.review_queue import ReviewQueueStore
 
 logger = logging.getLogger(__name__)
 
+
 class ReviewDecisionRequest(BaseModel):
     decision: str
     reason: str = ""

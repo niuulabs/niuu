@@ -6,6 +6,7 @@ from __future__ import annotations
 # invocation so established command patch points remain effective.
 # ruff: noqa: F821
 
+
 def _build_mesh(settings: Settings, discovery: Any = None) -> Any:
     """Build mesh adapters using dynamic import from config.
 
@@ -145,9 +146,7 @@ def _resolve_transport_kwargs(
         return kwargs
 
     if adapter == "redis":
-        redis_url = os.environ.get(
-            settings.mesh.redis_url_env, "redis://localhost:6379"
-        )
+        redis_url = os.environ.get(settings.mesh.redis_url_env, "redis://localhost:6379")
         return {"redis_url": redis_url}
 
     return {}

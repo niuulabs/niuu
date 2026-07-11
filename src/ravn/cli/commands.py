@@ -1356,14 +1356,8 @@ def _runtime_wrapper(module: Any, name: str, own_names: frozenset[str]) -> Any:
     return wrapper
 
 
-_DAEMON_RUNTIME_NAMES = frozenset(
-    (
-        "_run_daemon",
-    )
-)
-_run_daemon = _runtime_wrapper(
-    _daemon_runtime, "_run_daemon", _DAEMON_RUNTIME_NAMES
-)
+_DAEMON_RUNTIME_NAMES = frozenset(("_run_daemon",))
+_run_daemon = _runtime_wrapper(_daemon_runtime, "_run_daemon", _DAEMON_RUNTIME_NAMES)
 
 _RESIDENT_RUNTIME_WIRING_NAMES = frozenset(
     (
@@ -1422,18 +1416,14 @@ _TRIGGER_WIRING_NAMES = frozenset(
 _wire_mimir_triggers = _runtime_wrapper(
     _trigger_wiring, "_wire_mimir_triggers", _TRIGGER_WIRING_NAMES
 )
-_wire_cron = _runtime_wrapper(
-    _trigger_wiring, "_wire_cron", _TRIGGER_WIRING_NAMES
-)
+_wire_cron = _runtime_wrapper(_trigger_wiring, "_wire_cron", _TRIGGER_WIRING_NAMES)
 _wire_task_dispatch = _runtime_wrapper(
     _trigger_wiring, "_wire_task_dispatch", _TRIGGER_WIRING_NAMES
 )
 _derive_capabilities = _runtime_wrapper(
     _trigger_wiring, "_derive_capabilities", _TRIGGER_WIRING_NAMES
 )
-_wire_cascade = _runtime_wrapper(
-    _trigger_wiring, "_wire_cascade", _TRIGGER_WIRING_NAMES
-)
+_wire_cascade = _runtime_wrapper(_trigger_wiring, "_wire_cascade", _TRIGGER_WIRING_NAMES)
 
 _MESH_RUNTIME_NAMES = frozenset(
     (
@@ -1443,18 +1433,12 @@ _MESH_RUNTIME_NAMES = frozenset(
         "_run_peers",
     )
 )
-_build_mesh = _runtime_wrapper(
-    _mesh_runtime, "_build_mesh", _MESH_RUNTIME_NAMES
-)
+_build_mesh = _runtime_wrapper(_mesh_runtime, "_build_mesh", _MESH_RUNTIME_NAMES)
 _resolve_transport_kwargs = _runtime_wrapper(
     _mesh_runtime, "_resolve_transport_kwargs", _MESH_RUNTIME_NAMES
 )
-_build_discovery = _runtime_wrapper(
-    _mesh_runtime, "_build_discovery", _MESH_RUNTIME_NAMES
-)
-_run_peers = _runtime_wrapper(
-    _mesh_runtime, "_run_peers", _MESH_RUNTIME_NAMES
-)
+_build_discovery = _runtime_wrapper(_mesh_runtime, "_build_discovery", _MESH_RUNTIME_NAMES)
+_run_peers = _runtime_wrapper(_mesh_runtime, "_run_peers", _MESH_RUNTIME_NAMES)
 
 _RUNTIME_WRAPPERS.update(
     {

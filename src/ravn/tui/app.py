@@ -688,7 +688,6 @@ class RavnTUI(TextualApp[None]):
                 names = ", ".join(self.layout_mgr.list())
                 self.notify(f"Layouts: {names}")
 
-
     async def _cmd_broadcast(self, *args: str) -> None:
         message = " ".join(args)
         if not message:
@@ -734,7 +733,6 @@ class RavnTUI(TextualApp[None]):
             self.notify("\n".join(self._notif_log[-5:]))
         else:
             self.notify("No notifications")
-
 
     async def _cmd_ingest(self, path: str = "") -> None:
         import os

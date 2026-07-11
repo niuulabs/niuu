@@ -10,6 +10,7 @@ from ravn.ports.executor import ExecutionAgentPort
 
 logger = logging.getLogger(__name__)
 
+
 async def _start_mcp(
     settings: Settings,
     agent: ExecutionAgentPort,

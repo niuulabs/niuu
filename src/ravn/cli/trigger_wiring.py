@@ -6,6 +6,7 @@ from __future__ import annotations
 # invocation so established command patch points remain effective.
 # ruff: noqa: F821
 
+
 def _wire_mimir_triggers(
     drive_loop: Any,
     mimir: Any,
@@ -209,7 +210,6 @@ def _derive_capabilities(
 
     profile_cfg = _get_tool_group(settings, profile_name)
     return list(profile_cfg.include_groups)
-
 
 
 def _wire_cascade(
