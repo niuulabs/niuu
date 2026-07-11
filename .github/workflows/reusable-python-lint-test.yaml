@@ -36,7 +36,14 @@ jobs:
         run: uv run ruff check --output-format=github src/ tests/
 
       - name: Check ruff formatting
-        run: uv run ruff format --check src/ tests/
+        run: |
+          output="$(uv run ruff format --check src/ tests/ 2>&1)" || {
+            printf '%s\n' "$output"
+            diff_output="$(uv run ruff format --diff src/ tests/ 2>&1 || true)"
+            encoded_diff="$(printf '%s' "$diff_output" | gzip -9 | base64 -w 0)"
+            echo "::error title=Ruff format gzip base64::${encoded_diff}"
+            exit 1
+          }
 
   test:
     name: "Python: Test ${{ matrix.pkg.name }}"
