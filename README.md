@@ -222,6 +222,10 @@ pnpm typecheck
 pnpm lint
 pnpm format:check
 pnpm test
+
+# Informational module-size and dependency-coupling review
+cd ..
+make review-modules
 ```
 
 ## Deployment
