@@ -26,7 +26,7 @@ from ting.domain.utils import _session_name, _slugify
 from ting.domain.workflow_snapshot import build_workflow_snapshot, workflow_mimir_from_snapshot
 from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrSession
 from ting.ports.workflow_repository import WorkflowRepository
-from volundr.adapters.inbound.rest import _public_session_endpoint
+from niuu.domain.session_endpoint import public_session_endpoint
 
 _DEFAULT_WORKFLOW_LAUNCH_DEFINITION = "skuldCodex"
 
@@ -242,7 +242,12 @@ def create_workflows_router() -> APIRouter:
             principal=principal,
             bearer_token=bearer_token,
         )
-        return _launch_response(execution.workflow, execution.slug, execution.session)
+        return _launch_response(
+            execution.workflow,
+            execution.slug,
+            execution.session,
+            public_host=request.url.hostname,
+        )
 
     return router
 
@@ -286,6 +291,8 @@ def _launch_response(
     workflow: WorkflowDefinition,
     slug: str,
     session: VolundrSession,
+    *,
+    public_host: str | None = None,
 ) -> WorkflowLaunchResponse:
     return WorkflowLaunchResponse(
         workflow_id=str(workflow.id),
@@ -295,7 +302,7 @@ def _launch_response(
         session_name=session.name,
         status=session.status,
         cluster_name=session.cluster_name,
-        chat_endpoint=_public_session_endpoint(session.chat_endpoint),
+        chat_endpoint=public_session_endpoint(session.chat_endpoint, public_host=public_host),
     )
 
 

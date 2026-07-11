@@ -6,15 +6,25 @@ import json
 import logging
 import os
 import sys
+from typing import Any, Protocol
 
 import uvicorn
 
 from niuu.domain.logging import LoggingConfig
 from niuu.domain.services.pat_validator import PATValidator
-from niuu.service_settings import Settings
+from niuu.domain.services.workload_identity import WorkloadIdentityService
 from niuu.utils import import_class, resolve_secret_kwargs
 
 logger = logging.getLogger(__name__)
+
+
+class ServiceSettings(Protocol):
+    """Settings sections required by shared service runtime builders."""
+
+    identity: Any
+    storage: Any
+    credential_store: Any
+    pat: Any
 
 _SHARED_CREDENTIAL_STORES: dict[str, object] = {}
 _SHARED_CREDENTIAL_STORE_REFS: dict[str, int] = {}
@@ -51,8 +61,31 @@ def configure_logging(config: LoggingConfig | None = None) -> None:
     )
 
 
+def create_workload_identity_service(config: Any) -> WorkloadIdentityService:
+    """Resolve secret material and verifier adapters at the composition boundary."""
+    signing_key_pem = str(getattr(config, "signing_key_pem", "") or "")
+    signing_key_env = str(getattr(config, "signing_key_env", "") or "")
+    if not signing_key_pem and signing_key_env:
+        signing_key_pem = os.environ.get(signing_key_env, "")
+
+    verifiers = {}
+    for verifier_config in getattr(config, "verifiers", []) or []:
+        kwargs = resolve_secret_kwargs(
+            dict(getattr(verifier_config, "kwargs", {}) or {}),
+            dict(getattr(verifier_config, "secret_kwargs_env", {}) or {}),
+        )
+        verifier_class = import_class(str(getattr(verifier_config, "adapter")))
+        verifiers[str(getattr(verifier_config, "name"))] = verifier_class(**kwargs)
+
+    return WorkloadIdentityService(
+        config,
+        signing_key_pem=signing_key_pem,
+        verifiers=verifiers,
+    )
+
+
 def create_identity_adapter(
-    settings: Settings,
+    settings: ServiceSettings,
     user_repository,
     storage=None,
     tenant_service=None,
@@ -73,7 +106,7 @@ def create_identity_adapter(
     return instance
 
 
-def create_storage_adapter(settings: Settings):
+def create_storage_adapter(settings: ServiceSettings):
     """Create the shared storage adapter from dynamic config."""
     config = settings.storage
     cls = import_class(config.adapter)
@@ -83,7 +116,7 @@ def create_storage_adapter(settings: Settings):
     return instance
 
 
-def _credential_store_cache_key(settings: Settings) -> str:
+def _credential_store_cache_key(settings: ServiceSettings) -> str:
     config = settings.credential_store
     kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
     return json.dumps(
@@ -96,7 +129,7 @@ def _credential_store_cache_key(settings: Settings) -> str:
     )
 
 
-def create_credential_store(settings: Settings):
+def create_credential_store(settings: ServiceSettings):
     """Create or reuse the shared credential store."""
     cache_key = _credential_store_cache_key(settings)
     cached = _SHARED_CREDENTIAL_STORES.get(cache_key)
@@ -116,7 +149,7 @@ def create_credential_store(settings: Settings):
     return instance
 
 
-def release_credential_store(settings: Settings) -> None:
+def release_credential_store(settings: ServiceSettings) -> None:
     """Release one reference to the shared credential store."""
     cache_key = _credential_store_cache_key(settings)
     refs = _SHARED_CREDENTIAL_STORE_REFS.get(cache_key, 0)
@@ -127,7 +160,7 @@ def release_credential_store(settings: Settings) -> None:
     _SHARED_CREDENTIAL_STORE_REFS[cache_key] = refs - 1
 
 
-def create_pat_validator(settings: Settings, pat_repository) -> PATValidator:
+def create_pat_validator(settings: ServiceSettings, pat_repository) -> PATValidator:
     """Create the shared PAT validator."""
     return PATValidator(
         repo=pat_repository,

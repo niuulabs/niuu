@@ -20,7 +20,7 @@ from niuu.adapters.postgres_realms import PostgresRealmRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.services.pat import PATService
 from niuu.domain.services.realm import RealmService
-from niuu.domain.services.workload_identity import WorkloadIdentityService
+from niuu.service_runtime import create_workload_identity_service
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.service_integrations import (
     has_seeded_linear_integration as _has_seeded_linear_integration,
@@ -39,7 +39,7 @@ from niuu.service_runtime import create_identity_adapter as _create_identity_ada
 from niuu.service_runtime import create_pat_validator as _create_pat_validator
 from niuu.service_runtime import create_storage_adapter as _create_storage_adapter
 from niuu.service_runtime import release_credential_store as _release_credential_store
-from niuu.service_settings import Settings
+from volundr.config import Settings
 from niuu.utils import import_class, resolve_secret_kwargs
 from sleipnir.adapters.audit_postgres import PostgresAuditRepository
 from sleipnir.adapters.audit_subscriber import AuditSubscriber
@@ -526,7 +526,11 @@ def _create_otel_providers(otel_cfg):  # pragma: no cover
     return tracer_provider, meter_provider
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    public_origin: str = "http://localhost:8080",
+) -> FastAPI:
     """Create and configure the FastAPI application.
 
     Args:
@@ -675,7 +679,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             persona_registry = PostgresPersonaRegistry(pool)
             app.state.persona_registry = persona_registry
-            workload_identity_service = WorkloadIdentityService(settings.workload_identity)
+            workload_identity_service = create_workload_identity_service(settings.workload_identity)
             pod_manager = _create_pod_manager(settings)
             if hasattr(pod_manager, "set_session_repository"):
                 pod_manager.set_session_repository(repository)
@@ -868,6 +872,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 integration_repo=integration_repo,
                 storage=storage_adapter,
                 communication_route_repository=communication_route_repository,
+                public_origin=public_origin,
                 session_communication_port=session_room_port,
                 attention_notifier=attention_notifier,
                 runtime_backend=_runtime_backend(settings),

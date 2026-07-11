@@ -11,7 +11,7 @@ from typing import TypeVar
 import asyncpg
 from pydantic import BaseModel
 
-from volundr.config import DatabaseConfig
+from niuu.config_models import DatabaseConfig
 
 SettingsT = TypeVar("SettingsT", bound=BaseModel)
 

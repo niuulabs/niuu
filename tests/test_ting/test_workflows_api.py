@@ -638,8 +638,7 @@ class TestWorkflowCatalogAPI:
         assert response.status_code == 201
         assert adapter.requests[0].name == "research-campaign-final-public-session-endpoint"
 
-    def test_launch_workflow_returns_public_chat_endpoint(self, monkeypatch) -> None:
-        monkeypatch.setenv("NIUU_SERVER_PUBLIC_HOST", "sessions.example")
+    def test_launch_workflow_returns_public_chat_endpoint(self) -> None:
         workflow = _make_research_workflow()
         repo = InMemoryWorkflowRepository([workflow])
         adapter = RecordingVolundrPort(chat_endpoint="ws://127.0.0.1:8080/s/session-123/session")
@@ -652,7 +651,7 @@ class TestWorkflowCatalogAPI:
         )
 
         assert response.status_code == 201
-        assert response.json()["chatEndpoint"] == "ws://sessions.example:8080/s/session-123/session"
+        assert response.json()["chatEndpoint"] == "ws://testserver:8080/s/session-123/session"
 
     def test_launch_workflow_uses_first_available_connection(self) -> None:
         workflow = _make_research_workflow()

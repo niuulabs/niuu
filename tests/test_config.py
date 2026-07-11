@@ -1007,9 +1007,9 @@ class TestEventPipelineConfig:
 def test_builtin_remote_control_definitions_present():
     """Remote Control session types ship as built-ins like the other skuld*
     definitions, wired to the remote-control transports."""
-    from volundr.config import _default_session_definitions
+    from niuu.config_models import default_session_definitions
 
-    defs = _default_session_definitions()
+    defs = default_session_definitions()
     claude_rc = defs["skuldClaudeRemote"]
     assert claude_rc.defaults["broker"]["transportAdapter"] == (
         "skuld.transports.remote_control.RemoteControlTransport"

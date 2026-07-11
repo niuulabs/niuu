@@ -21,7 +21,7 @@ from niuu.config import GitConfig
 from niuu.cors import apply_cors_middleware
 from niuu.domain.services.pat import PATService
 from niuu.domain.services.repo import RepoService
-from niuu.domain.services.workload_identity import WorkloadIdentityService
+from niuu.service_runtime import create_workload_identity_service
 from niuu.service_database import database_pool
 from niuu.service_databases import apply_service_database_settings
 from niuu.service_integrations import (
@@ -36,7 +36,7 @@ from niuu.service_runtime import (
     create_storage_adapter,
     release_credential_store,
 )
-from niuu.service_settings import Settings
+from volundr.config import Settings
 from niuu.utils import import_class
 from ravn.adapters.personas.postgres_registry import PostgresPersonaRegistry
 from volundr.adapters.inbound.rest_credentials import create_canonical_credentials_router
@@ -193,7 +193,7 @@ def create_app(
             app.state.storage = storage_adapter
             app.state.pat_validator = pat_validator
             app.state.pat_service = pat_service
-            app.state.workload_identity_service = WorkloadIdentityService(
+            app.state.workload_identity_service = create_workload_identity_service(
                 loaded_settings.workload_identity
             )
             app.state.persona_registry = PostgresPersonaRegistry(pool)

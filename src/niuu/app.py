@@ -584,6 +584,15 @@ def _plugin_api_base_url(host: str, port: int) -> str:
     """Return the intra-stack base URL used by host-mounted plugin apps."""
     return f"http://{_local_service_host(host)}:{port}"
 
+def _plugin_public_origin(public_host: str | None, host: str, port: int) -> str:
+    """Return the browser-facing origin passed to hosted plugin apps."""
+    normalized = str(public_host or host).strip() or "127.0.0.1"
+    if normalized.startswith(("http://", "https://")):
+        return normalized.rstrip("/")
+    if normalized in {"0.0.0.0", "::", "[::]", "127.0.0.1"}:
+        normalized = "localhost"
+    return f"http://{normalized}:{port}"
+
 
 def _create_plugin_api_app(plugin: Service, *, base_url: str) -> Any:
     """Create a plugin API app, passing root context to opt-in plugins only."""
@@ -970,11 +979,13 @@ def build_root_app(
     registry: PluginRegistry,
     host: str,
     port: int,
+    public_host: str | None = None,
     host_profile: str = DEFAULT_HOST_PROFILE,
     enabled_mounts: set[str] | None = None,
     skuld_registry: SkuldPortRegistry | None = None,
 ) -> FastAPI:
     """Build the root FastAPI app that hosts selected route domains."""
+    plugin_public_origin = _plugin_public_origin(public_host, host, port)
     plugin_api_base_url = _plugin_api_base_url(host, port)
     active_mounts = resolve_enabled_mounts(
         host_profile,
@@ -1019,6 +1030,7 @@ def build_root_app(
             else:
                 sub_app = _create_plugin_api_app_with_context(
                     plugin,
+                    public_origin=plugin_public_origin,
                     base_url=plugin_api_base_url,
                     embedded_forge_app=embedded_forge_app,
                 )
@@ -1263,6 +1275,7 @@ class RootServer(Service):
         return build_root_app(
             registry=self._registry,
             host=self._host,
+            public_host=self._public_host,
             port=self._port,
             host_profile=self._host_profile,
             enabled_mounts=self._enabled_mounts,

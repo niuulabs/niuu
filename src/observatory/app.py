@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.service_databases import apply_service_database_settings, database_pool
-from niuu.service_settings import Settings
+from volundr.config import Settings
 from niuu.settings_schema import (
     SettingsFieldSchema,
     SettingsProviderSchema,

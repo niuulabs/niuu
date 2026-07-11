@@ -9,8 +9,8 @@ from niuu.settings_schema import (
     SettingsProviderSchema,
     SettingsSectionSchema,
 )
-from volundr.adapters.inbound.auth import extract_principal
-from volundr.domain.models import Principal
+from niuu.adapters.inbound.auth import extract_principal
+from niuu.domain.models import Principal
 
 
 def create_credentials_settings_router(prefix: str = "/api/v1/credentials") -> APIRouter:

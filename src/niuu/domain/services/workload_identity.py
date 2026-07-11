@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import os
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -29,7 +28,6 @@ from niuu.ports.workload_identity import (
     WorkloadIdentityVerifier,
     WorkloadTokenIssuer,
 )
-from niuu.utils import import_class, resolve_secret_kwargs
 
 
 @dataclass(frozen=True)
@@ -75,17 +73,17 @@ def _claim(claims: dict[str, Any], path: str) -> Any:
 class WorkloadIdentityService(WorkloadTokenIssuer):
     """Validate workload proofs and mint short-lived Volundr JWTs."""
 
-    def __init__(self, config: Any) -> None:
+    def __init__(
+        self,
+        config: Any,
+        *,
+        signing_key_pem: str = "",
+        verifiers: dict[str, WorkloadIdentityVerifier] | None = None,
+    ) -> None:
         self._config = config
-        self._private_key = self._load_or_generate_key()
-        self._verifiers: dict[str, WorkloadIdentityVerifier] = {}
-        for verifier_config in getattr(config, "verifiers", []) or []:
-            kwargs = resolve_secret_kwargs(
-                dict(getattr(verifier_config, "kwargs", {}) or {}),
-                dict(getattr(verifier_config, "secret_kwargs_env", {}) or {}),
-            )
-            cls = import_class(getattr(verifier_config, "adapter"))
-            self._verifiers[getattr(verifier_config, "name")] = cls(**kwargs)
+        configured_pem = signing_key_pem or str(getattr(config, "signing_key_pem", "") or "")
+        self._private_key = self._load_or_generate_key(configured_pem)
+        self._verifiers = dict(verifiers or {})
 
     @property
     def enabled(self) -> bool:
@@ -270,10 +268,7 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
         )
         return IssuedWorkloadToken(token=token, expires_at=expires_at)
 
-    def _load_or_generate_key(self) -> RSAPrivateKey:
-        configured = str(getattr(self._config, "signing_key_pem", "") or "")
-        env_name = str(getattr(self._config, "signing_key_env", "") or "")
-        pem = configured or (os.environ.get(env_name) if env_name else "")
+    def _load_or_generate_key(self, pem: str) -> RSAPrivateKey:
         if pem:
             key = load_pem_private_key(pem.encode("utf-8"), password=None)
             if not isinstance(key, RSAPrivateKey):

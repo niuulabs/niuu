@@ -39,6 +39,11 @@ class TestPrintStatus:
         captured = capsys.readouterr()
         assert "Starting volundr" in captured.out
 
+    def test_hosted_prints_owner(self, capsys: pytest.CaptureFixture[str]) -> None:
+        _print_status("volundr", ServiceState.HOSTED)
+        captured = capsys.readouterr()
+        assert "Hosted volundr by root server" in captured.out
+
     def test_healthy_prints_ok(self, capsys: pytest.CaptureFixture[str]) -> None:
         _print_status("volundr", ServiceState.HEALTHY)
         captured = capsys.readouterr()

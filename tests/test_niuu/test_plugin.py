@@ -22,7 +22,8 @@ from niuu.domain.models import (
     ReviewStatus,
 )
 from niuu.domain.services.repo import ProviderInfo, RepoService
-from niuu.plugin import NiuuPlugin, _NiuuStub
+from niuu.plugin import NiuuPlugin
+from niuu.ports.plugin import ServiceLifecycle
 from niuu.ports.git import (
     GitAuthError,
     GitProvider,
@@ -54,9 +55,11 @@ class TestNiuuPlugin:
         assert defn.default_enabled is True
         assert "postgres" in defn.depends_on
 
-    def test_create_service(self, plugin: NiuuPlugin) -> None:
-        svc = plugin.create_service()
-        assert isinstance(svc, _NiuuStub)
+    def test_service_is_host_mounted(self, plugin: NiuuPlugin) -> None:
+        definition = plugin.register_service()
+        assert definition.lifecycle is ServiceLifecycle.HOSTED
+        assert definition.factory is None
+        assert plugin.create_service() is None
 
     def test_create_api_app(self, plugin: NiuuPlugin) -> None:
         app = plugin.create_api_app()
@@ -81,26 +84,6 @@ class TestNiuuPlugin:
         client = plugin.create_api_client()
         assert client._base_url == "http://localhost:8080"
         assert client._service_name == "Niuu"
-
-
-class TestNiuuStub:
-    """Tests for the _NiuuStub service lifecycle."""
-
-    @pytest.fixture
-    def stub(self) -> _NiuuStub:
-        return _NiuuStub()
-
-    @pytest.mark.asyncio
-    async def test_start(self, stub: _NiuuStub) -> None:
-        await stub.start()
-
-    @pytest.mark.asyncio
-    async def test_stop(self, stub: _NiuuStub) -> None:
-        await stub.stop()
-
-    @pytest.mark.asyncio
-    async def test_health_check(self, stub: _NiuuStub) -> None:
-        assert await stub.health_check() is True
 
 
 # ---------------------------------------------------------------------------

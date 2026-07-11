@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Res
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from niuu.domain.session_endpoint import public_session_endpoint
 from niuu.domain.services.token_scope import OPENSHELL_SESSION_TOKEN_USE, require_build_scope
 from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turns
 from volundr.adapters.inbound.auth import extract_principal, require_role
@@ -91,26 +92,16 @@ SEND_MESSAGE_ACK_GRACE_SECONDS = 3.0
 
 def _public_session_endpoint(endpoint: str | None, session_id: str = "") -> str | None:
     """Normalize loopback session endpoints for browser-facing clients."""
-    if not endpoint:
-        return endpoint
-    try:
-        parsed = urlsplit(endpoint)
-    except ValueError:
-        return endpoint
-    if session_id and parsed.hostname and parsed.hostname.endswith(OPENSHELL_SERVICE_HOST_SUFFIX):
-        return f"/s/{quote(session_id, safe='')}/session"
-    if parsed.hostname != "127.0.0.1":
-        return endpoint
-    host = (
+    public_host = (
         os.environ.get("NIUU_SERVER_PUBLIC_HOST")
         or os.environ.get("NIUU_SERVER_HOST")
         or "127.0.0.1"
-    ).strip() or "127.0.0.1"
-    public_host = "localhost" if host == "127.0.0.1" else host
-    netloc = public_host
-    if parsed.port is not None:
-        netloc = f"{public_host}:{parsed.port}"
-    return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+    )
+    return public_session_endpoint(
+        endpoint,
+        session_id=session_id,
+        public_host=public_host,
+    )
 
 
 def _server_side_ws_connect_overrides(ws_url: str) -> dict[str, object]:

@@ -17,7 +17,7 @@ from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
 from niuu.domain.services.pat_validator import PATValidator
-from niuu.domain.services.workload_identity import WorkloadIdentityService
+from niuu.service_runtime import create_workload_identity_service
 from niuu.ports.integrations import IntegrationRepository
 from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
@@ -333,7 +333,11 @@ async def _seed_linear_integration(
     await integration_repo.save_connection(connection)
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    public_origin: str | None = None,
+) -> FastAPI:
     """Create and configure the FastAPI application."""
     if settings is None:
         settings = Settings()
@@ -347,7 +351,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     app.state.settings = settings
-    app.state.workload_identity_service = WorkloadIdentityService(settings.workload_identity)
+    app.state.workload_identity_service = create_workload_identity_service(settings.workload_identity)
 
     # -- Routers --
     app.include_router(create_health_router())
@@ -817,6 +821,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             notification_service = NotificationService(
                 event_bus=event_bus,
                 channel_factory=channel_factory,
+                public_origin=public_origin or settings.notification.public_origin,
                 confidence_threshold=settings.notification.confidence_threshold,
             )
             app.state.notification_service = notification_service

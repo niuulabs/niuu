@@ -22,6 +22,11 @@ from niuu.ports.git import (
     GitWorkflowProvider,  # noqa: F401
 )
 from niuu.ports.integrations import IntegrationRepository  # noqa: F401
+from niuu.ports.identity import (
+    IdentityPort,  # noqa: F401
+    InvalidTokenError,  # noqa: F401
+    UserProvisioningError,  # noqa: F401
+)
 from volundr.domain.models import (
     Chronicle,
     ClusterResourceInfo,
@@ -923,34 +928,6 @@ class UserRepository(ABC):
     @abstractmethod
     async def remove_membership(self, user_id: str, tenant_id: str) -> bool:
         """Remove a user from a tenant. Returns True if removed."""
-
-
-class IdentityPort(ABC):
-    """Port for identity/authentication operations."""
-
-    @abstractmethod
-    async def validate_token(self, raw_token: str) -> Principal:
-        """Validate a JWT and extract a Principal.
-
-        Raises:
-            InvalidTokenError: If the token is invalid or expired.
-        """
-
-    @abstractmethod
-    async def get_or_provision_user(self, principal: Principal) -> User:
-        """Get existing user or provision on first login (JIT).
-
-        Raises:
-            UserProvisioningError: If provisioning fails.
-        """
-
-
-class InvalidTokenError(Exception):
-    """Raised when a JWT is invalid, expired, or malformed."""
-
-
-class UserProvisioningError(Exception):
-    """Raised when JIT user provisioning fails."""
 
 
 @dataclass(frozen=True)

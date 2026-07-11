@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -34,6 +35,13 @@ class Service(ABC):
         """Return True if the service is healthy."""
 
 
+class ServiceLifecycle(Enum):
+    """How a registered service is started and observed."""
+
+    MANAGED = "managed"
+    HOSTED = "hosted"
+
+
 @dataclass
 class ServiceDefinition:
     """Describes a managed service exposed by a plugin.
@@ -50,8 +58,11 @@ class ServiceDefinition:
     description: str
     """One-line description shown in --help."""
 
-    factory: Callable[[], Service]
-    """Zero-arg callable that creates a fresh Service instance."""
+    factory: Callable[[], Service] | None = None
+    """Factory for a managed service; absent when mounted by the root host."""
+
+    lifecycle: ServiceLifecycle = ServiceLifecycle.MANAGED
+    """Whether the CLI manages this service or the root host mounts it."""
 
     default_enabled: bool = True
     """Whether this service is enabled when no config or flag overrides it."""
@@ -61,6 +72,32 @@ class ServiceDefinition:
 
     default_port: int = 0
     """Default listen port (0 means no fixed port)."""
+
+    def __post_init__(self) -> None:
+        if self.lifecycle is ServiceLifecycle.MANAGED and self.factory is None:
+            raise ValueError("managed services require a factory")
+        if self.lifecycle is ServiceLifecycle.HOSTED and self.factory is not None:
+            raise ValueError("hosted services cannot define a factory")
+
+    @classmethod
+    def hosted(
+        cls,
+        *,
+        name: str,
+        description: str,
+        default_enabled: bool = True,
+        depends_on: list[str] | None = None,
+        default_port: int = 0,
+    ) -> ServiceDefinition:
+        """Describe an API mounted and supervised by the root ASGI host."""
+        return cls(
+            name=name,
+            description=description,
+            lifecycle=ServiceLifecycle.HOSTED,
+            default_enabled=default_enabled,
+            depends_on=list(depends_on or []),
+            default_port=default_port,
+        )
 
 
 @dataclass(frozen=True)
@@ -111,10 +148,13 @@ class ServicePlugin(ABC):
     def create_service(self) -> Service | None:
         """Create the managed service instance, or None if not applicable.
 
-        Plugins that implement register_service() should delegate to
-        ``register_service().factory()`` here for consistency.
+        Host-mounted plugins intentionally return None: their lifecycle belongs
+        to the root ASGI host, not to the independent service manager.
         """
-        return None
+        definition = self.register_service()
+        if definition is None or definition.factory is None:
+            return None
+        return definition.factory()
 
     def register_commands(self, app: typer.Typer) -> None:
         """Register CLI commands on the given Typer app."""

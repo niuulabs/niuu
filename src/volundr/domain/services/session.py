@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -59,15 +58,6 @@ def _sanitize_log(value: object) -> str:
     """Sanitize a value for safe log output (prevent log injection)."""
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
-
-def _public_loopback_host() -> str:
-    """Return the loopback host we publish to browser-facing clients."""
-    host = (
-        os.environ.get("NIUU_SERVER_PUBLIC_HOST")
-        or os.environ.get("NIUU_SERVER_HOST")
-        or "127.0.0.1"
-    ).strip() or "127.0.0.1"
-    return "localhost" if host == "127.0.0.1" else host
 
 
 class SessionNotFoundError(Exception):
@@ -131,6 +121,7 @@ class SessionService:
         session_communication_port: SessionCommunicationPort | None = None,
         attention_notifier: AttentionNotifier | None = None,
         runtime_backend: str = "kubernetes",
+        public_origin: str = "http://localhost:8080",
     ):
         self._repository = repository
         self._pod_manager = pod_manager
@@ -153,6 +144,14 @@ class SessionService:
         self._communication_route_repository = communication_route_repository
         self._session_communication_port = session_communication_port
         self._runtime_backend = runtime_backend
+        normalized_public_origin = public_origin.rstrip("/")
+        if normalized_public_origin.startswith("https://"):
+            self._public_ws_origin = "wss://" + normalized_public_origin.removeprefix("https://")
+        elif normalized_public_origin.startswith("http://"):
+            self._public_ws_origin = "ws://" + normalized_public_origin.removeprefix("http://")
+        else:
+            self._public_ws_origin = normalized_public_origin
+
 
     async def create_session(
         self,
@@ -809,9 +808,7 @@ class SessionService:
         # route before the pod is ready; local mode falls back to the root proxy.
         chat_endpoint = self._pod_manager.initial_chat_endpoint(session)
         if not chat_endpoint:
-            host = _public_loopback_host()
-            port = os.environ.get("NIUU_SERVER_PORT", "8080")
-            chat_endpoint = f"ws://{host}:{port}/s/{session_id}/session"
+            chat_endpoint = f"{self._public_ws_origin}/s/{session_id}/session"
 
         starting = session.model_copy(
             update={

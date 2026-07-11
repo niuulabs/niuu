@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from fastapi import APIRouter
 
-from niuu.service_settings import Settings
+from volundr.config import Settings
 from volundr.adapters.inbound.rest_launch_specs import create_launch_specs_router
 from volundr.adapters.outbound.config_launch_specs import ConfigLaunchSpecProvider
 from volundr.domain.ports import LaunchSpecProvider, LaunchSpecRepository

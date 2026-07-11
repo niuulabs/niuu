@@ -26,10 +26,10 @@ from pydantic_settings import (
 
 from bifrost.config import BifrostConfig
 from niuu.config import CorsConfig, HttpAuthAdapterConfig, InstanceRegistryConfig
-from volundr.config import (
+from niuu.config_models import (
     SessionDefinitionConfig,
     WorkloadIdentityConfig,
-    _default_session_definitions,
+    default_session_definitions,
 )
 
 
@@ -1027,6 +1027,10 @@ class NotificationConfig(BaseModel):
     """Notification service configuration."""
 
     enabled: bool = Field(default=True)
+    public_origin: str = Field(
+        default="http://localhost:8080",
+        description="Browser-facing Niuu origin used to build notification links.",
+    )
     confidence_threshold: float = Field(
         default=0.3,
         description="Notify when run confidence drops below this value.",
@@ -1070,7 +1074,7 @@ class Settings(BaseSettings):
     volundr: VolundrConfig = Field(default_factory=VolundrConfig)
     bifrost: BifrostConfig = Field(default_factory=BifrostConfig)
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
-        default_factory=_default_session_definitions
+        default_factory=default_session_definitions
     )
     git: GitConfig = Field(default_factory=GitConfig)
     niuu: InstanceRegistryConfig = Field(default_factory=InstanceRegistryConfig)

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from cli.registry import PluginRegistry
-from niuu.ports.plugin import Service
+from niuu.ports.plugin import Service, ServiceLifecycle
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ class ServiceState(Enum):
     """Current state of a managed service."""
 
     STOPPED = "stopped"
+    HOSTED = "hosted"
     STARTING = "starting"
     HEALTHY = "healthy"
     UNHEALTHY = "unhealthy"
@@ -199,10 +200,17 @@ class ServiceManager:
             plugin = plugins.get(name)
             if not plugin:
                 continue
+            definition = plugin.register_service()
             service = plugin.create_service()
             if not service:
-                self._services[name] = ServiceStatus(name=name, state=ServiceState.HEALTHY)
-                self._notify(name, ServiceState.HEALTHY)
+                state = (
+                    ServiceState.HOSTED
+                    if definition is not None
+                    and definition.lifecycle is ServiceLifecycle.HOSTED
+                    else ServiceState.HEALTHY
+                )
+                self._services[name] = ServiceStatus(name=name, state=state)
+                self._notify(name, state)
                 started.append(name)
                 continue
 
