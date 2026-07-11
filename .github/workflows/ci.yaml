@@ -558,11 +558,17 @@ jobs:
 
       - name: Install Volundr chart
         run: |
-          helm install volundr charts/volundr/ \
+          output="$(helm install volundr charts/volundr/ \
             -f charts/volundr/ci-values.yaml \
             --set global.imagePullSecrets[0]=ghcr-pull-secret \
             --set image.tag="pr-${{ github.event.number }}" \
-            --wait --timeout 120s
+            --wait --timeout 120s 2>&1)" || {
+            printf "%s\n" "$output"
+            annotation="$(printf "%s" "$output" | tail -c 3000 | sed -z "s/%/%25/g; s/\n/%0A/g; s/\r/%0D/g")"
+            echo "::error title=Volundr Helm install failure::${annotation}"
+            exit 1
+          }
+          printf "%s\n" "$output"
 
       - name: Install Guild chart
         run: |
