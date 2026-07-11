@@ -57,8 +57,8 @@ Acceptance: business behavior can be discovered, validated, and tested through c
 - [x] Delete unreachable handlers or implement their real supported behavior.
 - [x] Replace hosted-service “stub” lifecycle objects with an honest hosted-app/service descriptor.
 - [ ] Audit production TODOs, canned implementations, and broad `NotImplementedError` fallbacks.
-- [ ] Distinguish intentional null-object adapters from incomplete implementations by name and contract.
-- [ ] Add contract tests for every retained null/unavailable adapter.
+- [x] Distinguish intentional null-object adapters from incomplete implementations by name and contract.
+- [x] Add contract tests for every retained null/unavailable adapter.
 
 Acceptance: production source contains no path that claims to work while doing nothing.
 
@@ -68,23 +68,29 @@ Acceptance: production source contains no path that claims to work while doing n
 - [ ] Split `skuld/broker.py` by protocol routing, connection state, persistence, and transport lifecycle.
 - [ ] Split `ravn/cli/commands.py` into bounded command modules and shared CLI composition.
 - [ ] Split `ravn/api/valkyries.py` into routers, application services, and response mapping.
+  - [x] Extract validated request DTOs and typed dashboard catalog configuration.
+  - [ ] Extract telemetry/projection mapping and route groups.
 - [ ] Split Volundr and Niuu composition roots into focused builders without hiding wiring.
 - [ ] Split `LaunchWizard.tsx` into use cases/hooks, step components, validation, and request mapping.
+  - [x] Extract the pure form model, compatibility, validation, and request mapping.
+  - [ ] Extract stateful orchestration hooks and step components.
 - [ ] Split `ResearchCampaignPage.tsx` into data hooks, panels, actions, and presentation.
+  - [x] Extract drawer state, parsing, derivation, and view-model helpers.
+  - [ ] Extract data hooks, panels, and operator actions.
 - [ ] Track module size and dependency direction as review signals, not arbitrary runtime limits.
 
 Acceptance: high-change modules have clear responsibilities and can be tested without booting an entire service.
 
 ## 6. Documentation and quality-gate alignment
 
-- [ ] Update the root README for `web-next`, React 19, Tailwind/tokens, pnpm, and current commands.
-- [ ] Remove stale branch-specific and deleted-`web/` guidance.
-- [ ] Align the declared Python minimum with the Python 3.12 CI/container/release baseline.
-- [ ] Raise frontend branch coverage from 84% to the documented 85%.
-- [ ] Make Python format checking a hard CI failure.
-- [ ] Make local verification commands mirror CI coverage gates.
-- [ ] Document a reproducible offline-friendly bootstrap/toolchain workflow.
-- [ ] Reconcile package version metadata with the release/tagging process.
+- [x] Update the root README for `web-next`, React 19, Tailwind/tokens, pnpm, and current commands.
+- [x] Remove stale branch-specific and deleted-`web/` guidance.
+- [x] Align the declared Python minimum with the Python 3.12 CI/container/release baseline.
+- [x] Raise frontend branch coverage from 84% to the documented 85%.
+- [x] Make Python format checking a hard CI failure.
+- [x] Make local verification commands mirror CI coverage gates.
+- [x] Document a reproducible offline-friendly bootstrap/toolchain workflow.
+- [x] Reconcile package version metadata with the release/tagging process.
 
 Acceptance: the documented command, toolchain, and threshold is the one CI and releases actually use.
 
