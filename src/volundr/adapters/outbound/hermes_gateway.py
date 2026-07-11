@@ -160,7 +160,7 @@ def _session_uuid(key: str) -> UUID:
     return uuid5(NAMESPACE_URL, f"hermes-resident-session:{key}")
 
 
-def _hermes_model_id(model: str) -> str:
+def normalize_hermes_model_id(model: str) -> str:
     """Translate Niuu's virtual provider namespace to the Bifrost model ID."""
     return model.removeprefix(NIUU_MODEL_PREFIX)
 
@@ -407,7 +407,7 @@ class HermesChatConnection(ResidentChatConnection):
             json_body={
                 "input": text,
                 "session_id": self._session_key,
-                "model": _hermes_model_id(self._model),
+                "model": normalize_hermes_model_id(self._model),
             },
         )
         run_id = str(payload.get("run_id") or "")
@@ -573,7 +573,7 @@ class HermesResidentSessionController(ResidentSessionController):
             stored_model = str(row.get("model") or runtime.model)
             model = (
                 runtime.model
-                if _hermes_model_id(runtime.model) == stored_model
+                if normalize_hermes_model_id(runtime.model) == stored_model
                 else stored_model
             )
             sessions.append(
@@ -610,7 +610,7 @@ class HermesResidentSessionController(ResidentSessionController):
                 "/api/sessions",
                 json_body={
                     "title": title or runtime.name,
-                    "model": _hermes_model_id(runtime.model),
+                    "model": normalize_hermes_model_id(runtime.model),
                 },
             )
         finally:
@@ -663,7 +663,7 @@ class HermesResidentSessionController(ResidentSessionController):
         )
         resolved_model = (
             runtime.model
-            if _hermes_model_id(runtime.model) == stored_model
+            if normalize_hermes_model_id(runtime.model) == stored_model
             else stored_model
         )
         return HermesChatConnection(

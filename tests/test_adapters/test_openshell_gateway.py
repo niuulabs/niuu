@@ -574,15 +574,13 @@ def _hermes_profile() -> ResidentDeploymentProfile:
                 "resident": {
                     "llm": {
                         "provider": {
-                            "kwargs": {
-                                "base_url": "http://bifrost.volundr.svc.cluster.local/v1"
-                            }
+                            "kwargs": {"base_url": "http://bifrost.volundr.svc.cluster.local/v1"}
                         }
                     },
                     "platform": {
                         "enabled": True,
                         "baseUrl": "https://platform.example.test",
-                    }
+                    },
                 },
                 "openshell": {
                     "processMode": "replace",
@@ -789,6 +787,9 @@ async def test_hermes_deploy_uses_persisted_process_only_credential_and_generic_
         "/sandbox/workspace/.hermes/config.yaml"
     ].decode()
     assert "provider: custom:niuu" in hermes_config
+    assert "default: gpt-5.6-sol" in hermes_config
+    assert "model: gpt-5.6-sol" in hermes_config
+    assert "niuu/gpt-5.6-sol" not in hermes_config
     assert "key_env: NIUU_VOLUNDR_ACCESS_TOKEN" in hermes_config
     assert "api_key:" not in hermes_config
     assert "api_server:" in hermes_config
@@ -829,9 +830,7 @@ async def test_hermes_restart_reuses_machine_credential(
     client = _FakeOpenShellGatewayClient(adapter)
     token = "persisted-hermes-token"
     manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
-    manager.set_credential_store(
-        _FakeCredentialStore({HERMES_CREDENTIAL_NAME: {"api_key": token}})
-    )
+    manager.set_credential_store(_FakeCredentialStore({HERMES_CREDENTIAL_NAME: {"api_key": token}}))
 
     observation = await manager.restart(runtime, _hermes_profile())
 

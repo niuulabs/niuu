@@ -21,9 +21,9 @@ from volundr.adapters.outbound.hermes_gateway import (
     HERMES_LEGACY_CREDENTIAL_NAME,
     HermesGatewayError,
     HermesResidentSessionController,
-    _hermes_model_id,
     _session_uuid,
     ensure_hermes_api_key,
+    normalize_hermes_model_id,
 )
 from volundr.domain.models import ResidentBackend, ResidentEngine, ResidentRuntime
 
@@ -100,9 +100,7 @@ async def test_legacy_dashboard_token_is_migrated_to_api_credential() -> None:
     api_key = await ensure_hermes_api_key(store, runtime)
 
     assert api_key == "legacy-machine-secret"
-    assert await store.get_value(
-        "resident", str(runtime.id), HERMES_LEGACY_CREDENTIAL_NAME
-    ) is None
+    assert await store.get_value("resident", str(runtime.id), HERMES_LEGACY_CREDENTIAL_NAME) is None
     assert await store.get_value("resident", str(runtime.id), HERMES_CREDENTIAL_NAME) == {
         "api_key": api_key
     }
@@ -125,10 +123,10 @@ async def test_incomplete_api_credential_fails_closed() -> None:
 
 
 def test_niuu_virtual_provider_prefix_is_removed_for_hermes() -> None:
-    assert _hermes_model_id("niuu/Qwen/Qwen3.6-35B-A3B-FP8") == (
+    assert normalize_hermes_model_id("niuu/Qwen/Qwen3.6-35B-A3B-FP8") == (
         "Qwen/Qwen3.6-35B-A3B-FP8"
     )
-    assert _hermes_model_id("openrouter/anthropic/claude-sonnet-4.6") == (
+    assert normalize_hermes_model_id("openrouter/anthropic/claude-sonnet-4.6") == (
         "openrouter/anthropic/claude-sonnet-4.6"
     )
 
@@ -227,13 +225,18 @@ async def test_chat_stream_normalizes_history_approval_tools_and_usage() -> None
     async def list_sessions(request: web.Request) -> web.Response:
         _assert_auth(request, token)
         return web.json_response(
-            {"data": [{"id": session_key, "model": _hermes_model_id(runtime.model)}]}
+            {"data": [{"id": session_key, "model": normalize_hermes_model_id(runtime.model)}]}
         )
 
     async def get_session(request: web.Request) -> web.Response:
         _assert_auth(request, token)
         return web.json_response(
-            {"session": {"id": session_key, "model": _hermes_model_id(runtime.model)}}
+            {
+                "session": {
+                    "id": session_key,
+                    "model": normalize_hermes_model_id(runtime.model),
+                }
+            }
         )
 
     async def get_messages(request: web.Request) -> web.Response:
@@ -252,7 +255,7 @@ async def test_chat_stream_normalizes_history_approval_tools_and_usage() -> None
         assert await request.json() == {
             "input": "Run the command",
             "session_id": session_key,
-            "model": _hermes_model_id(runtime.model),
+            "model": normalize_hermes_model_id(runtime.model),
         }
         return web.json_response({"run_id": run_id, "status": "started"}, status=202)
 
@@ -326,16 +329,18 @@ async def test_chat_stream_normalizes_history_approval_tools_and_usage() -> None
                 "behavior": "allowOnce",
             }
         )
-        post_approval = [await chat.receive(), await chat.receive(), await chat.receive()]
+        post_approval = [await chat.receive() for _ in range(6)]
         assert {frame["type"] for frame in post_approval} == {
             "permission_resolved",
             "tool_start",
             "tool_result",
+            "assistant",
+            "content_block_delta",
+            "result",
         }
-        assert (await chat.receive())["type"] == "assistant"
-        delta = await chat.receive()
+        delta = next(frame for frame in post_approval if frame["type"] == "content_block_delta")
         assert delta["delta"]["text"] == "API_OK"
-        result = await chat.receive()
+        result = next(frame for frame in post_approval if frame["type"] == "result")
         assert result["type"] == "result"
         assert result["usage"]["total_tokens"] == 10
         await chat.close()

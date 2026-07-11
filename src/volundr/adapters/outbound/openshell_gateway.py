@@ -1159,9 +1159,7 @@ class OpenShellGatewayPodManager(
                 )
 
                 machine_credential = {
-                    "api_key": await ensure_hermes_api_key(
-                        self._credential_store, runtime
-                    )
+                    "api_key": await ensure_hermes_api_key(self._credential_store, runtime)
                 }
             platform_providers = await self._resolve_platform_provider(
                 subject,
@@ -2859,6 +2857,8 @@ def _resident_hermes_config(
     runtime: ResidentRuntime,
     values: dict[str, Any],
 ) -> dict[str, Any]:
+    from volundr.adapters.outbound.hermes_gateway import normalize_hermes_model_id
+
     resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
     llm = resident.get("llm") if isinstance(resident.get("llm"), dict) else {}
     provider = llm.get("provider") if isinstance(llm.get("provider"), dict) else {}
@@ -2871,9 +2871,10 @@ def _resident_hermes_config(
         "hermes",
         HERMES_API_SERVER_DEFAULT_PORT,
     )
+    model_id = normalize_hermes_model_id(runtime.model)
     return {
         "model": {
-            "default": runtime.model,
+            "default": model_id,
             "provider": "custom:niuu",
             "base_url": base_url,
             "api_mode": "chat_completions",
@@ -2884,7 +2885,7 @@ def _resident_hermes_config(
                 "base_url": base_url,
                 "key_env": PLATFORM_ACCESS_TOKEN_ENV,
                 "api_mode": "chat_completions",
-                "model": runtime.model,
+                "model": model_id,
             }
         ],
         "terminal": {"cwd": "/sandbox/workspace"},
@@ -2989,7 +2990,7 @@ def _resident_health_script(
     if service_port is not None:
         port_hex = f"{service_port:04X}"
         lines.append(
-            "awk '$2 ~ /:" + port_hex + "$/ && $4 == \"0A\" { found=1 } "
+            "awk '$2 ~ /:" + port_hex + '$/ && $4 == "0A" { found=1 } '
             "END { exit !found }' /proc/net/tcp /proc/net/tcp6"
         )
     return "\n".join(lines)
@@ -3400,8 +3401,7 @@ def _sandbox_policy_from_config(config: dict[str, Any]) -> Any:
         str(key): sandbox_pb2.NetworkPolicyRule(
             name=str(value.get("name") or key),
             endpoints=[
-                sandbox_pb2.NetworkEndpoint(**endpoint)
-                for endpoint in value.get("endpoints", [])
+                sandbox_pb2.NetworkEndpoint(**endpoint) for endpoint in value.get("endpoints", [])
             ],
             binaries=[sandbox_pb2.NetworkBinary(**binary) for binary in value.get("binaries", [])],
         )
