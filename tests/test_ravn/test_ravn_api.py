@@ -14,6 +14,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from ravn.api import create_app
+from ravn.api.valkyrie_config import (
+    ValkyrieDashboardConfig,
+    configured_environment_records,
+)
 from ravn.api.valkyries import (
     HuddleJoinRequest,
     HuddleSendRequest,
@@ -1635,6 +1639,33 @@ def test_valkyrie_dashboard_uses_configured_environment_catalog(monkeypatch):
     assert dashboard["liveReport"]["transports"][0]["streamName"] == "obs-asgard-events"
     assert dashboard["signals"] == []
     assert dashboard["learnings"] == []
+
+
+def test_valkyrie_dashboard_accepts_typed_catalog_config(monkeypatch):
+    monkeypatch.delenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", raising=False)
+    config = ValkyrieDashboardConfig(
+        environments_json=json.dumps([{"id": "midgard", "name": "Midgard"}])
+    )
+
+    dashboard = ValkyrieDashboardProjection(config).dashboard()
+
+    assert [environment["id"] for environment in dashboard["environments"]] == [
+        "env-midgard"
+    ]
+
+
+def test_valkyrie_dashboard_rejects_malformed_typed_catalog():
+    with pytest.raises(ValueError, match="invalid Valkyrie dashboard catalog JSON"):
+        ValkyrieDashboardConfig(environments_json="{not-json")
+
+
+def test_valkyrie_dashboard_rejects_unreadable_catalog_file(tmp_path):
+    config = ValkyrieDashboardConfig(
+        environments_file=str(tmp_path / "missing.json")
+    )
+
+    with pytest.raises(ValueError, match="cannot read Valkyrie dashboard catalog"):
+        configured_environment_records(config)
 
 
 def test_valkyrie_dashboard_telemetry_nats_subscription_is_explicit_opt_in(monkeypatch):

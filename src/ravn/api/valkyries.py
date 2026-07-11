@@ -17,6 +17,10 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from ravn.api.valkyrie_config import (
+    ValkyrieDashboardConfig,
+    configured_environment_records,
+)
 from ravn.api.valkyrie_requests import (
     LEARNING_FEEDBACK_VERDICTS,
     AutonomyUpdateRequest,
@@ -36,10 +40,6 @@ Dashboard = dict[str, Any]
 logger = logging.getLogger(__name__)
 RAW_SIGNAL_TELEMETRY_LIMIT = 1_000
 CONTROL_TELEMETRY_LIMIT = 2_000
-DASHBOARD_ENVIRONMENTS_JSON_ENV = "RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON"
-DASHBOARD_ENVIRONMENTS_FILE_ENV = "RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_FILE"
-
-
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -133,39 +133,6 @@ def _first_transport_value(
         if value:
             return value
     return default
-
-
-def _catalog_raw() -> str:
-    configured = os.environ.get(DASHBOARD_ENVIRONMENTS_JSON_ENV, "").strip()
-    if configured:
-        return configured
-    path = os.environ.get(DASHBOARD_ENVIRONMENTS_FILE_ENV, "").strip()
-    if not path:
-        return ""
-    try:
-        with open(path, encoding="utf-8") as handle:
-            return handle.read()
-    except OSError as exc:
-        logger.warning("could not read Valkyrie dashboard environment catalog %s: %s", path, exc)
-        return ""
-
-
-def _configured_environment_records() -> list[dict[str, Any]]:
-    raw = _catalog_raw()
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        logger.warning("invalid Valkyrie dashboard environment catalog JSON: %s", exc)
-        return []
-    records = parsed.get("environments") if isinstance(parsed, dict) else parsed
-    if not isinstance(records, list):
-        logger.warning(
-            "Valkyrie dashboard environment catalog must be a list or object.environments"
-        )
-        return []
-    return [record for record in records if isinstance(record, dict)]
 
 
 def _live_report(
@@ -2546,8 +2513,8 @@ def _configured_huddle_entries(
     return huddles
 
 
-def _initial_dashboard() -> Dashboard:
-    records = _configured_environment_records()
+def _initial_dashboard(config: ValkyrieDashboardConfig | None = None) -> Dashboard:
+    records = configured_environment_records(config or ValkyrieDashboardConfig())
     environments = _configured_environment_entries(records)
     valkyries = _configured_valkyrie_entries(records)
     flocks = _configured_flock_entries(records, environments, valkyries)
@@ -2599,8 +2566,8 @@ def _signal_events(dashboard: Dashboard) -> list[dict[str, Any]]:
 
 
 class ValkyrieDashboardProjection:
-    def __init__(self) -> None:
-        self._dashboard = _initial_dashboard()
+    def __init__(self, config: ValkyrieDashboardConfig | None = None) -> None:
+        self._dashboard = _initial_dashboard(config)
         self._poll_count = 0
         self._raw_signal_events: list[dict[str, Any]] = []
         self._control_events: list[dict[str, Any]] = []
