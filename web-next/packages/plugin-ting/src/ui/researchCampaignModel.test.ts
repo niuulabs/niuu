@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   artifactDisplayTitle,
   citationToken,
@@ -63,6 +63,9 @@ describe('research campaign model', () => {
   beforeEach(() => {
     window.history.replaceState({}, '', '/ting/research');
   });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
 
   it('joins conditional classes and manages drawer query state', () => {
     expect(cx('a', false, null, undefined, 'b')).toBe('a b');
@@ -95,6 +98,16 @@ describe('research campaign model', () => {
     expect(window.location.search).toBe('?drawer=operator&sub=actions');
     writeDrawerState({ open: false, tab: 'files' });
     expect(window.location.search).toBe('');
+    for (const tab of ['files', 'sources', 'critiques', 'operator'] as const) {
+      writeDrawerState({ open: true, tab });
+      expect(window.location.search).toBe(`?drawer=${tab}`);
+    }
+  });
+
+  it('handles drawer state without a browser global', () => {
+    vi.stubGlobal('window', undefined);
+    expect(readDrawerState()).toEqual({ open: false, tab: 'files' });
+    expect(writeDrawerState({ open: true, tab: 'files', file: 'brief.md' })).toBeUndefined();
   });
 
   it('formats clocks, elapsed time, and word counts defensively', () => {
@@ -107,6 +120,7 @@ describe('research campaign model', () => {
     expect(formatElapsed('2026-01-02T03:00:00Z', '2026-01-02T03:00:20Z')).toBe('1m');
     expect(formatElapsed('2026-01-02T03:00:00Z', '2026-01-02T05:05:00Z')).toBe('2h 5m');
     expect(formatElapsed('2026-01-01T03:00:00Z', '2026-01-03T05:00:00Z')).toBe('2d 2h');
+    expect(countWords('')).toBe(0);
     expect(countWords('  one   two ')).toBe(2);
     expect(formatKiloWords('one two')).toBe('2');
     expect(formatKiloWords(Array.from({ length: 1200 }, () => 'word').join(' '))).toBe('1.2k');
@@ -166,6 +180,7 @@ describe('research campaign model', () => {
       ]),
     ).toBe('published');
     expect(deriveCampaignState(campaign('completed'), [artifact()])).toBe('review');
+    expect(deriveCampaignState(campaign('running'), [artifact()])).toBe('running');
     expect(deriveCampaignState(campaign('running', [{ label: 'x', status: 'active' }]), [])).toBe(
       'running',
     );

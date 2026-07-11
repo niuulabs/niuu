@@ -248,7 +248,7 @@ export function deriveCampaignState(
   if (hasFinal && campaign.status === 'completed') return 'review';
   if (activeLike || campaign.stageState.some((stage) => stage.status === 'pending'))
     return 'running';
-  if (campaign.status === 'completed') return hasFinal ? 'review' : 'running';
+  if (campaign.status === 'completed') return 'running';
   return 'running';
 }
 
@@ -277,7 +277,7 @@ export function confidenceFromArtifacts(
   if (state === 'failed') return { percent: 34, label: 'low', raw: 'low' };
   const base = 46 + Math.min(24, sourceCount * 2) + Math.min(8, critiqueCount);
   return {
-    percent: Math.max(38, Math.min(74, base)),
+    percent: Math.min(74, base),
     label: base >= 68 ? 'high' : base >= 54 ? 'med' : 'low',
     raw: base >= 68 ? 'high' : base >= 54 ? 'medium' : 'low',
   };
