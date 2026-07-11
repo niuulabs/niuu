@@ -116,7 +116,19 @@ jobs:
           status=${PIPESTATUS[0]}
           set -e
           if (( status != 0 )); then
-            failure_output="$(grep -E 'All files|CampaignModel|ERROR: Coverage' "$output_file" || true)"
+            failure_output="$(grep -E 'All files|ERROR: Coverage' "$output_file" || true)"
+            if [[ -f coverage/lcov.info ]]; then
+              branch_output="$(awk -F: '
+                /^SF:/ { file = substr($0, 4) }
+                /^BRF:/ { total = $2 }
+                /^BRH:/ {
+                  covered = $2
+                  if (total > 0) printf "%.2f%% (%d/%d) %s\n", 100 * covered / total, covered, total, file
+                }
+              ' coverage/lcov.info | sort -n | head -n 20)"
+              failure_output+=$'\nLowest per-file branch coverage:\n'
+              failure_output+="$branch_output"
+            fi
             failure_output+=$'\n'
             failure_output+="$(tail -n 25 "$output_file")"
             failure_output="${failure_output//'%'/'%25'}"
