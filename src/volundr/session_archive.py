@@ -228,15 +228,11 @@ def load_archive_transcript(
         archive_path=archive_path,
     )
     root_path = os.path.realpath(os.path.abspath(os.fspath(root)))
-    checked_artifact_path = os.path.realpath(os.path.abspath(os.fspath(path)))
+    safe_path = os.path.realpath(os.path.abspath(os.fspath(path)))
     root_prefix = root_path.rstrip(os.sep) + os.sep
-    if checked_artifact_path == root_path:
-        safe_path = Path(root_path)
-    elif checked_artifact_path.startswith(root_prefix):
-        safe_path = Path(checked_artifact_path)
-    else:
+    if not safe_path.startswith(root_prefix):
         raise ArchivePathError(f"Archive artifact escapes archive root: {path}")
-    if not safe_path.exists():
+    if not os.path.exists(safe_path):
         return None
     if not _archive_owned_by(
         workspace_dir,
@@ -281,17 +277,13 @@ def load_archive_manifest(
         archive_path=archive_path,
     )
     root_path = os.path.realpath(os.path.abspath(os.fspath(root)))
-    checked_manifest_path = os.path.realpath(os.path.abspath(os.fspath(path)))
+    safe_manifest_path = os.path.realpath(os.path.abspath(os.fspath(path)))
     root_prefix = root_path.rstrip(os.sep) + os.sep
-    if checked_manifest_path == root_path:
-        safe_manifest_path = Path(root_path)
-    elif checked_manifest_path.startswith(root_prefix):
-        safe_manifest_path = Path(checked_manifest_path)
-    else:
+    if not safe_manifest_path.startswith(root_prefix):
         raise ArchivePathError(f"Archive manifest escapes archive root: {path}")
-    if not safe_manifest_path.exists():
+    if not os.path.exists(safe_manifest_path):
         return None
-    return _read_json(Path(root_path), safe_manifest_path)
+    return _read_json(root_path, safe_manifest_path)
 
 
 def archive_logs_aggregate_path(
@@ -337,15 +329,11 @@ def load_archive_logs(
         archive_path=archive_path,
     )
     root_path = os.path.realpath(os.path.abspath(os.fspath(root)))
-    checked_artifact_path = os.path.realpath(os.path.abspath(os.fspath(path)))
+    safe_path = os.path.realpath(os.path.abspath(os.fspath(path)))
     root_prefix = root_path.rstrip(os.sep) + os.sep
-    if checked_artifact_path == root_path:
-        safe_path = Path(root_path)
-    elif checked_artifact_path.startswith(root_prefix):
-        safe_path = Path(checked_artifact_path)
-    else:
+    if not safe_path.startswith(root_prefix):
         raise ArchivePathError(f"Archive artifact escapes archive root: {path}")
-    if not safe_path.exists():
+    if not os.path.exists(safe_path):
         return None
     if not _archive_owned_by(
         workspace_dir,
@@ -649,17 +637,13 @@ def _workspace_log_sources(workspace: Path) -> list[tuple[Path, Path]]:
     return sources
 
 
-def _read_json(root: Path, path: Path) -> dict[str, Any]:
+def _read_json(root: str | Path, path: str | Path) -> dict[str, Any]:
     root_path = os.path.realpath(os.path.abspath(os.fspath(root)))
-    checked_json_path = os.path.realpath(os.path.abspath(os.fspath(path)), strict=True)
+    safe_json_path = os.path.realpath(os.path.abspath(os.fspath(path)), strict=True)
     root_prefix = root_path.rstrip(os.sep) + os.sep
-    if checked_json_path == root_path:
-        safe_json_path = Path(root_path)
-    elif checked_json_path.startswith(root_prefix):
-        safe_json_path = Path(checked_json_path)
-    else:
+    if not safe_json_path.startswith(root_prefix):
         raise ArchivePathError(f"JSON path escapes archive root: {path}")
-    with safe_json_path.open(encoding="utf-8") as archive_file:
+    with open(safe_json_path, encoding="utf-8") as archive_file:
         data = json.load(archive_file)
     if not isinstance(data, dict):
         raise ValueError(f"Expected JSON object in {path}")
