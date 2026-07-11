@@ -97,6 +97,8 @@ async def list_files(path: str = "", root: str = "workspace") -> dict:
     _validate_root(root)
     base = _resolve_root(root)
     target = _resolve_user_path(base, path)
+    if os.path.commonpath((os.fspath(base), os.fspath(target))) != os.fspath(base):
+        raise HTTPException(400, "Path traversal not allowed")
 
     if not target.is_dir():
         raise HTTPException(404, "Directory not found")
@@ -113,16 +115,22 @@ async def list_files(path: str = "", root: str = "workspace") -> dict:
         if item.name in _SKIP_NAMES:
             continue
         try:
-            _resolve_user_path(base, item.name, strict=True)
+            relative_item = item.relative_to(base).as_posix()
+            canonical_item = _resolve_user_path(base, relative_item, strict=True)
+            if (
+                os.path.commonpath((os.fspath(base), os.fspath(canonical_item)))
+                != os.fspath(base)
+            ):
+                continue
         except HTTPException:
             # Hide symlinks that escape the selected root.
             continue
-        stat = item.stat(follow_symlinks=False)
+        stat = canonical_item.stat()
         entries.append(
             {
                 "name": item.name,
                 "path": str(item.relative_to(base)),
-                "type": "directory" if item.is_dir() else "file",
+                "type": "directory" if canonical_item.is_dir() else "file",
                 "size": stat.st_size,
                 "modified": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
             }
@@ -137,6 +145,8 @@ async def download_file(path: str, root: str = "workspace") -> FileResponse:
     _validate_root(root)
     base = _resolve_root(root)
     target = _resolve_user_path(base, path, allow_root=False)
+    if os.path.commonpath((os.fspath(base), os.fspath(target))) != os.fspath(base):
+        raise HTTPException(400, "Path traversal not allowed")
 
     if not target.is_file():
         raise HTTPException(404, "File not found")
@@ -158,6 +168,8 @@ async def upload_files(
     _validate_root(root)
     base = _resolve_root(root)
     target_dir = _resolve_user_path(base, path)
+    if os.path.commonpath((os.fspath(base), os.fspath(target_dir))) != os.fspath(base):
+        raise HTTPException(400, "Path traversal not allowed")
 
     if not target_dir.is_dir():
         raise HTTPException(404, "Target directory not found")
@@ -170,6 +182,11 @@ async def upload_files(
         # Prevent path traversal in filenames
         safe_name = os.path.basename(upload.filename)
         destination = _resolve_user_path(target_dir, safe_name, allow_root=False)
+        if (
+            os.path.commonpath((os.fspath(base), os.fspath(destination)))
+            != os.fspath(base)
+        ):
+            raise HTTPException(400, "Path traversal not allowed")
 
         content = await upload.read()
         if len(content) > max_size:
@@ -207,6 +224,8 @@ async def upload_file_raw(
     _validate_root(root)
     base = _resolve_root(root)
     target = _resolve_user_path(base, path, allow_root=False)
+    if os.path.commonpath((os.fspath(base), os.fspath(target))) != os.fspath(base):
+        raise HTTPException(400, "Path traversal not allowed")
     if target.is_dir():
         raise HTTPException(400, "path must name a file, not a directory")
 
@@ -219,6 +238,8 @@ async def upload_file_raw(
         )
 
     parent = _resolve_user_path(base, target.parent.relative_to(base).as_posix())
+    if os.path.commonpath((os.fspath(base), os.fspath(parent))) != os.fspath(base):
+        raise HTTPException(400, "Path traversal not allowed")
     parent.mkdir(parents=True, exist_ok=True)
 
     with target.open("wb") as target_file:
@@ -245,6 +266,8 @@ async def mkdir(body: MkdirRequest) -> dict:
     _validate_root(body.root)
     base = _resolve_root(body.root)
     target = _resolve_user_path(base, body.path, allow_root=False)
+    if os.path.commonpath((os.fspath(base), os.fspath(target))) != os.fspath(base):
+        raise HTTPException(400, "Path traversal not allowed")
 
     if target.exists():
         raise HTTPException(409, "Path already exists")
@@ -272,6 +295,8 @@ async def delete_file(path: str, root: str = "workspace") -> dict:
         raise HTTPException(400, "Cannot delete root directory")
     base = _resolve_root(root)
     target = _resolve_user_path(base, path, allow_root=False)
+    if os.path.commonpath((os.fspath(base), os.fspath(target))) != os.fspath(base):
+        raise HTTPException(400, "Path traversal not allowed")
 
     if not target.exists():
         raise HTTPException(404, "Path not found")

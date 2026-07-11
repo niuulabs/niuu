@@ -59,6 +59,41 @@ class PathSecurityTests(unittest.TestCase):
             with self.assertRaises(UnsafePathError):
                 resolve_path_in_roots(secret, (root,))
 
+    def test_common_prefix_is_not_treated_as_containment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "work"
+            sibling = Path(directory) / "workspace"
+            root.mkdir()
+            sibling.mkdir()
+
+            with self.assertRaises(UnsafePathError):
+                resolve_contained_path(root, "../workspace/secret.txt")
+
+    def test_nonstrict_resolution_rejects_symlinked_parent_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            outside = Path(directory) / "outside"
+            root.mkdir()
+            outside.mkdir()
+            (root / "escape").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaises(UnsafePathError):
+                resolve_contained_path(root, "escape/new.txt", strict=False)
+
+    def test_allowed_root_resolver_rejects_symlink_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            outside = Path(directory) / "outside"
+            root.mkdir()
+            outside.mkdir()
+            secret = outside / "secret.txt"
+            secret.write_text("secret", encoding="utf-8")
+            alias = root / "alias.txt"
+            alias.symlink_to(secret)
+
+            with self.assertRaises(UnsafePathError):
+                resolve_path_in_roots(alias, (root,))
+
 
 if __name__ == "__main__":
     unittest.main()
