@@ -591,6 +591,10 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
     ]
     assert client.execs[0]["env"]["NIUU_CONFIG"] == "/sandbox/.volundr/skuld.yaml"
     assert "SKULD_CONFIG" not in client.execs[0]["env"]
+    assert client.execs[1]["env"]["SKULD__TRANSPORT_ADAPTER"] == (
+        "skuld.transports.codex_ws.CodexWebSocketTransport"
+    )
+    assert client.execs[1]["env"]["SKULD__SKIP_PERMISSIONS"] == "true"
 
 
 @pytest.mark.asyncio
@@ -635,6 +639,10 @@ async def test_resident_restart_reuses_sandbox_and_dynamic_provider_environment(
     )
     assert client.execs[-1]["env"][adapter.CODEX_ACCOUNT_ID_ENV] == "account-from-openbao"
     assert client.execs[-1]["env"]["RESIDENT_MODE"] == "active"
+    assert client.execs[-1]["env"]["SKULD__TRANSPORT_ADAPTER"] == (
+        "skuld.transports.codex_ws.CodexWebSocketTransport"
+    )
+    assert client.execs[-1]["env"]["SKULD__SKIP_PERMISSIONS"] == "true"
     assert [process["pid_path"] for process in client.execs] == [
         "/sandbox/.volundr/skuld.pid",
         "/sandbox/.volundr/ravn.pid",

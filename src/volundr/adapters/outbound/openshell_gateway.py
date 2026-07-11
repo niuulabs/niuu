@@ -1262,6 +1262,9 @@ class OpenShellGatewayPodManager(
             "SKULD__PORT": str(self._service_port),
             "RAVN_STATE_DIR": f"{self._sandbox_workspace}/.ravn",
         }
+        broker = values.get("broker")
+        if isinstance(broker, dict):
+            env.update(_resident_broker_environment(broker))
         extra_env = values.get("env")
         if isinstance(extra_env, dict):
             env.update(_string_dict(extra_env))
@@ -2198,6 +2201,25 @@ def _resident_skuld_config(
         if isinstance(overlay, dict):
             _deep_merge(config, overlay)
     return config
+
+
+def _resident_broker_environment(broker: dict[str, Any]) -> dict[str, str]:
+    """Translate the shared broker contract for resident child processes."""
+    env: dict[str, str] = {}
+    fields = {
+        "SKULD__CLI_TYPE": broker.get("cliType", broker.get("cli_type")),
+        "SKULD__TRANSPORT": broker.get("transport"),
+        "SKULD__TRANSPORT_ADAPTER": broker.get("transportAdapter", broker.get("transport_adapter")),
+        "SKULD__APPROVAL_POLICY": broker.get("approvalPolicy", broker.get("approval_policy")),
+        "SKULD__SANDBOX": broker.get("sandbox"),
+    }
+    for name, value in fields.items():
+        if value is not None and str(value).strip():
+            env[name] = str(value)
+    if "skipPermissions" in broker or "skip_permissions" in broker:
+        value = broker.get("skipPermissions", broker.get("skip_permissions"))
+        env["SKULD__SKIP_PERMISSIONS"] = str(bool(value)).lower()
+    return env
 
 
 def _resident_ravn_config(
