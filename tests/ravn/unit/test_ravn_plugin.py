@@ -1,35 +1,10 @@
-"""Unit tests for RavnPlugin and _RavnService."""
+"""Unit tests for the host-mounted Ravn plugin."""
 
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 import typer
-
-
-class TestRavnService:
-    @pytest.mark.asyncio
-    async def test_start_is_noop(self) -> None:
-        from ravn.plugin import _RavnService
-
-        svc = _RavnService()
-        await svc.start()  # Must not raise
-
-    @pytest.mark.asyncio
-    async def test_stop_is_noop(self) -> None:
-        from ravn.plugin import _RavnService
-
-        svc = _RavnService()
-        await svc.stop()  # Must not raise
-
-    @pytest.mark.asyncio
-    async def test_health_check_returns_true(self) -> None:
-        from ravn.plugin import _RavnService
-
-        svc = _RavnService()
-        assert await svc.health_check() is True
-
 
 class TestRavnPlugin:
     def test_name_property(self) -> None:
@@ -45,11 +20,11 @@ class TestRavnPlugin:
         assert isinstance(plugin.description, str)
         assert len(plugin.description) > 0
 
-    def test_depends_on_returns_empty(self) -> None:
+    def test_depends_on_returns_postgres(self) -> None:
         from ravn.plugin import RavnPlugin
 
         plugin = RavnPlugin()
-        assert list(plugin.depends_on()) == []
+        assert list(plugin.depends_on()) == ["postgres"]
 
     def test_register_service_returns_definition(self) -> None:
         from ravn.plugin import RavnPlugin
@@ -59,12 +34,15 @@ class TestRavnPlugin:
         assert defn.name == "ravn"
         assert defn.default_enabled is True
 
-    def test_create_service_returns_ravn_service(self) -> None:
-        from ravn.plugin import RavnPlugin, _RavnService
+    def test_service_is_host_mounted(self) -> None:
+        from niuu.ports.plugin import ServiceLifecycle
+        from ravn.plugin import RavnPlugin
 
         plugin = RavnPlugin()
-        svc = plugin.create_service()
-        assert isinstance(svc, _RavnService)
+        definition = plugin.register_service()
+        assert definition.lifecycle is ServiceLifecycle.HOSTED
+        assert definition.factory is None
+        assert plugin.create_service() is None
 
     def test_create_api_client_returns_client(self) -> None:
         from ravn.plugin import RavnPlugin

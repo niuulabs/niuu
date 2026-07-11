@@ -2,43 +2,16 @@
 
 from __future__ import annotations
 
-import pytest
-
-from niuu.ports.plugin import Service, ServiceDefinition, TUIPageSpec
-from ravn.plugin import RavnPlugin, _RavnService
-
-# ---------------------------------------------------------------------------
-# _RavnService lifecycle
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_ravn_service_start_is_noop():
-    svc = _RavnService()
-    await svc.start()  # Should not raise
-
-
-@pytest.mark.asyncio
-async def test_ravn_service_stop_is_noop():
-    svc = _RavnService()
-    await svc.stop()  # Should not raise
-
-
-@pytest.mark.asyncio
-async def test_ravn_service_health_check_returns_true():
-    svc = _RavnService()
-    assert await svc.health_check() is True
-
+from niuu.ports.plugin import ServiceDefinition, ServiceLifecycle, TUIPageSpec
+from ravn.plugin import RavnPlugin
 
 # ---------------------------------------------------------------------------
 # RavnPlugin identity
 # ---------------------------------------------------------------------------
 
-
 def test_plugin_name():
     plugin = RavnPlugin()
     assert plugin.name == "ravn"
-
 
 def test_plugin_description():
     plugin = RavnPlugin()
@@ -49,37 +22,27 @@ def test_plugin_description():
 # ServiceDefinition
 # ---------------------------------------------------------------------------
 
-
 def test_register_service_returns_definition():
     plugin = RavnPlugin()
     defn = plugin.register_service()
     assert isinstance(defn, ServiceDefinition)
     assert defn.name == "ravn"
 
-
-def test_register_service_factory_creates_service():
+def test_service_is_host_mounted():
     plugin = RavnPlugin()
-    defn = plugin.register_service()
-    svc = defn.factory()
-    assert isinstance(svc, Service)
+    definition = plugin.register_service()
+    assert definition.lifecycle is ServiceLifecycle.HOSTED
+    assert definition.factory is None
+    assert plugin.create_service() is None
 
-
-def test_create_service_returns_service():
+def test_depends_on_returns_postgres():
     plugin = RavnPlugin()
-    svc = plugin.create_service()
-    assert isinstance(svc, Service)
-
-
-def test_depends_on_returns_empty():
-    plugin = RavnPlugin()
-    assert list(plugin.depends_on()) == []
-
+    assert list(plugin.depends_on()) == ["postgres"]
 
 def test_register_service_depends_on_postgres():
     plugin = RavnPlugin()
     defn = plugin.register_service()
     assert "postgres" in defn.depends_on
-
 
 def test_register_service_description_mentions_agent_runtime():
     plugin = RavnPlugin()
@@ -90,7 +53,6 @@ def test_register_service_description_mentions_agent_runtime():
 # ---------------------------------------------------------------------------
 # TUI pages
 # ---------------------------------------------------------------------------
-
 
 def test_tui_pages_returns_agents_page():
     plugin = RavnPlugin()
@@ -105,7 +67,6 @@ def test_tui_pages_returns_agents_page():
 # CLI commands
 # ---------------------------------------------------------------------------
 
-
 def test_register_commands_adds_ravn_typer():
     import typer
 
@@ -116,7 +77,6 @@ def test_register_commands_adds_ravn_typer():
     # The ravn sub-command group should now be registered.
     group_names = {g.name for g in app.registered_groups}
     assert "ravn" in group_names
-
 
 def test_list_sessions_empty():
     """list command outputs message when no sessions."""
@@ -139,7 +99,6 @@ def test_list_sessions_empty():
         result = CliRunner().invoke(app, ["ravn", "list"])
 
     assert result.exit_code == 0
-
 
 def test_list_sessions_with_data():
     """list command outputs table when sessions exist."""
@@ -165,7 +124,6 @@ def test_list_sessions_with_data():
 
     assert result.exit_code == 0
 
-
 def test_list_sessions_json_output():
     """list --json command returns raw JSON."""
     from unittest.mock import MagicMock
@@ -187,7 +145,6 @@ def test_list_sessions_json_output():
         result = CliRunner().invoke(app, ["ravn", "list", "--json"])
 
     assert result.exit_code == 0
-
 
 def test_stop_session_command():
     """stop command calls API and prints success."""
@@ -212,7 +169,6 @@ def test_stop_session_command():
 
     assert result.exit_code == 0
 
-
 def test_stop_session_json_output():
     """stop --json command returns raw JSON."""
     from unittest.mock import MagicMock
@@ -236,7 +192,6 @@ def test_stop_session_json_output():
 
     assert result.exit_code == 0
 
-
 def test_platform_status_command():
     """status command shows session count."""
     from unittest.mock import MagicMock
@@ -258,7 +213,6 @@ def test_platform_status_command():
         result = CliRunner().invoke(app, ["ravn", "status"])
 
     assert result.exit_code == 0
-
 
 def test_platform_status_json_output():
     """status --json outputs raw JSON."""
@@ -282,7 +236,6 @@ def test_platform_status_json_output():
 
     assert result.exit_code == 0
 
-
 def test_create_api_client_returns_instance():
     """create_api_client returns a CLIAPIClient."""
     from niuu.cli_api_client import CLIAPIClient
@@ -296,7 +249,6 @@ def test_create_api_client_returns_instance():
 # API app
 # ---------------------------------------------------------------------------
 
-
 def test_create_api_app_returns_fastapi():
     from pathlib import Path
 
@@ -309,7 +261,6 @@ def test_create_api_app_returns_fastapi():
         app = plugin.create_api_app()
 
     assert isinstance(app, FastAPI)
-
 
 def test_create_api_app_does_not_mount_personas_endpoint():
     from pathlib import Path
@@ -325,7 +276,6 @@ def test_create_api_app_does_not_mount_personas_endpoint():
     client = TestClient(app)
     resp = client.get("/api/v1/ravn/personas")
     assert resp.status_code == 404
-
 
 def test_create_api_app_lists_ravens_sessions_and_triggers():
     from pathlib import Path
@@ -378,7 +328,6 @@ def test_create_api_app_lists_ravens_sessions_and_triggers():
     assert isinstance(triggers.json(), list)
     assert triggers.json()[0]["persona_name"]
 
-
 def test_create_api_app_supports_session_messages_and_budget_routes():
     from pathlib import Path
 
@@ -423,7 +372,6 @@ def test_create_api_app_supports_session_messages_and_budget_routes():
     fleet = client.get("/api/v1/ravn/budget/fleet")
     assert fleet.status_code == 200
     assert fleet.json()["cap_usd"] > 0
-
 
 def test_create_api_app_supports_trigger_crud():
     from pathlib import Path

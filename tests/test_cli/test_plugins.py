@@ -61,7 +61,8 @@ class TestVolundrPlugin:
         plugin = VolundrPlugin()
         sentinel = object()
 
-        def fake_create_app():
+        def fake_create_app(*, public_origin: str):
+            assert public_origin == "http://localhost:8080"
             return sentinel
 
         monkeypatch.setattr("volundr.main.create_app", fake_create_app)
