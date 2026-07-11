@@ -41,6 +41,9 @@ jobs:
             printf '%s\n' "$output"
             printf '%s\n' "$output" | sed -n 's/^Would reformat: //p' | while IFS= read -r file; do
               echo "::error file=${file}::Ruff formatting required"
+              file_diff="$(uv run ruff format --diff "$file" 2>&1 || true)"
+              encoded_diff="$(printf '%s' "$file_diff" | base64 -w 0)"
+              echo "::error file=${file},title=Ruff format base64::${encoded_diff}"
             done
             diff_output="$(uv run ruff format --diff src/ tests/ 2>&1 || true)"
             diff_output="${diff_output//'%'/'%25'}"
