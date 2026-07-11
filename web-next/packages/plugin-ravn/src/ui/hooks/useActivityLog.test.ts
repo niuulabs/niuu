@@ -149,4 +149,124 @@ describe('useActivityLog', () => {
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(result.current.data).toEqual([]);
   });
+
+  it('formats every session role and trigger kind fallback', async () => {
+    const makeSession = (
+      index: number,
+      personaRole: Session['personaRole'],
+      overrides: Partial<Session> = {},
+    ): Session => ({
+      id: `7000000${index}-0000-4000-8000-000000000001`,
+      ravnId: `7000000${index}-0000-4000-8000-000000000002`,
+      personaName: `persona-${index}`,
+      personaRole,
+      personaLetter: 'R',
+      status: 'stopped',
+      model: 'test-model',
+      createdAt: `2026-07-11T12:${String(index).padStart(2, '0')}:00Z`,
+      tokenCount: 0,
+      costUsd: 0,
+      ...overrides,
+    });
+    const sessions = [
+      makeSession(1, 'review', { title: 'Review' }),
+      makeSession(2, 'observe', { title: 'Observe' }),
+      makeSession(3, 'knowledge', { title: 'Knowledge' }),
+      makeSession(4, 'qa', { title: 'QA' }),
+      makeSession(5, 'build', { title: 'Build' }),
+      makeSession(6, 'report', { title: 'Report' }),
+      makeSession(7, 'coord', { title: 'Coordinate' }),
+      makeSession(8, 'investigate', { title: 'Investigate' }),
+      makeSession(9, undefined, { status: 'running', messageCount: undefined }),
+    ];
+    const triggers: Trigger[] = [
+      {
+        id: 'trigger-cron',
+        kind: 'cron',
+        personaName: 'cron',
+        spec: '* * * * *',
+        enabled: true,
+        createdAt: '2026-07-11T13:00:00Z',
+      },
+      {
+        id: 'trigger-event',
+        kind: 'event',
+        personaName: 'event',
+        spec: 'code.changed',
+        enabled: true,
+        createdAt: '2026-07-11T13:01:00Z',
+        lastFiredAt: '2026-07-11T13:05:00Z',
+      },
+      {
+        id: 'trigger-manual',
+        kind: 'manual',
+        personaName: 'manual',
+        spec: 'run-now',
+        enabled: true,
+        createdAt: '2026-07-11T13:02:00Z',
+      },
+      {
+        id: 'trigger-webhook',
+        kind: 'webhook',
+        personaName: 'webhook',
+        spec: '/hooks/run',
+        enabled: true,
+        createdAt: '2026-07-11T13:03:00Z',
+      },
+      {
+        id: 'trigger-fallback',
+        kind: 'custom' as never,
+        personaName: 'custom',
+        spec: 'fallback',
+        enabled: true,
+        createdAt: '2026-07-11T13:04:00Z',
+      },
+    ];
+    const sessionStream = {
+      listSessions: async () => sessions,
+      getSession: async () => sessions[0]!,
+      getMessages: async () => [],
+    };
+    const triggerStore = {
+      listTriggers: async () => triggers,
+      createTrigger: async () => triggers[0]!,
+      deleteTrigger: async () => undefined,
+    };
+
+    const { result } = renderHook(() => useActivityLog(), {
+      wrapper: makeWrapper(sessionStream, triggerStore),
+    });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.data).toHaveLength(9);
+  });
+
+  it('reflects trigger-only loading and error states', async () => {
+    const sessionStream = {
+      listSessions: async () => [] as Session[],
+      getSession: async () => ({} as Session),
+      getMessages: async () => [],
+    };
+    const slowTriggers = {
+      listTriggers: () => new Promise<Trigger[]>(() => undefined),
+      createTrigger: async () => ({} as Trigger),
+      deleteTrigger: async () => undefined,
+    };
+    const loading = renderHook(() => useActivityLog(), {
+      wrapper: makeWrapper(sessionStream, slowTriggers),
+    });
+    await waitFor(() => expect(loading.result.current.data).toEqual([]));
+    expect(loading.result.current.isLoading).toBe(true);
+
+    const failedTriggers = {
+      ...slowTriggers,
+      listTriggers: async () => {
+        throw new Error('triggers unavailable');
+      },
+    };
+    const failed = renderHook(() => useActivityLog(), {
+      wrapper: makeWrapper(sessionStream, failedTriggers),
+    });
+    await waitFor(() => expect(failed.result.current.isError).toBe(true));
+    expect(failed.result.current.data).toEqual([]);
+  });
 });

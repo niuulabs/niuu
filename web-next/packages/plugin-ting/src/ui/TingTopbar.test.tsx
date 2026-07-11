@@ -89,4 +89,22 @@ describe('TingTopbar', () => {
     expect(screen.getByTestId('ting-topbar')).toBeInTheDocument();
     expect(screen.getByTestId('ting-chip-dispatcher-…')).toBeInTheDocument();
   });
+
+  it('shows the stopped dispatcher state', async () => {
+    const stopped: IDispatcherService = {
+      ...createMockDispatcherService(),
+      getState: async () => ({
+        id: '00000000-0000-0000-0000-000000000999',
+        running: false,
+        threshold: 55,
+        maxConcurrentRuns: 2,
+        autoContinue: false,
+        updatedAt: '2026-07-11T12:00:00Z',
+      }),
+    };
+    render(<TingTopbar />, { wrapper: wrap(stopped) });
+    await waitFor(() => expect(screen.getByTestId('ting-chip-dispatcher-off')).toBeInTheDocument());
+    expect(screen.getByTestId('ting-chip-threshold-0.55')).toBeInTheDocument();
+    expect(screen.getByTestId('ting-chip-concurrent-2')).toBeInTheDocument();
+  });
 });
