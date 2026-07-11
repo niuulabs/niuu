@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import typer
 
+
 class TestRavnPlugin:
     def test_name_property(self) -> None:
         from ravn.plugin import RavnPlugin

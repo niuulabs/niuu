@@ -5,6 +5,7 @@ from __future__ import annotations
 from bifrost.plugin import BifrostPlugin
 from niuu.ports.plugin import ServiceLifecycle
 
+
 class TestBifrostPlugin:
     def test_name(self) -> None:
         plugin = BifrostPlugin()

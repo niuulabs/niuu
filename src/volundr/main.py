@@ -20,7 +20,6 @@ from niuu.adapters.postgres_realms import PostgresRealmRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.services.pat import PATService
 from niuu.domain.services.realm import RealmService
-from niuu.service_runtime import create_workload_identity_service
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.service_integrations import (
     has_seeded_linear_integration as _has_seeded_linear_integration,
@@ -38,8 +37,8 @@ from niuu.service_runtime import (
 from niuu.service_runtime import create_identity_adapter as _create_identity_adapter
 from niuu.service_runtime import create_pat_validator as _create_pat_validator
 from niuu.service_runtime import create_storage_adapter as _create_storage_adapter
+from niuu.service_runtime import create_workload_identity_service
 from niuu.service_runtime import release_credential_store as _release_credential_store
-from volundr.config import Settings
 from niuu.utils import import_class, resolve_secret_kwargs
 from sleipnir.adapters.audit_postgres import PostgresAuditRepository
 from sleipnir.adapters.audit_subscriber import AuditSubscriber
@@ -95,6 +94,7 @@ from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
 from volundr.catalog import build_catalog
+from volundr.config import Settings
 from volundr.domain.models import SessionStatus
 from volundr.domain.ports import OpenShellCredentialGrantPort, SessionContributor
 from volundr.domain.services import (

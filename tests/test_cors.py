@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from fastapi.middleware.cors import CORSMiddleware
 
-from niuu.config import CorsConfig, GitConfig
 from cli.shared_host import create_app as create_niuu_app
-from volundr.config import Settings as NiuuSharedSettings
+from niuu.config import CorsConfig, GitConfig
 from ting.config import Settings as TingSettings
 from ting.main import create_app as create_ting_app
-from volundr.config import Settings as VolundrSettings
+from volundr.config import (
+    Settings as NiuuSharedSettings,
+    Settings as VolundrSettings,
+)
 from volundr.main import create_app as create_volundr_app
 
 

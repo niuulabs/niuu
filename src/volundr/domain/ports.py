@@ -21,12 +21,12 @@ from niuu.ports.git import (
     GitRepoNotFoundError,  # noqa: F401
     GitWorkflowProvider,  # noqa: F401
 )
-from niuu.ports.integrations import IntegrationRepository  # noqa: F401
 from niuu.ports.identity import (
     IdentityPort,  # noqa: F401
     InvalidTokenError,  # noqa: F401
     UserProvisioningError,  # noqa: F401
 )
+from niuu.ports.integrations import IntegrationRepository  # noqa: F401
 from volundr.domain.models import (
     Chronicle,
     ClusterResourceInfo,

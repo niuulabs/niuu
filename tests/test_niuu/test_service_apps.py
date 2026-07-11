@@ -9,13 +9,13 @@ from unittest.mock import AsyncMock
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
-from volundr.config import Settings
 from volundr.config import (
     FeatureModuleConfig,
     IntegrationsConfig,
     LinearConfig,
     LocalMountsConfig,
     SeededIntegrationConnectionConfig,
+    Settings,
 )
 
 

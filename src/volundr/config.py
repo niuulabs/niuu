@@ -40,8 +40,6 @@ from niuu.config_models import (
     DatabaseConfig,
     SessionDefinitionConfig,
     WorkloadIdentityConfig,
-    WorkloadIdentityMappingConfig,
-    WorkloadIdentityVerifierConfig,
     default_session_definitions,
 )
 from ravn.config import PersonaSourceConfig

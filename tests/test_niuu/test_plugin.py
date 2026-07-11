@@ -23,13 +23,13 @@ from niuu.domain.models import (
 )
 from niuu.domain.services.repo import ProviderInfo, RepoService
 from niuu.plugin import NiuuPlugin
-from niuu.ports.plugin import ServiceLifecycle
 from niuu.ports.git import (
     GitAuthError,
     GitProvider,
     GitRepoNotFoundError,
     GitWorkflowProvider,
 )
+from niuu.ports.plugin import ServiceLifecycle
 
 # ---------------------------------------------------------------------------
 # NiuuPlugin tests
