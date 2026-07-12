@@ -36,6 +36,10 @@ setup_cli_home CODEX_HOME "$HOME/.codex" /tmp/codex-home
 setup_cli_home CLAUDE_CONFIG_DIR "$HOME/.claude" /tmp/claude-home
 "$PYTHON_BIN" -m skuld.openshell_home
 
+if [ "${SKULD_BOOTSTRAP_FOREGROUND:-false}" = "true" ]; then
+    exec "$PYTHON_BIN" -m skuld
+fi
+
 nohup "$PYTHON_BIN" -m skuld >"$LOG_FILE" 2>&1 &
 broker_pid="$!"
 

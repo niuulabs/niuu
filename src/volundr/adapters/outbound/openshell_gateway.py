@@ -1521,7 +1521,10 @@ class OpenShellGatewayPodManager(
             OpenShellRuntimeProcess(
                 name="skuld",
                 command=tuple(self._sandbox_command),
-                env={"NIUU_CONFIG": "/sandbox/.volundr/skuld.yaml"},
+                env={
+                    "NIUU_CONFIG": "/sandbox/.volundr/skuld.yaml",
+                    "SKULD_BOOTSTRAP_FOREGROUND": "true",
+                },
                 files={},
                 log_path="/sandbox/.volundr/skuld.log",
             ),
