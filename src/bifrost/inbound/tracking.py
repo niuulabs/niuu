@@ -54,6 +54,7 @@ def _extract_usage_from_sse_line(line: str, usage: TokenUsage) -> None:
             usage.reasoning_tokens += msg_usage.get("reasoning_tokens", 0)
         elif event_type == "message_delta":
             delta_usage = payload.get("usage", {})
+            usage.input_tokens += delta_usage.get("input_tokens", 0)
             usage.output_tokens += delta_usage.get("output_tokens", 0)
             usage.reasoning_tokens += delta_usage.get("reasoning_tokens", 0)
 

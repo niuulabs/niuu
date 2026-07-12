@@ -115,6 +115,27 @@ class TestOpenAIStreamToAnthropic:
         assert msg_delta["delta"]["stop_reason"] == "max_tokens"
 
     @pytest.mark.asyncio
+    async def test_usage_only_terminal_chunk_is_preserved(self):
+        events = await self._run(
+            _chunk("ok", finish="stop"),
+            _sse(
+                {
+                    "id": "c1",
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 17,
+                        "completion_tokens": 3,
+                        "total_tokens": 20,
+                    },
+                }
+            ),
+            "data: [DONE]",
+        )
+
+        msg_delta = next(e for e in events if e.get("type") == "message_delta")
+        assert msg_delta["usage"] == {"input_tokens": 17, "output_tokens": 3}
+
+    @pytest.mark.asyncio
     async def test_message_start_has_message_id(self):
         events = await self._run(
             _chunk("x", finish="stop"),

@@ -42,4 +42,5 @@ class OllamaAdapter(OpenAICompatAdapter):
     def _prepare_payload(self, payload: dict) -> dict:
         """Remove fields that some Ollama versions do not support."""
         payload.pop("top_p", None)
+        payload.pop("stream_options", None)
         return payload

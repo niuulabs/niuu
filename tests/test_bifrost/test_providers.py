@@ -428,6 +428,21 @@ class TestOpenAICompatAdapterStreaming:
         chunks = []
         async for chunk in adapter.stream(_simple_request(), "gpt-4o"):
             chunks.append(chunk)
+        payload = json.loads(respx.calls[0].request.content)
+        assert payload["stream_options"] == {"include_usage": True}
         # Should contain at least a message_start event.
         all_text = "".join(chunks)
         assert "message_start" in all_text
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_ollama_stream_omits_unsupported_stream_options(self):
+        route = respx.post("http://localhost:11434/v1/chat/completions").mock(
+            return_value=Response(200, text="data: [DONE]\n\n")
+        )
+        adapter = OllamaAdapter()
+
+        async for _ in adapter.stream(_simple_request(), "llama3.1:8b"):
+            pass
+
+        assert "stream_options" not in json.loads(route.calls[0].request.content)
