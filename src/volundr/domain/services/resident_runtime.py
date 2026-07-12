@@ -242,6 +242,7 @@ class ResidentRuntimeService:
         try:
             profile = self._require_profile(runtime.profile_id)
             controller = self._require_controller(profile)
+            runtime = runtime.model_copy(update={"capabilities": profile.capabilities})
             observation = await controller.reconcile(runtime, profile)
         except Exception as exc:
             await self._record_backend_failure(runtime, "ReconcileFailed", str(exc))
