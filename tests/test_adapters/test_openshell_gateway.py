@@ -978,6 +978,7 @@ def test_dynamic_provider_accepts_configured_tcp_route(
                     "host": "nats-noatun.nats.svc.cluster.local",
                     "port": 4222,
                     "tls": "skip",
+                    "allowed_ips": ["10.191.72.34"],
                 }
             ],
             "binaries": ["/opt/niuu/bin/python"],
@@ -988,6 +989,7 @@ def test_dynamic_provider_accepts_configured_tcp_route(
     assert profile.endpoints[0].port == 4222
     assert profile.endpoints[0].protocol == ""
     assert profile.endpoints[0].tls == "skip"
+    assert list(profile.endpoints[0].allowed_ips) == ["10.191.72.34"]
     assert [binary.path for binary in profile.binaries] == ["/opt/niuu/bin/python"]
 
 

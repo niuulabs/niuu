@@ -3227,6 +3227,9 @@ def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
         for raw in raw_endpoints:
             if not isinstance(raw, dict) or not raw.get("host") or not raw.get("port"):
                 raise RuntimeError("OpenShell credential provider endpoint requires host and port")
+            allowed_ips = raw.get("allowedIps") or raw.get("allowed_ips") or []
+            if not isinstance(allowed_ips, list):
+                raise RuntimeError("OpenShell credential provider allowed_ips must be a list")
             endpoints.append(
                 sandbox_pb2.NetworkEndpoint(
                     host=str(raw["host"]),
@@ -3235,6 +3238,7 @@ def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
                     tls=str(raw.get("tls") or "skip"),
                     enforcement=str(raw.get("enforcement") or "enforce"),
                     access=str(raw.get("access") or "full"),
+                    allowed_ips=[str(item) for item in allowed_ips],
                 )
             )
         binaries = [
