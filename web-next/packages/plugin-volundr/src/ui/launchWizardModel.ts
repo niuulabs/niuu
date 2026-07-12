@@ -29,6 +29,7 @@ export interface WizardForm {
   workspaceId: string;
   mountPath: string;
   sessionName: string;
+  personaName: string;
   systemPrompt: string;
   initialPrompt: string;
   trackerQuery: string;
@@ -549,7 +550,7 @@ export function buildPresetRuntimePayload(
     repos: [],
     setupScripts: form.setupScripts.filter((script) => script.trim()),
     workspaceLayout: {},
-    workloadConfig: {},
+    workloadConfig: form.personaName ? { persona: form.personaName } : {},
   };
 }
 
@@ -618,13 +619,14 @@ export function buildYamlRuntimeFields(form: WizardForm) {
             },
     integrationIds: form.selectedIntegrations,
     setupScripts: form.setupScripts.filter((script) => script.trim()),
-    workloadConfig: {},
+    workloadConfig: form.personaName ? { persona: form.personaName } : {},
   };
 }
 
 export function hasPresetBackedRuntime(form: WizardForm): boolean {
   return (
     form.mcpServers.length > 0 ||
+    Boolean(form.personaName) ||
     form.envVars.some((entry) => entry.key.trim()) ||
     form.setupScripts.some((script) => script.trim())
   );

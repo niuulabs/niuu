@@ -37,6 +37,24 @@ function wrapWithServices(
           bifrost: createMockBifrostService(),
           volundr: service,
           'niuu.repos': repoService,
+          'ravn.personas': {
+            listPersonas: vi.fn().mockResolvedValue([
+              {
+                name: 'reviewer',
+                role: 'review',
+                letter: 'R',
+                color: 'blue',
+                summary: 'Reviews changes',
+                permissionMode: 'safe',
+                allowedTools: [],
+                iterationBudget: 10,
+                isBuiltin: true,
+                hasOverride: false,
+                producesEvent: '',
+                consumesEvents: [],
+              },
+            ]),
+          },
         }}
       >
         <LaunchWizard
@@ -234,6 +252,24 @@ describe('LaunchWizard', () => {
       );
     });
     expect(screen.getAllByTestId('boot-step').length).toBe(8);
+  });
+
+  it('attaches a catalog persona to the launched session', async () => {
+    const service = createMockVolundrService();
+    const startSession = vi.spyOn(service, 'startSession');
+    wrap(true, vi.fn(), service);
+    await advanceToRuntime();
+    const personaSelect = await screen.findByTestId('persona-select');
+    fireEvent.change(personaSelect, { target: { value: 'reviewer' } });
+    fireEvent.click(screen.getByTestId('wizard-next'));
+    expect(await screen.findByText('reviewer')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('wizard-next'));
+
+    await waitFor(() =>
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({ personaName: 'reviewer' }),
+      ),
+    );
   });
 
   it('launches through a Forge tag selector', async () => {

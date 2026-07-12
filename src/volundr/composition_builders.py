@@ -268,6 +268,13 @@ def _create_contributors(
         contributors.append(NotificationChannelContributor(**ports))
         logger.info("Session contributor: notification_channels (auto-wired)")
 
+    persona_provider = ports.get("persona_provider")
+    if persona_provider is not None and not _has_contributor("persona"):
+        from volundr.adapters.outbound.contributors.persona import PersonaContributor
+
+        contributors.append(PersonaContributor(persona_provider=persona_provider))
+        logger.info("Session contributor: persona (auto-wired)")
+
     contributors.append(PromptContributor())
 
     # Auto-wire RavnFlockContributor so ravn_flock workloads spawn

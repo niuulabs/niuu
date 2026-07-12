@@ -139,6 +139,7 @@ export interface IVolundrService {
   // Session lifecycle
   startSession(config: {
     name: string;
+    personaName?: string;
     source: SessionSource;
     model: string;
     launchSpec?: string;

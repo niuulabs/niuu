@@ -1400,6 +1400,22 @@ class SessionContext:
 
 
 @dataclass(frozen=True)
+class SessionPersona:
+    """Runtime persona fields Forge can apply without owning Ravn storage."""
+
+    name: str
+    system_prompt: str
+
+
+class SessionPersonaProvider(ABC):
+    """Resolve a persona in the launching user's catalog."""
+
+    @abstractmethod
+    async def get(self, owner_id: str, name: str) -> SessionPersona | None:
+        """Return the selected persona, or None when it does not exist."""
+
+
+@dataclass(frozen=True)
 class SessionContribution:
     """Output from a single contributor."""
 

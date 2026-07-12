@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import type { PersonaSummary } from '@niuulabs/domain';
 import { Field, Input, SegmentedFilter, Textarea } from '@niuulabs/ui';
 import type {
   ClusterResourceInfo,
@@ -45,6 +46,7 @@ export function RuntimeStep({
   form,
   update,
   models,
+  personas = [],
   workspaces,
   targets,
   credentials,
@@ -60,6 +62,7 @@ export function RuntimeStep({
   form: WizardForm;
   update: (patch: Partial<WizardForm>) => void;
   models: Record<string, RuntimeModelDescriptor>;
+  personas?: PersonaSummary[];
   workspaces: VolundrWorkspace[];
   targets: VolundrTarget[];
   credentials: StoredCredential[];
@@ -193,6 +196,22 @@ export function RuntimeStep({
             ))}
           </div>
           <div className="niuu:grid niuu:grid-cols-1 niuu:gap-4">
+            {personas.length > 0 ? (
+              <Field label="Persona (optional)">
+                <WizardSelect
+                  options={[
+                    { value: '', label: 'No persona' },
+                    ...personas.map((persona) => ({
+                      value: persona.name,
+                      label: `${persona.name} · ${persona.role}`,
+                    })),
+                  ]}
+                  value={form.personaName}
+                  onChange={(value) => update({ personaName: value })}
+                  testId="persona-select"
+                />
+              </Field>
+            ) : null}
             <Field label="Model">
               {modelOptions.length > 0 ? (
                 <WizardSelect

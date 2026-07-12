@@ -15,6 +15,9 @@ export {
   type WeightedScoreParams,
   type FanInStrategy,
   type Persona,
+  type PersonaFilter,
+  type PersonaSummary,
+  type IPersonaCatalog,
 } from './persona';
 
 export {

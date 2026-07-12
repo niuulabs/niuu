@@ -219,6 +219,7 @@ export function ConfirmStep({
           <ConfirmRow label="session" value={deriveSessionName(form)} />
           <ConfirmRow label="forge" value={targetLabel} />
           <ConfirmRow label="definition" value={definitionLabel} />
+          <ConfirmRow label="persona" value={form.personaName || 'not attached'} />
           <ConfirmRow label="model" value={modelLabel} />
           <ConfirmRow
             label="source"

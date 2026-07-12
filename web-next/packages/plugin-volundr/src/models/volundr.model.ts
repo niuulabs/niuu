@@ -162,6 +162,7 @@ export interface VolundrSession {
   source: SessionSource;
   status: SessionStatus;
   model: string;
+  personaName?: string;
   lastActive: number;
   messageCount: number;
   tokensUsed: number;

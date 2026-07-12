@@ -437,6 +437,11 @@ def create_app(
 
             persona_registry = PostgresPersonaRegistry(pool)
             app.state.persona_registry = persona_registry
+            from volundr.adapters.outbound.session_personas import (
+                RegistrySessionPersonaProvider,
+            )
+
+            session_persona_provider = RegistrySessionPersonaProvider(persona_registry)
             workload_identity_service = create_workload_identity_service(settings.workload_identity)
             pod_manager = _create_pod_manager(settings)
             resident_controllers = _create_resident_controllers(settings, pod_manager)
@@ -639,6 +644,7 @@ def create_app(
                 integration_registry=integration_registry,
                 user_integration=user_integration_service,
                 resource_provider=resource_provider,
+                persona_provider=session_persona_provider,
             )
 
             session_service = SessionService(

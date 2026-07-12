@@ -4,6 +4,7 @@ import { Rocket } from 'lucide-react';
 import type { Ravn, ResidentDeploymentProfile } from '../domain/ravn';
 import { useDeployResident, useResidentProfiles } from './hooks/useResidentControl';
 import { ResidentModelSelect } from './ResidentModelSelect';
+import { useOptionalPersonas } from './usePersonas';
 
 interface ResidentDeployDialogProps {
   open: boolean;
@@ -25,6 +26,7 @@ export function ResidentDeployDialog({
   onDeployed,
 }: ResidentDeployDialogProps) {
   const profilesQuery = useResidentProfiles(open);
+  const personasQuery = useOptionalPersonas(open);
   const deploy = useDeployResident();
   const [instanceId, setInstanceId] = useState('');
   const [profileId, setProfileId] = useState('');
@@ -33,6 +35,11 @@ export function ResidentDeployDialog({
   const [model, setModel] = useState('');
 
   const profiles = useMemo(() => profilesQuery.data ?? [], [profilesQuery.data]);
+  const personas = useMemo(
+    () =>
+      [...(personasQuery.data ?? [])].sort((left, right) => left.name.localeCompare(right.name)),
+    [personasQuery.data],
+  );
   const targets = useMemo(() => {
     const byId = new Map<string, ResidentDeploymentProfile>();
     for (const profile of profiles) byId.set(profile.instanceId, profile);
@@ -169,12 +176,27 @@ export function ResidentDeployDialog({
 
               <label className="rv-form-field">
                 <span>Persona</span>
-                <input
-                  value={personaName}
-                  onChange={(event) => setPersonaName(event.target.value)}
-                  maxLength={255}
-                  data-testid="resident-persona"
-                />
+                {personas.length > 0 ? (
+                  <select
+                    value={personaName}
+                    onChange={(event) => setPersonaName(event.target.value)}
+                    data-testid="resident-persona"
+                  >
+                    <option value="">No persona</option>
+                    {personas.map((persona) => (
+                      <option key={persona.name} value={persona.name}>
+                        {persona.name} · {persona.role}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    value={personaName}
+                    onChange={(event) => setPersonaName(event.target.value)}
+                    maxLength={255}
+                    data-testid="resident-persona"
+                  />
+                )}
               </label>
 
               {selectedProfile && selectedProfile.allowedModels.length > 0 && (
