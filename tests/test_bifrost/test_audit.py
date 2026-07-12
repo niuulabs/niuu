@@ -175,6 +175,13 @@ class TestExtractUsageFromSseLine:
         _extract_usage_from_sse_line(line, usage)
         assert usage.output_tokens == 17
 
+    def test_message_delta_populates_translated_openai_usage(self):
+        usage = TokenUsage()
+        line = 'data: {"type":"message_delta","usage":{"input_tokens":19,"output_tokens":4}}'
+        _extract_usage_from_sse_line(line, usage)
+        assert usage.input_tokens == 19
+        assert usage.output_tokens == 4
+
     def test_unknown_event_type_is_a_no_op(self):
         usage = TokenUsage()
         _extract_usage_from_sse_line('data: {"type":"content_block_start"}', usage)
