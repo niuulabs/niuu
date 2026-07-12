@@ -71,6 +71,9 @@ def test_ravn_status_available(client: TestClient) -> None:
         router.get("http://localhost:8080/api/v1/forge/sessions").mock(
             return_value=httpx.Response(200, json=[])
         )
+        router.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+            return_value=httpx.Response(200, json=[])
+        )
         resp = client.get("/api/v1/ravn/status")
 
     assert resp.status_code == 200

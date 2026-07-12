@@ -1412,6 +1412,7 @@ class ResidentDeploymentProfile(BaseModel):
     capabilities: list[ResidentCapability] = Field(default_factory=list)
     default_model: str = ""
     allowed_models: list[str] = Field(default_factory=list)
+    model_prefix: str = ""
     labels: list[str] = Field(default_factory=list)
     deployment: dict[str, Any] = Field(default_factory=dict, exclude=True)
 

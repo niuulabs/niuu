@@ -6,10 +6,12 @@ from uuid import UUID
 
 import pytest
 
+from niuu.domain.model_catalog import ManagedModel
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.config_resident_profiles import (
     ConfigResidentDeploymentProfileProvider,
 )
+from volundr.adapters.outbound.pricing import HardcodedPricingProvider
 from volundr.config import ResidentProfileConfig
 from volundr.domain.models import (
     Principal,
@@ -192,6 +194,94 @@ def _profiles() -> ConfigResidentDeploymentProfileProvider:
             ),
         ]
     )
+
+
+def test_profiles_resolve_model_options_from_bifrost_catalog() -> None:
+    catalog = HardcodedPricingProvider(
+        [
+            ManagedModel(id="gpt-5.6-sol", name="Sol", vendor="openai"),
+            ManagedModel(id="gpt-5.6-terra", name="Terra", vendor="openai"),
+            ManagedModel(id="Qwen/Qwen3.6-35B-A3B-FP8", name="Qwen", vendor="local"),
+        ]
+    )
+    profiles = ConfigResidentDeploymentProfileProvider(
+        [
+            ResidentProfileConfig(
+                id="codex",
+                display_name="Codex",
+                backend=ResidentBackend.OPENSHELL,
+                engine=ResidentEngine.RAVN,
+                default_model="gpt-5.6-sol",
+                catalog_vendors=["openai"],
+            ),
+            ResidentProfileConfig(
+                id="hermes",
+                display_name="Hermes",
+                backend=ResidentBackend.OPENSHELL,
+                engine=ResidentEngine.HERMES,
+                default_model="niuu/gpt-5.6-sol",
+                model_prefix="niuu/",
+            ),
+        ],
+        catalog,
+    )
+
+    codex = profiles.get("codex")
+    hermes = profiles.get("hermes")
+
+    assert codex is not None
+    assert codex.allowed_models == ["gpt-5.6-sol", "gpt-5.6-terra"]
+    assert codex.default_model == "gpt-5.6-sol"
+    assert hermes is not None
+    assert hermes.allowed_models == [
+        "niuu/gpt-5.6-sol",
+        "niuu/gpt-5.6-terra",
+        "niuu/Qwen/Qwen3.6-35B-A3B-FP8",
+    ]
+
+
+def test_profiles_intersect_explicit_constraints_with_bifrost_catalog() -> None:
+    catalog = HardcodedPricingProvider(
+        [ManagedModel(id="gpt-5.6-sol", name="Sol", vendor="openai")]
+    )
+    profiles = ConfigResidentDeploymentProfileProvider(
+        [
+            ResidentProfileConfig(
+                id="hermes",
+                display_name="Hermes",
+                backend=ResidentBackend.OPENSHELL,
+                engine=ResidentEngine.HERMES,
+                default_model="niuu/gpt-5.6-sol",
+                allowed_models=["niuu/gpt-5.6-sol", "niuu/missing"],
+                model_prefix="niuu/",
+            )
+        ],
+        catalog,
+    )
+
+    profile = profiles.get("hermes")
+
+    assert profile is not None
+    assert profile.allowed_models == ["niuu/gpt-5.6-sol"]
+
+
+def test_profiles_fail_closed_until_default_model_is_available() -> None:
+    profiles = ConfigResidentDeploymentProfileProvider(
+        [
+            ResidentProfileConfig(
+                id="codex",
+                display_name="Codex",
+                backend=ResidentBackend.OPENSHELL,
+                engine=ResidentEngine.RAVN,
+                default_model="gpt-5.6-sol",
+                catalog_vendors=["openai"],
+            )
+        ],
+        HardcodedPricingProvider(),
+    )
+
+    assert profiles.get("codex") is None
+    assert profiles.list() == []
 
 
 @pytest.fixture

@@ -58,6 +58,7 @@ class ResidentProfileResponse(BaseModel):
     capabilities: list[ResidentCapability]
     default_model: str
     allowed_models: list[str]
+    model_prefix: str
     labels: list[str]
 
     @classmethod

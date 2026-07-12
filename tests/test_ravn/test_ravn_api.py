@@ -2184,7 +2184,6 @@ def test_list_sessions_returns_live_ravn_sessions(client: TestClient):
 
 
 def test_get_native_session_uses_owning_resident_hint(client: TestClient):
-    import httpx
     import respx
 
     session_id = "11111111-2222-4333-8444-555555555555"
@@ -2211,12 +2210,10 @@ def test_get_native_session_uses_owning_resident_hint(client: TestClient):
     }
     with respx.mock(assert_all_called=False) as router:
         router.get(f"http://localhost:8080/api/v1/forge/sessions/{session_id}").respond(404)
-        router.get(
-            f"http://localhost:8080/api/v1/forge/resident-runtimes/{session_id}"
-        ).respond(404)
-        router.get("http://localhost:8080/api/v1/forge/resident-runtimes").respond(
-            json=runtimes
+        router.get(f"http://localhost:8080/api/v1/forge/resident-runtimes/{session_id}").respond(
+            404
         )
+        router.get("http://localhost:8080/api/v1/forge/resident-runtimes").respond(json=runtimes)
         first_route = router.get(
             f"http://localhost:8080/api/v1/forge/resident-runtimes/{first_ravn}/sessions"
         ).respond(json=[native])

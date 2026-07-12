@@ -69,6 +69,7 @@ def test_lists_only_public_profile_fields() -> None:
             "capabilities": ["chat"],
             "defaultModel": "",
             "allowedModels": [],
+            "modelPrefix": "",
             "labels": [],
         }
     ]

@@ -3,6 +3,7 @@ import { Dialog, DialogContent } from '@niuulabs/ui';
 import { Rocket } from 'lucide-react';
 import type { Ravn, ResidentDeploymentProfile } from '../domain/ravn';
 import { useDeployResident, useResidentProfiles } from './hooks/useResidentControl';
+import { ResidentModelSelect } from './ResidentModelSelect';
 
 interface ResidentDeployDialogProps {
   open: boolean;
@@ -179,17 +180,13 @@ export function ResidentDeployDialog({
               {selectedProfile && selectedProfile.allowedModels.length > 0 && (
                 <label className="rv-form-field">
                   <span>Model</span>
-                  <select
+                  <ResidentModelSelect
+                    allowedModels={selectedProfile.allowedModels}
+                    modelPrefix={selectedProfile.modelPrefix ?? ''}
                     value={selectedModel}
-                    onChange={(event) => setModel(event.target.value)}
-                    data-testid="resident-model"
-                  >
-                    {selectedProfile.allowedModels.map((allowedModel) => (
-                      <option key={allowedModel} value={allowedModel}>
-                        {allowedModel}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={setModel}
+                    testId="resident-model"
+                  />
                 </label>
               )}
             </>

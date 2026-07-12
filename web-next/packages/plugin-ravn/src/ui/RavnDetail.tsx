@@ -27,6 +27,7 @@ import {
   useResidentSessions,
 } from './hooks/useResidentControl';
 import { ravnStatusToDotState } from './grouping';
+import { ResidentModelSelect } from './ResidentModelSelect';
 import { loadStorage, saveStorage } from './storage';
 import './RavnDetail.css';
 
@@ -649,17 +650,13 @@ function SessionsSection({ ravn, sessions }: SessionsSectionProps) {
             {allowedModels.length > 0 && (
               <label className="rv-form-field">
                 <span>Model</span>
-                <select
+                <ResidentModelSelect
+                  allowedModels={allowedModels}
+                  modelPrefix={profile?.modelPrefix ?? ''}
                   value={allowedModels.includes(model) ? model : (profile?.defaultModel ?? '')}
-                  onChange={(event) => setModel(event.target.value)}
-                  data-testid="resident-session-model"
-                >
-                  {allowedModels.map((allowedModel) => (
-                    <option key={allowedModel} value={allowedModel}>
-                      {allowedModel}
-                    </option>
-                  ))}
-                </select>
+                  onChange={setModel}
+                  testId="resident-session-model"
+                />
               </label>
             )}
             {createSession.isError && (

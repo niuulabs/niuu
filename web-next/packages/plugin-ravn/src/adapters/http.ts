@@ -294,6 +294,8 @@ interface RawResidentProfile {
   defaultModel?: string;
   allowed_models?: string[];
   allowedModels?: string[];
+  model_prefix?: string;
+  modelPrefix?: string;
   labels?: string[];
   instance_id?: string;
   instance_name?: string;
@@ -549,6 +551,7 @@ function toResidentProfile(raw: RawResidentProfile): ResidentDeploymentProfile {
     capabilities: (raw.capabilities ?? []) as ResidentCapability[],
     defaultModel: raw.default_model ?? raw.defaultModel ?? '',
     allowedModels: raw.allowed_models ?? raw.allowedModels ?? [],
+    modelPrefix: raw.model_prefix ?? raw.modelPrefix ?? '',
     labels: raw.labels ?? [],
     instanceId: raw.instance_id ?? '',
     instanceName: raw.instance_name ?? '',

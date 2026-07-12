@@ -660,9 +660,7 @@ class EventLogMixin:
             return
 
         client = await self._get_http_client()
-        url = self._settings.usage_report_path or (
-            f"{FORGE_SESSIONS_PATH}/{self.session_id}/usage"
-        )
+        url = self._settings.usage_report_path or (f"{FORGE_SESSIONS_PATH}/{self.session_id}/usage")
 
         for model_id, usage in model_usage.items():
             tokens = (

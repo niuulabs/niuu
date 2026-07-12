@@ -67,6 +67,7 @@ export interface ResidentDeploymentProfile {
   capabilities: ResidentCapability[];
   defaultModel: string;
   allowedModels: string[];
+  modelPrefix?: string;
   labels: string[];
   instanceId: string;
   instanceName: string;

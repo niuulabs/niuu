@@ -276,6 +276,16 @@ class ResidentProfileConfig(BaseModel):
     capabilities: list[ResidentCapability] = Field(default_factory=list)
     default_model: str = ""
     allowed_models: list[str] = Field(default_factory=list)
+    catalog_vendors: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Bifrost model vendors accepted by this resident engine. Empty means all vendors."
+        ),
+    )
+    model_prefix: str = Field(
+        default="",
+        description="Prefix added to canonical Bifrost model IDs for the resident engine.",
+    )
     labels: list[str] = Field(default_factory=list)
     deployment: dict[str, Any] = Field(
         default_factory=dict,
@@ -1460,6 +1470,11 @@ class VolundrBifrostConfig(BifrostConfig):
     timeout_seconds: float = Field(
         default=10.0,
         description="HTTP timeout for Bifrost catalog calls.",
+    )
+    catalog_refresh_interval_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        description="Interval between successful Bifrost catalog refreshes.",
     )
     auth: HttpAuthAdapterConfig = Field(default_factory=HttpAuthAdapterConfig)
 

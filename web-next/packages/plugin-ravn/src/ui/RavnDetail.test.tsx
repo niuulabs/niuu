@@ -90,6 +90,7 @@ function makeServices(overrides?: Record<string, unknown>) {
     'ravn.triggers': createMockTriggerStore(),
     'ravn.sessions': createMockSessionStream(),
     'ravn.budget': createMockBudgetStream(),
+    bifrost: { listModels: vi.fn().mockResolvedValue([]) },
     'ravn.residents': {
       listProfiles: vi.fn().mockResolvedValue([]),
       deploy: vi.fn(),

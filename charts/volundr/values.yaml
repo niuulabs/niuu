@@ -297,6 +297,8 @@ bifrost:
   url: "http://127.0.0.1:8080"
   # -- HTTP timeout for catalog fetches
   timeoutSeconds: 10.0
+  # -- Interval between successful model catalog refreshes
+  catalogRefreshIntervalSeconds: 60.0
   auth:
     # -- Fully-qualified outbound auth adapter class
     adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
@@ -340,7 +342,10 @@ residentRuntimeProfiles: []
 #   engine: ravn
 #   capabilities: [chat, runtime.restart, runtime.suspend, logs, metrics, usage]
 #   defaultModel: claude-sonnet-4-6
+#   # Engine compatibility policy; only IDs currently enabled in Bifrost are exposed.
 #   allowedModels: [claude-sonnet-4-6]
+#   catalogVendors: [anthropic]
+#   modelPrefix: ""
 #   labels: [resident, ravn]
 #   deployment:
 #     values:

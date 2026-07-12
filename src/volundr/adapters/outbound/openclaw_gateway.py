@@ -612,9 +612,7 @@ class OpenClawResidentSessionController(ResidentSessionController):
         connection = await self._connect(runtime)
         key = _session_key(session_id)
         try:
-            history = await connection.request(
-                "chat.history", {"sessionKey": key, "limit": 1000}
-            )
+            history = await connection.request("chat.history", {"sessionKey": key, "limit": 1000})
         except Exception:
             await connection.close()
             raise

@@ -107,6 +107,8 @@ data:
           capabilities: {{ .capabilities | default list | toJson }}
           default_model: {{ .defaultModel | default "" | quote }}
           allowed_models: {{ .allowedModels | default list | toJson }}
+          catalog_vendors: {{ .catalogVendors | default list | toJson }}
+          model_prefix: {{ .modelPrefix | default "" | quote }}
           labels: {{ .labels | default list | toJson }}
           deployment: {{ .deployment | default dict | toJson }}
         {{- end }}
@@ -367,6 +369,7 @@ data:
     bifrost:
       url: {{ .Values.bifrost.url | quote }}
       timeout_seconds: {{ .Values.bifrost.timeoutSeconds | default 10.0 }}
+      catalog_refresh_interval_seconds: {{ .Values.bifrost.catalogRefreshIntervalSeconds | default 60.0 }}
       auth:
         adapter: {{ .Values.bifrost.auth.adapter | quote }}
         kwargs: {{ .Values.bifrost.auth.kwargs | toJson }}

@@ -166,6 +166,17 @@ async def _load_bifrost_catalog(
             delay_seconds = min(delay_seconds * 2, 5.0)
 
 
+async def _refresh_bifrost_catalog(
+    pricing_provider: HardcodedPricingProvider,
+    bifrost_catalog: HttpBifrostCatalogAdapter,
+    *,
+    interval_seconds: float,
+) -> None:
+    while True:
+        await _load_bifrost_catalog(pricing_provider, bifrost_catalog)
+        await asyncio.sleep(interval_seconds)
+
+
 async def _bootstrap_startup_schema(settings: Settings) -> None:
     """Apply embedded Volundr migrations for standalone startup paths."""
     import asyncpg
@@ -416,9 +427,6 @@ def create_app(
             # Create adapters
             repository = PostgresSessionRepository(pool)
             resident_runtime_repository = PostgresResidentRuntimeRepository(pool)
-            resident_profile_provider = ConfigResidentDeploymentProfileProvider(
-                settings.resident_runtimes.profiles
-            )
             device_repository = PostgresDeviceTokenRepository(pool)
             communication_route_repository = PostgresCommunicationRouteRepository(pool)
             communication_cursor_repository = PostgresCommunicationCursorRepository(pool)
@@ -481,10 +489,15 @@ def create_app(
             )
             pricing_provider = HardcodedPricingProvider()
             bifrost_catalog_task = asyncio.create_task(
-                _load_bifrost_catalog(
+                _refresh_bifrost_catalog(
                     pricing_provider,
                     bifrost_catalog,
+                    interval_seconds=settings.bifrost.catalog_refresh_interval_seconds,
                 )
+            )
+            resident_profile_provider = ConfigResidentDeploymentProfileProvider(
+                settings.resident_runtimes.profiles,
+                pricing_provider,
             )
             git_registry = create_git_registry(settings.git)
 
