@@ -446,9 +446,6 @@ importers:
       '@niuulabs/domain':
         specifier: workspace:*
         version: link:../domain
-      '@niuulabs/plugin-bifrost':
-        specifier: workspace:*
-        version: link:../plugin-bifrost
       '@niuulabs/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk
@@ -577,6 +574,9 @@ importers:
       '@niuulabs/domain':
         specifier: workspace:*
         version: link:../domain
+      '@niuulabs/plugin-bifrost':
+        specifier: workspace:*
+        version: link:../plugin-bifrost
       '@niuulabs/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk
