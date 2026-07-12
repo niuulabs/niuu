@@ -25,6 +25,9 @@ from volundr.adapters.outbound.resident_container_spec import (
     ResidentContainerProcess,
     ResidentContainerSpec,
     materialize_resident_container,
+    resident_flock_environment,
+    resident_flock_labels,
+    resident_flock_profile_configured,
     resident_profile_values,
     resident_runtime_section,
     runtime_processes_from_values,
@@ -125,6 +128,8 @@ class LocalContainerResidentRuntimeController(
             values = resident_profile_values(profile.id, profile.deployment)
             if not values.get("image") and not self._default_image:
                 return False
+            if not resident_flock_profile_configured(profile, values):
+                return False
             if profile.engine is ResidentEngine.RAVN:
                 return True
             if profile.engine not in {ResidentEngine.OPENCLAW, ResidentEngine.HERMES}:
@@ -165,9 +170,11 @@ class LocalContainerResidentRuntimeController(
             RUNTIME_ID_LABEL: str(runtime.id),
             "volundr.niuu.io/runtime": runtime.engine.value,
             SPEC_HASH_LABEL: expected_hash,
+            **resident_flock_labels(runtime, prefix="volundr.niuu.io"),
         }
         environment = dict(spec.environment)
         environment.update(machine_environment)
+        environment.update(resident_flock_environment(runtime))
         environment.setdefault(PLATFORM_ACCESS_TOKEN_ENV, "local-mini")
         run_kwargs: dict[str, Any] = {
             "image": spec.image,

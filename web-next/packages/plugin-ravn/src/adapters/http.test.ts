@@ -534,6 +534,10 @@ describe('buildRavnResidentControlAdapter', () => {
       profile_id: 'nemohermes-openshell',
       desired_state: 'running',
       observed_state: 'deploying',
+      flock_id: '11111111-1111-4111-8111-111111111111',
+      flock_member_id: '22222222-2222-4222-8222-222222222222',
+      flock_role: 'specialist',
+      flock_peer_id: 'hermes-22222222',
       capabilities: ['chat', 'session.create'],
       conditions: [],
       endpoints: [],
@@ -546,6 +550,10 @@ describe('buildRavnResidentControlAdapter', () => {
       instanceId: 'target-1',
       personaName: 'product-steward',
       model: 'qwen3.5',
+      flockId: '11111111-1111-4111-8111-111111111111',
+      flockMemberId: '22222222-2222-4222-8222-222222222222',
+      flockRole: 'specialist',
+      flockPeerId: 'hermes-22222222',
     });
 
     expect(client.post).toHaveBeenCalledWith('/ravens', {
@@ -554,11 +562,17 @@ describe('buildRavnResidentControlAdapter', () => {
       instance_id: 'target-1',
       persona_name: 'product-steward',
       model: 'qwen3.5',
+      flock_id: '11111111-1111-4111-8111-111111111111',
+      flock_member_id: '22222222-2222-4222-8222-222222222222',
+      flock_role: 'specialist',
+      flock_peer_id: 'hermes-22222222',
     });
     expect(ravn).toMatchObject({
       managed: true,
       instanceId: 'target-1',
       observedState: 'deploying',
+      flockId: '11111111-1111-4111-8111-111111111111',
+      flockPeerId: 'hermes-22222222',
     });
   });
 

@@ -1831,6 +1831,10 @@ class MeshNatsConfig(BaseSettings):
         default="",
         description="Optional CA bundle path for TLS-secured NATS servers.",
     )
+    tls_ca_pem: str = Field(
+        default="",
+        description="Optional inline CA bundle for TLS-secured NATS servers.",
+    )
     tls_cert_file: str = Field(
         default="",
         description="Optional client TLS certificate path.",
@@ -1969,6 +1973,10 @@ class DiscoveryConfig(BaseModel):
     enabled: bool = Field(
         default=False,
         description="Enable flock peer discovery.",
+    )
+    realm_id: str = Field(
+        default="",
+        description="Explicit discovery realm identity; empty uses the persisted realm key.",
     )
     adapters: list[dict[str, Any]] = Field(
         default_factory=list,

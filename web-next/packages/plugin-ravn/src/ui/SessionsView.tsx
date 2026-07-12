@@ -562,6 +562,12 @@ interface SessionRavnGroup {
   sessions: Session[];
 }
 
+interface SessionFlockGroup {
+  key: string;
+  label: string;
+  ravns: SessionRavnGroup[];
+}
+
 export function groupSessionsByRavn(sessions: Session[], ravens: Ravn[]): SessionRavnGroup[] {
   const ravnById = new Map(
     ravens.map((ravn) => [ravenIdentityKey(ravn.id, ravn.instanceId), ravn]),
@@ -593,6 +599,27 @@ export function groupSessionsByRavn(sessions: Session[], ravens: Ravn[]): Sessio
       if (leftActive !== rightActive) return leftActive ? -1 : 1;
       return right.sessions[0]!.createdAt.localeCompare(left.sessions[0]!.createdAt);
     });
+}
+
+export function groupSessionRavnsByFlock(groups: SessionRavnGroup[]): SessionFlockGroup[] {
+  const flocks = new Map<string, SessionFlockGroup>();
+  for (const group of groups) {
+    const flockId = group.ravn?.flockId ?? group.sessions[0]?.flockId;
+    const key = flockId || `independent:${group.key}`;
+    const flock = flocks.get(key) ?? {
+      key,
+      label: flockId ? `Flock ${flockId.slice(0, 8)}` : 'Independent',
+      ravns: [],
+    };
+    flock.ravns.push(group);
+    flocks.set(key, flock);
+  }
+  return Array.from(flocks.values()).sort((left, right) => {
+    const leftFlock = !left.key.startsWith('independent:');
+    const rightFlock = !right.key.startsWith('independent:');
+    if (leftFlock !== rightFlock) return leftFlock ? -1 : 1;
+    return left.label.localeCompare(right.label);
+  });
 }
 
 function sessionGroupName(group: SessionRavnGroup): string {
@@ -1321,6 +1348,7 @@ export function SessionsView() {
     () => groupSessionsByRavn(sortedSessions, ravens ?? []),
     [ravens, sortedSessions],
   );
+  const flockGroups = useMemo(() => groupSessionRavnsByFlock(sessionGroups), [sessionGroups]);
   const hasLiveChat = Boolean(
     selectedSession?.status === 'running' &&
     normalizeSessionUrl(selectedSession.chatEndpoint ?? null) &&
@@ -1469,14 +1497,22 @@ export function SessionsView() {
             </div>
 
             <div className="rv-rs__rail-body">
-              {sessionGroups.map((group) => (
-                <SessionRailGroup
-                  key={group.key}
-                  group={group}
-                  selectedId={sessionIdentityKey(selectedSession)}
-                  anchorTime={anchorTime}
-                  onSelect={selectSession}
-                />
+              {flockGroups.map((flock) => (
+                <section key={flock.key} className="rv-rs__flock">
+                  <div className="rv-rs__flock-head">
+                    <span>{flock.label}</span>
+                    <span>{flock.ravns.length}</span>
+                  </div>
+                  {flock.ravns.map((group) => (
+                    <SessionRailGroup
+                      key={group.key}
+                      group={group}
+                      selectedId={sessionIdentityKey(selectedSession)}
+                      anchorTime={anchorTime}
+                      onSelect={selectSession}
+                    />
+                  ))}
+                </section>
               ))}
             </div>
           </>

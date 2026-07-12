@@ -535,6 +535,60 @@ def _resident_profile() -> ResidentDeploymentProfile:
     )
 
 
+def test_resident_ravn_config_uses_profile_selected_flock_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    flock_id = uuid4()
+    member_id = uuid4()
+    runtime = _resident_runtime().model_copy(
+        update={
+            "flock_id": flock_id,
+            "flock_member_id": member_id,
+            "flock_role": "coordinator",
+            "flock_peer_id": f"ravn-{member_id}",
+            "capabilities": [*_resident_runtime().capabilities, ResidentCapability.FLOCK],
+        }
+    )
+    values = _resident_profile().deployment["values"]
+    values["resident"]["flock"] = {
+        "mesh": {
+            "adapters": [{"adapter": "sleipnir", "transport": "nats"}],
+            "nats": {
+                "servers": ["tls://nats.example.test:4222"],
+                "user_env": "RAVN_NATS_USER",
+                "password_env": "RAVN_NATS_PASSWORD",
+                "tls_ca_pem": "-----BEGIN CERTIFICATE-----\nproof\n-----END CERTIFICATE-----\n",
+            },
+        },
+        "discovery": {
+            "adapters": [{"adapter": "event_bus", "transport": "nats"}],
+        },
+    }
+    manager = adapter.OpenShellGatewayPodManager(client=_FakeOpenShellGatewayClient(adapter))
+    missing_transport = _resident_profile().model_copy(
+        update={"capabilities": [*_resident_profile().capabilities, ResidentCapability.FLOCK]}
+    )
+    configured = missing_transport.model_copy(update={"deployment": {"values": values}})
+
+    config = adapter._resident_ravn_config(runtime, values, 9200)
+
+    assert manager.supports(missing_transport) is False
+    assert manager.supports(configured) is True
+    assert config["mesh"]["own_peer_id"] == f"ravn-{member_id}"
+    assert config["mesh"]["adapters"] == [
+        {"adapter": "sleipnir", "transport": "nng"},
+        {"adapter": "sleipnir", "transport": "nats"},
+    ]
+    assert config["mesh"]["nats"]["user_env"] == "RAVN_NATS_USER"
+    assert config["mesh"]["nats"]["tls_ca_pem"].startswith("-----BEGIN CERTIFICATE-----")
+    assert config["discovery"]["realm_id"] == str(flock_id)
+    assert config["discovery"]["adapters"][-1] == {
+        "adapter": "event_bus",
+        "transport": "nats",
+    }
+
+
 def _hermes_runtime() -> ResidentRuntime:
     return _resident_runtime().model_copy(
         update={
@@ -907,6 +961,34 @@ def test_platform_provider_adds_resident_engine_binary(
         "/sandbox/.uv/python/**",
         "/usr/bin/node",
     ]
+
+
+def test_dynamic_provider_accepts_configured_tcp_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+
+    profile = adapter._provider_profile(
+        profile_id="resident-nats",
+        env_name="RAVN_NATS_PASSWORD",
+        token_endpoint="https://volundr.example.test/token",
+        target_config={
+            "endpoints": [
+                {
+                    "host": "nats-noatun.nats.svc.cluster.local",
+                    "port": 4222,
+                    "tls": "skip",
+                }
+            ],
+            "binaries": ["/opt/niuu/bin/python"],
+        },
+    )
+
+    assert profile.endpoints[0].host == "nats-noatun.nats.svc.cluster.local"
+    assert profile.endpoints[0].port == 4222
+    assert profile.endpoints[0].protocol == ""
+    assert profile.endpoints[0].tls == "skip"
+    assert [binary.path for binary in profile.binaries] == ["/opt/niuu/bin/python"]
 
 
 @pytest.mark.asyncio

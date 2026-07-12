@@ -180,7 +180,11 @@ def _profiles() -> ConfigResidentDeploymentProfileProvider:
                 display_name="Ravn on OpenShell",
                 backend=ResidentBackend.OPENSHELL,
                 engine=ResidentEngine.RAVN,
-                capabilities=[ResidentCapability.CHAT, ResidentCapability.LOGS],
+                capabilities=[
+                    ResidentCapability.CHAT,
+                    ResidentCapability.LOGS,
+                    ResidentCapability.FLOCK,
+                ],
                 default_model="gpt-5.6",
                 allowed_models=["gpt-5.6"],
                 deployment={"image": "ghcr.io/niuulabs/niuu@sha256:real"},
@@ -293,12 +297,18 @@ def runtime_service() -> tuple[ResidentRuntimeService, MemoryResidentRuntimeRepo
 
 async def test_create_record_derives_identity_and_runtime_from_profile(runtime_service) -> None:
     service, _ = runtime_service
+    flock_id = UUID("11111111-1111-1111-1111-111111111111")
+    member_id = UUID("22222222-2222-2222-2222-222222222222")
 
     runtime = await service.create_record(
         _principal(),
         name="Muninn",
         profile_id="ravn-openshell",
         persona_name="product-steward",
+        flock_id=flock_id,
+        flock_member_id=member_id,
+        flock_role="coordinator",
+        flock_peer_id="ravn-coordinator",
     )
 
     assert runtime.owner_id == "user-a"
@@ -306,7 +316,15 @@ async def test_create_record_derives_identity_and_runtime_from_profile(runtime_s
     assert runtime.backend is ResidentBackend.OPENSHELL
     assert runtime.engine is ResidentEngine.RAVN
     assert runtime.model == "gpt-5.6"
-    assert runtime.capabilities == [ResidentCapability.CHAT, ResidentCapability.LOGS]
+    assert runtime.capabilities == [
+        ResidentCapability.CHAT,
+        ResidentCapability.LOGS,
+        ResidentCapability.FLOCK,
+    ]
+    assert runtime.flock_id == flock_id
+    assert runtime.flock_member_id == member_id
+    assert runtime.flock_role == "coordinator"
+    assert runtime.flock_peer_id == "ravn-coordinator"
 
 
 async def test_create_deploys_and_persists_real_observation(runtime_service) -> None:
@@ -355,7 +373,11 @@ async def test_reconcile_refreshes_capabilities_from_profile(runtime_service) ->
 
     reconciled = await service.reconcile(runtime.id)
 
-    assert reconciled.capabilities == [ResidentCapability.CHAT, ResidentCapability.LOGS]
+    assert reconciled.capabilities == [
+        ResidentCapability.CHAT,
+        ResidentCapability.LOGS,
+        ResidentCapability.FLOCK,
+    ]
     assert repository.items[runtime.id] == reconciled
 
 
@@ -370,6 +392,20 @@ async def test_create_record_rejects_unavailable_profile_and_model(runtime_servi
             name="Muninn",
             profile_id="ravn-openshell",
             model="not-allowed",
+        )
+    with pytest.raises(ResidentRuntimeValidationError, match="require flock_id"):
+        await service.create_record(
+            _principal(),
+            name="Partial flock",
+            profile_id="ravn-openshell",
+            flock_peer_id="partial",
+        )
+    with pytest.raises(ResidentRuntimeValidationError, match="requires member id"):
+        await service.create_record(
+            _principal(),
+            name="Missing member",
+            profile_id="ravn-openshell",
+            flock_id=UUID("33333333-3333-3333-3333-333333333333"),
         )
 
 

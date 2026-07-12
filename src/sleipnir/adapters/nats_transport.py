@@ -126,14 +126,23 @@ DEFAULT_PUBLISH_TIMEOUT_S = 10.0
 def _build_tls_context(
     *,
     tls_ca_file: str = "",
+    tls_ca_pem: str = "",
     tls_cert_file: str = "",
     tls_key_file: str = "",
     tls_insecure_skip_verify: bool = False,
 ) -> ssl.SSLContext | None:
     """Build an SSL context for NATS TLS, or return None when TLS files are unset."""
-    if not tls_ca_file and not tls_cert_file and not tls_key_file and not tls_insecure_skip_verify:
+    if (
+        not tls_ca_file
+        and not tls_ca_pem
+        and not tls_cert_file
+        and not tls_key_file
+        and not tls_insecure_skip_verify
+    ):
         return None
     context = ssl.create_default_context(cafile=tls_ca_file or None)
+    if tls_ca_pem:
+        context.load_verify_locations(cadata=tls_ca_pem)
     if tls_insecure_skip_verify:
         logger.warning(
             "NATS TLS certificate verification is DISABLED "
@@ -156,6 +165,7 @@ def _read_optional_file(path: str) -> str:
 def _connect_options(
     *,
     tls_ca_file: str = "",
+    tls_ca_pem: str = "",
     tls_cert_file: str = "",
     tls_key_file: str = "",
     tls_hostname: str = "",
@@ -170,6 +180,7 @@ def _connect_options(
     options: dict[str, Any] = {}
     tls_context = _build_tls_context(
         tls_ca_file=tls_ca_file,
+        tls_ca_pem=tls_ca_pem,
         tls_cert_file=tls_cert_file,
         tls_key_file=tls_key_file,
         tls_insecure_skip_verify=tls_insecure_skip_verify,
@@ -427,6 +438,7 @@ class NatsPublisher(SleipnirPublisher):
         ensure_stream: bool = True,
         publish_timeout_s: float = DEFAULT_PUBLISH_TIMEOUT_S,
         tls_ca_file: str = "",
+        tls_ca_pem: str = "",
         tls_cert_file: str = "",
         tls_key_file: str = "",
         tls_hostname: str = "",
@@ -452,6 +464,7 @@ class NatsPublisher(SleipnirPublisher):
         self._publish_timeout_s = publish_timeout_s
         self._connect_options = _connect_options(
             tls_ca_file=tls_ca_file,
+            tls_ca_pem=tls_ca_pem,
             tls_cert_file=tls_cert_file,
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,
@@ -560,6 +573,7 @@ class NatsCorePublisher(SleipnirPublisher):
         connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
         max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS,
         tls_ca_file: str = "",
+        tls_ca_pem: str = "",
         tls_cert_file: str = "",
         tls_key_file: str = "",
         tls_hostname: str = "",
@@ -578,6 +592,7 @@ class NatsCorePublisher(SleipnirPublisher):
         self._max_reconnect_attempts = max_reconnect_attempts
         self._connect_options = _connect_options(
             tls_ca_file=tls_ca_file,
+            tls_ca_pem=tls_ca_pem,
             tls_cert_file=tls_cert_file,
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,
@@ -685,6 +700,7 @@ class NatsSubscriber(SleipnirSubscriber):
         max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS,
         ensure_stream: bool = True,
         tls_ca_file: str = "",
+        tls_ca_pem: str = "",
         tls_cert_file: str = "",
         tls_key_file: str = "",
         tls_hostname: str = "",
@@ -717,6 +733,7 @@ class NatsSubscriber(SleipnirSubscriber):
         self._ensure_stream = ensure_stream
         self._connect_options = _connect_options(
             tls_ca_file=tls_ca_file,
+            tls_ca_pem=tls_ca_pem,
             tls_cert_file=tls_cert_file,
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,
@@ -1063,6 +1080,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
         ensure_stream: bool = True,
         publish_timeout_s: float = DEFAULT_PUBLISH_TIMEOUT_S,
         tls_ca_file: str = "",
+        tls_ca_pem: str = "",
         tls_cert_file: str = "",
         tls_key_file: str = "",
         tls_hostname: str = "",
@@ -1090,6 +1108,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             ensure_stream=ensure_stream,
             publish_timeout_s=publish_timeout_s,
             tls_ca_file=tls_ca_file,
+            tls_ca_pem=tls_ca_pem,
             tls_cert_file=tls_cert_file,
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,
@@ -1117,6 +1136,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             max_reconnect_attempts=max_reconnect_attempts,
             ensure_stream=ensure_stream,
             tls_ca_file=tls_ca_file,
+            tls_ca_pem=tls_ca_pem,
             tls_cert_file=tls_cert_file,
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,

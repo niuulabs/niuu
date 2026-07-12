@@ -414,7 +414,7 @@ spec:
             - name: RAVN_PERSONA
               value: {{ include "skuld.residentPersona" . | quote }}
             - name: RAVN_PEER_ID
-              value: {{ printf "flock-%s" (include "skuld.residentPersona" .) | quote }}
+              value: {{ .Values.resident.flock.peerId | default (printf "flock-%s" (include "skuld.residentPersona" .)) | quote }}
             - name: HOME
               value: /workspace
             - name: RAVN_STATE_DIR

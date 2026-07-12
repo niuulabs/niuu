@@ -1453,4 +1453,23 @@ data:
         DROP COLUMN IF EXISTS cost,
         DROP COLUMN IF EXISTS tokens_used,
         DROP COLUMN IF EXISTS message_count;
+  000057_resident_flock_membership.up.sql: |
+    ALTER TABLE resident_runtimes
+        ADD COLUMN IF NOT EXISTS flock_id UUID,
+        ADD COLUMN IF NOT EXISTS flock_member_id UUID,
+        ADD COLUMN IF NOT EXISTS flock_role VARCHAR(100) NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS flock_peer_id VARCHAR(255) NOT NULL DEFAULT '';
+
+    CREATE INDEX IF NOT EXISTS idx_resident_runtimes_flock
+        ON resident_runtimes (flock_id)
+        WHERE flock_id IS NOT NULL;
+
+  000057_resident_flock_membership.down.sql: |
+    DROP INDEX IF EXISTS idx_resident_runtimes_flock;
+
+    ALTER TABLE resident_runtimes
+        DROP COLUMN IF EXISTS flock_peer_id,
+        DROP COLUMN IF EXISTS flock_role,
+        DROP COLUMN IF EXISTS flock_member_id,
+        DROP COLUMN IF EXISTS flock_id;
 {{- end }}

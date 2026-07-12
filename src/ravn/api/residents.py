@@ -514,11 +514,14 @@ class ResidentDirectory:
             runtime.get("observed_state") or runtime.get("observedState") or "pending"
         )
         profile_id = str(runtime.get("profile_id") or runtime.get("profileId") or "")
+        flock_id = str(runtime.get("flock_id") or runtime.get("flockId") or "")
+        flock_member_id = str(runtime.get("flock_member_id") or runtime.get("flockMemberId") or "")
+        flock_peer_id = str(runtime.get("flock_peer_id") or runtime.get("flockPeerId") or "")
         return {
             "id": str(runtime.get("id") or ""),
             "persona_name": runtime.get("persona_name") or runtime.get("personaName") or "",
             "resident_name": runtime.get("name") or "",
-            "peer_id": "",
+            "peer_id": flock_peer_id,
             "kind": "resident",
             "status": _MANAGED_RAVEN_STATUS_MAP.get(observed_state, "idle"),
             "model": runtime.get("model") or "",
@@ -531,6 +534,10 @@ class ResidentDirectory:
             "backend": runtime.get("backend") or "",
             "engine": runtime.get("engine") or "",
             "profile_id": profile_id,
+            "flock_id": flock_id,
+            "flock_member_id": flock_member_id,
+            "flock_role": runtime.get("flock_role") or runtime.get("flockRole") or "",
+            "flock_peer_id": flock_peer_id,
             "desired_state": runtime.get("desired_state") or runtime.get("desiredState"),
             "observed_state": observed_state,
             "backend_ref": runtime.get("backend_ref") or runtime.get("backendRef") or {},
@@ -566,6 +573,10 @@ class ResidentDirectory:
             "instance_id": raven["instance_id"],
             "instance_name": raven["instance_name"],
             "instance_slug": raven["instance_slug"],
+            "flock_id": raven["flock_id"],
+            "flock_member_id": raven["flock_member_id"],
+            "flock_role": raven["flock_role"],
+            "flock_peer_id": raven["flock_peer_id"],
         }
 
     @staticmethod

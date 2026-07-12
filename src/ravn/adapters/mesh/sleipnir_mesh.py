@@ -128,6 +128,7 @@ class SleipnirMeshAdapter:
         discovery: object | None = None,
         rpc_timeout_s: float = 10.0,
         environment_id: str = "",
+        manage_transport_lifecycle: bool = True,
     ) -> None:
         self._publisher = publisher
         self._subscriber = subscriber
@@ -135,6 +136,7 @@ class SleipnirMeshAdapter:
         self._discovery = discovery
         self._rpc_timeout_s = rpc_timeout_s
         self._environment_id = environment_id or "-"
+        self._manage_transport_lifecycle = manage_transport_lifecycle
 
         self._subscriptions: dict[str, Subscription] = {}
         self._rpc_handler: Callable[[dict], Awaitable[dict]] | None = None
@@ -294,10 +296,14 @@ class SleipnirMeshAdapter:
     async def start(self) -> None:
         """Start listening for incoming RPC requests."""
         # Start the transport if it has a start method (nng, rabbitmq, etc.)
-        if hasattr(self._publisher, "start"):
+        if self._manage_transport_lifecycle and hasattr(self._publisher, "start"):
             await self._publisher.start()
         # If subscriber is different from publisher, start it too
-        if self._subscriber is not self._publisher and hasattr(self._subscriber, "start"):
+        if (
+            self._manage_transport_lifecycle
+            and self._subscriber is not self._publisher
+            and hasattr(self._subscriber, "start")
+        ):
             await self._subscriber.start()
 
         # Subscribe to RPC requests for this peer
@@ -330,9 +336,13 @@ class SleipnirMeshAdapter:
         self._pending_rpc.clear()
 
         # Stop the transport if it has a stop method
-        if hasattr(self._publisher, "stop"):
+        if self._manage_transport_lifecycle and hasattr(self._publisher, "stop"):
             await self._publisher.stop()
-        if self._subscriber is not self._publisher and hasattr(self._subscriber, "stop"):
+        if (
+            self._manage_transport_lifecycle
+            and self._subscriber is not self._publisher
+            and hasattr(self._subscriber, "stop")
+        ):
             await self._subscriber.stop()
 
         logger.info(

@@ -35,6 +35,31 @@ export function useDeployResident() {
   });
 }
 
+export function useDeployResidentFlock() {
+  const control = useControl();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (requests: DeployResidentRequest[]) => {
+      const results = await Promise.allSettled(requests.map((request) => control.deploy(request)));
+      const deployed = results.flatMap((result) =>
+        result.status === 'fulfilled' ? [result.value] : [],
+      );
+      const failure = results.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected',
+      );
+      if (!failure) return deployed;
+      await Promise.allSettled(deployed.map((ravn) => control.delete(ravn)));
+      throw failure.reason;
+    },
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['ravn', 'ravens'] }),
+        queryClient.invalidateQueries({ queryKey: ['ravn', 'sessions'] }),
+      ]);
+    },
+  });
+}
+
 export function useResidentLifecycle() {
   const control = useControl();
   const queryClient = useQueryClient();

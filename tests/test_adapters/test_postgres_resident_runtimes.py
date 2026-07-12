@@ -25,6 +25,8 @@ from volundr.domain.models import (
 
 def _runtime() -> ResidentRuntime:
     now = datetime.now(UTC)
+    flock_id = uuid4()
+    member_id = uuid4()
     return ResidentRuntime(
         id=uuid4(),
         owner_id="user-a",
@@ -35,6 +37,10 @@ def _runtime() -> ResidentRuntime:
         backend=ResidentBackend.OPENSHELL,
         engine=ResidentEngine.RAVN,
         profile_id="ravn-openshell",
+        flock_id=flock_id,
+        flock_member_id=member_id,
+        flock_role="coordinator",
+        flock_peer_id=f"ravn-{member_id}",
         desired_state=ResidentDesiredState.RUNNING,
         observed_state=ResidentObservedState.ACTIVE,
         backend_ref={"kind": "Sandbox", "name": "muninn"},
@@ -57,6 +63,10 @@ def _row(runtime: ResidentRuntime) -> dict:
         "backend": runtime.backend.value,
         "engine": runtime.engine.value,
         "profile_id": runtime.profile_id,
+        "flock_id": runtime.flock_id,
+        "flock_member_id": runtime.flock_member_id,
+        "flock_role": runtime.flock_role,
+        "flock_peer_id": runtime.flock_peer_id,
         "desired_state": runtime.desired_state.value,
         "observed_state": runtime.observed_state.value,
         "backend_ref": runtime.backend_ref,
@@ -83,9 +93,12 @@ async def test_create_and_update_persist_full_runtime_contract() -> None:
     assert "INSERT INTO resident_runtimes" in create_args[0]
     assert runtime.owner_id in create_args
     assert runtime.backend.value in create_args
+    assert runtime.flock_id in create_args
+    assert runtime.flock_peer_id in create_args
     update_args = pool.execute.await_args_list[1].args
     assert "UPDATE resident_runtimes" in update_args[0]
     assert runtime.observed_state.value in update_args
+    assert runtime.flock_member_id in update_args
 
 
 async def test_get_and_scoped_list_map_json_and_enums() -> None:

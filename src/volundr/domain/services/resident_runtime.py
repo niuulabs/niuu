@@ -96,6 +96,10 @@ class ResidentRuntimeService:
         profile_id: str,
         persona_name: str = "",
         model: str = "",
+        flock_id: UUID | None = None,
+        flock_member_id: UUID | None = None,
+        flock_role: str = "",
+        flock_peer_id: str = "",
     ) -> ResidentRuntime:
         """Create one durable record and its real backend deployment."""
         profile = self._require_profile(profile_id)
@@ -106,6 +110,10 @@ class ResidentRuntimeService:
             profile_id=profile_id,
             persona_name=persona_name,
             model=model,
+            flock_id=flock_id,
+            flock_member_id=flock_member_id,
+            flock_role=flock_role,
+            flock_peer_id=flock_peer_id,
         )
         try:
             observation = await controller.deploy(runtime, profile)
@@ -131,6 +139,10 @@ class ResidentRuntimeService:
         profile_id: str,
         persona_name: str = "",
         model: str = "",
+        flock_id: UUID | None = None,
+        flock_member_id: UUID | None = None,
+        flock_role: str = "",
+        flock_peer_id: str = "",
     ) -> ResidentRuntime:
         """Create the durable record used by a real deployment adapter."""
         self._require_write_role(principal)
@@ -145,6 +157,17 @@ class ResidentRuntimeService:
             raise ResidentRuntimeValidationError(
                 f"Model {resolved_model!r} is not allowed by resident profile {profile_id}"
             )
+        flock_fields = (flock_member_id, flock_role.strip(), flock_peer_id.strip())
+        if flock_id is None and any(flock_fields):
+            raise ResidentRuntimeValidationError("Flock member fields require flock_id")
+        if flock_id is not None and not all(flock_fields):
+            raise ResidentRuntimeValidationError(
+                "Flock membership requires member id, role, and peer id"
+            )
+        if flock_id is not None and ResidentCapability.FLOCK not in profile.capabilities:
+            raise ResidentRuntimeValidationError(
+                f"Resident profile {profile_id} does not support flock membership"
+            )
 
         runtime = ResidentRuntime(
             owner_id=principal.user_id,
@@ -155,6 +178,10 @@ class ResidentRuntimeService:
             backend=profile.backend,
             engine=profile.engine,
             profile_id=profile.id,
+            flock_id=flock_id,
+            flock_member_id=flock_member_id,
+            flock_role=flock_role.strip(),
+            flock_peer_id=flock_peer_id.strip(),
             capabilities=profile.capabilities,
         )
         try:

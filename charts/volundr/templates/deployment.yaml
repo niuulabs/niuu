@@ -213,6 +213,13 @@ spec:
                   name: {{ .secretName }}
                   key: {{ .secretKey }}
             {{- end }}
+            {{- range .Values.sleipnir.secretKwargs }}
+            - name: SLEIPNIR_SK_{{ .kwarg | upper }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
             {{- range $i, $contributor := .Values.sessionContributors }}
             {{- range $contributor.secretKwargs }}
             - name: SESSION_CONTRIBUTOR_{{ $i }}_SK_{{ .kwarg | upper }}

@@ -624,6 +624,7 @@ class SleipnirConfig(BaseModel):
         description="Fully-qualified class path for the Sleipnir adapter.",
     )
     kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
 
 
 class PushNotificationConfig(BaseModel):

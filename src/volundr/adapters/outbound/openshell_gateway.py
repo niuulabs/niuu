@@ -49,6 +49,13 @@ from volundr.adapters.outbound.resident_container_spec import (
     resident_attribution_headers as _shared_resident_attribution_headers,
 )
 from volundr.adapters.outbound.resident_container_spec import (
+    resident_flock_environment,
+    resident_flock_labels,
+    resident_flock_profile_configured,
+    resident_flock_runtime_config,
+    resident_mesh_pod_metadata,
+)
+from volundr.adapters.outbound.resident_container_spec import (
     resident_process_files as _shared_resident_process_files,
 )
 from volundr.adapters.outbound.resident_container_spec import (
@@ -1126,7 +1133,10 @@ class OpenShellGatewayPodManager(
         ):
             return False
         if profile.engine is ResidentEngine.RAVN:
-            return True
+            try:
+                return resident_flock_profile_configured(profile, _resident_profile_values(profile))
+            except RuntimeError:
+                return False
         if profile.engine not in {ResidentEngine.OPENCLAW, ResidentEngine.HERMES}:
             return False
         try:
@@ -1153,6 +1163,7 @@ class OpenShellGatewayPodManager(
         subject = self._resident_subject(runtime)
         sandbox_name = self._resident_sandbox_name(runtime)
         env = self._resident_environment(runtime, values)
+        env.update(resident_flock_environment(runtime))
         service_name, service_port = _resident_service(
             values, self._service_name, self._service_port
         )
@@ -1195,6 +1206,7 @@ class OpenShellGatewayPodManager(
             if grants:
                 await asyncio.to_thread(self._client.ensure_providers_v2)
             env.update(credential_context.environment)
+            mesh_labels, mesh_annotations = resident_mesh_pod_metadata(runtime)
             sandbox = await asyncio.to_thread(
                 self._client.create_sandbox,
                 name=sandbox_name,
@@ -1204,8 +1216,10 @@ class OpenShellGatewayPodManager(
                     "app.kubernetes.io/managed-by": "volundr",
                     "volundr.niuu.io/resident": str(runtime.id),
                     "volundr.niuu.io/runtime": runtime.engine.value,
+                    **resident_flock_labels(runtime, prefix="volundr.niuu.io"),
+                    **mesh_labels,
                 },
-                annotations={},
+                annotations=mesh_annotations,
                 resources=_resources_from_values(values, cpu=self._cpu, memory=self._memory),
                 driver_config=_driver_config_from_values(values),
                 providers=provider_names,
@@ -2220,6 +2234,7 @@ class OpenShellGatewayPodManager(
                 profile_id=provider_name,
                 env_name=env_name,
                 token_endpoint=self._credential_token_endpoint,
+                target_config=mapping.get("provider"),
             )
             if provider_name in providers:
                 continue
@@ -2549,7 +2564,7 @@ def _resident_skuld_config(
 ) -> dict[str, Any]:
     persona = runtime.persona_name or "product-steward"
     route_id = runtime.id.hex[:12]
-    ravn_peer = f"flock-{persona}"
+    ravn_peer = runtime.flock_peer_id or f"flock-{persona}"
     skuld_peer = f"skuld-{route_id}"
     broker = values.get("broker") if isinstance(values.get("broker"), dict) else {}
     session_values = values.get("session") if isinstance(values.get("session"), dict) else {}
@@ -2647,7 +2662,7 @@ def _resident_ravn_config(
 ) -> dict[str, Any]:
     persona = runtime.persona_name or "product-steward"
     route_id = runtime.id.hex[:12]
-    ravn_peer = f"flock-{persona}"
+    ravn_peer = runtime.flock_peer_id or f"flock-{persona}"
     skuld_peer = f"skuld-{route_id}"
     resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
     platform = resident.get("platform") if isinstance(resident.get("platform"), dict) else {}
@@ -2717,6 +2732,7 @@ def _resident_ravn_config(
         config["llm"] = llm
     if isinstance(resident.get("wakefulness"), dict):
         config["wakefulness"] = resident["wakefulness"]
+    resident_flock_runtime_config(config, runtime, values)
     if resident.get("dailyBudgetUsd") or resident.get("daily_budget_usd"):
         config["budget"] = {
             "daily_cap_usd": float(
@@ -3092,8 +3108,9 @@ def _provider_profile(
     env_name: str,
     token_endpoint: str,
     cache_ttl_seconds: int = 300,
+    target_config: Any = None,
 ) -> Any:
-    target = _provider_target(env_name)
+    target = _provider_target(env_name, target_config)
     audience = f"{GRANT_AUDIENCE_PREFIX}{profile_id}"
     credential = openshell_pb2.ProviderProfileCredential(
         name="access_token",
@@ -3110,7 +3127,7 @@ def _provider_profile(
             cache_ttl_seconds=cache_ttl_seconds,
         ),
     )
-    endpoints = [
+    endpoints = target.get("endpoints") or [
         sandbox_pb2.NetworkEndpoint(
             host=host,
             port=443,
@@ -3198,7 +3215,42 @@ def _platform_provider_profile(
     )
 
 
-def _provider_target(env_name: str) -> dict[str, Any]:
+def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
+    if isinstance(config, dict):
+        raw_endpoints = config.get("endpoints")
+        raw_binaries = config.get("binaries")
+        if not isinstance(raw_endpoints, list) or not raw_endpoints:
+            raise RuntimeError("OpenShell credential provider endpoints must be a non-empty list")
+        if not isinstance(raw_binaries, list) or not raw_binaries:
+            raise RuntimeError("OpenShell credential provider binaries must be a non-empty list")
+        endpoints = []
+        for raw in raw_endpoints:
+            if not isinstance(raw, dict) or not raw.get("host") or not raw.get("port"):
+                raise RuntimeError("OpenShell credential provider endpoint requires host and port")
+            endpoints.append(
+                sandbox_pb2.NetworkEndpoint(
+                    host=str(raw["host"]),
+                    port=int(raw["port"]),
+                    protocol=str(raw.get("protocol") or ""),
+                    tls=str(raw.get("tls") or "skip"),
+                    enforcement=str(raw.get("enforcement") or "enforce"),
+                    access=str(raw.get("access") or "full"),
+                )
+            )
+        binaries = [
+            str(item.get("path") if isinstance(item, dict) else item) for item in raw_binaries
+        ]
+        if any(not path for path in binaries):
+            raise RuntimeError("OpenShell credential provider binary path is required")
+        return {
+            "auth_style": str(config.get("authStyle") or config.get("auth_style") or "bearer"),
+            "header_name": str(
+                config.get("headerName") or config.get("header_name") or "Authorization"
+            ),
+            "endpoints": endpoints,
+            "binaries": binaries,
+            "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
+        }
     if env_name == CODEX_ACCESS_TOKEN_ENV:
         return {
             "auth_style": "bearer",

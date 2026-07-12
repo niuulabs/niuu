@@ -92,6 +92,17 @@ describe('groupRavens', () => {
     });
   });
 
+  describe('flock grouping', () => {
+    it('groups flock members and keeps independent ravens separate', () => {
+      const flocked = RAVENS.map((ravn, index) =>
+        index < 2 ? { ...ravn, flockId: '11111111-1111-1111-1111-111111111111' } : ravn,
+      );
+      const result = groupRavens(flocked, 'flock');
+      expect(result['flock 11111111']).toHaveLength(2);
+      expect(result.independent).toHaveLength(2);
+    });
+  });
+
   describe('empty input', () => {
     it('returns empty groups for empty input (none)', () => {
       const result = groupRavens([], 'none');

@@ -8,7 +8,8 @@ import { useSessions } from './hooks/useSessions';
 import { groupRavens, ravnStatusToDotState, type GroupKey } from './grouping';
 import { RavnDetail } from './RavnDetail';
 import { ResidentDeployDialog } from './ResidentDeployDialog';
-import { Plus } from 'lucide-react';
+import { ResidentFlockDeployDialog } from './ResidentFlockDeployDialog';
+import { Plus, Users } from 'lucide-react';
 import { loadStorage, saveStorage } from './storage';
 import './RavensPage.css';
 
@@ -18,6 +19,7 @@ const GROUP_OPTIONS: Array<{ key: GroupKey; label: string }> = [
   { key: 'location', label: 'loc' },
   { key: 'persona', label: 'persona' },
   { key: 'state', label: 'state' },
+  { key: 'flock', label: 'flock' },
   { key: 'none', label: 'flat' },
 ];
 
@@ -81,6 +83,9 @@ function matchesQuery(ravn: Ravn, query: string): boolean {
     ravn.backend,
     ravn.engine,
     ravn.instanceName,
+    ravn.flockId,
+    ravn.flockRole,
+    ravn.flockPeerId,
   ];
 
   return fields.some((value) => value?.toLowerCase().includes(needle));
@@ -190,6 +195,7 @@ function RavensFleet({ ravens }: { ravens: Ravn[] }) {
     pickDefaultRavn(ravens),
   );
   const [deployOpen, setDeployOpen] = useState(false);
+  const [flockDeployOpen, setFlockDeployOpen] = useState(false);
 
   const { data: sessions } = useSessions();
 
@@ -302,6 +308,15 @@ function RavensFleet({ ravens }: { ravens: Ravn[] }) {
                   <div className="rv-fleet__title-actions">
                     <button
                       type="button"
+                      onClick={() => setFlockDeployOpen(true)}
+                      className="rv-fleet__deploy"
+                      data-testid="flock-deploy-open"
+                    >
+                      <Users size={14} aria-hidden="true" />
+                      Flock
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => setDeployOpen(true)}
                       className="rv-fleet__deploy"
                       data-testid="resident-deploy-open"
@@ -410,6 +425,16 @@ function RavensFleet({ ravens }: { ravens: Ravn[] }) {
         open={deployOpen}
         onOpenChange={setDeployOpen}
         onDeployed={(ravn) => setSelectedRavnId(ravnKey(ravn))}
+      />
+      <ResidentFlockDeployDialog
+        open={flockDeployOpen}
+        onOpenChange={setFlockDeployOpen}
+        onDeployed={(deployed) => {
+          const coordinator = deployed.find((ravn) => ravn.flockRole === 'coordinator');
+          setSelectedRavnId(ravnKey(coordinator ?? deployed[0]!));
+          setGroupBy('flock');
+          saveStorage(GROUP_STORAGE_KEY, 'flock');
+        }}
       />
     </div>
   );

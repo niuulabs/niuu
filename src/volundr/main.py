@@ -91,6 +91,7 @@ from volundr.adapters.outbound.postgres_timeline import PostgresTimelineReposito
 from volundr.adapters.outbound.postgres_tokens import PostgresTokenTracker
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
+from volundr.adapters.outbound.resident_flock import ResidentFlockAdapter
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
 from volundr.app_shell import build_app_shell
 from volundr.catalog import build_catalog
@@ -316,6 +317,7 @@ async def _reconcile_resident_runtimes_loop(
     service: ResidentRuntimeService,
     *,
     interval_seconds: float,
+    flock_adapter: ResidentFlockAdapter | None = None,
 ) -> None:
     """Periodically converge durable resident records with backend state."""
     logger.info(
@@ -326,6 +328,8 @@ async def _reconcile_resident_runtimes_loop(
         try:
             await asyncio.sleep(interval_seconds)
             await service.reconcile_all()
+            if flock_adapter is not None:
+                await flock_adapter.sync()
         except asyncio.CancelledError:
             logger.info("Resident runtime reconcile loop cancelled")
             break
@@ -510,7 +514,13 @@ def create_app(
             if settings.sleipnir.enabled:
                 try:
                     sl_cls = import_class(settings.sleipnir.adapter)
-                    sleipnir_bus = sl_cls(**settings.sleipnir.kwargs)
+                    sleipnir_kwargs = resolve_secret_kwargs(
+                        settings.sleipnir.kwargs,
+                        settings.sleipnir.secret_kwargs_env,
+                    )
+                    sleipnir_bus = sl_cls(**sleipnir_kwargs)
+                    if hasattr(sleipnir_bus, "start"):
+                        await sleipnir_bus.start()
                     logger.info(
                         "Sleipnir integration enabled: adapter=%s",
                         settings.sleipnir.adapter.rsplit(".", 1)[-1],
@@ -584,6 +594,15 @@ def create_app(
                 resident_profile_provider,
                 resident_controllers,
                 resident_session_controllers,
+            )
+            resident_flock_adapter = (
+                ResidentFlockAdapter(
+                    resident_runtime_repository,
+                    resident_session_controllers,
+                    sleipnir_bus,
+                )
+                if sleipnir_bus is not None
+                else None
             )
             if hasattr(pod_manager, "set_persona_registry"):
                 pod_manager.set_persona_registry(persona_registry)
@@ -1177,6 +1196,7 @@ def create_app(
                 _reconcile_resident_runtimes_loop(
                     resident_runtime_service,
                     interval_seconds=settings.resident_runtimes.reconciliation_interval_seconds,
+                    flock_adapter=resident_flock_adapter,
                 )
             )
             if settings.telegram_ingress.enabled:
@@ -1190,6 +1210,8 @@ def create_app(
             await session_service.reconcile_provisioning_sessions()
             await session_service.reconcile_active_sessions()
             await resident_runtime_service.reconcile_all()
+            if resident_flock_adapter is not None:
+                await resident_flock_adapter.sync()
 
             try:
                 yield
@@ -1220,6 +1242,8 @@ def create_app(
                     await resident_reconcile_task
                 except asyncio.CancelledError:
                     pass
+                if resident_flock_adapter is not None:
+                    await resident_flock_adapter.stop()
                 await event_ingestion.close_all()
                 if hasattr(pod_manager, "close"):
                     await pod_manager.close()
@@ -1231,6 +1255,8 @@ def create_app(
                 await git_registry.close()
                 if audit_subscriber is not None:
                     await audit_subscriber.stop()
+                if sleipnir_bus is not None and hasattr(sleipnir_bus, "stop"):
+                    await sleipnir_bus.stop()
                 _release_credential_store(settings)
 
     app.router.lifespan_context = lifespan

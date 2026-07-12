@@ -120,6 +120,10 @@ export interface DeployResidentRequest {
   instanceId: string;
   personaName?: string;
   model?: string;
+  flockId?: string;
+  flockMemberId?: string;
+  flockRole?: string;
+  flockPeerId?: string;
 }
 
 export interface CreateResidentSessionRequest {

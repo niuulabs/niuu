@@ -1348,6 +1348,7 @@ class ResidentCapability(StrEnum):
     LOGS = "logs"
     METRICS = "metrics"
     USAGE = "usage"
+    FLOCK = "flock"
 
 
 class ResidentConditionStatus(StrEnum):
@@ -1432,6 +1433,10 @@ class ResidentRuntime(BaseModel):
     backend: ResidentBackend
     engine: ResidentEngine
     profile_id: str = Field(min_length=1, max_length=100)
+    flock_id: UUID | None = None
+    flock_member_id: UUID | None = None
+    flock_role: str = Field(default="", max_length=100)
+    flock_peer_id: str = Field(default="", max_length=255)
     desired_state: ResidentDesiredState = ResidentDesiredState.RUNNING
     observed_state: ResidentObservedState = ResidentObservedState.PENDING
     backend_ref: dict[str, Any] = Field(default_factory=dict)

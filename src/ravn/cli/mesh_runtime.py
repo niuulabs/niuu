@@ -112,6 +112,7 @@ def _resolve_transport_kwargs(
             "ensure_stream": nats_cfg.ensure_stream,
             "publish_timeout_s": nats_cfg.publish_timeout_s,
             "tls_ca_file": nats_cfg.tls_ca_file,
+            "tls_ca_pem": nats_cfg.tls_ca_pem,
             "tls_cert_file": nats_cfg.tls_cert_file,
             "tls_key_file": nats_cfg.tls_key_file,
             "tls_hostname": nats_cfg.tls_hostname,
@@ -169,7 +170,7 @@ def _build_discovery(
 
     peer_id = settings.mesh.own_peer_id or load_or_create_peer_id()
     realm_key = load_or_create_realm_key()
-    realm_id = realm_id_from_key(realm_key)
+    realm_id = settings.discovery.realm_id or realm_id_from_key(realm_key)
 
     try:
         version = importlib.metadata.version("ravn")
@@ -204,12 +205,19 @@ def _build_discovery(
     )
 
     from niuu.mesh.discovery_builder import build_discovery_adapters  # noqa: PLC0415
+    from niuu.mesh.transport_builder import build_transport  # noqa: PLC0415
+
+    def _event_bus_transport(entry: dict[str, Any]) -> Any:
+        transport_name = str(entry.get("transport") or "nats")
+        kwargs = _resolve_transport_kwargs(settings, transport_name)
+        return build_transport(transport_name, **kwargs) if kwargs else None
 
     return build_discovery_adapters(
         adapters_config=list(getattr(settings.discovery, "adapters", [])),
         own_identity=identity,
         heartbeat_interval_s=settings.discovery.heartbeat_interval_s,
         peer_ttl_s=settings.discovery.peer_ttl_s,
+        sleipnir_transport_builder=_event_bus_transport,
     )
 
 

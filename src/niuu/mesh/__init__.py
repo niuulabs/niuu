@@ -103,6 +103,7 @@ def build_mesh_from_adapters_list(
             kwargs["publisher"] = transport
             kwargs["subscriber"] = transport
             kwargs.pop("discovery", None)
+            kwargs.pop("transport", None)
 
         try:
             transports.append(cls(**kwargs))

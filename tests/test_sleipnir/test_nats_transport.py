@@ -293,6 +293,15 @@ def test_tls_context_can_skip_verification_for_internal_clusters():
     assert context.verify_mode == ssl.CERT_NONE
 
 
+def test_tls_context_loads_inline_ca_bundle():
+    context = MagicMock(spec=ssl.SSLContext)
+    with patch("sleipnir.adapters.nats_transport.ssl.create_default_context", return_value=context):
+        result = _build_tls_context(tls_ca_pem="certificate-pem")
+
+    assert result is context
+    context.load_verify_locations.assert_called_once_with(cadata="certificate-pem")
+
+
 # ---------------------------------------------------------------------------
 # NatsPublisher tests
 # ---------------------------------------------------------------------------

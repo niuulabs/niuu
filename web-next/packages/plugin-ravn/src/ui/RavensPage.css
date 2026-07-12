@@ -348,6 +348,34 @@
   width: min(520px, calc(100vw - 32px));
 }
 
+.rv-flock-deploy-dialog {
+  width: min(1120px, calc(100vw - 32px));
+}
+
+.rv-flock-members {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.rv-flock-member {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid rgba(150, 160, 180, 0.22);
+  padding: 12px;
+}
+
+.rv-flock-member legend {
+  padding: 0 5px;
+  color: #d6ecff;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.rv-flock-member > * + * {
+  margin-top: 10px;
+}
+
 .rv-deploy-form {
   display: grid;
   gap: 14px;
@@ -449,6 +477,9 @@
 }
 
 @media (max-width: 900px) {
+  .rv-flock-members {
+    grid-template-columns: 1fr;
+  }
   .rv-ravens__content {
     flex-direction: column;
   }

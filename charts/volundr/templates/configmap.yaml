@@ -51,6 +51,19 @@ data:
       timeout_seconds: {{ .Values.provisioning.timeoutSeconds | default 300.0 }}
       initial_delay_seconds: {{ .Values.provisioning.initialDelaySeconds | default 5.0 }}
 
+    sleipnir:
+      enabled: {{ .Values.sleipnir.enabled | default false }}
+      adapter: {{ .Values.sleipnir.adapter | quote }}
+      kwargs: {{ .Values.sleipnir.kwargs | default dict | toJson }}
+      {{- if .Values.sleipnir.secretKwargs }}
+      secret_kwargs_env:
+        {{- range .Values.sleipnir.secretKwargs }}
+        {{ .kwarg }}: SLEIPNIR_SK_{{ .kwarg | upper }}
+        {{- end }}
+      {{- else }}
+      secret_kwargs_env: {}
+      {{- end }}
+
     pod_manager:
       adapter: {{ .Values.podManager.adapter | quote }}
       kwargs: {{ .Values.podManager.kwargs | toJson }}

@@ -26,15 +26,29 @@ data:
     persona: {{ $persona | quote }}
     mesh:
       enabled: true
+      own_peer_id: {{ .Values.resident.flock.peerId | default (printf "flock-%s" $persona) | quote }}
+      {{- if .Values.resident.flock.mesh.adapters }}
+      adapters:
+        - adapter: sleipnir
+          transport: nng
+        {{- toYaml .Values.resident.flock.mesh.adapters | nindent 8 }}
+      {{- else }}
       adapter: nng
-      own_peer_id: {{ printf "flock-%s" $persona | quote }}
+      {{- end }}
       nng:
         pub_sub_address: "tcp://0.0.0.0:7482"
         req_rep_address: "tcp://0.0.0.0:7483"
+      {{- with .Values.resident.flock.mesh.nats }}
+      nats:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       peers:
         - peer_id: {{ printf "skuld-%s" $routeId | quote }}
     discovery:
       enabled: true
+      {{- if .Values.resident.flock.id }}
+      realm_id: {{ .Values.resident.flock.id | quote }}
+      {{- end }}
       adapters:
         - adapter: static
           peers:
@@ -46,7 +60,7 @@ data:
               consumes_event_types: []
               emits_event_types:
                 - code.changed
-            - peer_id: {{ printf "flock-%s" $persona | quote }}
+            - peer_id: {{ .Values.resident.flock.peerId | default (printf "flock-%s" $persona) | quote }}
               persona: {{ $persona | quote }}
               pub_address: "tcp://127.0.0.1:7482"
               rep_address: "tcp://127.0.0.1:7483"
@@ -54,6 +68,9 @@ data:
               consumes_event_types: []
               emits_event_types: []
           poll_interval_s: 0
+        {{- with .Values.resident.flock.discovery.adapters }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     cascade:
       enabled: true
     gateway:
