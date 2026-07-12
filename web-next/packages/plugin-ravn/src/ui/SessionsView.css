@@ -940,3 +940,38 @@
     border-bottom: 1px solid rgba(156, 164, 177, 0.14);
   }
 }
+
+@media (max-width: 640px) {
+  .rv-rs__head {
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px 18px 14px;
+  }
+
+  .rv-rs__head-left,
+  .rv-rs__head-right {
+    width: 100%;
+  }
+
+  .rv-rs__title-row,
+  .rv-rs__head-right,
+  .rv-rs__metrics {
+    flex-wrap: wrap;
+  }
+
+  .rv-rs__title-row {
+    align-items: flex-start;
+  }
+
+  .rv-rs__head-right {
+    justify-content: space-between;
+  }
+
+  .rv-rs__metrics {
+    gap: 8px 14px;
+  }
+
+  .rv-rs__surface-tabs {
+    padding: 0 18px;
+  }
+}
