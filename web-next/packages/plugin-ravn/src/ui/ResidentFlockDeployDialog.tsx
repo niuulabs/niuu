@@ -56,7 +56,12 @@ export function ResidentFlockDeployDialog({
     [personasQuery.data],
   );
 
-  const selectedProfiles = drafts.map((draft) => selectedResidentProfile(draft, profiles));
+  const selectedProfiles = drafts.map((draft, index) =>
+    selectedResidentProfile(
+      draft,
+      profiles.filter((profile) => profile.engine === MEMBER_SPECS[index]!.engine),
+    ),
+  );
   const valid =
     Boolean(flockName.trim()) &&
     drafts.every((draft, index) => Boolean(draft.name.trim() && selectedProfiles[index]));

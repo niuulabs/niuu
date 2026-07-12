@@ -57,6 +57,11 @@ describe('ResidentFlockDeployDialog', () => {
       'specialist',
       'specialist',
     ]);
+    expect(requests.map((request) => request.profileId)).toEqual([
+      'ravn-local',
+      'openclaw-local',
+      'hermes-local',
+    ]);
   });
 
   it('rolls back members when one deployment fails', async () => {

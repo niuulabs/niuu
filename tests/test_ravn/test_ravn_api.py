@@ -2265,7 +2265,14 @@ def test_resident_create_lifecycle_and_delete_proxy_target_control_plane(client:
 
         created = client.post(
             "/api/v1/ravn/ravens",
-            json={"name": "Muninn", "profile_id": "ravn-helm"},
+            json={
+                "name": "Muninn",
+                "profile_id": "ravn-helm",
+                "flock_id": "11111111-1111-4111-8111-111111111111",
+                "flock_member_id": "22222222-2222-4222-8222-222222222222",
+                "flock_role": "coordinator",
+                "flock_peer_id": "ravn-muninn",
+            },
         )
         suspended = client.post("/api/v1/ravn/ravens/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/suspend")
         deleted = client.delete("/api/v1/ravn/ravens/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
@@ -2273,6 +2280,12 @@ def test_resident_create_lifecycle_and_delete_proxy_target_control_plane(client:
     assert created.status_code == 201
     assert created.json()["managed"] is True
     assert created.json()["endpoints"] == runtime["endpoints"]
+    assert create_route.calls.last.request.read() == (
+        b'{"name":"Muninn","profile_id":"ravn-helm","persona_name":"","model":"",'
+        b'"flock_id":"11111111-1111-4111-8111-111111111111",'
+        b'"flock_member_id":"22222222-2222-4222-8222-222222222222",'
+        b'"flock_role":"coordinator","flock_peer_id":"ravn-muninn"}'
+    )
     assert suspended.status_code == 200
     assert deleted.status_code == 204
     assert create_route.called and suspend_route.called and delete_route.called
