@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from niuu.ports.plugin import APIRouteDomain, ServiceDefinition, ServicePlugin
@@ -31,7 +32,9 @@ class BifrostPlugin(ServicePlugin):
         from bifrost.app import create_app
         from bifrost.config import BifrostConfig
 
-        return create_app(BifrostConfig())
+        raw_config = os.environ.get("BIFROST_CONFIG", "").strip()
+        config = BifrostConfig.model_validate_json(raw_config) if raw_config else BifrostConfig()
+        return create_app(config)
 
     def api_route_domains(self) -> tuple[APIRouteDomain, ...]:
         return (

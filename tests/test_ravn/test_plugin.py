@@ -312,18 +312,14 @@ def test_create_api_app_lists_ravens_sessions_and_triggers():
 
     client = TestClient(app)
 
-    # /ravens is standalone resident discovery only now; no discovery is
-    # configured in the default plugin app, so the fleet is empty.
-    ravens = client.get("/api/v1/ravn/ravens")
-    assert ravens.status_code == 200
-    assert ravens.json() == []
-
-    # /sessions is real discovery — it proxies the Forge sessions API with
-    # the caller's auth forwarded and keeps ravn_flock rooms.
     import httpx
     import respx
 
     with respx.mock(assert_all_called=False) as router:
+        router.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        ravens = client.get("/api/v1/ravn/ravens")
         router.get("http://localhost:8080/api/v1/forge/sessions").mock(
             return_value=httpx.Response(
                 200,
@@ -340,6 +336,8 @@ def test_create_api_app_lists_ravens_sessions_and_triggers():
             )
         )
         sessions = client.get("/api/v1/ravn/sessions")
+    assert ravens.status_code == 200
+    assert ravens.json() == []
     assert sessions.status_code == 200
     assert isinstance(sessions.json(), list)
     assert sessions.json()[0]["ravn_id"] == "11111111-2222-4333-8444-555555555555"

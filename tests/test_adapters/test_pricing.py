@@ -60,6 +60,16 @@ class TestHardcodedPricingProvider:
         models = provider.list_models()
         assert models == []
 
+    def test_disabled_models_are_not_projected(self):
+        provider = HardcodedPricingProvider(
+            [
+                ManagedModelConfig(id="enabled", name="Enabled"),
+                ManagedModelConfig(id="disabled", name="Disabled", enabled=False),
+            ]
+        )
+
+        assert [model.id for model in provider.list_models()] == ["enabled"]
+
     def test_cloud_models_have_pricing(self, provider: HardcodedPricingProvider):
         models = provider.list_models()
         cloud = [m for m in models if m.provider == ModelProvider.CLOUD]

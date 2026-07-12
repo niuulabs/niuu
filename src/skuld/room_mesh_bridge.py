@@ -251,7 +251,7 @@ class RoomMeshBridge:
             return
 
         if "usage" in ravn_type.lower():
-            await self._handle_usage(ravn_event_payload)
+            await self.report_usage(ravn_event_payload)
             return
 
         activity_type = self._ravn_type_to_activity(ravn_type)
@@ -359,8 +359,8 @@ class RoomMeshBridge:
             return
         await self._room_bridge.handle_ravn_frame(peer_id, frame)
 
-    async def _handle_usage(self, ravn_event_payload: dict) -> None:
-        """Forward mesh usage events into the existing Forge usage reporter."""
+    async def report_usage(self, ravn_event_payload: dict) -> None:
+        """Forward a Ravn usage event into the existing Forge usage reporter."""
         if self._report_usage is None:
             return
 

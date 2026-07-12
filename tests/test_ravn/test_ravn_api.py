@@ -184,6 +184,9 @@ def client_with_personas(tmp_path) -> TestClient:
 
 @respx.mock
 def test_status_endpoint_reports_live_counts(client: TestClient):
+    respx.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+        return_value=httpx.Response(200, json=[])
+    )
     respx.get("http://localhost:8080/api/v1/forge/sessions").mock(
         return_value=httpx.Response(
             200,
@@ -211,6 +214,9 @@ def test_status_endpoint_reports_live_counts(client: TestClient):
 
 @respx.mock
 def test_status_endpoint_reports_discovery_unavailable(client: TestClient):
+    respx.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+        return_value=httpx.Response(200, json=[])
+    )
     respx.get("http://localhost:8080/api/v1/forge/sessions").mock(return_value=httpx.Response(503))
 
     resp = client.get("/api/v1/ravn/status")
@@ -2165,6 +2171,7 @@ def test_list_sessions_returns_live_ravn_sessions(client: TestClient):
                 ],
             )
         )
+        router.get("http://localhost:8080/api/v1/forge/resident-runtimes").respond(json=[])
         resp = client.get("/api/v1/ravn/sessions")
     assert resp.status_code == 200
     data = resp.json()
@@ -2174,6 +2181,101 @@ def test_list_sessions_returns_live_ravn_sessions(client: TestClient):
     assert data[0]["ravn_id"] == "11111111-2222-4333-8444-555555555555"
     assert data[0]["status"] == "running"
     assert data[0]["chat_endpoint"] == "ws://host/s/1/session"
+
+
+def test_get_native_session_uses_owning_resident_hint(client: TestClient):
+    import respx
+
+    session_id = "11111111-2222-4333-8444-555555555555"
+    first_ravn = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    second_ravn = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+    runtimes = [
+        {
+            "id": first_ravn,
+            "name": "first",
+            "capabilities": ["session.list"],
+        },
+        {
+            "id": second_ravn,
+            "name": "second",
+            "capabilities": ["session.list"],
+        },
+    ]
+    native = {
+        "id": session_id,
+        "title": "shared native id",
+        "status": "running",
+        "model": "niuu/Qwen/Qwen3.6-35B-A3B-FP8",
+        "createdAt": "2026-07-12T01:00:00Z",
+    }
+    with respx.mock(assert_all_called=False) as router:
+        router.get(f"http://localhost:8080/api/v1/forge/sessions/{session_id}").respond(404)
+        router.get(f"http://localhost:8080/api/v1/forge/resident-runtimes/{session_id}").respond(
+            404
+        )
+        router.get("http://localhost:8080/api/v1/forge/resident-runtimes").respond(json=runtimes)
+        first_route = router.get(
+            f"http://localhost:8080/api/v1/forge/resident-runtimes/{first_ravn}/sessions"
+        ).respond(json=[native])
+        second_route = router.get(
+            f"http://localhost:8080/api/v1/forge/resident-runtimes/{second_ravn}/sessions"
+        ).respond(json=[native])
+
+        response = client.get(
+            f"/api/v1/ravn/sessions/{session_id}", params={"ravn_id": second_ravn}
+        )
+
+    assert response.status_code == 200
+    assert response.json()["ravn_id"] == second_ravn
+    assert not first_route.called
+    assert second_route.called
+
+
+def test_resident_create_lifecycle_and_delete_proxy_target_control_plane(client: TestClient):
+    import httpx
+    import respx
+
+    runtime = {
+        "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "name": "Muninn",
+        "personaName": "product-steward",
+        "model": "gpt-5.6",
+        "backend": "helmrelease",
+        "engine": "ravn",
+        "profileId": "ravn-helm",
+        "desiredState": "running",
+        "observedState": "deploying",
+        "backendRef": {"kind": "HelmRelease", "name": "resident-id"},
+        "endpoints": [{"kind": "chat", "protocol": "skuld-v1", "url": "/s/id/session"}],
+        "capabilities": ["chat", "runtime.suspend"],
+        "conditions": [],
+    }
+    with respx.mock(assert_all_called=False) as router:
+        create_route = router.post("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+            return_value=httpx.Response(201, json=runtime)
+        )
+        suspend_route = router.post(
+            "http://localhost:8080/api/v1/forge/resident-runtimes/"
+            "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/suspend"
+        ).mock(return_value=httpx.Response(200, json=runtime))
+        delete_route = router.delete(
+            "http://localhost:8080/api/v1/forge/resident-runtimes/"
+            "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        ).mock(return_value=httpx.Response(204))
+
+        created = client.post(
+            "/api/v1/ravn/ravens",
+            json={"name": "Muninn", "profile_id": "ravn-helm"},
+        )
+        suspended = client.post("/api/v1/ravn/ravens/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/suspend")
+        deleted = client.delete("/api/v1/ravn/ravens/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+
+    assert created.status_code == 201
+    assert created.json()["managed"] is True
+    assert created.json()["endpoints"] == runtime["endpoints"]
+    assert suspended.status_code == 200
+    assert deleted.status_code == 204
+    assert create_route.called and suspend_route.called and delete_route.called
 
 
 @respx.mock
@@ -2260,10 +2362,14 @@ def test_sessions_dial_platform_base_url_from_settings():
         route = respx.get("http://forge.configured.internal:9999/api/v1/forge/sessions").respond(
             json=[]
         )
+        resident_route = respx.get(
+            "http://forge.configured.internal:9999/api/v1/forge/resident-runtimes"
+        ).respond(json=[])
         resp = client.get("/api/v1/ravn/sessions")
     assert resp.status_code == 200
     assert resp.json() == []
     assert route.called
+    assert resident_route.called
 
 
 def test_list_wardens_returns_empty_list_when_store_is_empty(tmp_path):

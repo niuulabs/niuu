@@ -65,14 +65,19 @@ def _strip_instance_hints(payload: Any) -> Any:
     return sanitized
 
 
-def _with_instance(payload: Any, instance: RegisteredInstance) -> Any:
+def _with_instance(
+    payload: Any,
+    instance: RegisteredInstance,
+    *,
+    rebase_chat_endpoint: bool = True,
+) -> Any:
     if not isinstance(payload, dict):
         return payload
     enriched = dict(payload)
     enriched["instance_id"] = instance.id
     enriched["instance_name"] = instance.name
     enriched["instance_slug"] = instance.slug
-    if not _uses_embedded_transport(instance):
+    if rebase_chat_endpoint and not _uses_embedded_transport(instance):
         for key in ("chat_endpoint", "chatEndpoint"):
             value = enriched.get(key)
             if isinstance(value, str) and value.startswith("/"):
@@ -197,11 +202,13 @@ async def _request_remote(
     method: str,
     path: str,
     remote_prefix: str = "/api/v1/forge",
+    base_url: str | None = None,
     json_body: Any | None = None,
     content_body: bytes | None = None,
     params: list[tuple[str, str]] | None = None,
     extra_headers: dict[str, str] | None = None,
     embedded_app: ASGIApp | None = None,
+    timeout: float = 30.0,
 ) -> httpx.Response:
     headers = _forward_headers(request)
     if extra_headers:
@@ -233,11 +240,11 @@ async def _request_remote(
             )
 
     try:
-        remote_url = build_remote_url(instance.base_url, remote_prefix, path)
+        remote_url = build_remote_url(base_url or instance.base_url, remote_prefix, path)
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         response = await client.request(
             method,
             remote_url,
@@ -279,6 +286,34 @@ async def _find_session_owner(
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"Session not found: {session_id}",
+    )
+
+
+async def _find_resident_owner(
+    service: InstanceService,
+    principal: Principal,
+    request: Request,
+    runtime_id: str,
+    *,
+    embedded_app: ASGIApp | None = None,
+) -> tuple[RegisteredInstance, dict[str, Any]]:
+    for instance in await _visible_instances(service, principal):
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/resident-runtimes/{runtime_id}",
+            embedded_app=embedded_app,
+        )
+        if response.status_code in {status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND}:
+            continue
+        _ensure_remote_success(response)
+        payload = response.json()
+        if isinstance(payload, dict):
+            return instance, _with_instance(payload, instance, rebase_chat_endpoint=False)
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Resident runtime not found: {runtime_id}",
     )
 
 
@@ -329,6 +364,307 @@ def create_volundr_router(
 ) -> APIRouter:
     """Create a registry-aware Forge runtime router."""
     router = APIRouter(prefix="/api/v1/forge", tags=["Forge"])
+
+    @router.get("/resident-profiles")
+    async def list_resident_profiles(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict[str, Any]]:
+        instances = await _visible_instances(service, principal)
+        results = await asyncio.gather(
+            *[
+                _request_remote(
+                    instance,
+                    request,
+                    method="GET",
+                    path="/resident-profiles",
+                    embedded_app=embedded_forge_app,
+                )
+                for instance in instances
+            ],
+            return_exceptions=True,
+        )
+        profiles: list[dict[str, Any]] = []
+        for instance, result in zip(instances, results, strict=False):
+            if isinstance(result, Exception) or result.status_code >= 400:
+                continue
+            payload = result.json()
+            if not isinstance(payload, list):
+                continue
+            profiles.extend(
+                _with_instance(item, instance, rebase_chat_endpoint=False)
+                for item in payload
+                if isinstance(item, dict)
+            )
+        return profiles
+
+    @router.get("/resident-runtimes")
+    async def list_resident_runtimes(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict[str, Any]]:
+        instances = await _visible_instances(service, principal)
+        results = await asyncio.gather(
+            *[
+                _request_remote(
+                    instance,
+                    request,
+                    method="GET",
+                    path="/resident-runtimes",
+                    embedded_app=embedded_forge_app,
+                )
+                for instance in instances
+            ],
+            return_exceptions=True,
+        )
+        runtimes: list[dict[str, Any]] = []
+        for instance, result in zip(instances, results, strict=False):
+            if isinstance(result, Exception) or result.status_code >= 400:
+                continue
+            payload = result.json()
+            if not isinstance(payload, list):
+                continue
+            runtimes.extend(
+                _with_instance(item, instance, rebase_chat_endpoint=False)
+                for item in payload
+                if isinstance(item, dict)
+            )
+        return runtimes
+
+    @router.post("/resident-runtimes", status_code=status.HTTP_201_CREATED)
+    async def create_resident_runtime(
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        requested_instance_id = body.get("instance_id") or body.get("instanceId")
+        instance = await _resolve_target_instance(
+            service,
+            principal,
+            str(requested_instance_id) if requested_instance_id else None,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path="/resident-runtimes",
+            json_body=_strip_instance_hints(body),
+            embedded_app=embedded_forge_app,
+            timeout=600.0,
+        )
+        _ensure_remote_success(response)
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="Unexpected resident create response")
+        return _with_instance(payload, instance, rebase_chat_endpoint=False)
+
+    @router.get("/resident-runtimes/{runtime_id}")
+    async def get_resident_runtime(
+        request: Request,
+        runtime_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        _, payload = await _find_resident_owner(
+            service,
+            principal,
+            request,
+            runtime_id,
+            embedded_app=embedded_forge_app,
+        )
+        return payload
+
+    async def _resident_owner_request(
+        request: Request,
+        principal: Principal,
+        runtime_id: str,
+        *,
+        method: str,
+        path_suffix: str = "",
+        json_body: Any | None = None,
+        timeout: float = 30.0,
+    ) -> tuple[RegisteredInstance, httpx.Response]:
+        instance, _ = await _find_resident_owner(
+            service,
+            principal,
+            request,
+            runtime_id,
+            embedded_app=embedded_forge_app,
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method=method,
+            path=f"/resident-runtimes/{runtime_id}{path_suffix}",
+            json_body=json_body,
+            params=_query_params(request),
+            embedded_app=embedded_forge_app,
+            timeout=timeout,
+        )
+        _ensure_remote_success(response)
+        return instance, response
+
+    async def _control_resident_runtime(
+        request: Request,
+        runtime_id: str,
+        action: str,
+        principal: Principal,
+    ) -> dict[str, Any]:
+        instance, response = await _resident_owner_request(
+            request,
+            principal,
+            runtime_id,
+            method="POST",
+            path_suffix=f"/{action}",
+            timeout=600.0,
+        )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="Unexpected resident lifecycle response")
+        return _with_instance(payload, instance, rebase_chat_endpoint=False)
+
+    @router.post("/resident-runtimes/{runtime_id}/restart")
+    async def restart_resident_runtime(
+        request: Request,
+        runtime_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        return await _control_resident_runtime(request, runtime_id, "restart", principal)
+
+    @router.post("/resident-runtimes/{runtime_id}/suspend")
+    async def suspend_resident_runtime(
+        request: Request,
+        runtime_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        return await _control_resident_runtime(request, runtime_id, "suspend", principal)
+
+    @router.post("/resident-runtimes/{runtime_id}/resume")
+    async def resume_resident_runtime(
+        request: Request,
+        runtime_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        return await _control_resident_runtime(request, runtime_id, "resume", principal)
+
+    @router.get("/resident-runtimes/{runtime_id}/logs")
+    async def get_resident_runtime_logs(
+        request: Request,
+        runtime_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, response = await _resident_owner_request(
+            request,
+            principal,
+            runtime_id,
+            method="GET",
+            path_suffix="/logs",
+        )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="Unexpected resident logs response")
+        return payload
+
+    @router.post("/resident-runtimes/{runtime_id}/usage")
+    async def record_resident_runtime_usage(
+        request: Request,
+        runtime_id: str,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, response = await _resident_owner_request(
+            request,
+            principal,
+            runtime_id,
+            method="POST",
+            path_suffix="/usage",
+            json_body=body,
+        )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="Unexpected resident usage response")
+        return _with_instance(payload, instance, rebase_chat_endpoint=False)
+
+    @router.get("/resident-runtimes/{runtime_id}/sessions")
+    async def list_resident_sessions(
+        request: Request,
+        runtime_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict[str, Any]]:
+        instance, response = await _resident_owner_request(
+            request,
+            principal,
+            runtime_id,
+            method="GET",
+            path_suffix="/sessions",
+        )
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise HTTPException(status_code=502, detail="Unexpected resident sessions response")
+        return [
+            _with_instance(item, instance, rebase_chat_endpoint=False)
+            for item in payload
+            if isinstance(item, dict)
+        ]
+
+    @router.post(
+        "/resident-runtimes/{runtime_id}/sessions",
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_resident_session(
+        request: Request,
+        runtime_id: str,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, response = await _resident_owner_request(
+            request,
+            principal,
+            runtime_id,
+            method="POST",
+            path_suffix="/sessions",
+            json_body=body,
+        )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="Unexpected resident session response")
+        return _with_instance(payload, instance, rebase_chat_endpoint=False)
+
+    @router.delete(
+        "/resident-runtimes/{runtime_id}/sessions/{session_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def delete_resident_session(
+        request: Request,
+        runtime_id: str,
+        session_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        await _resident_owner_request(
+            request,
+            principal,
+            runtime_id,
+            method="DELETE",
+            path_suffix=f"/sessions/{session_id}",
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @router.delete(
+        "/resident-runtimes/{runtime_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def delete_resident_runtime(
+        request: Request,
+        runtime_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        await _resident_owner_request(
+            request,
+            principal,
+            runtime_id,
+            method="DELETE",
+            timeout=600.0,
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @router.get("/sessions")
     async def list_sessions(

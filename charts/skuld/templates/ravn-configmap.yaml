@@ -115,6 +115,10 @@ data:
     llm:
       {{- toYaml . | nindent 6 }}
     {{- end }}
+    {{- with .Values.resident.wakefulness }}
+    wakefulness:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
     skuld:
       enabled: true
       broker_url: "ws://127.0.0.1:8081/ws/ravn"

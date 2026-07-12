@@ -16,16 +16,20 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 from starlette import status as http_status
 
+from niuu.adapters.inbound.auth import extract_principal
+from niuu.domain.models import Principal
 from niuu.settings_schema import (
     SettingsFieldSchema,
     SettingsProviderSchema,
     SettingsSectionSchema,
 )
+from ravn.adapters.platform_runtime import HttpPlatformRuntimeAdapter
 from ravn.api.residents import ResidentDirectory, forward_auth
 from ravn.api.valkyries import (
     ValkyrieDashboardProjection,
@@ -35,6 +39,7 @@ from ravn.api.valkyries import (
 )
 from ravn.api.warden_stream import WardenStreamBroker
 from ravn.config import Settings
+from ravn.ports.platform_runtime import PlatformRuntimePort
 from ravn.ports.resident_discovery import ResidentDiscoveryPort
 from ravn.ports.warden_deployer import WardenDeploymentError
 from ravn.ports.warden_discovery import WardenDiscoveryPort
@@ -67,6 +72,27 @@ class TriggerCreateRequest(BaseModel):
     persona_name: str
     spec: str
     enabled: bool = True
+
+
+class ResidentCreateRequest(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    name: str = Field(min_length=1, max_length=255)
+    profile_id: str = Field(min_length=1, max_length=100)
+    persona_name: str = Field(default="", max_length=255)
+    model: str = Field(default="", max_length=255)
+
+
+def _raise_platform_error(exc: httpx.HTTPStatusError) -> None:
+    try:
+        payload = exc.response.json()
+    except ValueError:
+        payload = {}
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    raise HTTPException(
+        status_code=exc.response.status_code,
+        detail=detail or str(exc),
+    ) from exc
 
 
 class WardenCreateRequest(BaseModel):
@@ -111,6 +137,7 @@ def create_app(
     settings: Settings | None = None,
     warden_discovery: WardenDiscoveryPort | None = None,
     resident_discovery: ResidentDiscoveryPort | None = None,
+    platform_runtime: PlatformRuntimePort | None = None,
 ) -> FastAPI:
     """Create and return the Ravn FastAPI sub-application.
 
@@ -130,10 +157,11 @@ def create_app(
         standalone_discovery = build_resident_discovery(loaded_settings.resident_discovery)
     else:
         standalone_discovery = resident_discovery
-    resident_directory = ResidentDirectory(
+    platform = platform_runtime or HttpPlatformRuntimeAdapter(
         base_url=loaded_settings.gateway.platform.base_url,
-        discovery=standalone_discovery,
+        timeout_seconds=loaded_settings.gateway.platform.timeout,
     )
+    resident_directory = ResidentDirectory(platform=platform, discovery=standalone_discovery)
     store = warden_store or build_warden_store()
     if warden_discovery is None:
         discovery = build_warden_discovery(loaded_settings.warden_discovery, store=store)
@@ -227,12 +255,23 @@ def create_app(
             return datetime.min.replace(tzinfo=UTC)
 
     @app.get("/api/v1/ravn/status")
-    async def status_endpoint(request: Request) -> dict:
+    async def status_endpoint(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> dict:
         """Return status derived from live session and resident discovery."""
         auth_headers, auth_params = forward_auth(request)
         try:
-            ravens = await resident_directory.list_ravens()
-            sessions = await resident_directory.list_sessions(auth_headers, auth_params)
+            ravens = await resident_directory.list_ravens(
+                principal,
+                auth_headers,
+                auth_params,
+            )
+            sessions = await resident_directory.list_sessions(
+                principal,
+                auth_headers,
+                auth_params,
+            )
         except Exception as exc:
             logger.warning("status: runtime discovery unavailable", exc_info=True)
             raise HTTPException(
@@ -247,11 +286,22 @@ def create_app(
         }
 
     @app.get("/api/v1/ravn/settings", response_model=SettingsProviderSchema)
-    async def settings_endpoint(request: Request) -> SettingsProviderSchema:
+    async def settings_endpoint(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> SettingsProviderSchema:
         auth_headers, auth_params = forward_auth(request)
         try:
-            ravens = await resident_directory.list_ravens()
-            sessions = await resident_directory.list_sessions(auth_headers, auth_params)
+            ravens = await resident_directory.list_ravens(
+                principal,
+                auth_headers,
+                auth_params,
+            )
+            sessions = await resident_directory.list_sessions(
+                principal,
+                auth_headers,
+                auth_params,
+            )
         except Exception as exc:
             logger.warning("settings: runtime discovery unavailable", exc_info=True)
             raise HTTPException(
@@ -315,15 +365,177 @@ def create_app(
         )
 
     @app.get("/api/v1/ravn/sessions")
-    async def list_sessions_endpoint(request: Request) -> list[dict]:
+    async def list_sessions_endpoint(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict]:
         """List the caller's live ravn sessions (flock rooms + residents)."""
         auth_headers, auth_params = forward_auth(request)
-        return await resident_directory.list_sessions(auth_headers, auth_params)
+        return await resident_directory.list_sessions(principal, auth_headers, auth_params)
 
     @app.get("/api/v1/ravn/ravens")
-    async def list_ravens_endpoint() -> list[dict]:
-        """List standalone resident ravns found by cluster discovery."""
-        return await resident_directory.list_ravens()
+    async def list_ravens_endpoint(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict]:
+        """List durable residents and visible compatibility deployments."""
+        auth_headers, auth_params = forward_auth(request)
+        return await resident_directory.list_ravens(principal, auth_headers, auth_params)
+
+    @app.post("/api/v1/ravn/ravens", status_code=http_status.HTTP_201_CREATED)
+    async def create_raven_endpoint(
+        body: ResidentCreateRequest,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> dict:
+        """Deploy one resident through this target's configured backend."""
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            return await resident_directory.create_raven(
+                body.model_dump(),
+                auth_headers,
+                auth_params,
+            )
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+
+    async def control_raven_endpoint(
+        ravn_id: str,
+        action: str,
+        request: Request,
+    ) -> dict:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            return await resident_directory.control_raven(
+                ravn_id,
+                action,
+                auth_headers,
+                auth_params,
+            )
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+
+    @app.post("/api/v1/ravn/ravens/{ravn_id}/restart")
+    async def restart_raven_endpoint(
+        ravn_id: str,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> dict:
+        return await control_raven_endpoint(ravn_id, "restart", request)
+
+    @app.get("/api/v1/ravn/ravens/{ravn_id}/logs")
+    async def raven_logs_endpoint(
+        ravn_id: str,
+        request: Request,
+        lines: int = Query(default=200, ge=1, le=5000),
+        source: list[str] = Query(default_factory=list),
+        min_level: str = Query(default="", max_length=32),
+        _: Principal = Depends(extract_principal),
+    ) -> dict:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            return await resident_directory.get_raven_logs(
+                ravn_id,
+                lines=lines,
+                sources=tuple(source),
+                min_level=min_level,
+                auth_headers=auth_headers,
+                auth_params=auth_params,
+            )
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+
+    @app.post("/api/v1/ravn/ravens/{ravn_id}/suspend")
+    async def suspend_raven_endpoint(
+        ravn_id: str,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> dict:
+        return await control_raven_endpoint(ravn_id, "suspend", request)
+
+    @app.post("/api/v1/ravn/ravens/{ravn_id}/resume")
+    async def resume_raven_endpoint(
+        ravn_id: str,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> dict:
+        return await control_raven_endpoint(ravn_id, "resume", request)
+
+    @app.delete(
+        "/api/v1/ravn/ravens/{ravn_id}",
+        status_code=http_status.HTTP_204_NO_CONTENT,
+    )
+    async def delete_raven_endpoint(
+        ravn_id: str,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> Response:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            await resident_directory.delete_raven(ravn_id, auth_headers, auth_params)
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+        return Response(status_code=http_status.HTTP_204_NO_CONTENT)
+
+    @app.get("/api/v1/ravn/ravens/{ravn_id}/sessions")
+    async def list_resident_sessions_endpoint(
+        ravn_id: str,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> list[dict]:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            return await resident_directory.list_resident_sessions(
+                ravn_id, auth_headers, auth_params
+            )
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+
+    @app.post(
+        "/api/v1/ravn/ravens/{ravn_id}/sessions",
+        status_code=http_status.HTTP_201_CREATED,
+    )
+    async def create_resident_session_endpoint(
+        ravn_id: str,
+        body: dict,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> dict:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            return await resident_directory.create_resident_session(
+                ravn_id, body, auth_headers, auth_params
+            )
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+
+    @app.delete(
+        "/api/v1/ravn/ravens/{ravn_id}/sessions/{session_id}",
+        status_code=http_status.HTTP_204_NO_CONTENT,
+    )
+    async def delete_resident_session_endpoint(
+        ravn_id: str,
+        session_id: str,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> Response:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            await resident_directory.delete_resident_session(
+                ravn_id, session_id, auth_headers, auth_params
+            )
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+        return Response(status_code=http_status.HTTP_204_NO_CONTENT)
+
+    @app.get("/api/v1/ravn/deployment-profiles")
+    async def list_resident_profiles_endpoint(
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> list[dict]:
+        """List resident profiles enabled on this target."""
+        auth_headers, auth_params = forward_auth(request)
+        return await resident_directory.list_profiles(auth_headers, auth_params)
 
     @app.get("/api/v1/ravn/wardens", response_model=list[WardenSpec])
     async def list_wardens_endpoint() -> list[WardenSpec]:
@@ -576,18 +788,39 @@ def create_app(
         return uninstalled
 
     @app.get("/api/v1/ravn/ravens/{ravn_id}")
-    async def get_raven_endpoint(ravn_id: str) -> dict:
-        """Return one discovered standalone resident ravn by its id."""
-        ravn = await resident_directory.get_raven(ravn_id)
+    async def get_raven_endpoint(
+        ravn_id: str,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> dict:
+        """Return one caller-visible resident ravn by its id."""
+        auth_headers, auth_params = forward_auth(request)
+        ravn = await resident_directory.get_raven(
+            ravn_id,
+            principal,
+            auth_headers,
+            auth_params,
+        )
         if ravn is None:
             raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Ravn not found")
         return ravn
 
     @app.get("/api/v1/ravn/sessions/{session_id}")
-    async def get_session_endpoint(session_id: str, request: Request) -> dict:
+    async def get_session_endpoint(
+        session_id: str,
+        request: Request,
+        ravn_id: str | None = None,
+        principal: Principal = Depends(extract_principal),
+    ) -> dict:
         """Return one live ravn session."""
         auth_headers, auth_params = forward_auth(request)
-        session_data = await resident_directory.get_session(session_id, auth_headers, auth_params)
+        session_data = await resident_directory.get_session(
+            session_id,
+            principal,
+            auth_headers,
+            auth_params,
+            ravn_id=ravn_id,
+        )
         if session_data is None:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
@@ -596,7 +829,12 @@ def create_app(
         return session_data
 
     @app.get("/api/v1/ravn/sessions/{session_id}/messages")
-    async def list_session_messages(session_id: str, request: Request) -> list[dict]:
+    async def list_session_messages(
+        session_id: str,
+        request: Request,
+        ravn_id: str | None = None,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict]:
         """Return transcript messages for one ravn session.
 
         The live transcript is delivered over the session's Skuld chat
@@ -605,7 +843,13 @@ def create_app(
         data — the UI opens the chat for history.
         """
         auth_headers, auth_params = forward_auth(request)
-        session_data = await resident_directory.get_session(session_id, auth_headers, auth_params)
+        session_data = await resident_directory.get_session(
+            session_id,
+            principal,
+            auth_headers,
+            auth_params,
+            ravn_id=ravn_id,
+        )
         if session_data is None:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
@@ -790,6 +1034,7 @@ def create_app(
             if valkyrie_telemetry is not None:
                 await valkyrie_telemetry.stop()
             await valkyrie_learning_commands.stop()
+            await resident_directory.aclose()
 
     app.router.lifespan_context = lifespan
 

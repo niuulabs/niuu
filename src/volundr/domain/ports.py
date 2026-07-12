@@ -36,6 +36,7 @@ from niuu.ports.identity import (
     UserProvisioningError,  # noqa: F401
 )
 from niuu.ports.integrations import IntegrationRepository  # noqa: F401
+from niuu.ports.session_proxy import SessionProxyTarget
 from tracker.ports import IssueTrackerProvider, ProjectMappingRepository  # noqa: F401
 from volundr.domain.models import (  # noqa: F401
     Chronicle,
@@ -56,6 +57,15 @@ from volundr.domain.models import (  # noqa: F401
     PushMessage,
     PVCRef,
     RealtimeEvent,
+    ResidentBackend,
+    ResidentCondition,
+    ResidentDeploymentProfile,
+    ResidentEndpoint,
+    ResidentEngine,
+    ResidentLogPage,
+    ResidentObservedState,
+    ResidentRuntime,
+    ResidentSession,
     RoomParticipantInfo,
     SavedPrompt,
     SecretInfo,
@@ -549,6 +559,213 @@ class LaunchSpecRepository(ABC):
     @abstractmethod
     async def clear_default(self, cli_tool: str) -> None:
         """Clear is_default for all user launch specs with the given cli_tool."""
+
+
+class ResidentDeploymentProfileProvider(ABC):
+    """Read-only provider for operator-approved resident deployment profiles."""
+
+    @abstractmethod
+    def get(self, profile_id: str) -> ResidentDeploymentProfile | None:
+        """Return one enabled profile by id."""
+
+    @abstractmethod
+    def list(self) -> list[ResidentDeploymentProfile]:
+        """Return every enabled deployment profile."""
+
+
+@dataclass(frozen=True)
+class ResidentRuntimeObservation:
+    """Normalized backend state returned by a resident deployment controller."""
+
+    observed_state: ResidentObservedState
+    backend_ref: dict[str, Any] = field(default_factory=dict)
+    endpoints: list[ResidentEndpoint] = field(default_factory=list)
+    conditions: list[ResidentCondition] = field(default_factory=list)
+
+
+class ResidentRuntimeController(ABC):
+    """Backend lifecycle port for long-lived resident runtimes."""
+
+    @property
+    @abstractmethod
+    def backend(self) -> ResidentBackend:
+        """Return the backend implemented by this controller."""
+
+    @abstractmethod
+    def supports(self, profile: ResidentDeploymentProfile) -> bool:
+        """Return whether this controller implements the complete profile."""
+
+    @abstractmethod
+    async def deploy(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        """Create or converge the backend resources for a resident."""
+
+    @abstractmethod
+    async def reconcile(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        """Converge and observe the backend resources owned by a resident."""
+
+    @abstractmethod
+    async def restart(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        """Restart a running resident without replacing its durable storage."""
+
+    @abstractmethod
+    async def suspend(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
+        """Suspend a resident while retaining its durable storage."""
+
+    @abstractmethod
+    async def resume(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
+        """Resume a suspended resident."""
+
+    @abstractmethod
+    async def delete(self, runtime: ResidentRuntime) -> bool:
+        """Delete backend resources, returning whether a resource existed."""
+
+
+class ResidentRuntimeLogReader(ABC):
+    """Optional backend port for normalized resident logs."""
+
+    @abstractmethod
+    async def logs(
+        self,
+        runtime: ResidentRuntime,
+        *,
+        lines: int,
+        sources: tuple[str, ...],
+        min_level: str,
+    ) -> ResidentLogPage:
+        """Return recent logs from the runtime-owning backend."""
+
+
+class ResidentRuntimeProxyTargetResolver(ABC):
+    """Optional backend port for routing resident Skuld traffic."""
+
+    @abstractmethod
+    def resident_proxy_target(self, runtime: ResidentRuntime) -> SessionProxyTarget | None:
+        """Resolve the backend service reached by the shared session proxy."""
+
+
+class ResidentDeviceApprover(ABC):
+    """Optional runtime capability for approving resident engine devices."""
+
+    @abstractmethod
+    async def approve_resident_device(
+        self,
+        runtime: ResidentRuntime,
+        *,
+        request_id: str,
+        gateway_token: str,
+    ) -> None:
+        """Approve an authenticated device challenge inside the owning runtime."""
+
+
+class ResidentChatConnection(ABC):
+    """One normalized shared-chat connection to a resident engine session."""
+
+    @abstractmethod
+    async def receive(self) -> dict[str, Any]:
+        """Receive the next shared-chat frame."""
+
+    @abstractmethod
+    async def send(self, frame: dict[str, Any]) -> None:
+        """Send one shared-chat command."""
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Close the engine connection."""
+
+
+class ResidentSessionController(ABC):
+    """Engine protocol port for sessions hosted by a resident runtime."""
+
+    @property
+    @abstractmethod
+    def engine(self) -> ResidentEngine:
+        """Return the resident engine implemented by this controller."""
+
+    @abstractmethod
+    async def list_sessions(self, runtime: ResidentRuntime) -> list[ResidentSession]:
+        """List engine-owned sessions for one resident."""
+
+    @abstractmethod
+    async def create_session(
+        self,
+        runtime: ResidentRuntime,
+        *,
+        title: str,
+        model: str,
+    ) -> ResidentSession:
+        """Create one durable engine-owned session."""
+
+    @abstractmethod
+    async def delete_session(self, runtime: ResidentRuntime, session_id: UUID) -> None:
+        """Delete one engine-owned session and transcript."""
+
+    @abstractmethod
+    async def connect_chat(
+        self,
+        runtime: ResidentRuntime,
+        session_id: UUID,
+    ) -> ResidentChatConnection:
+        """Open a normalized shared-chat connection."""
+
+
+class ResidentRuntimeRepository(ABC):
+    """Persistence port for long-lived resident runtime records."""
+
+    @abstractmethod
+    async def create(self, runtime: ResidentRuntime) -> ResidentRuntime:
+        """Persist a new resident runtime."""
+
+    @abstractmethod
+    async def get(self, runtime_id: UUID) -> ResidentRuntime | None:
+        """Return a resident runtime by id."""
+
+    @abstractmethod
+    async def get_by_owner_name(self, owner_id: str, name: str) -> ResidentRuntime | None:
+        """Return a resident runtime by owner and name."""
+
+    @abstractmethod
+    async def list(
+        self,
+        *,
+        tenant_id: str,
+        owner_id: str | None = None,
+    ) -> list[ResidentRuntime]:
+        """List resident runtimes in a tenant, optionally scoped to one owner."""
+
+    @abstractmethod
+    async def list_for_reconciliation(self) -> list[ResidentRuntime]:
+        """List every resident runtime requiring backend observation."""
+
+    @abstractmethod
+    async def update(self, runtime: ResidentRuntime) -> ResidentRuntime:
+        """Persist the current resident runtime state."""
+
+    @abstractmethod
+    async def add_usage(
+        self,
+        runtime_id: UUID,
+        *,
+        tokens: int,
+        cost: float,
+        message_count: int,
+    ) -> ResidentRuntime | None:
+        """Atomically add usage totals and return the updated resident."""
+
+    @abstractmethod
+    async def delete(self, runtime_id: UUID) -> bool:
+        """Delete a resident runtime record."""
 
 
 class EventSink(ABC):

@@ -34,6 +34,7 @@
   },
   "dependencies": {
     "@niuulabs/domain": "workspace:*",
+    "@niuulabs/plugin-bifrost": "workspace:*",
     "@niuulabs/plugin-sdk": "workspace:*",
     "@niuulabs/plugin-volundr": "workspace:*",
     "@niuulabs/query": "workspace:*",

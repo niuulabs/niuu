@@ -23,7 +23,9 @@ stop_pid_file() {
 
   if [[ -n "${pid}" ]] && kill -0 "${pid}" >/dev/null 2>&1; then
     echo "Stopping ${label} (${pid})..."
-    kill "${pid}" >/dev/null 2>&1 || true
+    # start-dev launches the platform in its own process group. Stop the whole
+    # group so the uv child cannot survive and race the next platform startup.
+    kill -TERM "-${pid}" >/dev/null 2>&1 || kill "${pid}" >/dev/null 2>&1 || true
 
     for _ in {1..20}; do
       if ! kill -0 "${pid}" >/dev/null 2>&1; then
@@ -33,7 +35,7 @@ stop_pid_file() {
     done
 
     if kill -0 "${pid}" >/dev/null 2>&1; then
-      kill -9 "${pid}" >/dev/null 2>&1 || true
+      kill -KILL "-${pid}" >/dev/null 2>&1 || kill -9 "${pid}" >/dev/null 2>&1 || true
     fi
   fi
 

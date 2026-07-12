@@ -12,6 +12,9 @@ data:
       id: {{ include "skuld.sessionId" . | quote }}
       name: {{ .Values.session.name | quote }}
       model: {{ .Values.session.model | quote }}
+      {{- if .Values.session.reasoningEffort }}
+      reasoning_effort: {{ .Values.session.reasoningEffort | quote }}
+      {{- end }}
       {{- if .Values.session.ownerId }}
       owner_id: {{ .Values.session.ownerId | quote }}
       {{- end }}
@@ -39,6 +42,10 @@ data:
 
     {{- if and .Values.volundr.apiUrl (not (include "skuld.residentEnabled" .)) }}
     volundr_api_url: {{ .Values.volundr.apiUrl | quote }}
+    {{- end }}
+    {{- if include "skuld.residentEnabled" . }}
+    volundr_api_url: {{ .Values.volundr.apiUrl | quote }}
+    usage_report_path: {{ printf "/api/v1/forge/resident-runtimes/%s/usage" (include "skuld.sessionId" .) | quote }}
     {{- end }}
     service_user_id: {{ .Values.volundr.serviceUserId | default "skuld-broker" | quote }}
     service_tenant_id: {{ .Values.volundr.serviceTenantId | default "default" | quote }}

@@ -453,6 +453,14 @@ class WebSocketLifecycleMixin:
                             tools=frame.get("tools"),
                         )
 
+                    if (
+                        str(frame.get("type") or "").lower() == "usage"
+                        and isinstance(frame.get("data"), dict)
+                        and self._room_mesh_bridge is not None
+                    ):
+                        await self._room_mesh_bridge.report_usage(frame["data"])
+                        continue
+
                     await self._room_bridge.handle_ravn_frame(peer_id, frame)
 
         except WebSocketDisconnect:

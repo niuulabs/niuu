@@ -28,6 +28,8 @@ session:
   tenantId: ""
   # -- AI model to use for the session
   model: "claude-sonnet-4-6"
+  # -- Reasoning effort passed to transports that support it
+  reasoningEffort: ""
   # -- System prompt injected into the LLM context
   systemPrompt: ""
   # -- Initial user message sent when the CLI starts
@@ -459,6 +461,10 @@ extraVolumes: []
 # -- Extra volume mounts added to skuld and devrunner containers
 extraVolumeMounts: []
 
+# -- Desired Deployment replicas. Resident lifecycle control uses 0/1 for
+# suspend and resume while preserving configured persistent storage.
+replicaCount: 1
+
 # -- Mesh configuration for session-local agent flocks.
 mesh:
   enabled: false
@@ -527,6 +533,9 @@ resident:
       enabled: true
       # -- Hours between staleness checks.
       scheduleHours: 6
+  # -- Ravn wakefulness trigger configuration. Passed through to ravn.yaml.
+  wakefulness:
+    enabled: false
   workloadIdentity:
     # -- Audience for the projected serviceAccountToken
     audience: "volundr-api"

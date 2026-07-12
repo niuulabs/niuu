@@ -51,6 +51,7 @@ from volundr.adapters.inbound.rest_openshell_credentials import (
     create_openshell_credentials_router,
 )
 from volundr.adapters.inbound.rest_prompts import create_prompts_router
+from volundr.adapters.inbound.rest_resident_runtimes import create_resident_runtimes_router
 from volundr.adapters.inbound.rest_resources import create_resources_router
 from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
@@ -59,6 +60,9 @@ from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_route
 from volundr.adapters.outbound.bifrost_catalog_http import HttpBifrostCatalogAdapter
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
 from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
+from volundr.adapters.outbound.config_resident_profiles import (
+    ConfigResidentDeploymentProfileProvider,
+)
 from volundr.adapters.outbound.git_registry import create_git_registry
 from volundr.adapters.outbound.linear import LinearAdapter
 from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
@@ -77,6 +81,9 @@ from volundr.adapters.outbound.postgres_integrations import PostgresIntegrationR
 from volundr.adapters.outbound.postgres_launch_specs import PostgresLaunchSpecRepository
 from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
 from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
+from volundr.adapters.outbound.postgres_resident_runtimes import (
+    PostgresResidentRuntimeRepository,
+)
 from volundr.adapters.outbound.postgres_spans import PostgresSpanRepository
 from volundr.adapters.outbound.postgres_stats import PostgresStatsRepository
 from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
@@ -95,6 +102,8 @@ from volundr.composition_builders import (  # noqa: F401
     _create_gateway_adapter,
     _create_http_auth_adapter,
     _create_pod_manager,
+    _create_resident_controllers,
+    _create_resident_session_controllers,
     _create_resource_provider,
     _create_secret_injection_adapter,
     _runtime_backend,
@@ -119,6 +128,10 @@ from volundr.domain.services.communication_ingress import CommunicationIngressSe
 from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.event_ingestion import EventIngestionService
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
+from volundr.domain.services.resident_runtime import (
+    ResidentRuntimeNotFoundError,
+    ResidentRuntimeService,
+)
 from volundr.domain.services.telegram_ingress import TelegramIngressService
 from volundr.domain.services.tracker import TrackerService
 from volundr.domain.services.tracker_factory import TrackerFactory
@@ -151,6 +164,17 @@ async def _load_bifrost_catalog(
             )
             await asyncio.sleep(delay_seconds)
             delay_seconds = min(delay_seconds * 2, 5.0)
+
+
+async def _refresh_bifrost_catalog(
+    pricing_provider: HardcodedPricingProvider,
+    bifrost_catalog: HttpBifrostCatalogAdapter,
+    *,
+    interval_seconds: float,
+) -> None:
+    while True:
+        await _load_bifrost_catalog(pricing_provider, bifrost_catalog)
+        await asyncio.sleep(interval_seconds)
 
 
 async def _bootstrap_startup_schema(settings: Settings) -> None:
@@ -288,6 +312,27 @@ async def _reconcile_active_loop(
             logger.exception("Active-session reconcile iteration failed")
 
 
+async def _reconcile_resident_runtimes_loop(
+    service: ResidentRuntimeService,
+    *,
+    interval_seconds: float,
+) -> None:
+    """Periodically converge durable resident records with backend state."""
+    logger.info(
+        "Resident runtime reconcile loop started, interval=%.1fs",
+        interval_seconds,
+    )
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            await service.reconcile_all()
+        except asyncio.CancelledError:
+            logger.info("Resident runtime reconcile loop cancelled")
+            break
+        except Exception:
+            logger.exception("Resident runtime reconcile iteration failed")
+
+
 def _create_otel_providers(otel_cfg):  # pragma: no cover
     """Build OTel TracerProvider + MeterProvider from config.
 
@@ -333,6 +378,7 @@ def create_app(
     settings: Settings | None = None,
     *,
     public_origin: str = "http://localhost:8080",
+    skuld_registry: object | None = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -381,6 +427,7 @@ def create_app(
 
             # Create adapters
             repository = PostgresSessionRepository(pool)
+            resident_runtime_repository = PostgresResidentRuntimeRepository(pool)
             device_repository = PostgresDeviceTokenRepository(pool)
             communication_route_repository = PostgresCommunicationRouteRepository(pool)
             communication_cursor_repository = PostgresCommunicationCursorRepository(pool)
@@ -392,21 +439,27 @@ def create_app(
             app.state.persona_registry = persona_registry
             workload_identity_service = create_workload_identity_service(settings.workload_identity)
             pod_manager = _create_pod_manager(settings)
+            resident_controllers = _create_resident_controllers(settings, pod_manager)
             if hasattr(pod_manager, "set_session_repository"):
                 pod_manager.set_session_repository(repository)
             if hasattr(pod_manager, "set_workload_token_issuer"):
                 pod_manager.set_workload_token_issuer(workload_identity_service)
+            for controller in resident_controllers:
+                if hasattr(controller, "set_resident_runtime_repository"):
+                    controller.set_resident_runtime_repository(resident_runtime_repository)
+                if controller is not pod_manager and hasattr(
+                    controller, "set_workload_token_issuer"
+                ):
+                    controller.set_workload_token_issuer(workload_identity_service)
 
             # Inject Skuld port registry for mini mode proxy routing
-            skuld_reg = None
-            try:
-                from cli.server import get_skuld_registry
-
-                skuld_reg = get_skuld_registry()
-                if skuld_reg is not None and hasattr(pod_manager, "set_skuld_registry"):
-                    pod_manager.set_skuld_registry(skuld_reg)
-            except ImportError:
-                pass  # Not running via CLI
+            skuld_reg = skuld_registry
+            if skuld_reg is not None and hasattr(pod_manager, "set_skuld_registry"):
+                pod_manager.set_skuld_registry(skuld_reg)
+            if skuld_reg is not None:
+                for controller in resident_controllers:
+                    if hasattr(controller, "set_skuld_registry"):
+                        controller.set_skuld_registry(skuld_reg)
 
             if skuld_reg is None:
                 # Standalone deployment (K8s / bare uvicorn): no CLI root app
@@ -416,7 +469,7 @@ def create_app(
                 # resolver (e.g. the OpenShell gateway) wired below. The
                 # registry lives on app.state so a lifespan re-entry rewires
                 # hooks on the same object the mounted routes captured.
-                from niuu.app import SkuldPortRegistry, register_session_proxy_routes
+                from niuu.session_proxy import SkuldPortRegistry, register_session_proxy_routes
 
                 skuld_reg = getattr(app.state, "session_proxy_registry", None)
                 if skuld_reg is None:
@@ -435,10 +488,15 @@ def create_app(
             )
             pricing_provider = HardcodedPricingProvider()
             bifrost_catalog_task = asyncio.create_task(
-                _load_bifrost_catalog(
+                _refresh_bifrost_catalog(
                     pricing_provider,
                     bifrost_catalog,
+                    interval_seconds=settings.bifrost.catalog_refresh_interval_seconds,
                 )
+            )
+            resident_profile_provider = ConfigResidentDeploymentProfileProvider(
+                settings.resident_runtimes.profiles,
+                pricing_provider,
             )
             git_registry = create_git_registry(settings.git)
 
@@ -508,6 +566,20 @@ def create_app(
             # Inject credential store into pod manager for envSecrets resolution
             if hasattr(pod_manager, "set_credential_store"):
                 pod_manager.set_credential_store(credential_store)
+            for controller in resident_controllers:
+                if controller is not pod_manager and hasattr(controller, "set_credential_store"):
+                    controller.set_credential_store(credential_store)
+            resident_session_controllers = _create_resident_session_controllers(
+                settings,
+                resident_controllers,
+                credential_store,
+            )
+            resident_runtime_service = ResidentRuntimeService(
+                resident_runtime_repository,
+                resident_profile_provider,
+                resident_controllers,
+                resident_session_controllers,
+            )
             if hasattr(pod_manager, "set_persona_registry"):
                 pod_manager.set_persona_registry(persona_registry)
 
@@ -631,12 +703,13 @@ def create_app(
 
                 async def _resolve_session_proxy_target(session_id: str):
                     try:
-                        session = await repository.get(UUID(session_id))
+                        resource_id = UUID(session_id)
                     except ValueError:
                         return None
-                    if session is None:
-                        return None
-                    return pod_manager.session_proxy_target(session)
+                    session = await repository.get(resource_id)
+                    if session is not None:
+                        return pod_manager.session_proxy_target(session)
+                    return await resident_runtime_service.proxy_target(resource_id)
 
                 skuld_reg.set_target_resolver(_resolve_session_proxy_target)
 
@@ -655,10 +728,23 @@ def create_app(
                     roles: tuple[str, ...],
                 ) -> bool:
                     try:
-                        session = await repository.get(UUID(session_id))
+                        resource_id = UUID(session_id)
                     except ValueError:
                         return False
-                    if session is None or not session.owner_id:
+                    session = await repository.get(resource_id)
+                    if session is None:
+                        principal = Principal(
+                            user_id=user_id or "",
+                            email="",
+                            tenant_id=tenant_id or "default",
+                            roles=list(roles),
+                        )
+                        try:
+                            await resident_runtime_service.get(principal, resource_id)
+                        except ResidentRuntimeNotFoundError:
+                            return False
+                        return True
+                    if not session.owner_id:
                         # Unknown or unowned (legacy/dev) session: not the
                         # proxy's job to invent a policy — stay permissive.
                         return True
@@ -669,7 +755,7 @@ def create_app(
                     principal = Principal(
                         user_id=user_id or "",
                         email="",
-                        tenant_id=tenant_id or "",
+                        tenant_id=tenant_id or "default",
                         roles=list(roles),
                     )
                     resource = Resource(
@@ -758,8 +844,23 @@ def create_app(
                 openshell_internal_gateway_url=settings.openshell_internal_gateway_url,
             )
             app.include_router(forge_router)
-            if isinstance(pod_manager, OpenShellCredentialGrantPort):
-                app.include_router(create_openshell_credentials_router(pod_manager))
+            app.include_router(create_resident_runtimes_router(resident_runtime_service))
+            app.state.resident_runtime_service = resident_runtime_service
+            credential_grant_brokers = {
+                id(adapter): adapter
+                for adapter in [pod_manager, *resident_controllers]
+                if isinstance(adapter, OpenShellCredentialGrantPort)
+            }
+            if len(credential_grant_brokers) > 1:
+                raise RuntimeError(
+                    "Only one OpenShell credential grant broker may be configured per target"
+                )
+            if credential_grant_brokers:
+                app.include_router(
+                    create_openshell_credentials_router(
+                        next(iter(credential_grant_brokers.values()))
+                    )
+                )
 
             app.include_router(catalog.router)
 
@@ -1066,6 +1167,12 @@ def create_app(
                         interval_seconds=settings.session_liveness.reconcile_interval_seconds,
                     )
                 )
+            resident_reconcile_task = asyncio.create_task(
+                _reconcile_resident_runtimes_loop(
+                    resident_runtime_service,
+                    interval_seconds=settings.resident_runtimes.reconciliation_interval_seconds,
+                )
+            )
             if settings.telegram_ingress.enabled:
                 await telegram_ingress.start()
             else:
@@ -1076,6 +1183,7 @@ def create_app(
             # Reconcile sessions stuck in PROVISIONING after a restart
             await session_service.reconcile_provisioning_sessions()
             await session_service.reconcile_active_sessions()
+            await resident_runtime_service.reconcile_all()
 
             try:
                 yield
@@ -1101,9 +1209,17 @@ def create_app(
                         await reconcile_task
                     except asyncio.CancelledError:
                         pass  # Expected: task cancellation during shutdown
+                resident_reconcile_task.cancel()
+                try:
+                    await resident_reconcile_task
+                except asyncio.CancelledError:
+                    pass
                 await event_ingestion.close_all()
                 if hasattr(pod_manager, "close"):
                     await pod_manager.close()
+                for controller in resident_controllers:
+                    if controller is not pod_manager and hasattr(controller, "close"):
+                        await controller.close()
                 if hasattr(gateway_adapter, "close"):
                     await gateway_adapter.close()
                 await git_registry.close()

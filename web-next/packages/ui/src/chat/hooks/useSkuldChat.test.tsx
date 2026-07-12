@@ -1080,6 +1080,99 @@ page_path: council/demo/opinion-b.md
     expect(result.current.pendingPermissions).toHaveLength(0);
   });
 
+  it('normalizes clarification requests and sends input responses', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'ask_user_question',
+          request_id: 'input-1',
+          questions: [
+            {
+              question: 'Which environment should be deployed?',
+              options: [{ label: 'Staging' }, { label: 'Production' }],
+            },
+          ],
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'ask_user_question',
+          request_id: 'input-1',
+          questions: [
+            {
+              question: 'Choose the target environment',
+              options: [{ label: 'Staging' }, 42, { label: 'Production' }],
+            },
+            {
+              question: 'Which region?',
+              options: [{ label: 'Canada' }, { label: 'Europe' }],
+            },
+          ],
+        }),
+      );
+    });
+
+    expect(result.current.pendingInputRequests).toEqual([
+      {
+        requestId: 'input-1',
+        questions: [
+          { prompt: 'Choose the target environment', choices: ['Staging', 'Production'] },
+          { prompt: 'Which region?', choices: ['Canada', 'Europe'] },
+        ],
+      },
+    ]);
+
+    act(() => {
+      result.current.respondToInput('input-1', ['Staging', 'Canada']);
+    });
+
+    expect(sendJson).toHaveBeenCalledWith({
+      type: 'ask_user_answer',
+      request_id: 'input-1',
+      answers: [{ answer: 'Staging' }, { answer: 'Canada' }],
+    });
+    expect(result.current.pendingInputRequests).toHaveLength(0);
+  });
+
+  it('ignores malformed clarification requests and clears pending input', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'ask_user_question',
+          questions: [{ question: 'Missing ID', options: [] }],
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({ type: 'ask_user_question', request_id: 'missing-prompt' }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'ask_user_question',
+          request_id: 'input-clear',
+          questions: [{ question: 'Provide a release note', options: [] }],
+        }),
+      );
+    });
+
+    expect(result.current.pendingInputRequests).toEqual([
+      {
+        requestId: 'input-clear',
+        questions: [{ prompt: 'Provide a release note', choices: [] }],
+      },
+    ]);
+
+    act(() => result.current.clearMessages());
+    expect(result.current.pendingInputRequests).toHaveLength(0);
+  });
+
   it('ignores blank directed replies and covers alternate permission behaviors', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 
@@ -1906,6 +1999,75 @@ page_path: council/demo/opinion-b.md
 
     expect(Array.from(result.current.participants.values())[0]?.persona).toBe('Skuld');
     expect(result.current.messages.at(-1)?.participant?.persona).toBe('Skuld');
+  });
+
+  it('uses explicit resident identity without synthesizing a Skuld observer', async () => {
+    const { result } = renderHook(() =>
+      useSkuldChat('ws://localhost:8080/s/resident/sessions/thread/session', {
+        historyMode: 'none',
+      }),
+    );
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'assistant',
+          participant: {
+            peer_id: 'openclaw-primary',
+            persona: 'NemoClaw',
+            display_name: 'NemoClaw',
+            participant_type: 'resident',
+            status: 'idle',
+          },
+          message: {
+            model: 'niuu/gpt-5.6-sol',
+            content: [{ type: 'text', text: 'Hello from NemoClaw.' }],
+          },
+        }),
+      );
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'result', result: '' }));
+    });
+
+    expect(Array.from(result.current.participants.keys())).toEqual(['openclaw-primary']);
+    expect(result.current.messages.at(-1)?.participant).toMatchObject({
+      peerId: 'openclaw-primary',
+      persona: 'NemoClaw',
+      participantType: 'resident',
+    });
+  });
+
+  it('keeps streamed text when the completion frame has an empty result', async () => {
+    const { result } = renderHook(() =>
+      useSkuldChat('ws://localhost:8080/s/resident/sessions/thread/session', {
+        historyMode: 'none',
+      }),
+    );
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'assistant',
+          message: { model: 'Qwen/Qwen3.6-35B-A3B-FP8', content: [] },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'content_block_delta',
+          delta: { type: 'text_delta', text: 'VALASKJALF_RESIDENT_CHAT_OK' },
+        }),
+      );
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'result', result: '' }));
+    });
+
+    expect(result.current.messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      content: 'VALASKJALF_RESIDENT_CHAT_OK',
+      status: 'done',
+    });
   });
 
   it('surfaces single-agent tool use while streaming', async () => {

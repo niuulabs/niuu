@@ -7,6 +7,7 @@ import type {
   ChatMessage,
   ChatMessagePart,
   ContentBlock,
+  InputRequest,
   MeshEvent,
   MeshOutcomeEvent,
   PermissionBehavior,
@@ -75,6 +76,10 @@ type CliStreamEvent = {
   is_error?: boolean;
   valid?: boolean;
   request_id?: string;
+  questions?: Array<{
+    question?: string;
+    options?: Array<{ label?: string } | unknown>;
+  }>;
   tool?: string;
   input?: Record<string, unknown>;
   participant?: WireParticipant;
@@ -151,6 +156,7 @@ interface UseSkuldChatResult {
   meshEvents: MeshEvent[];
   agentEvents: ReadonlyMap<string, readonly AgentInternalEvent[]>;
   pendingPermissions: PermissionRequest[];
+  pendingInputRequests: InputRequest[];
   availableCommands: SlashCommand[];
   capabilities: SessionCapabilities;
   sendMessage: (text: string, attachments: FileAttachment[]) => void;
@@ -161,6 +167,7 @@ interface UseSkuldChatResult {
   ) => void;
   sendResendPrompt: () => void;
   respondToPermission: (requestId: string, behavior: PermissionBehavior) => void;
+  respondToInput: (requestId: string, values: string[]) => void;
   sendInterrupt: () => void;
   sendSetModel: (model: string) => void;
   sendSetThinkingTokens: (tokens: number) => void;
@@ -631,6 +638,7 @@ export function useSkuldChat(
     () => initialPersistedState.agentEvents,
   );
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
+  const [pendingInputRequests, setPendingInputRequests] = useState<InputRequest[]>([]);
   const [availableCommandsState, setAvailableCommandsState] = useState<{
     url: string | null;
     commands: SlashCommand[];
@@ -947,7 +955,17 @@ export function useSkuldChat(
       for (const event of events) {
         switch (event.type) {
           case 'assistant': {
-            ensureSingleParticipant();
+            const explicitParticipant = parseParticipantMeta(event.participant);
+            if (explicitParticipant) {
+              setParticipants((prev) => {
+                const next = new Map(prev);
+                next.delete(SINGLE_PARTICIPANT_ID);
+                next.set(explicitParticipant.peerId, explicitParticipant);
+                return next;
+              });
+            } else {
+              ensureSingleParticipant();
+            }
             if (streamingMessageIdRef.current) finalizeStreaming();
             const initialContent =
               event.message?.content
@@ -955,7 +973,7 @@ export function useSkuldChat(
                 .map((entry) => entry.text)
                 .join('') ?? '';
             const messageId = generateId();
-            const participant = getDefaultAssistantParticipant();
+            const participant = explicitParticipant ?? getDefaultAssistantParticipant();
             streamingMessageIdRef.current = messageId;
             streamingTextRef.current = initialContent;
             streamingPartsRef.current = initialContent
@@ -1096,7 +1114,10 @@ export function useSkuldChat(
             break;
           }
           case 'result': {
-            finalizeStreaming(event.is_error ? 'error' : 'done', event.result ?? undefined);
+            finalizeStreaming(
+              event.is_error ? 'error' : 'done',
+              event.result ? event.result : undefined,
+            );
             break;
           }
           case 'error': {
@@ -1276,6 +1297,48 @@ export function useSkuldChat(
             if (!event.request_id) break;
             setPendingPermissions((prev) =>
               prev.filter((permission) => permission.requestId !== event.request_id),
+            );
+            break;
+          }
+          case 'ask_user_question': {
+            const questions = Array.isArray(event.questions) ? event.questions : [];
+            if (!event.request_id) break;
+            const normalizedQuestions = questions.flatMap((question) => {
+              if (!question || typeof question !== 'object') return [];
+              const prompt = typeof question.question === 'string' ? question.question : '';
+              if (!prompt) return [];
+              const options = Array.isArray(question.options) ? question.options : [];
+              return [
+                {
+                  prompt,
+                  choices: options
+                    .map((option) =>
+                      option &&
+                      typeof option === 'object' &&
+                      'label' in option &&
+                      typeof option.label === 'string'
+                        ? option.label
+                        : '',
+                    )
+                    .filter(Boolean),
+                },
+              ];
+            });
+            if (normalizedQuestions.length === 0) break;
+            const inputRequest: InputRequest = {
+              requestId: event.request_id,
+              questions: normalizedQuestions,
+            };
+            setPendingInputRequests((prev) => [
+              ...prev.filter((request) => request.requestId !== inputRequest.requestId),
+              inputRequest,
+            ]);
+            break;
+          }
+          case 'ask_user_resolved': {
+            if (!event.request_id) break;
+            setPendingInputRequests((prev) =>
+              prev.filter((request) => request.requestId !== event.request_id),
             );
             break;
           }
@@ -1728,11 +1791,24 @@ export function useSkuldChat(
     [sendJson],
   );
 
+  const respondToInput = useCallback(
+    (requestId: string, values: string[]) => {
+      sendJson({
+        type: 'ask_user_answer',
+        request_id: requestId,
+        answers: values.map((answer) => ({ answer })),
+      });
+      setPendingInputRequests((prev) => prev.filter((request) => request.requestId !== requestId));
+    },
+    [sendJson],
+  );
+
   const clearMessages = useCallback(() => {
     setMessages([]);
     setMeshEvents([]);
     setAgentEvents(new Map());
     setPendingPermissions([]);
+    setPendingInputRequests([]);
     internalStreamsRef.current.clear();
     resetStreaming();
   }, [resetStreaming]);
@@ -1757,12 +1833,14 @@ export function useSkuldChat(
     meshEvents,
     agentEvents: stableAgentEvents,
     pendingPermissions,
+    pendingInputRequests,
     availableCommands,
     capabilities,
     sendMessage,
     sendDirectedMessages,
     sendResendPrompt,
     respondToPermission,
+    respondToInput,
     sendInterrupt: () => sendJson({ type: 'interrupt' }),
     sendSetModel: (model: string) => sendJson({ type: 'set_model', model }),
     sendSetThinkingTokens: (tokens: number) =>

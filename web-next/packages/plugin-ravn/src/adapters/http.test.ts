@@ -5,6 +5,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   buildRavnPersonaAdapter,
   buildRavnRavenAdapter,
+  buildRavnResidentControlAdapter,
   buildRavnSessionAdapter,
   buildRavnTriggerAdapter,
   buildRavnBudgetAdapter,
@@ -390,6 +391,88 @@ describe('buildRavnRavenAdapter', () => {
     expect(result.sessionId).toBe('33333333-3333-4333-8333-333333333333');
   });
 
+  it('normalizes the complete managed resident contract from mixed backend records', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      ...rawRavn,
+      backend: 'openshell',
+      engine: 'hermes',
+      profile_id: 'nemohermes-openshell',
+      desired_state: 'running',
+      observed_state: 'active',
+      backend_ref: 'sandbox/hermes-1',
+      capabilities: ['chat', 'logs', 'metrics'],
+      conditions: [
+        {
+          type: 'Ready',
+          status: 'true',
+          reason: null,
+          message: null,
+          last_transition_at: '2026-04-02T09:31:00Z',
+        },
+        {
+          type: 'ChatReady',
+          status: 'unknown',
+          lastTransitionAt: '2026-04-02T09:32:00Z',
+        },
+        { type: 'Configured', status: 'true' },
+      ],
+      endpoints: [{ kind: 'metrics', protocol: 'http', url: 'https://metrics.example/resident' }],
+      managed: true,
+      instance_id: 'target-1',
+      instance_name: 'Compute target',
+      instance_slug: 'compute',
+      message_count: 7,
+      tokens_used: 42,
+      cost: '0.25',
+    });
+
+    const result = await buildRavnRavenAdapter(client).getRaven(rawRavn.id);
+
+    expect(result).toMatchObject({
+      backend: 'openshell',
+      engine: 'hermes',
+      profileId: 'nemohermes-openshell',
+      desiredState: 'running',
+      observedState: 'active',
+      backendRef: 'sandbox/hermes-1',
+      capabilities: ['chat', 'logs', 'metrics'],
+      managed: true,
+      instanceId: 'target-1',
+      instanceName: 'Compute target',
+      instanceSlug: 'compute',
+      messageCount: 7,
+      tokenCount: 42,
+      costUsd: 0.25,
+    });
+    expect(result.conditions).toEqual([
+      {
+        type: 'Ready',
+        status: 'true',
+        reason: '',
+        message: '',
+        lastTransitionAt: '2026-04-02T09:31:00Z',
+      },
+      {
+        type: 'ChatReady',
+        status: 'unknown',
+        reason: '',
+        message: '',
+        lastTransitionAt: '2026-04-02T09:32:00Z',
+      },
+      {
+        type: 'Configured',
+        status: 'true',
+        reason: '',
+        message: '',
+        lastTransitionAt: '',
+      },
+    ]);
+    expect(result.endpoints).toEqual([
+      { kind: 'metrics', protocol: 'http', url: 'https://metrics.example/resident' },
+    ]);
+  });
+
   it('maps a null chat_endpoint through unchanged', async () => {
     const client = makeClient();
     client.get.mockResolvedValue({ ...rawRavn, kind: 'resident', chat_endpoint: null });
@@ -406,6 +489,160 @@ describe('buildRavnRavenAdapter', () => {
     expect(result.kind).toBeUndefined();
     expect(result.chatEndpoint).toBeUndefined();
     expect(result.sessionId).toBeUndefined();
+  });
+});
+
+describe('buildRavnResidentControlAdapter', () => {
+  it('maps target-compatible deployment profiles', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      {
+        id: 'nemohermes-openshell',
+        displayName: 'NemoHermes',
+        description: 'NVIDIA Hermes resident',
+        backend: 'openshell',
+        engine: 'hermes',
+        capabilities: ['chat', 'session.create'],
+        defaultModel: 'qwen3.5',
+        allowedModels: ['qwen3.5'],
+        labels: ['nvidia'],
+        instance_id: 'target-1',
+        instance_name: 'Compute target',
+        instance_slug: 'compute',
+      },
+    ]);
+
+    const profiles = await buildRavnResidentControlAdapter(client).listProfiles();
+
+    expect(client.get).toHaveBeenCalledWith('/deployment-profiles');
+    expect(profiles[0]).toMatchObject({
+      id: 'nemohermes-openshell',
+      instanceId: 'target-1',
+      engine: 'hermes',
+      allowedModels: ['qwen3.5'],
+    });
+  });
+
+  it('deploys with opaque target context and maps the returned resident', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      ...rawRavn,
+      managed: true,
+      instance_id: 'target-1',
+      backend: 'openshell',
+      engine: 'hermes',
+      profile_id: 'nemohermes-openshell',
+      desired_state: 'running',
+      observed_state: 'deploying',
+      capabilities: ['chat', 'session.create'],
+      conditions: [],
+      endpoints: [],
+    });
+    const control = buildRavnResidentControlAdapter(client);
+
+    const ravn = await control.deploy({
+      name: 'Sol',
+      profileId: 'nemohermes-openshell',
+      instanceId: 'target-1',
+      personaName: 'product-steward',
+      model: 'qwen3.5',
+    });
+
+    expect(client.post).toHaveBeenCalledWith('/ravens', {
+      name: 'Sol',
+      profile_id: 'nemohermes-openshell',
+      instance_id: 'target-1',
+      persona_name: 'product-steward',
+      model: 'qwen3.5',
+    });
+    expect(ravn).toMatchObject({
+      managed: true,
+      instanceId: 'target-1',
+      observedState: 'deploying',
+    });
+  });
+
+  it('routes lifecycle and native session commands through the owner', async () => {
+    const client = makeClient();
+    const control = buildRavnResidentControlAdapter(client);
+    const ravn = {
+      ...rawRavn,
+      personaName: rawRavn.persona_name,
+      createdAt: rawRavn.created_at,
+      status: 'active' as const,
+      instanceId: 'target/one',
+    };
+    client.post.mockResolvedValueOnce({ ...rawRavn }).mockResolvedValueOnce({
+      id: '22222222-2222-4222-8222-222222222222',
+      ravn_id: rawRavn.id,
+      persona_name: 'coder',
+      status: 'running',
+      model: 'qwen3.5',
+      created_at: rawRavn.created_at,
+    });
+
+    await control.applyLifecycle(ravn, 'restart');
+    await control.createSession(ravn, { title: 'Second thread', model: 'qwen3.5' });
+    await control.deleteSession(ravn, 'session/two');
+
+    expect(client.post).toHaveBeenNthCalledWith(
+      1,
+      `/ravens/${rawRavn.id}/restart?instance_id=target%2Fone`,
+      {},
+    );
+    expect(client.post).toHaveBeenNthCalledWith(
+      2,
+      `/ravens/${rawRavn.id}/sessions?instance_id=target%2Fone`,
+      { title: 'Second thread', model: 'qwen3.5' },
+    );
+    expect(client.delete).toHaveBeenCalledWith(
+      `/ravens/${rawRavn.id}/sessions/session%2Ftwo?instance_id=target%2Fone`,
+    );
+  });
+
+  it('normalizes partial backend logs without inventing values', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      entries: [
+        { timestamp_ms: 12, level: 'info', source: 'engine', message: 'ready' },
+        { timestampMs: 13, target: 'api', fields: { port: 8000 } },
+        {},
+      ],
+      bufferTotal: 3,
+    });
+    const ravn = {
+      ...rawRavn,
+      personaName: rawRavn.persona_name,
+      createdAt: rawRavn.created_at,
+      status: 'active' as const,
+      instanceId: 'target-1',
+    };
+
+    const result = await buildRavnResidentControlAdapter(client).getLogs(ravn);
+
+    expect(client.get).toHaveBeenCalledWith(`/ravens/${rawRavn.id}/logs?instance_id=target-1`);
+    expect(result).toEqual({
+      entries: [
+        {
+          timestampMs: 12,
+          level: 'info',
+          source: 'engine',
+          target: '',
+          message: 'ready',
+          fields: {},
+        },
+        {
+          timestampMs: 13,
+          level: '',
+          source: '',
+          target: 'api',
+          message: '',
+          fields: { port: 8000 },
+        },
+        { timestampMs: 0, level: '', source: '', target: '', message: '', fields: {} },
+      ],
+      bufferTotal: 3,
+    });
   });
 });
 
@@ -447,6 +684,48 @@ describe('buildRavnSessionAdapter', () => {
     expect(client.get).toHaveBeenCalledWith(`/sessions/${rawSession.id}`);
   });
 
+  it('scopes a session lookup by target and owning resident', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(rawSession);
+
+    await buildRavnSessionAdapter(client).getSession(rawSession.id, 'target/one', 'resident/one');
+
+    expect(client.get).toHaveBeenCalledWith(
+      `/sessions/${rawSession.id}?instance_id=target%2Fone&ravn_id=resident%2Fone`,
+    );
+  });
+
+  it('scopes message lookup by target and owning resident', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([]);
+
+    await buildRavnSessionAdapter(client).getMessages(rawSession.id, 'target/one', 'resident/one');
+
+    expect(client.get).toHaveBeenCalledWith(
+      `/sessions/${rawSession.id}/messages?instance_id=target%2Fone&ravn_id=resident%2Fone`,
+    );
+  });
+
+  it('maps resident usage and title fields', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      ...rawSession,
+      title: 'resident coder',
+      message_count: 3,
+      tokens_used: 54729,
+      cost: '0.094503',
+    });
+
+    const result = await buildRavnSessionAdapter(client).getSession(rawSession.id);
+
+    expect(result).toMatchObject({
+      title: 'resident coder',
+      messageCount: 3,
+      tokenCount: 54729,
+      costUsd: 0.094503,
+    });
+  });
+
   it('fetches messages for a session', async () => {
     const client = makeClient();
     client.get.mockResolvedValue([rawMsg]);
@@ -464,6 +743,42 @@ describe('buildRavnSessionAdapter', () => {
     });
     const result = await buildRavnSessionAdapter(client).getSession(rawSession.id);
     expect(result.chatEndpoint).toBe('wss://skuld.example/s/abc/session');
+  });
+
+  it('carries opaque owning instance context into resident chat URLs', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      ...rawSession,
+      chat_endpoint: '/s/resident/sessions/thread/session',
+      instance_id: 'target/one',
+    });
+    const result = await buildRavnSessionAdapter(client).getSession(rawSession.id);
+    expect(result.chatEndpoint).toBe(
+      '/s/resident/sessions/thread/session?instance_id=target%2Fone',
+    );
+    expect(result.instanceId).toBe('target/one');
+  });
+
+  it('preserves existing query parameters and does not duplicate instance context', async () => {
+    const client = makeClient();
+    const adapter = buildRavnSessionAdapter(client);
+    client.get
+      .mockResolvedValueOnce({
+        ...rawSession,
+        chat_endpoint: '/s/resident/session?mode=chat',
+        instance_id: 'target one',
+      })
+      .mockResolvedValueOnce({
+        ...rawSession,
+        chat_endpoint: '/s/resident/session?instance_id=target-one',
+        instance_id: 'target-one',
+      });
+
+    const withQuery = await adapter.getSession(rawSession.id);
+    const alreadyScoped = await adapter.getSession(rawSession.id);
+
+    expect(withQuery.chatEndpoint).toBe('/s/resident/session?mode=chat&instance_id=target%20one');
+    expect(alreadyScoped.chatEndpoint).toBe('/s/resident/session?instance_id=target-one');
   });
 
   it('maps a null chat_endpoint through unchanged', async () => {

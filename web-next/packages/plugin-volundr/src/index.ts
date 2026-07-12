@@ -131,6 +131,8 @@ export { SessionsPage } from './ui/SessionsPage';
 export { ForgePage } from './ui/ForgePage';
 export { StructuredLogViewer } from './ui/components/StructuredLogViewer';
 export { useSkuldChat } from './ui/hooks/useSkuldChat';
+export { WizardSelect } from './ui/LaunchWizardPrimitives';
+export { formatModelOption, type RuntimeModelDescriptor } from './ui/launchWizardModel';
 
 // Atoms
 export { CliBadge } from './ui/atoms/CliBadge';

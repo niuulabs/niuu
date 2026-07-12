@@ -6,7 +6,7 @@
  */
 
 import type { BudgetState, PersonaRole, FieldType } from '@niuulabs/domain';
-import type { Ravn } from './domain/ravn';
+import type { Ravn, ResidentDeploymentProfile } from './domain/ravn';
 import type { Session } from './domain/session';
 import type { Trigger } from './domain/trigger';
 import type { Message } from './domain/message';
@@ -122,11 +122,52 @@ export interface IRavenStream {
   getRaven(id: string): Promise<Ravn>;
 }
 
+export type ResidentLifecycleAction = 'restart' | 'suspend' | 'resume';
+
+export interface DeployResidentRequest {
+  name: string;
+  profileId: string;
+  instanceId: string;
+  personaName?: string;
+  model?: string;
+}
+
+export interface CreateResidentSessionRequest {
+  title: string;
+  model?: string;
+}
+
+export interface ResidentLogEntry {
+  timestampMs: number;
+  level: string;
+  source: string;
+  target: string;
+  message: string;
+  fields: Record<string, string>;
+}
+
+export interface ResidentLogPage {
+  entries: ResidentLogEntry[];
+  bufferTotal: number;
+}
+
+/** Commands and backend-aware reads for managed resident runtimes. */
+export interface IResidentControl {
+  listProfiles(): Promise<ResidentDeploymentProfile[]>;
+  deploy(request: DeployResidentRequest): Promise<Ravn>;
+  applyLifecycle(ravn: Ravn, action: ResidentLifecycleAction): Promise<Ravn>;
+  delete(ravn: Ravn): Promise<void>;
+  getLogs(ravn: Ravn): Promise<ResidentLogPage>;
+  listSessions(ravn: Ravn): Promise<Session[]>;
+  createSession(ravn: Ravn, request: CreateResidentSessionRequest): Promise<Session>;
+  deleteSession(ravn: Ravn, sessionId: string): Promise<void>;
+}
+
 /** Read stream for Session transcripts. */
 export interface ISessionStream {
   listSessions(): Promise<Session[]>;
-  getSession(id: string): Promise<Session>;
-  getMessages(sessionId: string): Promise<Message[]>;
+  getSession(id: string, instanceId?: string, ravnId?: string): Promise<Session>;
+  getMessages(sessionId: string, instanceId?: string, ravnId?: string): Promise<Message[]>;
 }
 
 /** CRUD store for Triggers. */

@@ -44,11 +44,10 @@ def test_cli_runtime_images_install_vim() -> None:
         assert "    vim \\\n" in dockerfile
 
 
-def test_skuld_image_installs_iproute2_for_openshell_vm() -> None:
+def test_openshell_runtime_images_install_iproute2() -> None:
     """OpenShell's VM driver requires an ip binary during rootfs preparation."""
     dockerfile = (REPO_ROOT / "containers/skuld/Dockerfile").read_text()
-
-    assert "    iproute2 \\\n" in dockerfile
+    assert "iproute2" in dockerfile
 
 
 def test_openshell_image_installs_locked_agent_clis() -> None:

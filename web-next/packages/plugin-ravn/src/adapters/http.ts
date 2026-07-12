@@ -18,6 +18,8 @@ import type {
   PersonaForkRequest,
   PersonaFilter,
   IRavenStream,
+  IResidentControl,
+  ResidentLogPage,
   ISessionStream,
   ITriggerStore,
   IBudgetStream,
@@ -25,7 +27,14 @@ import type {
   WardenSummary,
   WardenCreateRequest,
 } from '../ports';
-import type { Ravn, RavnStatus } from '../domain/ravn';
+import type {
+  Ravn,
+  RavnStatus,
+  ResidentCapability,
+  ResidentCondition,
+  ResidentDeploymentProfile,
+  ResidentEndpoint,
+} from '../domain/ravn';
 import type { Session, SessionStatus } from '../domain/session';
 import type { Trigger, TriggerKind } from '../domain/trigger';
 import type { Message, MessageKind } from '../domain/message';
@@ -240,6 +249,57 @@ interface RawRavn {
   kind?: string;
   chat_endpoint?: string | null;
   session_id?: string;
+  backend?: string;
+  engine?: string;
+  profile_id?: string;
+  desired_state?: string;
+  observed_state?: string;
+  backend_ref?: Record<string, unknown>;
+  capabilities?: string[];
+  conditions?: RawResidentCondition[];
+  endpoints?: RawResidentEndpoint[];
+  managed?: boolean;
+  instance_id?: string;
+  instance_name?: string;
+  instance_slug?: string;
+  message_count?: number;
+  tokens_used?: number;
+  cost?: number | string;
+}
+
+interface RawResidentEndpoint {
+  kind: string;
+  protocol: string;
+  url: string;
+}
+
+interface RawResidentCondition {
+  type: string;
+  status: string;
+  reason?: string;
+  message?: string;
+  last_transition_at?: string;
+  lastTransitionAt?: string;
+}
+
+interface RawResidentProfile {
+  id: string;
+  display_name?: string;
+  displayName?: string;
+  description?: string;
+  backend: string;
+  engine: string;
+  capabilities?: string[];
+  default_model?: string;
+  defaultModel?: string;
+  allowed_models?: string[];
+  allowedModels?: string[];
+  model_prefix?: string;
+  modelPrefix?: string;
+  labels?: string[];
+  instance_id?: string;
+  instance_name?: string;
+  instance_slug?: string;
 }
 
 interface RawSession {
@@ -249,7 +309,26 @@ interface RawSession {
   status: string;
   model: string;
   created_at: string;
+  title?: string;
+  message_count?: number;
+  tokens_used?: number;
+  cost?: number | string;
   chat_endpoint?: string | null;
+  instance_id?: string;
+}
+
+interface RawResidentLogPage {
+  entries?: Array<{
+    timestamp_ms?: number;
+    timestampMs?: number;
+    level?: string;
+    source?: string;
+    target?: string;
+    message?: string;
+    fields?: Record<string, string>;
+  }>;
+  buffer_total?: number;
+  bufferTotal?: number;
 }
 
 interface RawMessage {
@@ -383,22 +462,56 @@ interface RawWardenLogEntry {
 }
 
 function toRavn(raw: RawRavn): Ravn {
+  const conditions: ResidentCondition[] = (raw.conditions ?? []).map((condition) => ({
+    type: condition.type,
+    status: condition.status as ResidentCondition['status'],
+    reason: condition.reason ?? '',
+    message: condition.message ?? '',
+    lastTransitionAt: condition.last_transition_at ?? condition.lastTransitionAt ?? '',
+  }));
+  const endpoints: ResidentEndpoint[] = (raw.endpoints ?? []).map((endpoint) => ({
+    kind: endpoint.kind,
+    protocol: endpoint.protocol,
+    url: endpoint.url,
+  }));
   return {
     id: raw.id,
     personaName: raw.persona_name,
     status: raw.status as RavnStatus,
     model: raw.model,
     createdAt: raw.created_at,
-    updatedAt: raw.updated_at,
-    location: raw.location,
-    deployment: raw.deployment,
-    role: raw.role as Ravn['role'],
-    letter: raw.letter,
-    residentName: raw.resident_name,
-    peerId: raw.peer_id,
-    kind: raw.kind as Ravn['kind'],
-    chatEndpoint: raw.chat_endpoint,
-    sessionId: raw.session_id,
+    ...(raw.updated_at !== undefined && { updatedAt: raw.updated_at }),
+    ...(raw.location !== undefined && { location: raw.location }),
+    ...(raw.deployment !== undefined && { deployment: raw.deployment }),
+    ...(raw.role !== undefined && { role: raw.role as Ravn['role'] }),
+    ...(raw.letter !== undefined && { letter: raw.letter }),
+    ...(raw.resident_name !== undefined && { residentName: raw.resident_name }),
+    ...(raw.peer_id !== undefined && { peerId: raw.peer_id }),
+    ...(raw.kind !== undefined && { kind: raw.kind as Ravn['kind'] }),
+    ...(raw.chat_endpoint !== undefined && { chatEndpoint: raw.chat_endpoint }),
+    ...(raw.session_id !== undefined && { sessionId: raw.session_id }),
+    ...(raw.backend !== undefined && { backend: raw.backend as Ravn['backend'] }),
+    ...(raw.engine !== undefined && { engine: raw.engine as Ravn['engine'] }),
+    ...(raw.profile_id !== undefined && { profileId: raw.profile_id }),
+    ...(raw.desired_state !== undefined && {
+      desiredState: raw.desired_state as Ravn['desiredState'],
+    }),
+    ...(raw.observed_state !== undefined && {
+      observedState: raw.observed_state as Ravn['observedState'],
+    }),
+    ...(raw.backend_ref !== undefined && { backendRef: raw.backend_ref }),
+    ...(raw.capabilities !== undefined && {
+      capabilities: raw.capabilities as ResidentCapability[],
+    }),
+    ...(raw.conditions !== undefined && { conditions }),
+    ...(raw.endpoints !== undefined && { endpoints }),
+    ...(raw.managed !== undefined && { managed: raw.managed }),
+    ...(raw.instance_id !== undefined && { instanceId: raw.instance_id }),
+    ...(raw.instance_name !== undefined && { instanceName: raw.instance_name }),
+    ...(raw.instance_slug !== undefined && { instanceSlug: raw.instance_slug }),
+    ...(raw.message_count !== undefined && { messageCount: raw.message_count }),
+    ...(raw.tokens_used !== undefined && { tokenCount: raw.tokens_used }),
+    ...(raw.cost !== undefined && { costUsd: Number(raw.cost) }),
   };
 }
 
@@ -410,8 +523,45 @@ function toSession(raw: RawSession): Session {
     status: raw.status as SessionStatus,
     model: raw.model,
     createdAt: raw.created_at,
-    chatEndpoint: raw.chat_endpoint,
+    title: raw.title,
+    messageCount: raw.message_count,
+    tokenCount: raw.tokens_used,
+    costUsd: raw.cost === undefined ? undefined : Number(raw.cost),
+    chatEndpoint: withInstanceQuery(raw.chat_endpoint, raw.instance_id),
+    instanceId: raw.instance_id,
   };
+}
+
+function withInstanceQuery(
+  endpoint?: string | null,
+  instanceId?: string,
+): string | null | undefined {
+  if (!endpoint || !instanceId || /[?&]instance_id=/.test(endpoint)) return endpoint;
+  const separator = endpoint.includes('?') ? '&' : '?';
+  return `${endpoint}${separator}instance_id=${encodeURIComponent(instanceId)}`;
+}
+
+function toResidentProfile(raw: RawResidentProfile): ResidentDeploymentProfile {
+  return {
+    id: raw.id,
+    displayName: raw.display_name ?? raw.displayName ?? raw.id,
+    description: raw.description ?? '',
+    backend: raw.backend as ResidentDeploymentProfile['backend'],
+    engine: raw.engine as ResidentDeploymentProfile['engine'],
+    capabilities: (raw.capabilities ?? []) as ResidentCapability[],
+    defaultModel: raw.default_model ?? raw.defaultModel ?? '',
+    allowedModels: raw.allowed_models ?? raw.allowedModels ?? [],
+    modelPrefix: raw.model_prefix ?? raw.modelPrefix ?? '',
+    labels: raw.labels ?? [],
+    instanceId: raw.instance_id ?? '',
+    instanceName: raw.instance_name ?? '',
+    instanceSlug: raw.instance_slug ?? '',
+  };
+}
+
+function residentQuery(ravn: Ravn): string {
+  if (!ravn.instanceId) throw new Error('Resident has no owning target');
+  return `instance_id=${encodeURIComponent(ravn.instanceId)}`;
 }
 
 function toMessage(raw: RawMessage): Message {
@@ -632,6 +782,70 @@ export function buildRavnRavenAdapter(client: ApiClient): IRavenStream {
   };
 }
 
+/** Build managed resident commands over the same authenticated Ravn API. */
+export function buildRavnResidentControlAdapter(client: ApiClient): IResidentControl {
+  return {
+    async listProfiles() {
+      const raw = await client.get<RawResidentProfile[]>('/deployment-profiles');
+      return raw.map(toResidentProfile).filter((profile) => profile.instanceId);
+    },
+    async deploy(request) {
+      const raw = await client.post<RawRavn>('/ravens', {
+        name: request.name,
+        profile_id: request.profileId,
+        instance_id: request.instanceId,
+        persona_name: request.personaName ?? '',
+        model: request.model ?? '',
+      });
+      return toRavn(raw);
+    },
+    async applyLifecycle(ravn, action) {
+      const raw = await client.post<RawRavn>(
+        `/ravens/${encodeURIComponent(ravn.id)}/${action}?${residentQuery(ravn)}`,
+        {},
+      );
+      return toRavn(raw);
+    },
+    async delete(ravn) {
+      await client.delete<void>(`/ravens/${encodeURIComponent(ravn.id)}?${residentQuery(ravn)}`);
+    },
+    async getLogs(ravn): Promise<ResidentLogPage> {
+      const raw = await client.get<RawResidentLogPage>(
+        `/ravens/${encodeURIComponent(ravn.id)}/logs?${residentQuery(ravn)}`,
+      );
+      return {
+        entries: (raw.entries ?? []).map((entry) => ({
+          timestampMs: entry.timestamp_ms ?? entry.timestampMs ?? 0,
+          level: entry.level ?? '',
+          source: entry.source ?? '',
+          target: entry.target ?? '',
+          message: entry.message ?? '',
+          fields: entry.fields ?? {},
+        })),
+        bufferTotal: raw.buffer_total ?? raw.bufferTotal ?? 0,
+      };
+    },
+    async listSessions(ravn) {
+      const raw = await client.get<RawSession[]>(
+        `/ravens/${encodeURIComponent(ravn.id)}/sessions?${residentQuery(ravn)}`,
+      );
+      return raw.map(toSession);
+    },
+    async createSession(ravn, request) {
+      const raw = await client.post<RawSession>(
+        `/ravens/${encodeURIComponent(ravn.id)}/sessions?${residentQuery(ravn)}`,
+        { title: request.title, model: request.model ?? '' },
+      );
+      return toSession(raw);
+    },
+    async deleteSession(ravn, sessionId) {
+      await client.delete<void>(
+        `/ravens/${encodeURIComponent(ravn.id)}/sessions/${encodeURIComponent(sessionId)}?${residentQuery(ravn)}`,
+      );
+    },
+  };
+}
+
 /**
  * Build an ISessionStream backed by the Ravn REST API.
  */
@@ -641,13 +855,21 @@ export function buildRavnSessionAdapter(client: ApiClient): ISessionStream {
       const raw = await client.get<RawSession[]>('/sessions');
       return raw.map(toSession);
     },
-    async getSession(id) {
-      const raw = await client.get<RawSession>(`/sessions/${encodeURIComponent(id)}`);
+    async getSession(id, instanceId, ravnId) {
+      const params = new URLSearchParams();
+      if (instanceId) params.set('instance_id', instanceId);
+      if (ravnId) params.set('ravn_id', ravnId);
+      const query = params.size > 0 ? `?${params.toString()}` : '';
+      const raw = await client.get<RawSession>(`/sessions/${encodeURIComponent(id)}${query}`);
       return toSession(raw);
     },
-    async getMessages(sessionId) {
+    async getMessages(sessionId, instanceId, ravnId) {
+      const params = new URLSearchParams();
+      if (instanceId) params.set('instance_id', instanceId);
+      if (ravnId) params.set('ravn_id', ravnId);
+      const query = params.size > 0 ? `?${params.toString()}` : '';
       const raw = await client.get<RawMessage[]>(
-        `/sessions/${encodeURIComponent(sessionId)}/messages`,
+        `/sessions/${encodeURIComponent(sessionId)}/messages${query}`,
       );
       return raw.map(toMessage);
     },

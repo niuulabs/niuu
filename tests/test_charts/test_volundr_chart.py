@@ -1,5 +1,6 @@
 """Tests for Volundr Helm chart templates."""
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -461,6 +462,10 @@ class TestRbacTemplate:
         flux_api_group = "helm.toolkit.fluxcd.io"
         assert f'apiGroups: ["{flux_api_group}"]' in template_yaml
 
+    def test_flux_controller_can_observe_resident_deployments(self, template_yaml):
+        assert 'apiGroups: ["apps"]' in template_yaml
+        assert 'resources: ["deployments"]' in template_yaml
+
     def test_has_cluster_wide_conditional(self, template_yaml):
         """Test template has cluster-wide conditional."""
         assert ".Values.rbac.clusterWide" in template_yaml
@@ -491,6 +496,95 @@ class TestConfigMapTemplate:
         """Test template has HOST and PORT."""
         assert "HOST:" in template_yaml
         assert "PORT:" in template_yaml
+
+    def test_empty_resident_profiles_render_as_list(self):
+        result = subprocess.run(
+            ["helm", "template", "test", str(CHART_DIR)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        configmap = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr"
+        )
+        config = yaml.safe_load(configmap["data"]["config.yaml"])
+
+        assert config["resident_runtimes"]["profiles"] == []
+
+    def test_ci_values_run_resident_runtime_migrations(self):
+        result = subprocess.run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                "-f",
+                str(CHART_DIR / "ci-values.yaml"),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        deployment = next(doc for doc in documents if doc.get("kind") == "Deployment")
+        init_containers = deployment["spec"]["template"]["spec"].get("initContainers", [])
+        migrations = next(
+            container for container in init_containers if container["name"] == "migrate"
+        )
+        migration_config = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr-migrations"
+        )
+
+        assert migrations["args"][-1] == "up"
+        assert "000055_resident_runtimes.up.sql" in migration_config["data"]
+        assert "000056_resident_usage.up.sql" in migration_config["data"]
+
+    def test_resident_session_controllers_render_with_backend_binding(self):
+        result = subprocess.run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                "--set",
+                (
+                    "residentRuntimeSessionControllers[0].adapter="
+                    "volundr.adapters.outbound.hermes_gateway.HermesResidentSessionController"
+                ),
+                "--set",
+                "residentRuntimeSessionControllers[0].runtimeBackend=openshell",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        configmap = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr"
+        )
+        config = yaml.safe_load(configmap["data"]["config.yaml"])
+
+        assert config["resident_runtimes"]["session_controllers"] == [
+            {
+                "adapter": (
+                    "volundr.adapters.outbound.hermes_gateway.HermesResidentSessionController"
+                ),
+                "runtime_backend": "openshell",
+                "optional": False,
+                "kwargs": {},
+                "secret_kwargs_env": {},
+            }
+        ]
 
 
 class TestHpaTemplate:

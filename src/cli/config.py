@@ -13,6 +13,8 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from bifrost.config import BifrostConfig
+
 DEFAULT_CONFIG_DIR = Path.home() / ".niuu"
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.yaml"
 
@@ -191,6 +193,7 @@ class CLISettings(BaseSettings):
     server: ServerConfig = Field(default_factory=ServerConfig)
     plugins: PluginConfig = Field(default_factory=PluginConfig)
     services: ServiceConfig = Field(default_factory=ServiceConfig)
+    bifrost: BifrostConfig = Field(default_factory=BifrostConfig)
     service_overrides: dict[str, PerServiceConfig] = Field(
         default_factory=dict,
         description="Per-service enabled/port overrides keyed by service name.",

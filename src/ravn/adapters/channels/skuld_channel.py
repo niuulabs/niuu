@@ -363,6 +363,9 @@ class SkuldChannel(ChannelPort):
                 # Help needed event — RoomBridge translates to room_notification
                 data = payload
                 metadata = {"urgency": event.urgency}
+            case RavnEventType.USAGE:
+                data = payload
+                metadata = {}
             case _:
                 data = str(payload)
                 metadata = {}

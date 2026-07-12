@@ -21,6 +21,10 @@ data:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                     stat_prefix: ingress_http
                     codec_type: AUTO
+                    # Fleet Ravn WebSockets terminate at Guild before relaying
+                    # to the owning target's shared session proxy.
+                    upgrade_configs:
+                      - upgrade_type: websocket
                     stream_idle_timeout: 0s
                     access_log:
                       - name: envoy.access_loggers.stdout

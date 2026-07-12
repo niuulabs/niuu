@@ -1298,6 +1298,181 @@ class LaunchSpec(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
+class ResidentBackend(StrEnum):
+    """Infrastructure substrate that owns a resident runtime."""
+
+    HELMRELEASE = "helmrelease"
+    OPENSHELL = "openshell"
+    LOCAL = "local"
+
+
+class ResidentEngine(StrEnum):
+    """Agent protocol hosted by a resident runtime."""
+
+    RAVN = "ravn"
+    OPENCLAW = "openclaw"
+    HERMES = "hermes"
+
+
+class ResidentDesiredState(StrEnum):
+    """Operator-requested resident lifecycle state."""
+
+    RUNNING = "running"
+    SUSPENDED = "suspended"
+    DELETED = "deleted"
+
+
+class ResidentObservedState(StrEnum):
+    """State last observed from the owning deployment backend."""
+
+    PENDING = "pending"
+    DEPLOYING = "deploying"
+    ACTIVE = "active"
+    SUSPENDED = "suspended"
+    FAILED = "failed"
+    DELETING = "deleting"
+
+
+class ResidentCapability(StrEnum):
+    """Operations a resident runtime can actually perform."""
+
+    CHAT = "chat"
+    SESSION_LIST = "session.list"
+    SESSION_CREATE = "session.create"
+    SESSION_DELETE = "session.delete"
+    STEER = "steer"
+    INTERRUPT = "interrupt"
+    APPROVALS = "approvals"
+    RUNTIME_RESTART = "runtime.restart"
+    RUNTIME_SUSPEND = "runtime.suspend"
+    LOGS = "logs"
+    METRICS = "metrics"
+    USAGE = "usage"
+
+
+class ResidentConditionStatus(StrEnum):
+    """Tri-state status for a reconciled resident condition."""
+
+    TRUE = "true"
+    FALSE = "false"
+    UNKNOWN = "unknown"
+
+
+class ResidentEndpoint(BaseModel):
+    """One normalized endpoint exposed by a resident runtime."""
+
+    kind: str = Field(min_length=1, max_length=64)
+    protocol: str = Field(min_length=1, max_length=100)
+    url: str = Field(min_length=1)
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class ResidentCondition(BaseModel):
+    """Actionable lifecycle condition reported by a deployment backend."""
+
+    type: str = Field(min_length=1, max_length=100)
+    status: ResidentConditionStatus
+    reason: str = Field(default="", max_length=255)
+    message: str = ""
+    last_transition_at: datetime = Field(default_factory=_utc_now)
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class ResidentLogEntry(BaseModel):
+    """One normalized backend log entry for a resident runtime."""
+
+    timestamp_ms: int = Field(ge=0)
+    level: str = ""
+    source: str = ""
+    target: str = ""
+    message: str = ""
+    fields: dict[str, str] = Field(default_factory=dict)
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class ResidentLogPage(BaseModel):
+    """Bounded resident log result returned by a backend adapter."""
+
+    entries: list[ResidentLogEntry] = Field(default_factory=list)
+    buffer_total: int = Field(default=0, ge=0)
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class ResidentDeploymentProfile(BaseModel):
+    """Operator-owned valid resident backend and engine combination."""
+
+    id: str = Field(min_length=1, max_length=100)
+    display_name: str = Field(min_length=1, max_length=255)
+    description: str = ""
+    backend: ResidentBackend
+    engine: ResidentEngine
+    capabilities: list[ResidentCapability] = Field(default_factory=list)
+    default_model: str = ""
+    allowed_models: list[str] = Field(default_factory=list)
+    model_prefix: str = ""
+    labels: list[str] = Field(default_factory=list)
+    deployment: dict[str, Any] = Field(default_factory=dict, exclude=True)
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class ResidentRuntime(BaseModel):
+    """Durable control-plane record for one long-lived resident runtime."""
+
+    id: UUID = Field(default_factory=uuid4)
+    owner_id: str = Field(min_length=1)
+    tenant_id: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=255)
+    persona_name: str = Field(default="", max_length=255)
+    model: str = Field(default="", max_length=255)
+    backend: ResidentBackend
+    engine: ResidentEngine
+    profile_id: str = Field(min_length=1, max_length=100)
+    desired_state: ResidentDesiredState = ResidentDesiredState.RUNNING
+    observed_state: ResidentObservedState = ResidentObservedState.PENDING
+    backend_ref: dict[str, Any] = Field(default_factory=dict)
+    endpoints: list[ResidentEndpoint] = Field(default_factory=list)
+    capabilities: list[ResidentCapability] = Field(default_factory=list)
+    conditions: list[ResidentCondition] = Field(default_factory=list)
+    message_count: int = Field(default=0, ge=0)
+    tokens_used: int = Field(default=0, ge=0)
+    cost: Decimal = Field(default=Decimal("0"), ge=0)
+    created_at: datetime = Field(default_factory=_utc_now)
+    updated_at: datetime = Field(default_factory=_utc_now)
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class ResidentSessionStatus(StrEnum):
+    """Normalized activity state for one engine-owned resident session."""
+
+    IDLE = "idle"
+    RUNNING = "running"
+    FAILED = "failed"
+
+
+class ResidentSession(BaseModel):
+    """Backend-neutral projection of an engine-owned resident session."""
+
+    id: UUID
+    resident_id: UUID
+    title: str = ""
+    model: str = ""
+    status: ResidentSessionStatus = ResidentSessionStatus.IDLE
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    message_count: int = Field(default=0, ge=0)
+    tokens_used: int = Field(default=0, ge=0)
+    cost: Decimal = Field(default=Decimal("0"), ge=0)
+    chat_endpoint: str = ""
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
 class ResourceCategory(StrEnum):
     """Category of a resource type."""
 

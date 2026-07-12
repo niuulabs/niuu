@@ -48,6 +48,7 @@ const ravnMocks = vi.hoisted(() => ({
   createMockWardenStore: vi.fn(() => ({})),
   buildRavnPersonaAdapter: vi.fn(() => ({})),
   buildRavnRavenAdapter: vi.fn(() => ({})),
+  buildRavnResidentControlAdapter: vi.fn(() => ({})),
   buildRavnSessionAdapter: vi.fn(() => ({})),
   buildRavnTriggerAdapter: vi.fn(() => ({})),
   buildRavnBudgetAdapter: vi.fn(() => ({})),
@@ -1036,6 +1037,9 @@ describe('buildServices', () => {
       basePath: 'http://localhost:8080/api/v1/ravn',
     });
     expect(ravnMocks.buildRavnRavenAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ravn',
+    });
+    expect(ravnMocks.buildRavnResidentControlAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1/ravn',
     });
     expect(ravnMocks.buildRavnTriggerAdapter).toHaveBeenCalledWith({

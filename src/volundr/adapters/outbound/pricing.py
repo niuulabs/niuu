@@ -48,6 +48,8 @@ class HardcodedPricingProvider(PricingProvider):
         self._pricing = {}
 
         for cfg in model_configs:
+            if not bool(getattr(cfg, "enabled", True)):
+                continue
             model_id = str(getattr(cfg, "id", "") or "").strip()
             if not model_id:
                 continue

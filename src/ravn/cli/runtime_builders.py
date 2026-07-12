@@ -342,6 +342,20 @@ def _build_executor(
         raw_kwargs = getattr(executor_cfg, "kwargs", {})
         if isinstance(raw_kwargs, dict):
             kwargs = dict(raw_kwargs)
+        if adapter_path == "ravn.adapters.executors.cli.CliTransportExecutor":
+            transport_adapter = str(kwargs.get("transport_adapter") or "").strip()
+            runtime_kwargs = _runtime_cli_transport_kwargs(
+                transport_adapter,
+                loaded_settings,
+            )
+            configured_kwargs = kwargs.get("transport_kwargs")
+            if runtime_kwargs and (
+                configured_kwargs is None or isinstance(configured_kwargs, dict)
+            ):
+                kwargs["transport_kwargs"] = {
+                    **runtime_kwargs,
+                    **(configured_kwargs or {}),
+                }
     else:
         runtime_transport_adapter = loaded_settings.runtime_executor.transport_adapter.strip()
         if runtime_transport_adapter:

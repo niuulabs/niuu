@@ -570,6 +570,13 @@ class SkuldSettings(BaseSettings):
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8081)
     volundr_api_url: str = Field(default="")
+    usage_report_path: str = Field(
+        default="",
+        description=(
+            "Absolute Volundr API path for token usage reports. Empty uses the "
+            "Forge session usage endpoint."
+        ),
+    )
     external_api_token: str = Field(
         default="",
         validation_alias=AliasChoices(

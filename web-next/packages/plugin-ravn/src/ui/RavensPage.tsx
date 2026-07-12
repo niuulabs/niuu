@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { BudgetBar, PersonaAvatar, StateDot, cn, ErrorState, LoadingState } from '@niuulabs/ui';
+import { PersonaAvatar, StateDot, cn, ErrorState, LoadingState } from '@niuulabs/ui';
 import type { BudgetState, PersonaRole } from '@niuulabs/domain';
 import type { Ravn } from '../domain/ravn';
 import { useRavens } from './hooks/useRavens';
@@ -7,6 +7,8 @@ import { useRavnBudgets } from './hooks/useBudget';
 import { useSessions } from './hooks/useSessions';
 import { groupRavens, ravnStatusToDotState, type GroupKey } from './grouping';
 import { RavnDetail } from './RavnDetail';
+import { ResidentDeployDialog } from './ResidentDeployDialog';
+import { Plus } from 'lucide-react';
 import { loadStorage, saveStorage } from './storage';
 import './RavensPage.css';
 
@@ -56,17 +58,29 @@ function subtitleForRavn(ravn: Ravn): string {
   return ROLE_LABELS[ravn.role ?? 'build'] ?? ravn.role ?? 'raven';
 }
 
+function nameForRavn(ravn: Ravn): string {
+  return ravn.residentName || ravn.personaName || ravn.id.slice(0, 8);
+}
+
+function ravnKey(ravn: Pick<Ravn, 'id' | 'instanceId'>): string {
+  return ravn.instanceId ? `${encodeURIComponent(ravn.instanceId)}:${ravn.id}` : ravn.id;
+}
+
 function matchesQuery(ravn: Ravn, query: string): boolean {
   const needle = query.trim().toLowerCase();
   if (!needle) return true;
 
   const fields = [
     ravn.personaName,
+    ravn.residentName,
     ravn.role,
     ravn.location,
     ravn.deployment,
     ravn.summary,
     ravn.id,
+    ravn.backend,
+    ravn.engine,
+    ravn.instanceName,
   ];
 
   return fields.some((value) => value?.toLowerCase().includes(needle));
@@ -74,7 +88,7 @@ function matchesQuery(ravn: Ravn, query: string): boolean {
 
 function pickDefaultRavn(ravens: Ravn[]): string | null {
   if (ravens.length === 0) return null;
-  return ravens.find((ravn) => ravn.status === 'active')?.id ?? ravens[0]!.id;
+  return ravnKey(ravens.find((ravn) => ravn.status === 'active') ?? ravens[0]!);
 }
 
 interface RavnListRowProps {
@@ -86,7 +100,7 @@ interface RavnListRowProps {
 }
 
 function RavnListRow({ ravn, budget, sessionCount, selected, onClick }: RavnListRowProps) {
-  const letter = ravn.letter ?? ravn.personaName.charAt(0).toUpperCase();
+  const letter = ravn.letter ?? nameForRavn(ravn).charAt(0).toUpperCase();
   const role = ravn.role ?? 'build';
 
   return (
@@ -110,34 +124,20 @@ function RavnListRow({ ravn, budget, sessionCount, selected, onClick }: RavnList
       </span>
 
       <span className="rv-list-row__identity">
-        <span className="rv-list-row__name">{ravn.personaName}</span>
-        <span className="rv-list-row__sub">{subtitleForRavn(ravn)}</span>
+        <span className="rv-list-row__name">{nameForRavn(ravn)}</span>
+        <span className="rv-list-row__sub">
+          {subtitleForRavn(ravn)} · {normalizeLabel(ravn.engine || ravn.deployment || 'ravn')}
+        </span>
       </span>
 
-      <span className="rv-list-row__location">
-        <span>{normalizeLabel(ravn.location ?? 'unknown')}</span>
-        <span>{normalizeLabel(ravn.deployment ?? 'unplaced')}</span>
-      </span>
-
-      <span className="rv-list-row__sessions">
-        <span className="rv-list-row__sessions-value">{sessionCount}</span>
-        <span className="rv-list-row__sessions-label">sess</span>
-      </span>
-
-      <span className="rv-list-row__budget">
-        {budget ? (
-          <>
-            <BudgetBar
-              spent={budget.spentUsd}
-              cap={budget.capUsd}
-              warnAt={Math.round(budget.warnAt * 100)}
-              size="sm"
-            />
-            <span className="rv-list-row__budget-text">{formatBudgetText(budget)}</span>
-          </>
-        ) : (
-          <span className="rv-list-row__budget-text">—</span>
-        )}
+      <span className="rv-list-row__summary">
+        <span className="rv-list-row__target">
+          {normalizeLabel(ravn.instanceName || ravn.location || 'unknown')}
+        </span>
+        <span className="rv-list-row__metrics">
+          <span>{sessionCount} sess</span>
+          <span>{formatBudgetText(budget)}</span>
+        </span>
       </span>
     </button>
   );
@@ -158,48 +158,7 @@ function FleetGroupHeader({ label, count }: FleetGroupProps) {
 }
 
 export function RavensPage() {
-  const [groupBy, setGroupBy] = useState<GroupKey>(() =>
-    loadStorage<GroupKey>(GROUP_STORAGE_KEY, 'location'),
-  );
-  const [searchQuery, setSearchQuery] = useState('');
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [selectedRavnId, setSelectedRavnId] = useState<string | null>(null);
-
   const { data: ravens, isLoading, isError, error } = useRavens();
-  const { data: sessions } = useSessions();
-
-  const ravnList = useMemo(() => ravens ?? [], [ravens]);
-  const budgets = useRavnBudgets(ravnList.map((ravn) => ravn.id));
-  const resolvedSelectedRavnId =
-    ravnList.find((ravn) => ravn.id === selectedRavnId)?.id ?? pickDefaultRavn(ravnList);
-
-  const sessionCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const session of sessions ?? []) {
-      counts.set(session.ravnId, (counts.get(session.ravnId) ?? 0) + 1);
-    }
-    return counts;
-  }, [sessions]);
-
-  const filteredRavens = useMemo(
-    () => ravnList.filter((ravn) => matchesQuery(ravn, searchQuery)),
-    [ravnList, searchQuery],
-  );
-
-  const groupedEntries = useMemo(() => {
-    const entries = Object.entries(groupRavens(filteredRavens, groupBy));
-    if (groupBy === 'none') return entries;
-    return entries.sort(([left], [right]) => left.localeCompare(right));
-  }, [filteredRavens, groupBy]);
-
-  const selectedRavn =
-    ravnList.find((ravn) => ravn.id === resolvedSelectedRavnId) ??
-    filteredRavens[0] ??
-    ravnList[0] ??
-    null;
-
-  const activeCount = ravnList.filter((ravn) => ravn.status === 'active').length;
-  const failedCount = ravnList.filter((ravn) => ravn.status === 'failed').length;
 
   if (isLoading) {
     return (
@@ -216,6 +175,61 @@ export function RavensPage() {
       </div>
     );
   }
+
+  const ravnList = ravens ?? [];
+  return <RavensFleet key={ravnList.length === 0 ? 'empty' : 'populated'} ravens={ravnList} />;
+}
+
+function RavensFleet({ ravens }: { ravens: Ravn[] }) {
+  const [groupBy, setGroupBy] = useState<GroupKey>(() =>
+    loadStorage<GroupKey>(GROUP_STORAGE_KEY, 'location'),
+  );
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [selectedRavnId, setSelectedRavnId] = useState<string | null>(() =>
+    pickDefaultRavn(ravens),
+  );
+  const [deployOpen, setDeployOpen] = useState(false);
+
+  const { data: sessions } = useSessions();
+
+  const ravnList = useMemo(() => ravens, [ravens]);
+  const budgets = useRavnBudgets(ravnList.map((ravn) => ravn.id));
+  const resolvedSelectedRavnId =
+    ravnList.find((ravn) => ravnKey(ravn) === selectedRavnId) !== undefined
+      ? selectedRavnId
+      : pickDefaultRavn(ravnList);
+
+  const sessionCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const session of sessions ?? []) {
+      const key = session.instanceId
+        ? `${encodeURIComponent(session.instanceId)}:${session.ravnId}`
+        : session.ravnId;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }, [sessions]);
+
+  const filteredRavens = useMemo(
+    () => ravnList.filter((ravn) => matchesQuery(ravn, searchQuery)),
+    [ravnList, searchQuery],
+  );
+
+  const groupedEntries = useMemo(() => {
+    const entries = Object.entries(groupRavens(filteredRavens, groupBy));
+    if (groupBy === 'none') return entries;
+    return entries.sort(([left], [right]) => left.localeCompare(right));
+  }, [filteredRavens, groupBy]);
+
+  const selectedRavn =
+    ravnList.find((ravn) => ravnKey(ravn) === resolvedSelectedRavnId) ??
+    filteredRavens[0] ??
+    ravnList[0] ??
+    null;
+
+  const activeCount = ravnList.filter((ravn) => ravn.status === 'active').length;
+  const failedCount = ravnList.filter((ravn) => ravn.status === 'failed').length;
 
   return (
     <div data-testid="ravens-page" className="rv-ravens">
@@ -244,14 +258,16 @@ export function RavensPage() {
                   <div key={groupLabel} className="rv-fleet__collapsed-group">
                     {groupRavns.map((ravn) => (
                       <button
-                        key={ravn.id}
+                        key={ravnKey(ravn)}
                         type="button"
-                        onClick={() => setSelectedRavnId(ravn.id)}
+                        onClick={() => setSelectedRavnId(ravnKey(ravn))}
                         className={cn(
                           'rv-fleet__collapsed-item',
-                          selectedRavn?.id === ravn.id && 'rv-fleet__collapsed-item--selected',
+                          selectedRavn &&
+                            ravnKey(selectedRavn) === ravnKey(ravn) &&
+                            'rv-fleet__collapsed-item--selected',
                         )}
-                        aria-label={ravn.personaName}
+                        aria-label={nameForRavn(ravn)}
                       >
                         <StateDot
                           state={ravnStatusToDotState(ravn.status)}
@@ -283,15 +299,26 @@ export function RavensPage() {
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => setSidebarCollapsed(true)}
-                    className="rv-fleet__toggle"
-                    data-testid="ravens-sidebar-toggle"
-                    aria-label="Collapse ravens sidebar"
-                  >
-                    ‹
-                  </button>
+                  <div className="rv-fleet__title-actions">
+                    <button
+                      type="button"
+                      onClick={() => setDeployOpen(true)}
+                      className="rv-fleet__deploy"
+                      data-testid="resident-deploy-open"
+                    >
+                      <Plus size={14} aria-hidden="true" />
+                      Deploy
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSidebarCollapsed(true)}
+                      className="rv-fleet__toggle"
+                      data-testid="ravens-sidebar-toggle"
+                      aria-label="Collapse ravens sidebar"
+                    >
+                      ‹
+                    </button>
+                  </div>
                 </div>
 
                 <div className="rv-fleet__controls">
@@ -346,12 +373,14 @@ export function RavensPage() {
                       <div className="rv-fleet__rows">
                         {groupRavns.map((ravn) => (
                           <RavnListRow
-                            key={ravn.id}
+                            key={ravnKey(ravn)}
                             ravn={ravn}
                             budget={budgets[ravn.id]}
-                            sessionCount={sessionCounts.get(ravn.id) ?? 0}
-                            selected={selectedRavn?.id === ravn.id}
-                            onClick={() => setSelectedRavnId(ravn.id)}
+                            sessionCount={sessionCounts.get(ravnKey(ravn)) ?? 0}
+                            selected={Boolean(
+                              selectedRavn && ravnKey(selectedRavn) === ravnKey(ravn),
+                            )}
+                            onClick={() => setSelectedRavnId(ravnKey(ravn))}
                           />
                         ))}
                       </div>
@@ -365,7 +394,11 @@ export function RavensPage() {
 
         <section className="rv-ravens__detail">
           {selectedRavn ? (
-            <RavnDetail ravn={selectedRavn} />
+            <RavnDetail
+              key={ravnKey(selectedRavn)}
+              ravn={selectedRavn}
+              onDeleted={() => setSelectedRavnId(null)}
+            />
           ) : (
             <div className="rv-detail-empty" data-testid="detail-empty">
               No ravn available
@@ -373,6 +406,11 @@ export function RavensPage() {
           )}
         </section>
       </div>
+      <ResidentDeployDialog
+        open={deployOpen}
+        onOpenChange={setDeployOpen}
+        onDeployed={(ravn) => setSelectedRavnId(ravnKey(ravn))}
+      />
     </div>
   );
 }

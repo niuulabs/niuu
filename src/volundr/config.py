@@ -43,7 +43,13 @@ from niuu.config_models import (
     default_session_definitions,
 )
 from ravn.config import PersonaSourceConfig
-from volundr.domain.models import IntegrationType, SecretType
+from volundr.domain.models import (
+    IntegrationType,
+    ResidentBackend,
+    ResidentCapability,
+    ResidentEngine,
+    SecretType,
+)
 
 __all__ = ["GitHubInstance", "GitLabInstance"]
 
@@ -256,6 +262,82 @@ class PodManagerConfig(BaseModel):
         default_factory=dict,
         description="Mapping of kwarg names to env var names holding secret values.",
     )
+
+
+class ResidentProfileConfig(BaseModel):
+    """One operator-approved resident backend and engine combination."""
+
+    id: str = Field(min_length=1, max_length=100)
+    enabled: bool = True
+    display_name: str = Field(min_length=1, max_length=255)
+    description: str = ""
+    backend: ResidentBackend
+    engine: ResidentEngine
+    capabilities: list[ResidentCapability] = Field(default_factory=list)
+    default_model: str = ""
+    allowed_models: list[str] = Field(default_factory=list)
+    catalog_vendors: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Bifrost model vendors accepted by this resident engine. Empty means all vendors."
+        ),
+    )
+    model_prefix: str = Field(
+        default="",
+        description="Prefix added to canonical Bifrost model IDs for the resident engine.",
+    )
+    labels: list[str] = Field(default_factory=list)
+    deployment: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Backend-owned deployment input, never exposed through the profile API.",
+    )
+
+
+class ResidentSessionControllerConfig(BaseModel):
+    """One dynamically configured resident engine protocol adapter."""
+
+    adapter: str = Field(min_length=1)
+    runtime_backend: ResidentBackend
+    optional: bool = False
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+
+class ResidentRuntimesConfig(BaseModel):
+    """Configured resident deployment profiles for this Volundr target."""
+
+    controllers: list[PodManagerConfig] = Field(
+        default_factory=list,
+        description=(
+            "Additional dynamically configured resident runtime controllers. "
+            "A resident-capable pod manager is registered automatically."
+        ),
+    )
+    session_controllers: list[ResidentSessionControllerConfig] = Field(
+        default_factory=lambda: [
+            ResidentSessionControllerConfig(
+                adapter=(
+                    "volundr.adapters.outbound.openclaw_gateway.OpenClawResidentSessionController"
+                ),
+                runtime_backend=ResidentBackend.OPENSHELL,
+                optional=True,
+            )
+        ],
+        description="Dynamically configured resident engine protocol adapters.",
+    )
+    profiles: list[ResidentProfileConfig] = Field(default_factory=list)
+    reconciliation_interval_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description="Interval between resident backend reconciliation passes.",
+    )
+
+    @model_validator(mode="after")
+    def validate_unique_profile_ids(self) -> "ResidentRuntimesConfig":
+        ids = [profile.id for profile in self.profiles]
+        if len(ids) != len(set(ids)):
+            raise ValueError("resident_runtimes.profiles ids must be unique")
+        return self
 
 
 class MCPServerEntry(BaseModel):
@@ -1389,6 +1471,11 @@ class VolundrBifrostConfig(BifrostConfig):
         default=10.0,
         description="HTTP timeout for Bifrost catalog calls.",
     )
+    catalog_refresh_interval_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        description="Interval between successful Bifrost catalog refreshes.",
+    )
     auth: HttpAuthAdapterConfig = Field(default_factory=HttpAuthAdapterConfig)
 
 
@@ -1508,6 +1595,7 @@ class Settings(BaseSettings):
     cors: CorsConfig = Field(default_factory=CorsConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
+    resident_runtimes: ResidentRuntimesConfig = Field(default_factory=ResidentRuntimesConfig)
     git: GitConfig = Field(default_factory=GitConfig)
     niuu: InstanceRegistryConfig = Field(default_factory=InstanceRegistryConfig)
     chronicle: ChronicleConfig = Field(default_factory=ChronicleConfig)

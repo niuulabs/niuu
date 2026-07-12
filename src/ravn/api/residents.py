@@ -20,15 +20,13 @@ import logging
 import re
 from typing import Any
 
-import httpx
 from fastapi import Request
 
+from niuu.domain.models import InstanceVisibility, Principal
+from ravn.ports.platform_runtime import PlatformRuntimePort
 from ravn.ports.resident_discovery import ResidentDiscoveryPort, StandaloneResident
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_PLATFORM_API_URL = "http://localhost:8080"  # matches PlatformToolsConfig.base_url
-_DEFAULT_TIMEOUT_SECONDS = 5.0
 
 # Headers that carry caller identity (Envoy-injected or bearer); forwarded
 # verbatim so Volundr resolves the same principal this request carries.
@@ -73,6 +71,24 @@ _STANDALONE_SESSION_STATUS_MAP = {
     "completed": "stopped",
 }
 
+_MANAGED_SESSION_STATUS_MAP = {
+    "pending": "idle",
+    "deploying": "idle",
+    "active": "running",
+    "suspended": "stopped",
+    "failed": "failed",
+    "deleting": "stopped",
+}
+
+_MANAGED_RAVEN_STATUS_MAP = {
+    "pending": "idle",
+    "deploying": "idle",
+    "active": "active",
+    "suspended": "suspended",
+    "failed": "failed",
+    "deleting": "completed",
+}
+
 
 def forward_auth(request: Request) -> tuple[dict[str, str], dict[str, str]]:
     """Extract forwardable auth headers and dev-identity query params."""
@@ -90,49 +106,152 @@ def forward_auth(request: Request) -> tuple[dict[str, str], dict[str, str]]:
 class ResidentDirectory:
     """Serves the ravn fleet: discovered residents plus live Forge sessions.
 
-    Ravens come exclusively from a :class:`ResidentDiscoveryPort` (standalone
-    residents deployed via the skuld chart) — discovery failures there
-    propagate loudly. Sessions proxy the Forge API (ravn_flock rooms) and
-    merge in the discovered residents; on the session path a discovery
-    failure degrades to forge-only results, while forge failures propagate.
+    Durable Volundr records are authoritative for managed residents. A
+    :class:`ResidentDiscoveryPort` contributes compatibility deployments that
+    have not yet moved under control-plane management. Forge flock sessions
+    remain ordinary sessions and are merged into the session view.
     """
 
     def __init__(
         self,
         *,
-        base_url: str = "",
-        timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+        platform: PlatformRuntimePort,
         discovery: ResidentDiscoveryPort | None = None,
     ) -> None:
-        # Configuration-driven: create_app threads gateway.platform.base_url
-        # from the ravn Settings here (config file or standard RAVN_ env
-        # overrides) — no bespoke environment lookups.
-        self._base_url = (base_url or _DEFAULT_PLATFORM_API_URL).rstrip("/")
-        self._timeout = timeout_seconds
+        self._platform = platform
         self._discovery = discovery
-        # One pooled client for the directory's lifetime — /ravens and
-        # /settings hit this per request, so a fresh client (new TCP+TLS)
-        # per call is pure setup waste.
-        self._client = httpx.AsyncClient(base_url=self._base_url, timeout=timeout_seconds)
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        await self._platform.aclose()
 
-    async def list_ravens(self) -> list[dict[str, Any]]:
-        """Return every discovered standalone resident as a raven.
+    async def list_ravens(
+        self,
+        principal: Principal,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        """Return durable and visible compatibility residents as ravens.
 
-        Discovery is the ONLY source for ravens now, so failures propagate —
-        a broken discovery must not masquerade as an empty fleet.
+        Durable records are authoritative for managed residents. Kubernetes
+        discovery remains a compatibility input for externally managed legacy
+        residents and is filtered by its explicit visibility metadata.
         """
-        if self._discovery is None:
-            return []
-        return [
-            self._standalone_to_raven(resident)
-            for resident in await self._discovery.list_residents()
-        ]
+        managed = await self._platform.list_resident_runtimes(auth_headers, auth_params)
+        ravens = [self._managed_to_raven(runtime) for runtime in managed]
+        managed_ids = {raven["id"] for raven in ravens}
+        for resident in await self._discover_standalone():
+            if resident.id in managed_ids or not self._is_discovered_visible(resident, principal):
+                continue
+            ravens.append(self._standalone_to_raven(resident))
+        return ravens
+
+    async def list_profiles(
+        self,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        """Return profiles that can actually be deployed on this target."""
+        return await self._platform.list_resident_profiles(auth_headers, auth_params)
+
+    async def create_raven(
+        self,
+        body: dict[str, Any],
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any]:
+        """Deploy one managed resident and return the Ravn product projection."""
+        runtime = await self._platform.create_resident_runtime(
+            body,
+            auth_headers,
+            auth_params,
+        )
+        return self._managed_to_raven(runtime)
+
+    async def control_raven(
+        self,
+        ravn_id: str,
+        action: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any]:
+        """Apply a lifecycle action and return the updated Ravn projection."""
+        runtime = await self._platform.control_resident_runtime(
+            ravn_id,
+            action,
+            auth_headers,
+            auth_params,
+        )
+        return self._managed_to_raven(runtime)
+
+    async def delete_raven(
+        self,
+        ravn_id: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> None:
+        """Delete one managed resident through the target control plane."""
+        await self._platform.delete_resident_runtime(
+            ravn_id,
+            auth_headers,
+            auth_params,
+        )
+
+    async def get_raven_logs(
+        self,
+        ravn_id: str,
+        *,
+        lines: int,
+        sources: tuple[str, ...],
+        min_level: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any]:
+        """Return target-native logs for one managed resident."""
+        return await self._platform.get_resident_logs(
+            ravn_id,
+            lines=lines,
+            sources=sources,
+            min_level=min_level,
+            auth_headers=auth_headers,
+            auth_params=auth_params,
+        )
+
+    async def list_resident_sessions(
+        self,
+        ravn_id: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        """Return native sessions from one managed resident."""
+        sessions = await self._platform.list_resident_sessions(ravn_id, auth_headers, auth_params)
+        return [self._native_session(session, ravn_id) for session in sessions]
+
+    async def create_resident_session(
+        self,
+        ravn_id: str,
+        body: dict[str, Any],
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any]:
+        """Create one native session through the resident engine adapter."""
+        session = await self._platform.create_resident_session(
+            ravn_id, body, auth_headers, auth_params
+        )
+        return self._native_session(session, ravn_id)
+
+    async def delete_resident_session(
+        self,
+        ravn_id: str,
+        session_id: str,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> None:
+        """Delete one native resident session."""
+        await self._platform.delete_resident_session(ravn_id, session_id, auth_headers, auth_params)
 
     async def list_sessions(
         self,
+        principal: Principal,
         auth_headers: dict[str, str],
         auth_params: dict[str, str],
     ) -> list[dict[str, Any]]:
@@ -142,15 +261,7 @@ class ResidentDirectory:
         Ravn-side equivalent of the Volundr live session list — each carries a
         ``chat_endpoint`` (its Skuld room) so the UI can reuse the shared chat.
         """
-        sessions = await self._get_json(
-            "/api/v1/forge/sessions",
-            auth_headers,
-            auth_params,
-        )
-        if not isinstance(sessions, list):
-            raise RuntimeError(
-                f"Forge sessions API returned unexpected payload: {type(sessions).__name__}"
-            )
+        sessions = await self._platform.list_forge_sessions(auth_headers, auth_params)
         ravn_sessions = []
         for session in sessions:
             if not isinstance(session, dict):
@@ -160,9 +271,48 @@ class ResidentDirectory:
             mapped = self._to_session(session)
             if _is_live_session(mapped):
                 ravn_sessions.append(mapped)
-        forge_ids = {session["id"] for session in ravn_sessions}
-        for resident in await self._discover_standalone():
-            if resident.id in forge_ids:
+        known_ids = {session["id"] for session in ravn_sessions}
+        managed = await self._platform.list_resident_runtimes(auth_headers, auth_params)
+        for runtime in managed:
+            runtime_id = str(runtime.get("id") or "")
+            if not runtime_id:
+                continue
+            capabilities = runtime.get("capabilities") or []
+            if "session.list" in capabilities:
+                try:
+                    native_sessions = await self._platform.list_resident_sessions(
+                        runtime_id, auth_headers, auth_params
+                    )
+                except Exception:
+                    logger.warning(
+                        "native resident session discovery failed for %s",
+                        runtime_id,
+                        exc_info=True,
+                    )
+                    continue
+                for native in native_sessions:
+                    mapped_native = self._native_session(
+                        native,
+                        runtime_id,
+                        str(
+                            runtime.get("persona_name")
+                            or runtime.get("personaName")
+                            or runtime.get("name")
+                            or "resident-agent"
+                        ),
+                    )
+                    if mapped_native["id"] and _is_live_session(mapped_native):
+                        ravn_sessions.append(mapped_native)
+                        known_ids.add(mapped_native["id"])
+                continue
+            if runtime_id in known_ids:
+                continue
+            mapped = self._managed_to_session(runtime)
+            if _is_live_session(mapped):
+                ravn_sessions.append(mapped)
+                known_ids.add(runtime_id)
+        for resident in await self._discover_standalone_best_effort():
+            if resident.id in known_ids or not self._is_discovered_visible(resident, principal):
                 continue
             mapped = self._standalone_to_session(resident)
             if _is_live_session(mapped):
@@ -172,27 +322,66 @@ class ResidentDirectory:
     async def get_session(
         self,
         session_id: str,
+        principal: Principal,
         auth_headers: dict[str, str],
         auth_params: dict[str, str],
+        *,
+        ravn_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Return one live ravn session by id, or None."""
         if not _RAVN_ID_RE.fullmatch(session_id):
             return None
-        try:
-            session = await self._get_json(
-                f"/api/v1/forge/sessions/{session_id}",
+        session = await self._platform.get_forge_session(
+            session_id,
+            auth_headers,
+            auth_params,
+        )
+        if session is None:
+            managed_or_standalone = await self._managed_or_standalone_session(
+                session_id,
+                principal,
                 auth_headers,
                 auth_params,
             )
-        except httpx.HTTPStatusError as exc:
-            if 400 <= exc.response.status_code < 500:
-                return await self._standalone_session(session_id)
-            raise
+            if managed_or_standalone is not None:
+                return managed_or_standalone
+            managed = await self._platform.list_resident_runtimes(auth_headers, auth_params)
+            for runtime in managed:
+                capabilities = runtime.get("capabilities") or []
+                runtime_id = str(runtime.get("id") or "")
+                if not runtime_id or "session.list" not in capabilities:
+                    continue
+                if ravn_id is not None and runtime_id != ravn_id:
+                    continue
+                try:
+                    native_sessions = await self._platform.list_resident_sessions(
+                        runtime_id, auth_headers, auth_params
+                    )
+                except Exception:
+                    continue
+                for native in native_sessions:
+                    if str(native.get("id") or "") == session_id:
+                        return self._native_session(
+                            native,
+                            runtime_id,
+                            str(
+                                runtime.get("persona_name")
+                                or runtime.get("personaName")
+                                or runtime.get("name")
+                                or "resident-agent"
+                            ),
+                        )
+            return None
         if (
             not isinstance(session, dict)
             or session.get("workload_type") not in _RAVN_SESSION_WORKLOADS
         ):
-            return await self._standalone_session(session_id)
+            return await self._managed_or_standalone_session(
+                session_id,
+                principal,
+                auth_headers,
+                auth_params,
+            )
         mapped = self._to_session(session)
         if not _is_live_session(mapped):
             return None
@@ -213,17 +402,13 @@ class ResidentDirectory:
         """
         if not _RAVN_ID_RE.fullmatch(session_id):
             return None
-        try:
-            result = await self._request_json(
-                "POST",
-                f"/api/v1/forge/sessions/{session_id}/stop",
-                auth_headers,
-                auth_params,
-            )
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                return None
-            raise
+        result = await self._platform.stop_forge_session(
+            session_id,
+            auth_headers,
+            auth_params,
+        )
+        if result is None:
+            return None
         if not isinstance(result, dict):
             raise RuntimeError(
                 f"Forge stop API returned unexpected payload: {type(result).__name__}"
@@ -245,47 +430,36 @@ class ResidentDirectory:
             "title": session.get("name") or "",
         }
 
-    async def get_raven(self, ravn_id: str) -> dict[str, Any] | None:
-        """Return one discovered standalone resident by its id, or None."""
-        if self._discovery is None:
+    async def get_raven(
+        self,
+        ravn_id: str,
+        principal: Principal,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any] | None:
+        """Return one caller-visible durable or compatibility resident."""
+        if not _RAVN_ID_RE.fullmatch(ravn_id):
             return None
-        for resident in await self._discovery.list_residents():
+        managed = await self._platform.get_resident_runtime(ravn_id, auth_headers, auth_params)
+        if managed is not None:
+            return self._managed_to_raven(managed)
+        for resident in await self._discover_standalone():
             if resident.id == ravn_id:
+                if not self._is_discovered_visible(resident, principal):
+                    return None
                 return self._standalone_to_raven(resident)
         return None
 
-    async def _get_json(
-        self,
-        path: str,
-        auth_headers: dict[str, str],
-        auth_params: dict[str, str],
-    ) -> Any:
-        return await self._request_json("GET", path, auth_headers, auth_params)
-
-    async def _request_json(
-        self,
-        method: str,
-        path: str,
-        auth_headers: dict[str, str],
-        auth_params: dict[str, str],
-    ) -> Any:
-        url = f"{self._base_url}{path}"
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.request(
-                method,
-                url,
-                headers=auth_headers,
-                params=auth_params,
-            )
-            response.raise_for_status()
-            return response.json()
-
     async def _discover_standalone(self) -> list[StandaloneResident]:
-        """Return discovered standalone residents; never break forge results."""
+        """Return discovered standalone residents for authoritative fleet reads."""
         if self._discovery is None:
             return []
+        return await self._discovery.list_residents()
+
+    async def _discover_standalone_best_effort(self) -> list[StandaloneResident]:
+        """Return compatibility residents without breaking Forge session reads."""
         try:
-            return await self._discovery.list_residents()
+            return await self._discover_standalone()
         except Exception:
             logger.warning(
                 "standalone resident discovery failed; serving forge results only",
@@ -293,14 +467,132 @@ class ResidentDirectory:
             )
             return []
 
-    async def _standalone_session(self, session_id: str) -> dict[str, Any] | None:
-        for resident in await self._discover_standalone():
+    async def _standalone_session(
+        self,
+        session_id: str,
+        principal: Principal,
+    ) -> dict[str, Any] | None:
+        for resident in await self._discover_standalone_best_effort():
             if resident.id == session_id:
+                if not self._is_discovered_visible(resident, principal):
+                    return None
                 mapped = self._standalone_to_session(resident)
                 if _is_live_session(mapped):
                     return mapped
                 return None
         return None
+
+    async def _managed_or_standalone_session(
+        self,
+        session_id: str,
+        principal: Principal,
+        auth_headers: dict[str, str],
+        auth_params: dict[str, str],
+    ) -> dict[str, Any] | None:
+        managed = await self._platform.get_resident_runtime(
+            session_id,
+            auth_headers,
+            auth_params,
+        )
+        if managed is not None:
+            mapped = self._managed_to_session(managed)
+            return mapped if _is_live_session(mapped) else None
+        return await self._standalone_session(session_id, principal)
+
+    @staticmethod
+    def _managed_to_raven(runtime: dict[str, Any]) -> dict[str, Any]:
+        endpoints = runtime.get("endpoints") or []
+        chat_endpoint = next(
+            (
+                endpoint.get("url")
+                for endpoint in endpoints
+                if isinstance(endpoint, dict) and endpoint.get("kind") == "chat"
+            ),
+            None,
+        )
+        observed_state = str(
+            runtime.get("observed_state") or runtime.get("observedState") or "pending"
+        )
+        profile_id = str(runtime.get("profile_id") or runtime.get("profileId") or "")
+        return {
+            "id": str(runtime.get("id") or ""),
+            "persona_name": runtime.get("persona_name") or runtime.get("personaName") or "",
+            "resident_name": runtime.get("name") or "",
+            "peer_id": "",
+            "kind": "resident",
+            "status": _MANAGED_RAVEN_STATUS_MAP.get(observed_state, "idle"),
+            "model": runtime.get("model") or "",
+            "created_at": runtime.get("created_at") or runtime.get("createdAt"),
+            "updated_at": runtime.get("updated_at") or runtime.get("updatedAt"),
+            "chat_endpoint": chat_endpoint,
+            "session_id": str(runtime.get("id") or ""),
+            "location": "",
+            "deployment": runtime.get("backend") or "",
+            "backend": runtime.get("backend") or "",
+            "engine": runtime.get("engine") or "",
+            "profile_id": profile_id,
+            "desired_state": runtime.get("desired_state") or runtime.get("desiredState"),
+            "observed_state": observed_state,
+            "backend_ref": runtime.get("backend_ref") or runtime.get("backendRef") or {},
+            "endpoints": endpoints,
+            "capabilities": runtime.get("capabilities") or [],
+            "conditions": runtime.get("conditions") or [],
+            "message_count": runtime.get("message_count") or runtime.get("messageCount") or 0,
+            "tokens_used": runtime.get("tokens_used") or runtime.get("tokensUsed") or 0,
+            "cost": runtime.get("cost") or 0,
+            "managed": True,
+            "instance_id": runtime.get("instance_id") or runtime.get("instanceId") or "",
+            "instance_name": runtime.get("instance_name") or runtime.get("instanceName") or "",
+            "instance_slug": runtime.get("instance_slug") or runtime.get("instanceSlug") or "",
+        }
+
+    @classmethod
+    def _managed_to_session(cls, runtime: dict[str, Any]) -> dict[str, Any]:
+        raven = cls._managed_to_raven(runtime)
+        return {
+            "id": raven["id"],
+            "ravn_id": raven["id"],
+            "persona_name": raven["persona_name"],
+            "status": _MANAGED_SESSION_STATUS_MAP.get(raven["observed_state"], "idle"),
+            "model": raven["model"],
+            "created_at": raven["created_at"],
+            "chat_endpoint": raven["chat_endpoint"],
+            "title": raven["resident_name"],
+            "engine": raven["engine"],
+            "capabilities": raven["capabilities"],
+            "message_count": raven["message_count"],
+            "tokens_used": raven["tokens_used"],
+            "cost": raven["cost"],
+            "instance_id": raven["instance_id"],
+            "instance_name": raven["instance_name"],
+            "instance_slug": raven["instance_slug"],
+        }
+
+    @staticmethod
+    def _native_session(
+        session: dict[str, Any],
+        ravn_id: str,
+        persona_name: str = "resident-agent",
+    ) -> dict[str, Any]:
+        session_id = str(session.get("id") or "")
+        engine_status = str(session.get("status") or "idle")
+        return {
+            "id": session_id,
+            "ravn_id": ravn_id,
+            "persona_name": persona_name,
+            "status": "failed" if engine_status == "failed" else "running",
+            "model": session.get("model") or "",
+            "created_at": session.get("created_at") or session.get("createdAt"),
+            "updated_at": session.get("updated_at") or session.get("updatedAt"),
+            "chat_endpoint": f"/s/{ravn_id}/sessions/{session_id}/session",
+            "title": session.get("title") or "",
+            "message_count": session.get("message_count") or session.get("messageCount") or 0,
+            "tokens_used": session.get("tokens_used") or session.get("tokensUsed") or 0,
+            "cost": session.get("cost") or 0,
+            "instance_id": session.get("instance_id") or session.get("instanceId") or "",
+            "instance_name": session.get("instance_name") or session.get("instanceName") or "",
+            "instance_slug": session.get("instance_slug") or session.get("instanceSlug") or "",
+        }
 
     @staticmethod
     def _standalone_to_raven(resident: StandaloneResident) -> dict[str, Any]:
@@ -318,6 +610,15 @@ class ResidentDirectory:
             "session_id": resident.id,
             "location": resident.location,
             "deployment": "standalone",
+            "backend": "unknown",
+            "engine": "ravn",
+            "profile_id": "",
+            "desired_state": "running",
+            "observed_state": resident.status,
+            "backend_ref": {},
+            "capabilities": ["chat"],
+            "conditions": [],
+            "managed": False,
         }
 
     @staticmethod
@@ -331,7 +632,21 @@ class ResidentDirectory:
             "created_at": resident.created_at,
             "chat_endpoint": resident.chat_endpoint,
             "title": resident.resident_name,
+            "engine": "ravn",
+            "capabilities": ["chat"],
         }
+
+    @staticmethod
+    def _is_discovered_visible(resident: StandaloneResident, principal: Principal) -> bool:
+        if resident.visibility is InstanceVisibility.SYSTEM:
+            return True
+        if resident.visibility is InstanceVisibility.TENANT:
+            return bool(resident.tenant_id) and resident.tenant_id == principal.tenant_id
+        if resident.tenant_id and resident.tenant_id != principal.tenant_id:
+            return False
+        if resident.owner_id == principal.user_id:
+            return True
+        return bool(resident.tenant_id) and "volundr:admin" in principal.roles
 
 
 def _is_live_session(session: dict[str, Any]) -> bool:

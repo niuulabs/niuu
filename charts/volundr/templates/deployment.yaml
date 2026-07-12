@@ -155,6 +155,15 @@ spec:
                   name: {{ .secretName }}
                   key: {{ .secretKey }}
             {{- end }}
+            {{- range $index, $controller := .Values.residentRuntimeControllers }}
+            {{- range $controller.secretKwargs }}
+            - name: RESIDENT_CONTROLLER_{{ $index }}_SK_{{ .kwarg | upper }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
+            {{- end }}
             {{- range .Values.storageAdapter.secretKwargs }}
             - name: STORAGE_ADAPTER_SK_{{ .kwarg | upper }}
               valueFrom:

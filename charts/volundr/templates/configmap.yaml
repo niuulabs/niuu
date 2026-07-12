@@ -63,6 +63,57 @@ data:
       secret_kwargs_env: {}
       {{- end }}
 
+    resident_runtimes:
+      reconciliation_interval_seconds: {{ .Values.residentRuntimeReconciliationIntervalSeconds | default 10.0 }}
+      controllers:{{ if not .Values.residentRuntimeControllers }} []{{ else }}
+        {{- range $index, $controller := .Values.residentRuntimeControllers }}
+        - adapter: {{ $controller.adapter | quote }}
+          kwargs: {{ $controller.kwargs | default dict | toJson }}
+          {{- if $controller.secretKwargs }}
+          secret_kwargs_env:
+            {{- range $controller.secretKwargs }}
+            {{ .kwarg }}: RESIDENT_CONTROLLER_{{ $index }}_SK_{{ .kwarg | upper }}
+            {{- end }}
+          {{- else }}
+          secret_kwargs_env: {}
+          {{- end }}
+        {{- end }}
+        {{- end }}
+      {{- if .Values.residentRuntimeSessionControllers }}
+      session_controllers:
+        {{- range $index, $controller := .Values.residentRuntimeSessionControllers }}
+        - adapter: {{ $controller.adapter | quote }}
+          runtime_backend: {{ $controller.runtimeBackend | quote }}
+          optional: {{ $controller.optional | default false }}
+          kwargs: {{ $controller.kwargs | default dict | toJson }}
+          {{- if $controller.secretKwargs }}
+          secret_kwargs_env:
+            {{- range $controller.secretKwargs }}
+            {{ .kwarg }}: RESIDENT_SESSION_CONTROLLER_{{ $index }}_SK_{{ .kwarg | upper }}
+            {{- end }}
+          {{- else }}
+          secret_kwargs_env: {}
+          {{- end }}
+        {{- end }}
+      {{- end }}
+      profiles:{{ if not .Values.residentRuntimeProfiles }} []{{ else }}
+        {{- range .Values.residentRuntimeProfiles }}
+        - id: {{ .id | quote }}
+          enabled: {{ .enabled | default false }}
+          display_name: {{ .displayName | quote }}
+          description: {{ .description | default "" | quote }}
+          backend: {{ .backend | quote }}
+          engine: {{ .engine | quote }}
+          capabilities: {{ .capabilities | default list | toJson }}
+          default_model: {{ .defaultModel | default "" | quote }}
+          allowed_models: {{ .allowedModels | default list | toJson }}
+          catalog_vendors: {{ .catalogVendors | default list | toJson }}
+          model_prefix: {{ .modelPrefix | default "" | quote }}
+          labels: {{ .labels | default list | toJson }}
+          deployment: {{ .deployment | default dict | toJson }}
+        {{- end }}
+        {{- end }}
+
     chronicle:
       auto_create_on_stop: {{ .Values.chronicle.autoCreateOnStop | default true }}
       summary_model: {{ .Values.chronicle.summaryModel | default "claude-haiku-4-5-20251001" | quote }}
@@ -318,6 +369,7 @@ data:
     bifrost:
       url: {{ .Values.bifrost.url | quote }}
       timeout_seconds: {{ .Values.bifrost.timeoutSeconds | default 10.0 }}
+      catalog_refresh_interval_seconds: {{ .Values.bifrost.catalogRefreshIntervalSeconds | default 60.0 }}
       auth:
         adapter: {{ .Values.bifrost.auth.adapter | quote }}
         kwargs: {{ .Values.bifrost.auth.kwargs | toJson }}

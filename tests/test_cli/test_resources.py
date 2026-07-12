@@ -67,6 +67,28 @@ class TestMigrationDir:
 
         assert "000042_session_spans.up.sql" in migration_names
 
+    @pytest.mark.parametrize(
+        ("source_relative", "embedded_relative"),
+        [
+            ("migrations", "src/cli/migrations/volundr"),
+            ("migrations/ting", "src/cli/migrations/ting"),
+        ],
+    )
+    def test_embedded_migrations_match_source(
+        self,
+        source_relative: str,
+        embedded_relative: str,
+    ) -> None:
+        """Container and binary startup must not ship stale migration streams."""
+        repo_root = Path(__file__).resolve().parents[2]
+        source = repo_root / source_relative
+        embedded = repo_root / embedded_relative
+
+        source_files = {path.name: path.read_bytes() for path in source.glob("*.sql")}
+        embedded_files = {path.name: path.read_bytes() for path in embedded.glob("*.sql")}
+
+        assert embedded_files == source_files
+
     def test_ting_variant(self):
         """migration_dir('ting') returns a directory containing ting migrations."""
         result = migration_dir("ting")

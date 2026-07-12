@@ -260,6 +260,16 @@ database:
 #       sandbox_image: "ghcr.io/niuulabs/skuld:openshell-codex-openbao-20260709-7"
 #       sandbox_command: ["/usr/local/bin/openshell-run-installed-skuld"]
 #       sandbox_home: "/sandbox"
+#       sandbox_policy:                # OpenShell SandboxPolicy; required for real clients
+#         version: 1
+#         filesystem:
+#           include_workdir: true
+#           read_only: ["/bin", "/etc", "/lib", "/opt", "/usr"]
+#           read_write: ["/sandbox", "/run/secrets", "/tmp", "/dev/null"]
+#         process:
+#           run_as_user: sandbox
+#           run_as_group: sandbox
+#         network_policies: {}
 #       credential_token_endpoint: "http://niuu-volundr.volundr.svc.cluster.local/api/v1/internal/openshell/credential-token"
 #       volundr_api_url: "http://niuu-volundr.volundr.svc.cluster.local"
 #       workload_audience: "volundr-api"
@@ -287,6 +297,8 @@ bifrost:
   url: "http://127.0.0.1:8080"
   # -- HTTP timeout for catalog fetches
   timeoutSeconds: 10.0
+  # -- Interval between successful model catalog refreshes
+  catalogRefreshIntervalSeconds: 60.0
   auth:
     # -- Fully-qualified outbound auth adapter class
     adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
@@ -317,6 +329,53 @@ podManager:
   # -- Secret kwargs from K8s Secrets, merged into kwargs at runtime
   # Each entry: { kwarg: "name", secretName: "k8s-secret", secretKey: "key" }
   secretKwargs: []
+
+# Operator-approved resident deployment profiles for this target. Profiles are
+# hidden from the API until explicitly configured and enabled; backend-specific
+# deployment details remain server-side.
+residentRuntimeProfiles: []
+# - id: ravn-helm
+#   enabled: true
+#   displayName: Resident Ravn (Helm)
+#   description: Long-lived Ravn deployed through the existing Skuld chart
+#   backend: helmrelease
+#   engine: ravn
+#   capabilities: [chat, runtime.restart, runtime.suspend, logs, metrics, usage]
+#   defaultModel: claude-sonnet-4-6
+#   # Engine compatibility policy; only IDs currently enabled in Bifrost are exposed.
+#   allowedModels: [claude-sonnet-4-6]
+#   catalogVendors: [anthropic]
+#   modelPrefix: ""
+#   labels: [resident, ravn]
+#   deployment:
+#     values:
+#       persistence:
+#         enabled: true
+#         emptyDir: false
+#         existingClaim: volundr-sessions
+#       resident:
+#         persona: product-steward
+#         platform:
+#           enabled: true
+#           baseUrl: http://niuu-volundr.volundr.svc.cluster.local
+
+# Additional resident backend adapters. A PodManager that also implements the
+# resident controller port is registered automatically and should not be repeated.
+residentRuntimeControllers: []
+# - adapter: volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager
+#   kwargs: {}
+#   secretKwargs: []
+
+# Engine-protocol adapters behind resident runtime backends.
+residentRuntimeSessionControllers: []
+# - adapter: volundr.adapters.outbound.openclaw_gateway.OpenClawResidentSessionController
+#   runtimeBackend: openshell
+#   optional: false
+#   kwargs: {}
+#   secretKwargs: []
+
+# -- Seconds between resident HelmRelease/Deployment reconciliation passes
+residentRuntimeReconciliationIntervalSeconds: 10.0
 
 # Chronicle configuration
 chronicle:

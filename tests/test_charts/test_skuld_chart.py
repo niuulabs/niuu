@@ -454,6 +454,7 @@ class TestResidentWorkloadIdentityConfigFirst:
                 }
             ]
         },
+        "session": {"model": "gpt-5.6-sol", "reasoningEffort": "high"},
         "volundr": {"apiUrl": "https://volundr.example"},
     }
 
@@ -481,8 +482,10 @@ class TestResidentWorkloadIdentityConfigFirst:
         assert workload["exchange_url"] == (
             "https://volundr.example/api/v1/tokens/workload/exchange"
         )
+        assert broker_cfg["session"]["model"] == "gpt-5.6-sol"
+        assert broker_cfg["session"]["reasoning_effort"] == "high"
 
-    def test_resident_broker_does_not_report_as_forge_session(self, rendered):
+    def test_resident_broker_reports_usage_to_resident_runtime(self, rendered):
         configmaps = self._configmaps(rendered)
         broker_cfg = next(
             yaml.safe_load(cm["data"]["config.yaml"])
@@ -490,7 +493,60 @@ class TestResidentWorkloadIdentityConfigFirst:
             if "config.yaml" in cm.get("data", {})
             and "transport_adapter" in cm["data"]["config.yaml"]
         )
-        assert "volundr_api_url" not in broker_cfg
+        assert broker_cfg["volundr_api_url"] == "https://volundr.example"
+        assert broker_cfg["usage_report_path"] == ("/api/v1/forge/resident-runtimes/muninn/usage")
+
+    def test_resident_replica_count_supports_real_suspend_and_resume(self, tmp_path):
+        suspended = dict(self.RESIDENT_VALUES)
+        suspended["replicaCount"] = 0
+        rendered = _render_skuld_chart(tmp_path, suspended)
+
+        assert _deployment_from_rendered(rendered)["spec"]["replicas"] == 0
+
+    def test_resident_restart_never_overlaps_agent_replicas(self, rendered):
+        assert _deployment_from_rendered(rendered)["spec"]["strategy"] == {"type": "Recreate"}
+
+    def test_resident_name_annotation_can_be_supplied_by_control_plane(self, tmp_path):
+        values = dict(self.RESIDENT_VALUES)
+        values["podAnnotations"] = {
+            "niuu.world/resident-name": "managed-resident",
+            "niuu.world/resident-id": "resident-id",
+        }
+
+        rendered = _render_skuld_chart(tmp_path, values)
+        annotations = _deployment_from_rendered(rendered)["spec"]["template"]["metadata"][
+            "annotations"
+        ]
+
+        assert annotations["niuu.world/resident-name"] == "managed-resident"
+        assert annotations["niuu.world/resident-id"] == "resident-id"
+
+    def test_gateway_extracts_browser_websocket_token(self, tmp_path):
+        values = dict(self.RESIDENT_VALUES)
+        values["gateway"] = {
+            "enabled": True,
+            "jwt": {
+                "enabled": True,
+                "issuer": "https://keycloak.example/realms/volundr",
+                "audiences": ["volundr-api"],
+                "jwksUri": "https://keycloak.example/certs",
+                "workload": {
+                    "enabled": True,
+                    "issuer": "https://volundr.example/workload",
+                    "audiences": ["volundr-api"],
+                    "jwksUri": "https://volundr.example/workload/jwks",
+                },
+            },
+        }
+        rendered = _render_skuld_chart(tmp_path, values)
+        policy = next(
+            doc
+            for doc in yaml.safe_load_all(rendered)
+            if isinstance(doc, dict) and doc.get("kind") == "SecurityPolicy"
+        )
+
+        for provider in policy["spec"]["jwt"]["providers"]:
+            assert provider["extractFrom"]["params"] == ["access_token", "token"]
 
     def test_pod_has_no_workload_identity_env_vars(self, rendered):
         deployment = _deployment_from_rendered(rendered)
@@ -547,6 +603,22 @@ class TestResidentWorkloadIdentityConfigFirst:
             ravn_cfg["gateway"]["platform"]["workload_exchange_url"]
             == "https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange"
         )
+
+    def test_resident_wakefulness_is_rendered(self, tmp_path):
+        values = dict(self.RESIDENT_VALUES)
+        values["resident"] = {
+            **values["resident"],
+            "wakefulness": {"enabled": True, "silence_threshold_seconds": 900},
+        }
+        rendered = _render_skuld_chart(tmp_path, values)
+        configmaps = self._configmaps(rendered)
+        ravn_cm = next(cm for name, cm in configmaps.items() if name.endswith("-ravn-config"))
+        ravn_cfg = yaml.safe_load(ravn_cm["data"]["config.yaml"])
+
+        assert ravn_cfg["wakefulness"] == {
+            "enabled": True,
+            "silence_threshold_seconds": 900,
+        }
 
     def test_default_render_has_no_workload_identity_config(self, tmp_path):
         rendered = _render_skuld_chart(tmp_path, {})

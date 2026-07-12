@@ -10,9 +10,12 @@ from volundr.config import Settings
 from volundr.domain.ports import (
     ArchiveStorePort,
     AuthorizationPort,
+    CredentialStorePort,
     ExternalSessionProvider,
     GatewayPort,
     PodManager,
+    ResidentRuntimeController,
+    ResidentSessionController,
     ResourceProvider,
     SecretInjectionPort,
     SessionContributor,
@@ -38,6 +41,62 @@ def _create_pod_manager(settings: Settings) -> PodManager:
     instance = cls(**kwargs)
     logger.info("Pod manager: %s", pm_cfg.adapter.rsplit(".", 1)[-1])
     return instance
+
+
+def _create_resident_controllers(
+    settings: Settings,
+    pod_manager: PodManager,
+) -> list[ResidentRuntimeController]:
+    """Create configured resident backend adapters through the shared port."""
+    controllers: list[ResidentRuntimeController] = []
+    if isinstance(pod_manager, ResidentRuntimeController):
+        controllers.append(pod_manager)
+
+    for config in settings.resident_runtimes.controllers:
+        cls = import_class(config.adapter)
+        kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
+        instance = cls(**kwargs)
+        if not isinstance(instance, ResidentRuntimeController):
+            raise TypeError(
+                f"Resident controller {config.adapter} must implement ResidentRuntimeController"
+            )
+        controllers.append(instance)
+        logger.info("Resident controller: %s", config.adapter.rsplit(".", 1)[-1])
+    return controllers
+
+
+def _create_resident_session_controllers(
+    settings: Settings,
+    runtime_controllers: list[ResidentRuntimeController],
+    credential_store: CredentialStorePort,
+) -> list[ResidentSessionController]:
+    """Create configured engine adapters against their owning runtime backend."""
+    controllers_by_backend = {controller.backend: controller for controller in runtime_controllers}
+    session_controllers: list[ResidentSessionController] = []
+    for config in settings.resident_runtimes.session_controllers:
+        runtime_controller = controllers_by_backend.get(config.runtime_backend)
+        if runtime_controller is None:
+            if config.optional:
+                continue
+            raise RuntimeError(
+                "Resident session controller "
+                f"{config.adapter} requires unavailable backend {config.runtime_backend.value}"
+            )
+        cls = import_class(config.adapter)
+        kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
+        instance = cls(
+            runtime_controller=runtime_controller,
+            credential_store=credential_store,
+            **kwargs,
+        )
+        if not isinstance(instance, ResidentSessionController):
+            raise TypeError(
+                f"Resident session controller {config.adapter} must implement "
+                "ResidentSessionController"
+            )
+        session_controllers.append(instance)
+        logger.info("Resident session controller: %s", config.adapter.rsplit(".", 1)[-1])
+    return session_controllers
 
 
 def _runtime_backend(settings: Settings) -> str:

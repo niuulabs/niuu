@@ -1,4 +1,12 @@
-import { useCallback, useMemo, useState, useRef, useEffect, type ReactNode } from 'react';
+import {
+  useCallback,
+  useMemo,
+  useState,
+  useRef,
+  useEffect,
+  type FormEvent,
+  type ReactNode,
+} from 'react';
 import {
   Wifi,
   WifiOff,
@@ -26,6 +34,7 @@ import type {
   AgentInternalEvent,
   ChatMessage,
   ChatMessagePart,
+  InputRequest,
   RoomParticipant,
   MeshEvent,
   PermissionRequest,
@@ -110,6 +119,125 @@ function formatOutcomeDialogContent(
   return formatOutcomeMarkdown(event);
 }
 
+function DefaultPermissionRequests({
+  permissions,
+  onRespond,
+}: {
+  permissions: PermissionRequest[];
+  onRespond: (requestId: string, behavior: PermissionBehavior) => void;
+}) {
+  return (
+    <div className="niuu-chat-request-list" role="region" aria-label="Pending approvals">
+      {permissions.map((permission) => (
+        <section className="niuu-chat-request" key={permission.requestId}>
+          <div className="niuu-chat-request-copy">
+            <strong className="niuu-chat-request-title">Approval required</strong>
+            <span className="niuu-chat-request-tool">{permission.toolName}</span>
+            <p className="niuu-chat-request-prompt">{permission.description}</p>
+          </div>
+          <div className="niuu-chat-request-actions">
+            <button
+              type="button"
+              className="niuu-chat-request-button niuu-chat-request-button--deny"
+              onClick={() => onRespond(permission.requestId, 'deny')}
+            >
+              Deny
+            </button>
+            <button
+              type="button"
+              className="niuu-chat-request-button"
+              onClick={() => onRespond(permission.requestId, 'allow_once')}
+            >
+              Allow once
+            </button>
+            <button
+              type="button"
+              className="niuu-chat-request-button niuu-chat-request-button--primary"
+              onClick={() => onRespond(permission.requestId, 'allow_always')}
+            >
+              Always allow
+            </button>
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function InputRequestForm({
+  request,
+  onRespond,
+}: {
+  request: InputRequest;
+  onRespond: (requestId: string, values: string[]) => void;
+}) {
+  const [values, setValues] = useState(() => request.questions.map(() => ''));
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const responses = values.map((value) => value.trim());
+    if (responses.some((value) => !value)) return;
+    onRespond(request.requestId, responses);
+  };
+
+  return (
+    <section className="niuu-chat-request">
+      <form className="niuu-chat-request-copy" onSubmit={submit}>
+        <strong className="niuu-chat-request-title">Input required</strong>
+        {request.questions.map((question, index) => {
+          const inputId = `input-request-${request.requestId}-${index}`;
+          return (
+            <div className="niuu-chat-request-question" key={inputId}>
+              <label className="niuu-chat-request-prompt" htmlFor={inputId}>
+                {question.prompt}
+              </label>
+              {question.choices.length > 0 && (
+                <div className="niuu-chat-request-choices" aria-label="Suggested responses">
+                  {question.choices.map((choice) => (
+                    <button
+                      type="button"
+                      className="niuu-chat-request-button"
+                      key={choice}
+                      onClick={() =>
+                        setValues((current) =>
+                          current.map((value, valueIndex) =>
+                            valueIndex === index ? choice : value,
+                          ),
+                        )
+                      }
+                    >
+                      {choice}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <input
+                id={inputId}
+                className="niuu-chat-request-input"
+                value={values[index] ?? ''}
+                onChange={(event) =>
+                  setValues((current) =>
+                    current.map((value, valueIndex) =>
+                      valueIndex === index ? event.target.value : value,
+                    ),
+                  )
+                }
+                placeholder="Type a response"
+              />
+            </div>
+          );
+        })}
+        <button
+          type="submit"
+          className="niuu-chat-request-button niuu-chat-request-button--primary"
+          disabled={values.some((value) => !value.trim())}
+        >
+          Submit
+        </button>
+      </form>
+    </section>
+  );
+}
+
 export interface SessionChatProps {
   /** All completed messages */
   messages: readonly ChatMessage[];
@@ -131,6 +259,8 @@ export interface SessionChatProps {
   agentEvents?: ReadonlyMap<string, readonly AgentInternalEvent[]>;
   /** Pending permission requests */
   pendingPermissions?: PermissionRequest[];
+  /** Pending clarification requests */
+  pendingInputRequests?: InputRequest[];
   /** Available slash commands */
   availableCommands?: readonly SlashCommand[];
   /** Which server-side capabilities are active */
@@ -173,6 +303,7 @@ export interface SessionChatProps {
   onRegenerate?: (messageId: string) => void;
   onBookmark?: (messageId: string, bookmarked: boolean) => void;
   onPermissionRespond?: (requestId: string, behavior: PermissionBehavior) => void;
+  onInputRespond?: (requestId: string, values: string[]) => void;
   onFetchFiles?: (path: string, apiBase: string) => Promise<FileEntry[]>;
   onMessageCountChange?: (count: number) => void;
 
@@ -199,6 +330,7 @@ export function SessionChat({
   meshEvents = [],
   agentEvents = new Map(),
   pendingPermissions = [],
+  pendingInputRequests = [],
   availableCommands,
   capabilities = {},
   sessionHost = null,
@@ -220,6 +352,7 @@ export function SessionChat({
   onRegenerate,
   onBookmark,
   onPermissionRespond,
+  onInputRespond,
   onFetchFiles,
   onMessageCountChange,
   renderPermissions,
@@ -471,6 +604,13 @@ export function SessionChat({
       onPermissionRespond?.(requestId, behavior);
     },
     [onPermissionRespond],
+  );
+
+  const handleInputRespond = useCallback(
+    (requestId: string, values: string[]) => {
+      onInputRespond?.(requestId, values);
+    },
+    [onInputRespond],
   );
 
   const handleSelectAgent = useCallback(
@@ -827,9 +967,30 @@ export function SessionChat({
         {/* ── Input area ── */}
         <div className="niuu-chat-input-area-outer">
           <div className="niuu-chat-input-area-inner">
-            {pendingPermissions.length > 0 && renderPermissions
-              ? renderPermissions(pendingPermissions, handlePermissionRespond)
-              : null}
+            {pendingPermissions.length > 0 &&
+              (renderPermissions ? (
+                renderPermissions(pendingPermissions, handlePermissionRespond)
+              ) : (
+                <DefaultPermissionRequests
+                  permissions={pendingPermissions}
+                  onRespond={handlePermissionRespond}
+                />
+              ))}
+            {pendingInputRequests.length > 0 && (
+              <div
+                className="niuu-chat-request-list"
+                role="region"
+                aria-label="Pending input requests"
+              >
+                {pendingInputRequests.map((request) => (
+                  <InputRequestForm
+                    key={request.requestId}
+                    request={request}
+                    onRespond={handleInputRespond}
+                  />
+                ))}
+              </div>
+            )}
             <ChatInput
               onSend={handleSend}
               onSendDirected={handleSendDirected}

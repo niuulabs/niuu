@@ -562,6 +562,25 @@ def test_serialise_includes_source_when_peer_id_provided():
     assert data["source"] == "ravn-agent-1"
 
 
+def test_serialise_usage_preserves_structured_payload():
+    ch = _make_channel()
+    event = RavnEvent.usage(
+        _SRC,
+        model="gpt-5.6-sol",
+        input_tokens=10,
+        output_tokens=5,
+        usage_id="usage-1",
+        correlation_id=_CID,
+        session_id=_SID,
+    )
+
+    data = json.loads(ch._serialise(event).strip())
+
+    assert data["type"] == "usage"
+    assert data["data"]["model"] == "gpt-5.6-sol"
+    assert data["data"]["inputTokens"] == 10
+
+
 def test_serialise_includes_persona_when_provided():
     ch = SkuldChannel(
         broker_url="ws://localhost:9000/ws/ravn/p1",

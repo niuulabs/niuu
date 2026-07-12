@@ -15,10 +15,10 @@
 
 .rv-rs__rail {
   display: flex;
-  width: 310px;
-  min-width: 310px;
-  max-width: 310px;
-  flex: 0 0 310px;
+  width: 350px;
+  min-width: 350px;
+  max-width: 350px;
+  flex: 0 0 350px;
   flex-direction: column;
   overflow: hidden;
   border-right: 1px solid rgba(156, 164, 177, 0.16);
@@ -107,23 +107,54 @@
 }
 
 .rv-rs__group {
-  padding-top: 8px;
+  border-bottom: 1px solid rgba(156, 164, 177, 0.13);
+  padding: 12px 0 6px;
 }
 
 .rv-rs__group-head {
-  display: flex;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 18px 8px;
+  gap: 10px;
+  padding: 0 16px 10px;
 }
 
-.rv-rs__group-label,
+.rv-rs__group-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.rv-rs__group-label {
+  overflow: hidden;
+  color: #dce2e9;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rv-rs__group-meta,
 .rv-rs__group-count {
   color: #727b87;
   font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: lowercase;
+  font-size: 10px;
+}
+
+.rv-rs__group-meta {
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rv-rs__group-count {
+  min-width: 28px;
+  border: 1px solid rgba(156, 164, 177, 0.18);
+  border-radius: 6px;
+  padding: 3px 5px;
+  color: #aab3bf;
+  text-align: center;
 }
 
 .rv-rs__group-body {
@@ -133,14 +164,14 @@
 
 .rv-rs__session {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  gap: 12px;
-  align-items: start;
+  grid-template-columns: 12px minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
   border: 0;
   border-left: 2px solid transparent;
   border-bottom: 1px solid rgba(156, 164, 177, 0.08);
   background: transparent;
-  padding: 12px 18px;
+  padding: 10px 16px 10px 26px;
   color: #d5dae2;
   text-align: left;
   cursor: pointer;
@@ -157,6 +188,12 @@
 
 .rv-rs__session-main {
   min-width: 0;
+}
+
+.rv-rs__session-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .rv-rs__session-title {
@@ -380,6 +417,19 @@
 
 .rv-rs__observability-panel--trace {
   overflow: auto;
+}
+
+.rv-rs__observability-empty {
+  display: flex;
+  min-height: 180px;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: #090a0d;
+  color: #7c8490;
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 
 .rv-rs__body {
@@ -899,9 +949,9 @@
   }
 
   .rv-rs__rail {
-    width: 290px;
-    min-width: 290px;
-    max-width: 290px;
+    width: 330px;
+    min-width: 330px;
+    max-width: 330px;
   }
 }
 
@@ -938,5 +988,40 @@
   .rv-rs__chat {
     border-right: 0;
     border-bottom: 1px solid rgba(156, 164, 177, 0.14);
+  }
+}
+
+@media (max-width: 640px) {
+  .rv-rs__head {
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px 18px 14px;
+  }
+
+  .rv-rs__head-left,
+  .rv-rs__head-right {
+    width: 100%;
+  }
+
+  .rv-rs__title-row,
+  .rv-rs__head-right,
+  .rv-rs__metrics {
+    flex-wrap: wrap;
+  }
+
+  .rv-rs__title-row {
+    align-items: flex-start;
+  }
+
+  .rv-rs__head-right {
+    justify-content: space-between;
+  }
+
+  .rv-rs__metrics {
+    gap: 8px 14px;
+  }
+
+  .rv-rs__surface-tabs {
+    padding: 0 18px;
   }
 }
