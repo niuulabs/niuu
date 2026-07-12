@@ -76,6 +76,61 @@ describe('RavensPage', () => {
     expect(screen.getAllByText(/sindri/i).length).toBeGreaterThan(0);
   });
 
+  it('pins the displayed resident across refreshed list ordering', async () => {
+    const first = {
+      id: '11111111-1111-4111-8111-111111111111',
+      personaName: 'coder',
+      residentName: 'First resident',
+      status: 'active' as const,
+      model: 'qwen3.5',
+      createdAt: '2026-07-11T20:00:00Z',
+      managed: true,
+      kind: 'resident' as const,
+      backend: 'openshell' as const,
+      engine: 'hermes' as const,
+      desiredState: 'running' as const,
+      observedState: 'active' as const,
+      capabilities: ['runtime.restart' as const],
+      instanceId: 'target-a',
+      instanceName: 'Alpha',
+    };
+    const second = {
+      ...first,
+      id: '22222222-2222-4222-8222-222222222222',
+      residentName: 'Second resident',
+    };
+    const listRavens = vi
+      .fn()
+      .mockResolvedValueOnce([first, second])
+      .mockResolvedValue([second, first]);
+    const applyLifecycle = vi.fn().mockResolvedValue(first);
+    const services = makeServices({
+      'ravn.ravens': { listRavens, getRaven: vi.fn() },
+      'ravn.residents': {
+        ...makeServices()['ravn.residents'],
+        applyLifecycle,
+      },
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const Wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={client}>
+        <ServicesProvider services={services}>{children}</ServicesProvider>
+      </QueryClientProvider>
+    );
+
+    render(<RavensPage />, { wrapper: Wrapper });
+
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'First resident' })).toBeVisible(),
+    );
+    await client.invalidateQueries({ queryKey: ['ravn', 'ravens'] });
+    await waitFor(() => expect(listRavens).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('heading', { name: 'First resident' })).toBeVisible();
+
+    fireEvent.click(screen.getByTestId('resident-restart'));
+    await waitFor(() => expect(applyLifecycle).toHaveBeenCalledWith(first, 'restart'));
+  });
+
   it('filters the fleet list from the left rail search', async () => {
     render(<RavensPage />, { wrapper: wrap() });
 

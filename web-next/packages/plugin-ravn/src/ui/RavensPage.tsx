@@ -172,18 +172,42 @@ function FleetGroupHeader({ label, count }: FleetGroupProps) {
 }
 
 export function RavensPage() {
+  const { data: ravens, isLoading, isError, error } = useRavens();
+
+  if (isLoading) {
+    return (
+      <div data-testid="ravens-loading">
+        <LoadingState label="Loading ravens…" />
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div data-testid="ravens-error">
+        <ErrorState message={error instanceof Error ? error.message : 'Failed to load ravens'} />
+      </div>
+    );
+  }
+
+  const ravnList = ravens ?? [];
+  return <RavensFleet key={ravnList.length === 0 ? 'empty' : 'populated'} ravens={ravnList} />;
+}
+
+function RavensFleet({ ravens }: { ravens: Ravn[] }) {
   const [groupBy, setGroupBy] = useState<GroupKey>(() =>
     loadStorage<GroupKey>(GROUP_STORAGE_KEY, 'location'),
   );
   const [searchQuery, setSearchQuery] = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [selectedRavnId, setSelectedRavnId] = useState<string | null>(null);
+  const [selectedRavnId, setSelectedRavnId] = useState<string | null>(() =>
+    pickDefaultRavn(ravens),
+  );
   const [deployOpen, setDeployOpen] = useState(false);
 
-  const { data: ravens, isLoading, isError, error } = useRavens();
   const { data: sessions } = useSessions();
 
-  const ravnList = useMemo(() => ravens ?? [], [ravens]);
+  const ravnList = useMemo(() => ravens, [ravens]);
   const budgets = useRavnBudgets(ravnList.map((ravn) => ravn.id));
   const resolvedSelectedRavnId =
     ravnList.find((ravn) => ravnKey(ravn) === selectedRavnId) !== undefined
@@ -220,22 +244,6 @@ export function RavensPage() {
 
   const activeCount = ravnList.filter((ravn) => ravn.status === 'active').length;
   const failedCount = ravnList.filter((ravn) => ravn.status === 'failed').length;
-
-  if (isLoading) {
-    return (
-      <div data-testid="ravens-loading">
-        <LoadingState label="Loading ravens…" />
-      </div>
-    );
-  }
-
-  if (isError) {
-    return (
-      <div data-testid="ravens-error">
-        <ErrorState message={error instanceof Error ? error.message : 'Failed to load ravens'} />
-      </div>
-    );
-  }
 
   return (
     <div data-testid="ravens-page" className="rv-ravens">
