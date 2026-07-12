@@ -34,7 +34,6 @@ ALLOWLIST = {
     ("ravn/warden/store.py", "RAVN_WARDENS_DIR"): "standalone local store bootstrap",
     ("skuld/room_bridge.py", "RAVN_ENVIRONMENT_ID"): "supervisor-injected sidecar identity",
     ("skuld/transports/claude_env.py", "SKULD__CLAUDE_AUTH"): "child auth environment filtering",
-    ("skuld/transports/codex.py", "SKULD_CODEX_SANDBOX"): "Codex child compatibility override",
     ("skuld/transports/tmux_interactive.py", "SKULD__CLAUDE_AUTH"): "tmux child auth filtering",
     (
         "skuld/transports/tmux_interactive.py",
