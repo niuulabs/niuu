@@ -324,6 +324,14 @@ async def test_chat_stream_normalizes_history_approval_tools_and_usage() -> None
         }
         history = await chat.receive()
         assert [turn["content"] for turn in history["turns"]] == ["Earlier", "Reply"]
+        assert "participant_meta" not in history["turns"][0]
+        assert history["turns"][1]["participant_meta"] == {
+            "peer_id": "hermes-primary",
+            "persona": "NemoHermes",
+            "display_name": "NemoHermes",
+            "participant_type": "resident",
+            "status": "idle",
+        }
 
         await chat.send({"type": "user", "request_id": "u1", "content": "Run the command"})
         assert (await chat.receive())["type"] == "user_confirmed"
@@ -346,6 +354,8 @@ async def test_chat_stream_normalizes_history_approval_tools_and_usage() -> None
             "content_block_delta",
             "result",
         }
+        assistant = next(frame for frame in post_approval if frame["type"] == "assistant")
+        assert assistant["participant"] == history["turns"][1]["participant_meta"]
         delta = next(frame for frame in post_approval if frame["type"] == "content_block_delta")
         assert delta["delta"]["text"] == "API_OK"
         result = next(frame for frame in post_approval if frame["type"] == "result")

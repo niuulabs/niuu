@@ -541,6 +541,9 @@ class ResidentDirectory:
             "tokens_used": runtime.get("tokens_used") or runtime.get("tokensUsed") or 0,
             "cost": runtime.get("cost") or 0,
             "managed": True,
+            "instance_id": runtime.get("instance_id") or runtime.get("instanceId") or "",
+            "instance_name": runtime.get("instance_name") or runtime.get("instanceName") or "",
+            "instance_slug": runtime.get("instance_slug") or runtime.get("instanceSlug") or "",
         }
 
     @classmethod
@@ -560,6 +563,9 @@ class ResidentDirectory:
             "message_count": raven["message_count"],
             "tokens_used": raven["tokens_used"],
             "cost": raven["cost"],
+            "instance_id": raven["instance_id"],
+            "instance_name": raven["instance_name"],
+            "instance_slug": raven["instance_slug"],
         }
 
     @staticmethod
@@ -583,6 +589,9 @@ class ResidentDirectory:
             "message_count": session.get("message_count") or session.get("messageCount") or 0,
             "tokens_used": session.get("tokens_used") or session.get("tokensUsed") or 0,
             "cost": session.get("cost") or 0,
+            "instance_id": session.get("instance_id") or session.get("instanceId") or "",
+            "instance_name": session.get("instance_name") or session.get("instanceName") or "",
+            "instance_slug": session.get("instance_slug") or session.get("instanceSlug") or "",
         }
 
     @staticmethod

@@ -1008,6 +1008,36 @@ class TestRootServerBuildApp:
         assert client.get("/api/v1/forge/ping").json() == {"pong": "guild"}
         assert client.get("/api/v1/volundr/ping").json() == {"pong": "volundr"}
 
+    def test_build_root_app_passes_session_registry_to_volundr(self) -> None:
+        captured: dict[str, object | None] = {}
+
+        class VolundrPlugin(FakePlugin):
+            def create_api_app(self, *, skuld_registry=None):
+                captured["skuld_registry"] = skuld_registry
+                return FastAPI()
+
+            def api_route_domains(self):
+                return (
+                    APIRouteDomain(
+                        name="catalog-api",
+                        prefixes=("/api/v1/volundr",),
+                    ),
+                )
+
+        registry = PluginRegistry()
+        registry.register(VolundrPlugin(name="volundr"))
+        skuld_registry = SkuldPortRegistry()
+
+        build_root_app(
+            registry=registry,
+            host="127.0.0.1",
+            port=8080,
+            enabled_mounts={"catalog-api", "skuld-proxy"},
+            skuld_registry=skuld_registry,
+        )
+
+        assert captured["skuld_registry"] is skuld_registry
+
     def test_build_root_app_with_explicit_mounts_only_exposes_selected_routes(self) -> None:
         niuu_app = FastAPI()
 

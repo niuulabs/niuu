@@ -955,7 +955,17 @@ export function useSkuldChat(
       for (const event of events) {
         switch (event.type) {
           case 'assistant': {
-            ensureSingleParticipant();
+            const explicitParticipant = parseParticipantMeta(event.participant);
+            if (explicitParticipant) {
+              setParticipants((prev) => {
+                const next = new Map(prev);
+                next.delete(SINGLE_PARTICIPANT_ID);
+                next.set(explicitParticipant.peerId, explicitParticipant);
+                return next;
+              });
+            } else {
+              ensureSingleParticipant();
+            }
             if (streamingMessageIdRef.current) finalizeStreaming();
             const initialContent =
               event.message?.content
@@ -963,7 +973,7 @@ export function useSkuldChat(
                 .map((entry) => entry.text)
                 .join('') ?? '';
             const messageId = generateId();
-            const participant = getDefaultAssistantParticipant();
+            const participant = explicitParticipant ?? getDefaultAssistantParticipant();
             streamingMessageIdRef.current = messageId;
             streamingTextRef.current = initialContent;
             streamingPartsRef.current = initialContent

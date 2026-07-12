@@ -20,7 +20,7 @@ export const ravnMountSchema = z.object({
 
 export type RavnMount = z.infer<typeof ravnMountSchema>;
 
-export const residentBackendSchema = z.enum(['helmrelease', 'openshell']);
+export const residentBackendSchema = z.enum(['helmrelease', 'openshell', 'local']);
 export type ResidentBackend = z.infer<typeof residentBackendSchema>;
 
 export const residentEngineSchema = z.enum(['ravn', 'openclaw', 'hermes']);

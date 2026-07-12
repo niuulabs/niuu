@@ -172,7 +172,11 @@ class TestListRavens:
 
     @respx.mock
     async def test_managed_resident_is_authoritative_over_discovery(self):
-        managed = _managed_runtime()
+        managed = _managed_runtime(
+            instance_id="target-local",
+            instance_name="Local Forge",
+            instance_slug="local",
+        )
         directory = _directory(
             managed=[managed],
             discovery=_StaticDiscovery([_standalone(id=managed["id"])]),
@@ -186,6 +190,7 @@ class TestListRavens:
         assert ravens[0]["profile_id"] == "ravn-openshell"
         assert ravens[0]["chat_endpoint"] == "/s/muninn"
         assert ravens[0]["status"] == "active"
+        assert ravens[0]["instance_id"] == "target-local"
 
     @respx.mock
     async def test_discovery_visibility_is_owner_and_tenant_scoped(self):
@@ -466,6 +471,9 @@ class TestListSessions:
                         "title": "Persistent work",
                         "status": "idle",
                         "model": "openai/gpt-5.6",
+                        "instance_id": "target-local",
+                        "instance_name": "Local Forge",
+                        "instance_slug": "local",
                     }
                 ],
             )
@@ -477,6 +485,7 @@ class TestListSessions:
         assert [session["id"] for session in sessions] == [native_id]
         assert sessions[0]["ravn_id"] == runtime["id"]
         assert sessions[0]["chat_endpoint"] == (f"/s/{runtime['id']}/sessions/{native_id}/session")
+        assert sessions[0]["instance_id"] == "target-local"
 
     @respx.mock
     async def test_lists_only_flock_sessions_with_chat(self):

@@ -141,6 +141,90 @@ def test_list_sessions_can_dispatch_to_embedded_local_target() -> None:
     ]
 
 
+def test_resident_control_dispatches_through_embedded_target() -> None:
+    embedded = FastAPI()
+    runtime = {
+        "id": "resident-1",
+        "name": "Local NemoClaw",
+        "backend": "local",
+        "engine": "openclaw",
+    }
+
+    @embedded.get("/api/v1/forge/resident-profiles")
+    async def profiles() -> list[dict[str, Any]]:
+        return [{"id": "nemoclaw-local", "backend": "local", "engine": "openclaw"}]
+
+    @embedded.get("/api/v1/forge/resident-runtimes")
+    async def runtimes() -> list[dict[str, Any]]:
+        return [runtime]
+
+    @embedded.post("/api/v1/forge/resident-runtimes", status_code=201)
+    async def create_runtime(body: dict[str, Any]) -> dict[str, Any]:
+        assert body["profile_id"] == "nemoclaw-local"
+        assert "instance_id" not in body
+        return runtime
+
+    @embedded.get("/api/v1/forge/resident-runtimes/{runtime_id}")
+    async def get_runtime(runtime_id: str) -> dict[str, Any]:
+        assert runtime_id == runtime["id"]
+        return runtime
+
+    @embedded.post("/api/v1/forge/resident-runtimes/{runtime_id}/restart")
+    async def restart_runtime(runtime_id: str) -> dict[str, Any]:
+        return {**runtime, "id": runtime_id, "observed_state": "active"}
+
+    @embedded.get("/api/v1/forge/resident-runtimes/{runtime_id}/sessions")
+    async def list_native_sessions(runtime_id: str) -> list[dict[str, Any]]:
+        return [{"id": "session-1", "resident_id": runtime_id}]
+
+    @embedded.post("/api/v1/forge/resident-runtimes/{runtime_id}/sessions", status_code=201)
+    async def create_native_session(runtime_id: str) -> dict[str, Any]:
+        return {"id": "session-2", "resident_id": runtime_id}
+
+    client = _client(
+        [
+            _instance(
+                "local",
+                base_url="embedded://local-forge",
+                is_default=True,
+                config={"transport": "embedded"},
+            )
+        ],
+        embedded_forge_app=embedded,
+    )
+
+    profiles_response = client.get("/api/v1/forge/resident-profiles", headers=_headers())
+    assert profiles_response.status_code == 200
+    assert profiles_response.json()[0]["instance_id"] == "local"
+    assert client.get("/api/v1/forge/resident-runtimes", headers=_headers()).status_code == 200
+    created = client.post(
+        "/api/v1/forge/resident-runtimes",
+        headers=_headers(),
+        json={"profile_id": "nemoclaw-local", "name": "Nemo", "instance_id": "local"},
+    )
+    assert created.status_code == 201
+    assert created.json()["instance_id"] == "local"
+    assert (
+        client.post(
+            "/api/v1/forge/resident-runtimes/resident-1/restart",
+            headers=_headers(),
+        ).status_code
+        == 200
+    )
+    sessions = client.get(
+        "/api/v1/forge/resident-runtimes/resident-1/sessions",
+        headers=_headers(),
+    )
+    assert sessions.json()[0]["instance_id"] == "local"
+    created_session = client.post(
+        "/api/v1/forge/resident-runtimes/resident-1/sessions",
+        headers=_headers(),
+        json={"title": "New session"},
+    )
+    assert created_session.status_code == 201
+    assert created_session.json()["instance_id"] == "local"
+
+
 def test_embedded_target_fails_loud_without_local_app() -> None:
     client = _client(
         [

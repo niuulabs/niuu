@@ -37,6 +37,44 @@ not create a Forge Session row or a parallel OpenShell client. OpenShell profile
 support chat, restart, gateway logs, and Skuld usage reporting; they must not
 advertise suspend or metrics.
 
+### Local mini runtime
+
+Mini mode composes the same resident control port with
+`LocalContainerResidentRuntimeController`. The adapter uses the Docker API to
+run the configured Ravn, NemoClaw, or NemoHermes image without Kubernetes. The
+Ravn deployment wizard therefore remains unchanged: select `Local Forge`, then
+one of `ravn-local`, `nemoclaw-local`, or `nemohermes-local`.
+
+Configure the models the local Bifröst can actually route in `~/.niuu/config.yaml`:
+
+```yaml
+bifrost:
+  providers:
+    local-vllm:
+      base_url: https://vllm.example.test
+      models:
+        - nvidia/nemotron-3-super
+      # Optional credentials stay in an environment variable, not this file.
+      api_key_env: LOCAL_VLLM_API_KEY
+```
+
+Mini passes this configuration to its hosted Bifröst and derives the resident
+profile model choices from the configured provider models. `./start-dev` binds
+the server on all host interfaces while publishing its detected LAN address;
+resident containers call the shared host through `host.docker.internal`.
+
+Each resident receives a private loopback-only host port and durable directories
+under `~/.niuu/residents/<resident-id>/`: `workspace`, `.volundr`, `.codex`, and
+`.claude`. Existing Codex and Claude credential files are copied with mode
+`0600` only when the resident's durable destination does not exist. Restart and
+suspend preserve these directories; deleting the resident removes its container,
+durable directory, and engine machine credential unless retention is configured.
+
+The browser still reaches chat through `/s/<resident-id>/sessions/<session-id>/session`.
+The root host sends that route to Guild, Guild authorizes the owning target, and
+embedded mini targets call the existing Volundr resident service directly. No
+local-only Ravn API or alternate chat protocol is involved.
+
 Configure persistent storage in the profile when suspend/resume must retain
 workspace data. Suspension sets the existing chart's `replicaCount` to `0` and
 resume restores it to `1`; `emptyDir` data does not survive that transition.

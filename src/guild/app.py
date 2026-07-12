@@ -107,7 +107,12 @@ def create_app(
                     embedded_forge_app=embedded_forge_app,
                 )
             )
-            app.include_router(create_ravn_session_proxy_router(instance_service))
+            app.include_router(
+                create_ravn_session_proxy_router(
+                    instance_service,
+                    embedded_forge_app=embedded_forge_app,
+                )
+            )
             app.include_router(create_workload_identity_jwks_router())
 
             yield

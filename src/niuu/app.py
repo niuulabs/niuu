@@ -159,6 +159,7 @@ HOST_PROFILES: dict[str, frozenset[str]] = {
 _STATIC_ROUTE_PREFIXES: dict[str, tuple[str, ...]] = {
     "skuld-proxy": (
         "/s/{session_id}/session",
+        "/s/{ravn_id}/sessions/{session_id}/session",
         "/s/{session_id}/ws/ravn/{peer_id}",
         "/s/{session_id}/api/{path:path}",
         "/s/{session_id}/health",
@@ -256,6 +257,27 @@ class _PrefixDispatchMiddleware:
                 if raw_path:
                     delegated_scope["raw_path"] = raw_path[len(prefix.encode()) :]
                 await sub_app(delegated_scope, receive, send)
+                return
+        await self._app(scope, receive, send)
+
+
+class _ResidentSessionDispatchMiddleware:
+    """Route registry-owned resident chat sockets through Guild."""
+
+    def __init__(self, app: ASGIApp, *, guild_app: ASGIApp) -> None:
+        self._app = app
+        self._guild_app = guild_app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "websocket":
+            parts = scope.get("path", "").split("/")
+            if (
+                len(parts) == 6
+                and parts[1] == "s"
+                and parts[3] == "sessions"
+                and parts[5] == "session"
+            ):
+                await self._guild_app(scope, receive, send)
                 return
         await self._app(scope, receive, send)
 
@@ -480,6 +502,7 @@ def build_root_app(
         for plugin_name, route_domain in entries:
             plugin_prefixes.setdefault(plugin_name, []).extend(route_domain.prefixes)
 
+    skuld_reg = skuld_registry or SkuldPortRegistry()
     sub_apps: list[tuple[str, FastAPI]] = []
     shared_api_apps: dict[str, FastAPI] = {}
     embedded_forge_app: ASGIApp | None = None
@@ -502,6 +525,7 @@ def build_root_app(
                     public_origin=plugin_public_origin,
                     base_url=plugin_api_base_url,
                     embedded_forge_app=embedded_forge_app,
+                    skuld_registry=skuld_reg,
                 )
                 if shared_key and sub_app is not None:
                     shared_api_apps[shared_key] = sub_app
@@ -584,13 +608,15 @@ def build_root_app(
     if prefix_apps:
         root.add_middleware(_PrefixDispatchMiddleware, prefix_apps=prefix_apps)
 
+    guild_app = next((sub_app for name, sub_app in sub_apps if name == "guild"), None)
+    if guild_app is not None and "skuld-proxy" in active_mounts:
+        root.add_middleware(_ResidentSessionDispatchMiddleware, guild_app=guild_app)
+
     _install_merged_openapi(
         root=root,
         sub_apps=sub_apps,
         plugin_prefixes=plugin_prefixes,
     )
-
-    skuld_reg = skuld_registry or SkuldPortRegistry()
 
     if "skuld-proxy" in active_mounts:
         register_session_proxy_routes(root, skuld_reg)

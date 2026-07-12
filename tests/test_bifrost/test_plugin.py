@@ -36,6 +36,23 @@ class TestBifrostPlugin:
         app = plugin.create_api_app()
         assert isinstance(app, FastAPI)
 
+    def test_create_api_app_loads_composed_config(self, monkeypatch) -> None:
+        captured = {}
+
+        def fake_create_app(config):
+            captured["config"] = config
+            return object()
+
+        monkeypatch.setenv(
+            "BIFROST_CONFIG",
+            '{"providers":{"local":{"base_url":"http://vllm","models":["model-a"]}}}',
+        )
+        monkeypatch.setattr("bifrost.app.create_app", fake_create_app)
+
+        BifrostPlugin().create_api_app()
+
+        assert captured["config"].providers["local"].models == ["model-a"]
+
     def test_depends_on_is_empty(self) -> None:
         plugin = BifrostPlugin()
         svc_def = plugin.register_service()

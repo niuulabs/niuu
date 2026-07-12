@@ -214,11 +214,21 @@ async def test_openclaw_sessions_and_shared_chat_use_native_gateway_contract() -
         }
         history = await chat.receive()
         assert [turn["content"] for turn in history["turns"]] == ["Earlier", "Still here"]
+        assert "participant_meta" not in history["turns"][0]
+        assert history["turns"][1]["participant_meta"] == {
+            "peer_id": "openclaw-primary",
+            "persona": "NemoClaw",
+            "display_name": "NemoClaw",
+            "participant_type": "resident",
+            "status": "idle",
+        }
         await chat.send({"type": "user", "content": "Hi", "request_id": "request-1"})
         confirmed = await chat.receive()
         assert confirmed["type"] == "user_confirmed"
         assert confirmed["request_id"] == "request-1"
-        assert (await chat.receive())["type"] == "assistant"
+        assistant = await chat.receive()
+        assert assistant["type"] == "assistant"
+        assert assistant["participant"] == history["turns"][1]["participant_meta"]
         delta = await chat.receive()
         assert delta["delta"]["text"] == "Hello"
         assert (await chat.receive())["type"] == "result"

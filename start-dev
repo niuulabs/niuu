@@ -9,9 +9,8 @@ PG_CTL="${ROOT_DIR}/build/pginstall/bin/pg_ctl"
 PG_DATA="${HOME}/.niuu/pgdata"
 PLATFORM_LOG="${LOG_DIR}/platform.log"
 RUNTIME_MODE="${RUNTIME_MODE:-mini}"
-# Auto-detect a LAN-routable IP so the platform binds to (and bakes into URLs)
-# an address that browsers on this machine *and* on the LAN can reach. Override
-# by exporting NIUU_SERVER__HOST before invoking this script.
+# Auto-detect a LAN-routable public address while binding all interfaces. The
+# latter lets local resident containers use Docker's host.docker.internal route.
 detect_lan_ip() {
   python3 - <<'PY' 2>/dev/null
 import socket
@@ -26,20 +25,27 @@ PY
 
 if [[ -z "${NIUU_SERVER__HOST:-}" ]]; then
   detected_ip="$(detect_lan_ip || true)"
-  NIUU_SERVER__HOST="${detected_ip:-127.0.0.1}"
+  NIUU_SERVER__HOST="0.0.0.0"
+  NIUU_SERVER__EXTERNAL_HOST="${NIUU_SERVER__EXTERNAL_HOST:-${detected_ip:-127.0.0.1}}"
 fi
-export NIUU_SERVER__HOST
+export NIUU_SERVER__HOST NIUU_SERVER__EXTERNAL_HOST
+PLATFORM_PUBLIC_HOST="${NIUU_SERVER__EXTERNAL_HOST:-${NIUU_SERVER__HOST}}"
+PLATFORM_INTERNAL_HOST="${NIUU_SERVER__HOST}"
+if [[ "${PLATFORM_INTERNAL_HOST}" == "0.0.0.0" ]]; then
+  PLATFORM_INTERNAL_HOST="127.0.0.1"
+fi
 #
 # Several mounted services call back into the shared platform host over HTTP.
 # Keep those internal URLs aligned with the same bind address start-dev chose,
 # otherwise localhost becomes unreachable whenever the stack is pinned to a LAN
 # address for cross-device access.
-export OBSERVATORY__GUILD__URL="${OBSERVATORY__GUILD__URL:-http://${NIUU_SERVER__HOST}:8080}"
-export BIFROST__URL="${BIFROST__URL:-http://${NIUU_SERVER__HOST}:8080}"
+export OBSERVATORY__GUILD__URL="${OBSERVATORY__GUILD__URL:-http://${PLATFORM_INTERNAL_HOST}:8080}"
+export BIFROST__URL="${BIFROST__URL:-http://${PLATFORM_INTERNAL_HOST}:8080}"
+export RAVN_GATEWAY__PLATFORM__BASE_URL="${RAVN_GATEWAY__PLATFORM__BASE_URL:-http://${PLATFORM_INTERNAL_HOST}:8080}"
 UI_VARIANT="${UI_VARIANT:-new}"
 export UI_VARIANT
-PLATFORM_URL="http://${NIUU_SERVER__HOST}:8080/health"
-VALKYRIE_URL="http://${NIUU_SERVER__HOST}:8080/api/v1/ravn/valkyrie/dashboard"
+PLATFORM_URL="http://${PLATFORM_INTERNAL_HOST}:8080/health"
+VALKYRIE_URL="http://${PLATFORM_INTERNAL_HOST}:8080/api/v1/ravn/valkyrie/dashboard"
 
 mkdir -p "${LOG_DIR}"
 
@@ -264,7 +270,7 @@ if [[ "${RUNTIME_MODE}" == "openshell" ]]; then
   export NIUU_POD_MANAGER__SERVICE_PORT="${NIUU_POD_MANAGER__SERVICE_PORT:-9200}"
 fi
 
-echo "Starting platform on ${NIUU_SERVER__HOST}:8080 (host-profile=${HOST_PROFILE}, runtime=${RUNTIME_MODE})..."
+echo "Starting platform on ${NIUU_SERVER__HOST}:8080 (public=${PLATFORM_PUBLIC_HOST}, host-profile=${HOST_PROFILE}, runtime=${RUNTIME_MODE})..."
 python3 - <<'PY'
 import os
 import subprocess
@@ -303,13 +309,13 @@ Ready.
 
 UI:
   variant: web-next
-  http://${NIUU_SERVER__HOST}:8080/?config=/config.live.json
-  http://${NIUU_SERVER__HOST}:8080/volundr?config=/config.live.json
-  http://${NIUU_SERVER__HOST}:8080/valkyries?config=/config.live.json
+  http://${PLATFORM_PUBLIC_HOST}:8080/?config=/config.live.json
+  http://${PLATFORM_PUBLIC_HOST}:8080/volundr?config=/config.live.json
+  http://${PLATFORM_PUBLIC_HOST}:8080/valkyries?config=/config.live.json
 
 API:
-  http://${NIUU_SERVER__HOST}:8080/health
-  ${VALKYRIE_URL}
+  http://${PLATFORM_PUBLIC_HOST}:8080/health
+  http://${PLATFORM_PUBLIC_HOST}:8080/api/v1/ravn/valkyrie/dashboard
 
 Logs:
   ${PLATFORM_LOG}

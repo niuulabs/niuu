@@ -42,6 +42,18 @@ from niuu.domain.services.token_scope import (
 from niuu.ports.session_proxy import SessionProxyTarget
 from niuu.ports.workload_identity import WorkloadTokenIssuer
 from volundr.adapters.outbound.local_process import LocalProcessPodManager
+from volundr.adapters.outbound.resident_container_spec import (
+    image_from_values as _shared_image_from_values,
+)
+from volundr.adapters.outbound.resident_container_spec import (
+    resident_profile_values as _shared_resident_profile_values,
+)
+from volundr.adapters.outbound.resident_container_spec import (
+    resident_service as _shared_resident_service,
+)
+from volundr.adapters.outbound.resident_container_spec import (
+    runtime_processes_from_values as _shared_runtime_processes_from_values,
+)
 from volundr.domain.models import (
     ResidentBackend,
     ResidentCapability,
@@ -64,6 +76,7 @@ from volundr.domain.ports import (
     OpenShellCredentialGrantToken,
     PodManager,
     PodStartResult,
+    ResidentDeviceApprover,
     ResidentRuntimeController,
     ResidentRuntimeLogReader,
     ResidentRuntimeObservation,
@@ -724,6 +737,7 @@ class OpenShellGatewayPodManager(
     ResidentRuntimeController,
     ResidentRuntimeLogReader,
     ResidentRuntimeProxyTargetResolver,
+    ResidentDeviceApprover,
 ):
     """Kubernetes OpenShell PodManager using OIDC and native gRPC."""
 
@@ -2494,57 +2508,20 @@ def _runtime_processes_from_spec(spec: SessionSpec) -> tuple[OpenShellRuntimePro
 def _runtime_processes_from_values(
     values: dict[str, Any],
 ) -> tuple[OpenShellRuntimeProcess, ...]:
-    openshell_values = values.get("openshell")
-    if not isinstance(openshell_values, dict):
-        return ()
-    raw_processes = openshell_values.get("processes")
-    if not isinstance(raw_processes, list):
-        return ()
-
-    processes: list[OpenShellRuntimeProcess] = []
-    names: set[str] = set()
-    for raw in raw_processes:
-        if not isinstance(raw, dict):
-            raise RuntimeError("OpenShell runtime process entries must be objects")
-        name = str(raw.get("name") or "").strip()
-        if not name or name in names:
-            raise RuntimeError(f"OpenShell runtime process has invalid name {name!r}")
-        command = raw.get("command")
-        if not isinstance(command, list) or not command:
-            raise RuntimeError(f"OpenShell runtime process {name!r} has no command")
-        command_parts = tuple(str(part) for part in command)
-        if any(not part or "\x00" in part for part in command_parts):
-            raise RuntimeError(f"OpenShell runtime process {name!r} has an invalid command")
-        env = _string_dict(raw.get("env") or {})
-        raw_files = raw.get("files") or {}
-        if not isinstance(raw_files, dict):
-            raise RuntimeError(f"OpenShell runtime process {name!r} files must be an object")
-        files: dict[str, bytes] = {}
-        for destination, content in raw_files.items():
-            path = _sandbox_credential_path(str(destination))
-            value = str(content)
-            if "\x00" in value:
-                raise RuntimeError(f"OpenShell runtime process {name!r} file contains a null byte")
-            files[path] = value.encode("utf-8")
-        log_path = _sandbox_credential_path(str(raw.get("logPath") or raw.get("log_path") or ""))
-        names.add(name)
-        processes.append(
-            OpenShellRuntimeProcess(
-                name=name,
-                command=command_parts,
-                env=env,
-                files=files,
-                log_path=log_path,
-            )
+    return tuple(
+        OpenShellRuntimeProcess(
+            name=process.name,
+            command=process.command,
+            env=process.env,
+            files=process.files,
+            log_path=process.log_path,
         )
-    return tuple(processes)
+        for process in _shared_runtime_processes_from_values(values)
+    )
 
 
 def _resident_profile_values(profile: ResidentDeploymentProfile) -> dict[str, Any]:
-    values = profile.deployment.get("values")
-    if not isinstance(values, dict):
-        raise RuntimeError(f"OpenShell resident profile {profile.id!r} requires deployment.values")
-    return values
+    return _shared_resident_profile_values(profile.id, profile.deployment)
 
 
 def _resident_service(
@@ -2552,17 +2529,7 @@ def _resident_service(
     default_name: str,
     default_port: int,
 ) -> tuple[str, int]:
-    openshell = values.get("openshell")
-    if not isinstance(openshell, dict):
-        return default_name, default_port
-    service = openshell.get("service")
-    if not isinstance(service, dict):
-        return default_name, default_port
-    name = str(service.get("name") or default_name).strip()
-    port = int(service.get("port") or default_port)
-    if not name or port < 1 or port > 65535:
-        raise RuntimeError("OpenShell resident service configuration is invalid")
-    return name, port
+    return _shared_resident_service(values, default_name, default_port)
 
 
 def _resident_skuld_config(
@@ -2948,16 +2915,7 @@ def _resources_from_values(
 
 
 def _image_from_values(values: dict[str, Any], *, default: str) -> str:
-    configured = values.get("image")
-    if isinstance(configured, str):
-        return configured or default
-    if not isinstance(configured, dict):
-        return default
-    repository = str(configured.get("repository") or "").rstrip(":")
-    tag = str(configured.get("tag") or "")
-    if not repository:
-        return default
-    return f"{repository}:{tag}" if tag else repository
+    return _shared_image_from_values(values, default=default)
 
 
 def _driver_config_from_values(values: dict[str, Any]) -> dict[str, Any]:

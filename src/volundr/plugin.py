@@ -43,10 +43,17 @@ class VolundrPlugin(ServicePlugin):
             default_port=8080,
         )
 
-    def create_api_app(self, public_origin: str = "http://localhost:8080") -> Any:
+    def create_api_app(
+        self,
+        public_origin: str = "http://localhost:8080",
+        *,
+        skuld_registry: Any | None = None,
+    ) -> Any:
         from volundr.main import create_app
 
-        return create_app(public_origin=public_origin)
+        if skuld_registry is None:
+            return create_app(public_origin=public_origin)
+        return create_app(public_origin=public_origin, skuld_registry=skuld_registry)
 
     def api_route_domains(self) -> tuple[APIRouteDomain, ...]:
         return (

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -18,6 +19,7 @@ from cli.commands.platform import (
     _collect_service_definitions,
     _prompt_mode_selection,
     _resolve_enabled_services,
+    _resolve_local_pod_manager_env,
     _route_inventory_payload,
     create_platform_commands,
 )
@@ -245,7 +247,12 @@ class TestDynamicUpCallback:
 
         fake_event = MagicMock()
         fake_event.wait = AsyncMock(side_effect=asyncio.CancelledError())
-        startup = AsyncMock()
+        captured_environment: dict[str, str] = {}
+
+        async def capture_startup(*_args, **_kwargs) -> None:
+            captured_environment.update(os.environ)
+
+        startup = AsyncMock(side_effect=capture_startup)
         shutdown = AsyncMock()
 
         with (
@@ -264,20 +271,23 @@ class TestDynamicUpCallback:
                 volundr=True,
             )
 
-            assert os.environ["LOCAL_MOUNTS__ENABLED"] == "true"
-            assert os.environ["LOCAL_MOUNTS__MINI_MODE"] == "true"
-            assert os.environ["POD_MANAGER__ADAPTER"] == settings.pod_manager.adapter
-            assert os.environ["POD_MANAGER__KWARGS__WORKSPACES_DIR"] == "~/.niuu/workspaces"
-            assert os.environ["STORAGE__KWARGS__WORKSPACE_MOUNT_PATH"] == str(
+            assert captured_environment["LOCAL_MOUNTS__ENABLED"] == "true"
+            assert captured_environment["LOCAL_MOUNTS__MINI_MODE"] == "true"
+            assert captured_environment["POD_MANAGER__ADAPTER"] == settings.pod_manager.adapter
+            assert (
+                captured_environment["POD_MANAGER__KWARGS__WORKSPACES_DIR"] == "~/.niuu/workspaces"
+            )
+            assert captured_environment["STORAGE__KWARGS__WORKSPACE_MOUNT_PATH"] == str(
                 Path("~/.niuu/workspaces").expanduser()
             )
-            assert os.environ["STORAGE__KWARGS__HOME_MOUNT_PATH"] == str(
+            assert captured_environment["STORAGE__KWARGS__HOME_MOUNT_PATH"] == str(
                 Path("~/.niuu/home").expanduser()
             )
-            assert os.environ["POD_MANAGER__KWARGS__CLAUDE_BINARY"] == "claude"
-            assert os.environ["POD_MANAGER__KWARGS__MAX_CONCURRENT"] == "4"
-            assert os.environ["POD_MANAGER__KWARGS__SDK_PORT_START"] == "9100"
-            assert os.environ["GIT__VALIDATE_ON_CREATE"] == "false"
+            assert captured_environment["POD_MANAGER__KWARGS__CLAUDE_BINARY"] == "claude"
+            assert captured_environment["POD_MANAGER__KWARGS__MAX_CONCURRENT"] == "4"
+            assert captured_environment["POD_MANAGER__KWARGS__SDK_PORT_START"] == "9100"
+            assert captured_environment["GIT__VALIDATE_ON_CREATE"] == "false"
+            assert "LOCAL_MOUNTS__ENABLED" not in os.environ
 
         startup.assert_awaited_once()
         shutdown.assert_awaited_once_with(manager)
@@ -331,7 +341,12 @@ class TestDynamicUpCallback:
 
         fake_event = MagicMock()
         fake_event.wait = AsyncMock(side_effect=asyncio.CancelledError())
-        startup = AsyncMock()
+        captured_environment: dict[str, str] = {}
+
+        async def capture_startup(*_args, **_kwargs) -> None:
+            captured_environment.update(os.environ)
+
+        startup = AsyncMock(side_effect=capture_startup)
         shutdown = AsyncMock()
 
         with (
@@ -351,9 +366,16 @@ class TestDynamicUpCallback:
                 volundr=True,
             )
 
-            assert os.environ["POD_MANAGER__KWARGS__WORKSPACES_DIR"] == "/tmp/mini-workspaces"
-            assert os.environ["STORAGE__KWARGS__WORKSPACE_MOUNT_PATH"] == "/tmp/mini-workspaces"
-            assert os.environ["STORAGE__KWARGS__HOME_MOUNT_PATH"] == "/tmp/home"
+            assert (
+                captured_environment["POD_MANAGER__KWARGS__WORKSPACES_DIR"]
+                == "/tmp/mini-workspaces"
+            )
+            assert (
+                captured_environment["STORAGE__KWARGS__WORKSPACE_MOUNT_PATH"]
+                == "/tmp/mini-workspaces"
+            )
+            assert captured_environment["STORAGE__KWARGS__HOME_MOUNT_PATH"] == "/tmp/home"
+            assert "POD_MANAGER__KWARGS__WORKSPACES_DIR" not in os.environ
 
         assert startup.await_count == 1
         called_settings = startup.await_args.args[1]
@@ -563,6 +585,42 @@ class TestBuildInitConfig:
         skuld_image = config["pod_manager"]["skuld_image"]
         assert ":latest" not in skuld_image
         assert ":" in skuld_image  # has a version tag
+
+    def test_mini_runtime_exposes_local_resident_profiles(self) -> None:
+        settings = CLISettings(
+            mode="mini",
+            bifrost={
+                "providers": {
+                    "local-vllm": {
+                        "base_url": "https://vllm.example.test",
+                        "models": ["nvidia/nemotron-test"],
+                    }
+                }
+            },
+        )
+
+        env = _resolve_local_pod_manager_env(settings)
+        resident_config = json.loads(env["RESIDENT_RUNTIMES"])
+
+        assert resident_config["controllers"][0]["adapter"].endswith(
+            "LocalContainerResidentRuntimeController"
+        )
+        assert {profile["id"] for profile in resident_config["profiles"]} == {
+            "ravn-local",
+            "nemoclaw-local",
+            "nemohermes-local",
+        }
+        assert {profile["backend"] for profile in resident_config["profiles"]} == {"local"}
+        assert resident_config["profiles"][0]["default_model"] == "gpt-5.6-sol"
+        assert resident_config["profiles"][0]["allowed_models"] == ["gpt-5.6-sol"]
+        assert resident_config["profiles"][0]["deployment"]["values"]["session"] == {
+            "reasoningEffort": "high"
+        }
+        assert json.loads(env["BIFROST_CONFIG"])["providers"]["local-vllm"]["models"] == [
+            "nvidia/nemotron-test"
+        ]
+        assert resident_config["profiles"][1]["default_model"] == ("niuu/nvidia/nemotron-test")
+        assert "FileCredentialStore" in json.loads(env["CREDENTIAL_STORE"])["adapter"]
 
 
 class TestRouteInventoryPayload:

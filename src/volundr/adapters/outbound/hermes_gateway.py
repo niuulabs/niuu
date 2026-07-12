@@ -32,6 +32,13 @@ HERMES_REQUEST_TIMEOUT_SECONDS = 30
 HERMES_SESSION_PAGE_SIZE = 200
 NIUU_MODEL_PREFIX = "niuu/"
 VOLUNDR_DELETED_END_REASON = "volundr_deleted"
+_PARTICIPANT = {
+    "peer_id": "hermes-primary",
+    "persona": "NemoHermes",
+    "display_name": "NemoHermes",
+    "participant_type": "resident",
+    "status": "idle",
+}
 
 
 class HermesGatewayError(RuntimeError):
@@ -189,6 +196,7 @@ def _history_turns(messages: Any) -> list[dict[str, Any]]:
                 "role": message["role"],
                 "content": text,
                 "created_at": created_at.isoformat(),
+                **({"participant_meta": _PARTICIPANT} if message["role"] == "assistant" else {}),
             }
         )
     return turns
@@ -277,6 +285,7 @@ class HermesChatConnection(ResidentChatConnection):
             await self._events.put(
                 {
                     "type": "assistant",
+                    "participant": _PARTICIPANT,
                     "message": {
                         "role": "assistant",
                         "model": self._model,
@@ -299,6 +308,7 @@ class HermesChatConnection(ResidentChatConnection):
             await self._events.put(
                 {
                     "type": "assistant",
+                    "participant": _PARTICIPANT,
                     "message": {
                         "role": "assistant",
                         "model": self._model,

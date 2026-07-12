@@ -243,13 +243,6 @@ def _build_up_callback(
             effective_settings = settings.model_copy(deep=True)
             effective_settings.pod_manager.workspaces_dir = workspaces_dir
 
-        # Host-local runtime needs local mount support and dynamic PodManager env.
-        if effective_settings.mode == "mini":
-            os.environ.setdefault("LOCAL_MOUNTS__ENABLED", "true")
-            os.environ.setdefault("LOCAL_MOUNTS__MINI_MODE", "true")
-            for key, value in _resolve_local_pod_manager_env(effective_settings).items():
-                os.environ[key] = value
-
         skip_preflight: bool = bool(kwargs.pop("skip_preflight", False))
         start_all: bool = bool(kwargs.pop("all", False))
         no_web: bool = bool(kwargs.pop("no_web", False))
@@ -257,15 +250,33 @@ def _build_up_callback(
         mounts = str(kwargs.pop("mounts", ""))
         svc_flags: dict[str, bool | None] = dict(kwargs)
 
-        if no_web:
-            os.environ["NIUU_NO_WEB"] = "true"
-
         try:
             enabled_mounts = parse_enabled_mounts(mounts)
         except ValueError as exc:
             raise typer.BadParameter(str(exc), param_hint="mounts") from exc
 
         enabled = _resolve_enabled_services(service_defs, settings, start_all, svc_flags)
+        environment_before: dict[str, str | None] = {}
+
+        def _set_environment(key: str, value: str, *, only_if_missing: bool = False) -> None:
+            if key not in environment_before:
+                environment_before[key] = os.environ.get(key)
+            if not only_if_missing or key not in os.environ:
+                os.environ[key] = value
+
+        # Host-local runtime needs local mount support and dynamic PodManager env.
+        if effective_settings.mode == "mini":
+            _set_environment("LOCAL_MOUNTS__ENABLED", "true", only_if_missing=True)
+            _set_environment("LOCAL_MOUNTS__MINI_MODE", "true", only_if_missing=True)
+            for key, value in _resolve_local_pod_manager_env(effective_settings).items():
+                _set_environment(
+                    key,
+                    value,
+                    only_if_missing=key in {"RESIDENT_RUNTIMES", "CREDENTIAL_STORE"},
+                )
+
+        if no_web:
+            _set_environment("NIUU_NO_WEB", "true")
 
         async def _run() -> None:
             await _startup(
@@ -289,6 +300,12 @@ def _build_up_callback(
         except KeyboardInterrupt:
             typer.echo("\nReceived shutdown signal...")
             asyncio.run(_shutdown(manager))
+        finally:
+            for key, previous in environment_before.items():
+                if previous is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = previous
         typer.echo("All services stopped. Goodbye.")
 
     # Build dynamic signature: skip_preflight, all, then one bool | None per service.
@@ -354,6 +371,27 @@ CLUSTER_POD_MANAGER_ADAPTER = "volundr.adapters.outbound.direct_k8s_pod_manager.
 OPENSHELL_POD_MANAGER_ADAPTER = (
     "volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager"
 )
+LOCAL_RESIDENT_RUNTIME_ADAPTER = (
+    "volundr.adapters.outbound.local_resident_runtime.LocalContainerResidentRuntimeController"
+)
+OPENCLAW_RESIDENT_SESSION_ADAPTER = (
+    "volundr.adapters.outbound.openclaw_gateway.OpenClawResidentSessionController"
+)
+HERMES_RESIDENT_SESSION_ADAPTER = (
+    "volundr.adapters.outbound.hermes_gateway.HermesResidentSessionController"
+)
+LOCAL_RAVN_IMAGE = (
+    "ghcr.io/niuulabs/openshell@"
+    "sha256:b17395a07b7dd19798c9e424a4139e2518a8b0e0bfee2305b5352a33140f383b"
+)
+LOCAL_NEMOCLAW_IMAGE = (
+    "ghcr.io/nvidia/openshell-community/sandboxes/openclaw@"
+    "sha256:b3d832b596ab6b7184a9dcb4ae93337ca32851a4f93b00765cc12de26baa3a9a"
+)
+LOCAL_NEMOHERMES_IMAGE = (
+    "ghcr.io/nvidia/nemoclaw/hermes-sandbox-base@"
+    "sha256:7e9378c50f291e6dd80b922e8b89e0e7edf21e4e3a80b8c2664be01976f59aa8"
+)
 
 CLUSTER_POD_MANAGER_DEFAULTS: dict[str, Any] = {
     "adapter": CLUSTER_POD_MANAGER_ADAPTER,
@@ -395,10 +433,227 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
         "STORAGE__KWARGS__WORKSPACE_MOUNT_PATH": str(workspaces_dir),
         "STORAGE__KWARGS__HOME_MOUNT_PATH": str(home_dir),
         "GIT__VALIDATE_ON_CREATE": "false",
+        "RESIDENT_RUNTIMES": json.dumps(_mini_resident_runtimes_config(settings)),
+        "BIFROST_CONFIG": settings.bifrost.model_dump_json(),
+        "CREDENTIAL_STORE": json.dumps(
+            {
+                "adapter": ("volundr.adapters.outbound.file_credential_store.FileCredentialStore"),
+                "kwargs": {"base_dir": str(workspaces_dir.parent / "credentials")},
+            }
+        ),
     }
     for key, value in kwargs.items():
         env[f"POD_MANAGER__KWARGS__{key.upper()}"] = str(value)
     return env
+
+
+def _mini_resident_runtimes_config(settings: CLISettings) -> dict[str, Any]:
+    local_platform_url = "http://host.docker.internal:8080"
+    local_bifrost_url = f"{local_platform_url}/api/v1/bifrost"
+    configured_models = [
+        model for provider in settings.bifrost.providers.values() for model in provider.models
+    ]
+    model_ids = list(dict.fromkeys(configured_models)) or ["gpt-5.6-sol"]
+    codex_model = "gpt-5.6-sol"
+    resident_model_ids = [f"niuu/{model}" for model in model_ids]
+    resident_default_model = resident_model_ids[0]
+    openclaw_models = [
+        {
+            "id": model,
+            "name": model,
+            "reasoning": True,
+            "input": ["text"],
+            "contextWindow": 131072,
+            "maxTokens": 32768,
+        }
+        for model in model_ids
+    ]
+    common_capabilities = [
+        "chat",
+        "runtime.restart",
+        "runtime.suspend",
+        "logs",
+        "metrics",
+        "usage",
+    ]
+    session_capabilities = ["session.list", "session.create", "session.delete"]
+    return {
+        "controllers": [
+            {
+                "adapter": LOCAL_RESIDENT_RUNTIME_ADAPTER,
+                "residents_dir": "~/.niuu/residents",
+                "volundr_api_url": local_platform_url,
+            }
+        ],
+        "session_controllers": [
+            {
+                "adapter": OPENCLAW_RESIDENT_SESSION_ADAPTER,
+                "runtime_backend": "local",
+            },
+            {
+                "adapter": HERMES_RESIDENT_SESSION_ADAPTER,
+                "runtime_backend": "local",
+            },
+        ],
+        "profiles": [
+            {
+                "id": "ravn-local",
+                "display_name": "Resident Ravn (Local)",
+                "description": "Long-lived Ravn resident hosted by the local container engine",
+                "backend": "local",
+                "engine": "ravn",
+                "capabilities": common_capabilities,
+                "default_model": codex_model,
+                "allowed_models": [codex_model],
+                "catalog_vendors": [],
+                "labels": ["resident", "ravn", "local"],
+                "deployment": {
+                    "values": {
+                        "image": LOCAL_RAVN_IMAGE,
+                        "runtime": {"service": {"name": "skuld", "port": 9200}},
+                        "broker": {
+                            "cliType": "codex-ws",
+                            "transportAdapter": (
+                                "skuld.transports.codex_ws.CodexWebSocketTransport"
+                            ),
+                            "skipPermissions": True,
+                        },
+                        "session": {"reasoningEffort": "high"},
+                        "resident": {
+                            "persona": "product-steward",
+                            "llm": {
+                                "provider": {
+                                    "adapter": "ravn.adapters.llm.bifrost.BifrostAdapter",
+                                    "kwargs": {"base_url": local_bifrost_url},
+                                }
+                            },
+                            "platform": {"enabled": True, "baseUrl": local_platform_url},
+                            "wakefulness": {"enabled": True},
+                        },
+                    }
+                },
+            },
+            {
+                "id": "nemoclaw-local",
+                "display_name": "NemoClaw (Local)",
+                "description": "NVIDIA OpenClaw resident hosted by the local container engine",
+                "backend": "local",
+                "engine": "openclaw",
+                "capabilities": [*common_capabilities, *session_capabilities, "steer", "interrupt"],
+                "default_model": resident_default_model,
+                "allowed_models": resident_model_ids,
+                "catalog_vendors": [],
+                "model_prefix": "niuu/",
+                "labels": ["resident", "nemoclaw", "openclaw", "local"],
+                "deployment": {
+                    "values": {
+                        "image": LOCAL_NEMOCLAW_IMAGE,
+                        "runtime": {
+                            "processMode": "replace",
+                            "service": {"name": "openclaw", "port": 18789},
+                            "processes": [
+                                {
+                                    "name": "openclaw",
+                                    "command": [
+                                        "openclaw",
+                                        "gateway",
+                                        "run",
+                                        "--bind",
+                                        "lan",
+                                        "--auth",
+                                        "token",
+                                        "--port",
+                                        "18789",
+                                    ],
+                                    "files": {
+                                        "/sandbox/workspace/.openclaw/openclaw.json": json.dumps(
+                                            {
+                                                "gateway": {"bind": "lan", "mode": "local"},
+                                                "agents": {
+                                                    "defaults": {
+                                                        "model": {
+                                                            "primary": resident_default_model
+                                                        },
+                                                        "thinkingDefault": "high",
+                                                        "workspace": "/sandbox/workspace",
+                                                    }
+                                                },
+                                                "models": {
+                                                    "mode": "merge",
+                                                    "providers": {
+                                                        "niuu": {
+                                                            "baseUrl": f"{local_bifrost_url}/v1",
+                                                            "apiKey": "local-mini",
+                                                            "api": "openai-completions",
+                                                            "models": openclaw_models,
+                                                        }
+                                                    },
+                                                },
+                                            },
+                                            indent=2,
+                                        )
+                                    },
+                                }
+                            ],
+                        },
+                        "resident": {
+                            "llm": {"provider": {"kwargs": {"base_url": local_bifrost_url}}},
+                            "platform": {"enabled": True, "baseUrl": local_platform_url},
+                        },
+                    }
+                },
+            },
+            {
+                "id": "nemohermes-local",
+                "display_name": "NemoHermes (Local)",
+                "description": "NVIDIA NemoHermes resident hosted by the local container engine",
+                "backend": "local",
+                "engine": "hermes",
+                "capabilities": [
+                    *common_capabilities,
+                    *session_capabilities,
+                    "interrupt",
+                    "approvals",
+                ],
+                "default_model": resident_default_model,
+                "allowed_models": resident_model_ids,
+                "catalog_vendors": [],
+                "model_prefix": "niuu/",
+                "labels": ["resident", "nemohermes", "hermes", "local"],
+                "deployment": {
+                    "values": {
+                        "image": LOCAL_NEMOHERMES_IMAGE,
+                        "env": {"HERMES_ALLOW_ROOT_GATEWAY": "1"},
+                        "runtime": {
+                            "processMode": "replace",
+                            "service": {"name": "hermes", "port": 18789},
+                            "processes": [
+                                {
+                                    "name": "hermes",
+                                    "command": [
+                                        "/opt/hermes/.venv/bin/python",
+                                        "/opt/hermes/.venv/bin/hermes",
+                                        "gateway",
+                                        "run",
+                                        "--replace",
+                                        "--force",
+                                        "--no-supervise",
+                                        "--accept-hooks",
+                                    ],
+                                }
+                            ],
+                        },
+                        "resident": {
+                            "llm": {
+                                "provider": {"kwargs": {"base_url": f"{local_bifrost_url}/v1"}}
+                            },
+                            "platform": {"enabled": True, "baseUrl": local_platform_url},
+                        },
+                    }
+                },
+            },
+        ],
+    }
 
 
 def _prompt_mode_selection() -> str:

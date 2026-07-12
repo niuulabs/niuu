@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, patch
+from uuid import UUID
 
 import pytest
 import respx
@@ -99,7 +101,12 @@ def _client(
             embedded_forge_app=embedded_forge_app,
         )
     )
-    app.include_router(create_ravn_session_proxy_router(service))  # type: ignore[arg-type]
+    app.include_router(  # type: ignore[arg-type]
+        create_ravn_session_proxy_router(
+            service,
+            embedded_forge_app=embedded_forge_app,
+        )
+    )
     return TestClient(app)
 
 
@@ -220,6 +227,63 @@ def test_resident_session_proxy_promotes_query_token_to_upstream_authorization()
     )
     assert captured["kwargs"]["additional_headers"]["authorization"] == "Bearer machine-jwt"
     assert owner.calls.last.request.headers["authorization"] == "Bearer machine-jwt"
+
+
+def test_resident_session_proxy_bridges_embedded_forge_chat() -> None:
+    runtime_id = "f0e2bb14-c2c2-48ab-b7fb-ffab722d43d9"
+    session_id = "ca9986e4-4d7b-405e-bfe2-ff2dce94976d"
+
+    class Connection:
+        def __init__(self) -> None:
+            self.sent: list[dict[str, Any]] = []
+            self.closed = False
+
+        async def send(self, message: dict[str, Any]) -> None:
+            self.sent.append(message)
+
+        async def receive(self) -> dict[str, Any]:
+            while not self.sent:
+                await asyncio.sleep(0)
+            return {"type": "message", "content": self.sent[0]["content"]}
+
+        async def close(self) -> None:
+            self.closed = True
+
+    connection = Connection()
+
+    class ResidentService:
+        async def connect_chat(
+            self,
+            principal: Principal,
+            requested_runtime_id: UUID,
+            requested_session_id: UUID,
+        ) -> Connection:
+            assert principal.user_id == "user-a"
+            assert requested_runtime_id == UUID(runtime_id)
+            assert requested_session_id == UUID(session_id)
+            return connection
+
+    embedded = FastAPI()
+    embedded.state.resident_runtime_service = ResidentService()
+    client = _client(
+        [
+            _instance(
+                "local",
+                base_url="embedded://local-forge",
+                config={"transport": "embedded"},
+            )
+        ],
+        embedded_forge_app=embedded,
+    )
+
+    with client.websocket_connect(
+        f"/s/{runtime_id}/sessions/{session_id}/session?instance_id=local",
+        headers=_headers(),
+    ) as websocket:
+        websocket.send_json({"type": "message", "content": "hello locally"})
+        assert websocket.receive_json() == {"type": "message", "content": "hello locally"}
+
+    assert connection.sent == [{"type": "message", "content": "hello locally"}]
 
 
 @respx.mock

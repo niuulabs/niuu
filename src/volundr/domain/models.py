@@ -1303,6 +1303,7 @@ class ResidentBackend(StrEnum):
 
     HELMRELEASE = "helmrelease"
     OPENSHELL = "openshell"
+    LOCAL = "local"
 
 
 class ResidentEngine(StrEnum):

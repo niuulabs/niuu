@@ -18,10 +18,12 @@ target and preserve its response status.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import suppress
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
+from uuid import UUID
 
 import httpx
 from fastapi import (
@@ -34,6 +36,7 @@ from fastapi import (
     Request,
     Response,
     WebSocket,
+    WebSocketDisconnect,
     status,
 )
 from starlette.types import ASGIApp
@@ -69,7 +72,11 @@ def _ravn_base_url(instance: RegisteredInstance) -> str:
     return str(configured).strip() if configured else instance.base_url
 
 
-def create_ravn_session_proxy_router(service: InstanceService) -> APIRouter:
+def create_ravn_session_proxy_router(
+    service: InstanceService,
+    *,
+    embedded_forge_app: ASGIApp | None = None,
+) -> APIRouter:
     """Proxy Yggdrasil Ravn chat sockets to their registry-owned target."""
     router = APIRouter(tags=["Ravn"])
 
@@ -194,8 +201,27 @@ def create_ravn_session_proxy_router(service: InstanceService) -> APIRouter:
             headers["authorization"] = f"Bearer {token}"
 
         owner: RegisteredInstance | None = None
+        embedded_connection: Any | None = None
         async with httpx.AsyncClient(timeout=15.0) as client:
             for instance in instances:
+                if instance.config.get("transport") == "embedded":
+                    resident_service = getattr(
+                        getattr(embedded_forge_app, "state", None),
+                        "resident_runtime_service",
+                        None,
+                    )
+                    if resident_service is None:
+                        continue
+                    try:
+                        embedded_connection = await resident_service.connect_chat(
+                            principal,
+                            UUID(ravn_id),
+                            UUID(session_id),
+                        )
+                    except Exception:
+                        continue
+                    owner = instance
+                    break
                 try:
                     response = await client.get(
                         f"{_ravn_base_url(instance).rstrip('/')}{_RAVN_REMOTE_PREFIX}/ravens/"
@@ -209,6 +235,34 @@ def create_ravn_session_proxy_router(service: InstanceService) -> APIRouter:
                     break
         if owner is None:
             await websocket.close(code=4410, reason="Resident is no longer available")
+            return
+
+        if embedded_connection is not None:
+            await websocket.accept()
+
+            async def browser_to_resident() -> None:
+                while True:
+                    await embedded_connection.send(json.loads(await websocket.receive_text()))
+
+            async def resident_to_browser() -> None:
+                while True:
+                    await websocket.send_json(await embedded_connection.receive())
+
+            tasks = [
+                asyncio.create_task(browser_to_resident()),
+                asyncio.create_task(resident_to_browser()),
+            ]
+            try:
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            except WebSocketDisconnect:
+                pass
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await embedded_connection.close()
+                with suppress(Exception):
+                    await websocket.close()
             return
 
         parsed = urlsplit(owner.base_url)

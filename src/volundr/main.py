@@ -378,6 +378,7 @@ def create_app(
     settings: Settings | None = None,
     *,
     public_origin: str = "http://localhost:8080",
+    skuld_registry: object | None = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -452,15 +453,13 @@ def create_app(
                     controller.set_workload_token_issuer(workload_identity_service)
 
             # Inject Skuld port registry for mini mode proxy routing
-            skuld_reg = None
-            try:
-                from cli.server import get_skuld_registry
-
-                skuld_reg = get_skuld_registry()
-                if skuld_reg is not None and hasattr(pod_manager, "set_skuld_registry"):
-                    pod_manager.set_skuld_registry(skuld_reg)
-            except ImportError:
-                pass  # Not running via CLI
+            skuld_reg = skuld_registry
+            if skuld_reg is not None and hasattr(pod_manager, "set_skuld_registry"):
+                pod_manager.set_skuld_registry(skuld_reg)
+            if skuld_reg is not None:
+                for controller in resident_controllers:
+                    if hasattr(controller, "set_skuld_registry"):
+                        controller.set_skuld_registry(skuld_reg)
 
             if skuld_reg is None:
                 # Standalone deployment (K8s / bare uvicorn): no CLI root app

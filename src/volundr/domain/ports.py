@@ -655,6 +655,20 @@ class ResidentRuntimeProxyTargetResolver(ABC):
         """Resolve the backend service reached by the shared session proxy."""
 
 
+class ResidentDeviceApprover(ABC):
+    """Optional runtime capability for approving resident engine devices."""
+
+    @abstractmethod
+    async def approve_resident_device(
+        self,
+        runtime: ResidentRuntime,
+        *,
+        request_id: str,
+        gateway_token: str,
+    ) -> None:
+        """Approve an authenticated device challenge inside the owning runtime."""
+
+
 class ResidentChatConnection(ABC):
     """One normalized shared-chat connection to a resident engine session."""
 

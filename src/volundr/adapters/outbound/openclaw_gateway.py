@@ -39,6 +39,13 @@ _SESSION_KEY_PREFIX = f"agent:{_AGENT_ID}:niuu-"
 _SCOPES = ["operator.read", "operator.write", "operator.admin"]
 _MIN_PROTOCOL_VERSION = 3
 _MAX_PROTOCOL_VERSION = 4
+_PARTICIPANT = {
+    "peer_id": "openclaw-primary",
+    "persona": "NemoClaw",
+    "display_name": "NemoClaw",
+    "participant_type": "resident",
+    "status": "idle",
+}
 
 
 class OpenClawGatewayError(RuntimeError):
@@ -305,6 +312,7 @@ def _history_turns(payload: Any) -> list[dict[str, Any]]:
                 "role": message["role"],
                 "content": _message_text(message),
                 "created_at": created_at.isoformat(),
+                **({"participant_meta": _PARTICIPANT} if message["role"] == "assistant" else {}),
             }
         )
     return turns
@@ -381,6 +389,7 @@ class OpenClawChatConnection(ResidentChatConnection):
                         return {
                             "type": "assistant",
                             "message": {"role": "assistant", "model": self._model, "content": []},
+                            "participant": _PARTICIPANT,
                         }
                     return {
                         "type": "content_block_delta",
@@ -401,6 +410,7 @@ class OpenClawChatConnection(ResidentChatConnection):
                         return {
                             "type": "assistant",
                             "message": {"role": "assistant", "model": self._model, "content": []},
+                            "participant": _PARTICIPANT,
                         }
                     self._active_runs.discard(run_id)
                     self._run_text.pop(run_id, None)
@@ -471,7 +481,7 @@ class OpenClawResidentSessionController(ResidentSessionController):
     """OpenClaw implementation of resident-native session lifecycle and chat."""
 
     def __init__(self, runtime_controller: Any, credential_store: CredentialStorePort) -> None:
-        self._openshell = runtime_controller
+        self._runtime = runtime_controller
         self._credentials = credential_store
 
     @property
@@ -479,7 +489,7 @@ class OpenClawResidentSessionController(ResidentSessionController):
         return ResidentEngine.OPENCLAW
 
     async def _connect(self, runtime: ResidentRuntime) -> _GatewayConnection:
-        target = self._openshell.resident_proxy_target(runtime)
+        target = self._runtime.resident_proxy_target(runtime)
         if target is None:
             raise OpenClawGatewayError("OpenClaw resident has no Gateway service route")
         credentials = await ensure_openclaw_machine_credential(self._credentials, runtime)
@@ -491,7 +501,7 @@ class OpenClawResidentSessionController(ResidentSessionController):
             request_id = str(exc.details.get("requestId") or exc.details.get("request_id") or "")
             if not request_id:
                 raise
-            await self._openshell.approve_resident_device(
+            await self._runtime.approve_resident_device(
                 runtime,
                 request_id=request_id,
                 gateway_token=credentials["gateway_token"],
