@@ -344,6 +344,7 @@ def test_list_sessions_merges_and_sorts_last_active_descending() -> None:
         [
             _instance("alpha", base_url="http://alpha"),
             _instance("beta", base_url="http://beta"),
+            _instance("control-only", base_url="http://control-only"),
         ]
     )
     respx.get("http://alpha/api/v1/ravn/sessions").mock(
@@ -558,6 +559,9 @@ def test_list_deployment_profiles_is_target_aware() -> None:
     )
     respx.get("http://beta/api/v1/ravn/deployment-profiles").mock(
         return_value=Response(200, json=[{"id": "ravn-openshell", "backend": "openshell"}])
+    )
+    respx.get("http://control-only/api/v1/ravn/deployment-profiles").mock(
+        return_value=Response(200, json=[])
     )
 
     response = client.get("/api/v1/ravn/deployment-profiles", headers=_headers())
