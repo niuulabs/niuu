@@ -18,6 +18,7 @@ import asyncio
 import ssl
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 
@@ -42,9 +43,11 @@ from sleipnir.adapters.nats_transport import (
     _decode_nats_message,
     _DeduplicationCache,
     _durable_name_for_subject,
+    _HttpConnectTcpTransport,
     _nats_subject_for_event,
     _nats_subjects_for_patterns,
     _parse_retention,
+    _sandbox_proxy_url,
     nats_available,
 )
 from sleipnir.adapters.serialization import serialize
@@ -102,6 +105,46 @@ def mock_nats(monkeypatch):
 
 def test_nats_available_returns_true():
     assert nats_available() is True
+
+
+def test_sandbox_proxy_uses_openshell_all_proxy(monkeypatch):
+    monkeypatch.setenv("OPENSHELL_SANDBOX", "1")
+    monkeypatch.setenv("ALL_PROXY", "http://10.200.0.1:3128")
+
+    assert _sandbox_proxy_url() == "http://10.200.0.1:3128"
+
+
+def test_sandbox_proxy_ignores_host_proxy_outside_openshell(monkeypatch):
+    monkeypatch.delenv("OPENSHELL_SANDBOX", raising=False)
+    monkeypatch.setenv("ALL_PROXY", "http://proxy.example:3128")
+
+    assert _sandbox_proxy_url() == ""
+
+
+@pytest.mark.asyncio
+async def test_http_connect_transport_tunnels_nats_connection():
+    request = b""
+
+    async def proxy(reader, writer):
+        nonlocal request
+        request = await reader.readuntil(b"\r\n\r\n")
+        writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\nINFO {}\r\n")
+        await writer.drain()
+        await reader.read()
+        writer.close()
+
+    server = await asyncio.start_server(proxy, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    transport = _HttpConnectTcpTransport(f"http://127.0.0.1:{port}")
+    try:
+        await transport.connect(urlparse("nats://nats.internal:4222"), 1024, 2)
+        assert await transport.readline() == b"INFO {}\r\n"
+        assert request.startswith(b"CONNECT nats.internal:4222 HTTP/1.1\r\n")
+    finally:
+        transport.close()
+        await transport.wait_closed()
+        server.close()
+        await server.wait_closed()
 
 
 # ---------------------------------------------------------------------------
