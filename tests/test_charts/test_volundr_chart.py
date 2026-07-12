@@ -192,6 +192,14 @@ class TestValuesDefaults:
         broker = values_yaml["sessionDefinitions"]["skuldCodex"]["defaults"]["broker"]
         assert broker["transportAdapter"] == "skuld.transports.codex_ws.CodexWebSocketTransport"
 
+    @pytest.mark.parametrize(
+        "definition",
+        ["skuldClaude", "skuldClaudeInteractive", "skuldCodex", "skuldOpenCode"],
+    )
+    def test_agent_session_definitions_default_to_full_access(self, values_yaml, definition):
+        broker = values_yaml["sessionDefinitions"][definition]["defaults"]["broker"]
+        assert broker["skipPermissions"] is True
+
     def test_both_session_defs_use_same_image_repo(self, values_yaml):
         """Test skuld-claude and skuld-codex reference the same image repo."""
         defs = values_yaml["sessionDefinitions"]

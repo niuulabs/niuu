@@ -243,9 +243,9 @@ broker:
   remoteControlPermissionMode: ""
   # -- Maximum size, in bytes, accepted by the present-file endpoint.
   maxPresentedFileBytes: 52428800
-  # -- Skip tool permission prompts (true = --dangerously-skip-permissions for Claude,
-  # --full-auto for Codex)
-  skipPermissions: false
+  # -- Skip tool permission prompts and use full access (Claude bypassPermissions,
+  # Codex approvalPolicy=never with danger-full-access)
+  skipPermissions: true
   # -- Enable Claude Code experimental Agent Teams (Claude only)
   agentTeams: false
 

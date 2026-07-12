@@ -537,7 +537,10 @@ class SkuldSettings(BaseSettings):
     cli_type: str = Field(default="claude")  # "claude" | "codex" | "grok"
     transport: str = Field(default="sdk")  # claude only: "sdk" | "subprocess"
     transport_adapter: str = Field(default=_DEFAULT_TRANSPORT_ADAPTER)
-    skip_permissions: bool = Field(default=False)
+    skip_permissions: bool = Field(
+        default=True,
+        description="Run agent transports without interactive tool approval prompts.",
+    )
     approval_policy: str = Field(default="")
     sandbox: str = Field(default="")
     cli_binary: str = Field(

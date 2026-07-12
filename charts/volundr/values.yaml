@@ -944,7 +944,7 @@ sessionDefinitions:
         # -- Fully-qualified transport adapter class path
         transportAdapter: "skuld.transports.sdk.SDKTransport"
         # -- Skip tool permission prompts (--dangerously-skip-permissions)
-        skipPermissions: false
+        skipPermissions: true
         # -- Enable Claude Code experimental Agent Teams
         agentTeams: false
 
@@ -1189,8 +1189,8 @@ sessionDefinitions:
         cliType: codex-ws
         # -- Fully-qualified transport adapter class path
         transportAdapter: "skuld.transports.codex_ws.CodexWebSocketTransport"
-        # -- Skip tool permission prompts (--full-auto for Codex)
-        skipPermissions: false
+        # -- Skip prompts and use approvalPolicy=never with danger-full-access
+        skipPermissions: true
         agentTeams: false
 
       image:
@@ -1289,7 +1289,7 @@ sessionDefinitions:
         # -- Fully-qualified transport adapter class path
         transportAdapter: "skuld.transports.opencode.OpenCodeHttpTransport"
         # -- Skip tool permission prompts
-        skipPermissions: false
+        skipPermissions: true
         agentTeams: false
 
       image:

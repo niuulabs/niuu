@@ -191,7 +191,7 @@ class TestSkuldSettings:
 
     def test_skip_permissions_default(self):
         s = SkuldSettings()
-        assert s.skip_permissions is False
+        assert s.skip_permissions is True
 
     def test_skip_permissions_false(self, monkeypatch):
         monkeypatch.setenv("SKULD__SKIP_PERMISSIONS", "false")

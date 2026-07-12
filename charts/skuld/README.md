@@ -224,7 +224,7 @@ Core Skuld broker configuration controlling which AI CLI backend to use and how 
 | `broker.maxPresentedFileBytes` | int | `52428800` | Maximum file size accepted by the present-file endpoint |
 | `broker.cliType` | string | `"claude"` | **(DEPRECATED)** AI CLI backend: `"claude"` (Claude Code) or `"codex"` (OpenAI Codex). Use `broker.transportAdapter` instead |
 | `broker.transport` | string | `"sdk"` | **(DEPRECATED)** CLI transport mode: `"sdk"` (WebSocket, default) or `"subprocess"` (legacy). Use `broker.transportAdapter` instead |
-| `broker.skipPermissions` | bool | `false` | Skip tool permission prompts (`--dangerously-skip-permissions` for Claude, `--full-auto` for Codex) |
+| `broker.skipPermissions` | bool | `true` | Skip tool permission prompts and use full access (Claude `bypassPermissions`; Codex `approvalPolicy=never` with `danger-full-access`) |
 | `broker.agentTeams` | bool | `false` | Enable Claude Code experimental Agent Teams (Claude only) |
 
 ### Volundr API

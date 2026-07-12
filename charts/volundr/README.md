@@ -606,7 +606,7 @@ Session definitions are Kubernetes custom resources that describe how session po
 | `sessionDefinitions.skuldClaude.defaults.session.model` | string | `"claude-sonnet-4-20250514"` | Default Claude model |
 | `sessionDefinitions.skuldClaude.defaults.broker.cliType` | string | `"claude"` | AI CLI backend |
 | `sessionDefinitions.skuldClaude.defaults.broker.transport` | string | `"sdk"` | CLI transport mode (`sdk` = WebSocket, `subprocess` = legacy) |
-| `sessionDefinitions.skuldClaude.defaults.broker.skipPermissions` | bool | `false` | Skip tool permission prompts (`--dangerously-skip-permissions`) |
+| `sessionDefinitions.skuldClaude.defaults.broker.skipPermissions` | bool | `true` | Skip tool permission prompts (`--dangerously-skip-permissions`) |
 | `sessionDefinitions.skuldClaude.defaults.broker.agentTeams` | bool | `false` | Enable Claude Code experimental Agent Teams |
 | `sessionDefinitions.skuldClaude.defaults.image.repository` | string | `"ghcr.io/niuulabs/skuld"` | Session image repository |
 | `sessionDefinitions.skuldClaude.defaults.image.tag` | string | `"latest"` | Session image tag |
@@ -692,7 +692,7 @@ Session definitions are Kubernetes custom resources that describe how session po
 | `sessionDefinitions.skuldCodex.defaults.broker.cliType` | string | `"codex"` | AI CLI backend |
 | `sessionDefinitions.skuldCodex.defaults.broker.transport` | string | `"subprocess"` | Codex always uses subprocess transport |
 | `sessionDefinitions.skuldCodex.defaults.broker.transportAdapter` | string | `"skuld.transports.codex.CodexSubprocessTransport"` | Fully-qualified transport adapter class path |
-| `sessionDefinitions.skuldCodex.defaults.broker.skipPermissions` | bool | `false` | Skip tool permission prompts (`--full-auto` for Codex) |
+| `sessionDefinitions.skuldCodex.defaults.broker.skipPermissions` | bool | `true` | Skip prompts and use `approvalPolicy=never` with `danger-full-access` |
 | `sessionDefinitions.skuldCodex.defaults.image.repository` | string | `"ghcr.io/niuulabs/skuld"` | Session image repository |
 | `sessionDefinitions.skuldCodex.defaults.image.tag` | string | `"latest"` | Session image tag |
 | `sessionDefinitions.skuldCodex.defaults.homeVolume.credentialFiles.secretName` | string | `"codex-credentials"` | K8s secret containing Codex credential files |

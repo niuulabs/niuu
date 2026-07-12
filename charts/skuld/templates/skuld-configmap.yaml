@@ -32,7 +32,7 @@ data:
     transport_adapter: {{ .Values.broker.transportAdapter | default "skuld.transports.sdk.SDKTransport" | quote }}
     cli_binary: {{ .Values.broker.cliBinary | default "claude" | quote }}
     remote_control_permission_mode: {{ .Values.broker.remoteControlPermissionMode | default "" | quote }}
-    skip_permissions: {{ .Values.broker.skipPermissions | default false }}
+    skip_permissions: {{ .Values.broker.skipPermissions }}
     agent_teams: {{ .Values.broker.agentTeams | default false }}
     cli_type: {{ .Values.broker.cliType | default "claude" | quote }}
     host: "0.0.0.0"
