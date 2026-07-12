@@ -30,6 +30,29 @@ export const personaRoleSchema = z.enum([
 
 export type PersonaRole = z.infer<typeof personaRoleSchema>;
 
+export type PersonaFilter = 'all' | 'builtin' | 'custom';
+
+/** Compact persona projection shared by every persona picker. */
+export interface PersonaSummary {
+  name: string;
+  role: PersonaRole;
+  letter: string;
+  color: string;
+  summary: string;
+  permissionMode: string;
+  allowedTools: string[];
+  iterationBudget: number;
+  isBuiltin: boolean;
+  hasOverride: boolean;
+  producesEvent: string;
+  consumesEvents: string[];
+}
+
+/** Read-only persona catalog used across independently publishable plugins. */
+export interface IPersonaCatalog {
+  listPersonas(filter?: PersonaFilter): Promise<PersonaSummary[]>;
+}
+
 /**
  * LLM configuration attached to a Persona.
  *

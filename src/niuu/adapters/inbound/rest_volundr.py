@@ -253,6 +253,67 @@ async def _request_remote(
     return response
 
 
+async def _sync_persona_to_instance(
+    instance: RegisteredInstance,
+    request: Request,
+    principal: Principal,
+    persona_name: object,
+    *,
+    embedded_app: ASGIApp | None,
+) -> None:
+    """Materialize the central user persona on a remote target before launch."""
+    name = str(persona_name or "").strip()
+    if not name or embedded_app is None or _uses_embedded_transport(instance):
+        return
+
+    registry = getattr(getattr(embedded_app, "state", None), "persona_registry", None)
+    if registry is None:
+        return
+    view = await registry.get_persona(principal.user_id, name)
+    if view is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Persona not found: {name}",
+        )
+
+    encoded_name = quote(name, safe="")
+    existing = await _request_remote(
+        instance,
+        request,
+        method="GET",
+        path=f"/personas/{encoded_name}",
+        remote_prefix="/api/v1",
+        embedded_app=embedded_app,
+    )
+    if existing.status_code < 400 and not view.has_override:
+        return
+    if existing.status_code not in {status.HTTP_200_OK, status.HTTP_404_NOT_FOUND}:
+        _ensure_remote_success(existing)
+
+    method = "PUT" if existing.status_code == status.HTTP_200_OK else "POST"
+    path = f"/personas/{encoded_name}" if method == "PUT" else "/personas"
+    synced = await _request_remote(
+        instance,
+        request,
+        method=method,
+        path=path,
+        remote_prefix="/api/v1",
+        json_body=view.payload,
+        embedded_app=embedded_app,
+    )
+    if synced.status_code == status.HTTP_409_CONFLICT and method == "POST":
+        synced = await _request_remote(
+            instance,
+            request,
+            method="PUT",
+            path=f"/personas/{encoded_name}",
+            remote_prefix="/api/v1",
+            json_body=view.payload,
+            embedded_app=embedded_app,
+        )
+    _ensure_remote_success(synced)
+
+
 async def _find_session_owner(
     service: InstanceService,
     principal: Principal,
@@ -799,6 +860,13 @@ def create_volundr_router(
             str(requested_instance_id) if requested_instance_id else None,
             tags=list(target_tags) if target_tags else None,
             match=str(target_match),
+        )
+        await _sync_persona_to_instance(
+            instance,
+            request,
+            principal,
+            body.get("persona_name") or body.get("personaName"),
+            embedded_app=embedded_forge_app,
         )
         response = await _request_remote(
             instance,

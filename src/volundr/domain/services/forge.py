@@ -104,6 +104,10 @@ class ForgeService:
             tracker_issue_id=data.issue_id,
             issue_tracker_url=data.issue_url,
         )
+        workload_config = dict(data.workload_config or {})
+        persona_name = getattr(data, "persona_name", "")
+        if persona_name:
+            workload_config["persona"] = persona_name
         return await self._session_service.start_session(
             session.id,
             definition=resolved_definition,
@@ -116,7 +120,7 @@ class ForgeService:
             system_prompt=data.system_prompt,
             initial_prompt=data.initial_prompt,
             workload_type=data.workload_type,
-            workload_config=data.workload_config or None,
+            workload_config=workload_config or None,
         )
 
     def _resolve_session_definition(

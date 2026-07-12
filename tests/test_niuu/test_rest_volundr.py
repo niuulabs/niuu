@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 import respx
@@ -408,6 +410,43 @@ def test_create_session_uses_requested_instance_and_strips_instance_hints() -> N
     assert response.status_code == 201
     assert response.json()["instance_id"] == "target"
     assert route.calls.last.request.read() == b'{"workspace":"repo-a"}'
+
+
+@respx.mock
+def test_create_session_syncs_custom_persona_to_selected_target() -> None:
+    embedded = FastAPI()
+    embedded.state.persona_registry = SimpleNamespace(
+        get_persona=AsyncMock(
+            return_value=SimpleNamespace(
+                has_override=True,
+                payload={"name": "custom-reviewer", "system_prompt_template": "Review"},
+            )
+        )
+    )
+    client = _client(
+        [_instance("target", base_url="http://target", is_default=True)],
+        embedded_forge_app=embedded,
+    )
+    respx.get("http://target/api/v1/personas/custom-reviewer").mock(return_value=Response(404))
+    sync = respx.post("http://target/api/v1/personas").mock(
+        return_value=Response(201, json={"name": "custom-reviewer"})
+    )
+    launch = respx.post("http://target/api/v1/forge/sessions").mock(
+        return_value=Response(201, json={"id": "s-persona"})
+    )
+
+    response = client.post(
+        "/api/v1/forge/sessions",
+        headers=_headers(),
+        json={"name": "review-session", "persona_name": "custom-reviewer"},
+    )
+
+    assert response.status_code == 201
+    assert sync.called
+    assert launch.called
+    embedded.state.persona_registry.get_persona.assert_awaited_once_with(
+        "user-a", "custom-reviewer"
+    )
 
 
 @respx.mock

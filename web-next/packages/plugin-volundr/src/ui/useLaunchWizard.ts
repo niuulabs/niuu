@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import type { BifrostModel, IBifrostService } from '@niuulabs/plugin-bifrost';
-import { useService } from '@niuulabs/plugin-sdk';
+import type { IPersonaCatalog, PersonaSummary } from '@niuulabs/domain';
+import { useOptionalService, useService } from '@niuulabs/plugin-sdk';
 import type { RepoRecord } from '@niuulabs/ui';
 import type { IVolundrService } from '../ports/IVolundrService';
 import type {
@@ -56,6 +57,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
   const volundr = useService<IVolundrService>('volundr');
   const bifrost = useService<IBifrostService>('bifrost');
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
+  const personaCatalog = useOptionalService<IPersonaCatalog>('ravn.personas');
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [repos, setRepos] = useState<RepoRecord[]>([]);
@@ -69,6 +71,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
   const [targets, setTargets] = useState<VolundrTarget[]>([]);
   const [availableMcpServers, setAvailableMcpServers] = useState<McpServerConfig[]>([]);
   const [sessionDefinitions, setSessionDefinitions] = useState<SessionDefinition[]>([]);
+  const [personas, setPersonas] = useState<PersonaSummary[]>([]);
   const [trackerResults, setTrackerResults] = useState<TrackerIssue[]>([]);
   const [trackerLoading, setTrackerLoading] = useState(false);
 
@@ -81,6 +84,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
     workspaceId: '',
     mountPath: '~/code/niuu',
     sessionName: '',
+    personaName: '',
     systemPrompt: '',
     initialPrompt: '',
     trackerQuery: '',
@@ -128,6 +132,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
       volundr.getTargets().catch(() => []),
       volundr.getAvailableMcpServers().catch(() => []),
       volundr.getSessionDefinitions().catch(() => FALLBACK_SESSION_DEFINITIONS),
+      personaCatalog?.listPersonas().catch(() => []) ?? Promise.resolve([]),
     ]).then(
       ([
         nextRepos,
@@ -140,6 +145,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
         nextTargets,
         nextMcpServers,
         nextSessionDefinitions,
+        nextPersonas,
       ]) => {
         if (cancelled) return;
         setRepos(nextRepos);
@@ -154,13 +160,14 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
         setSessionDefinitions(
           nextSessionDefinitions.length > 0 ? nextSessionDefinitions : FALLBACK_SESSION_DEFINITIONS,
         );
+        setPersonas([...nextPersonas].sort((left, right) => left.name.localeCompare(right.name)));
       },
     );
 
     return () => {
       cancelled = true;
     };
-  }, [bifrost, open, repoCatalog, volundr]);
+  }, [bifrost, open, personaCatalog, repoCatalog, volundr]);
 
   useEffect(() => {
     if (!open || form.sourcetype !== 'git' || !form.repo.trim()) {
@@ -293,6 +300,8 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
         definition: normalizeDefinitionKey(preset.workloadType || `skuld-${preset.cliTool}`),
         model: preset.model ?? current.model,
         systemPrompt: preset.systemPrompt ?? '',
+        personaName:
+          typeof preset.workloadConfig.persona === 'string' ? preset.workloadConfig.persona : '',
         selectedCredentials: [...preset.envSecretRefs],
         selectedIntegrations: [...preset.integrationIds],
         mcpServers: [...preset.mcpServers],
@@ -457,6 +466,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
 
       const session = await volundr.startSession({
         name: effectiveSessionName,
+        personaName: form.personaName || undefined,
         source: buildSessionSource(form),
         model: form.model.trim(),
         launchSpec,
@@ -542,6 +552,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
     manualBranches,
     models,
     navigate,
+    personas,
     presets,
     repos,
     sessionDefinitions,

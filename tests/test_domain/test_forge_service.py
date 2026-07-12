@@ -40,6 +40,7 @@ async def test_create_and_start_session_delegates_to_session_service() -> None:
         initial_prompt="start",
         workload_type="interactive",
         workload_config={},
+        persona_name="reviewer",
     )
 
     result = await forge.create_and_start_session(data)
@@ -58,7 +59,7 @@ async def test_create_and_start_session_delegates_to_session_service() -> None:
         system_prompt="system",
         initial_prompt="start",
         workload_type="interactive",
-        workload_config=None,
+        workload_config={"persona": "reviewer"},
     )
 
 

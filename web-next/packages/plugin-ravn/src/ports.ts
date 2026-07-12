@@ -5,7 +5,13 @@
  * cost) or type aliases. Implementations live in src/adapters/.
  */
 
-import type { BudgetState, PersonaRole, FieldType } from '@niuulabs/domain';
+import type {
+  BudgetState,
+  FieldType,
+  IPersonaCatalog,
+  PersonaRole,
+  PersonaSummary,
+} from '@niuulabs/domain';
 import type { Ravn, ResidentDeploymentProfile } from './domain/ravn';
 import type { Session } from './domain/session';
 import type { Trigger } from './domain/trigger';
@@ -43,20 +49,7 @@ export interface PersonaFanIn {
   params: Record<string, unknown>;
 }
 
-export interface PersonaSummary {
-  name: string;
-  role: PersonaRole;
-  letter: string;
-  color: string;
-  summary: string;
-  permissionMode: string;
-  allowedTools: string[];
-  iterationBudget: number;
-  isBuiltin: boolean;
-  hasOverride: boolean;
-  producesEvent: string;
-  consumesEvents: string[];
-}
+export type { PersonaFilter, PersonaSummary } from '@niuulabs/domain';
 
 export interface PersonaDetail extends PersonaSummary {
   description: string;
@@ -99,15 +92,12 @@ export interface PersonaForkRequest {
   newName: string;
 }
 
-export type PersonaFilter = 'all' | 'builtin' | 'custom';
-
 // ---------------------------------------------------------------------------
 // Port interfaces
 // ---------------------------------------------------------------------------
 
 /** CRUD store for Persona configurations. */
-export interface IPersonaStore {
-  listPersonas(filter?: PersonaFilter): Promise<PersonaSummary[]>;
+export interface IPersonaStore extends IPersonaCatalog {
   getPersona(name: string): Promise<PersonaDetail>;
   getPersonaYaml(name: string): Promise<string>;
   createPersona(req: PersonaCreateRequest): Promise<PersonaDetail>;

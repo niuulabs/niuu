@@ -37,6 +37,7 @@ export function LaunchWizard(props: LaunchWizardProps) {
     manualBranches,
     models,
     navigate,
+    personas,
     presets,
     repos,
     sessionDefinitions,
@@ -79,6 +80,7 @@ export function LaunchWizard(props: LaunchWizardProps) {
               form={form}
               update={update}
               models={models}
+              personas={personas}
               workspaces={workspaces}
               targets={targets}
               credentials={credentials}

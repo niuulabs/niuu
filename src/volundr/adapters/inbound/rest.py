@@ -370,6 +370,11 @@ class SessionCreate(BaseModel):
         max_length=100,
         description="LLM model identifier (e.g. claude-sonnet-4-6)",
     )
+    persona_name: str = Field(
+        default="",
+        max_length=255,
+        description="Persona from the authenticated user's Ravn persona catalog",
+    )
     source: SessionSource = Field(
         default_factory=GitSource,
         description="Workspace source (git repo or local mount)",
@@ -710,6 +715,7 @@ class SessionResponse(BaseModel):
     id: UUID = Field(description="Unique session identifier")
     name: str = Field(description="Human-readable session name")
     model: str = Field(description="LLM model identifier")
+    persona_name: str = Field(default="", description="Persona attached at launch")
     source: SessionSource = Field(description="Workspace source config")
     status: SessionStatus = Field(description="Current lifecycle status")
     chat_endpoint: str | None = Field(
@@ -834,6 +840,7 @@ class SessionResponse(BaseModel):
             id=session.id,
             name=session.name,
             model=session.model,
+            persona_name=str(session.workload_config.get("persona") or ""),
             source=session.source,
             status=session.status,
             chat_endpoint=_public_session_endpoint(

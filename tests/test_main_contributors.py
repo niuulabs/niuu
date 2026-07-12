@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 from volundr.config import SessionContributorConfig, Settings
+from volundr.domain.ports import SessionPersonaProvider
 from volundr.main import _create_contributors
 
 
@@ -81,3 +84,15 @@ def test_create_contributors_passes_ravn_flock_init_writer_image() -> None:
     )
 
     assert ravn_flock._init_writer_image == "ghcr.io/niuulabs/skuld:writer"
+
+
+def test_create_contributors_auto_wires_persona_provider_once() -> None:
+    provider = AsyncMock(spec=SessionPersonaProvider)
+
+    contributors = _create_contributors(Settings(), persona_provider=provider)
+
+    assert [contributor.name for contributor in contributors].count("persona") == 1
+    names = [contributor.name for contributor in contributors]
+    assert names.index("persona") < max(
+        index for index, name in enumerate(names) if name == "prompt"
+    )

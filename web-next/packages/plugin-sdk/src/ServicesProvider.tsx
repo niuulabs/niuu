@@ -24,3 +24,8 @@ export function useService<T>(key: string): T {
   }
   return service as T;
 }
+
+export function useOptionalService<T>(key: string): T | undefined {
+  const services = useContext(ServicesContext);
+  return services?.[key] as T | undefined;
+}

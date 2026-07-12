@@ -102,6 +102,8 @@ type SessionPayload = {
   source: VolundrSession['source'];
   status: VolundrSession['status'];
   model: string;
+  personaName?: string;
+  persona_name?: string;
   lastActive?: number;
   last_active?: string;
   messageCount?: number;
@@ -429,6 +431,7 @@ function buildStartSessionBody(
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     name: config.name,
+    persona_name: config.personaName,
     source: config.source,
     model: config.model,
     definition: config.definition,
@@ -491,6 +494,7 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     source: session.source,
     status: session.status,
     model: session.model,
+    personaName: session.personaName ?? session.persona_name ?? undefined,
     lastActive: toEpochMs(session.lastActive ?? session.last_active),
     messageCount: session.messageCount ?? session.message_count ?? 0,
     tokensUsed: session.tokensUsed ?? session.tokens_used ?? 0,

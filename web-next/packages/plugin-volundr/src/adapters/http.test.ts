@@ -147,6 +147,7 @@ describe('__testables', () => {
     expect(
       buildStartSessionBody({
         name: 'alpha',
+        personaName: 'reviewer',
         source: { type: 'git', repo: 'r', branch: 'main' },
         model: 'sonnet',
         terminalRestricted: true,
@@ -160,6 +161,7 @@ describe('__testables', () => {
       }),
     ).toEqual({
       name: 'alpha',
+      persona_name: 'reviewer',
       source: { type: 'git', repo: 'r', branch: 'main' },
       model: 'sonnet',
       terminal_restricted: true,

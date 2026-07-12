@@ -605,10 +605,16 @@ def test_create_raven_uses_resident_command_timeout() -> None:
     client = _client([_instance("noatun", base_url="http://noatun")])
     response = Response(201, json={"id": "resident-id", "managed": True})
 
-    with patch(
-        "niuu.adapters.inbound.rest_ravn._request_remote",
-        new=AsyncMock(return_value=response),
-    ) as request_remote:
+    with (
+        patch(
+            "niuu.adapters.inbound.rest_ravn._request_remote",
+            new=AsyncMock(return_value=response),
+        ) as request_remote,
+        patch(
+            "niuu.adapters.inbound.rest_ravn._sync_persona_to_instance",
+            new=AsyncMock(),
+        ) as sync_persona,
+    ):
         result = client.post(
             "/api/v1/ravn/ravens",
             headers=_headers(),
@@ -616,11 +622,13 @@ def test_create_raven_uses_resident_command_timeout() -> None:
                 "instance_id": "noatun",
                 "profile_id": "ravn-openshell",
                 "name": "Muninn",
+                "persona_name": "reviewer",
             },
         )
 
     assert result.status_code == 201
     assert request_remote.await_args.kwargs["timeout"] == 900.0
+    assert sync_persona.await_args.args[3] == "reviewer"
 
 
 @respx.mock

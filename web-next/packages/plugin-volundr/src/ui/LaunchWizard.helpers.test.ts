@@ -51,6 +51,7 @@ function makeForm(overrides: Partial<WizardForm> = {}): WizardForm {
     workspaceId: '',
     mountPath: '~/code/niuu',
     sessionName: '',
+    personaName: '',
     systemPrompt: '',
     initialPrompt: '',
     trackerQuery: '',
@@ -390,6 +391,7 @@ describe('LaunchWizard helpers', () => {
     ).toBe(true);
     expect(hasPresetBackedRuntime(makeForm({ envVars: [{ key: 'A', value: '1' }] }))).toBe(true);
     expect(hasPresetBackedRuntime(makeForm({ setupScripts: ['echo hi'] }))).toBe(true);
+    expect(hasPresetBackedRuntime(makeForm({ personaName: 'reviewer' }))).toBe(true);
   });
 
   it('builds preset payload variants for git, local mount, and blank flows', () => {
@@ -445,6 +447,9 @@ describe('LaunchWizard helpers', () => {
       paths: [],
     });
     expect(buildPresetPayload(makeForm(), 'saved-name').name).toBe('saved-name');
+    expect(
+      buildPresetPayload(makeForm({ personaName: 'reviewer' }), 'persona-spec').workloadConfig,
+    ).toEqual({ persona: 'reviewer' });
   });
 
   it('copies existing preset state into comparison payloads', () => {

@@ -77,6 +77,10 @@ export function AdvancedRuntimeSection({
       if (parsed.envSecretRefs) patch.selectedCredentials = parsed.envSecretRefs;
       if (parsed.integrationIds) patch.selectedIntegrations = parsed.integrationIds;
       if (parsed.setupScripts) patch.setupScripts = parsed.setupScripts;
+      if (parsed.workloadConfig) {
+        patch.personaName =
+          typeof parsed.workloadConfig.persona === 'string' ? parsed.workloadConfig.persona : '';
+      }
       if (parsed.source !== undefined) {
         if (parsed.source === null) {
           patch.sourcetype = 'blank';
