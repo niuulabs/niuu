@@ -348,9 +348,7 @@ async def test_create_rolls_back_record_and_backend_on_deployment_failure() -> N
 
 async def test_reconcile_refreshes_capabilities_from_profile(runtime_service) -> None:
     service, repository = runtime_service
-    runtime = await service.create_record(
-        _principal(), name="Muninn", profile_id="ravn-openshell"
-    )
+    runtime = await service.create_record(_principal(), name="Muninn", profile_id="ravn-openshell")
     repository.items[runtime.id] = runtime.model_copy(
         update={"capabilities": [ResidentCapability.CHAT, ResidentCapability.METRICS]}
     )
