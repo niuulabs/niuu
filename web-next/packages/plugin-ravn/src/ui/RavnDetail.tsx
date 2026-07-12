@@ -22,12 +22,12 @@ import {
   useDeleteResident,
   useDeleteResidentSession,
   useResidentLifecycle,
-  useResidentLogs,
   useResidentProfiles,
   useResidentSessions,
 } from './hooks/useResidentControl';
 import { ravnStatusToDotState } from './grouping';
 import { ResidentModelSelect } from './ResidentModelSelect';
+import { ResidentLogsView } from './ResidentLogsView';
 import { loadStorage, saveStorage } from './storage';
 import './RavnDetail.css';
 
@@ -154,6 +154,38 @@ function OverviewSection({ ravn, budget, sessions }: OverviewSectionProps) {
 
   return (
     <div className="rv-detail-overview" data-testid="section-body-overview">
+      <section className="rv-overview-stats" aria-label="Ravn status summary">
+        <div className="rv-overview-stat">
+          <span>State</span>
+          <strong className="rv-overview-stat__state">
+            <StateDot
+              state={ravnStatusToDotState(ravn.status)}
+              pulse={ravn.status === 'active'}
+              size={8}
+            />
+            {pillStateLabel(ravn.status)}
+          </strong>
+        </div>
+        <div className="rv-overview-stat">
+          <span>Sessions</span>
+          <strong>
+            {openSessions} open · {totalSessions} total
+          </strong>
+        </div>
+        <div className="rv-overview-stat">
+          <span>Model</span>
+          <strong title={ravn.model}>{ravn.model}</strong>
+        </div>
+        <div className="rv-overview-stat">
+          <span>Spend today</span>
+          <strong>{budget ? `$${budget.spentUsd.toFixed(2)}` : '—'}</strong>
+        </div>
+        <div className="rv-overview-stat">
+          <span>Last activity</span>
+          <strong>{relTime(ravn.updatedAt ?? ravn.createdAt)}</strong>
+        </div>
+      </section>
+
       <section className="rv-panel" data-testid="identity-panel">
         <header className="rv-panel__head">
           <h3>Identity</h3>
@@ -161,18 +193,26 @@ function OverviewSection({ ravn, budget, sessions }: OverviewSectionProps) {
         <div className="rv-panel__body">
           <dl className="rv-kv-list">
             <KeyValueRow label="id" value={<span className="rv-value-mono">{ravn.id}</span>} />
-            <KeyValueRow
-              label="persona"
-              value={<span className="rv-value-strong">{ravn.personaName || '—'}</span>}
-            />
-            <KeyValueRow
-              label="role"
-              value={<span className="rv-value-mono">{ravn.role ?? '—'}</span>}
-            />
-            <KeyValueRow
-              label="specialisations"
-              value={<span className="rv-value-mono">{buildSpecialisations(ravn)}</span>}
-            />
+            {(ravn.residentName || ravn.personaName) && (
+              <KeyValueRow
+                label={ravn.residentName ? 'name' : 'persona'}
+                value={
+                  <span className="rv-value-strong">{ravn.residentName || ravn.personaName}</span>
+                }
+              />
+            )}
+            {ravn.role && (
+              <KeyValueRow
+                label="role"
+                value={<span className="rv-value-mono">{ravn.role}</span>}
+              />
+            )}
+            {!ravn.managed && (
+              <KeyValueRow
+                label="specialisations"
+                value={<span className="rv-value-mono">{buildSpecialisations(ravn)}</span>}
+              />
+            )}
             {ravn.summary && (
               <KeyValueRow
                 label="summary"
@@ -189,19 +229,6 @@ function OverviewSection({ ravn, budget, sessions }: OverviewSectionProps) {
         </header>
         <div className="rv-panel__body">
           <dl className="rv-kv-list">
-            <KeyValueRow
-              label="state"
-              value={
-                <span className="rv-state-pill">
-                  <StateDot
-                    state={ravnStatusToDotState(ravn.status)}
-                    pulse={ravn.status === 'active'}
-                    size={8}
-                  />
-                  {pillStateLabel(ravn.status)}
-                </span>
-              }
-            />
             {ravn.managed && (
               <>
                 <KeyValueRow
@@ -242,38 +269,17 @@ function OverviewSection({ ravn, budget, sessions }: OverviewSectionProps) {
               label="routing"
               value={<span className="rv-value-mono">{ravn.writeRouting ?? '—'}</span>}
             />
-            <KeyValueRow
-              label="model"
-              value={<span className="rv-value-mono">{ravn.model}</span>}
-            />
-            <KeyValueRow
-              label="last activity"
-              value={
-                <span className="rv-value-strong">{relTime(ravn.updatedAt ?? ravn.createdAt)}</span>
-              }
-            />
-            <KeyValueRow
-              label="sessions"
-              value={
-                <span className="rv-value-strong">
-                  {openSessions} open / {totalSessions} total
-                </span>
-              }
-            />
-            <KeyValueRow
-              label="today's spend"
-              value={
-                budget ? (
+            {budget && (
+              <KeyValueRow
+                label="budget"
+                value={
                   <span className="rv-spend-row">
-                    <span className="rv-value-strong">${budget.spentUsd.toFixed(2)}</span>
-                    <span className="rv-value-mono">of ${budget.capUsd.toFixed(2)}</span>
+                    <span className="rv-value-mono">${budget.capUsd.toFixed(2)} cap</span>
                     <span className="rv-percent-pill">{percentage}%</span>
                   </span>
-                ) : (
-                  <span className="rv-value-mono">—</span>
-                )
-              }
-            />
+                }
+              />
+            )}
           </dl>
         </div>
       </section>
@@ -729,7 +735,6 @@ function ConnectivitySection({ ravn }: ConnectivitySectionProps) {
   const gatewayChannels = ravn.gatewayChannels ?? [];
   const eventSubscriptions = ravn.eventSubscriptions ?? [];
   const canReadLogs = Boolean(ravn.managed && ravn.capabilities?.includes('logs'));
-  const logs = useResidentLogs(ravn, logsOpen && canReadLogs);
   const operationalEndpoints = (ravn.endpoints ?? []).filter(
     (endpoint) => endpoint.kind === 'metrics' && ravn.capabilities?.includes('metrics'),
   );
@@ -841,30 +846,7 @@ function ConnectivitySection({ ravn }: ConnectivitySectionProps) {
 
       <Dialog open={logsOpen} onOpenChange={setLogsOpen}>
         <DialogContent title="Resident logs" className="rv-logs-dialog">
-          {logs.isLoading && <div className="rv-form-state">Loading logs…</div>}
-          {logs.isError && (
-            <div className="rv-form-error" role="alert">
-              {logs.error instanceof Error ? logs.error.message : 'Failed to load resident logs'}
-            </div>
-          )}
-          {logs.data && logs.data.entries.length === 0 && (
-            <div className="rv-form-state">No log entries reported.</div>
-          )}
-          {logs.data && logs.data.entries.length > 0 && (
-            <div className="rv-resident-logs" data-testid="resident-log-entries">
-              {logs.data.entries.map((entry, index) => (
-                <div
-                  key={`${entry.timestampMs}:${entry.source}:${index}`}
-                  className="rv-resident-log"
-                >
-                  <span>{new Date(entry.timestampMs).toLocaleTimeString()}</span>
-                  <strong>{entry.level || 'info'}</strong>
-                  <span>{entry.source}</span>
-                  <p>{entry.message}</p>
-                </div>
-              ))}
-            </div>
-          )}
+          <ResidentLogsView ravn={ravn} enabled={logsOpen && canReadLogs} />
         </DialogContent>
       </Dialog>
     </div>

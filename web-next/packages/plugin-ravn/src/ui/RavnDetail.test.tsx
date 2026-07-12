@@ -529,10 +529,9 @@ describe('RavnDetail — Overview tab', () => {
     expect(screen.getByText('sequential')).toBeInTheDocument();
   });
 
-  it('shows last activity in runtime panel', () => {
+  it('shows last activity in the operational summary', () => {
     render(<RavnDetail ravn={SAMPLE_RAVN} />, { wrapper: wrap() });
-    // The runtime panel displays "last activity" derived from updatedAt or createdAt
-    expect(screen.getByText('last activity')).toBeInTheDocument();
+    expect(screen.getByText('Last activity')).toBeInTheDocument();
   });
 
   it('shows write routing when provided', () => {

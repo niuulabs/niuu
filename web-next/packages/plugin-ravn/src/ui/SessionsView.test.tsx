@@ -390,7 +390,7 @@ describe('SessionsView — live chat', () => {
     expect(getMessages).not.toHaveBeenCalled();
   });
 
-  it('keeps managed resident sessions on their protocol-aware chat surface', async () => {
+  it('keeps managed resident chat and observability on backend-aware surfaces', async () => {
     const resident = {
       id: 'a3f1b2c4-8e7d-4a6f-9b0c-1d2e3f4a5b6c',
       personaName: 'product-steward',
@@ -410,6 +410,19 @@ describe('SessionsView — live chat', () => {
         return resident;
       },
     };
+    const getLogs = vi.fn().mockResolvedValue({
+      entries: [
+        {
+          timestampMs: Date.parse('2026-07-11T15:05:00Z'),
+          level: 'info',
+          source: 'nemohermes',
+          target: 'resident',
+          message: 'session ready',
+          fields: {},
+        },
+      ],
+      bufferTotal: 1,
+    });
     render(<SessionsView />, {
       wrapper: wrap({
         'ravn.sessions': singleSessionStream(
@@ -418,12 +431,17 @@ describe('SessionsView — live chat', () => {
         'ravn.ravens': ravenStream,
         'ravn.personas': createMockPersonaStore(),
         'ravn.budget': createMockBudgetStream(),
+        'ravn.residents': { getLogs },
       }),
     });
 
     expect(await screen.findByTestId('sessions-live-chat')).toBeInTheDocument();
-    expect(screen.queryByRole('tab', { name: /trace/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('tab', { name: /logs/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: /trace/i }));
+    expect(screen.getByText('Session traces are not exposed by this runtime.')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: /logs/i }));
+    expect(await screen.findByText('session ready')).toBeInTheDocument();
+    expect(getLogs).toHaveBeenCalledWith(resident);
     expect(screen.queryByText(/^pause$/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/^abort$/i)).not.toBeInTheDocument();
   });

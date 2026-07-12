@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   PersonaAvatar,
+  StateDot,
   ErrorState,
   LoadingState,
   SessionChat,
@@ -15,6 +16,7 @@ import { Eye, EyeOff, FileCode2, MessageSquareText, Sparkles } from 'lucide-reac
 import { useMessages, useSessions } from './hooks/useSessions';
 import { useRavens } from './hooks/useRavens';
 import { useRavnBudget } from './hooks/useBudget';
+import { ResidentLogsView } from './ResidentLogsView';
 import { usePersona } from './usePersona';
 import { loadStorage, saveStorage } from './storage';
 import type { Message } from '../domain/message';
@@ -533,17 +535,17 @@ function SessionRailItem({
       aria-pressed={selected}
       aria-label={`Open session ${titleForSession(session)}`}
     >
-      <div className="rv-rs__session-avatar">
-        <PersonaAvatar
-          role={session.personaRole ?? 'build'}
-          letter={session.personaLetter ?? '?'}
-          size={24}
+      <span className="rv-rs__session-state" aria-hidden="true">
+        <StateDot
+          state={session.status === 'running' ? 'running' : 'idle'}
+          pulse={false}
+          size={8}
         />
-      </div>
+      </span>
       <div className="rv-rs__session-main">
         <div className="rv-rs__session-title">{titleForSession(session)}</div>
         <div className="rv-rs__session-meta">
-          <span>{session.personaName}</span>
+          <span>{normalizeLabel(session.model)}</span>
           <span>·</span>
           <span>{relativeAge}</span>
           <span>·</span>
@@ -554,28 +556,83 @@ function SessionRailItem({
   );
 }
 
+interface SessionRavnGroup {
+  key: string;
+  ravn: Ravn | null;
+  sessions: Session[];
+}
+
+export function groupSessionsByRavn(sessions: Session[], ravens: Ravn[]): SessionRavnGroup[] {
+  const ravnById = new Map(
+    ravens.map((ravn) => [ravenIdentityKey(ravn.id, ravn.instanceId), ravn]),
+  );
+  const groups = new Map<string, SessionRavnGroup>();
+
+  for (const session of sessions) {
+    const key = ravenIdentityKey(session.ravnId, session.instanceId);
+    const group = groups.get(key) ?? {
+      key,
+      ravn: ravnById.get(key) ?? null,
+      sessions: [],
+    };
+    group.sessions.push(session);
+    groups.set(key, group);
+  }
+
+  return Array.from(groups.values())
+    .map((group) => ({
+      ...group,
+      sessions: [...group.sessions].sort((left, right) => {
+        if (left.status !== right.status) return left.status === 'running' ? -1 : 1;
+        return right.createdAt.localeCompare(left.createdAt);
+      }),
+    }))
+    .sort((left, right) => {
+      const leftActive = left.sessions.some((session) => session.status === 'running');
+      const rightActive = right.sessions.some((session) => session.status === 'running');
+      if (leftActive !== rightActive) return leftActive ? -1 : 1;
+      return right.sessions[0]!.createdAt.localeCompare(left.sessions[0]!.createdAt);
+    });
+}
+
+function sessionGroupName(group: SessionRavnGroup): string {
+  return (
+    group.ravn?.residentName ||
+    group.ravn?.personaName ||
+    group.sessions[0]?.personaName ||
+    `Ravn ${group.sessions[0]?.ravnId.slice(0, 8) ?? ''}`
+  );
+}
+
 function SessionRailGroup({
-  label,
-  count,
-  sessions,
+  group,
   selectedId,
   anchorTime,
   onSelect,
 }: {
-  label: string;
-  count: number;
-  sessions: Session[];
+  group: SessionRavnGroup;
   selectedId: string | null;
   anchorTime: string;
   onSelect: (session: Session) => void;
 }) {
-  if (sessions.length === 0) return null;
+  const { ravn, sessions } = group;
+  const activeCount = sessions.filter((session) => session.status === 'running').length;
+  const letter = ravn?.letter ?? sessionGroupName(group).charAt(0).toUpperCase();
 
   return (
     <section className="rv-rs__group">
       <div className="rv-rs__group-head">
-        <span className="rv-rs__group-label">{label}</span>
-        <span className="rv-rs__group-count">{count}</span>
+        <PersonaAvatar role={ravn?.role ?? 'build'} letter={letter} size={24} />
+        <span className="rv-rs__group-copy">
+          <span className="rv-rs__group-label">{sessionGroupName(group)}</span>
+          <span className="rv-rs__group-meta">
+            {normalizeLabel(ravn?.instanceName ?? ravn?.location ?? 'unknown target')} ·{' '}
+            {normalizeLabel(ravn?.engine ?? ravn?.deployment ?? 'ravn')}
+          </span>
+        </span>
+        <span className="rv-rs__group-count" aria-label={`${sessions.length} sessions`}>
+          {activeCount > 0 ? `${activeCount}/${sessions.length}` : sessions.length}
+        </span>
       </div>
       <div className="rv-rs__group-body">
         {sessions.map((session) => (
@@ -983,7 +1040,7 @@ function LiveSessionChat({
   );
 }
 
-function SessionObservabilityPanel({
+function VolundrSessionObservability({
   session,
   tab,
 }: {
@@ -1011,6 +1068,38 @@ function SessionObservabilityPanel({
       <LiveLogsTab sessionId={session.id} volundr={volundr} />
     </div>
   );
+}
+
+function SessionObservabilityPanel({
+  session,
+  ravn,
+  tab,
+}: {
+  session: Session;
+  ravn: Ravn | null;
+  tab: Exclude<SessionSurfaceTab, 'chat'>;
+}) {
+  if (ravn?.managed && tab === 'logs') {
+    if (!ravn.capabilities?.includes('logs')) {
+      return (
+        <div className="rv-rs__observability-empty">Logs are not exposed by this runtime.</div>
+      );
+    }
+    return (
+      <div className="rv-rs__observability-panel">
+        <ResidentLogsView ravn={ravn} fill />
+      </div>
+    );
+  }
+
+  if (ravn?.managed && tab === 'trace') {
+    return (
+      <div className="rv-rs__observability-empty">
+        Session traces are not exposed by this runtime.
+      </div>
+    );
+  }
+  return <VolundrSessionObservability session={session} tab={tab} />;
 }
 
 function SessionSurfaceTabs({
@@ -1228,6 +1317,10 @@ export function SessionsView() {
   const selectedRavn = selectedSession
     ? (ravnById.get(ravenIdentityKey(selectedSession.ravnId, selectedSession.instanceId)) ?? null)
     : null;
+  const sessionGroups = useMemo(
+    () => groupSessionsByRavn(sortedSessions, ravens ?? []),
+    [ravens, sortedSessions],
+  );
   const hasLiveChat = Boolean(
     selectedSession?.status === 'running' &&
     normalizeSessionUrl(selectedSession.chatEndpoint ?? null) &&
@@ -1325,9 +1418,7 @@ export function SessionsView() {
   const liveChatEndpoint = hasLiveChat
     ? normalizeSessionUrl(selectedSession.chatEndpoint ?? null)
     : null;
-  const surfaceTabs = selectedRavn?.managed
-    ? SESSION_SURFACE_TABS.filter((tab) => tab.id === 'chat')
-    : SESSION_SURFACE_TABS;
+  const surfaceTabs = SESSION_SURFACE_TABS;
   const resolvedSurfaceTab = surfaceTabs.some((tab) => tab.id === surfaceTab) ? surfaceTab : 'chat';
 
   return (
@@ -1378,22 +1469,15 @@ export function SessionsView() {
             </div>
 
             <div className="rv-rs__rail-body">
-              <SessionRailGroup
-                label="active"
-                count={activeSessions.length}
-                sessions={activeSessions}
-                selectedId={sessionIdentityKey(selectedSession)}
-                anchorTime={anchorTime}
-                onSelect={selectSession}
-              />
-              <SessionRailGroup
-                label="idle"
-                count={idleSessions.length}
-                sessions={idleSessions}
-                selectedId={sessionIdentityKey(selectedSession)}
-                anchorTime={anchorTime}
-                onSelect={selectSession}
-              />
+              {sessionGroups.map((group) => (
+                <SessionRailGroup
+                  key={group.key}
+                  group={group}
+                  selectedId={sessionIdentityKey(selectedSession)}
+                  anchorTime={anchorTime}
+                  onSelect={selectSession}
+                />
+              ))}
             </div>
           </>
         )}
@@ -1482,7 +1566,11 @@ export function SessionsView() {
             )}
           </div>
         ) : (
-          <SessionObservabilityPanel session={selectedSession} tab={resolvedSurfaceTab} />
+          <SessionObservabilityPanel
+            session={selectedSession}
+            ravn={selectedRavn}
+            tab={resolvedSurfaceTab}
+          />
         )}
       </main>
     </div>

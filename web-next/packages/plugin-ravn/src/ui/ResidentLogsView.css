@@ -1,0 +1,63 @@
+.rv-resident-logs-view {
+  display: grid;
+  max-height: min(65vh, 620px);
+  overflow: auto;
+  padding: 0 2px;
+}
+
+.rv-resident-logs-view--fill {
+  height: 100%;
+  max-height: none;
+  padding: 16px 20px;
+  background: #090a0d;
+}
+
+.rv-resident-logs-view__row {
+  display: grid;
+  grid-template-columns: 82px 58px minmax(90px, 0.2fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  border-bottom: 1px solid rgba(156, 164, 177, 0.1);
+  padding: 8px 0;
+  color: #9aa3af;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.rv-resident-logs-view__row time {
+  color: #68717f;
+}
+
+.rv-resident-logs-view__row strong {
+  color: #b7d9ef;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.rv-resident-logs-view__row p {
+  margin: 0;
+  color: #d9dee5;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.rv-resident-logs-view__empty {
+  display: flex;
+  min-height: 180px;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: #7c8490;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .rv-resident-logs-view__row {
+    grid-template-columns: 72px 50px minmax(0, 1fr);
+  }
+
+  .rv-resident-logs-view__row p {
+    grid-column: 1 / -1;
+  }
+}

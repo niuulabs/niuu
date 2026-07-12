@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { BudgetBar, PersonaAvatar, StateDot, cn, ErrorState, LoadingState } from '@niuulabs/ui';
+import { PersonaAvatar, StateDot, cn, ErrorState, LoadingState } from '@niuulabs/ui';
 import type { BudgetState, PersonaRole } from '@niuulabs/domain';
 import type { Ravn } from '../domain/ravn';
 import { useRavens } from './hooks/useRavens';
@@ -125,33 +125,19 @@ function RavnListRow({ ravn, budget, sessionCount, selected, onClick }: RavnList
 
       <span className="rv-list-row__identity">
         <span className="rv-list-row__name">{nameForRavn(ravn)}</span>
-        <span className="rv-list-row__sub">{subtitleForRavn(ravn)}</span>
+        <span className="rv-list-row__sub">
+          {subtitleForRavn(ravn)} · {normalizeLabel(ravn.engine || ravn.deployment || 'ravn')}
+        </span>
       </span>
 
-      <span className="rv-list-row__location">
-        <span>{normalizeLabel(ravn.instanceName || ravn.location || 'unknown')}</span>
-        <span>{normalizeLabel(ravn.engine || ravn.deployment || 'unplaced')}</span>
-      </span>
-
-      <span className="rv-list-row__sessions">
-        <span className="rv-list-row__sessions-value">{sessionCount}</span>
-        <span className="rv-list-row__sessions-label">sess</span>
-      </span>
-
-      <span className="rv-list-row__budget">
-        {budget ? (
-          <>
-            <BudgetBar
-              spent={budget.spentUsd}
-              cap={budget.capUsd}
-              warnAt={Math.round(budget.warnAt * 100)}
-              size="sm"
-            />
-            <span className="rv-list-row__budget-text">{formatBudgetText(budget)}</span>
-          </>
-        ) : (
-          <span className="rv-list-row__budget-text">—</span>
-        )}
+      <span className="rv-list-row__summary">
+        <span className="rv-list-row__target">
+          {normalizeLabel(ravn.instanceName || ravn.location || 'unknown')}
+        </span>
+        <span className="rv-list-row__metrics">
+          <span>{sessionCount} sess</span>
+          <span>{formatBudgetText(budget)}</span>
+        </span>
       </span>
     </button>
   );
