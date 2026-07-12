@@ -55,12 +55,51 @@ const SAMPLE_RESIDENT: Ravn = {
   sessionId: '0f8e7d6c-5b4a-4392-8170-6e5d4c3b2a19',
 };
 
+const MANAGED_HERMES: Ravn = {
+  ...SAMPLE_RESIDENT,
+  managed: true,
+  backend: 'openshell',
+  engine: 'hermes',
+  profileId: 'nemohermes-openshell',
+  desiredState: 'running',
+  observedState: 'active',
+  instanceId: 'target-1',
+  instanceName: 'Compute target',
+  capabilities: [
+    'chat',
+    'session.list',
+    'session.create',
+    'session.delete',
+    'runtime.restart',
+    'logs',
+  ],
+  conditions: [
+    {
+      type: 'Ready',
+      status: 'true',
+      reason: 'EngineReady',
+      message: '',
+      lastTransitionAt: '2026-04-15T09:01:00Z',
+    },
+  ],
+};
+
 function makeServices(overrides?: Record<string, unknown>) {
   return {
     'ravn.ravens': createMockRavenStream(),
     'ravn.triggers': createMockTriggerStore(),
     'ravn.sessions': createMockSessionStream(),
     'ravn.budget': createMockBudgetStream(),
+    'ravn.residents': {
+      listProfiles: vi.fn().mockResolvedValue([]),
+      deploy: vi.fn(),
+      applyLifecycle: vi.fn(),
+      delete: vi.fn(),
+      getLogs: vi.fn(),
+      listSessions: vi.fn().mockResolvedValue([]),
+      createSession: vi.fn(),
+      deleteSession: vi.fn(),
+    },
     ...overrides,
   };
 }
@@ -120,6 +159,20 @@ describe('RavnDetail', () => {
     expect(screen.getByTestId('triggers-section-body')).toBeInTheDocument();
   });
 
+  it('moves between detail tabs with arrow keys', () => {
+    render(<RavnDetail ravn={SAMPLE_RAVN} />, { wrapper: wrap() });
+    const overview = screen.getByTestId('sectab-overview');
+
+    fireEvent.keyDown(overview, { key: 'ArrowRight' });
+    expect(screen.getByTestId('sectab-triggers')).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.keyDown(screen.getByTestId('sectab-triggers'), { key: 'ArrowLeft' });
+    expect(overview).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.keyDown(overview, { key: 'Enter' });
+    expect(overview).toHaveAttribute('aria-selected', 'true');
+  });
+
   it('persists active tab to localStorage', () => {
     render(<RavnDetail ravn={SAMPLE_RAVN} />, { wrapper: wrap() });
     const sessionsTab = screen.getByTestId('sectab-sessions');
@@ -135,6 +188,13 @@ describe('RavnDetail', () => {
     expect(connectivityTab).toHaveAttribute('aria-selected', 'true');
   });
 
+  it('recovers from a stale persisted tab', () => {
+    localStorage.setItem('ravn.detail.tab', '"removed-chat-tab"');
+    render(<RavnDetail ravn={SAMPLE_RAVN} />, { wrapper: wrap() });
+    expect(screen.getByTestId('sectab-overview')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('section-body-overview')).toBeInTheDocument();
+  });
+
   it('shows close button when onClose is provided', () => {
     const handleClose = vi.fn();
     render(<RavnDetail ravn={SAMPLE_RAVN} onClose={handleClose} />, { wrapper: wrap() });
@@ -147,6 +207,269 @@ describe('RavnDetail', () => {
   it('does not show close button when onClose is not provided', () => {
     render(<RavnDetail ravn={SAMPLE_RAVN} />, { wrapper: wrap() });
     expect(screen.queryByTestId('detail-close-btn')).not.toBeInTheDocument();
+  });
+});
+
+describe('RavnDetail — resident controls', () => {
+  it('shows the managed runtime contract and advertised lifecycle controls', () => {
+    render(<RavnDetail ravn={MANAGED_HERMES} />, { wrapper: wrap() });
+
+    expect(screen.getByTestId('resident-contract-panel')).toBeInTheDocument();
+    expect(screen.getByText('nemohermes-openshell')).toBeInTheDocument();
+    expect(screen.getByText('Compute target')).toBeInTheDocument();
+    expect(screen.getByTestId('resident-restart')).toBeInTheDocument();
+    expect(screen.queryByTestId('resident-suspend')).not.toBeInTheDocument();
+    expect(screen.getByText('EngineReady')).toBeInTheDocument();
+  });
+
+  it('uses the lifecycle command port and never renders the old pause control', async () => {
+    const applyLifecycle = vi.fn().mockResolvedValue(MANAGED_HERMES);
+    render(<RavnDetail ravn={MANAGED_HERMES} />, {
+      wrapper: wrap(
+        makeServices({
+          'ravn.residents': {
+            ...makeServices()['ravn.residents'],
+            applyLifecycle,
+          },
+        }),
+      ),
+    });
+
+    fireEvent.click(screen.getByTestId('resident-restart'));
+    await waitFor(() => expect(applyLifecycle).toHaveBeenCalledWith(MANAGED_HERMES, 'restart'));
+    expect(screen.queryByText(/^pause$/i)).not.toBeInTheDocument();
+  });
+
+  it('shows suspend only when the capability is advertised', () => {
+    const helmResident: Ravn = {
+      ...MANAGED_HERMES,
+      backend: 'helmrelease',
+      engine: 'ravn',
+      capabilities: ['chat', 'runtime.restart', 'runtime.suspend'],
+    };
+    const { rerender } = render(<RavnDetail ravn={helmResident} />, { wrapper: wrap() });
+    expect(screen.getByTestId('resident-suspend')).toBeInTheDocument();
+
+    rerender(
+      <RavnDetail
+        ravn={{ ...helmResident, backend: 'openshell', capabilities: ['chat', 'runtime.restart'] }}
+      />,
+    );
+    expect(screen.queryByTestId('resident-suspend')).not.toBeInTheDocument();
+  });
+
+  it('offers resume, but not restart or suspend, for a suspended resident', async () => {
+    const applyLifecycle = vi.fn().mockResolvedValue(MANAGED_HERMES);
+    const suspended: Ravn = {
+      ...MANAGED_HERMES,
+      desiredState: 'suspended',
+      observedState: 'suspended',
+      capabilities: ['chat', 'runtime.restart', 'runtime.suspend'],
+    };
+    render(<RavnDetail ravn={suspended} />, {
+      wrapper: wrap(
+        makeServices({
+          'ravn.residents': {
+            ...makeServices()['ravn.residents'],
+            applyLifecycle,
+          },
+        }),
+      ),
+    });
+
+    expect(screen.queryByTestId('resident-restart')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('resident-suspend')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('resident-resume'));
+
+    await waitFor(() => expect(applyLifecycle).toHaveBeenCalledWith(suspended, 'resume'));
+  });
+
+  it('allows failed runtimes to restart and suppresses destructive controls while deleting', () => {
+    const failed: Ravn = { ...MANAGED_HERMES, status: 'failed', observedState: 'failed' };
+    const { rerender } = render(<RavnDetail ravn={failed} />, { wrapper: wrap() });
+    expect(screen.getByTestId('resident-restart')).toBeInTheDocument();
+
+    rerender(<RavnDetail ravn={{ ...failed, observedState: 'deleting' }} />);
+    expect(screen.queryByTestId('resident-restart')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('resident-delete-open')).not.toBeInTheDocument();
+  });
+
+  it('renders a sparse managed identity without exposing unsupported observability', () => {
+    const sparse: Ravn = {
+      id: '12345678-1234-4234-8234-123456789012',
+      personaName: '',
+      status: 'idle',
+      model: 'qwen3.5',
+      createdAt: '2026-04-15T09:00:00Z',
+      managed: true,
+      observedState: 'active',
+      capabilities: ['metrics'],
+      endpoints: [{ kind: 'chat', protocol: 'ws', url: 'wss://chat.example/session' }],
+    };
+    render(<RavnDetail ravn={sparse} />, { wrapper: wrap() });
+    expect(screen.getByRole('heading', { name: '12345678' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('sectab-connectivity'));
+    expect(screen.queryByTestId('resident-observability-panel')).not.toBeInTheDocument();
+  });
+
+  it('keeps lifecycle and deletion failures visible in their owning surfaces', async () => {
+    const applyLifecycle = vi.fn().mockRejectedValue(new Error('restart refused'));
+    const deleteResident = vi.fn().mockRejectedValue(new Error('runtime still terminating'));
+    render(<RavnDetail ravn={MANAGED_HERMES} />, {
+      wrapper: wrap(
+        makeServices({
+          'ravn.residents': {
+            ...makeServices()['ravn.residents'],
+            applyLifecycle,
+            delete: deleteResident,
+          },
+        }),
+      ),
+    });
+
+    fireEvent.click(screen.getByTestId('resident-restart'));
+    await waitFor(() => expect(screen.getByText('restart refused')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('resident-delete-open'));
+    fireEvent.click(screen.getByTestId('resident-delete-confirm'));
+    await waitFor(() => expect(screen.getByText('runtime still terminating')).toBeInTheDocument());
+    expect(screen.getByTestId('resident-delete-confirm')).toBeInTheDocument();
+  });
+
+  it('creates and closes a second native conversation through capabilities', async () => {
+    const session = {
+      id: '22222222-3333-4444-8555-666666666666',
+      ravnId: MANAGED_HERMES.id,
+      personaName: MANAGED_HERMES.personaName,
+      status: 'running' as const,
+      model: MANAGED_HERMES.model,
+      createdAt: '2026-04-15T09:02:00Z',
+      title: 'Second conversation',
+    };
+    const createSession = vi.fn().mockResolvedValue(session);
+    const deleteSession = vi.fn().mockResolvedValue(undefined);
+    render(<RavnDetail ravn={MANAGED_HERMES} />, {
+      wrapper: wrap(
+        makeServices({
+          'ravn.residents': {
+            ...makeServices()['ravn.residents'],
+            listSessions: vi.fn().mockResolvedValue([session]),
+            createSession,
+            deleteSession,
+          },
+        }),
+      ),
+    });
+
+    fireEvent.click(screen.getByTestId('sectab-sessions'));
+    await waitFor(() => expect(screen.getByText('Second conversation')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('resident-session-create-open'));
+    fireEvent.change(screen.getByTestId('resident-session-title'), {
+      target: { value: 'Another thread' },
+    });
+    fireEvent.click(screen.getByTestId('resident-session-create-submit'));
+    await waitFor(() =>
+      expect(createSession).toHaveBeenCalledWith(MANAGED_HERMES, {
+        title: 'Another thread',
+      }),
+    );
+
+    fireEvent.click(screen.getByTestId('resident-session-delete-open'));
+    fireEvent.click(screen.getByTestId('resident-session-delete-confirm'));
+    await waitFor(() => expect(deleteSession).toHaveBeenCalledWith(MANAGED_HERMES, session.id));
+  });
+
+  it('shows native conversation loading failures without falling back to aggregate sessions', async () => {
+    const listSessions = vi.fn().mockRejectedValue(new Error('engine session API unavailable'));
+    render(<RavnDetail ravn={MANAGED_HERMES} />, {
+      wrapper: wrap(
+        makeServices({
+          'ravn.residents': {
+            ...makeServices()['ravn.residents'],
+            listSessions,
+          },
+        }),
+      ),
+    });
+
+    fireEvent.click(screen.getByTestId('sectab-sessions'));
+
+    await waitFor(() =>
+      expect(screen.getByText('engine session API unavailable')).toBeInTheDocument(),
+    );
+    expect(screen.queryByText('Implement login form')).not.toBeInTheDocument();
+  });
+
+  it('loads resident logs through the authenticated control port', async () => {
+    const getLogs = vi.fn().mockResolvedValue({
+      entries: [
+        {
+          timestampMs: 1_788_000_000_000,
+          level: 'info',
+          source: 'hermes',
+          target: 'runtime',
+          message: 'API server ready',
+          fields: {},
+        },
+      ],
+      bufferTotal: 1,
+    });
+    render(<RavnDetail ravn={MANAGED_HERMES} />, {
+      wrapper: wrap(
+        makeServices({
+          'ravn.residents': {
+            ...makeServices()['ravn.residents'],
+            getLogs,
+          },
+        }),
+      ),
+    });
+
+    fireEvent.click(screen.getByTestId('sectab-connectivity'));
+    fireEvent.click(screen.getByRole('button', { name: 'Logs' }));
+
+    await waitFor(() => expect(screen.getByText('API server ready')).toBeInTheDocument());
+    expect(getLogs).toHaveBeenCalledWith(MANAGED_HERMES);
+  });
+
+  it('gates metrics by capability and reports an empty authenticated log result', async () => {
+    const metricsEndpoint = {
+      kind: 'metrics',
+      protocol: 'http',
+      url: 'https://metrics.example/resident',
+    } as const;
+    const getLogs = vi.fn().mockResolvedValue({ entries: [], bufferTotal: 0 });
+    const services = makeServices({
+      'ravn.residents': {
+        ...makeServices()['ravn.residents'],
+        getLogs,
+      },
+    });
+    const { rerender } = render(
+      <RavnDetail ravn={{ ...MANAGED_HERMES, endpoints: [metricsEndpoint] }} />,
+      { wrapper: wrap(services) },
+    );
+
+    fireEvent.click(screen.getByTestId('sectab-connectivity'));
+    expect(screen.queryByRole('link', { name: 'metrics' })).not.toBeInTheDocument();
+
+    rerender(
+      <RavnDetail
+        ravn={{
+          ...MANAGED_HERMES,
+          capabilities: [...(MANAGED_HERMES.capabilities ?? []), 'metrics'],
+          endpoints: [metricsEndpoint],
+        }}
+      />,
+    );
+    expect(screen.getByRole('link', { name: 'metrics' })).toHaveAttribute(
+      'href',
+      metricsEndpoint.url,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Logs' }));
+    await waitFor(() => expect(screen.getByText('No log entries reported.')).toBeInTheDocument());
   });
 });
 

@@ -45,6 +45,8 @@ export const sessionSchema = z.object({
    * same protocol as Volundr live sessions.
    */
   chatEndpoint: z.string().nullish(),
+  /** Opaque owning target used for resident commands and routing. */
+  instanceId: z.string().optional(),
 });
 
 export type Session = z.infer<typeof sessionSchema>;

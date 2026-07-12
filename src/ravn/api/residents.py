@@ -530,6 +530,7 @@ class ResidentDirectory:
             "desired_state": runtime.get("desired_state") or runtime.get("desiredState"),
             "observed_state": observed_state,
             "backend_ref": runtime.get("backend_ref") or runtime.get("backendRef") or {},
+            "endpoints": endpoints,
             "capabilities": runtime.get("capabilities") or [],
             "conditions": runtime.get("conditions") or [],
             "message_count": runtime.get("message_count") or runtime.get("messageCount") or 0,

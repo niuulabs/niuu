@@ -2224,6 +2224,7 @@ def test_resident_create_lifecycle_and_delete_proxy_target_control_plane(client:
 
     assert created.status_code == 201
     assert created.json()["managed"] is True
+    assert created.json()["endpoints"] == runtime["endpoints"]
     assert suspended.status_code == 200
     assert deleted.status_code == 204
     assert create_route.called and suspend_route.called and delete_route.called

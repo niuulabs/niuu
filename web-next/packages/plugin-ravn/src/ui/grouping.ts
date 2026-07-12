@@ -15,23 +15,14 @@ export function ravnStatusToDotState(
 }
 
 /**
- * Derive a location label from a model alias.
- * In the real system this would be a field on the Ravn; for now we map
- * model alias to a Norse realm name so demos are coherent.
- */
-export function modelToLocation(model: string): string {
-  if (model.includes('opus')) return 'asgard';
-  if (model.includes('haiku')) return 'jotunheim';
-  return 'midgard';
-}
-
-/**
  * Group a flat list of ravens by the given key.
  * Returns a record of group-label → ravens-in-group.
  * Within each group, ravens are sorted by personaName alphabetically.
  */
 export function groupRavens(ravens: Ravn[], by: GroupKey): Record<string, Ravn[]> {
-  const sorted = [...ravens].sort((a, b) => a.personaName.localeCompare(b.personaName));
+  const sorted = [...ravens].sort((a, b) =>
+    (a.residentName || a.personaName).localeCompare(b.residentName || b.personaName),
+  );
 
   if (by === 'none') return { all: sorted };
 
@@ -40,9 +31,9 @@ export function groupRavens(ravens: Ravn[], by: GroupKey): Record<string, Ravn[]
   for (const r of sorted) {
     let key: string;
 
-    if (by === 'persona') key = r.personaName;
+    if (by === 'persona') key = r.personaName || r.residentName || 'unassigned';
     else if (by === 'state') key = r.status;
-    else key = r.location ?? modelToLocation(r.model);
+    else key = r.instanceName || r.location || 'unplaced';
 
     (groups[key] ??= []).push(r);
   }

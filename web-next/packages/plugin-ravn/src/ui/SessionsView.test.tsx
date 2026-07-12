@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react';
-import { SessionsView } from './SessionsView';
+import { SessionsView, sessionIdentityKey } from './SessionsView';
 import {
   createMockBudgetStream,
   createMockPersonaStore,
@@ -124,6 +124,13 @@ beforeEach(() => {
 });
 
 describe('SessionsView', () => {
+  it('distinguishes same-id sessions by opaque owning target', () => {
+    const session = liveRunningSession();
+    expect(sessionIdentityKey({ ...session, instanceId: 'target-a' })).not.toBe(
+      sessionIdentityKey({ ...session, instanceId: 'target-b' }),
+    );
+  });
+
   it('shows loading state initially', () => {
     render(<SessionsView />, { wrapper: wrap(services()) });
     expect(screen.getByText(/loading sessions/i)).toBeInTheDocument();
@@ -341,6 +348,44 @@ describe('SessionsView — live chat', () => {
     });
     expect(getPersona).not.toHaveBeenCalled();
     expect(getMessages).not.toHaveBeenCalled();
+  });
+
+  it('keeps managed resident sessions on their protocol-aware chat surface', async () => {
+    const resident = {
+      id: 'a3f1b2c4-8e7d-4a6f-9b0c-1d2e3f4a5b6c',
+      personaName: 'product-steward',
+      residentName: 'Sol',
+      kind: 'resident' as const,
+      managed: true,
+      status: 'active' as const,
+      model: 'qwen3.5',
+      createdAt: '2026-07-11T15:04:14Z',
+      capabilities: ['chat' as const, 'session.create' as const, 'logs' as const],
+    };
+    const ravenStream = {
+      async listRavens() {
+        return [resident];
+      },
+      async getRaven() {
+        return resident;
+      },
+    };
+    render(<SessionsView />, {
+      wrapper: wrap({
+        'ravn.sessions': singleSessionStream(
+          liveRunningSession({ personaName: 'product-steward', model: resident.model }),
+        ),
+        'ravn.ravens': ravenStream,
+        'ravn.personas': createMockPersonaStore(),
+        'ravn.budget': createMockBudgetStream(),
+      }),
+    });
+
+    expect(await screen.findByTestId('sessions-live-chat')).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /trace/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /logs/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/^pause$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^abort$/i)).not.toBeInTheDocument();
   });
 
   it('mounts Volundr trace and logs tabs for the selected live session', async () => {

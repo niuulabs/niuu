@@ -63,6 +63,30 @@
   gap: 16px;
 }
 
+.rv-fleet__title-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rv-fleet__deploy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgba(120, 190, 150, 0.34);
+  border-radius: 6px;
+  background: rgba(68, 153, 105, 0.12);
+  padding: 6px 8px;
+  color: #c9f1d7;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.rv-fleet__deploy:hover {
+  background: rgba(68, 153, 105, 0.2);
+}
+
 .rv-fleet__title {
   margin: 0;
   font-size: 14px;
@@ -318,6 +342,97 @@
   font-size: 13px;
 }
 
+.rv-deploy-dialog {
+  width: min(520px, calc(100vw - 32px));
+}
+
+.rv-deploy-form {
+  display: grid;
+  gap: 14px;
+}
+
+.rv-form-field {
+  display: grid;
+  gap: 6px;
+  color: #aeb4bf;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.rv-form-field input,
+.rv-form-field select {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(150, 160, 180, 0.22);
+  border-radius: 6px;
+  background: #0a0b10;
+  padding: 9px 10px;
+  color: #eef2f6;
+  font: inherit;
+}
+
+.rv-profile-summary {
+  border-left: 2px solid #7fadd0;
+  background: rgba(127, 173, 208, 0.08);
+  padding: 10px 12px;
+}
+
+.rv-profile-summary > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #d6ecff;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.rv-profile-summary > div span {
+  color: #8e96a6;
+}
+
+.rv-profile-summary p {
+  margin: 6px 0 0;
+  color: #8e96a6;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.rv-form-state,
+.rv-form-error {
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.rv-form-state {
+  color: #8e96a6;
+}
+
+.rv-form-error {
+  border-left: 2px solid #d66f6f;
+  background: rgba(214, 111, 111, 0.1);
+  color: #f1b5b5;
+}
+
+.rv-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.rv-form-actions .rv-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rv-form-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 @media (max-width: 1500px) {
   .rv-fleet {
     width: 400px;
@@ -342,8 +457,15 @@
     min-width: 100%;
     max-width: 100%;
     flex-basis: auto;
+    max-height: min(42vh, 360px);
+    flex-shrink: 0;
     border-right: 0;
     border-bottom: 1px solid rgba(150, 160, 180, 0.18);
+  }
+
+  .rv-ravens__detail {
+    min-height: 0;
+    flex: 1;
   }
 
   .rv-fleet__controls {

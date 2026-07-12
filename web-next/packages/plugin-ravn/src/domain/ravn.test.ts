@@ -55,6 +55,18 @@ describe('ravnSchema', () => {
     expect(() => ravnSchema.parse({ ...validRavn, personaName: '' })).toThrow();
   });
 
+  it('allows a managed resident to use its resident name without a persona', () => {
+    expect(
+      ravnSchema.parse({
+        ...validRavn,
+        personaName: '',
+        residentName: 'Sol',
+        kind: 'resident',
+        managed: true,
+      }).residentName,
+    ).toBe('Sol');
+  });
+
   it('rejects empty model', () => {
     expect(() => ravnSchema.parse({ ...validRavn, model: '' })).toThrow();
   });

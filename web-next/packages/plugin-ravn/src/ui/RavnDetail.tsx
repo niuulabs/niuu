@@ -1,5 +1,14 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { LiveBadge, MountChip, PersonaAvatar, StateDot, relTime } from '@niuulabs/ui';
+import {
+  Dialog,
+  DialogContent,
+  LiveBadge,
+  MountChip,
+  PersonaAvatar,
+  StateDot,
+  relTime,
+} from '@niuulabs/ui';
+import { FileText, MessageSquare, Pause, Play, Plus, RotateCw, Trash2, X } from 'lucide-react';
 import type { BudgetState } from '@niuulabs/domain';
 import type { Ravn } from '../domain/ravn';
 import type { Message, MessageKind } from '../domain/message';
@@ -8,6 +17,15 @@ import type { Trigger } from '../domain/trigger';
 import { useTriggers } from './hooks/useTriggers';
 import { useSessions, useRavnActivity } from './hooks/useSessions';
 import { useRavnBudget } from './hooks/useBudget';
+import {
+  useCreateResidentSession,
+  useDeleteResident,
+  useDeleteResidentSession,
+  useResidentLifecycle,
+  useResidentLogs,
+  useResidentProfiles,
+  useResidentSessions,
+} from './hooks/useResidentControl';
 import { ravnStatusToDotState } from './grouping';
 import { loadStorage, saveStorage } from './storage';
 import './RavnDetail.css';
@@ -52,11 +70,23 @@ function pillStateLabel(status: Ravn['status']): string {
 function detailSubtitle(ravn: Ravn): string {
   return [
     ravn.role ? normalizeLabel(ravn.role) : null,
-    ravn.location ? normalizeLabel(ravn.location) : null,
-    ravn.deployment ? normalizeLabel(ravn.deployment) : null,
+    ravn.instanceName
+      ? normalizeLabel(ravn.instanceName)
+      : ravn.location
+        ? normalizeLabel(ravn.location)
+        : null,
+    ravn.engine
+      ? normalizeLabel(ravn.engine)
+      : ravn.deployment
+        ? normalizeLabel(ravn.deployment)
+        : null,
   ]
     .filter(Boolean)
     .join(' · ');
+}
+
+function nameForRavn(ravn: Ravn): string {
+  return ravn.residentName || ravn.personaName || ravn.id.slice(0, 8);
 }
 
 function buildSpecialisations(ravn: Ravn): string {
@@ -74,11 +104,23 @@ function spendPercent(budget?: BudgetState): number {
   return Math.round((budget.spentUsd / budget.capUsd) * 100);
 }
 
-function dispatchSessionSelection(sessionId: string) {
-  saveStorage('ravn.session', sessionId);
-  window.dispatchEvent(new CustomEvent('ravn:session-selected', { detail: sessionId }));
+function sessionKey(session: Pick<Session, 'id' | 'instanceId'>): string {
+  return session.instanceId
+    ? `${encodeURIComponent(session.instanceId)}:${session.id}`
+    : session.id;
+}
+
+function dispatchSessionSelection(session: Session) {
+  saveStorage('ravn.session', sessionKey(session));
+  window.dispatchEvent(
+    new CustomEvent('ravn:session-selected', {
+      detail: { sessionId: session.id, instanceId: session.instanceId },
+    }),
+  );
   const params = new URLSearchParams(window.location.search);
-  params.set('session', sessionId);
+  params.set('session', session.id);
+  if (session.instanceId) params.set('instance_id', session.instanceId);
+  else params.delete('instance_id');
   window.history.pushState(null, '', `/ravn/sessions?${params.toString()}`);
   window.dispatchEvent(new Event('popstate'));
 }
@@ -119,7 +161,7 @@ function OverviewSection({ ravn, budget, sessions }: OverviewSectionProps) {
             <KeyValueRow label="id" value={<span className="rv-value-mono">{ravn.id}</span>} />
             <KeyValueRow
               label="persona"
-              value={<span className="rv-value-strong">{ravn.personaName}</span>}
+              value={<span className="rv-value-strong">{ravn.personaName || '—'}</span>}
             />
             <KeyValueRow
               label="role"
@@ -158,6 +200,38 @@ function OverviewSection({ ravn, budget, sessions }: OverviewSectionProps) {
                 </span>
               }
             />
+            {ravn.managed && (
+              <>
+                <KeyValueRow
+                  label="backend"
+                  value={<span className="rv-value-mono">{ravn.backend ?? '—'}</span>}
+                />
+                <KeyValueRow
+                  label="engine"
+                  value={<span className="rv-value-mono">{ravn.engine ?? '—'}</span>}
+                />
+                <KeyValueRow
+                  label="profile"
+                  value={<span className="rv-value-mono">{ravn.profileId ?? '—'}</span>}
+                />
+                <KeyValueRow
+                  label="target"
+                  value={
+                    <span className="rv-value-mono">
+                      {ravn.instanceName ?? ravn.instanceSlug ?? ravn.instanceId ?? '—'}
+                    </span>
+                  }
+                />
+                <KeyValueRow
+                  label="desired"
+                  value={<span className="rv-value-mono">{ravn.desiredState ?? '—'}</span>}
+                />
+                <KeyValueRow
+                  label="observed"
+                  value={<span className="rv-value-mono">{ravn.observedState ?? '—'}</span>}
+                />
+              </>
+            )}
             <KeyValueRow
               label="cascade"
               value={<span className="rv-value-mono">{ravn.cascade ?? '—'}</span>}
@@ -201,6 +275,39 @@ function OverviewSection({ ravn, budget, sessions }: OverviewSectionProps) {
           </dl>
         </div>
       </section>
+
+      {ravn.managed && (
+        <section className="rv-panel rv-panel--wide" data-testid="resident-contract-panel">
+          <header className="rv-panel__head">
+            <h3>Runtime contract</h3>
+            <span className="rv-panel__count">{ravn.capabilities?.length ?? 0} capabilities</span>
+          </header>
+          <div className="rv-panel__body rv-resident-contract">
+            <div className="rv-chip-row">
+              {(ravn.capabilities ?? []).map((capability) => (
+                <span key={capability} className="rv-conn-chip" data-testid="resident-capability">
+                  {capability}
+                </span>
+              ))}
+            </div>
+            {(ravn.conditions ?? []).length > 0 && (
+              <div className="rv-condition-list" data-testid="resident-conditions">
+                {(ravn.conditions ?? []).map((condition) => (
+                  <div key={condition.type} className="rv-condition-row">
+                    <span
+                      className={`rv-condition-status rv-condition-status--${condition.status}`}
+                    >
+                      {condition.status}
+                    </span>
+                    <strong>{condition.type}</strong>
+                    <span>{condition.reason || condition.message || 'No detail reported'}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+      )}
 
       {ravn.mounts && ravn.mounts.length > 0 && (
         <section className="rv-panel rv-panel--wide" data-testid="mounts-panel">
@@ -379,62 +486,237 @@ function ActivitySection({ messages, isActive, isLoading }: ActivitySectionProps
 }
 
 interface SessionsSectionProps {
+  ravn: Ravn;
   sessions: Session[];
 }
 
-function SessionsSection({ sessions }: SessionsSectionProps) {
+function SessionsSection({ ravn, sessions }: SessionsSectionProps) {
+  const [createOpen, setCreateOpen] = useState(false);
+  const [title, setTitle] = useState('');
+  const [model, setModel] = useState(ravn.model);
+  const [pendingDelete, setPendingDelete] = useState<Session | null>(null);
+  const residentActive = ravn.observedState === 'active';
+  const canList = Boolean(
+    ravn.managed && residentActive && ravn.capabilities?.includes('session.list'),
+  );
+  const canCreate = Boolean(
+    ravn.managed && residentActive && ravn.capabilities?.includes('session.create'),
+  );
+  const canDelete = Boolean(
+    ravn.managed && residentActive && ravn.capabilities?.includes('session.delete'),
+  );
+  const residentSessions = useResidentSessions(ravn, canList);
+  const profiles = useResidentProfiles(canCreate);
+  const createSession = useCreateResidentSession(ravn);
+  const deleteSession = useDeleteResidentSession(ravn);
+  const visibleSessions = canList ? (residentSessions.data ?? []) : sessions;
+  const profile = profiles.data?.find(
+    (candidate) => candidate.id === ravn.profileId && candidate.instanceId === ravn.instanceId,
+  );
+  const allowedModels = profile?.allowedModels ?? [];
+
+  async function create() {
+    if (!title.trim()) return;
+    const selectedModel = allowedModels.includes(model) ? model : (profile?.defaultModel ?? '');
+    let session: Session;
+    try {
+      session = await createSession.mutateAsync({
+        title: title.trim(),
+        ...(selectedModel && { model: selectedModel }),
+      });
+    } catch {
+      return;
+    }
+    setCreateOpen(false);
+    setTitle('');
+    dispatchSessionSelection(session);
+  }
+
+  async function remove() {
+    if (!pendingDelete) return;
+    try {
+      await deleteSession.mutateAsync(pendingDelete.id);
+    } catch {
+      return;
+    }
+    setPendingDelete(null);
+  }
+
   return (
     <div className="rv-section-body" data-testid="sessions-section-body">
-      {sessions.length === 0 ? (
-        <p className="rv-empty-text">No sessions</p>
-      ) : (
-        <div className="rv-stack-list">
-          {sessions.map((session) => (
-            <button
-              key={session.id}
-              type="button"
-              onClick={() => dispatchSessionSelection(session.id)}
-              className="rv-stack-card rv-stack-card--button"
-              data-testid="session-card"
-            >
-              <div className="rv-stack-card__main">
-                <span className="rv-stack-session-dot">
-                  <StateDot
-                    state={
-                      session.status === 'running'
-                        ? 'running'
-                        : session.status === 'failed'
-                          ? 'failed'
-                          : 'unknown'
-                    }
-                    pulse={session.status === 'running'}
-                    size={8}
-                  />
-                </span>
-                <div className="rv-stack-card__copy">
-                  <div className="rv-stack-card__title">
-                    {session.title ?? session.id.slice(0, 8)}
-                  </div>
-                  <div className="rv-stack-card__meta">
-                    <span className="rv-value-mono">{session.status}</span>
-                    <span className="rv-value-mono">{relTime(session.createdAt)}</span>
-                    <span className="rv-value-mono">{session.model}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="rv-stack-card__metrics">
-                {session.messageCount != null && (
-                  <span data-testid="session-message-count">{session.messageCount} msgs</span>
-                )}
-                {session.costUsd != null && (
-                  <span data-testid="session-cost">${session.costUsd.toFixed(2)}</span>
-                )}
-              </div>
-            </button>
-          ))}
+      {canCreate && (
+        <div className="rv-section-toolbar rv-section-toolbar--end">
+          <button
+            type="button"
+            className="rv-action-btn"
+            onClick={() => setCreateOpen(true)}
+            data-testid="resident-session-create-open"
+          >
+            <Plus size={14} aria-hidden="true" />
+            New conversation
+          </button>
         </div>
       )}
+
+      {residentSessions.isError && (
+        <p className="rv-inline-error" role="alert">
+          {residentSessions.error instanceof Error
+            ? residentSessions.error.message
+            : 'Failed to load resident sessions'}
+        </p>
+      )}
+
+      {canList && residentSessions.isLoading && (
+        <p className="rv-empty-text">Loading conversations…</p>
+      )}
+
+      {!residentSessions.isLoading && visibleSessions.length === 0 ? (
+        <p className="rv-empty-text">No sessions</p>
+      ) : visibleSessions.length > 0 ? (
+        <div className="rv-stack-list">
+          {visibleSessions.map((session) => (
+            <div key={session.id} className="rv-stack-card">
+              <button
+                type="button"
+                onClick={() => dispatchSessionSelection(session)}
+                className="rv-stack-card__open"
+                data-testid="session-card"
+              >
+                <div className="rv-stack-card__main">
+                  <span className="rv-stack-session-dot">
+                    <StateDot
+                      state={
+                        session.status === 'running'
+                          ? 'running'
+                          : session.status === 'failed'
+                            ? 'failed'
+                            : 'unknown'
+                      }
+                      pulse={session.status === 'running'}
+                      size={8}
+                    />
+                  </span>
+                  <div className="rv-stack-card__copy">
+                    <div className="rv-stack-card__title">
+                      {session.title ?? session.id.slice(0, 8)}
+                    </div>
+                    <div className="rv-stack-card__meta">
+                      <span className="rv-value-mono">{session.status}</span>
+                      <span className="rv-value-mono">{relTime(session.createdAt)}</span>
+                      <span className="rv-value-mono">{session.model}</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="rv-stack-card__metrics">
+                  {session.messageCount != null && (
+                    <span data-testid="session-message-count">{session.messageCount} msgs</span>
+                  )}
+                  {session.costUsd != null && (
+                    <span data-testid="session-cost">${session.costUsd.toFixed(2)}</span>
+                  )}
+                </div>
+              </button>
+              {canDelete && (
+                <button
+                  type="button"
+                  className="rv-icon-btn rv-icon-btn--danger"
+                  onClick={() => setPendingDelete(session)}
+                  title="Close conversation"
+                  aria-label={`Close ${session.title ?? 'conversation'}`}
+                  data-testid="resident-session-delete-open"
+                >
+                  <X size={15} aria-hidden="true" />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+        <DialogContent title="New conversation" className="rv-session-dialog">
+          <div className="rv-deploy-form">
+            <label className="rv-form-field">
+              <span>Title</span>
+              <input
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                maxLength={255}
+                data-testid="resident-session-title"
+              />
+            </label>
+            {allowedModels.length > 0 && (
+              <label className="rv-form-field">
+                <span>Model</span>
+                <select
+                  value={allowedModels.includes(model) ? model : (profile?.defaultModel ?? '')}
+                  onChange={(event) => setModel(event.target.value)}
+                  data-testid="resident-session-model"
+                >
+                  {allowedModels.map((allowedModel) => (
+                    <option key={allowedModel} value={allowedModel}>
+                      {allowedModel}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {createSession.isError && (
+              <div className="rv-form-error" role="alert">
+                {createSession.error instanceof Error
+                  ? createSession.error.message
+                  : 'Conversation creation failed'}
+              </div>
+            )}
+            <div className="rv-form-actions">
+              <button type="button" className="rv-action-btn" onClick={() => setCreateOpen(false)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="rv-action-btn rv-action-btn--primary"
+                disabled={!title.trim() || createSession.isPending}
+                onClick={() => void create()}
+                data-testid="resident-session-create-submit"
+              >
+                {createSession.isPending ? 'Creating…' : 'Create'}
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(pendingDelete)}
+        onOpenChange={(open) => !open && setPendingDelete(null)}
+      >
+        <DialogContent
+          title="Close conversation"
+          description="This removes the conversation and its engine-owned history."
+        >
+          {deleteSession.isError && (
+            <div className="rv-form-error" role="alert">
+              {deleteSession.error instanceof Error
+                ? deleteSession.error.message
+                : 'Conversation deletion failed'}
+            </div>
+          )}
+          <div className="rv-form-actions">
+            <button type="button" className="rv-action-btn" onClick={() => setPendingDelete(null)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="rv-action-btn rv-action-btn--danger"
+              disabled={deleteSession.isPending}
+              onClick={() => void remove()}
+              data-testid="resident-session-delete-confirm"
+            >
+              {deleteSession.isPending ? 'Closing…' : 'Close'}
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -444,9 +726,15 @@ interface ConnectivitySectionProps {
 }
 
 function ConnectivitySection({ ravn }: ConnectivitySectionProps) {
+  const [logsOpen, setLogsOpen] = useState(false);
   const mcpServers = ravn.mcpServers ?? [];
   const gatewayChannels = ravn.gatewayChannels ?? [];
   const eventSubscriptions = ravn.eventSubscriptions ?? [];
+  const canReadLogs = Boolean(ravn.managed && ravn.capabilities?.includes('logs'));
+  const logs = useResidentLogs(ravn, logsOpen && canReadLogs);
+  const operationalEndpoints = (ravn.endpoints ?? []).filter(
+    (endpoint) => endpoint.kind === 'metrics' && ravn.capabilities?.includes('metrics'),
+  );
 
   return (
     <div className="rv-detail-connectivity" data-testid="connectivity-section-body">
@@ -521,6 +809,66 @@ function ConnectivitySection({ ravn }: ConnectivitySectionProps) {
           )}
         </div>
       </section>
+
+      {(canReadLogs || operationalEndpoints.length > 0) && (
+        <section className="rv-panel rv-panel--wide" data-testid="resident-observability-panel">
+          <header className="rv-panel__head">
+            <h3>Observability</h3>
+          </header>
+          <div className="rv-panel__body rv-chip-row">
+            {canReadLogs && (
+              <button
+                type="button"
+                className="rv-conn-chip rv-conn-link"
+                onClick={() => setLogsOpen(true)}
+              >
+                <FileText size={13} aria-hidden="true" />
+                Logs
+              </button>
+            )}
+            {operationalEndpoints.map((endpoint) => (
+              <a
+                key={`${endpoint.kind}:${endpoint.url}`}
+                className="rv-conn-chip rv-conn-link"
+                href={endpoint.url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {normalizeLabel(endpoint.kind)}
+              </a>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <Dialog open={logsOpen} onOpenChange={setLogsOpen}>
+        <DialogContent title="Resident logs" className="rv-logs-dialog">
+          {logs.isLoading && <div className="rv-form-state">Loading logs…</div>}
+          {logs.isError && (
+            <div className="rv-form-error" role="alert">
+              {logs.error instanceof Error ? logs.error.message : 'Failed to load resident logs'}
+            </div>
+          )}
+          {logs.data && logs.data.entries.length === 0 && (
+            <div className="rv-form-state">No log entries reported.</div>
+          )}
+          {logs.data && logs.data.entries.length > 0 && (
+            <div className="rv-resident-logs" data-testid="resident-log-entries">
+              {logs.data.entries.map((entry, index) => (
+                <div
+                  key={`${entry.timestampMs}:${entry.source}:${index}`}
+                  className="rv-resident-log"
+                >
+                  <span>{new Date(entry.timestampMs).toLocaleTimeString()}</span>
+                  <strong>{entry.level || 'info'}</strong>
+                  <span>{entry.source}</span>
+                  <p>{entry.message}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -528,28 +876,37 @@ function ConnectivitySection({ ravn }: ConnectivitySectionProps) {
 export interface RavnDetailProps {
   ravn: Ravn;
   onClose?: () => void;
+  onDeleted?: () => void;
 }
 
-export function RavnDetail({ ravn, onClose }: RavnDetailProps) {
+export function RavnDetail({ ravn, onClose, onDeleted }: RavnDetailProps) {
   const [activeTab, setActiveTab] = useState<TabId>(() =>
     loadStorage<TabId>(TAB_STORAGE_KEY, 'overview'),
   );
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const { data: budget } = useRavnBudget(ravn.id);
   const { data: triggers } = useTriggers();
   const { data: sessions } = useSessions();
   const { data: activityMessages, isLoading: activityLoading } = useRavnActivity(ravn.id);
+  const lifecycle = useResidentLifecycle();
+  const deleteResident = useDeleteResident();
 
   const ravnTriggers = useMemo(
     () => (triggers ?? []).filter((trigger) => trigger.personaName === ravn.personaName),
     [triggers, ravn.personaName],
   );
   const ravnSessions = useMemo(
-    () => (sessions ?? []).filter((session) => session.ravnId === ravn.id),
-    [sessions, ravn.id],
+    () =>
+      (sessions ?? []).filter(
+        (session) =>
+          session.ravnId === ravn.id &&
+          (!ravn.instanceId || session.instanceId === ravn.instanceId),
+      ),
+    [sessions, ravn.id, ravn.instanceId],
   );
 
-  const openSessionId = ravnSessions.find((session) => session.status === 'running')?.id;
+  const openSession = ravnSessions.find((session) => session.status === 'running');
 
   const tabs: Array<{ id: TabId; label: string; count?: number }> = [
     { id: 'overview', label: 'Overview' },
@@ -564,6 +921,31 @@ export function RavnDetail({ ravn, onClose }: RavnDetailProps) {
   const resolvedTab: TabId = tabs.some((tab) => tab.id === activeTab) ? activeTab : 'overview';
 
   const subtitle = detailSubtitle(ravn);
+  const canRestart = Boolean(
+    ravn.managed &&
+    ravn.capabilities?.includes('runtime.restart') &&
+    ravn.desiredState === 'running' &&
+    ['active', 'failed'].includes(ravn.observedState ?? ''),
+  );
+  const hasSuspend = Boolean(ravn.managed && ravn.capabilities?.includes('runtime.suspend'));
+  const isSuspended = ravn.observedState === 'suspended' || ravn.desiredState === 'suspended';
+  const canSuspend = hasSuspend && ravn.observedState === 'active' && !isSuspended;
+  const canResume = hasSuspend && isSuspended;
+
+  async function removeResident() {
+    try {
+      await deleteResident.mutateAsync(ravn);
+    } catch {
+      return;
+    }
+    setDeleteOpen(false);
+    onDeleted?.();
+  }
+
+  function selectTab(tabId: TabId) {
+    saveStorage(TAB_STORAGE_KEY, tabId);
+    setActiveTab(tabId);
+  }
 
   return (
     <div className="rv-detail" data-testid="ravn-detail">
@@ -571,12 +953,12 @@ export function RavnDetail({ ravn, onClose }: RavnDetailProps) {
         <div className="rv-detail__hero-left">
           <PersonaAvatar
             role={ravn.role ?? 'build'}
-            letter={ravn.letter ?? ravn.personaName.charAt(0).toUpperCase()}
+            letter={ravn.letter ?? nameForRavn(ravn).charAt(0).toUpperCase()}
             size={46}
           />
           <div>
             <div className="rv-detail__title-wrap">
-              <h1 className="rv-detail__title">{ravn.personaName}</h1>
+              <h1 className="rv-detail__title">{nameForRavn(ravn)}</h1>
             </div>
             {subtitle && <p className="rv-detail__subtitle">{subtitle}</p>}
           </div>
@@ -592,19 +974,74 @@ export function RavnDetail({ ravn, onClose }: RavnDetailProps) {
             {pillStateLabel(ravn.status)}
           </span>
 
-          <button type="button" className="rv-action-btn">
-            pause
-          </button>
+          {canRestart && (
+            <button
+              type="button"
+              className="rv-icon-btn"
+              onClick={() => lifecycle.mutate({ ravn, action: 'restart' })}
+              disabled={lifecycle.isPending}
+              title="Restart resident"
+              aria-label="Restart resident"
+              data-testid="resident-restart"
+            >
+              <RotateCw size={15} aria-hidden="true" />
+            </button>
+          )}
 
-          <button
-            type="button"
-            className="rv-action-btn rv-action-btn--primary"
-            onClick={() => {
-              if (openSessionId) dispatchSessionSelection(openSessionId);
-            }}
-          >
-            open session
-          </button>
+          {canSuspend && (
+            <button
+              type="button"
+              className="rv-icon-btn"
+              onClick={() => lifecycle.mutate({ ravn, action: 'suspend' })}
+              disabled={lifecycle.isPending}
+              title="Suspend resident"
+              aria-label="Suspend resident"
+              data-testid="resident-suspend"
+            >
+              <Pause size={15} aria-hidden="true" />
+            </button>
+          )}
+
+          {canResume && (
+            <button
+              type="button"
+              className="rv-icon-btn"
+              onClick={() => lifecycle.mutate({ ravn, action: 'resume' })}
+              disabled={lifecycle.isPending}
+              title="Resume resident"
+              aria-label="Resume resident"
+              data-testid="resident-resume"
+            >
+              <Play size={15} aria-hidden="true" />
+            </button>
+          )}
+
+          {openSession && (
+            <button
+              type="button"
+              className="rv-action-btn rv-action-btn--primary"
+              onClick={() => dispatchSessionSelection(openSession)}
+            >
+              <MessageSquare size={14} aria-hidden="true" />
+              Open session
+            </button>
+          )}
+
+          {ravn.managed && ravn.observedState !== 'deleting' && (
+            <button
+              type="button"
+              className="rv-icon-btn rv-icon-btn--danger"
+              onClick={() => {
+                deleteResident.reset();
+                setDeleteOpen(true);
+              }}
+              title="Delete resident"
+              aria-label="Delete resident"
+              data-testid="resident-delete-open"
+            >
+              <Trash2 size={15} aria-hidden="true" />
+            </button>
+          )}
 
           {onClose && (
             <button
@@ -620,16 +1057,29 @@ export function RavnDetail({ ravn, onClose }: RavnDetailProps) {
         </div>
       </header>
 
-      <nav className="rv-sectabs" aria-label="Ravn detail sections" data-testid="ravn-sectabs">
+      <nav
+        className="rv-sectabs"
+        aria-label="Ravn detail sections"
+        role="tablist"
+        data-testid="ravn-sectabs"
+      >
         {tabs.map((tab) => (
           <button
             key={tab.id}
             type="button"
             role="tab"
+            id={`ravn-tab-${tab.id}`}
+            aria-controls={`ravn-panel-${tab.id}`}
             aria-selected={resolvedTab === tab.id}
-            onClick={() => {
-              saveStorage(TAB_STORAGE_KEY, tab.id);
-              setActiveTab(tab.id);
+            onClick={() => selectTab(tab.id)}
+            onKeyDown={(event) => {
+              if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+              event.preventDefault();
+              const currentIndex = tabs.findIndex((candidate) => candidate.id === tab.id);
+              const offset = event.key === 'ArrowRight' ? 1 : -1;
+              const next = tabs[(currentIndex + offset + tabs.length) % tabs.length]!;
+              selectTab(next.id);
+              document.getElementById(`ravn-tab-${next.id}`)?.focus();
             }}
             className={`rv-sectab${resolvedTab === tab.id ? ' rv-sectab--active' : ''}`}
             data-testid={`sectab-${tab.id}`}
@@ -642,7 +1092,17 @@ export function RavnDetail({ ravn, onClose }: RavnDetailProps) {
         ))}
       </nav>
 
-      <div className="rv-detail__content">
+      <div
+        className="rv-detail__content"
+        id={`ravn-panel-${resolvedTab}`}
+        role="tabpanel"
+        aria-labelledby={`ravn-tab-${resolvedTab}`}
+      >
+        {lifecycle.isError && (
+          <div className="rv-inline-error" role="alert">
+            {lifecycle.error instanceof Error ? lifecycle.error.message : 'Resident command failed'}
+          </div>
+        )}
         {resolvedTab === 'overview' && (
           <OverviewSection ravn={ravn} budget={budget} sessions={ravnSessions} />
         )}
@@ -654,9 +1114,44 @@ export function RavnDetail({ ravn, onClose }: RavnDetailProps) {
             isLoading={activityLoading}
           />
         )}
-        {resolvedTab === 'sessions' && <SessionsSection sessions={ravnSessions} />}
+        {resolvedTab === 'sessions' && <SessionsSection ravn={ravn} sessions={ravnSessions} />}
         {resolvedTab === 'connectivity' && <ConnectivitySection ravn={ravn} />}
       </div>
+
+      <Dialog
+        open={deleteOpen}
+        onOpenChange={(open) => {
+          setDeleteOpen(open);
+          if (!open) deleteResident.reset();
+        }}
+      >
+        <DialogContent
+          title="Delete resident"
+          description="This removes the resident runtime and all resources owned by its deployment backend."
+        >
+          {deleteResident.isError && (
+            <div className="rv-form-error" role="alert">
+              {deleteResident.error instanceof Error
+                ? deleteResident.error.message
+                : 'Resident deletion failed'}
+            </div>
+          )}
+          <div className="rv-form-actions">
+            <button type="button" className="rv-action-btn" onClick={() => setDeleteOpen(false)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="rv-action-btn rv-action-btn--danger"
+              onClick={() => void removeResident()}
+              disabled={deleteResident.isPending}
+              data-testid="resident-delete-confirm"
+            >
+              {deleteResident.isPending ? 'Deleting…' : 'Delete'}
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

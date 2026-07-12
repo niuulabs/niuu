@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
@@ -16,6 +16,16 @@ function makeServices(overrides?: Record<string, unknown>) {
     'ravn.budget': createMockBudgetStream(),
     'ravn.triggers': createMockTriggerStore(),
     'ravn.sessions': createMockSessionStream(),
+    'ravn.residents': {
+      listProfiles: vi.fn().mockResolvedValue([]),
+      deploy: vi.fn(),
+      applyLifecycle: vi.fn(),
+      delete: vi.fn(),
+      getLogs: vi.fn(),
+      listSessions: vi.fn().mockResolvedValue([]),
+      createSession: vi.fn(),
+      deleteSession: vi.fn(),
+    },
     ...overrides,
   };
 }
@@ -112,5 +122,163 @@ describe('RavensPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /expand ravens sidebar/i }));
     expect(screen.getByRole('button', { name: /collapse ravens sidebar/i })).toBeInTheDocument();
+  });
+
+  it('filters profiles by target and deploys through the resident control port', async () => {
+    const profiles = [
+      {
+        id: 'ravn-helm',
+        displayName: 'Ravn Helm',
+        description: 'Helm resident',
+        backend: 'helmrelease' as const,
+        engine: 'ravn' as const,
+        capabilities: ['chat' as const],
+        defaultModel: 'gpt-5.6',
+        allowedModels: ['gpt-5.6'],
+        labels: [],
+        instanceId: 'target-a',
+        instanceName: 'Alpha',
+        instanceSlug: 'alpha',
+      },
+      {
+        id: 'nemohermes-openshell',
+        displayName: 'NemoHermes',
+        description: 'Hermes resident',
+        backend: 'openshell' as const,
+        engine: 'hermes' as const,
+        capabilities: ['chat' as const, 'session.create' as const],
+        defaultModel: 'qwen3.5',
+        allowedModels: ['qwen3.5'],
+        labels: [],
+        instanceId: 'target-b',
+        instanceName: 'Beta',
+        instanceSlug: 'beta',
+      },
+    ];
+    const deployed = {
+      id: '99999999-9999-4999-8999-999999999999',
+      personaName: 'product-steward',
+      status: 'idle' as const,
+      model: 'qwen3.5',
+      createdAt: '2026-07-11T20:00:00Z',
+      managed: true,
+      instanceId: 'target-b',
+    };
+    const deploy = vi.fn().mockResolvedValue(deployed);
+    const residentControl = {
+      ...makeServices()['ravn.residents'],
+      listProfiles: vi.fn().mockResolvedValue(profiles),
+      deploy,
+    };
+    render(<RavensPage />, {
+      wrapper: wrap(makeServices({ 'ravn.residents': residentControl })),
+    });
+
+    await waitFor(() => expect(screen.getByTestId('resident-deploy-open')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('resident-deploy-open'));
+    await waitFor(() => expect(screen.getByTestId('resident-target')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('resident-target'), { target: { value: 'target-b' } });
+    expect(screen.getByTestId('resident-profile')).toHaveValue('nemohermes-openshell');
+    expect(screen.queryByRole('option', { name: 'Ravn Helm' })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('resident-name'), { target: { value: 'Sol' } });
+    fireEvent.change(screen.getByTestId('resident-persona'), {
+      target: { value: 'product-steward' },
+    });
+    fireEvent.click(screen.getByTestId('resident-deploy-submit'));
+
+    await waitFor(() =>
+      expect(deploy).toHaveBeenCalledWith({
+        name: 'Sol',
+        profileId: 'nemohermes-openshell',
+        instanceId: 'target-b',
+        personaName: 'product-steward',
+        model: 'qwen3.5',
+      }),
+    );
+  });
+
+  it('keeps real deployment failures visible in the dialog', async () => {
+    const profile = {
+      id: 'ravn-openshell',
+      displayName: 'Ravn OpenShell',
+      description: 'OpenShell resident',
+      backend: 'openshell' as const,
+      engine: 'ravn' as const,
+      capabilities: ['chat' as const],
+      defaultModel: 'gpt-5.6',
+      allowedModels: ['gpt-5.6'],
+      labels: [],
+      instanceId: 'target-a',
+      instanceName: 'Alpha',
+      instanceSlug: 'alpha',
+    };
+    const residentControl = {
+      ...makeServices()['ravn.residents'],
+      listProfiles: vi.fn().mockResolvedValue([profile]),
+      deploy: vi.fn().mockRejectedValue(new Error('OpenShell gateway unavailable')),
+    };
+    render(<RavensPage />, {
+      wrapper: wrap(makeServices({ 'ravn.residents': residentControl })),
+    });
+
+    await waitFor(() => expect(screen.getByTestId('resident-deploy-open')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('resident-deploy-open'));
+    await waitFor(() => expect(screen.getByTestId('resident-name')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('resident-name'), { target: { value: 'Sol' } });
+    fireEvent.click(screen.getByTestId('resident-deploy-submit'));
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('gateway unavailable'));
+    expect(screen.getByTestId('resident-name')).toBeInTheDocument();
+  });
+
+  it('keeps same-id residents distinct by their opaque owning target', async () => {
+    const sharedId = '88888888-8888-4888-8888-888888888888';
+    const ravens = [
+      {
+        id: sharedId,
+        personaName: 'steward-a',
+        residentName: 'Alpha resident',
+        status: 'active' as const,
+        model: 'qwen3.5',
+        createdAt: '2026-07-11T20:00:00Z',
+        managed: true,
+        kind: 'resident' as const,
+        backend: 'openshell' as const,
+        engine: 'hermes' as const,
+        instanceId: 'target-a',
+        instanceName: 'Alpha',
+      },
+      {
+        id: sharedId,
+        personaName: 'steward-b',
+        residentName: 'Beta resident',
+        status: 'active' as const,
+        model: 'qwen3.5',
+        createdAt: '2026-07-11T20:01:00Z',
+        managed: true,
+        kind: 'resident' as const,
+        backend: 'openshell' as const,
+        engine: 'hermes' as const,
+        instanceId: 'target-b',
+        instanceName: 'Beta',
+      },
+    ];
+    const ravenStream = {
+      listRavens: vi.fn().mockResolvedValue(ravens),
+      getRaven: vi.fn(),
+    };
+    render(<RavensPage />, {
+      wrapper: wrap(makeServices({ 'ravn.ravens': ravenStream })),
+    });
+
+    await waitFor(() => expect(screen.getAllByTestId('ravn-list-row')).toHaveLength(2));
+    const betaRow = screen
+      .getAllByTestId('ravn-list-row')
+      .find((row) => within(row).queryByText('Beta resident'));
+    expect(betaRow).toBeTruthy();
+    if (betaRow) fireEvent.click(betaRow);
+
+    await waitFor(() => expect(screen.getAllByText('Beta').length).toBeGreaterThan(0));
+    expect(screen.getByTestId('runtime-panel')).toHaveTextContent('targetBeta');
   });
 });

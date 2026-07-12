@@ -10,11 +10,11 @@ export function useSessions() {
   });
 }
 
-export function useSession(id: string) {
+export function useSession(id: string, instanceId?: string) {
   const service = useService<ISessionStream>('ravn.sessions');
   return useQuery({
-    queryKey: ['ravn', 'sessions', id],
-    queryFn: () => service.getSession(id),
+    queryKey: ['ravn', 'sessions', id, instanceId],
+    queryFn: () => service.getSession(id, instanceId),
     enabled: !!id,
   });
 }

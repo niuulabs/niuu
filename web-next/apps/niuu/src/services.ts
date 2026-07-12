@@ -9,10 +9,12 @@ import {
   createMockWardenStore,
   buildRavnPersonaAdapter,
   buildRavnRavenAdapter,
+  buildRavnResidentControlAdapter,
   buildRavnSessionAdapter,
   buildRavnTriggerAdapter,
   buildRavnBudgetAdapter,
   buildRavnWardenAdapter,
+  type IResidentControl,
 } from '@niuulabs/plugin-ravn';
 import {
   createMockTingService,
@@ -698,6 +700,7 @@ export function buildServiceBackendStatus(
     'observatory.events': resolveObservatoryServiceStatus(config, 'observatory.events'),
     'ravn.personas': resolveRavnServiceStatus(config, 'ravn.personas'),
     'ravn.ravens': resolveRavnServiceStatus(config, 'ravn.ravens'),
+    'ravn.residents': resolveRavnServiceStatus(config, 'ravn.ravens'),
     'ravn.sessions': resolveRavnServiceStatus(config, 'ravn.sessions'),
     'ravn.triggers': resolveRavnServiceStatus(config, 'ravn.triggers'),
     'ravn.budget': resolveRavnServiceStatus(config, 'ravn.budget'),
@@ -1327,6 +1330,9 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const ravnRavens = ravnRavenBase
     ? buildRavnRavenAdapter(createApiClient(ravnRavenBase))
     : demoService(config, 'ravn.ravens', createMockRavenStream);
+  const ravnResidents: IResidentControl = ravnRavenBase
+    ? buildRavnResidentControlAdapter(createApiClient(ravnRavenBase))
+    : unavailableService<IResidentControl>('ravn.residents');
   const ravnSessions = ravnSessionBase
     ? buildRavnSessionAdapter(createApiClient(ravnSessionBase))
     : demoService(config, 'ravn.sessions', createMockSessionStream);
@@ -1489,6 +1495,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'ting.audit': tingAuditLogService,
     'ravn.personas': ravnPersonas,
     'ravn.ravens': ravnRavens,
+    'ravn.residents': ravnResidents,
     'ravn.sessions': ravnSessions,
     'ravn.triggers': ravnTriggers,
     'ravn.budget': ravnBudget,
