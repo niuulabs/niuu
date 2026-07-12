@@ -14,12 +14,12 @@ allowed_tools:
   - workflow
   - platform
   - ask_user
-permission_mode: workspace-write
+permission_mode: full-access
 iteration_budget: 80
 executor:
   adapter: ravn.adapters.executors.cli.CliTransportExecutor
   kwargs:
     transport_adapter: skuld.transports.codex_ws.CodexWebSocketTransport
     transport_kwargs:
-      approval_policy: on-request
-      sandbox: workspace-write
+      approval_policy: never
+      sandbox: danger-full-access
