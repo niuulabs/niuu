@@ -10,20 +10,25 @@ export function useSessions() {
   });
 }
 
-export function useSession(id: string, instanceId?: string) {
+export function useSession(id: string, instanceId?: string, ravnId?: string) {
   const service = useService<ISessionStream>('ravn.sessions');
   return useQuery({
-    queryKey: ['ravn', 'sessions', id, instanceId],
-    queryFn: () => service.getSession(id, instanceId),
+    queryKey: ['ravn', 'sessions', id, instanceId, ravnId],
+    queryFn: () => service.getSession(id, instanceId, ravnId),
     enabled: !!id,
   });
 }
 
-export function useMessages(sessionId: string, enabled = true) {
+export function useMessages(
+  sessionId: string,
+  enabled = true,
+  instanceId?: string,
+  ravnId?: string,
+) {
   const service = useService<ISessionStream>('ravn.sessions');
   return useQuery({
-    queryKey: ['ravn', 'messages', sessionId],
-    queryFn: () => service.getMessages(sessionId),
+    queryKey: ['ravn', 'messages', sessionId, instanceId, ravnId],
+    queryFn: () => service.getMessages(sessionId, instanceId, ravnId),
     enabled: !!sessionId && enabled,
   });
 }
@@ -40,14 +45,14 @@ export function useRavnActivity(ravnId: string) {
     queryFn: () => service.listSessions(),
   });
 
-  const ravnSessionIds = (sessionsQuery.data ?? [])
+  const ravnSessions = (sessionsQuery.data ?? [])
     .filter((s) => s.ravnId === ravnId && !s.chatEndpoint)
-    .map((s) => s.id);
+    .map((s) => ({ id: s.id, instanceId: s.instanceId }));
 
   const messageQueries = useQueries({
-    queries: ravnSessionIds.map((sessionId) => ({
-      queryKey: ['ravn', 'messages', sessionId] as const,
-      queryFn: () => service.getMessages(sessionId),
+    queries: ravnSessions.map((session) => ({
+      queryKey: ['ravn', 'messages', session.id, session.instanceId, ravnId] as const,
+      queryFn: () => service.getMessages(session.id, session.instanceId, ravnId),
     })),
   });
 

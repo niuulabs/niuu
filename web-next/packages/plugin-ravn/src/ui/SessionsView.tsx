@@ -482,9 +482,9 @@ export function deriveAnchorTime(sessions: Session[]): string {
   return new Date(new Date(newest.createdAt).getTime() + 4 * 60 * 1000).toISOString();
 }
 
-export function sessionIdentityKey(session: Pick<Session, 'id' | 'instanceId'>): string {
+export function sessionIdentityKey(session: Pick<Session, 'id' | 'ravnId' | 'instanceId'>): string {
   return session.instanceId
-    ? `${encodeURIComponent(session.instanceId)}:${session.id}`
+    ? `${encodeURIComponent(session.instanceId)}:${encodeURIComponent(session.ravnId)}:${session.id}`
     : session.id;
 }
 
@@ -505,7 +505,12 @@ function preferredSessionId(): string | null {
   const params = new URLSearchParams(window.location.search);
   const fromUrl = params.get('session');
   const instanceId = params.get('instance_id');
-  if (fromUrl) return instanceId ? `${encodeURIComponent(instanceId)}:${fromUrl}` : fromUrl;
+  const ravnId = params.get('ravn_id');
+  if (fromUrl) {
+    return instanceId && ravnId
+      ? `${encodeURIComponent(instanceId)}:${encodeURIComponent(ravnId)}:${fromUrl}`
+      : fromUrl;
+  }
   return loadStorage<string | null>(SESSION_STORAGE_KEY, null);
 }
 
@@ -1189,12 +1194,19 @@ export function SessionsView() {
 
   useEffect(() => {
     const handleSelect = (event: Event) => {
-      const detail = (event as CustomEvent<string | { sessionId?: string; instanceId?: string }>)
-        .detail;
+      const detail = (
+        event as CustomEvent<string | { sessionId?: string; ravnId?: string; instanceId?: string }>
+      ).detail;
       const nextId = typeof detail === 'string' ? detail : detail?.sessionId;
       if (!nextId) return;
       const nextKey =
-        typeof detail === 'string' ? detail : ravenIdentityKey(nextId, detail.instanceId);
+        typeof detail === 'string' || !detail.ravnId
+          ? nextId
+          : sessionIdentityKey({
+              id: nextId,
+              ravnId: detail.ravnId,
+              instanceId: detail.instanceId,
+            });
       saveStorage(SESSION_STORAGE_KEY, nextKey);
       setSelectedId(nextKey);
     };
@@ -1226,7 +1238,12 @@ export function SessionsView() {
     data: rawMessages,
     isLoading: messagesLoading,
     isError: messagesError,
-  } = useMessages(selectedSession?.id ?? '', !hasLiveChat);
+  } = useMessages(
+    selectedSession?.id ?? '',
+    !hasLiveChat,
+    selectedSession?.instanceId,
+    selectedSession?.ravnId,
+  );
 
   const personaKey = selectedSession
     ? selectedRavn?.kind === 'resident' && !selectedRavn.personaName
@@ -1250,6 +1267,7 @@ export function SessionsView() {
     setSelectedId(key);
     const params = new URLSearchParams(window.location.search);
     params.set('session', session.id);
+    params.set('ravn_id', session.ravnId);
     if (session.instanceId) params.set('instance_id', session.instanceId);
     else params.delete('instance_id');
     window.history.replaceState(null, '', `/ravn/sessions?${params.toString()}`);

@@ -684,6 +684,28 @@ describe('buildRavnSessionAdapter', () => {
     expect(client.get).toHaveBeenCalledWith(`/sessions/${rawSession.id}`);
   });
 
+  it('scopes a session lookup by target and owning resident', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(rawSession);
+
+    await buildRavnSessionAdapter(client).getSession(rawSession.id, 'target/one', 'resident/one');
+
+    expect(client.get).toHaveBeenCalledWith(
+      `/sessions/${rawSession.id}?instance_id=target%2Fone&ravn_id=resident%2Fone`,
+    );
+  });
+
+  it('scopes message lookup by target and owning resident', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([]);
+
+    await buildRavnSessionAdapter(client).getMessages(rawSession.id, 'target/one', 'resident/one');
+
+    expect(client.get).toHaveBeenCalledWith(
+      `/sessions/${rawSession.id}/messages?instance_id=target%2Fone&ravn_id=resident%2Fone`,
+    );
+  });
+
   it('maps resident usage and title fields', async () => {
     const client = makeClient();
     client.get.mockResolvedValue({

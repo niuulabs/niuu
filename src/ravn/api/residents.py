@@ -325,6 +325,8 @@ class ResidentDirectory:
         principal: Principal,
         auth_headers: dict[str, str],
         auth_params: dict[str, str],
+        *,
+        ravn_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Return one live ravn session by id, or None."""
         if not _RAVN_ID_RE.fullmatch(session_id):
@@ -348,6 +350,8 @@ class ResidentDirectory:
                 capabilities = runtime.get("capabilities") or []
                 runtime_id = str(runtime.get("id") or "")
                 if not runtime_id or "session.list" not in capabilities:
+                    continue
+                if ravn_id is not None and runtime_id != ravn_id:
                     continue
                 try:
                     native_sessions = await self._platform.list_resident_sessions(

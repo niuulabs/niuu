@@ -131,6 +131,46 @@ describe('SessionsView', () => {
     );
   });
 
+  it('distinguishes same-id sessions by resident on one target', async () => {
+    const sharedId = '10000001-0000-4000-8000-0000000000aa';
+    const first = liveRunningSession({
+      id: sharedId,
+      ravnId: 'aaaaaaaa-0000-4000-8000-000000000001',
+      instanceId: 'target-a',
+      title: 'First resident conversation',
+    });
+    const second = liveRunningSession({
+      id: sharedId,
+      ravnId: 'bbbbbbbb-0000-4000-8000-000000000002',
+      instanceId: 'target-a',
+      title: 'Second resident conversation',
+    });
+    const stream: ISessionStream = {
+      async listSessions() {
+        return [first, second];
+      },
+      async getSession() {
+        return second;
+      },
+      async getMessages() {
+        return [];
+      },
+    };
+    window.history.replaceState(
+      null,
+      '',
+      `/ravn/sessions?session=${sharedId}&instance_id=target-a&ravn_id=${second.ravnId}`,
+    );
+
+    render(<SessionsView />, { wrapper: wrap(servicesWith(stream)) });
+
+    expect(sessionIdentityKey(first)).not.toBe(sessionIdentityKey(second));
+    const header = await screen.findByTestId('sessions-header');
+    expect(
+      within(header).getByRole('heading', { name: 'Second resident conversation' }),
+    ).toBeInTheDocument();
+  });
+
   it('shows loading state initially', () => {
     render(<SessionsView />, { wrapper: wrap(services()) });
     expect(screen.getByText(/loading sessions/i)).toBeInTheDocument();

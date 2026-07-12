@@ -852,14 +852,21 @@ export function buildRavnSessionAdapter(client: ApiClient): ISessionStream {
       const raw = await client.get<RawSession[]>('/sessions');
       return raw.map(toSession);
     },
-    async getSession(id, instanceId) {
-      const query = instanceId ? `?instance_id=${encodeURIComponent(instanceId)}` : '';
+    async getSession(id, instanceId, ravnId) {
+      const params = new URLSearchParams();
+      if (instanceId) params.set('instance_id', instanceId);
+      if (ravnId) params.set('ravn_id', ravnId);
+      const query = params.size > 0 ? `?${params.toString()}` : '';
       const raw = await client.get<RawSession>(`/sessions/${encodeURIComponent(id)}${query}`);
       return toSession(raw);
     },
-    async getMessages(sessionId) {
+    async getMessages(sessionId, instanceId, ravnId) {
+      const params = new URLSearchParams();
+      if (instanceId) params.set('instance_id', instanceId);
+      if (ravnId) params.set('ravn_id', ravnId);
+      const query = params.size > 0 ? `?${params.toString()}` : '';
       const raw = await client.get<RawMessage[]>(
-        `/sessions/${encodeURIComponent(sessionId)}/messages`,
+        `/sessions/${encodeURIComponent(sessionId)}/messages${query}`,
       );
       return raw.map(toMessage);
     },

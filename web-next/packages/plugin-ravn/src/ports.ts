@@ -166,8 +166,8 @@ export interface IResidentControl {
 /** Read stream for Session transcripts. */
 export interface ISessionStream {
   listSessions(): Promise<Session[]>;
-  getSession(id: string, instanceId?: string): Promise<Session>;
-  getMessages(sessionId: string): Promise<Message[]>;
+  getSession(id: string, instanceId?: string, ravnId?: string): Promise<Session>;
+  getMessages(sessionId: string, instanceId?: string, ravnId?: string): Promise<Message[]>;
 }
 
 /** CRUD store for Triggers. */

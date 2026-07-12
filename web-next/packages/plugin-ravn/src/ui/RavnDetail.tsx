@@ -104,9 +104,9 @@ function spendPercent(budget?: BudgetState): number {
   return Math.round((budget.spentUsd / budget.capUsd) * 100);
 }
 
-function sessionKey(session: Pick<Session, 'id' | 'instanceId'>): string {
+function sessionKey(session: Pick<Session, 'id' | 'ravnId' | 'instanceId'>): string {
   return session.instanceId
-    ? `${encodeURIComponent(session.instanceId)}:${session.id}`
+    ? `${encodeURIComponent(session.instanceId)}:${encodeURIComponent(session.ravnId)}:${session.id}`
     : session.id;
 }
 
@@ -114,11 +114,12 @@ function dispatchSessionSelection(session: Session) {
   saveStorage('ravn.session', sessionKey(session));
   window.dispatchEvent(
     new CustomEvent('ravn:session-selected', {
-      detail: { sessionId: session.id, instanceId: session.instanceId },
+      detail: { sessionId: session.id, ravnId: session.ravnId, instanceId: session.instanceId },
     }),
   );
   const params = new URLSearchParams(window.location.search);
   params.set('session', session.id);
+  params.set('ravn_id', session.ravnId);
   if (session.instanceId) params.set('instance_id', session.instanceId);
   else params.delete('instance_id');
   window.history.pushState(null, '', `/ravn/sessions?${params.toString()}`);

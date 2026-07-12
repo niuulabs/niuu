@@ -809,6 +809,7 @@ def create_app(
     async def get_session_endpoint(
         session_id: str,
         request: Request,
+        ravn_id: str | None = None,
         principal: Principal = Depends(extract_principal),
     ) -> dict:
         """Return one live ravn session."""
@@ -818,6 +819,7 @@ def create_app(
             principal,
             auth_headers,
             auth_params,
+            ravn_id=ravn_id,
         )
         if session_data is None:
             raise HTTPException(
@@ -830,6 +832,7 @@ def create_app(
     async def list_session_messages(
         session_id: str,
         request: Request,
+        ravn_id: str | None = None,
         principal: Principal = Depends(extract_principal),
     ) -> list[dict]:
         """Return transcript messages for one ravn session.
@@ -845,6 +848,7 @@ def create_app(
             principal,
             auth_headers,
             auth_params,
+            ravn_id=ravn_id,
         )
         if session_data is None:
             raise HTTPException(
