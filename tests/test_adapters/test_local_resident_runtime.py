@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -110,6 +111,15 @@ def _profile(engine: ResidentEngine = ResidentEngine.RAVN) -> ResidentDeployment
                     {
                         "name": "openclaw",
                         "command": ["openclaw", "gateway", "run"],
+                        "files": {
+                            "/sandbox/workspace/.openclaw/openclaw.json": json.dumps(
+                                {
+                                    "models": {
+                                        "providers": {"niuu": {"baseUrl": "http://bifrost.test/v1"}}
+                                    }
+                                }
+                            )
+                        },
                     }
                 ],
             }
@@ -209,7 +219,9 @@ async def test_local_openclaw_uses_machine_credentials_and_device_approval(
     )
     store = MemoryCredentialStore()
     controller.set_credential_store(store)
-    runtime = _runtime(ResidentEngine.OPENCLAW)
+    runtime = _runtime(ResidentEngine.OPENCLAW).model_copy(
+        update={"model": "niuu/nvidia/nemotron-3-super"}
+    )
 
     deployed = await controller.deploy(runtime, _profile(ResidentEngine.OPENCLAW))
 
@@ -223,6 +235,16 @@ async def test_local_openclaw_uses_machine_credentials_and_device_approval(
         )
     )
     assert await store.get_value("resident", str(runtime.id), "openclaw-gateway")
+    openclaw_config = json.loads(
+        (
+            tmp_path / str(runtime.id) / "sandbox" / "workspace" / ".openclaw" / "openclaw.json"
+        ).read_text()
+    )
+    assert openclaw_config["models"]["providers"]["niuu"]["headers"] == {
+        "X-Agent-ID": str(runtime.id),
+        "X-Tenant-ID": "local",
+        "X-Session-ID": str(runtime.id),
+    }
     runtime = runtime.model_copy(update={"backend_ref": deployed.backend_ref})
     await controller.approve_resident_device(
         runtime,

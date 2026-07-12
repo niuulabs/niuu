@@ -792,6 +792,9 @@ async def test_hermes_deploy_uses_persisted_process_only_credential_and_generic_
     assert "niuu/gpt-5.6-sol" not in hermes_config
     assert "key_env: NIUU_VOLUNDR_ACCESS_TOKEN" in hermes_config
     assert "api_key:" not in hermes_config
+    assert f"X-Agent-ID: {runtime.id}" in hermes_config
+    assert "X-Tenant-ID: tenant-1" in hermes_config
+    assert f"X-Session-ID: {runtime.id}" in hermes_config
     assert "api_server:" in hermes_config
     assert "port: 18789" in hermes_config
     assert any(
