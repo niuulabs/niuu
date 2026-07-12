@@ -23,6 +23,39 @@ The sandbox starts with the OpenShell supervisor. Völundr then runs the Skuld
 session command via gateway `ExecSandbox` and exposes Skuld via gateway
 `ExposeService`.
 
+### Managed support matrix
+
+Installing the OpenShell substrate on a cluster does not make that cluster a
+resident deployment target. A target is offered by the deployment wizard only
+when its Völundr instance advertises at least one enabled runtime profile.
+
+| Cluster | SPIRE | OpenShell substrate | Resident deployment profiles |
+| --- | --- | --- | --- |
+| `noatun` | yes | yes | `ravn-openshell`, `nemoclaw-openshell`, `nemohermes-openshell` |
+| `valhalla` | yes | yes | `ravn-helm` |
+| `ymir` | yes | yes | none; central routing and aggregation only |
+| `eitri` | yes | yes | none |
+| `glitnir` | yes | yes | none |
+| `jarnvidr` | yes | yes | none |
+| `valaskjalf` | yes | yes | none |
+| `vanaheim` | yes | no | none |
+| `local` | no | no | local-container profiles; see the resident Ravn operator guide |
+
+The supported capabilities are the intersection of the resident engine and its
+backend adapter. They are reported by the profile API and drive the controls the
+UI renders.
+
+| Profile | Chat/session controls | Runtime controls | Observation |
+| --- | --- | --- | --- |
+| `ravn-openshell` | chat | restart | logs, usage |
+| `nemoclaw-openshell` | chat, list/create/delete sessions, steer, interrupt | restart | logs, usage |
+| `nemohermes-openshell` | chat, list/create/delete sessions, interrupt, approvals | restart | logs, usage |
+| `ravn-helm` | chat | restart, suspend, resume | logs, metrics, usage |
+
+OpenShell gateway metrics describe the gateway itself. They are not a resident
+metrics endpoint, so OpenShell profiles must not advertise the `metrics`
+capability until a resident-scoped metrics adapter is available.
+
 ## Authentication Boundaries
 
 The runtime uses three separate authentication paths:
@@ -129,7 +162,7 @@ pod_manager:
     gateway_endpoint: "openshell.openshell.svc.cluster.local:8080"
     token_url: "https://keycloak.niuu.world/realms/volundr/protocol/openid-connect/token"
     client_id: "openshell-volundr-agent"
-    sandbox_image: "ghcr.io/niuulabs/skuld:openshell-codex-openbao-20260709-7"
+    sandbox_image: "ghcr.io/niuulabs/skuld:dev-21377866be297c1317b078014eccccd3935ad670"
     sandbox_command: ["/usr/local/bin/openshell-run-installed-skuld"]
     sandbox_workspace: "/sandbox/workspace"
     sandbox_home: "/sandbox"
@@ -184,7 +217,7 @@ residentRuntimeProfiles:
       values:
         image:
           repository: ghcr.io/niuulabs/openshell
-          tag: niu-1099-openshell-resident
+          tag: dev-21377866be297c1317b078014eccccd3935ad670
         broker:
           cliType: codex-ws
           transportAdapter: skuld.transports.codex_ws.CodexWebSocketTransport
@@ -219,6 +252,22 @@ OpenShell does not currently implement resident suspend/resume or a native usage
 API, so those capabilities must not be advertised. `usage` is the existing Skuld
 model-usage report sent with the resident-bound platform token. `logs` uses the
 gateway's bounded `GetSandboxLogs` API.
+
+### Enabling another managed cluster
+
+Do not copy a second control path. Extend the existing GitOps deployment only
+after all of these gates pass:
+
+1. SPIRE and OpenShell prerequisites in this guide are healthy in the target.
+2. The target Völundr has an `OpenShellGatewayPodManager` configured with its
+   cluster-local gateway, SPIFFE issuer, trust domain, and OpenBao grant endpoint.
+3. The Keycloak machine client secret is supplied through the existing secret
+   wiring; no user token or CLI login is used.
+4. At least one real `residentRuntimeProfiles` entry names the existing
+   `openshell` backend and a supported engine.
+5. Yggdrasil can discover the target through Guild and returns its profiles from
+   the existing target-aware deployment-profile API.
+6. The conformance checks below pass and all proof resources are deleted.
 
 ## Supported Session Inputs
 
@@ -284,6 +333,24 @@ supported dynamic grant. Do not upload agent authentication files or mount the
 legacy Völundr home PVC into OpenShell sandboxes.
 
 ## Operational Checks
+
+For every enabled profile, production conformance requires:
+
+- deploy from the normal UI against the selected target;
+- open chat, receive a streamed answer, reconnect, and recover history;
+- exercise every control advertised by that profile;
+- verify owner isolation with another identity;
+- verify dynamic OpenBao delivery through a sandbox SPIFFE identity;
+- verify logs and usage are attributed to the resident and owner;
+- restart and confirm the resident workspace/history contract is retained;
+- delete through Völundr and confirm the sandbox, service exposure, providers,
+  profiles, pods, and persistent storage owned by the runtime are gone;
+- force deployment and startup failures in adapter integration tests and confirm
+  rollback leaves no owned resources.
+
+The backend adapter suites are the repeatable failure and cleanup proof. Live
+production checks must use real configured profiles and credentials; do not add
+temporary production profiles, fake providers, or demo-only paths.
 
 Check that the OpenShell gateway has OIDC enabled and can validate Keycloak
 tokens:
