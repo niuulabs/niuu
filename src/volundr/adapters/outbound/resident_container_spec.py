@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shlex
 from dataclasses import dataclass
@@ -133,6 +134,46 @@ def runtime_processes_from_values(
     return tuple(processes)
 
 
+def resident_attribution_headers(runtime: ResidentRuntime) -> dict[str, str]:
+    """Headers understood by Bifrost's authenticated usage tracker."""
+    runtime_id = str(runtime.id)
+    return {
+        "X-Agent-ID": runtime_id,
+        "X-Tenant-ID": runtime.tenant_id,
+        "X-Session-ID": runtime_id,
+    }
+
+
+def resident_process_files(
+    runtime: ResidentRuntime,
+    files: dict[str, bytes],
+) -> dict[str, bytes]:
+    """Materialize engine-owned process files with runtime-specific identity."""
+    materialized = dict(files)
+    if runtime.engine is not ResidentEngine.OPENCLAW:
+        return materialized
+
+    provider_name, separator, _ = runtime.model.partition("/")
+    if not separator:
+        return materialized
+    for path, content in tuple(materialized.items()):
+        if not path.endswith("/.openclaw/openclaw.json"):
+            continue
+        try:
+            config = json.loads(content)
+            provider = config["models"]["providers"][provider_name]
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise RuntimeError(f"OpenClaw resident configuration is invalid: {path!r}") from exc
+        if not isinstance(config, dict) or not isinstance(provider, dict):
+            raise RuntimeError(f"OpenClaw resident configuration is invalid: {path!r}")
+        headers = provider.setdefault("headers", {})
+        if not isinstance(headers, dict):
+            raise RuntimeError(f"OpenClaw provider headers are invalid: {path!r}")
+        headers.update(resident_attribution_headers(runtime))
+        materialized[path] = json.dumps(config, indent=2).encode()
+    return materialized
+
+
 def materialize_resident_container(
     runtime: ResidentRuntime,
     values: dict[str, Any],
@@ -181,7 +222,7 @@ def materialize_resident_container(
             sort_keys=False,
         ).encode()
     for process in processes:
-        files.update(process.files)
+        files.update(resident_process_files(runtime, process.files))
     return ResidentContainerSpec(
         image=image,
         service_name=service_name,
@@ -414,6 +455,7 @@ def _resident_hermes_config(
             "provider": "custom:niuu",
             "base_url": base_url,
             "api_mode": "chat_completions",
+            "default_headers": resident_attribution_headers(runtime),
         },
         "custom_providers": [
             {

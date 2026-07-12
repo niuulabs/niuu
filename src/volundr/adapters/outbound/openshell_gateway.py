@@ -46,6 +46,12 @@ from volundr.adapters.outbound.resident_container_spec import (
     image_from_values as _shared_image_from_values,
 )
 from volundr.adapters.outbound.resident_container_spec import (
+    resident_attribution_headers as _shared_resident_attribution_headers,
+)
+from volundr.adapters.outbound.resident_container_spec import (
+    resident_process_files as _shared_resident_process_files,
+)
+from volundr.adapters.outbound.resident_container_spec import (
     resident_profile_values as _shared_resident_profile_values,
 )
 from volundr.adapters.outbound.resident_container_spec import (
@@ -1212,7 +1218,7 @@ class OpenShellGatewayPodManager(
             }
             processes = self._resident_processes(runtime, values)
             for process in processes:
-                files.update(process.files)
+                files.update(_shared_resident_process_files(runtime, process.files))
             await asyncio.to_thread(
                 self._client.write_files,
                 sandbox_id=ready.id,
@@ -1340,7 +1346,7 @@ class OpenShellGatewayPodManager(
             raise RuntimeError(f"OpenShell resident process stop failed: {output.strip()}")
         files = self._resident_config_files(runtime, values)
         for process in processes:
-            files.update(process.files)
+            files.update(_shared_resident_process_files(runtime, process.files))
         await asyncio.to_thread(
             self._client.write_files,
             sandbox_id=sandbox.id,
@@ -2856,6 +2862,7 @@ def _resident_hermes_config(
             "provider": "custom:niuu",
             "base_url": base_url,
             "api_mode": "chat_completions",
+            "default_headers": _shared_resident_attribution_headers(runtime),
         },
         "custom_providers": [
             {
