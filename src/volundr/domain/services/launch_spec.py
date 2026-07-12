@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from volundr.domain.models import LaunchScope, LaunchSpec
 from volundr.domain.ports import LaunchSpecProvider, LaunchSpecRepository
@@ -90,6 +90,7 @@ class LaunchSpecService:
     async def create(self, spec: LaunchSpec) -> LaunchSpec:
         repo = self._require_repo()
         spec.scope = LaunchScope.USER
+        spec.id = spec.id or uuid4()
         existing = await repo.get_by_name(spec.name)
         if existing is not None:
             raise LaunchSpecDuplicateNameError(f"Launch spec already exists: {spec.name}")
