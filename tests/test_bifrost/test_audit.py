@@ -14,10 +14,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bifrost import catalog as bifrost_catalog
+from bifrost.adapters.memory_store import MemoryUsageStore
 from bifrost.app import create_app
+from bifrost.auth import AgentIdentity
 from bifrost.config import BifrostConfig, ProviderConfig, RoutingStrategy
 from bifrost.domain.models import TokenUsage
-from bifrost.inbound.tracking import _extract_usage_from_sse_line
+from bifrost.inbound.tracking import _extract_usage_from_sse_line, _stream_with_tracking
 from bifrost.ports.provider import ProviderError, ProviderPort
 from bifrost.router import ModelRouter, RouterError, _load_adapter
 from bifrost.translation.models import (
@@ -188,6 +190,48 @@ class TestExtractUsageFromSseLine:
         usage = TokenUsage()
         _extract_usage_from_sse_line("data: not-valid-json", usage)
         assert usage.input_tokens == 0
+
+    def test_multiline_event_chunk_populates_usage(self):
+        usage = TokenUsage()
+        _extract_usage_from_sse_line(
+            'event: message_start\ndata: {"type":"message_start",'
+            '"message":{"usage":{"input_tokens":42}}}\n',
+            usage,
+        )
+        assert usage.input_tokens == 42
+
+
+async def test_stream_usage_is_recorded_before_terminal_chunk_is_yielded():
+    async def source():
+        yield (
+            'event: message_start\ndata: {"type":"message_start",'
+            '"message":{"usage":{"input_tokens":12}}}\n\n'
+            'event: message_delta\ndata: {"type":"message_delta",'
+            '"usage":{"output_tokens":7}}\n\n'
+            'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+        )
+
+    store = MemoryUsageStore()
+    emitter = AsyncMock()
+    stream = _stream_with_tracking(
+        source(),
+        "nvidia/nemotron-3-super",
+        0.0,
+        AgentIdentity(agent_id="resident-1", tenant_id="tenant-1", session_id="session-1"),
+        store,
+        {},
+        "request-1",
+        emitter,
+        provider="valaskjalf-nemotron",
+    )
+
+    await anext(stream)
+
+    records = await store.query()
+    assert len(records) == 1
+    assert records[0].input_tokens == 12
+    assert records[0].output_tokens == 7
+    assert records[0].agent_id == "resident-1"
 
 
 # ---------------------------------------------------------------------------
