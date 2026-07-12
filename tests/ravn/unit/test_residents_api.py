@@ -283,6 +283,21 @@ class TestListRavens:
 
 
 class TestManagedResidentCommands:
+    async def test_platform_adapter_rejects_invalid_runtime_identifiers(self):
+        adapter = HttpPlatformRuntimeAdapter(base_url=_BASE)
+
+        with pytest.raises(ValueError, match="Invalid platform resource identifier"):
+            await adapter.get_resident_runtime("resident/../target?admin=true", {}, {})
+        await adapter.aclose()
+
+    async def test_platform_adapter_rejects_unknown_lifecycle_actions(self):
+        adapter = HttpPlatformRuntimeAdapter(base_url=_BASE)
+
+        with pytest.raises(ValueError, match="Unsupported resident lifecycle action"):
+            await adapter.control_resident_runtime("resident-id", "redirect", {}, {})
+
+        await adapter.aclose()
+
     @respx.mock
     async def test_create_and_lifecycle_use_target_platform_adapter(self):
         runtime = _managed_runtime()

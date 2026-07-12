@@ -42,6 +42,7 @@ from fastapi import (
 from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.auth import extract_principal
+from niuu.adapters.inbound.remote_urls import build_remote_url
 from niuu.adapters.inbound.rest_volundr import (
     _ensure_remote_success,
     _normalize_timestamp,
@@ -70,6 +71,11 @@ def _ravn_base_url(instance: RegisteredInstance) -> str:
     """Resolve an optional Ravn service endpoint for split-service targets."""
     configured = instance.config.get("ravn_base_url") or instance.config.get("ravnBaseUrl")
     return str(configured).strip() if configured else instance.base_url
+
+
+def _safe_log_value(value: str) -> str:
+    """Keep request identifiers from forging additional log records."""
+    return value.replace("\r", "").replace("\n", "")
 
 
 def create_ravn_session_proxy_router(
@@ -115,13 +121,17 @@ def create_ravn_session_proxy_router(
         owner: RegisteredInstance | None = None
         async with httpx.AsyncClient(timeout=15.0) as client:
             for instance in instances:
-                target_base = _ravn_base_url(instance).rstrip("/")
                 try:
+                    target_url = build_remote_url(
+                        _ravn_base_url(instance),
+                        _RAVN_REMOTE_PREFIX,
+                        f"/sessions/{quote(session_id, safe='')}",
+                    )
                     response = await client.get(
-                        f"{target_base}{_RAVN_REMOTE_PREFIX}/sessions/{quote(session_id, safe='')}",
+                        target_url,
                         headers=headers,
                     )
-                except httpx.HTTPError:
+                except (ValueError, httpx.HTTPError):
                     continue
                 if response.status_code == status.HTTP_200_OK:
                     owner = instance
@@ -160,7 +170,7 @@ def create_ravn_session_proxy_router(
                 forward_dev_params=True,
             )
         except Exception:
-            logger.debug("Remote Ravn socket ended for %s", session_id)
+            logger.debug("Remote Ravn socket ended for %s", _safe_log_value(session_id))
         finally:
             with suppress(Exception):
                 await websocket.close()
@@ -223,12 +233,16 @@ def create_ravn_session_proxy_router(
                     owner = instance
                     break
                 try:
+                    target_url = build_remote_url(
+                        _ravn_base_url(instance),
+                        _RAVN_REMOTE_PREFIX,
+                        f"/ravens/{quote(ravn_id, safe='')}",
+                    )
                     response = await client.get(
-                        f"{_ravn_base_url(instance).rstrip('/')}{_RAVN_REMOTE_PREFIX}/ravens/"
-                        f"{quote(ravn_id, safe='')}",
+                        target_url,
                         headers=headers,
                     )
-                except httpx.HTTPError:
+                except (ValueError, httpx.HTTPError):
                     continue
                 if response.status_code == status.HTTP_200_OK:
                     owner = instance
@@ -295,7 +309,11 @@ def create_ravn_session_proxy_router(
                 forward_dev_params=True,
             )
         except Exception:
-            logger.debug("Remote resident socket ended for %s/%s", ravn_id, session_id)
+            logger.debug(
+                "Remote resident socket ended for %s/%s",
+                _safe_log_value(ravn_id),
+                _safe_log_value(session_id),
+            )
         finally:
             with suppress(Exception):
                 await websocket.close()
@@ -483,7 +501,7 @@ def create_ravn_router(
         return await _find_owner_payload(
             request,
             principal,
-            f"/ravens/{ravn_id}",
+            f"/ravens/{quote(ravn_id, safe='')}",
             f"Ravn not found: {ravn_id}",
             instance_id,
         )
@@ -500,7 +518,7 @@ def create_ravn_router(
             instance,
             request,
             method="POST",
-            path=f"/ravens/{ravn_id}/{action}",
+            path=f"/ravens/{quote(ravn_id, safe='')}/{action}",
             remote_prefix=_RAVN_REMOTE_PREFIX,
             base_url=_ravn_base_url(instance),
             embedded_app=embedded_forge_app,
@@ -544,7 +562,7 @@ def create_ravn_router(
         return await _find_owner_payload(
             request,
             principal,
-            f"/ravens/{ravn_id}/logs",
+            f"/ravens/{quote(ravn_id, safe='')}/logs",
             f"Ravn not found: {ravn_id}",
             instance_id,
             params,
@@ -564,7 +582,7 @@ def create_ravn_router(
                 instance,
                 request,
                 method="GET",
-                path=f"/ravens/{ravn_id}/sessions",
+                path=f"/ravens/{quote(ravn_id, safe='')}/sessions",
                 remote_prefix=_RAVN_REMOTE_PREFIX,
                 base_url=_ravn_base_url(instance),
                 embedded_app=embedded_forge_app,
@@ -581,7 +599,7 @@ def create_ravn_router(
         raven = await _find_owner_payload(
             request,
             principal,
-            f"/ravens/{ravn_id}",
+            f"/ravens/{quote(ravn_id, safe='')}",
             f"Ravn not found: {ravn_id}",
             None,
         )
@@ -608,7 +626,7 @@ def create_ravn_router(
             instance,
             request,
             method="POST",
-            path=f"/ravens/{ravn_id}/sessions",
+            path=f"/ravens/{quote(ravn_id, safe='')}/sessions",
             remote_prefix=_RAVN_REMOTE_PREFIX,
             base_url=_ravn_base_url(instance),
             json_body=body,
@@ -637,7 +655,7 @@ def create_ravn_router(
             instance,
             request,
             method="DELETE",
-            path=f"/ravens/{ravn_id}/sessions/{session_id}",
+            path=(f"/ravens/{quote(ravn_id, safe='')}/sessions/{quote(session_id, safe='')}"),
             remote_prefix=_RAVN_REMOTE_PREFIX,
             base_url=_ravn_base_url(instance),
             embedded_app=embedded_forge_app,
@@ -679,7 +697,7 @@ def create_ravn_router(
             instance,
             request,
             method="DELETE",
-            path=f"/ravens/{ravn_id}",
+            path=f"/ravens/{quote(ravn_id, safe='')}",
             remote_prefix=_RAVN_REMOTE_PREFIX,
             base_url=_ravn_base_url(instance),
             embedded_app=embedded_forge_app,
@@ -699,7 +717,7 @@ def create_ravn_router(
         return await _find_owner_payload(
             request,
             principal,
-            f"/sessions/{session_id}",
+            f"/sessions/{quote(session_id, safe='')}",
             f"Session not found: {session_id}",
             instance_id,
         )

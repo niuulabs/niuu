@@ -16,6 +16,7 @@ from httpx import Response
 from starlette.websockets import WebSocketDisconnect
 
 from niuu.adapters.inbound.rest_ravn import (
+    _safe_log_value,
     create_ravn_router,
     create_ravn_session_proxy_router,
 )
@@ -116,6 +117,10 @@ def _headers() -> dict[str, str]:
         "x-auth-user-id": "user-a",
         "x-auth-tenant": "tenant-a",
     }
+
+
+def test_safe_log_value_removes_record_delimiters() -> None:
+    assert _safe_log_value("resident\r\nforged") == "residentforged"
 
 
 @respx.mock

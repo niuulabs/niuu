@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import httpx
 
 _DEFAULT_PLATFORM_API_URL = "http://localhost:8080"
 _DEFAULT_TIMEOUT_SECONDS = 5.0
+
+
+def _path_segment(value: str) -> str:
+    """Validate an engine-provided identifier as exactly one URL path segment."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        raise ValueError(f"Invalid platform resource identifier: {value!r}")
+    return value
 
 
 class HttpPlatformRuntimeAdapter:
@@ -38,7 +46,7 @@ class HttpPlatformRuntimeAdapter:
         auth_params: dict[str, str],
     ) -> dict[str, Any] | None:
         return await self._get_item(
-            f"/api/v1/forge/sessions/{session_id}",
+            f"/api/v1/forge/sessions/{_path_segment(session_id)}",
             auth_headers,
             auth_params,
         )
@@ -50,7 +58,7 @@ class HttpPlatformRuntimeAdapter:
         auth_params: dict[str, str],
     ) -> dict[str, Any] | None:
         response = await self._client.post(
-            f"/api/v1/forge/sessions/{session_id}/stop",
+            f"/api/v1/forge/sessions/{_path_segment(session_id)}/stop",
             headers=auth_headers,
             params=auth_params,
         )
@@ -80,7 +88,7 @@ class HttpPlatformRuntimeAdapter:
         auth_params: dict[str, str],
     ) -> dict[str, Any] | None:
         return await self._get_item(
-            f"/api/v1/forge/resident-runtimes/{runtime_id}",
+            f"/api/v1/forge/resident-runtimes/{_path_segment(runtime_id)}",
             auth_headers,
             auth_params,
         )
@@ -116,8 +124,10 @@ class HttpPlatformRuntimeAdapter:
         auth_headers: dict[str, str],
         auth_params: dict[str, str],
     ) -> dict[str, Any]:
+        if action not in {"restart", "suspend", "resume"}:
+            raise ValueError(f"Unsupported resident lifecycle action: {action}")
         return await self._post_item(
-            f"/api/v1/forge/resident-runtimes/{runtime_id}/{action}",
+            f"/api/v1/forge/resident-runtimes/{_path_segment(runtime_id)}/{action}",
             None,
             auth_headers,
             auth_params,
@@ -130,7 +140,7 @@ class HttpPlatformRuntimeAdapter:
         auth_params: dict[str, str],
     ) -> None:
         response = await self._client.delete(
-            f"/api/v1/forge/resident-runtimes/{runtime_id}",
+            f"/api/v1/forge/resident-runtimes/{_path_segment(runtime_id)}",
             headers=auth_headers,
             params=auth_params,
         )
@@ -154,7 +164,7 @@ class HttpPlatformRuntimeAdapter:
         if min_level:
             params.append(("min_level", min_level))
         response = await self._client.get(
-            f"/api/v1/forge/resident-runtimes/{runtime_id}/logs",
+            f"/api/v1/forge/resident-runtimes/{_path_segment(runtime_id)}/logs",
             headers=auth_headers,
             params=params,
         )
@@ -171,7 +181,7 @@ class HttpPlatformRuntimeAdapter:
         auth_params: dict[str, str],
     ) -> list[dict[str, Any]]:
         return await self._get_list(
-            f"/api/v1/forge/resident-runtimes/{runtime_id}/sessions",
+            f"/api/v1/forge/resident-runtimes/{_path_segment(runtime_id)}/sessions",
             auth_headers,
             auth_params,
         )
@@ -184,7 +194,7 @@ class HttpPlatformRuntimeAdapter:
         auth_params: dict[str, str],
     ) -> dict[str, Any]:
         return await self._post_item(
-            f"/api/v1/forge/resident-runtimes/{runtime_id}/sessions",
+            f"/api/v1/forge/resident-runtimes/{_path_segment(runtime_id)}/sessions",
             body,
             auth_headers,
             auth_params,
@@ -198,7 +208,8 @@ class HttpPlatformRuntimeAdapter:
         auth_params: dict[str, str],
     ) -> None:
         response = await self._client.delete(
-            f"/api/v1/forge/resident-runtimes/{runtime_id}/sessions/{session_id}",
+            "/api/v1/forge/resident-runtimes/"
+            f"{_path_segment(runtime_id)}/sessions/{_path_segment(session_id)}",
             headers=auth_headers,
             params=auth_params,
         )

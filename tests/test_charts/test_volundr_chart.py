@@ -515,6 +515,37 @@ class TestConfigMapTemplate:
 
         assert config["resident_runtimes"]["profiles"] == []
 
+    def test_ci_values_run_resident_runtime_migrations(self):
+        result = subprocess.run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                "-f",
+                str(CHART_DIR / "ci-values.yaml"),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        deployment = next(doc for doc in documents if doc.get("kind") == "Deployment")
+        init_containers = deployment["spec"]["template"]["spec"].get("initContainers", [])
+        migrations = next(
+            container for container in init_containers if container["name"] == "migrate"
+        )
+        migration_config = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr-migrations"
+        )
+
+        assert migrations["args"][-1] == "up"
+        assert "000055_resident_runtimes.up.sql" in migration_config["data"]
+        assert "000056_resident_usage.up.sql" in migration_config["data"]
+
     def test_resident_session_controllers_render_with_backend_binding(self):
         result = subprocess.run(
             [

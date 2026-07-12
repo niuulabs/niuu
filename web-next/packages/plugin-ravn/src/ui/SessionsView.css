@@ -432,7 +432,6 @@
   font-size: 12px;
 }
 
-
 .rv-rs__body {
   display: grid;
   min-height: 0;
@@ -1025,5 +1024,4 @@
   .rv-rs__surface-tabs {
     padding: 0 18px;
   }
-
 }
