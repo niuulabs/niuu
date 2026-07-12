@@ -26,7 +26,7 @@ class InMemoryLaunchSpecRepository:
             self.specs[spec.id] = spec
 
     async def create(self, spec: LaunchSpec) -> LaunchSpec:
-        spec.id = spec.id or uuid4()
+        assert spec.id is not None
         self.specs[spec.id] = spec
         return spec
 
