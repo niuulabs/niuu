@@ -1061,6 +1061,54 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
 
 
 @pytest.mark.asyncio
+async def test_resident_materializes_raw_protocol_credential_from_openbao(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _resident_runtime()
+    profile = _resident_profile()
+    values = profile.deployment["values"]
+    values["openshell"]["credentialMappings"] = [
+        {
+            "credentialName": "nats-flock-noatun",
+            "envMappings": {"RAVN_NATS_PASSWORD": "password"},
+            "materializeEnvironment": True,
+            "provider": {
+                "endpoints": [
+                    {
+                        "host": "10.191.72.34",
+                        "port": 4222,
+                        "tls": "skip",
+                        "allowed_ips": ["10.191.72.34"],
+                    }
+                ],
+                "binaries": ["/opt/niuu/bin/python"],
+            },
+        }
+    ]
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    manager.set_credential_store(
+        _FakeCredentialStore(
+            {
+                "codex-credentials": {"auth.json": _codex_auth_document()},
+                "nats-flock-noatun": {"password": "nats-from-openbao"},
+            }
+        )
+    )
+
+    await manager.deploy(runtime, profile)
+
+    assert client.created is not None
+    assert "RAVN_NATS_PASSWORD" not in client.created["env"]
+    assert client.execs[1]["env"]["RAVN_NATS_PASSWORD"] == "nats-from-openbao"
+    assert any(
+        grant["profile"].credentials[0].env_vars == ["RAVN_NATS_PASSWORD"]
+        for grant in client.provider_grants
+    )
+
+
+@pytest.mark.asyncio
 async def test_resident_restart_reuses_sandbox_and_dynamic_provider_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

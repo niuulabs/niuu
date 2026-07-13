@@ -173,6 +173,7 @@ class OpenShellCredentialContext:
     files: dict[str, bytes]
     providers: tuple[str, ...]
     environment: dict[str, str]
+    process_environment: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -993,7 +994,9 @@ class OpenShellGatewayPodManager(
         sandbox_name = self._sandbox_name(session)
         session_id = str(session.id)
         env = self._build_env(session, spec)
-        credential_context = OpenShellCredentialContext(files={}, providers=(), environment={})
+        credential_context = OpenShellCredentialContext(
+            files={}, providers=(), environment={}, process_environment={}
+        )
         grants: tuple[OpenShellProviderGrant, ...] = ()
         for env_key in SECRET_ENV_KEYS:
             env.pop(env_key, None)
@@ -1015,6 +1018,7 @@ class OpenShellGatewayPodManager(
             )
             credential_context = await self._resolve_credential_env(session, spec)
             env.update(credential_context.environment)
+            process_env = {**env, **credential_context.process_environment}
             runtime_processes = _runtime_processes_from_spec(spec)
             provider_names = (*platform_providers, *credential_context.providers)
             grants = tuple(
@@ -1056,7 +1060,7 @@ class OpenShellGatewayPodManager(
                     self._client.exec_detached,
                     sandbox_id=ready.id,
                     command=process.command,
-                    env={**env, **process.env},
+                    env={**process_env, **process.env},
                     log_path=process.log_path,
                 )
                 if process_exit != 0:
@@ -1068,7 +1072,7 @@ class OpenShellGatewayPodManager(
                 self._client.exec_detached,
                 sandbox_id=ready.id,
                 command=self._sandbox_command,
-                env=env,
+                env=process_env,
                 log_path=self._command_log_path,
             )
             if exit_code != 0:
@@ -1172,7 +1176,9 @@ class OpenShellGatewayPodManager(
             raise RuntimeError("OpenClaw residents require the configured credential store")
         if runtime.engine is ResidentEngine.HERMES and self._credential_store is None:
             raise RuntimeError("Hermes residents require the configured credential store")
-        credential_context = OpenShellCredentialContext(files={}, providers=(), environment={})
+        credential_context = OpenShellCredentialContext(
+            files={}, providers=(), environment={}, process_environment={}
+        )
         grants: tuple[OpenShellProviderGrant, ...] = ()
         try:
             if runtime.engine is ResidentEngine.OPENCLAW:
@@ -1238,7 +1244,7 @@ class OpenShellGatewayPodManager(
                 sandbox_id=ready.id,
                 files=files,
             )
-            process_env = dict(env)
+            process_env = {**env, **credential_context.process_environment}
             if runtime.engine is ResidentEngine.OPENCLAW and machine_credential is not None:
                 process_env["OPENCLAW_GATEWAY_TOKEN"] = machine_credential["gateway_token"]
             if runtime.engine is ResidentEngine.HERMES and machine_credential is not None:
@@ -2025,7 +2031,9 @@ class OpenShellGatewayPodManager(
         mappings = _credential_mappings_from_values(values)
         codex_auth = _codex_auth_from_values(values)
         if not mappings and not codex_auth:
-            return OpenShellCredentialContext(files={}, providers=(), environment={})
+            return OpenShellCredentialContext(
+                files={}, providers=(), environment={}, process_environment={}
+            )
         if not subject.owner_id:
             raise RuntimeError("OpenShell credential mappings require a workload owner")
         if self._credential_store is None:
@@ -2034,6 +2042,7 @@ class OpenShellGatewayPodManager(
         files: dict[str, bytes] = {}
         providers: list[str] = []
         environment: dict[str, str] = {}
+        process_environment: dict[str, str] = {}
         try:
             if codex_auth:
                 await self._resolve_codex_auth(
@@ -2056,6 +2065,7 @@ class OpenShellGatewayPodManager(
                     mapping,
                     files=files,
                     providers=providers,
+                    process_environment=process_environment,
                     excluded_env_names={"OPENAI_API_KEY"} if codex_auth else set(),
                 )
         except Exception:
@@ -2073,6 +2083,7 @@ class OpenShellGatewayPodManager(
             files=files,
             providers=tuple(providers),
             environment=environment,
+            process_environment=process_environment,
         )
 
     async def _resolve_platform_provider(
@@ -2186,6 +2197,7 @@ class OpenShellGatewayPodManager(
         *,
         files: dict[str, bytes],
         providers: list[str],
+        process_environment: dict[str, str],
         excluded_env_names: set[str] | None = None,
     ) -> None:
         credential_name = str(mapping.get("credentialName") or mapping.get("credential_name") or "")
@@ -2219,6 +2231,19 @@ class OpenShellGatewayPodManager(
                 f"Credential {credential_name!r} does not contain fields: "
                 + ", ".join(missing_fields)
             )
+        if mapping.get("materializeEnvironment") or mapping.get("materialize_environment"):
+            values = await self._credential_store.get_value(
+                "user",
+                subject.owner_id,
+                credential_name,
+            )
+            for env_name, field_name in env_mappings.items():
+                value = values.get(field_name) if values else None
+                if not value:
+                    raise RuntimeError(
+                        f"Credential {credential_name!r} does not contain field {field_name!r}"
+                    )
+                process_environment[env_name] = value
         for env_name, field_name in env_mappings.items():
             if not _valid_env_name(env_name):
                 raise RuntimeError(
