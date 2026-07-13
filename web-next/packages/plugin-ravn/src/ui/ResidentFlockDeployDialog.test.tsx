@@ -42,7 +42,7 @@ describe('ResidentFlockDeployDialog', () => {
       description: `${displayName} resident`,
       backend: 'local',
       engine,
-      capabilities: ['chat', 'flock'],
+      capabilities: engine === 'ravn' ? ['chat', 'flock'] : ['chat'],
       instanceId: 'local',
       instanceName: 'Local',
       instanceSlug: 'local',

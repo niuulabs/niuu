@@ -7,6 +7,7 @@ lazy-start its own CLI transport.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -89,6 +90,44 @@ class TestPlainMessageRouting:
         args, kwargs = broker.handle_directed_room_message.await_args
         assert args[0] == "other-peer"
         assert kwargs.get("request_id") == "req-directed-1"
+
+    @pytest.mark.asyncio
+    async def test_directed_message_uses_mesh_for_discovered_resident_peer(self):
+        broker = _resident_broker()
+        participant = SimpleNamespace(
+            peer_id="hermes-worker",
+            persona="Hermes",
+            participant_kind="mesh",
+        )
+        broker._room_bridge.participants = {participant.peer_id: participant}
+        broker._room_bridge.route_directed_message = AsyncMock(return_value=False)
+        broker._room_bridge.handle_ravn_frame = AsyncMock()
+        broker.handle_human_room_message = AsyncMock(return_value="message-1")
+        broker._mesh_adapter = MagicMock()
+        broker._mesh_adapter.request_work = AsyncMock(
+            return_value={"status": "complete", "output": "Hermes reply"}
+        )
+
+        message_id = await broker.handle_directed_room_message(
+            participant.peer_id,
+            "Review this",
+            request_id="request-1",
+        )
+
+        assert message_id == "message-1"
+        broker._mesh_adapter.request_work.assert_awaited_once_with(
+            participant.peer_id,
+            "Review this",
+            request_id="request-1",
+        )
+        broker._room_bridge.handle_ravn_frame.assert_awaited_once_with(
+            participant.peer_id,
+            {
+                "type": "response",
+                "data": "Hermes reply",
+                "metadata": {},
+            },
+        )
 
     @pytest.mark.asyncio
     async def test_no_default_target_keeps_classic_path(self):

@@ -26,6 +26,8 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from ravn.config import MeshNatsConfig
+
 
 # Config file search paths (in order of priority).
 # NIUU_CONFIG env var (set by the CLI --config flag) takes precedence.
@@ -85,12 +87,16 @@ class MeshConfig(BaseModel):
 
     enabled: bool = Field(default=False)
     peer_id: str = Field(default="")
+    realm_id: str = Field(default="")
     capabilities: list[str] = Field(default_factory=lambda: list(_DEFAULT_MESH_CAPABILITIES))
     tools: list[str] = Field(default_factory=lambda: list(_DEFAULT_MESH_TOOLS))
     persona: str = Field(default="coder")
     transport: str = Field(default="nng")
     nng: NngConfig = Field(default_factory=NngConfig)
     adapters: list[dict[str, Any]] = Field(default_factory=list)
+    discovery_adapters: list[dict[str, Any]] = Field(default_factory=list)
+    nats: MeshNatsConfig = Field(default_factory=MeshNatsConfig)
+    redis_url_env: str = Field(default="REDIS_URL")
     rpc_timeout_s: float = Field(default=10.0)
     default_work_timeout_s: float = Field(default=120.0)
     default_response_urgency: float = Field(default=0.3)

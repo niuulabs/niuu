@@ -572,6 +572,12 @@ def test_resident_ravn_config_uses_profile_selected_flock_transport(
     configured = missing_transport.model_copy(update={"deployment": {"values": values}})
 
     config = adapter._resident_ravn_config(runtime, values, 9200)
+    skuld_config = adapter._resident_skuld_config(
+        runtime,
+        values,
+        9200,
+        "https://volundr.example.test",
+    )
 
     assert manager.supports(missing_transport) is False
     assert manager.supports(configured) is True
@@ -584,6 +590,14 @@ def test_resident_ravn_config_uses_profile_selected_flock_transport(
         "adapter": "event_bus",
         "transport": "nats",
     }
+    assert skuld_config["mesh"]["realm_id"] == str(flock_id)
+    assert skuld_config["mesh"]["adapters"] == [{"adapter": "sleipnir", "transport": "nats"}]
+    assert skuld_config["mesh"]["discovery_adapters"][-1] == {
+        "adapter": "event_bus",
+        "transport": "nats",
+    }
+    assert skuld_config["mesh"]["nats"]["user_env"] == "RAVN_NATS_USER"
+    assert "max_participants" not in skuld_config["room"]
 
 
 def _hermes_runtime() -> ResidentRuntime:

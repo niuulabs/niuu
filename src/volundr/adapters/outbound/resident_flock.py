@@ -124,6 +124,29 @@ class ResidentFlockAdapter:
 
     async def _handle_rpc(self, runtime_id: UUID, message: dict[str, Any]) -> dict[str, Any]:
         message_type = str(message.get("type") or "")
+        if message_type == "work_request":
+            request_id = str(message.get("request_id") or "").strip()
+            if not request_id:
+                return {"status": "error", "error": "request_id is required"}
+            accepted = await self._dispatch(
+                runtime_id,
+                {
+                    "task_id": request_id,
+                    "title": "Directed flock message",
+                    "prompt": str(message.get("prompt") or ""),
+                },
+            )
+            if accepted.get("status") != "accepted":
+                return accepted
+            task = self._tasks[request_id]
+            if task.runner is not None:
+                await task.runner
+            return {
+                "status": task.status,
+                "request_id": request_id,
+                "output": task.output,
+                **({"error": task.error} if task.error else {}),
+            }
         if message_type == "task_dispatch":
             return await self._dispatch(runtime_id, message.get("task"))
         if message_type == "task_list":
@@ -184,7 +207,9 @@ class ResidentFlockAdapter:
             controller = self._controllers[runtime.engine]
             title = str(payload.get("title") or "Remote flock task")
             context = str(payload.get("initiative_context") or "").strip()
-            prompt = f"{title}\n\n{context}" if context else title
+            prompt = str(payload.get("prompt") or "").strip()
+            if not prompt:
+                prompt = f"{title}\n\n{context}" if context else title
             session = await controller.create_session(runtime, title=title, model=runtime.model)
             connection = await controller.connect_chat(runtime, session.id)
             task.connection = connection

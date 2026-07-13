@@ -152,6 +152,22 @@ async def test_ravn_rpc_dispatches_through_existing_resident_session_controller(
     assert controller.connection.sent[0]["content"] == "Prove life\n\nReturn alive"
     assert controller.connection.closed
 
+    directed = await coordinator.send(
+        "hermes-worker",
+        {
+            "type": "work_request",
+            "request_id": "room-message-1",
+            "prompt": "Reply directly",
+        },
+    )
+    assert directed == {
+        "status": "complete",
+        "request_id": "room-message-1",
+        "output": "alive",
+    }
+    assert controller.created[-1] == ("Directed flock message", "niuu/qwen")
+    assert controller.connection.sent[-1]["content"] == "Reply directly"
+
     await coordinator.stop()
     await discovery.stop()
     await resident.stop()

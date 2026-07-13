@@ -151,27 +151,18 @@ export function ResidentDeployFields({
 
       <label className="rv-form-field">
         <span>Persona</span>
-        {personas.length > 0 ? (
-          <select
-            value={draft.personaName}
-            onChange={(event) => onChange({ ...draft, personaName: event.target.value })}
-            data-testid={`${testIdPrefix}-persona`}
-          >
-            <option value="">No persona</option>
-            {personas.map((persona) => (
-              <option key={persona.name} value={persona.name}>
-                {persona.name} · {persona.role}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <input
-            value={draft.personaName}
-            onChange={(event) => onChange({ ...draft, personaName: event.target.value })}
-            maxLength={255}
-            data-testid={`${testIdPrefix}-persona`}
-          />
-        )}
+        <select
+          value={draft.personaName}
+          onChange={(event) => onChange({ ...draft, personaName: event.target.value })}
+          data-testid={`${testIdPrefix}-persona`}
+        >
+          <option value="">No persona</option>
+          {personas.map((persona) => (
+            <option key={persona.name} value={persona.name}>
+              {persona.name} · {persona.role}
+            </option>
+          ))}
+        </select>
       </label>
 
       {selectedProfile && selectedProfile.allowedModels.length > 0 && (

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Dialog, DialogContent } from '@niuulabs/ui';
 import type { PersonaSummary } from '@niuulabs/domain';
-import { ChevronDown, ChevronUp, Plus, Trash2, Users } from 'lucide-react';
+import { ChevronDown, ChevronUp, Copy, Plus, Trash2, Users } from 'lucide-react';
 import type { Ravn, ResidentDeploymentProfile } from '../domain/ravn';
 import { useDeployResidentFlock, useResidentProfiles } from './hooks/useResidentControl';
 import { useOptionalPersonas } from './usePersonas';
@@ -61,13 +61,11 @@ export function ResidentFlockDeployDialog({
   const [drafts, setDrafts] = useState<FlockMemberDraft[]>(() => [initialDraft('coordinator')]);
   const profiles = useMemo(
     () =>
-      (profilesQuery.data ?? [])
-        .filter((profile) => profile.capabilities.includes('flock'))
-        .sort((left, right) => {
-          if (left.engine === 'ravn' && right.engine !== 'ravn') return -1;
-          if (right.engine === 'ravn' && left.engine !== 'ravn') return 1;
-          return left.displayName.localeCompare(right.displayName);
-        }),
+      (profilesQuery.data ?? []).sort((left, right) => {
+        if (left.engine === 'ravn' && right.engine !== 'ravn') return -1;
+        if (right.engine === 'ravn' && left.engine !== 'ravn') return 1;
+        return left.displayName.localeCompare(right.displayName);
+      }),
     [profilesQuery.data],
   );
   const personas = useMemo(
@@ -75,8 +73,14 @@ export function ResidentFlockDeployDialog({
     [personasQuery.data],
   );
   const coordinators = useMemo(() => coordinatorPersonas(personas), [personas]);
+  const coordinatorProfiles = useMemo(
+    () => profiles.filter((profile) => profile.capabilities.includes('flock')),
+    [profiles],
+  );
   const preferredCoordinator = coordinators.find((persona) => persona.name === 'flock-coordinator');
-  const selectedProfiles = drafts.map((draft) => selectedResidentProfile(draft, profiles));
+  const selectedProfiles = drafts.map((draft) =>
+    selectedResidentProfile(draft, draft.role === 'coordinator' ? coordinatorProfiles : profiles),
+  );
   const normalizedNames = drafts.map((draft) => draft.name.trim().toLowerCase());
   const duplicateNames = new Set(
     normalizedNames.filter((name, index) => name && normalizedNames.indexOf(name) !== index),
@@ -84,10 +88,12 @@ export function ResidentFlockDeployDialog({
   const coordinatorCount = drafts.filter((draft) => draft.role.trim() === 'coordinator').length;
   const coordinatorReady = drafts
     .filter((draft) => draft.role.trim() === 'coordinator')
-    .every((draft) =>
-      coordinators.some(
-        (persona) => persona.name === (draft.personaName || preferredCoordinator?.name),
-      ),
+    .every(
+      (draft) =>
+        Boolean(selectedResidentProfile(draft, coordinatorProfiles)) &&
+        coordinators.some(
+          (persona) => persona.name === (draft.personaName || preferredCoordinator?.name),
+        ),
     );
   const valid =
     Boolean(flockName.trim()) &&
@@ -130,6 +136,20 @@ export function ResidentFlockDeployDialog({
     draft.model = profile?.defaultModel ?? '';
     draft.name = defaultMemberName(flockName, profile, drafts.length);
     setDrafts((current) => [...current, draft]);
+  }
+
+  function duplicateMember(index: number) {
+    setDrafts((current) => {
+      const source = current[index];
+      if (!source) return current;
+      const copy = {
+        ...source,
+        key: crypto.randomUUID(),
+        name: `${source.name || defaultMemberName(flockName, selectedProfiles[index], index)}-copy`,
+        role: source.role === 'coordinator' ? 'specialist' : source.role,
+      };
+      return [...current.slice(0, index + 1), copy, ...current.slice(index + 1)];
+    });
   }
 
   function removeMember(index: number) {
@@ -204,7 +224,17 @@ export function ResidentFlockDeployDialog({
           )}
           {!profilesQuery.isLoading && profiles.length === 0 && (
             <div className="rv-form-error" role="alert">
-              No flock-capable resident profiles are enabled.
+              No resident profiles are enabled.
+            </div>
+          )}
+          {!profilesQuery.isLoading && profiles.length > 0 && coordinatorProfiles.length === 0 && (
+            <div className="rv-form-error" role="alert">
+              A flock-capable resident profile is required for the coordinator.
+            </div>
+          )}
+          {personasQuery.isError && (
+            <div className="rv-form-error" role="alert">
+              {errorMessage(personasQuery.error)}
             </div>
           )}
           {!personasQuery.isLoading && coordinators.length === 0 && (
@@ -230,10 +260,19 @@ export function ResidentFlockDeployDialog({
             <div className="rv-flock-members">
               {drafts.map((draft, index) => {
                 const coordinator = draft.role === 'coordinator';
+                const memberProfiles = coordinator ? coordinatorProfiles : profiles;
                 return (
                   <fieldset key={draft.key} className="rv-flock-member">
                     <legend>{coordinator ? 'Coordinator' : `Member ${index + 1}`}</legend>
                     <div className="rv-flock-member__tools">
+                      <button
+                        type="button"
+                        onClick={() => duplicateMember(index)}
+                        aria-label={`Duplicate member ${index + 1}`}
+                        title="Duplicate member"
+                      >
+                        <Copy size={14} aria-hidden="true" />
+                      </button>
                       <button
                         type="button"
                         onClick={() => moveMember(index, -1)}
@@ -270,7 +309,7 @@ export function ResidentFlockDeployDialog({
                             ? preferredCoordinator.name
                             : draft.personaName,
                       }}
-                      profiles={profiles}
+                      profiles={memberProfiles}
                       personas={coordinator ? coordinators : personas}
                       onChange={(nextDraft) => updateDraft(index, nextDraft)}
                       testIdPrefix={`flock-member-${index}`}

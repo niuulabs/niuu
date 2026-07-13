@@ -624,17 +624,44 @@ class Broker(
         Uses niuu.mesh functions to build transport and discovery, then wraps
         them in a MeshParticipant for unified lifecycle management (NIU-634).
         """
-        from niuu.mesh import build_in_process_mesh, resolve_peer_id
+        from niuu.mesh import (
+            build_in_process_mesh,
+            build_mesh_from_adapters_list,
+            resolve_peer_id,
+        )
         from niuu.mesh.participant import MeshParticipant
-        from niuu.mesh.transport_builder import build_nng_transport
+        from niuu.mesh.transport_builder import (
+            build_nng_transport,
+            build_transport,
+            resolve_transport_kwargs,
+        )
         from skuld.mesh_adapter import SkuldMeshAdapter
 
         mesh_cfg = self._settings.mesh
         own_peer_id = resolve_peer_id(mesh_cfg.peer_id)
 
-        # Build mesh transport (nng preferred, in-process fallback)
+        def _sleipnir_transport(entry: dict[str, Any]) -> Any:
+            transport_name = str(entry.get("transport") or mesh_cfg.transport or "nng")
+            kwargs = resolve_transport_kwargs(
+                self._settings,
+                transport_name,
+                service_prefix="skuld",
+            )
+            if transport_name in ("sleipnir", "rabbitmq") and not kwargs:
+                return None
+            return build_transport(transport_name, **kwargs)
+
+        # New configs select transport and discovery independently. Legacy
+        # configs keep adapters as discovery entries and use local NNG.
         mesh = None
-        if mesh_cfg.transport != "in_process":
+        if mesh_cfg.discovery_adapters and mesh_cfg.adapters:
+            mesh = build_mesh_from_adapters_list(
+                adapters=list(mesh_cfg.adapters),
+                own_peer_id=own_peer_id,
+                rpc_timeout_s=mesh_cfg.rpc_timeout_s,
+                sleipnir_transport_builder=_sleipnir_transport,
+            )
+        elif mesh_cfg.transport != "in_process":
             try:
                 from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter  # noqa: PLC0415
 
@@ -666,16 +693,47 @@ class Broker(
         # Build discovery adapter using shared niuu.mesh.discovery_builder
         own_identity = MeshIdentity(
             peer_id=mesh_cfg.peer_id or self.session_id or "skuld",
-            realm_id="",
+            realm_id=mesh_cfg.realm_id,
             persona=mesh_cfg.persona,
             capabilities=list(mesh_cfg.capabilities),
             permission_mode="full_access",
             version="0.1.0",
         )
         discovery = build_discovery_adapters(
-            adapters_config=mesh_cfg.adapters,
+            adapters_config=list(mesh_cfg.discovery_adapters or mesh_cfg.adapters),
             own_identity=own_identity,
+            sleipnir_transport_builder=_sleipnir_transport,
         )
+
+        if self._room_bridge is not None and discovery is not None:
+            loop = asyncio.get_running_loop()
+
+            async def _register_discovered_peer(peer: Any) -> None:
+                await self._room_bridge.register_mesh_peer(
+                    peer_id=peer.peer_id,
+                    persona=peer.persona,
+                    display_name=peer.persona,
+                    subscribes_to=list(getattr(peer, "consumes_event_types", [])),
+                    emits=list(getattr(peer, "emits_event_types", [])),
+                    tools=list(getattr(peer, "capabilities", [])),
+                    environment_id=getattr(peer, "realm_id", "") or mesh_cfg.realm_id,
+                    participant_kind="mesh",
+                    heartbeat_ttl_s=0.0,
+                )
+
+            def _on_join(peer: Any) -> None:
+                loop.create_task(
+                    _register_discovered_peer(peer),
+                    name=f"skuld-room-peer-join-{peer.peer_id}",
+                )
+
+            def _on_leave(peer: Any) -> None:
+                loop.create_task(
+                    self._room_bridge.unregister(peer.peer_id),
+                    name=f"skuld-room-peer-leave-{peer.peer_id}",
+                )
+
+            await discovery.watch(_on_join, _on_leave)
 
         participant = MeshParticipant(
             mesh=mesh,
@@ -714,16 +772,7 @@ class Broker(
             has_peers = discovery is not None and hasattr(discovery, "peers")
             if self._room_bridge is not None and has_peers:
                 for peer in discovery.peers().values():
-                    await self._room_bridge.register_mesh_peer(
-                        peer_id=peer.peer_id,
-                        persona=peer.persona,
-                        display_name=peer.persona,
-                        subscribes_to=list(getattr(peer, "consumes_event_types", [])),
-                        emits=list(getattr(peer, "emits_event_types", [])),
-                        tools=list(getattr(peer, "capabilities", [])),
-                        participant_kind="mesh",
-                        heartbeat_ttl_s=0.0,
-                    )
+                    await _register_discovered_peer(peer)
 
             # Start room mesh bridge so outcomes from any mesh peer flow to the
             # room UI via Sleipnir — eliminates the dual-publish pattern.
@@ -3549,6 +3598,36 @@ class Broker(
             content,
             metadata=metadata,
         )
+        if (
+            not delivered
+            and participant is not None
+            and participant.participant_kind == "mesh"
+            and self._mesh_adapter is not None
+        ):
+            try:
+                response = await self._mesh_adapter.request_work(
+                    target_peer_id,
+                    content,
+                    request_id=request_id or msg_id,
+                )
+                status = str(response.get("status") or "error")
+                output = str(response.get("output") or response.get("error") or status)
+                await self._room_bridge.handle_ravn_frame(
+                    target_peer_id,
+                    {
+                        "type": "response" if status == "complete" else "error",
+                        "data": output,
+                        "metadata": metadata or {},
+                    },
+                )
+                delivered = True
+            except Exception as exc:
+                logger.warning(
+                    "Mesh-directed room message failed target=%s: %s",
+                    target_peer_id,
+                    exc,
+                    exc_info=True,
+                )
         if not delivered:
             raise LookupError(f"Unknown room participant: {target_peer_id}")
         return msg_id

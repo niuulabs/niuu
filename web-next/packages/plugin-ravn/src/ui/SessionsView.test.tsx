@@ -556,9 +556,10 @@ describe('SessionsView — live chat', () => {
     );
   });
 
-  it('combines flock member sessions and sends through the coordinator', async () => {
+  it('shows a flock as one room using the coordinator room participants', async () => {
     const flockId = '11111111-1111-4111-8111-111111111111';
     const coordinatorSend = vi.fn();
+    const sendDirectedMessages = vi.fn();
     const coordinator = liveRunningSession({
       id: '10000001-0000-4000-8000-0000000000c1',
       ravnId: '20000001-0000-4000-8000-0000000000c1',
@@ -575,6 +576,7 @@ describe('SessionsView — live chat', () => {
       ravnId: '20000001-0000-4000-8000-0000000000e1',
       personaName: 'hermes-specialist',
       title: 'Delegated analysis',
+      createdAt: '2026-07-01T10:00:02Z',
       chatEndpoint: 'wss://skuld.example/hermes/session',
       flockId,
       flockRole: 'specialist',
@@ -612,20 +614,44 @@ describe('SessionsView — live chat', () => {
         capabilities: ['chat' as const],
       },
     ];
-    useSkuldChatMock.mockImplementation((url: string) =>
+    const coordinatorParticipant = {
+      peerId: 'ravn-coordinator',
+      persona: 'flock-coordinator',
+      displayName: 'Coordinator',
+      participantType: 'ravn',
+    };
+    const hermesParticipant = {
+      peerId: 'hermes-specialist',
+      persona: 'hermes-specialist',
+      displayName: 'Hermes',
+      participantType: 'ravn',
+    };
+    useSkuldChatMock.mockImplementation(() =>
       makeChatState({
         messages: [
           {
-            id: url.includes('hermes') ? 'hermes-message' : 'coordinator-message',
+            id: 'coordinator-message',
             role: 'assistant',
-            content: url.includes('hermes') ? 'Hermes result' : 'Coordinator ready',
-            createdAt: new Date(
-              url.includes('hermes') ? '2026-07-01T10:00:03Z' : '2026-07-01T10:00:02Z',
-            ),
+            content: 'Coordinator ready',
+            createdAt: new Date('2026-07-01T10:00:02Z'),
             status: 'done',
+            participant: coordinatorParticipant,
+          },
+          {
+            id: 'hermes-message',
+            role: 'assistant',
+            content: 'Hermes result',
+            createdAt: new Date('2026-07-01T10:00:03Z'),
+            status: 'done',
+            participant: hermesParticipant,
           },
         ],
-        sendMessage: url.includes('coordinator') ? coordinatorSend : vi.fn(),
+        participants: new Map([
+          [coordinatorParticipant.peerId, coordinatorParticipant],
+          [hermesParticipant.peerId, hermesParticipant],
+        ]),
+        sendMessage: coordinatorSend,
+        sendDirectedMessages,
       }),
     );
     const sessionStream: ISessionStream = {
@@ -648,6 +674,11 @@ describe('SessionsView — live chat', () => {
       },
     };
 
+    window.history.replaceState(
+      null,
+      '',
+      `/ravn/sessions?session=${hermes.id}&ravn_id=${hermes.ravnId}`,
+    );
     render(<SessionsView />, {
       wrapper: wrap({
         'ravn.sessions': sessionStream,
@@ -657,7 +688,17 @@ describe('SessionsView — live chat', () => {
       }),
     });
 
-    expect(await screen.findByTestId('sessions-flock-chat')).toBeInTheDocument();
+    expect(await screen.findByTestId('sessions-live-chat')).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Flock' })).not.toBeInTheDocument();
+    expect(useSkuldChatMock).toHaveBeenCalledTimes(1);
+    expect(useSkuldChatMock).toHaveBeenCalledWith(
+      'wss://skuld.example/coordinator/session',
+      expect.anything(),
+    );
+    const rail = screen.getByRole('complementary', { name: 'Sessions' });
+    expect(within(rail).getAllByRole('button', { name: /Open session/ })).toHaveLength(1);
+    expect(screen.getByTestId('peer-card-ravn-coordinator')).toBeInTheDocument();
+    expect(screen.getByTestId('peer-card-hermes-specialist')).toBeInTheDocument();
     expect(screen.getByText('Coordinator ready')).toBeInTheDocument();
     expect(screen.getByText('Hermes result')).toBeInTheDocument();
     fireEvent.change(screen.getByTestId('chat-textarea'), {
@@ -666,8 +707,15 @@ describe('SessionsView — live chat', () => {
     fireEvent.click(screen.getByTestId('send-btn'));
     expect(coordinatorSend).toHaveBeenCalledWith('Coordinate this work', []);
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Chat' }));
-    expect(await screen.findByTestId('sessions-live-chat')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('chat-textarea'), {
+      target: { value: '@hermes-specialist verify this result' },
+    });
+    fireEvent.click(screen.getByTestId('send-btn'));
+    expect(sendDirectedMessages).toHaveBeenCalledWith(
+      [hermesParticipant],
+      '@hermes-specialist verify this result',
+      [],
+    );
   });
 
   it('keeps the read-only transcript for a running session without a chatEndpoint', async () => {

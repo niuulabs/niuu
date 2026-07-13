@@ -124,6 +124,33 @@ def resident_flock_runtime_config(
     config["discovery"]["realm_id"] = str(runtime.flock_id)
 
 
+def resident_flock_skuld_config(
+    config: dict[str, Any],
+    runtime: ResidentRuntime,
+    values: dict[str, Any],
+) -> None:
+    """Apply the profile-selected flock transport to the resident room broker."""
+    if runtime.flock_id is None:
+        return
+    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
+    flock = resident.get("flock") if isinstance(resident.get("flock"), dict) else {}
+    mesh_options = flock.get("mesh") if isinstance(flock.get("mesh"), dict) else {}
+    discovery = flock.get("discovery") if isinstance(flock.get("discovery"), dict) else {}
+    mesh = config["mesh"]
+    local_discovery = list(mesh.get("discovery_adapters") or mesh.get("adapters") or [])
+    adapters = mesh_options.get("adapters")
+    if isinstance(adapters, list) and adapters:
+        mesh["adapters"] = list(adapters)
+        mesh["discovery_adapters"] = [
+            *local_discovery,
+            *list(discovery.get("adapters") or []),
+        ]
+    nats = mesh_options.get("nats")
+    if isinstance(nats, dict) and nats:
+        mesh["nats"] = nats
+    mesh["realm_id"] = str(runtime.flock_id)
+
+
 def resident_flock_profile_configured(
     profile: ResidentDeploymentProfile,
     values: dict[str, Any],
@@ -419,7 +446,7 @@ def _resident_skuld_config(
     ravn_peer = runtime.flock_peer_id or f"flock-{persona}"
     broker = values.get("broker") if isinstance(values.get("broker"), dict) else {}
     session_values = values.get("session") if isinstance(values.get("session"), dict) else {}
-    return {
+    config = {
         "session": {
             "id": str(runtime.id),
             "name": runtime.name,
@@ -447,7 +474,6 @@ def _resident_skuld_config(
         "usage_report_path": f"/api/v1/forge/resident-runtimes/{runtime.id}/usage",
         "room": {
             "enabled": True,
-            "max_participants": 2,
             "presence_sweep_interval_s": 0,
             "default_target_peer_id": ravn_peer,
         },
@@ -462,6 +488,8 @@ def _resident_skuld_config(
             "adapters": [],
         },
     }
+    resident_flock_skuld_config(config, runtime, values)
+    return config
 
 
 def _resident_ravn_config(

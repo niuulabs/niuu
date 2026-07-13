@@ -53,6 +53,7 @@ from volundr.adapters.outbound.resident_container_spec import (
     resident_flock_labels,
     resident_flock_profile_configured,
     resident_flock_runtime_config,
+    resident_flock_skuld_config,
     resident_mesh_pod_metadata,
 )
 from volundr.adapters.outbound.resident_container_spec import (
@@ -2621,7 +2622,6 @@ def _resident_skuld_config(
         "usage_report_path": f"/api/v1/forge/resident-runtimes/{runtime.id}/usage",
         "room": {
             "enabled": True,
-            "max_participants": 2,
             "presence_sweep_interval_s": 0,
             "default_target_peer_id": ravn_peer,
         },
@@ -2658,6 +2658,7 @@ def _resident_skuld_config(
             raise RuntimeError("OpenShell resident skuldConfig must be an object")
         if isinstance(overlay, dict):
             _deep_merge(config, overlay)
+    resident_flock_skuld_config(config, runtime, values)
     return config
 
 

@@ -1,10 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  type AgentInternalEvent,
-  type ChatMessage,
-  type MeshEvent,
   PersonaAvatar,
-  type RoomParticipant,
   StateDot,
   ErrorState,
   LoadingState,
@@ -16,7 +12,7 @@ import {
 import { useService } from '@niuulabs/plugin-sdk';
 import { LiveLogsTab, TelemetryTab, type IVolundrService } from '@niuulabs/plugin-volundr';
 import type { PersonaRole } from '@niuulabs/domain';
-import { Eye, EyeOff, FileCode2, MessageSquareText, Sparkles, Users } from 'lucide-react';
+import { Eye, EyeOff, FileCode2, MessageSquareText, Sparkles } from 'lucide-react';
 import { useMessages, useSessions } from './hooks/useSessions';
 import { useRavens } from './hooks/useRavens';
 import { useRavnBudget } from './hooks/useBudget';
@@ -32,7 +28,7 @@ import './SessionsView.css';
 const SESSION_STORAGE_KEY = 'ravn.session';
 
 type TranscriptFilter = 'all' | 'chat' | 'tools' | 'system';
-type SessionSurfaceTab = 'flock' | 'chat' | 'trace' | 'logs';
+type SessionSurfaceTab = 'chat' | 'trace' | 'logs';
 
 type TimelineTone = 'info' | 'muted' | 'warn' | 'good';
 
@@ -71,8 +67,6 @@ const SESSION_SURFACE_TABS: Array<{
   { id: 'trace', label: 'Trace', icon: Sparkles },
   { id: 'logs', label: 'Logs', icon: FileCode2 },
 ];
-
-const FLOCK_SURFACE_TAB = { id: 'flock' as const, label: 'Flock', icon: Users };
 
 const DEFAULT_PERSONA_BY_ROLE: Partial<Record<PersonaRole, string>> = {
   arbiter: 'review-arbiter',
@@ -628,6 +622,35 @@ export function groupSessionRavnsByFlock(groups: SessionRavnGroup[]): SessionFlo
   });
 }
 
+function flockCoordinatorGroup(flock: SessionFlockGroup): SessionRavnGroup {
+  const coordinator = flock.ravns.find((group) =>
+    group.sessions.some(
+      (session) => session.flockRole === 'coordinator' || group.ravn?.flockRole === 'coordinator',
+    ),
+  );
+  const group = coordinator ?? flock.ravns[0]!;
+  const session =
+    group.sessions.find(
+      (candidate) =>
+        candidate.flockRole === 'coordinator' || group.ravn?.flockRole === 'coordinator',
+    ) ?? group.sessions[0]!;
+  return { ...group, sessions: [session] };
+}
+
+function flockRailGroups(flock: SessionFlockGroup): SessionRavnGroup[] {
+  if (flock.key.startsWith('independent:')) return flock.ravns;
+  return [flockCoordinatorGroup(flock)];
+}
+
+function canonicalFlockSession(
+  session: Session | null,
+  flocks: SessionFlockGroup[],
+): Session | null {
+  if (!session?.flockId) return session;
+  const flock = flocks.find((candidate) => candidate.key === session.flockId);
+  return flock ? flockCoordinatorGroup(flock).sessions[0]! : session;
+}
+
 function sessionGroupName(group: SessionRavnGroup): string {
   return (
     group.ravn?.residentName ||
@@ -1073,206 +1096,6 @@ function LiveSessionChat({
   );
 }
 
-type FlockChatSnapshot = ReturnType<typeof useSkuldChat>;
-
-interface FlockSessionMember {
-  session: Session;
-  ravn: Ravn | null;
-}
-
-function flockChatSignature(chat: FlockChatSnapshot): string {
-  return JSON.stringify({
-    messages: chat.messages.map((message) => [
-      message.id,
-      message.role,
-      message.content,
-      message.status,
-      message.createdAt.toISOString(),
-    ]),
-    streaming: [chat.streamingContent, chat.streamingModel, chat.streamingParts],
-    connected: chat.connected,
-    historyLoaded: chat.historyLoaded,
-    participants: Array.from(chat.participants.values()).map((participant) => [
-      participant.peerId,
-      participant.persona,
-      participant.status,
-    ]),
-    meshEvents: chat.meshEvents.map((event) => [
-      event.id,
-      event.type,
-      event.timestamp.toISOString(),
-    ]),
-    agentEvents: Array.from(chat.agentEvents.entries()).map(([peerId, events]) => [
-      peerId,
-      events.map((event) => [event.id, event.frameType]),
-    ]),
-    pendingPermissions: chat.pendingPermissions.map((request) => request.requestId),
-    pendingInputRequests: chat.pendingInputRequests.map((request) => request.requestId),
-  });
-}
-
-function flockParticipant(member: FlockSessionMember): RoomParticipant {
-  const name = sessionGroupName({
-    key: member.session.ravnId,
-    ravn: member.ravn,
-    sessions: [member.session],
-  });
-  return {
-    peerId: member.session.flockPeerId ?? member.ravn?.flockPeerId ?? member.session.ravnId,
-    persona: member.session.personaName,
-    displayName: name,
-    status: member.session.status,
-    participantType: member.ravn?.engine ?? 'ravn',
-  };
-}
-
-function FlockChatConnection({
-  member,
-  onUpdate,
-}: {
-  member: FlockSessionMember;
-  onUpdate: (key: string, snapshot: FlockChatSnapshot | null) => void;
-}) {
-  const key = sessionIdentityKey(member.session);
-  const endpoint = normalizeSessionUrl(member.session.chatEndpoint ?? null);
-  const chat = useSkuldChat(endpoint, { historyMode: 'none' });
-
-  useEffect(() => {
-    onUpdate(key, chat);
-  }, [chat, key, onUpdate]);
-
-  useEffect(() => () => onUpdate(key, null), [key, onUpdate]);
-  return null;
-}
-
-function FlockSessionChat({
-  flockId,
-  members,
-  showInternalMessages,
-  onInternalVisibilitySender,
-}: {
-  flockId: string;
-  members: FlockSessionMember[];
-  showInternalMessages: boolean;
-  onInternalVisibilitySender: (sender: ((visible: boolean) => void) | null) => void;
-}) {
-  const [connections, setConnections] = useState<Map<string, FlockChatSnapshot>>(new Map());
-  const updateConnection = useCallback((key: string, snapshot: FlockChatSnapshot | null) => {
-    setConnections((current) => {
-      const existing = current.get(key);
-      if (snapshot && existing && flockChatSignature(existing) === flockChatSignature(snapshot)) {
-        return current;
-      }
-      const next = new Map(current);
-      if (snapshot) next.set(key, snapshot);
-      else next.delete(key);
-      return next;
-    });
-  }, []);
-  const coordinator =
-    members.find((member) => member.session.flockRole === 'coordinator') ?? members[0];
-  const coordinatorChat = coordinator
-    ? connections.get(sessionIdentityKey(coordinator.session))
-    : undefined;
-
-  useEffect(() => {
-    onInternalVisibilitySender(coordinatorChat?.sendSetInternalVisibility ?? null);
-    return () => onInternalVisibilitySender(null);
-  }, [coordinatorChat?.sendSetInternalVisibility, onInternalVisibilitySender]);
-
-  const combined = useMemo(() => {
-    const messages: ChatMessage[] = [];
-    const participants = new Map<string, RoomParticipant>();
-    const meshEvents: MeshEvent[] = [];
-    const agentEvents = new Map<string, readonly AgentInternalEvent[]>();
-
-    for (const member of members) {
-      const key = sessionIdentityKey(member.session);
-      const snapshot = connections.get(key);
-      const participant = flockParticipant(member);
-      participants.set(participant.peerId, participant);
-      if (!snapshot) continue;
-      const isCoordinator = member === coordinator;
-
-      for (const message of snapshot.messages) {
-        messages.push({
-          ...message,
-          id: `${key}:${message.id}`,
-          role: !isCoordinator && message.role === 'user' ? 'system' : message.role,
-          content:
-            !isCoordinator && message.role === 'user'
-              ? `Delegated to ${participant.displayName ?? participant.persona}\n\n${message.content}`
-              : message.content,
-          participant: message.role === 'assistant' ? participant : message.participant,
-        });
-      }
-      if (!isCoordinator && snapshot.streamingContent) {
-        messages.push({
-          id: `${key}:streaming`,
-          role: 'assistant',
-          content: snapshot.streamingContent,
-          createdAt: new Date(),
-          status: 'running',
-          parts: snapshot.streamingParts,
-          participant,
-        });
-      }
-      meshEvents.push(
-        ...snapshot.meshEvents.map((event) => ({ ...event, id: `${key}:${event.id}` })),
-      );
-      for (const [peerId, events] of snapshot.agentEvents) {
-        agentEvents.set(`${key}:${peerId}`, events);
-      }
-    }
-
-    messages.sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
-    meshEvents.sort((left, right) => left.timestamp.getTime() - right.timestamp.getTime());
-    return { messages, participants, meshEvents, agentEvents };
-  }, [connections, coordinator, members]);
-
-  return (
-    <div className="rv-rs__live-chat rv-rs__flock-chat" data-testid="sessions-flock-chat">
-      {members.map((member) => (
-        <FlockChatConnection
-          key={sessionIdentityKey(member.session)}
-          member={member}
-          onUpdate={updateConnection}
-        />
-      ))}
-      <SessionChat
-        className="rv-rs__live-chat-session"
-        showToolbar={false}
-        messages={combined.messages}
-        streamingContent={coordinatorChat?.streamingContent}
-        streamingParts={coordinatorChat?.streamingParts}
-        streamingModel={coordinatorChat?.streamingModel}
-        connected={coordinatorChat?.connected ?? false}
-        historyLoaded={members.every((member) =>
-          Boolean(connections.get(sessionIdentityKey(member.session))?.historyLoaded),
-        )}
-        participants={combined.participants}
-        meshEvents={combined.meshEvents}
-        agentEvents={combined.agentEvents}
-        pendingPermissions={coordinatorChat?.pendingPermissions}
-        pendingInputRequests={coordinatorChat?.pendingInputRequests}
-        availableCommands={coordinatorChat?.availableCommands}
-        capabilities={coordinatorChat?.capabilities}
-        chatEndpoint={normalizeSessionUrl(coordinator?.session.chatEndpoint ?? null)}
-        sessionName={`Flock ${flockId.slice(0, 8)}`}
-        showInternalToggle={false}
-        internalVisibility={showInternalMessages}
-        onSend={(text, attachments) => coordinatorChat?.sendMessage(text, attachments)}
-        onStop={() => coordinatorChat?.sendInterrupt()}
-        onPermissionRespond={(requestId, behavior) =>
-          coordinatorChat?.respondToPermission(requestId, behavior)
-        }
-        onInputRespond={(requestId, values) => coordinatorChat?.respondToInput(requestId, values)}
-        onSetInternalVisibility={(visible) => coordinatorChat?.sendSetInternalVisibility(visible)}
-      />
-    </div>
-  );
-}
-
 function VolundrSessionObservability({
   session,
   tab,
@@ -1489,7 +1312,7 @@ export function SessionsView() {
   const { data: ravens } = useRavens();
   const [selectedId, setSelectedId] = useState<string | null>(() => preferredSessionId());
   const [filter, setFilter] = useState<TranscriptFilter>('all');
-  const [surfaceTab, setSurfaceTab] = useState<SessionSurfaceTab>('flock');
+  const [surfaceTab, setSurfaceTab] = useState<SessionSurfaceTab>('chat');
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [showInternalMessages, setShowInternalMessages] = useState(false);
   const setInternalVisibilityRef = useRef<((visible: boolean) => void) | null>(null);
@@ -1506,13 +1329,9 @@ export function SessionsView() {
     () => [...sessionList].sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
     [sessionList],
   );
-  const resolvedSelectedId = sortedSessions.length
+  const requestedSelectedId = sortedSessions.length
     ? pickDefaultSession(sortedSessions, selectedId)
     : null;
-
-  useEffect(() => {
-    saveStorage(SESSION_STORAGE_KEY, resolvedSelectedId);
-  }, [resolvedSelectedId]);
 
   useEffect(() => {
     const handleSelect = (event: Event) => {
@@ -1537,43 +1356,30 @@ export function SessionsView() {
     return () => window.removeEventListener('ravn:session-selected', handleSelect);
   }, []);
 
-  const selectedSession =
-    sortedSessions.find((session) => sessionIdentityKey(session) === resolvedSelectedId) ??
-    sortedSessions[0] ??
-    null;
-
   const ravnById = useMemo(
     () => new Map((ravens ?? []).map((ravn) => [ravenIdentityKey(ravn.id, ravn.instanceId), ravn])),
     [ravens],
   );
 
-  const selectedRavn = selectedSession
-    ? (ravnById.get(ravenIdentityKey(selectedSession.ravnId, selectedSession.instanceId)) ?? null)
-    : null;
   const sessionGroups = useMemo(
     () => groupSessionsByRavn(sortedSessions, ravens ?? []),
     [ravens, sortedSessions],
   );
   const flockGroups = useMemo(() => groupSessionRavnsByFlock(sessionGroups), [sessionGroups]);
-  const selectedFlockId = selectedRavn?.flockId ?? selectedSession?.flockId;
-  const selectedFlock = selectedFlockId
-    ? flockGroups.find((flock) => flock.key === selectedFlockId)
-    : undefined;
-  const selectedFlockMembers = useMemo(
-    () =>
-      selectedFlock?.ravns.flatMap((group) =>
-        group.sessions.map((session) => ({ session, ravn: group.ravn })),
-      ) ?? [],
-    [selectedFlock],
-  );
-  const hasFlockChat =
-    selectedFlockMembers.length > 1 &&
-    selectedFlockMembers.some(
-      (member) =>
-        member.session.flockRole === 'coordinator' &&
-        member.session.status === 'running' &&
-        Boolean(normalizeSessionUrl(member.session.chatEndpoint ?? null)),
-    );
+  const requestedSession =
+    sortedSessions.find((session) => sessionIdentityKey(session) === requestedSelectedId) ??
+    sortedSessions[0] ??
+    null;
+  const selectedSession = canonicalFlockSession(requestedSession, flockGroups);
+  const resolvedSelectedId = selectedSession ? sessionIdentityKey(selectedSession) : null;
+
+  useEffect(() => {
+    saveStorage(SESSION_STORAGE_KEY, resolvedSelectedId);
+  }, [resolvedSelectedId]);
+
+  const selectedRavn = selectedSession
+    ? (ravnById.get(ravenIdentityKey(selectedSession.ravnId, selectedSession.instanceId)) ?? null)
+    : null;
   const hasLiveChat = Boolean(
     selectedSession?.status === 'running' &&
     normalizeSessionUrl(selectedSession.chatEndpoint ?? null) &&
@@ -1662,8 +1468,11 @@ export function SessionsView() {
     );
   }
 
-  const activeSessions = sortedSessions.filter((session) => session.status === 'running');
-  const idleSessions = sortedSessions.filter((session) => session.status === 'idle');
+  const railSessions = flockGroups.flatMap((flock) =>
+    flockRailGroups(flock).flatMap((group) => group.sessions),
+  );
+  const activeSessions = railSessions.filter((session) => session.status === 'running');
+  const idleSessions = railSessions.filter((session) => session.status === 'idle');
   const anchorTime = deriveAnchorTime(sortedSessions);
 
   // A running session with a Skuld endpoint is a real live chat — the shared
@@ -1671,10 +1480,9 @@ export function SessionsView() {
   const liveChatEndpoint = hasLiveChat
     ? normalizeSessionUrl(selectedSession.chatEndpoint ?? null)
     : null;
-  const surfaceTabs = hasFlockChat
-    ? [FLOCK_SURFACE_TAB, ...SESSION_SURFACE_TABS]
-    : SESSION_SURFACE_TABS;
-  const resolvedSurfaceTab = surfaceTabs.some((tab) => tab.id === surfaceTab) ? surfaceTab : 'chat';
+  const resolvedSurfaceTab = SESSION_SURFACE_TABS.some((tab) => tab.id === surfaceTab)
+    ? surfaceTab
+    : 'chat';
 
   return (
     <div className="rv-rs" data-testid="sessions-page">
@@ -1696,7 +1504,7 @@ export function SessionsView() {
               </button>
             </div>
             <CollapsedSessionRail
-              sessions={sortedSessions}
+              sessions={railSessions}
               selectedId={sessionIdentityKey(selectedSession)}
               onSelect={selectSession}
             />
@@ -1728,9 +1536,14 @@ export function SessionsView() {
                 <section key={flock.key} className="rv-rs__flock">
                   <div className="rv-rs__flock-head">
                     <span>{flock.label}</span>
-                    <span>{flock.ravns.length}</span>
+                    <span>
+                      {flockRailGroups(flock).reduce(
+                        (count, group) => count + group.sessions.length,
+                        0,
+                      )}
+                    </span>
                   </div>
-                  {flock.ravns.map((group) => (
+                  {flockRailGroups(flock).map((group) => (
                     <SessionRailGroup
                       key={group.key}
                       group={group}
@@ -1754,23 +1567,8 @@ export function SessionsView() {
           showInternalMessages={showInternalMessages}
           onToggleInternalMessages={toggleInternalMessages}
         />
-        <SessionSurfaceTabs
-          activeTab={resolvedSurfaceTab}
-          onTabChange={setSurfaceTab}
-          tabs={surfaceTabs}
-        />
-        {resolvedSurfaceTab === 'flock' && selectedFlockId ? (
-          <section className="rv-rs__chat rv-rs__chat--flock">
-            <FlockSessionChat
-              flockId={selectedFlockId}
-              members={selectedFlockMembers}
-              showInternalMessages={showInternalMessages}
-              onInternalVisibilitySender={(sender) => {
-                setInternalVisibilityRef.current = sender;
-              }}
-            />
-          </section>
-        ) : resolvedSurfaceTab === 'chat' ? (
+        <SessionSurfaceTabs activeTab={resolvedSurfaceTab} onTabChange={setSurfaceTab} />
+        {resolvedSurfaceTab === 'chat' ? (
           <div className={cn('rv-rs__body', liveChatEndpoint && 'rv-rs__body--chat-only')}>
             <section className="rv-rs__chat">
               {liveChatEndpoint ? (

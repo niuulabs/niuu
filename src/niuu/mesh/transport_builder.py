@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from niuu.utils import import_class
+from niuu.utils import import_class, resolve_secret_kwargs
 
 logger = logging.getLogger("niuu.mesh.transport")
 
@@ -82,3 +82,102 @@ def build_nng_transport(
         service_id=service_id,
         peer_addresses=peer_addresses or None,
     )
+
+
+def resolve_transport_kwargs(
+    settings: Any,
+    adapter: str,
+    *,
+    service_prefix: str,
+) -> dict[str, Any]:
+    """Resolve shared Sleipnir transport settings for Ravn and Skuld."""
+    mesh = settings.mesh
+    if adapter == "nng":
+        from niuu.mesh.cluster import read_cluster_pub_addresses
+
+        discovery_adapters = list(
+            getattr(mesh, "discovery_adapters", None)
+            or getattr(getattr(settings, "discovery", None), "adapters", [])
+            or getattr(mesh, "adapters", [])
+        )
+        peer_id = getattr(mesh, "own_peer_id", "") or getattr(mesh, "peer_id", "")
+        return {
+            "address": mesh.nng.pub_sub_address,
+            "service_id": f"{service_prefix}:{peer_id}",
+            "peer_addresses": read_cluster_pub_addresses(discovery_adapters) or None,
+        }
+
+    if adapter in ("sleipnir", "rabbitmq"):
+        sleipnir = getattr(settings, "sleipnir", None)
+        amqp_url_env = getattr(sleipnir, "amqp_url_env", "SLEIPNIR_AMQP_URL")
+        amqp_url = resolve_secret_kwargs({}, {"amqp_url": amqp_url_env}).get("amqp_url", "")
+        if not amqp_url:
+            logger.warning("mesh: %s not set, rabbitmq transport unavailable", amqp_url_env)
+            return {}
+        return {"amqp_url": amqp_url}
+
+    if adapter == "nats":
+        nats = mesh.nats
+        kwargs: dict[str, Any] = {
+            "servers": list(nats.servers) or ["nats://localhost:4222"],
+            "stream_name": nats.stream_name,
+            "jetstream_domain": nats.jetstream_domain,
+            "subject_prefix": nats.subject_prefix,
+            "retention": nats.retention,
+            "max_age_seconds": nats.max_age_seconds,
+            "max_bytes": nats.max_bytes,
+            "ring_buffer_depth": nats.ring_buffer_depth,
+            "connect_timeout_s": nats.connect_timeout_s,
+            "max_reconnect_attempts": nats.max_reconnect_attempts,
+            "ensure_stream": nats.ensure_stream,
+            "publish_timeout_s": nats.publish_timeout_s,
+            "tls_ca_file": nats.tls_ca_file,
+            "tls_ca_pem": nats.tls_ca_pem,
+            "tls_cert_file": nats.tls_cert_file,
+            "tls_key_file": nats.tls_key_file,
+            "tls_hostname": nats.tls_hostname,
+            "tls_handshake_first": nats.tls_handshake_first,
+            "tls_legacy_ca": nats.tls_legacy_ca,
+            "tls_insecure_skip_verify": nats.tls_insecure_skip_verify,
+            "user": nats.user,
+            "password": "",
+            "token": "",
+            "nkeys_seed_file": nats.nkeys_seed_file,
+            "nkeys_seed": "",
+            "extra_subscriptions": [
+                {
+                    "subject": entry.subject,
+                    "stream_name": entry.stream_name,
+                    "event_types": list(entry.event_types),
+                }
+                for entry in nats.extra_subscriptions
+                if entry.subject
+            ],
+            "core_subscriptions": [
+                {"subject": entry.subject} for entry in nats.core_subscriptions if entry.subject
+            ],
+        }
+        if nats.consumer_group:
+            kwargs["consumer_group"] = nats.consumer_group
+        if nats.replay_from_sequence is not None:
+            kwargs["replay_from_sequence"] = nats.replay_from_sequence
+        return resolve_secret_kwargs(
+            kwargs,
+            {
+                name: env_name
+                for name, env_name in {
+                    "user": nats.user_env,
+                    "password": nats.password_env,
+                    "token": nats.token_env,
+                    "nkeys_seed": nats.nkeys_seed_env,
+                }.items()
+                if env_name
+            },
+        )
+
+    if adapter == "redis":
+        return resolve_secret_kwargs(
+            {"redis_url": "redis://localhost:6379"},
+            {"redis_url": getattr(mesh, "redis_url_env", "REDIS_URL")},
+        )
+    return {}
