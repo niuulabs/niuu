@@ -57,6 +57,7 @@ MESH_PATTERNS: list[str] = ["ravn.mesh.*"]
 
 #: RavnEventType string fragments → room activity type.
 _RAVN_TYPE_TO_ACTIVITY: dict[str, str] = {
+    "error": "error",
     "tool_start": "tool_executing",
     "tool_result": "idle",
     "thought": "thinking",
@@ -115,7 +116,14 @@ def _build_activity_frame(ravn_type: str, ravn_event_payload: dict) -> dict | No
         return {
             "type": "response",
             "data": ravn_event_payload.get("text", ""),
-            "metadata": {},
+            "metadata": dict(ravn_event_payload.get("metadata") or {}),
+        }
+
+    if "error" in ravn_type_lower:
+        return {
+            "type": "error",
+            "data": ravn_event_payload.get("message") or ravn_event_payload.get("error") or "",
+            "metadata": dict(ravn_event_payload.get("metadata") or {}),
         }
 
     if "tool_start" in ravn_type_lower:

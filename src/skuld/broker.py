@@ -482,6 +482,10 @@ class Broker(
                     parts=t.get("parts", []),
                     created_at=t.get("created_at", ""),
                     metadata=t.get("metadata", {}),
+                    participant_id=t.get("participant_id"),
+                    participant_meta=t.get("participant_meta"),
+                    thread_id=t.get("thread_id"),
+                    visibility=t.get("visibility", "public"),
                 )
                 for t in turns
             ]

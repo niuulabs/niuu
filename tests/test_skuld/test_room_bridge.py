@@ -732,15 +732,24 @@ class TestHistoryPersistence:
         bridge, _ = _make_bridge(append_turn=turns.append)
         await bridge.register("p1", "Alice", _fake_ws())
 
-        await bridge.handle_ravn_frame("p1", {"type": "response", "data": "Hello", "metadata": {}})
+        await bridge.handle_ravn_frame(
+            "p1",
+            {
+                "type": "response",
+                "data": "Hello",
+                "metadata": {"resident_session_id": "worker-session-1"},
+                "visibility": "internal",
+            },
+        )
 
         assert len(turns) == 1
         turn = turns[0]
         assert turn.role == "assistant"
         assert turn.content == "Hello"
+        assert turn.metadata == {"resident_session_id": "worker-session-1"}
         assert turn.participant_id == "p1"
         assert turn.participant_meta["persona"] == "Alice"
-        assert turn.visibility == "public"
+        assert turn.visibility == "internal"
 
     @pytest.mark.asyncio
     async def test_activity_frame_does_not_persist_turn(self):

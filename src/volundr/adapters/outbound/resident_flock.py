@@ -327,12 +327,18 @@ class ResidentFlockAdapter:
                     result = str(frame.get("result") or "")
                     if result and not task.output:
                         task.output = result
+                    if not task.output.strip():
+                        task.error = "Resident task completed without an assistant response"
+                        task.status = "failed"
+                        await self._publish_task_error(runtime, task, payload)
+                        return
                     task.status = "complete"
                     await self._publish_task_output(runtime, task, payload, persona)
                     return
                 if frame_type == "error":
                     task.error = str(frame.get("error") or "Resident task failed")
                     task.status = "failed"
+                    await self._publish_task_error(runtime, task, payload)
                     return
         except asyncio.CancelledError:
             task.status = "cancelled"
@@ -349,6 +355,36 @@ class ResidentFlockAdapter:
             task.connection = None
             if connection is not None:
                 await connection.close()
+
+    async def _publish_task_error(
+        self,
+        runtime: Any,
+        task: _ResidentTask,
+        payload: dict[str, Any],
+    ) -> None:
+        peer = self._peers.get(task.runtime_id)
+        if peer is None:
+            return
+        output_mode = OutputMode(str(payload.get("output_mode") or OutputMode.SILENT))
+        if output_mode != OutputMode.SURFACE:
+            return
+        session_id = str(payload.get("session_id") or "")
+        root_correlation_id = str(payload.get("root_correlation_id") or session_id or task.task_id)
+        error = RavnEvent(
+            type=RavnEventType.ERROR,
+            source=runtime.flock_peer_id,
+            payload={
+                "message": task.error,
+                "persona": runtime.persona_name or runtime.name,
+            },
+            timestamp=datetime.now(UTC),
+            urgency=0.6,
+            correlation_id=session_id or task.task_id,
+            session_id=session_id,
+            task_id=task.task_id,
+            root_correlation_id=root_correlation_id,
+        )
+        await peer.mesh.publish(error, topic=f"activity.{runtime.flock_peer_id}")
 
     async def _publish_task_output(
         self,

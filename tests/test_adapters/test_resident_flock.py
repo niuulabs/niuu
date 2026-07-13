@@ -409,3 +409,44 @@ async def test_matching_persona_event_wakes_resident_and_surfaces_response() -> 
     assert outcomes[0].payload["ravn_root_correlation_id"] == "room-1"
 
     await resident.stop()
+
+
+async def test_surface_task_without_assistant_output_surfaces_error() -> None:
+    flock_id = uuid4()
+    runtime = _runtime(flock_id=flock_id)
+    controller = _Controller("")
+    bus = InProcessBus()
+    resident = ResidentFlockAdapter(_Repository(runtime), [controller], bus)
+    await resident.sync()
+    surfaced: list[object] = []
+
+    async def capture_surface(event: object) -> None:
+        surfaced.append(event)
+
+    prefix = mesh_event_prefix(str(flock_id))
+    await bus.subscribe([f"{prefix}.activity.hermes_worker"], capture_surface)
+
+    accepted = await resident._dispatch(
+        runtime.id,
+        {
+            "task_id": "empty-task",
+            "title": "Empty response proof",
+            "output_mode": "surface",
+            "session_id": "room-1",
+            "root_correlation_id": "room-1",
+        },
+    )
+    assert accepted == {"status": "accepted", "task_id": "empty-task"}
+    task = resident._tasks["empty-task"]
+    assert task.runner is not None
+    await task.runner
+    await bus.flush()
+
+    assert task.status == "failed"
+    assert task.error == "Resident task completed without an assistant response"
+    assert len(surfaced) == 1
+    assert surfaced[0].payload["ravn_type"] == "error"
+    assert surfaced[0].payload["ravn_event"]["message"] == task.error
+    assert surfaced[0].payload["ravn_session_id"] == "room-1"
+
+    await resident.stop()

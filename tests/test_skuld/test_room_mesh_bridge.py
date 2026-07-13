@@ -472,6 +472,43 @@ class TestActivityTranslation:
         await bridge.stop()
 
     @pytest.mark.asyncio
+    async def test_error_event_translated_to_persisted_error_frame(self):
+        room = _make_room_bridge(known_peers=["hermes-01"])
+        bus = InProcessBus()
+        bridge = RoomMeshBridge(
+            subscriber=bus,
+            room_bridge=room,
+            session_id="sess-abc",
+        )
+        await bridge.start()
+
+        evt = _make_event(
+            source="ravn:hermes-01",
+            payload={
+                "ravn_event": {
+                    "message": "Resident task completed without an assistant response",
+                    "persona": "Hermes",
+                },
+                "ravn_type": "RavnEventType.ERROR",
+                "ravn_source": "hermes-01",
+                "ravn_session_id": "sess-abc",
+                "ravn_urgency": 0.6,
+                "ravn_task_id": "task-1",
+            },
+        )
+        await bridge._handle_event(evt)
+
+        room.handle_ravn_frame.assert_awaited_once_with(
+            "hermes-01",
+            {
+                "type": "error",
+                "data": "Resident task completed without an assistant response",
+                "metadata": {},
+            },
+        )
+        await bridge.stop()
+
+    @pytest.mark.asyncio
     async def test_tool_result_event_translated_to_tool_result_frame(self):
         room = _make_room_bridge(known_peers=["skuld-01"])
         bus = InProcessBus()
