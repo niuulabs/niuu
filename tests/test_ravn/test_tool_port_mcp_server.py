@@ -80,7 +80,7 @@ async def test_stdio_handshake_does_not_depend_on_anyio_worker_pool() -> None:
             buffer = LockedBuffer()
 
             def fileno(self):
-                return 0
+                threading.Event().wait()
 
         async def main():
             sys.stdin = StdinProxy()

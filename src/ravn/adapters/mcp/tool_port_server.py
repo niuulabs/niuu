@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import select
 import sys
 import threading
 from contextlib import asynccontextmanager
@@ -13,6 +14,7 @@ from typing import Any
 import anyio
 from mcp import types
 from mcp.server import Server
+from mcp.server.stdio import stdio_server as threaded_stdio_server
 from mcp.shared.message import SessionMessage
 
 from ravn.ports.tool import ToolPort
@@ -75,6 +77,11 @@ class ToolPortMcpServer:
 @asynccontextmanager
 async def _stdio_server():
     """Run MCP stdio with a dedicated reader, independent of shared worker pools."""
+    if os.name == "nt":
+        async with threaded_stdio_server() as streams:
+            yield streams
+        return
+
     read_writer, read_stream = anyio.create_memory_object_stream[SessionMessage | Exception](0)
     write_stream, write_reader = anyio.create_memory_object_stream[SessionMessage](0)
     loop = asyncio.get_running_loop()
@@ -89,15 +96,17 @@ async def _stdio_server():
         await read_writer.send(SessionMessage(message))
 
     def read_stdin() -> None:
-        fd = sys.stdin.fileno()
+        fd = 0
         pending = bytearray()
         while not stopped.is_set():
+            readable, _, _ = select.select([fd], [], [], 0.1)
+            if not readable:
+                continue
             try:
                 chunk = os.read(fd, 64 * 1024)
             except InterruptedError:
                 continue
             except BlockingIOError:
-                stopped.wait(0.01)
                 continue
             if not chunk:
                 break
