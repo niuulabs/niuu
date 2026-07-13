@@ -749,40 +749,26 @@ def tool_mcp(
 
 
 async def _run_tool_mcp(settings: Settings, *, persona_config: Any | None) -> None:
-    """Serve static tools and the configured flock participant over one MCP process."""
-    from niuu.mesh.participant import MeshParticipant
+    """Serve static tools plus resident-owned flock tools over MCP stdio."""
     from ravn.adapters.mcp.tool_port_server import ToolPortMcpServer
 
     tools = _build_tool_mcp_tools(settings, persona_config=persona_config)
-    discovery: Any | None = None
-    mesh: Any | None = None
-    participant: MeshParticipant | None = None
-    try:
-        if _tool_mcp_allows(persona_config, ["flock_status"]):
-            discovery = _build_discovery(settings, persona_config)
-            mesh = _build_flock_tool_mesh(settings, discovery)
-            participant = MeshParticipant(
-                mesh=mesh,
-                discovery=discovery,
-                peer_id=settings.mesh.own_peer_id,
-            )
-            await participant.start()
+    if _tool_mcp_allows(persona_config, ["flock_status"]):
+        if not settings.gateway.channels.http.enabled:
+            raise RuntimeError("Flock MCP tools require the resident HTTP gateway")
+        from ravn.adapters.tools.resident_proxy import load_resident_tools
 
-            from ravn.adapters.tools.cascade_tools import build_flock_tools
-            from ravn.adapters.tools.mesh_routing_tools import build_mesh_routing_tools
+        base_url = f"http://127.0.0.1:{settings.gateway.channels.http.port}"
+        resident_tools = await load_resident_tools(
+            base_url=base_url,
+            connect_timeout_s=settings.mesh.rpc_timeout_s,
+        )
+        allowed_resident_tools = _filter_tools(resident_tools, settings, persona_config)
+        if not any(tool.name == "flock_status" for tool in allowed_resident_tools):
+            raise RuntimeError("Resident daemon did not expose flock tools")
+        tools.extend(allowed_resident_tools)
 
-            remote_tools = build_flock_tools(
-                mesh=mesh,
-                discovery=discovery,
-                task_config=settings.cascade,
-            )
-            remote_tools.extend(build_mesh_routing_tools(mesh=mesh, discovery=discovery))
-            tools.extend(_filter_tools(remote_tools, settings, persona_config))
-
-        await ToolPortMcpServer(tools).run_stdio()
-    finally:
-        if participant is not None:
-            await participant.stop()
+    await ToolPortMcpServer(tools).run_stdio()
 
 
 def _build_tool_mcp_tools(settings: Settings, *, persona_config: Any | None) -> list[Any]:
@@ -1468,7 +1454,6 @@ _MESH_RUNTIME_NAMES = frozenset(
         "_build_mesh",
         "_resolve_transport_kwargs",
         "_build_discovery",
-        "_build_flock_tool_mesh",
         "_run_peers",
     )
 )
@@ -1477,9 +1462,6 @@ _resolve_transport_kwargs = _runtime_wrapper(
     _mesh_runtime, "_resolve_transport_kwargs", _MESH_RUNTIME_NAMES
 )
 _build_discovery = _runtime_wrapper(_mesh_runtime, "_build_discovery", _MESH_RUNTIME_NAMES)
-_build_flock_tool_mesh = _runtime_wrapper(
-    _mesh_runtime, "_build_flock_tool_mesh", _MESH_RUNTIME_NAMES
-)
 _run_peers = _runtime_wrapper(_mesh_runtime, "_run_peers", _MESH_RUNTIME_NAMES)
 
 _RUNTIME_WRAPPERS.update(

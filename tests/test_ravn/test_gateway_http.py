@@ -14,6 +14,8 @@ from ravn.adapters.channels.gateway import RavnGateway
 from ravn.adapters.channels.gateway_http import ChatRequest, HttpGateway
 from ravn.config import HttpChannelConfig
 from ravn.domain.events import RavnEvent
+from ravn.domain.models import ToolResult
+from ravn.ports.tool import ToolPort
 
 _SRC = "ravn-test"
 _CID = "corr-1"
@@ -81,6 +83,88 @@ def test_status_endpoint_no_sessions():
     resp = client.get("/status")
     assert resp.status_code == 200
     assert resp.json()["session_count"] == 0
+
+
+class _ResidentEchoTool(ToolPort):
+    @property
+    def name(self) -> str:
+        return "resident_echo"
+
+    @property
+    def description(self) -> str:
+        return "Echo through the resident runtime."
+
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        }
+
+    @property
+    def required_permission(self) -> str:
+        return "tool:flock"
+
+    async def execute(self, input: dict) -> ToolResult:  # noqa: A002
+        return ToolResult(tool_call_id="resident-call", content=input["text"])
+
+
+def _resident_tool_client(*, host: str = "127.0.0.1") -> TestClient:
+    gateway = HttpGateway(
+        _make_http_config(),
+        _make_gateway_mock(),
+        resident_tool_provider=lambda: [_ResidentEchoTool()],
+    )
+    return TestClient(gateway.app, client=(host, 50000))
+
+
+def test_resident_tool_endpoints_list_and_execute_owned_tools():
+    client = _resident_tool_client()
+
+    listed = client.get("/internal/tools")
+    executed = client.post(
+        "/internal/tools/resident_echo",
+        json={"input": {"text": "resident-owned"}},
+    )
+
+    assert listed.status_code == 200
+    assert listed.json()["tools"] == [
+        {
+            "name": "resident_echo",
+            "description": "Echo through the resident runtime.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+            },
+            "required_permission": "tool:flock",
+            "parallelisable": True,
+        }
+    ]
+    assert executed.status_code == 200
+    assert executed.json() == {
+        "tool_call_id": "resident-call",
+        "content": "resident-owned",
+        "is_error": False,
+    }
+
+
+def test_resident_tool_endpoints_are_loopback_only():
+    client = _resident_tool_client(host="10.0.0.8")
+
+    response = client.get("/internal/tools")
+
+    assert response.status_code == 403
+
+
+def test_resident_tool_endpoint_rejects_unknown_tool():
+    response = _resident_tool_client().post(
+        "/internal/tools/missing",
+        json={"input": {}},
+    )
+
+    assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------

@@ -222,30 +222,6 @@ def _build_discovery(
     )
 
 
-def _build_flock_tool_mesh(settings: Settings, discovery: Any) -> Any:
-    """Build the event-bus mesh used by the flock tool MCP process."""
-    from niuu.mesh.transport_builder import build_transport  # noqa: PLC0415
-    from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter  # noqa: PLC0415
-
-    for entry in settings.discovery.adapters:
-        if entry.get("adapter") != "event_bus":
-            continue
-        transport_name = str(entry.get("transport") or "nats")
-        kwargs = _resolve_transport_kwargs(settings, transport_name)
-        transport = build_transport(transport_name, **kwargs) if kwargs else None
-        if transport is None:
-            return None
-        return SleipnirMeshAdapter(
-            publisher=transport,
-            subscriber=transport,
-            own_peer_id=settings.mesh.own_peer_id,
-            discovery=discovery,
-            rpc_timeout_s=settings.mesh.rpc_timeout_s,
-            environment_id=settings.discovery.realm_id,
-        )
-    return None
-
-
 async def _run_peers(settings: Settings, *, verbose: bool, force_scan: bool) -> None:
     """Build a discovery adapter, optionally scan, and print the peer table."""
     from ravn.adapters.discovery._identity import (

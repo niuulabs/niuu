@@ -29,6 +29,7 @@ from ravn.cli.commands import (
     _print_usage,
     _resolve_persona_model,
     _run_daemon,
+    _run_tool_mcp,
     _run_turn,
     _split_workflow_edge_label,
     _stage_personas,
@@ -44,7 +45,6 @@ from ravn.cli.commands import (
     main,
 )
 from ravn.cli.flock import NodeDef, _write_node_config
-from ravn.cli.mesh_runtime import _build_flock_tool_mesh
 from ravn.config import Settings
 from ravn.domain.models import (
     StreamEvent,
@@ -1378,28 +1378,6 @@ class TestWorkflowRuntimeForPersona:
             "flock_status",
         ]
 
-    def test_flock_tool_mesh_uses_configured_event_bus_adapter(self) -> None:
-        settings = Settings()
-        settings.discovery.adapters = [{"adapter": "event_bus", "transport": "nats"}]
-        discovery = MagicMock()
-        transport = MagicMock()
-
-        with (
-            patch("niuu.mesh.transport_builder.build_transport", return_value=transport),
-            patch("ravn.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter") as mesh_adapter,
-        ):
-            mesh = _build_flock_tool_mesh(settings, discovery)
-
-        assert mesh is mesh_adapter.return_value
-        mesh_adapter.assert_called_once_with(
-            publisher=transport,
-            subscriber=transport,
-            own_peer_id=settings.mesh.own_peer_id,
-            discovery=discovery,
-            rpc_timeout_s=settings.mesh.rpc_timeout_s,
-            environment_id=settings.discovery.realm_id,
-        )
-
     def test_wire_cron_registers_trigger_and_returns_tools(self, tmp_path: Path) -> None:
         drive_loop = MagicMock()
         trigger = MagicMock()
@@ -1498,3 +1476,60 @@ class TestDaemonAgentFactory:
                 "url": "",
             }
         ]
+
+
+class TestToolMcp:
+    async def test_tool_mcp_proxies_flock_tools_from_resident_daemon(self) -> None:
+        settings = Settings()
+        settings.gateway.channels.http.enabled = True
+        settings.gateway.channels.http.port = 7781
+        persona = PersonaConfig(name="coordinator", allowed_tools=["flock"])
+        static_tool = MagicMock()
+        static_tool.name = "todo_read"
+        resident_tool = MagicMock()
+        resident_tool.name = "flock_status"
+        server = MagicMock()
+        server.return_value.run_stdio = AsyncMock()
+
+        with (
+            patch("ravn.cli.commands._build_tool_mcp_tools", return_value=[static_tool]),
+            patch(
+                "ravn.adapters.tools.resident_proxy.load_resident_tools",
+                new=AsyncMock(return_value=[resident_tool]),
+            ) as load_tools,
+            patch("ravn.adapters.mcp.tool_port_server.ToolPortMcpServer", server),
+        ):
+            await _run_tool_mcp(settings, persona_config=persona)
+
+        load_tools.assert_awaited_once_with(
+            base_url="http://127.0.0.1:7781",
+            connect_timeout_s=settings.mesh.rpc_timeout_s,
+        )
+        server.assert_called_once_with([static_tool, resident_tool])
+        server.return_value.run_stdio.assert_awaited_once_with()
+
+    async def test_tool_mcp_requires_resident_flock_tools(self) -> None:
+        settings = Settings()
+        settings.gateway.channels.http.enabled = True
+        persona = PersonaConfig(name="coordinator", allowed_tools=["flock"])
+
+        with (
+            patch("ravn.cli.commands._build_tool_mcp_tools", return_value=[]),
+            patch(
+                "ravn.adapters.tools.resident_proxy.load_resident_tools",
+                new=AsyncMock(return_value=[]),
+            ),
+            pytest.raises(RuntimeError, match="did not expose flock tools"),
+        ):
+            await _run_tool_mcp(settings, persona_config=persona)
+
+    async def test_tool_mcp_requires_resident_http_gateway_for_flock(self) -> None:
+        settings = Settings()
+        settings.gateway.channels.http.enabled = False
+        persona = PersonaConfig(name="coordinator", allowed_tools=["flock"])
+
+        with (
+            patch("ravn.cli.commands._build_tool_mcp_tools", return_value=[]),
+            pytest.raises(RuntimeError, match="require the resident HTTP gateway"),
+        ):
+            await _run_tool_mcp(settings, persona_config=persona)
