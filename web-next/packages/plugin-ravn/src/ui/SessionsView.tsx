@@ -1573,6 +1573,7 @@ export function SessionsView() {
             <section className="rv-rs__chat">
               {liveChatEndpoint ? (
                 <LiveSessionChat
+                  key={liveChatEndpoint}
                   chatEndpoint={liveChatEndpoint}
                   sessionName={
                     selectedRavn?.residentName ||
