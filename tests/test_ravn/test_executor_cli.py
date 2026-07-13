@@ -712,6 +712,7 @@ def test_cli_executor_adds_ravn_tools_mcp_server_when_tools_are_preloaded() -> N
         key == "mcp_servers.ravn-tools.args" and '"tool-mcp"' in value
         for key, value in transport._mcp_overrides
     )
+    assert ("mcp_servers.ravn-tools.required", "true") in transport._mcp_overrides
 
 
 def test_cli_executor_delegates_codex_ws_permissions_to_codex_config() -> None:

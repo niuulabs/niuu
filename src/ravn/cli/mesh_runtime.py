@@ -228,9 +228,9 @@ def _build_flock_tool_mesh(settings: Settings, discovery: Any) -> Any:
     from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter  # noqa: PLC0415
 
     for entry in settings.discovery.adapters:
-        if entry.adapter != "event_bus":
+        if entry.get("adapter") != "event_bus":
             continue
-        transport_name = entry.transport or "nats"
+        transport_name = str(entry.get("transport") or "nats")
         kwargs = _resolve_transport_kwargs(settings, transport_name)
         transport = build_transport(transport_name, **kwargs) if kwargs else None
         if transport is None:

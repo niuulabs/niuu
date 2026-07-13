@@ -33,6 +33,8 @@ def normalize_mcp_servers(raw_servers: object) -> list[dict[str, Any]]:
             entry["description"] = str(raw["description"])
         if raw.get("cwd"):
             entry["cwd"] = str(raw["cwd"])
+        if isinstance(raw.get("required"), bool):
+            entry["required"] = raw["required"]
         servers.append(entry)
     return servers
 
@@ -102,4 +104,6 @@ def build_codex_mcp_overrides(raw_servers: object) -> list[tuple[str, str]]:
                     overrides.append((f"{base}.env.{env_key}", json.dumps(env_value)))
             if server.get("cwd"):
                 overrides.append((f"{base}.cwd", json.dumps(server["cwd"])))
+        if "required" in server:
+            overrides.append((f"{base}.required", json.dumps(server["required"])))
     return overrides

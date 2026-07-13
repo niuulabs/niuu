@@ -44,6 +44,7 @@ from ravn.cli.commands import (
     main,
 )
 from ravn.cli.flock import NodeDef, _write_node_config
+from ravn.cli.mesh_runtime import _build_flock_tool_mesh
 from ravn.config import Settings
 from ravn.domain.models import (
     StreamEvent,
@@ -1376,6 +1377,28 @@ class TestWorkflowRuntimeForPersona:
             "task_collect",
             "flock_status",
         ]
+
+    def test_flock_tool_mesh_uses_configured_event_bus_adapter(self) -> None:
+        settings = Settings()
+        settings.discovery.adapters = [{"adapter": "event_bus", "transport": "nats"}]
+        discovery = MagicMock()
+        transport = MagicMock()
+
+        with (
+            patch("niuu.mesh.transport_builder.build_transport", return_value=transport),
+            patch("ravn.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter") as mesh_adapter,
+        ):
+            mesh = _build_flock_tool_mesh(settings, discovery)
+
+        assert mesh is mesh_adapter.return_value
+        mesh_adapter.assert_called_once_with(
+            publisher=transport,
+            subscriber=transport,
+            own_peer_id=settings.mesh.own_peer_id,
+            discovery=discovery,
+            rpc_timeout_s=settings.mesh.rpc_timeout_s,
+            environment_id=settings.discovery.realm_id,
+        )
 
     def test_wire_cron_registers_trigger_and_returns_tools(self, tmp_path: Path) -> None:
         drive_loop = MagicMock()

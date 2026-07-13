@@ -580,5 +580,6 @@ def _with_ravn_tool_mcp_server(
             "command": sys.executable,
             "args": args,
             "env": env,
+            "required": True,
         },
     ]
