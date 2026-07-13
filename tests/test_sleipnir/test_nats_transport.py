@@ -43,6 +43,7 @@ from sleipnir.adapters.nats_transport import (
     _decode_nats_message,
     _DeduplicationCache,
     _durable_name_for_subject,
+    _HttpConnectNatsClient,
     _HttpConnectTcpTransport,
     _nats_subject_for_event,
     _nats_subjects_for_patterns,
@@ -145,6 +146,19 @@ async def test_http_connect_transport_tunnels_nats_connection():
         await transport.wait_closed()
         server.close()
         await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_http_connect_client_does_not_replace_unconnected_transport():
+    client = _HttpConnectNatsClient("http://127.0.0.1:3128")
+    client.options["connect_timeout"] = 2
+    server = MagicMock(uri=urlparse("nats://nats.internal:4222"))
+
+    with patch.object(_HttpConnectTcpTransport, "connect", new_callable=AsyncMock) as connect:
+        await client._connect_to_server(server)
+
+    assert isinstance(client._transport, _HttpConnectTcpTransport)
+    connect.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

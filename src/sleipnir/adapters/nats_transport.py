@@ -70,6 +70,7 @@ import hashlib
 import logging
 import os
 import ssl
+import time
 from collections import deque
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -80,11 +81,13 @@ from urllib.parse import ParseResult, urlparse
 try:
     import nats
     import nats.js.api as js_api
+    from nats.aio.client import DEFAULT_BUFFER_SIZE
     from nats.aio.client import Client as NatsClient
     from nats.aio.transport import TcpTransport
 
     _NATS_AVAILABLE = True
 except ImportError:  # pragma: no cover
+    DEFAULT_BUFFER_SIZE = 0
     NatsClient = None  # type: ignore[assignment,misc]
     TcpTransport = object  # type: ignore[assignment,misc]
     _NATS_AVAILABLE = False
@@ -193,6 +196,26 @@ class _HttpConnectTcpTransport(TcpTransport):
         self._bare_io_writer = self._io_writer = writer
 
 
+class _HttpConnectNatsClient(NatsClient):
+    """nats-py client that preserves the CONNECT transport before it is connected."""
+
+    def __init__(self, proxy_url: str) -> None:
+        super().__init__()
+        self._proxy_url = proxy_url
+
+    async def _connect_to_server(self, server: Any) -> None:
+        server.last_attempt = time.monotonic()
+        if not self._transport:
+            if server.uri.scheme in ("ws", "wss"):
+                raise ValueError("NATS WebSocket URLs cannot use the TCP CONNECT transport")
+            self._transport = _HttpConnectTcpTransport(self._proxy_url)
+        await self._transport.connect(
+            server.uri,
+            buffer_size=DEFAULT_BUFFER_SIZE,
+            connect_timeout=self.options["connect_timeout"],
+        )
+
+
 async def _connect_nats(
     *,
     servers: list[str],
@@ -209,8 +232,7 @@ async def _connect_nats(
             max_reconnect_attempts=max_reconnect_attempts,
             **options,
         )
-    client = NatsClient()
-    client._transport = _HttpConnectTcpTransport(resolved_proxy)
+    client = _HttpConnectNatsClient(resolved_proxy)
     await client.connect(
         servers=servers,
         connect_timeout=connect_timeout,
