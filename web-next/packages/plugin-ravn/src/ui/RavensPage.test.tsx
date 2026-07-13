@@ -85,6 +85,22 @@ describe('RavensPage', () => {
     expect(screen.getByText(/load failed/i)).toBeInTheDocument();
   });
 
+  it('uses the standard error message for non-Error failures', async () => {
+    const failing = { listRavens: () => Promise.reject('disconnected') };
+    render(<RavensPage />, { wrapper: wrap(makeServices({ 'ravn.ravens': failing })) });
+    await waitFor(() => expect(screen.getByTestId('ravens-error')).toBeInTheDocument());
+    expect(screen.getByText('Failed to load ravens')).toBeInTheDocument();
+  });
+
+  it('renders an empty fleet without a selected detail', async () => {
+    const empty = { listRavens: vi.fn().mockResolvedValue([]), getRaven: vi.fn() };
+    render(<RavensPage />, { wrapper: wrap(makeServices({ 'ravn.ravens': empty })) });
+
+    await waitFor(() => expect(screen.getByTestId('ravens-page')).toBeInTheDocument());
+    expect(screen.getByTestId('fleet-counts')).toHaveTextContent('0 total·0 active');
+    expect(screen.getByTestId('detail-empty')).toBeInTheDocument();
+  });
+
   it('renders the split fleet layout controls', async () => {
     render(<RavensPage />, { wrapper: wrap() });
 
@@ -175,6 +191,82 @@ describe('RavensPage', () => {
 
     await waitFor(() => expect(screen.getByText('Active')).toBeInTheDocument());
     expect(localStorage.getItem('ravn.ravens.group')).toBe('"state"');
+  });
+
+  it('renders fallback metadata, mixed session ownership, failure counts, and flat grouping', async () => {
+    const unnamed = makeFlockRaven({
+      id: '77777777-7777-4777-8777-777777777777',
+      personaName: '',
+      residentName: undefined,
+      role: 'plan',
+      engine: undefined,
+      deployment: 'helm_release',
+      instanceId: undefined,
+      instanceName: undefined,
+      location: 'test_zone',
+      flockId: undefined,
+      flockRole: undefined,
+    });
+    const failed = makeFlockRaven({
+      id: '88888888-8888-4888-8888-888888888888',
+      residentName: 'Fallback resident',
+      status: 'failed',
+      engine: undefined,
+      deployment: undefined,
+      instanceName: undefined,
+      location: undefined,
+      flockId: undefined,
+      flockRole: undefined,
+    });
+    const sessions = {
+      ...createMockSessionStream(),
+      listSessions: vi.fn().mockResolvedValue([
+        {
+          id: '99999999-9999-4999-8999-999999999991',
+          ravnId: unnamed.id,
+          personaName: 'planner',
+          status: 'running',
+          model: 'gpt-5.6',
+          createdAt: '2026-07-13T10:01:00Z',
+        },
+        {
+          id: '99999999-9999-4999-8999-999999999992',
+          ravnId: failed.id,
+          instanceId: 'target-a',
+          personaName: 'coder',
+          status: 'running',
+          model: 'gpt-5.6',
+          createdAt: '2026-07-13T10:02:00Z',
+        },
+      ]),
+    };
+    render(<RavensPage />, {
+      wrapper: wrap(
+        makeServices({
+          'ravn.ravens': {
+            listRavens: vi.fn().mockResolvedValue([unnamed, failed]),
+            getRaven: vi.fn(),
+          },
+          'ravn.sessions': sessions,
+        }),
+      ),
+    });
+
+    await waitFor(() => expect(screen.getAllByTestId('ravn-list-row')).toHaveLength(2));
+    expect(screen.getByTestId('fleet-counts')).toHaveTextContent('2 total·1 active·1 failed');
+    const unnamedRow = screen.getAllByTestId('ravn-list-row')[0]!;
+    expect(unnamedRow).toHaveTextContent('77777777');
+    expect(unnamedRow).toHaveTextContent('planner · helm release');
+    expect(unnamedRow).toHaveTextContent('test zone');
+    await waitFor(() => expect(unnamedRow).toHaveTextContent('1 sess'));
+    expect(screen.getAllByTestId('ravn-list-row')[1]).toHaveTextContent('coder · ravn');
+    expect(screen.getAllByTestId('ravn-list-row')[1]).toHaveTextContent('unknown');
+
+    fireEvent.change(screen.getByTestId('ravens-search'), { target: { value: 'not-present' } });
+    expect(screen.getByText(/no ravens match/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('ravens-search'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('group-btn-none'));
+    expect(document.querySelector('.rv-group-header')).not.toBeInTheDocument();
   });
 
   it('deletes every resident in a flock from one group action', async () => {
@@ -319,6 +411,88 @@ describe('RavensPage', () => {
 
     finishDelete?.();
     await waitFor(() => expect(screen.queryByText('Delete flock')).not.toBeInTheDocument());
+  });
+
+  it('selects and groups the coordinator after deploying a flock', async () => {
+    const profiles = [
+      {
+        id: 'ravn-local',
+        displayName: 'Ravn',
+        description: 'Ravn resident',
+        backend: 'local' as const,
+        engine: 'ravn' as const,
+        capabilities: ['chat' as const, 'flock' as const],
+        defaultModel: 'niuu/qwen',
+        allowedModels: [],
+        labels: [],
+        instanceId: 'local',
+        instanceName: 'Local',
+        instanceSlug: 'local',
+      },
+      {
+        id: 'hermes-local',
+        displayName: 'NemoHermes',
+        description: 'Hermes resident',
+        backend: 'local' as const,
+        engine: 'hermes' as const,
+        capabilities: ['chat' as const, 'flock' as const],
+        defaultModel: 'niuu/qwen',
+        allowedModels: [],
+        labels: [],
+        instanceId: 'local',
+        instanceName: 'Local',
+        instanceSlug: 'local',
+      },
+    ];
+    const deploy = vi.fn().mockImplementation(async (request) =>
+      makeFlockRaven({
+        id: crypto.randomUUID(),
+        residentName: request.name,
+        profileId: request.profileId,
+        instanceId: request.instanceId,
+        flockId: request.flockId,
+        flockRole: request.flockRole,
+      }),
+    );
+    render(<RavensPage />, {
+      wrapper: wrap(
+        makeServices({
+          'ravn.residents': {
+            ...makeServices()['ravn.residents'],
+            listProfiles: vi.fn().mockResolvedValue(profiles),
+            deploy,
+          },
+          'ravn.personas': {
+            listPersonas: vi.fn().mockResolvedValue([
+              {
+                name: 'flock-coordinator',
+                role: 'coord',
+                letter: 'F',
+                color: 'ice',
+                summary: 'Coordinates resident flocks',
+                permissionMode: 'full-access',
+                allowedTools: ['flock'],
+                iterationBudget: 40,
+                isBuiltin: true,
+                hasOverride: false,
+                producesEvent: '',
+                consumesEvents: [],
+              },
+            ]),
+          },
+        }),
+      ),
+    });
+
+    await waitFor(() => expect(screen.getByTestId('flock-deploy-open')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('flock-deploy-open'));
+    fireEvent.change(screen.getByTestId('flock-name'), { target: { value: 'fleet proof' } });
+    await screen.findByTestId('flock-member-0-name');
+    fireEvent.click(screen.getByTestId('flock-add-member'));
+    fireEvent.click(screen.getByTestId('flock-deploy-submit'));
+
+    await waitFor(() => expect(deploy).toHaveBeenCalledTimes(2));
+    expect(localStorage.getItem('ravn.ravens.group')).toBe('"flock"');
   });
 
   it('switches the selected ravn when a different list row is clicked', async () => {

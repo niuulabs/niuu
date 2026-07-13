@@ -32,7 +32,7 @@ const GROUP_OPTIONS: Array<{ key: GroupKey; label: string }> = [
   { key: 'none', label: 'flat' },
 ];
 
-const ROLE_LABELS: Partial<Record<PersonaRole, string>> = {
+const ROLE_LABELS: Record<PersonaRole, string> = {
   arbiter: 'arbiter',
   audit: 'auditor',
   autonomy: 'autonomous',
@@ -66,7 +66,7 @@ function formatBudgetText(budget?: BudgetState): string {
 }
 
 function subtitleForRavn(ravn: Ravn): string {
-  return ROLE_LABELS[ravn.role ?? 'build'] ?? ravn.role ?? 'raven';
+  return ROLE_LABELS[ravn.role ?? 'build'];
 }
 
 function nameForRavn(ravn: Ravn): string {
