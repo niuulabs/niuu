@@ -219,6 +219,8 @@ class ResidentFlockAdapter:
                     "task_id": request_id,
                     "title": "Directed flock message",
                     "prompt": str(message.get("prompt") or ""),
+                    "session_id": str(message.get("session_id") or ""),
+                    "root_correlation_id": str(message.get("root_correlation_id") or ""),
                 },
             )
             if accepted.get("status") != "accepted":

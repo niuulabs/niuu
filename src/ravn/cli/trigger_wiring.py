@@ -372,6 +372,10 @@ def _wire_cascade(
                 output_mode=OutputMode.SILENT,
                 priority=5,
             )
+            if message.get("session_id"):
+                task.session_id = str(message["session_id"])
+            if message.get("root_correlation_id"):
+                task.root_correlation_id = str(message["root_correlation_id"])
 
             try:
                 await drive_loop.enqueue(task)

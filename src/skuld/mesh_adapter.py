@@ -138,6 +138,8 @@ class SkuldMeshAdapter:
                 "type": "work_request",
                 "prompt": prompt,
                 "request_id": request_id,
+                "session_id": self._session_id,
+                "root_correlation_id": self._session_id,
             },
             timeout_s=self._config.default_work_timeout_s,
         )

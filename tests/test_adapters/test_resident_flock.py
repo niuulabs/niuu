@@ -180,6 +180,8 @@ async def test_ravn_rpc_dispatches_through_existing_resident_session_controller(
             "type": "work_request",
             "request_id": "room-message-1",
             "prompt": "Reply directly",
+            "session_id": "room-1",
+            "root_correlation_id": "room-1",
         },
     )
     assert directed == {
@@ -189,10 +191,38 @@ async def test_ravn_rpc_dispatches_through_existing_resident_session_controller(
     }
     assert controller.created[-1] == ("Directed flock message", "niuu/qwen")
     assert controller.connection.sent[-1]["content"] == "Reply directly"
+    assert resident._tasks["room-message-1"].status == "complete"
 
     await coordinator.stop()
     await discovery.stop()
     await resident.stop()
+
+
+async def test_directed_work_request_preserves_room_correlation() -> None:
+    flock_id = uuid4()
+    runtime = _runtime(flock_id=flock_id)
+    resident = ResidentFlockAdapter(_Repository(runtime), [_Controller()], InProcessBus())
+    captured: dict = {}
+
+    async def capture_dispatch(runtime_id: UUID, payload: dict) -> dict:
+        captured.update(payload)
+        return {"status": "rejected", "error": "captured"}
+
+    resident._dispatch = capture_dispatch  # type: ignore[method-assign]
+    result = await resident._handle_rpc(
+        runtime.id,
+        {
+            "type": "work_request",
+            "request_id": "room-message-1",
+            "prompt": "Reply directly",
+            "session_id": "room-1",
+            "root_correlation_id": "root-1",
+        },
+    )
+
+    assert result == {"status": "rejected", "error": "captured"}
+    assert captured["session_id"] == "room-1"
+    assert captured["root_correlation_id"] == "root-1"
 
 
 async def test_resident_persona_subscribes_surfaces_and_emits_declared_outcome() -> None:

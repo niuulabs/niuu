@@ -233,6 +233,45 @@ async def test_mesh_rpc_work_request_generates_request_id():
 
 
 @pytest.mark.asyncio
+async def test_mesh_rpc_work_request_preserves_room_correlation():
+    dl = _make_drive_loop()
+
+    from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
+
+    settings = MagicMock(spec=Settings)
+    settings.cascade = MagicMock()
+    settings.cascade.enabled = True
+    settings.mesh = MagicMock()
+    settings.mesh.enabled = False
+    settings.discovery = MagicMock()
+    settings.discovery.enabled = False
+
+    with patch("ravn.cli.commands._build_mesh", side_effect=RuntimeError):
+        with patch("ravn.cli.commands._build_discovery", side_effect=RuntimeError):
+            _wire_cascade(dl, settings)
+
+    reply = await dl.handle_rpc(
+        {
+            "type": "work_request",
+            "request_id": "room-message-1",
+            "prompt": "review",
+            "session_id": "room-1",
+            "root_correlation_id": "room-1",
+            "timeout_s": 0.0,
+        }
+    )
+
+    task = next(
+        task
+        for _priority, _counter, task in dl._queue._queue
+        if task.task_id == "work_room-message-1"
+    )
+    assert reply["status"] == "timeout"
+    assert task.session_id == "room-1"
+    assert task.root_correlation_id == "room-1"
+
+
+@pytest.mark.asyncio
 async def test_mesh_rpc_task_cancel():
     dl = _make_drive_loop()
     # Fake an active task
