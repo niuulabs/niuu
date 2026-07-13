@@ -46,7 +46,7 @@ function defaultMemberName(
 }
 
 function coordinatorPersonas(personas: PersonaSummary[]): PersonaSummary[] {
-  return personas.filter((persona) => persona.allowedTools.includes('cascade'));
+  return personas.filter((persona) => persona.allowedTools.includes('flock'));
 }
 
 export function ResidentFlockDeployDialog({
@@ -209,7 +209,7 @@ export function ResidentFlockDeployDialog({
           )}
           {!personasQuery.isLoading && coordinators.length === 0 && (
             <div className="rv-form-error" role="alert">
-              A persona with cascade tools is required for the coordinator.
+              A persona with flock tools is required for the coordinator.
             </div>
           )}
           {drafts.length < 2 && profiles.length > 0 && (

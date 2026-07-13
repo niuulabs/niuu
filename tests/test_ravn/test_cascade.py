@@ -312,6 +312,38 @@ class TestTaskCreateTool:
         assert mesh.send.await_args.kwargs["target_peer_id"] == "hermes-peer"
 
     @pytest.mark.asyncio
+    async def test_remote_only_coordinator_dispatches_to_explicit_peer(self):
+        hermes = _FakePeer("hermes-peer", status="idle", capabilities=["chat", "flock"])
+        discovery = _FakeDiscovery({"hermes-peer": hermes})
+        mesh = AsyncMock()
+        mesh.send = AsyncMock(return_value={"status": "accepted", "task_id": "t1"})
+
+        tool = TaskCreateTool(drive_loop=None, mesh=mesh, discovery=discovery)
+        result = await tool.execute(
+            {
+                "prompt": "use Hermes",
+                "title": "targeted task",
+                "peer_id": "hermes-peer",
+            }
+        )
+
+        assert not result.is_error
+        assert json.loads(result.content)["location"] == "hermes-peer"
+
+    @pytest.mark.asyncio
+    async def test_remote_only_coordinator_fails_when_no_peer_is_available(self):
+        tool = TaskCreateTool(
+            drive_loop=None,
+            mesh=AsyncMock(),
+            discovery=_FakeDiscovery({}),
+        )
+
+        result = await tool.execute({"prompt": "work", "title": "task"})
+
+        assert result.is_error
+        assert json.loads(result.content) == {"error": "no_remote_peer"}
+
+    @pytest.mark.asyncio
     async def test_explicit_peer_must_be_discovered(self):
         tool = TaskCreateTool(
             drive_loop=_make_drive_loop(),

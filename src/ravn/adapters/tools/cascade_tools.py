@@ -63,7 +63,7 @@ class TaskCreateTool(ToolPort):
 
     def __init__(
         self,
-        drive_loop: DriveLoop,
+        drive_loop: DriveLoop | None,
         mesh: MeshPort | None = None,
         discovery: DiscoveryPort | None = None,
         spawn_adapter: SpawnPort | None = None,
@@ -160,7 +160,9 @@ class TaskCreateTool(ToolPort):
         allow_spawn = bool(input.get("spawn", False))
         required_caps: list[str] = input.get("required_caps") or []
         current_task = (
-            self._drive_loop.current_task() if hasattr(self._drive_loop, "current_task") else None
+            self._drive_loop.current_task()
+            if self._drive_loop is not None and hasattr(self._drive_loop, "current_task")
+            else None
         )
         resolved_allowed_target_personas = (
             self._allowed_target_resolver() if self._allowed_target_resolver is not None else None
@@ -317,6 +319,13 @@ class TaskCreateTool(ToolPort):
                 logger.warning("task_create: spawn failed, falling back to local: %s", exc)
 
         # Fall back to local enqueue
+        if self._drive_loop is None:
+            return ToolResult(
+                tool_call_id="",
+                content=json.dumps({"error": "no_remote_peer"}),
+                is_error=True,
+            )
+
         agent_task = AgentTask(
             task_id=task_id,
             title=title,
@@ -441,7 +450,7 @@ class TaskStatusTool(ToolPort):
 
     def __init__(
         self,
-        drive_loop: DriveLoop,
+        drive_loop: DriveLoop | None,
         mesh: MeshPort | None = None,
         remote_tasks: dict[str, str] | None = None,
         mesh_delegation_timeout_s: float = _DEFAULT_MESH_DELEGATION_TIMEOUT_S,
@@ -507,6 +516,13 @@ class TaskStatusTool(ToolPort):
             except Exception as exc:
                 logger.warning("task_status: mesh query failed: %s", exc)
 
+        if self._drive_loop is None:
+            return ToolResult(
+                tool_call_id="",
+                content=json.dumps({"error": "remote_task_not_found", "task_id": task_id}),
+                is_error=True,
+            )
+
         status_result = self._drive_loop.task_status(task_id, include_progress=include_progress)
         if include_progress and isinstance(status_result, dict):
             return ToolResult(
@@ -529,7 +545,7 @@ class TaskListTool(ToolPort):
 
     def __init__(
         self,
-        drive_loop: DriveLoop,
+        drive_loop: DriveLoop | None,
         mesh: MeshPort | None = None,
         discovery: DiscoveryPort | None = None,
         mesh_delegation_timeout_s: float = _DEFAULT_MESH_DELEGATION_TIMEOUT_S,
@@ -583,6 +599,8 @@ class TaskListTool(ToolPort):
         return ToolResult(tool_call_id="", content=json.dumps(result, indent=2))
 
     def _local_task_list(self) -> dict:
+        if self._drive_loop is None:
+            return {"active": [], "queued": []}
         return {
             "active": self._drive_loop.active_task_ids(),
             "queued": self._drive_loop.queued_task_ids(),
@@ -599,7 +617,7 @@ class TaskStopTool(ToolPort):
 
     def __init__(
         self,
-        drive_loop: DriveLoop,
+        drive_loop: DriveLoop | None,
         mesh: MeshPort | None = None,
         remote_tasks: dict[str, str] | None = None,
     ) -> None:
@@ -648,6 +666,13 @@ class TaskStopTool(ToolPort):
                     is_error=True,
                 )
 
+        if self._drive_loop is None:
+            return ToolResult(
+                tool_call_id="",
+                content=json.dumps({"error": "remote_task_not_found", "task_id": task_id}),
+                is_error=True,
+            )
+
         await self._drive_loop.cancel(task_id)
         return ToolResult(
             tool_call_id="",
@@ -669,7 +694,7 @@ class TaskCollectTool(ToolPort):
 
     def __init__(
         self,
-        drive_loop: DriveLoop,
+        drive_loop: DriveLoop | None,
         mesh: MeshPort | None = None,
         remote_tasks: dict[str, str] | None = None,
         poll_interval_s: float = _DEFAULT_COLLECT_POLL_INTERVAL_S,
@@ -719,6 +744,12 @@ class TaskCollectTool(ToolPort):
             return ToolResult(tool_call_id="", content="Error: task_id is required.", is_error=True)
 
         peer_id = self._remote_tasks.get(task_id)
+        if peer_id is None and self._drive_loop is None:
+            return ToolResult(
+                tool_call_id="",
+                content=json.dumps({"error": "remote_task_not_found", "task_id": task_id}),
+                is_error=True,
+            )
 
         try:
             await asyncio.wait_for(
@@ -744,7 +775,9 @@ class TaskCollectTool(ToolPort):
                 logger.warning("task_collect: failed to fetch remote result: %s", exc)
 
         # Local task — retrieve output from the TaskResultStore
-        local_result = self._drive_loop.get_result(task_id)
+        local_result = (
+            self._drive_loop.get_result(task_id) if self._drive_loop is not None else None
+        )
         if local_result is not None:
             return ToolResult(
                 tool_call_id="",
@@ -779,6 +812,8 @@ class TaskCollectTool(ToolPort):
                         return
                     continue
 
+            if self._drive_loop is None:
+                return
             status = self._drive_loop.task_status(task_id)
             if status not in ("running", "queued"):
                 return
@@ -991,7 +1026,7 @@ class FlockTerminateTool(ToolPort):
 
 
 def build_cascade_tools(
-    drive_loop: DriveLoop,
+    drive_loop: DriveLoop | None,
     mesh: MeshPort | None = None,
     discovery: DiscoveryPort | None = None,
     spawn_adapter: SpawnPort | None = None,

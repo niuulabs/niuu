@@ -12,7 +12,7 @@ describe('ResidentFlockDeployDialog', () => {
     color: 'ice',
     summary: 'Coordinates resident flocks',
     permissionMode: 'full-access',
-    allowedTools: ['cascade'],
+    allowedTools: ['flock'],
     iterationBudget: 40,
     isBuiltin: true,
     hasOverride: false,
@@ -222,7 +222,7 @@ describe('ResidentFlockDeployDialog', () => {
     expect(screen.getAllByRole('group')).toHaveLength(5);
   });
 
-  it('requires exactly one cascade-capable coordinator', async () => {
+  it('requires exactly one flock-capable coordinator', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const profiles = [
       {

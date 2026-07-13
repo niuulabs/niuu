@@ -330,6 +330,16 @@ _TOOL_GROUP_ALIASES: dict[str, list[str]] = {
         "route_work",
         "list_consumers",
     ],
+    "flock": [
+        "flock_status",
+        "task_create",
+        "task_status",
+        "task_list",
+        "task_stop",
+        "task_collect",
+        "route_work",
+        "list_consumers",
+    ],
     "volundr": ["volundr_session", "volundr_git"],
     "ravn": [
         "persona_validate",

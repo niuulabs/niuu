@@ -1358,6 +1358,25 @@ class TestWorkflowRuntimeForPersona:
             "flock_status",
         ]
 
+    def test_flock_group_allows_resident_delegation_tools(self) -> None:
+        settings = Settings()
+        persona = PersonaConfig(name="coordinator", allowed_tools=["flock"])
+        tools = [MagicMock() for _ in range(4)]
+        for tool, name in zip(
+            tools,
+            ("task_create", "task_collect", "flock_status", "read_file"),
+            strict=True,
+        ):
+            tool.name = name
+
+        filtered = _filter_tools(tools, settings, persona)
+
+        assert [tool.name for tool in filtered] == [
+            "task_create",
+            "task_collect",
+            "flock_status",
+        ]
+
     def test_wire_cron_registers_trigger_and_returns_tools(self, tmp_path: Path) -> None:
         drive_loop = MagicMock()
         trigger = MagicMock()

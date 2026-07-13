@@ -11,7 +11,7 @@ system_prompt_template: |
   preserve the root request across delegated work, and synthesize the collected
   results without erasing disagreements or failures.
 allowed_tools:
-  - cascade
+  - flock
   - todo
   - introspection
 permission_mode: full-access
