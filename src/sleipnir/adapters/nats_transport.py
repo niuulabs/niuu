@@ -248,6 +248,7 @@ def _build_tls_context(
     tls_ca_pem: str = "",
     tls_cert_file: str = "",
     tls_key_file: str = "",
+    tls_legacy_ca: bool = False,
     tls_insecure_skip_verify: bool = False,
 ) -> ssl.SSLContext | None:
     """Build an SSL context for NATS TLS, or return None when TLS files are unset."""
@@ -256,12 +257,15 @@ def _build_tls_context(
         and not tls_ca_pem
         and not tls_cert_file
         and not tls_key_file
+        and not tls_legacy_ca
         and not tls_insecure_skip_verify
     ):
         return None
     context = ssl.create_default_context(cafile=tls_ca_file or None)
     if tls_ca_pem:
         context.load_verify_locations(cadata=tls_ca_pem)
+    if tls_legacy_ca:
+        context.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
     if tls_insecure_skip_verify:
         logger.warning(
             "NATS TLS certificate verification is DISABLED "
@@ -289,6 +293,7 @@ def _connect_options(
     tls_key_file: str = "",
     tls_hostname: str = "",
     tls_handshake_first: bool = False,
+    tls_legacy_ca: bool = False,
     tls_insecure_skip_verify: bool = False,
     user: str = "",
     password: str = "",
@@ -302,6 +307,7 @@ def _connect_options(
         tls_ca_pem=tls_ca_pem,
         tls_cert_file=tls_cert_file,
         tls_key_file=tls_key_file,
+        tls_legacy_ca=tls_legacy_ca,
         tls_insecure_skip_verify=tls_insecure_skip_verify,
     )
     if tls_context is not None:
@@ -562,6 +568,7 @@ class NatsPublisher(SleipnirPublisher):
         tls_key_file: str = "",
         tls_hostname: str = "",
         tls_handshake_first: bool = False,
+        tls_legacy_ca: bool = False,
         tls_insecure_skip_verify: bool = False,
         user: str = "",
         password: str = "",
@@ -590,6 +597,7 @@ class NatsPublisher(SleipnirPublisher):
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,
             tls_handshake_first=tls_handshake_first,
+            tls_legacy_ca=tls_legacy_ca,
             tls_insecure_skip_verify=tls_insecure_skip_verify,
             user=user,
             password=password,
@@ -700,6 +708,7 @@ class NatsCorePublisher(SleipnirPublisher):
         tls_key_file: str = "",
         tls_hostname: str = "",
         tls_handshake_first: bool = False,
+        tls_legacy_ca: bool = False,
         tls_insecure_skip_verify: bool = False,
         user: str = "",
         password: str = "",
@@ -721,6 +730,7 @@ class NatsCorePublisher(SleipnirPublisher):
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,
             tls_handshake_first=tls_handshake_first,
+            tls_legacy_ca=tls_legacy_ca,
             tls_insecure_skip_verify=tls_insecure_skip_verify,
             user=user,
             password=password,
@@ -830,6 +840,7 @@ class NatsSubscriber(SleipnirSubscriber):
         tls_key_file: str = "",
         tls_hostname: str = "",
         tls_handshake_first: bool = False,
+        tls_legacy_ca: bool = False,
         tls_insecure_skip_verify: bool = False,
         user: str = "",
         password: str = "",
@@ -865,6 +876,7 @@ class NatsSubscriber(SleipnirSubscriber):
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,
             tls_handshake_first=tls_handshake_first,
+            tls_legacy_ca=tls_legacy_ca,
             tls_insecure_skip_verify=tls_insecure_skip_verify,
             user=user,
             password=password,
@@ -1213,6 +1225,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
         tls_key_file: str = "",
         tls_hostname: str = "",
         tls_handshake_first: bool = False,
+        tls_legacy_ca: bool = False,
         tls_insecure_skip_verify: bool = False,
         user: str = "",
         password: str = "",
@@ -1242,6 +1255,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,
             tls_handshake_first=tls_handshake_first,
+            tls_legacy_ca=tls_legacy_ca,
             tls_insecure_skip_verify=tls_insecure_skip_verify,
             user=user,
             password=password,
@@ -1271,6 +1285,7 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,
             tls_handshake_first=tls_handshake_first,
+            tls_legacy_ca=tls_legacy_ca,
             tls_insecure_skip_verify=tls_insecure_skip_verify,
             user=user,
             password=password,

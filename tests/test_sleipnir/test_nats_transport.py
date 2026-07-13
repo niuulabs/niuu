@@ -359,6 +359,15 @@ def test_tls_context_loads_inline_ca_bundle():
     context.load_verify_locations.assert_called_once_with(cadata="certificate-pem")
 
 
+def test_tls_context_can_accept_legacy_private_ca_without_disabling_verification():
+    context = _build_tls_context(tls_legacy_ca=True)
+
+    assert context is not None
+    assert context.check_hostname is True
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.verify_flags & getattr(ssl, "VERIFY_X509_STRICT", 0) == 0
+
+
 # ---------------------------------------------------------------------------
 # NatsPublisher tests
 # ---------------------------------------------------------------------------

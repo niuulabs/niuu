@@ -1851,6 +1851,10 @@ class MeshNatsConfig(BaseSettings):
         default=False,
         description="Use TLS-first handshakes for NATS servers that require it.",
     )
+    tls_legacy_ca: bool = Field(
+        default=False,
+        description="Allow private CAs without modern X.509 key-usage extensions.",
+    )
     tls_insecure_skip_verify: bool = Field(
         default=False,
         description="Disable NATS TLS certificate verification for internal/self-signed endpoints.",
