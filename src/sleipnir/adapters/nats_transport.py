@@ -68,7 +68,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import os
 import ssl
 import time
 from collections import deque
@@ -77,6 +76,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import ParseResult, urlparse
+from urllib.request import getproxies
 
 try:
     import nats
@@ -133,19 +133,11 @@ DEFAULT_PUBLISH_TIMEOUT_S = 10.0
 
 
 def _sandbox_proxy_url(explicit: str = "") -> str:
-    """Return the CONNECT proxy used by an OpenShell sandbox, if any."""
+    """Return the configured or operating-system CONNECT proxy, if any."""
     if explicit:
         return explicit
-    if os.environ.get("OPENSHELL_SANDBOX") != "1":
-        return ""
-    return next(
-        (
-            value
-            for name in ("ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "all_proxy", "https_proxy")
-            if (value := os.environ.get(name, "").strip())
-        ),
-        "",
-    )
+    proxies = getproxies()
+    return str(proxies.get("all") or proxies.get("https") or proxies.get("http") or "").strip()
 
 
 class _HttpConnectTcpTransport(TcpTransport):
@@ -175,9 +167,7 @@ class _HttpConnectTcpTransport(TcpTransport):
             ),
             connect_timeout,
         )
-        writer.write(
-            f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode("ascii")
-        )
+        writer.write(f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode("ascii"))
         await writer.drain()
         try:
             response = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), connect_timeout)

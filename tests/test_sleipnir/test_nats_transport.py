@@ -108,18 +108,16 @@ def test_nats_available_returns_true():
     assert nats_available() is True
 
 
-def test_sandbox_proxy_uses_openshell_all_proxy(monkeypatch):
-    monkeypatch.setenv("OPENSHELL_SANDBOX", "1")
+def test_sandbox_proxy_uses_operating_system_all_proxy(monkeypatch):
     monkeypatch.setenv("ALL_PROXY", "http://10.200.0.1:3128")
 
     assert _sandbox_proxy_url() == "http://10.200.0.1:3128"
 
 
-def test_sandbox_proxy_ignores_host_proxy_outside_openshell(monkeypatch):
-    monkeypatch.delenv("OPENSHELL_SANDBOX", raising=False)
+def test_explicit_sandbox_proxy_overrides_operating_system_proxy(monkeypatch):
     monkeypatch.setenv("ALL_PROXY", "http://proxy.example:3128")
 
-    assert _sandbox_proxy_url() == ""
+    assert _sandbox_proxy_url("http://10.200.0.1:3128") == "http://10.200.0.1:3128"
 
 
 @pytest.mark.asyncio
