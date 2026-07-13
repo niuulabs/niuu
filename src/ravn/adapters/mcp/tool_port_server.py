@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import threading
 from contextlib import asynccontextmanager
@@ -88,15 +89,29 @@ async def _stdio_server():
         await read_writer.send(SessionMessage(message))
 
     def read_stdin() -> None:
+        fd = sys.stdin.fileno()
+        pending = bytearray()
         while not stopped.is_set():
-            line = sys.stdin.buffer.readline()
-            if not line:
-                break
-            future = asyncio.run_coroutine_threadsafe(deliver(line), loop)
             try:
-                future.result()
-            except Exception:
+                chunk = os.read(fd, 64 * 1024)
+            except InterruptedError:
+                continue
+            except BlockingIOError:
+                stopped.wait(0.01)
+                continue
+            if not chunk:
                 break
+            pending.extend(chunk)
+            while (newline := pending.find(b"\n")) >= 0:
+                line = bytes(pending[: newline + 1])
+                del pending[: newline + 1]
+                future = asyncio.run_coroutine_threadsafe(deliver(line), loop)
+                try:
+                    future.result()
+                except Exception:
+                    return
+        if pending:
+            asyncio.run_coroutine_threadsafe(deliver(bytes(pending)), loop)
         asyncio.run_coroutine_threadsafe(read_writer.aclose(), loop)
 
     async def write_stdout() -> None:

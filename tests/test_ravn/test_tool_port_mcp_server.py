@@ -64,6 +64,7 @@ async def test_stdio_handshake_does_not_depend_on_anyio_worker_pool() -> None:
     script = textwrap.dedent(
         """
         import asyncio
+        import sys
         import threading
         from concurrent.futures import ThreadPoolExecutor
 
@@ -71,7 +72,18 @@ async def test_stdio_handshake_does_not_depend_on_anyio_worker_pool() -> None:
 
         from ravn.adapters.mcp.tool_port_server import ToolPortMcpServer
 
+        class LockedBuffer:
+            def readline(self):
+                threading.Event().wait()
+
+        class StdinProxy:
+            buffer = LockedBuffer()
+
+            def fileno(self):
+                return 0
+
         async def main():
+            sys.stdin = StdinProxy()
             loop = asyncio.get_running_loop()
             loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
             loop.run_in_executor(None, threading.Event().wait)
