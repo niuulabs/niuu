@@ -23,6 +23,7 @@ from credentials.ports import (  # noqa: F401
 )
 from identity.models import Resource  # noqa: F401
 from identity.ports import AuthorizationPort, TenantRepository, UserRepository  # noqa: F401
+from niuu.domain.outcome import OutcomeField
 from niuu.ports.credentials import CredentialStorePort  # noqa: F401
 from niuu.ports.git import (
     GitAuthError,  # noqa: F401
@@ -1405,6 +1406,9 @@ class SessionPersona:
 
     name: str
     system_prompt: str
+    consumes_event_types: tuple[str, ...] = ()
+    produces_event_type: str = ""
+    produces_schema: dict[str, OutcomeField] = field(default_factory=dict)
 
 
 class SessionPersonaProvider(ABC):

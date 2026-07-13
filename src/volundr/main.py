@@ -600,6 +600,7 @@ def create_app(
                     resident_runtime_repository,
                     resident_session_controllers,
                     sleipnir_bus,
+                    persona_provider=session_persona_provider,
                 )
                 if sleipnir_bus is not None
                 else None

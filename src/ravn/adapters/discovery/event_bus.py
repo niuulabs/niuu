@@ -119,6 +119,8 @@ class EventBusDiscoveryAdapter:
                 "pub_address",
                 "spiffe_id",
                 "sleipnir_routing_key",
+                "consumes_event_types",
+                "emits_event_types",
             )
         }
         await self._publisher.publish(
@@ -153,6 +155,12 @@ class EventBusDiscoveryAdapter:
         now = datetime.now(UTC)
         peer = self._peers.get(peer_id)
         if peer is not None:
+            peer.persona = str(identity.get("persona") or "")
+            peer.capabilities = list(identity.get("capabilities") or [])
+            peer.permission_mode = str(identity.get("permission_mode") or "")
+            peer.version = str(identity.get("version") or "")
+            peer.consumes_event_types = list(identity.get("consumes_event_types") or [])
+            peer.emits_event_types = list(identity.get("emits_event_types") or [])
             peer.last_seen = now
             peer.last_heartbeat = now
             peer.status = str(payload.get("status") or "idle")  # type: ignore[assignment]
@@ -171,6 +179,8 @@ class EventBusDiscoveryAdapter:
             pub_address=identity.get("pub_address"),
             spiffe_id=identity.get("spiffe_id"),
             sleipnir_routing_key=identity.get("sleipnir_routing_key"),
+            consumes_event_types=list(identity.get("consumes_event_types") or []),
+            emits_event_types=list(identity.get("emits_event_types") or []),
             trust_level="verified",
             first_seen=now,
             last_seen=now,

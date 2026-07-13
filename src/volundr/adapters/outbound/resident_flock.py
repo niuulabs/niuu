@@ -3,19 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from niuu.domain.outcome import OutcomeSchema, parse_outcome_block
 from niuu.mesh.identity import MeshIdentity
 from ravn.adapters.discovery.event_bus import EventBusDiscoveryAdapter
 from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
+from ravn.domain.events import RavnEvent, RavnEventType
+from ravn.domain.models import OutputMode
 from volundr.domain.models import ResidentObservedState
 from volundr.domain.ports import (
     ResidentChatConnection,
     ResidentRuntimeRepository,
     ResidentSessionController,
+    SessionPersona,
+    SessionPersonaProvider,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,6 +44,7 @@ class _ResidentTask:
 class _ResidentPeer:
     mesh: SleipnirMeshAdapter
     discovery: EventBusDiscoveryAdapter
+    persona: SessionPersona | None
 
 
 class ResidentFlockAdapter:
@@ -46,10 +55,13 @@ class ResidentFlockAdapter:
         repository: ResidentRuntimeRepository,
         session_controllers: list[ResidentSessionController],
         bus: Any,
+        *,
+        persona_provider: SessionPersonaProvider | None = None,
     ) -> None:
         self._repository = repository
         self._controllers = {controller.engine: controller for controller in session_controllers}
         self._bus = bus
+        self._persona_provider = persona_provider
         self._peers: dict[UUID, _ResidentPeer] = {}
         self._tasks: dict[str, _ResidentTask] = {}
 
@@ -69,8 +81,14 @@ class ResidentFlockAdapter:
             await peer.mesh.stop()
             await peer.discovery.stop()
         for runtime_id, runtime in desired.items():
-            if runtime_id in self._peers:
+            persona = await self._resolve_persona(runtime.owner_id, runtime.persona_name)
+            current = self._peers.get(runtime_id)
+            if current is not None and current.persona == persona:
                 continue
+            if current is not None:
+                self._peers.pop(runtime_id, None)
+                await current.mesh.stop()
+                await current.discovery.stop()
             peer = SleipnirMeshAdapter(
                 publisher=self._bus,
                 subscriber=self._bus,
@@ -89,23 +107,90 @@ class ResidentFlockAdapter:
                     capabilities=[capability.value for capability in runtime.capabilities],
                     permission_mode="permissive",
                     version="volundr",
+                    consumes_event_types=(
+                        list(persona.consumes_event_types) if persona is not None else []
+                    ),
+                    emits_event_types=(
+                        [persona.produces_event_type]
+                        if persona is not None and persona.produces_event_type
+                        else []
+                    ),
                 ),
                 self._bus,
                 self._bus,
                 manage_transport_lifecycle=False,
             )
+            resident_peer = _ResidentPeer(mesh=peer, discovery=discovery, persona=persona)
+            self._peers[runtime_id] = resident_peer
             try:
                 await discovery.start()
                 await peer.start()
+                if persona is not None:
+                    for event_type in persona.consumes_event_types:
+                        await peer.subscribe(
+                            event_type,
+                            lambda event, resident_id=runtime_id: self._handle_persona_event(
+                                resident_id, event
+                            ),
+                        )
             except Exception:
+                self._peers.pop(runtime_id, None)
                 await asyncio.gather(peer.stop(), discovery.stop(), return_exceptions=True)
                 raise
-            self._peers[runtime_id] = _ResidentPeer(mesh=peer, discovery=discovery)
             logger.info(
                 "Resident flock peer started runtime=%s peer=%s flock=%s",
                 runtime.id,
                 runtime.flock_peer_id,
                 runtime.flock_id,
+            )
+
+    async def _resolve_persona(self, owner_id: str, name: str) -> SessionPersona | None:
+        if self._persona_provider is None or not name.strip():
+            return None
+        persona = await self._persona_provider.get(owner_id, name)
+        if persona is None:
+            logger.warning("Resident flock persona not found owner=%s name=%s", owner_id, name)
+        return persona
+
+    async def _handle_persona_event(self, runtime_id: UUID, event: RavnEvent) -> None:
+        runtime = await self._repository.get(runtime_id)
+        if runtime is None or event.source == runtime.flock_peer_id:
+            return
+        event_type = str(event.payload.get("event_type") or "event")
+        identity = ":".join(
+            (
+                str(runtime_id),
+                event_type,
+                event.task_id or "",
+                event.correlation_id,
+                event.root_correlation_id,
+            )
+        )
+        task_id = f"event_{hashlib.sha256(identity.encode()).hexdigest()[:20]}"
+        payload = json.dumps(event.payload, sort_keys=True, default=str)
+        result = await self._dispatch(
+            runtime_id,
+            {
+                "task_id": task_id,
+                "title": f"React to {event_type}",
+                "initiative_context": (
+                    f"A subscribed flock event was received.\n"
+                    f"Event type: {event_type}\n"
+                    f"Source: {event.source}\n"
+                    f"Payload: {payload}"
+                ),
+                "triggered_by": f"mesh:event:{event_type}",
+                "output_mode": OutputMode.SILENT,
+                "session_id": event.session_id,
+                "root_correlation_id": event.root_correlation_id or event.correlation_id,
+            },
+        )
+        if result.get("status") != "accepted":
+            logger.warning(
+                "Resident persona event rejected runtime=%s event_type=%s error=%s",
+                runtime_id,
+                event_type,
+                result.get("error", "unknown"),
             )
 
     async def stop(self) -> None:
@@ -210,6 +295,10 @@ class ResidentFlockAdapter:
             prompt = str(payload.get("prompt") or "").strip()
             if not prompt:
                 prompt = f"{title}\n\n{context}" if context else title
+            peer = self._peers.get(task.runtime_id)
+            persona = peer.persona if peer is not None else None
+            if persona is not None and persona.system_prompt:
+                prompt = f"{persona.system_prompt}\n\nTask:\n{prompt}"
             session = await controller.create_session(runtime, title=title, model=runtime.model)
             connection = await controller.connect_chat(runtime, session.id)
             task.connection = connection
@@ -228,6 +317,7 @@ class ResidentFlockAdapter:
                     if result and not task.output:
                         task.output = result
                     task.status = "complete"
+                    await self._publish_task_output(runtime, task, payload, persona)
                     return
                 if frame_type == "error":
                     task.error = str(frame.get("error") or "Resident task failed")
@@ -248,3 +338,61 @@ class ResidentFlockAdapter:
             task.connection = None
             if connection is not None:
                 await connection.close()
+
+    async def _publish_task_output(
+        self,
+        runtime: Any,
+        task: _ResidentTask,
+        payload: dict[str, Any],
+        persona: SessionPersona | None,
+    ) -> None:
+        peer = self._peers.get(task.runtime_id)
+        if peer is None:
+            return
+        session_id = str(payload.get("session_id") or "")
+        root_correlation_id = str(payload.get("root_correlation_id") or session_id or task.task_id)
+        output_mode = OutputMode(str(payload.get("output_mode") or OutputMode.SILENT))
+        if output_mode == OutputMode.SURFACE and task.output:
+            response = RavnEvent(
+                type=RavnEventType.RESPONSE,
+                source=runtime.flock_peer_id,
+                payload={"text": task.output, "persona": runtime.persona_name or runtime.name},
+                timestamp=datetime.now(UTC),
+                urgency=0.2,
+                correlation_id=session_id or task.task_id,
+                session_id=session_id,
+                task_id=task.task_id,
+                root_correlation_id=root_correlation_id,
+            )
+            await peer.mesh.publish(response, topic=f"activity.{runtime.flock_peer_id}")
+
+        if persona is None or not persona.produces_event_type:
+            return
+        schema = OutcomeSchema(persona.produces_schema) if persona.produces_schema else None
+        parsed = parse_outcome_block(task.output, schema)
+        fields = dict(parsed.fields) if parsed is not None else {}
+        outcome_payload: dict[str, Any] = {
+            "persona": persona.name,
+            "success": True,
+            "event_type": persona.produces_event_type,
+            "outcome": fields,
+            "fields": fields,
+            "valid": bool(parsed.valid) if parsed is not None else not persona.produces_schema,
+            "task_id": task.task_id,
+            "bubble_up": True,
+        }
+        summary = fields.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            outcome_payload["summary"] = summary.strip()
+        outcome = RavnEvent(
+            type=RavnEventType.OUTCOME,
+            source=runtime.flock_peer_id,
+            payload=outcome_payload,
+            timestamp=datetime.now(UTC),
+            urgency=0.3,
+            correlation_id=task.task_id,
+            session_id=session_id,
+            task_id=task.task_id,
+            root_correlation_id=root_correlation_id,
+        )
+        await peer.mesh.publish(outcome, topic=persona.produces_event_type)

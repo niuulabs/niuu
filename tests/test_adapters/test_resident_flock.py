@@ -6,9 +6,11 @@ import asyncio
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+from niuu.domain.outcome import OutcomeField
 from niuu.mesh.identity import MeshIdentity
 from ravn.adapters.discovery.event_bus import EventBusDiscoveryAdapter
 from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
+from ravn.domain.events import RavnEvent, RavnEventType
 from sleipnir.adapters.in_process import InProcessBus
 from volundr.adapters.outbound.resident_flock import ResidentFlockAdapter
 from volundr.domain.models import (
@@ -18,6 +20,7 @@ from volundr.domain.models import (
     ResidentRuntime,
     ResidentSession,
 )
+from volundr.domain.ports import SessionPersona
 
 
 class _Repository:
@@ -32,10 +35,11 @@ class _Repository:
 
 
 class _Connection:
-    def __init__(self) -> None:
+    def __init__(self, output: str = "alive") -> None:
         self.frames: asyncio.Queue[dict] = asyncio.Queue()
         self.sent: list[dict] = []
         self.closed = False
+        self.output = output
 
     async def receive(self) -> dict:
         return await self.frames.get()
@@ -43,9 +47,12 @@ class _Connection:
     async def send(self, frame: dict) -> None:
         self.sent.append(frame)
         await self.frames.put(
-            {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "alive"}}
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": self.output},
+            }
         )
-        await self.frames.put({"type": "result", "result": "alive"})
+        await self.frames.put({"type": "result", "result": self.output})
 
     async def close(self) -> None:
         self.closed = True
@@ -54,8 +61,8 @@ class _Connection:
 class _Controller:
     engine = ResidentEngine.HERMES
 
-    def __init__(self) -> None:
-        self.connection = _Connection()
+    def __init__(self, output: str = "alive") -> None:
+        self.connection = _Connection(output)
         self.created: list[tuple[str, str]] = []
 
     async def create_session(
@@ -80,12 +87,22 @@ class _Controller:
         return self.connection
 
 
-async def test_ravn_rpc_dispatches_through_existing_resident_session_controller() -> None:
-    flock_id = uuid4()
-    runtime = ResidentRuntime(
+class _PersonaProvider:
+    def __init__(self, persona: SessionPersona) -> None:
+        self.persona = persona
+        self.requests: list[tuple[str, str]] = []
+
+    async def get(self, owner_id: str, name: str) -> SessionPersona | None:
+        self.requests.append((owner_id, name))
+        return self.persona if name == self.persona.name else None
+
+
+def _runtime(*, flock_id: UUID, persona_name: str = "") -> ResidentRuntime:
+    return ResidentRuntime(
         owner_id="user-a",
         tenant_id="tenant-a",
         name="Hermes worker",
+        persona_name=persona_name,
         model="niuu/qwen",
         backend=ResidentBackend.LOCAL,
         engine=ResidentEngine.HERMES,
@@ -96,6 +113,11 @@ async def test_ravn_rpc_dispatches_through_existing_resident_session_controller(
         flock_role="specialist",
         flock_peer_id="hermes-worker",
     )
+
+
+async def test_ravn_rpc_dispatches_through_existing_resident_session_controller() -> None:
+    flock_id = uuid4()
+    runtime = _runtime(flock_id=flock_id)
     bus = InProcessBus()
     controller = _Controller()
     resident = ResidentFlockAdapter(_Repository(runtime), [controller], bus)
@@ -170,4 +192,163 @@ async def test_ravn_rpc_dispatches_through_existing_resident_session_controller(
 
     await coordinator.stop()
     await discovery.stop()
+    await resident.stop()
+
+
+async def test_resident_persona_subscribes_surfaces_and_emits_declared_outcome() -> None:
+    flock_id = uuid4()
+    runtime = _runtime(flock_id=flock_id, persona_name="event-hermes")
+    persona = SessionPersona(
+        name="event-hermes",
+        system_prompt="Act as the event Hermes.",
+        consumes_event_types=("proof.started",),
+        produces_event_type="proof.hermes.completed",
+        produces_schema={
+            "summary": OutcomeField(type="string", description="result summary"),
+        },
+    )
+    provider = _PersonaProvider(persona)
+    output = "---outcome---\nsummary: HERMES_EVENT_OK\n---end---"
+    controller = _Controller(output)
+    bus = InProcessBus()
+    resident = ResidentFlockAdapter(
+        _Repository(runtime),
+        [controller],
+        bus,
+        persona_provider=provider,
+    )
+    await resident.sync()
+
+    discovery = EventBusDiscoveryAdapter(
+        MeshIdentity(
+            peer_id="coordinator",
+            realm_id=str(flock_id),
+            persona="Coordinator",
+            capabilities=[],
+            permission_mode="permissive",
+            version="test",
+        ),
+        bus,
+        bus,
+        manage_transport_lifecycle=False,
+    )
+    coordinator = SleipnirMeshAdapter(
+        bus,
+        bus,
+        "coordinator",
+        discovery=discovery,
+        manage_transport_lifecycle=False,
+    )
+    await discovery.start()
+    await bus.flush()
+    await coordinator.start()
+
+    peer = discovery.peers()["hermes-worker"]
+    assert peer.persona == "event-hermes"
+    assert peer.consumes_event_types == ["proof.started"]
+    assert peer.emits_event_types == ["proof.hermes.completed"]
+    assert provider.requests == [("user-a", "event-hermes")]
+
+    surfaced: list[object] = []
+    outcomes: list[object] = []
+    await bus.subscribe(["ravn.mesh.activity.hermes_worker"], surfaced.append)
+    await bus.subscribe(["ravn.mesh.proof.hermes.completed"], outcomes.append)
+
+    accepted = await coordinator.send(
+        "hermes-worker",
+        {
+            "type": "task_dispatch",
+            "task": {
+                "task_id": "surface-task",
+                "title": "Surface proof",
+                "initiative_context": "Return the proof outcome",
+                "output_mode": "surface",
+                "session_id": "room-1",
+                "root_correlation_id": "room-1",
+            },
+        },
+    )
+    assert accepted["status"] == "accepted"
+    for _ in range(30):
+        result = await coordinator.send(
+            "hermes-worker", {"type": "task_result", "task_id": "surface-task"}
+        )
+        if result.get("status") == "complete":
+            break
+        await asyncio.sleep(0)
+    await bus.flush()
+
+    assert controller.connection.sent[0]["content"].startswith(
+        "Act as the event Hermes.\n\nTask:\n"
+    )
+    assert len(surfaced) == 1
+    assert surfaced[0].payload["ravn_event"]["text"] == output
+    assert surfaced[0].payload["ravn_session_id"] == "room-1"
+    assert len(outcomes) == 1
+    assert outcomes[0].payload["ravn_event"]["event_type"] == "proof.hermes.completed"
+    assert outcomes[0].payload["ravn_event"]["fields"] == {"summary": "HERMES_EVENT_OK"}
+
+    await coordinator.stop()
+    await discovery.stop()
+    await resident.stop()
+
+
+async def test_matching_persona_event_wakes_resident_without_surface_response() -> None:
+    flock_id = uuid4()
+    runtime = _runtime(flock_id=flock_id, persona_name="event-hermes")
+    persona = SessionPersona(
+        name="event-hermes",
+        system_prompt="React to subscribed proof events.",
+        consumes_event_types=("proof.started",),
+        produces_event_type="proof.hermes.completed",
+    )
+    controller = _Controller("EVENT_REACTION_OK")
+    bus = InProcessBus()
+    resident = ResidentFlockAdapter(
+        _Repository(runtime),
+        [controller],
+        bus,
+        persona_provider=_PersonaProvider(persona),
+    )
+    await resident.sync()
+    surfaced: list[object] = []
+    outcomes: list[object] = []
+    await bus.subscribe(["ravn.mesh.activity.hermes_worker"], surfaced.append)
+    await bus.subscribe(["ravn.mesh.proof.hermes.completed"], outcomes.append)
+
+    peer = resident._peers[runtime.id]
+    await peer.mesh.publish(
+        RavnEvent(
+            type=RavnEventType.OUTCOME,
+            source="coordinator",
+            payload={
+                "event_type": "proof.started",
+                "persona": "event-source",
+                "fields": {"summary": "start"},
+            },
+            timestamp=datetime.now(UTC),
+            urgency=0.3,
+            correlation_id="source-task",
+            session_id="room-1",
+            task_id="source-task",
+            root_correlation_id="room-1",
+        ),
+        topic="proof.started",
+    )
+    await bus.flush()
+    for _ in range(30):
+        if controller.created and any(
+            task.status == "complete" for task in resident._tasks.values()
+        ):
+            break
+        await asyncio.sleep(0)
+    await bus.flush()
+
+    assert controller.created == [("React to proof.started", "niuu/qwen")]
+    assert "Event type: proof.started" in controller.connection.sent[0]["content"]
+    assert surfaced == []
+    assert len(outcomes) == 1
+    assert outcomes[0].payload["ravn_event"]["event_type"] == "proof.hermes.completed"
+    assert outcomes[0].payload["ravn_root_correlation_id"] == "room-1"
+
     await resident.stop()
