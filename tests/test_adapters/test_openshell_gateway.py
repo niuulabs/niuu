@@ -576,10 +576,7 @@ def test_resident_ravn_config_uses_profile_selected_flock_transport(
     assert manager.supports(missing_transport) is False
     assert manager.supports(configured) is True
     assert config["mesh"]["own_peer_id"] == f"ravn-{member_id}"
-    assert config["mesh"]["adapters"] == [
-        {"adapter": "sleipnir", "transport": "nng"},
-        {"adapter": "sleipnir", "transport": "nats"},
-    ]
+    assert config["mesh"]["adapters"] == [{"adapter": "sleipnir", "transport": "nats"}]
     assert config["mesh"]["nats"]["user_env"] == "RAVN_NATS_USER"
     assert config["mesh"]["nats"]["tls_ca_pem"].startswith("-----BEGIN CERTIFICATE-----")
     assert config["discovery"]["realm_id"] == str(flock_id)

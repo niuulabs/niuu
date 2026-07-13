@@ -110,10 +110,7 @@ def resident_flock_runtime_config(
     mesh_options = flock.get("mesh") if isinstance(flock.get("mesh"), dict) else {}
     mesh_adapters = mesh_options.get("adapters")
     if isinstance(mesh_adapters, list) and mesh_adapters:
-        config["mesh"]["adapters"] = [
-            {"adapter": "sleipnir", "transport": "nng"},
-            *mesh_adapters,
-        ]
+        config["mesh"]["adapters"] = list(mesh_adapters)
         config["mesh"].pop("adapter", None)
     nats = mesh_options.get("nats")
     if isinstance(nats, dict) and nats:
