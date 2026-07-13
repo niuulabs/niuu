@@ -20,6 +20,7 @@ from ravn.cli.commands import (
     _chat,
     _dedupe_preserve_order,
     _derive_capabilities,
+    _filter_tools,
     _join_mode_to_fan_in,
     _mimir_ingest_event_fields_from_mcp_result,
     _mimir_mount_name_from_mcp_server_name,
@@ -1336,6 +1337,25 @@ class TestWorkflowRuntimeForPersona:
             "mimir",
             "workflow",
             "ravn",
+        ]
+
+    def test_cascade_group_allows_runtime_delegation_tools(self) -> None:
+        settings = Settings()
+        persona = PersonaConfig(name="coordinator", allowed_tools=["cascade"])
+        tools = [MagicMock() for _ in range(4)]
+        for tool, name in zip(
+            tools,
+            ("task_create", "task_collect", "flock_status", "read_file"),
+            strict=True,
+        ):
+            tool.name = name
+
+        filtered = _filter_tools(tools, settings, persona)
+
+        assert [tool.name for tool in filtered] == [
+            "task_create",
+            "task_collect",
+            "flock_status",
         ]
 
     def test_wire_cron_registers_trigger_and_returns_tools(self, tmp_path: Path) -> None:

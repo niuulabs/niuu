@@ -290,6 +290,46 @@ class TestTaskCreateTool:
         mesh.send.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_mesh_delegation_to_explicit_discovered_peer(self):
+        dl = _make_drive_loop()
+        hermes = _FakePeer("hermes-peer", status="idle", capabilities=["chat", "flock"])
+        openclaw = _FakePeer("openclaw-peer", status="idle", capabilities=["chat", "flock"])
+        discovery = _FakeDiscovery({"hermes-peer": hermes, "openclaw-peer": openclaw})
+        mesh = AsyncMock()
+        mesh.send = AsyncMock(return_value={"status": "accepted", "task_id": "t1"})
+
+        tool = TaskCreateTool(drive_loop=dl, mesh=mesh, discovery=discovery)
+        result = await tool.execute(
+            {
+                "prompt": "use Hermes",
+                "title": "targeted task",
+                "peer_id": "hermes-peer",
+                "required_caps": ["flock"],
+            }
+        )
+
+        assert json.loads(result.content)["location"] == "hermes-peer"
+        assert mesh.send.await_args.kwargs["target_peer_id"] == "hermes-peer"
+
+    @pytest.mark.asyncio
+    async def test_explicit_peer_must_be_discovered(self):
+        tool = TaskCreateTool(
+            drive_loop=_make_drive_loop(),
+            mesh=AsyncMock(),
+            discovery=_FakeDiscovery({}),
+        )
+
+        result = await tool.execute(
+            {"prompt": "work", "title": "targeted task", "peer_id": "missing"}
+        )
+
+        assert result.is_error
+        assert json.loads(result.content) == {
+            "error": "peer_not_found",
+            "peer_id": "missing",
+        }
+
+    @pytest.mark.asyncio
     async def test_no_idle_peer_falls_back_local(self):
         """No idle peers → local enqueue (spawn=false)."""
         dl = _make_drive_loop()

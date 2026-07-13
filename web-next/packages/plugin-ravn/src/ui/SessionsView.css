@@ -469,6 +469,11 @@
   border-right: 0;
 }
 
+.rv-rs__chat--flock {
+  flex: 1;
+  border-right: 0;
+}
+
 .rv-rs__toolbar {
   display: flex;
   align-items: center;

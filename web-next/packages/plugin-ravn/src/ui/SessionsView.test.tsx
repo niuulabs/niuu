@@ -43,12 +43,14 @@ function makeChatState(overrides: Record<string, unknown> = {}) {
     meshEvents: [],
     agentEvents: new Map(),
     pendingPermissions: [],
+    pendingInputRequests: [],
     availableCommands: [],
     capabilities: {},
     sendMessage: vi.fn(),
     sendDirectedMessages: vi.fn(),
     sendResendPrompt: vi.fn(),
     respondToPermission: vi.fn(),
+    respondToInput: vi.fn(),
     sendInterrupt: vi.fn(),
     sendSetModel: vi.fn(),
     sendSetThinkingTokens: vi.fn(),
@@ -552,6 +554,120 @@ describe('SessionsView — live chat', () => {
       '@product-steward research solvent defaults',
       [],
     );
+  });
+
+  it('combines flock member sessions and sends through the coordinator', async () => {
+    const flockId = '11111111-1111-4111-8111-111111111111';
+    const coordinatorSend = vi.fn();
+    const coordinator = liveRunningSession({
+      id: '10000001-0000-4000-8000-0000000000c1',
+      ravnId: '20000001-0000-4000-8000-0000000000c1',
+      personaName: 'flock-coordinator',
+      title: 'Coordinator',
+      createdAt: '2026-07-01T10:00:01Z',
+      chatEndpoint: 'wss://skuld.example/coordinator/session',
+      flockId,
+      flockRole: 'coordinator',
+      flockPeerId: 'ravn-coordinator',
+    });
+    const hermes = liveRunningSession({
+      id: '10000001-0000-4000-8000-0000000000e1',
+      ravnId: '20000001-0000-4000-8000-0000000000e1',
+      personaName: 'hermes-specialist',
+      title: 'Delegated analysis',
+      chatEndpoint: 'wss://skuld.example/hermes/session',
+      flockId,
+      flockRole: 'specialist',
+      flockPeerId: 'hermes-specialist',
+    });
+    const ravens = [
+      {
+        id: coordinator.ravnId,
+        personaName: coordinator.personaName,
+        residentName: 'Coordinator',
+        kind: 'resident' as const,
+        managed: true,
+        status: 'active' as const,
+        model: coordinator.model,
+        createdAt: coordinator.createdAt,
+        flockId,
+        flockRole: 'coordinator',
+        flockPeerId: coordinator.flockPeerId,
+        engine: 'ravn' as const,
+        capabilities: ['chat' as const],
+      },
+      {
+        id: hermes.ravnId,
+        personaName: hermes.personaName,
+        residentName: 'Hermes',
+        kind: 'resident' as const,
+        managed: true,
+        status: 'active' as const,
+        model: hermes.model,
+        createdAt: hermes.createdAt,
+        flockId,
+        flockRole: 'specialist',
+        flockPeerId: hermes.flockPeerId,
+        engine: 'hermes' as const,
+        capabilities: ['chat' as const],
+      },
+    ];
+    useSkuldChatMock.mockImplementation((url: string) =>
+      makeChatState({
+        messages: [
+          {
+            id: url.includes('hermes') ? 'hermes-message' : 'coordinator-message',
+            role: 'assistant',
+            content: url.includes('hermes') ? 'Hermes result' : 'Coordinator ready',
+            createdAt: new Date(
+              url.includes('hermes') ? '2026-07-01T10:00:03Z' : '2026-07-01T10:00:02Z',
+            ),
+            status: 'done',
+          },
+        ],
+        sendMessage: url.includes('coordinator') ? coordinatorSend : vi.fn(),
+      }),
+    );
+    const sessionStream: ISessionStream = {
+      async listSessions() {
+        return [coordinator, hermes];
+      },
+      async getSession() {
+        return coordinator;
+      },
+      async getMessages() {
+        return [];
+      },
+    };
+    const ravenStream = {
+      async listRavens() {
+        return ravens;
+      },
+      async getRaven() {
+        return ravens[0]!;
+      },
+    };
+
+    render(<SessionsView />, {
+      wrapper: wrap({
+        'ravn.sessions': sessionStream,
+        'ravn.ravens': ravenStream,
+        'ravn.personas': createMockPersonaStore(),
+        'ravn.budget': createMockBudgetStream(),
+      }),
+    });
+
+    expect(await screen.findByTestId('sessions-flock-chat')).toBeInTheDocument();
+    expect(screen.getByText('Coordinator ready')).toBeInTheDocument();
+    expect(screen.getByText('Hermes result')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('chat-textarea'), {
+      target: { value: 'Coordinate this work' },
+    });
+    fireEvent.click(screen.getByTestId('send-btn'));
+    expect(coordinatorSend).toHaveBeenCalledWith('Coordinate this work', []);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Chat' }));
+    expect(await screen.findByTestId('sessions-live-chat')).toBeInTheDocument();
   });
 
   it('keeps the read-only transcript for a running session without a chatEndpoint', async () => {

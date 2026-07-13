@@ -114,6 +114,13 @@ class TaskCreateTool(ToolPort):
                     "type": "string",
                     "description": "Optional persona name for the subtask agent.",
                 },
+                "peer_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional exact peer_id from flock_status. Use this when addressing a "
+                        "specific resident member."
+                    ),
+                },
                 "output_mode": {
                     "type": "string",
                     "enum": ["silent", "ambient", "surface"],
@@ -147,6 +154,7 @@ class TaskCreateTool(ToolPort):
         prompt = input.get("prompt", "").strip()
         title = input.get("title", "untitled").strip()
         persona = input.get("persona") or None
+        requested_peer_id = str(input.get("peer_id") or "").strip()
         output_mode = OutputMode(input.get("output_mode", "silent"))
         priority = int(input.get("priority", 5))
         allow_spawn = bool(input.get("spawn", False))
@@ -238,6 +246,42 @@ class TaskCreateTool(ToolPort):
 
         # Try to delegate to an idle peer first
         if self._mesh is not None and self._discovery is not None:
+            if requested_peer_id:
+                peer = self._discovery.peers().get(requested_peer_id)
+                if peer is None:
+                    return ToolResult(
+                        tool_call_id="",
+                        content=json.dumps(
+                            {"error": "peer_not_found", "peer_id": requested_peer_id}
+                        ),
+                        is_error=True,
+                    )
+                peer_caps = set(getattr(peer, "capabilities", []))
+                if required_caps and not all(
+                    capability in peer_caps for capability in required_caps
+                ):
+                    return ToolResult(
+                        tool_call_id="",
+                        content=json.dumps(
+                            {
+                                "error": "peer_missing_capabilities",
+                                "peer_id": requested_peer_id,
+                                "required_caps": required_caps,
+                            }
+                        ),
+                        is_error=True,
+                    )
+                return await self._delegate_to_peer(
+                    requested_peer_id,
+                    task_id,
+                    title,
+                    prompt,
+                    persona,
+                    output_mode,
+                    priority,
+                    session_id=parent_session_id,
+                    root_correlation_id=parent_root_correlation_id,
+                )
             peer_id = self._pick_idle_peer(required_caps, preferred_persona=persona)
             if peer_id is not None:
                 return await self._delegate_to_peer(
