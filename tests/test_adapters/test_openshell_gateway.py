@@ -1072,6 +1072,51 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
 
 
 @pytest.mark.asyncio
+async def test_resident_reconcile_recovers_missing_service_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _resident_runtime().model_copy(
+        update={
+            "backend_ref": {
+                "kind": "OpenShellSandbox",
+                "id": "sandbox-id",
+                "name": "resident-existing",
+                "service_url": "",
+            }
+        }
+    )
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+
+    observation = await manager.reconcile(runtime, _resident_profile())
+
+    assert client.exposed == {
+        "sandbox_name": f"resident-{runtime.id.hex[:19]}",
+        "target_port": 9200,
+        "service": "skuld",
+    }
+    assert observation.backend_ref["service_url"] == client.service_url
+    assert observation.endpoints[0].url == f"/s/{runtime.id}/session"
+
+
+@pytest.mark.asyncio
+async def test_hermes_reconcile_recovers_internal_service_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _hermes_runtime()
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+
+    observation = await manager.reconcile(runtime, _hermes_profile())
+
+    assert client.exposed is None
+    assert observation.backend_ref["service_url"] == adapter.HERMES_INTERNAL_SERVICE_URL
+    assert observation.endpoints[0].kind == "sessions"
+
+
+@pytest.mark.asyncio
 async def test_resident_materializes_raw_protocol_credential_from_openbao(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

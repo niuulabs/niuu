@@ -1332,6 +1332,18 @@ class OpenShellGatewayPodManager(
                 service_port=service_port,
             )
         service_url = str(runtime.backend_ref.get("service_url") or "")
+        if not service_url and runtime.engine is ResidentEngine.HERMES:
+            service_url = HERMES_INTERNAL_SERVICE_URL
+        if not service_url:
+            service_url = await asyncio.to_thread(
+                self._client.expose_service,
+                sandbox_name=self._resident_sandbox_name(runtime),
+                target_port=service_port,
+                service=service_name,
+            )
+            service_url = (service_url or self._gateway_public_url).rstrip("/")
+            if service_url:
+                self._service_urls[str(runtime.id)] = service_url
         return self._resident_observation(
             runtime,
             sandbox,
