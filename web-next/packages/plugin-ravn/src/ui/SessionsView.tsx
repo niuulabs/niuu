@@ -1382,8 +1382,7 @@ export function SessionsView() {
     : null;
   const hasLiveChat = Boolean(
     selectedSession?.status === 'running' &&
-    normalizeSessionUrl(selectedSession.chatEndpoint ?? null) &&
-    (!selectedRavn?.managed || selectedRavn.capabilities?.includes('chat')),
+    normalizeSessionUrl(selectedSession.chatEndpoint ?? null),
   );
 
   const {

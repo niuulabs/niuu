@@ -347,6 +347,42 @@ describe('SessionsView — live chat', () => {
     expect(screen.queryByTestId('sessions-context')).not.toBeInTheDocument();
   });
 
+  it('uses an advertised chatEndpoint without requiring a duplicate resident capability', async () => {
+    const resident = {
+      id: 'a3f1b2c4-8e7d-4a6f-9b0c-1d2e3f4a5b6c',
+      personaName: 'flock-coordinator',
+      residentName: 'Coordinator',
+      kind: 'resident' as const,
+      managed: true,
+      status: 'active' as const,
+      model: 'gpt-5.6-sol',
+      createdAt: '2026-07-13T14:29:00Z',
+      capabilities: ['session.list' as const],
+    };
+    const ravenStream = {
+      async listRavens() {
+        return [resident];
+      },
+      async getRaven() {
+        return resident;
+      },
+    };
+
+    render(<SessionsView />, {
+      wrapper: wrap({
+        'ravn.sessions': singleSessionStream(liveRunningSession({ ravnId: resident.id })),
+        'ravn.ravens': ravenStream,
+        'ravn.personas': createMockPersonaStore(),
+        'ravn.budget': createMockBudgetStream(),
+      }),
+    });
+
+    expect(await screen.findByTestId('sessions-live-chat')).toBeInTheDocument();
+    expect(useSkuldChatMock).toHaveBeenCalledWith(LIVE_CHAT_ENDPOINT, {
+      historyMode: 'none',
+    });
+  });
+
   it('uses websocket-owned history for engine-native resident sessions', async () => {
     const resident = {
       id: 'a3f1b2c4-8e7d-4a6f-9b0c-1d2e3f4a5b6c',
