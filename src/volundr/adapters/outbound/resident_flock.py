@@ -172,7 +172,7 @@ class ResidentFlockAdapter:
             runtime_id,
             {
                 "task_id": task_id,
-                "title": f"React to {event_type}",
+                "title": f"React to {event_type} ({task_id[-8:]})",
                 "initiative_context": (
                     f"A subscribed flock event was received.\n"
                     f"Event type: {event_type}\n"

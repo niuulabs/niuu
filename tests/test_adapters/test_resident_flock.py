@@ -379,7 +379,11 @@ async def test_matching_persona_event_wakes_resident_and_surfaces_response() -> 
         await asyncio.sleep(0)
     await bus.flush()
 
-    assert controller.created == [("React to proof.started", "niuu/qwen")]
+    assert len(controller.created) == 1
+    reaction_title = controller.created[0][0]
+    assert reaction_title.startswith("React to proof.started (")
+    assert len(reaction_title.rsplit("(", 1)[1].removesuffix(")")) == 8
+    assert controller.created[0][1] == "niuu/qwen"
     assert "Event type: proof.started" in controller.connection.sent[0]["content"]
     assert len(surfaced) == 1
     assert surfaced[0].payload["ravn_event"]["text"] == "EVENT_REACTION_OK"
