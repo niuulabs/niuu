@@ -180,6 +180,16 @@ class TestRoomMeshBridgeLifecycle:
         assert bridge._patterns == MESH_PATTERNS
 
     @pytest.mark.asyncio
+    async def test_default_pattern_is_scoped_to_flock(self):
+        bus = InProcessBus()
+        bridge = RoomMeshBridge(
+            subscriber=bus,
+            room_bridge=_make_room_bridge(),
+            environment_id="flock-a",
+        )
+        assert bridge._patterns == ["ravn.mesh.realm_flock_a.*"]
+
+    @pytest.mark.asyncio
     async def test_custom_patterns_accepted(self):
         bus = InProcessBus()
         custom = ["ravn.mesh.code.*"]

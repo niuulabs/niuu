@@ -41,6 +41,7 @@ def _build_mesh(settings: Settings, discovery: Any = None) -> Any:
             rpc_timeout_s=mesh_cfg.rpc_timeout_s,
             discovery=discovery,
             sleipnir_transport_builder=_sleipnir_tb,
+            environment_id=settings.discovery.realm_id,
         )
 
     # Legacy single-adapter mode for backward compatibility
@@ -65,6 +66,7 @@ def _build_mesh(settings: Settings, discovery: Any = None) -> Any:
         own_peer_id=own_peer_id,
         discovery=discovery,
         rpc_timeout_s=mesh_cfg.rpc_timeout_s,
+        environment_id=settings.discovery.realm_id,
     )
 
 

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from niuu.domain.outcome import OutcomeField
+from niuu.mesh import mesh_event_prefix
 from niuu.mesh.identity import MeshIdentity
 from ravn.adapters.discovery.event_bus import EventBusDiscoveryAdapter
 from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
@@ -140,6 +141,7 @@ async def test_ravn_rpc_dispatches_through_existing_resident_session_controller(
         bus,
         "coordinator",
         discovery=discovery,
+        environment_id=str(flock_id),
         manage_transport_lifecycle=False,
     )
     await discovery.start()
@@ -267,6 +269,7 @@ async def test_resident_persona_subscribes_surfaces_and_emits_declared_outcome()
         bus,
         "coordinator",
         discovery=discovery,
+        environment_id=str(flock_id),
         manage_transport_lifecycle=False,
     )
     await discovery.start()
@@ -281,8 +284,9 @@ async def test_resident_persona_subscribes_surfaces_and_emits_declared_outcome()
 
     surfaced: list[object] = []
     outcomes: list[object] = []
-    await bus.subscribe(["ravn.mesh.activity.hermes_worker"], surfaced.append)
-    await bus.subscribe(["ravn.mesh.proof.hermes.completed"], outcomes.append)
+    prefix = mesh_event_prefix(str(flock_id))
+    await bus.subscribe([f"{prefix}.activity.hermes_worker"], surfaced.append)
+    await bus.subscribe([f"{prefix}.proof.hermes.completed"], outcomes.append)
 
     accepted = await coordinator.send(
         "hermes-worker",
@@ -343,8 +347,9 @@ async def test_matching_persona_event_wakes_resident_and_surfaces_response() -> 
     await resident.sync()
     surfaced: list[object] = []
     outcomes: list[object] = []
-    await bus.subscribe(["ravn.mesh.activity.hermes_worker"], surfaced.append)
-    await bus.subscribe(["ravn.mesh.proof.hermes.completed"], outcomes.append)
+    prefix = mesh_event_prefix(str(flock_id))
+    await bus.subscribe([f"{prefix}.activity.hermes_worker"], surfaced.append)
+    await bus.subscribe([f"{prefix}.proof.hermes.completed"], outcomes.append)
 
     peer = resident._peers[runtime.id]
     await peer.mesh.publish(

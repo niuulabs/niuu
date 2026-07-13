@@ -660,6 +660,7 @@ class Broker(
                 own_peer_id=own_peer_id,
                 rpc_timeout_s=mesh_cfg.rpc_timeout_s,
                 sleipnir_transport_builder=_sleipnir_transport,
+                environment_id=mesh_cfg.realm_id,
             )
         elif mesh_cfg.transport != "in_process":
             try:
@@ -683,12 +684,17 @@ class Broker(
                         subscriber=nng,
                         own_peer_id=own_peer_id,
                         rpc_timeout_s=mesh_cfg.rpc_timeout_s,
+                        environment_id=mesh_cfg.realm_id,
                     )
             except ImportError:
                 logger.warning("mesh: nng transport not available, falling back to in-process")
 
         if mesh is None:
-            mesh = build_in_process_mesh(own_peer_id, mesh_cfg.rpc_timeout_s)
+            mesh = build_in_process_mesh(
+                own_peer_id,
+                mesh_cfg.rpc_timeout_s,
+                environment_id=mesh_cfg.realm_id,
+            )
 
         # Build discovery adapter using shared niuu.mesh.discovery_builder
         own_identity = MeshIdentity(
@@ -795,6 +801,7 @@ class Broker(
                         subscriber=sleipnir_subscriber,
                         room_bridge=self._room_bridge,
                         session_id=self.session_id,
+                        environment_id=mesh_cfg.realm_id,
                         report_usage=self._report_usage,
                     )
                     await self._room_mesh_bridge.start()
@@ -948,8 +955,6 @@ class Broker(
         if self._mesh_adapter is None or not self._has_workflow_trigger():
             return
 
-        from ravn.domain.events import RavnEvent, RavnEventType
-
         cfg = self._settings.workflow_trigger
         # Workflow kickoff is a required dependency for flock-backed workflows.
         # Large flocks can take several seconds to finish peer startup, so we
@@ -970,31 +975,90 @@ class Broker(
                 delay_s,
             )
             await asyncio.sleep(delay_s)
-        event = RavnEvent(
-            type=RavnEventType.OUTCOME,
-            source=f"skuld:{self._mesh_adapter.peer_id}",
-            payload={
-                "event_type": cfg.event_type,
-                "session_id": self.session_id,
-                "persona": "skuld",
+        await self._publish_mesh_event(
+            cfg.event_type,
+            self._settings.session.initial_prompt,
+            source=cfg.source,
+            correlation_id=self.session_id,
+            extra_payload={
                 "summary": f"Workflow dispatch: {cfg.label or cfg.event_type}",
-                "task_description": self._settings.session.initial_prompt,
-                "trigger_source": cfg.source,
                 "workflow_trigger_label": cfg.label,
                 "workflow_trigger_node_id": cfg.node_id,
                 "workspace_path": self.workspace_dir,
             },
-            timestamp=datetime.now(UTC),
-            urgency=0.8,
-            correlation_id=self.session_id,
-            session_id=self.session_id,
-            root_correlation_id=self.session_id,
         )
-        await self._mesh_adapter.publish(event, cfg.event_type)
         logger.info(
             "Workflow trigger dispatched onto mesh event_type=%s node_id=%s",
             cfg.event_type,
             cfg.node_id,
+        )
+
+    async def _publish_mesh_event(
+        self,
+        event_type: str,
+        task_description: str,
+        *,
+        source: str,
+        correlation_id: str = "",
+        extra_payload: dict[str, Any] | None = None,
+    ) -> str:
+        """Publish one task event through Skuld's configured mesh adapter."""
+        from ravn.domain.events import RavnEvent, RavnEventType
+
+        if self._mesh_adapter is None:
+            raise RuntimeError("Flock mesh is not available")
+        event_id = correlation_id or str(uuid.uuid4())
+        payload = {
+            **(extra_payload or {}),
+            "event_type": event_type,
+            "session_id": self.session_id,
+            "persona": "skuld",
+            "prompt": task_description,
+            "task_description": task_description,
+            "trigger_source": source,
+        }
+        event = RavnEvent(
+            type=RavnEventType.OUTCOME,
+            source=f"skuld:{self._mesh_adapter.peer_id}",
+            payload=payload,
+            timestamp=datetime.now(UTC),
+            urgency=0.8,
+            correlation_id=event_id,
+            session_id=self.session_id,
+            task_id=None if correlation_id else event_id,
+            root_correlation_id=self.session_id,
+        )
+        await self._mesh_adapter.publish(event, event_type)
+        return event_id
+
+    async def handle_publish_mesh_event(
+        self,
+        event_type: str,
+        task_description: str,
+        *,
+        source: str = "external",
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        """Inject an operator event into the current flock through Skuld."""
+        event_type = event_type.strip()
+        task_description = task_description.strip()
+        if not event_type:
+            raise ValueError("Event type is required")
+        if not task_description:
+            raise ValueError("Event task description is required")
+        if self._mesh_adapter is None:
+            raise RuntimeError("Flock mesh is not available")
+        consumers_ready = await self._wait_for_workflow_trigger_consumers(
+            event_type,
+            20.0,
+        )
+        if not consumers_ready:
+            raise RuntimeError(f"mesh event consumers for {event_type} did not connect")
+        return await self._publish_mesh_event(
+            event_type,
+            task_description,
+            source=source,
+            extra_payload=payload,
         )
 
     async def _run_workflow_trigger_task(self) -> None:
@@ -2875,6 +2939,34 @@ class Broker(
                     await self._send_broker_frame_to(
                         sender_ws,
                         {"type": "room_prompt_resent", "message_id": message_id},
+                    )
+
+            case "publish_event":
+                try:
+                    event_id = await self.handle_publish_mesh_event(
+                        str(data.get("eventType") or data.get("event_type") or ""),
+                        str(data.get("content") or data.get("prompt") or ""),
+                        source="browser",
+                        payload=data.get("payload")
+                        if isinstance(data.get("payload"), dict)
+                        else None,
+                    )
+                except (ValueError, RuntimeError) as exc:
+                    if sender_ws:
+                        await self._send_broker_frame_to(
+                            sender_ws, {"type": "error", "content": str(exc)}
+                        )
+                    return
+                if sender_ws:
+                    await self._send_broker_frame_to(
+                        sender_ws,
+                        {
+                            "type": "mesh_event_published",
+                            "event_id": event_id,
+                            "event_type": str(
+                                data.get("eventType") or data.get("event_type") or ""
+                            ),
+                        },
                     )
 
             # Default: treat as user message (backward compat with {"content": "..."})

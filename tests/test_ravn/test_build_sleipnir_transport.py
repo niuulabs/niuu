@@ -229,12 +229,19 @@ class TestBuildMesh:
 
         settings = _make_settings()
         settings.mesh.adapters = [{"role": "pub_sub", "transport": "nng"}]
+        settings.discovery.realm_id = "flock-a"
 
         captured: list = []
 
         def _fake_build_mesh(
-            adapters, own_peer_id, rpc_timeout_s, discovery, sleipnir_transport_builder
+            adapters,
+            own_peer_id,
+            rpc_timeout_s,
+            discovery,
+            sleipnir_transport_builder,
+            environment_id,
         ):
+            assert environment_id == "flock-a"
             captured.append(sleipnir_transport_builder)
             return MagicMock()
 
@@ -258,7 +265,12 @@ class TestBuildMesh:
         captured: list = []
 
         def _fake_build_mesh(
-            adapters, own_peer_id, rpc_timeout_s, discovery, sleipnir_transport_builder
+            adapters,
+            own_peer_id,
+            rpc_timeout_s,
+            discovery,
+            sleipnir_transport_builder,
+            environment_id,
         ):
             captured.append(sleipnir_transport_builder)
             return MagicMock()

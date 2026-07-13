@@ -7,12 +7,11 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Any
 
+from niuu.mesh import mesh_event_prefix
 from ravn.domain.models import RavnCandidate, RavnPeer
 from ravn.ports.discovery import PeerCallback
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher, SleipnirSubscriber, Subscription
-
-_ANNOUNCE_EVENT_TYPE = "ravn.mesh.announce"
 
 
 class EventBusDiscoveryAdapter:
@@ -36,6 +35,9 @@ class EventBusDiscoveryAdapter:
         self._heartbeat_interval_s = heartbeat_interval_s
         self._peer_ttl_s = peer_ttl_s
         self._manage_transport_lifecycle = manage_transport_lifecycle
+        self._announce_event_type = (
+            f"{mesh_event_prefix(str(getattr(own_identity, 'realm_id', '') or ''))}.announce"
+        )
         self._peers: dict[str, RavnPeer] = {}
         self._on_join: list[PeerCallback] = []
         self._on_leave: list[PeerCallback] = []
@@ -52,7 +54,7 @@ class EventBusDiscoveryAdapter:
         ):
             await self._subscriber.start()  # type: ignore[attr-defined]
         self._subscription = await self._subscriber.subscribe(
-            [_ANNOUNCE_EVENT_TYPE], self._handle_announce
+            [self._announce_event_type], self._handle_announce
         )
         await self.announce()
         self._heartbeat_task = asyncio.create_task(
@@ -125,7 +127,7 @@ class EventBusDiscoveryAdapter:
         }
         await self._publisher.publish(
             SleipnirEvent(
-                event_type=_ANNOUNCE_EVENT_TYPE,
+                event_type=self._announce_event_type,
                 source=f"ravn:{self._identity.peer_id}",
                 payload={"identity": identity, "action": action, "status": "idle", "task_count": 0},
                 summary=f"Flock peer {action}: {self._identity.peer_id}",

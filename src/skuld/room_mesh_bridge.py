@@ -43,6 +43,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from niuu.mesh import mesh_event_prefix
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirSubscriber, Subscription
 
@@ -172,13 +173,15 @@ class RoomMeshBridge:
         subscriber: SleipnirSubscriber,
         room_bridge: RoomBridge,
         session_id: str | None = None,
+        environment_id: str = "",
         patterns: list[str] | None = None,
         report_usage: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._subscriber = subscriber
         self._room_bridge = room_bridge
         self._session_id = session_id
-        self._patterns = patterns if patterns is not None else list(MESH_PATTERNS)
+        self._event_prefix = mesh_event_prefix(environment_id)
+        self._patterns = patterns if patterns is not None else [f"{self._event_prefix}.*"]
         self._report_usage = report_usage
         self._reported_usage_ids: set[str] = set()
         self._subscription: Subscription | None = None
@@ -242,9 +245,7 @@ class RoomMeshBridge:
         ravn_type = event.payload.get("ravn_type", "")
         ravn_event_payload = event.payload.get("ravn_event", {})
 
-        # Mesh topic derived from event_type: "ravn.mesh.<topic>"
-        parts = event.event_type.split(".", 2)
-        mesh_topic = parts[2] if len(parts) == 3 else ""
+        mesh_topic = event.event_type.removeprefix(f"{self._event_prefix}.")
 
         if "outcome" in ravn_type.lower():
             await self._translate_outcome(peer_id, mesh_topic, ravn_event_payload)

@@ -511,6 +511,42 @@ class TestBroker:
         broker._mesh_adapter.publish.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_operator_event_uses_existing_mesh_publisher(self, tmp_path):
+        settings = SkuldSettings(
+            session={"id": "flock-session", "workspace_dir": str(tmp_path)},
+            mesh={"enabled": True, "peer_id": "skuld-flock"},
+        )
+        broker = Broker(settings=settings)
+        broker._mesh_adapter = MagicMock(peer_id="skuld-flock", publish=AsyncMock())
+
+        with patch.object(
+            broker,
+            "_wait_for_workflow_trigger_consumers",
+            new=AsyncMock(return_value=True),
+        ):
+            event_id = await broker.handle_publish_mesh_event(
+                "code.changed",
+                "Review commit abc123",
+                source="browser",
+                payload={"commit": "abc123"},
+            )
+
+        broker._mesh_adapter.publish.assert_awaited_once()
+        event, topic = broker._mesh_adapter.publish.await_args.args
+        assert topic == "code.changed"
+        assert event.correlation_id == event_id
+        assert event.root_correlation_id == "flock-session"
+        assert event.payload == {
+            "commit": "abc123",
+            "event_type": "code.changed",
+            "session_id": "flock-session",
+            "persona": "skuld",
+            "prompt": "Review commit abc123",
+            "task_description": "Review commit abc123",
+            "trigger_source": "browser",
+        }
+
+    @pytest.mark.asyncio
     async def test_shutdown_stops_transport(self, test_broker):
         mock_transport = AsyncMock()
         test_broker._transport = mock_transport
@@ -2109,6 +2145,35 @@ class TestDispatchBrowserMessage:
     async def test_dispatch_user_message_empty_ignored(self, test_broker):
         await test_broker._dispatch_browser_message({"content": ""})
         test_broker._transport.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_publish_event_injects_through_mesh(self, test_broker):
+        sender_ws = AsyncMock()
+        test_broker.handle_publish_mesh_event = AsyncMock(return_value="event-1")
+
+        await test_broker._dispatch_browser_message(
+            {
+                "type": "publish_event",
+                "eventType": "code.changed",
+                "content": "Review the latest change",
+                "payload": {"commit": "abc123"},
+            },
+            sender_ws=sender_ws,
+        )
+
+        test_broker.handle_publish_mesh_event.assert_awaited_once_with(
+            "code.changed",
+            "Review the latest change",
+            source="browser",
+            payload={"commit": "abc123"},
+        )
+        sender_ws.send_json.assert_awaited_once_with(
+            {
+                "type": "mesh_event_published",
+                "event_id": "event-1",
+                "event_type": "code.changed",
+            }
+        )
 
     @pytest.mark.asyncio
     async def test_dispatch_user_message_rejected_for_workflow_room_session(self, tmp_path):
