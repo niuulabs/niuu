@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from datetime import UTC, datetime
@@ -14,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from niuu.adapters.memory_credential_store import MemoryCredentialStore
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.openclaw_gateway import (
+    OpenClawChatConnection,
     OpenClawResidentSessionController,
 )
 from volundr.domain.models import (
@@ -49,6 +51,89 @@ def _runtime() -> ResidentRuntime:
         engine=ResidentEngine.OPENCLAW,
         profile_id="nemoclaw-openshell",
     )
+
+
+class _RetryHistoryGateway:
+    def __init__(self) -> None:
+        self.events: asyncio.Queue[dict] = asyncio.Queue()
+        self.history_requests = 0
+        self.closed = False
+
+    async def request(self, method: str, _params: dict) -> dict:
+        if method == "chat.send":
+            return {"ok": True}
+        if method != "chat.history":
+            raise AssertionError(f"unexpected Gateway method: {method}")
+        self.history_requests += 1
+        messages = [
+            {
+                "id": "old-assistant",
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": "Old answer"}],
+            }
+        ]
+        if self.history_requests >= 3:
+            messages.extend(
+                [
+                    {
+                        "id": "retry-error",
+                        "role": "assistant",
+                        "stopReason": "error",
+                        "content": [{"type": "text", "text": "terminated"}],
+                    },
+                    {
+                        "id": "retry-success",
+                        "role": "assistant",
+                        "stopReason": "stop",
+                        "content": [{"type": "text", "text": "Recovered answer"}],
+                    },
+                ]
+            )
+        return {"messages": messages}
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_openclaw_recovers_completed_native_retry_from_history() -> None:
+    gateway = _RetryHistoryGateway()
+    key = "agent:main:niuu-11111111-2222-4333-8444-555555555555"
+    initial_history = await gateway.request("chat.history", {})
+    chat = OpenClawChatConnection(
+        gateway,  # type: ignore[arg-type]
+        key,
+        initial_history,
+        "openai/gpt-5.6",
+        retry_history_timeout_seconds=0.1,
+        retry_history_poll_interval_seconds=0.001,
+    )
+
+    assert (await chat.receive())["type"] == "capabilities"
+    assert (await chat.receive())["turns"][0]["content"] == "Old answer"
+    await chat.send({"type": "user", "content": "New question", "request_id": "request-1"})
+    assert (await chat.receive())["type"] == "user_confirmed"
+    await gateway.events.put(
+        {
+            "type": "event",
+            "event": "chat",
+            "payload": {
+                "sessionKey": key,
+                "runId": "run-1",
+                "state": "error",
+                "errorMessage": "terminated",
+            },
+        }
+    )
+
+    assert (await chat.receive())["type"] == "assistant"
+    assert (await chat.receive())["delta"]["text"] == "Recovered answer"
+    assert (await chat.receive())["type"] == "result"
+    await chat.close()
+
+    assert gateway.history_requests == 3
+    assert gateway.closed is True
 
 
 @pytest.mark.asyncio
@@ -161,21 +246,6 @@ async def test_openclaw_sessions_and_shared_chat_use_native_gateway_contract() -
                                 "runId": "run-1",
                                 "sessionKey": key,
                                 "seq": 1,
-                                "state": "error",
-                                "errorMessage": "terminated",
-                            },
-                        }
-                    )
-                )
-                await websocket.send(
-                    json.dumps(
-                        {
-                            "type": "event",
-                            "event": "chat",
-                            "payload": {
-                                "runId": "run-1",
-                                "sessionKey": key,
-                                "seq": 2,
                                 "state": "delta",
                                 "message": {
                                     "role": "assistant",
@@ -193,7 +263,7 @@ async def test_openclaw_sessions_and_shared_chat_use_native_gateway_contract() -
                             "payload": {
                                 "runId": "run-1",
                                 "sessionKey": key,
-                                "seq": 3,
+                                "seq": 2,
                                 "state": "final",
                                 "message": {
                                     "role": "assistant",

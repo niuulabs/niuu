@@ -39,6 +39,8 @@ _SESSION_KEY_PREFIX = f"agent:{_AGENT_ID}:niuu-"
 _SCOPES = ["operator.read", "operator.write", "operator.admin"]
 _MIN_PROTOCOL_VERSION = 3
 _MAX_PROTOCOL_VERSION = 4
+_RETRY_HISTORY_TIMEOUT_SECONDS = 300.0
+_RETRY_HISTORY_POLL_INTERVAL_SECONDS = 1.0
 _PARTICIPANT = {
     "peer_id": "openclaw-primary",
     "persona": "NemoClaw",
@@ -294,13 +296,17 @@ def _message_text(message: Any) -> str:
     )
 
 
-def _history_turns(payload: Any) -> list[dict[str, Any]]:
+def _history_messages(payload: Any) -> list[dict[str, Any]]:
     messages = payload.get("messages") if isinstance(payload, dict) else []
     if not isinstance(messages, list):
         return []
+    return [message for message in messages if isinstance(message, dict)]
+
+
+def _history_turns(payload: Any) -> list[dict[str, Any]]:
     turns: list[dict[str, Any]] = []
-    for index, message in enumerate(messages):
-        if not isinstance(message, dict) or message.get("role") not in {"user", "assistant"}:
+    for index, message in enumerate(_history_messages(payload)):
+        if message.get("role") not in {"user", "assistant"}:
             continue
         timestamp = message.get("timestamp") or message.get("createdAt")
         created_at = datetime.now(UTC)
@@ -325,8 +331,11 @@ class OpenClawChatConnection(ResidentChatConnection):
         self,
         gateway: _GatewayConnection,
         session_key: str,
-        history: list[dict[str, Any]],
+        history: Any,
         model: str,
+        *,
+        retry_history_timeout_seconds: float = _RETRY_HISTORY_TIMEOUT_SECONDS,
+        retry_history_poll_interval_seconds: float = _RETRY_HISTORY_POLL_INTERVAL_SECONDS,
     ) -> None:
         self._gateway = gateway
         self._session_key = session_key
@@ -340,9 +349,34 @@ class OpenClawChatConnection(ResidentChatConnection):
                 "set_thinking_tokens": False,
             }
         )
-        self._initial.put_nowait({"type": "conversation_history", "turns": history})
+        self._initial.put_nowait({"type": "conversation_history", "turns": _history_turns(history)})
         self._active_runs: set[str] = set()
         self._run_text: dict[str, str] = {}
+        self._history_message_count = len(_history_messages(history))
+        self._retry_history_timeout_seconds = retry_history_timeout_seconds
+        self._retry_history_poll_interval_seconds = retry_history_poll_interval_seconds
+
+    async def _await_native_retry(self) -> str:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._retry_history_timeout_seconds
+        while True:
+            history = await self._gateway.request(
+                "chat.history",
+                {"sessionKey": self._session_key, "limit": 1000},
+            )
+            messages = _history_messages(history)
+            for message in reversed(messages[self._history_message_count :]):
+                stop_reason = message.get("stopReason") or message.get("stop_reason")
+                text = _message_text(message)
+                if message.get("role") == "assistant" and stop_reason == "stop" and text:
+                    self._history_message_count = len(messages)
+                    return text
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise OpenClawGatewayError(
+                    "OpenClaw native retry did not complete before the history timeout"
+                )
+            await asyncio.sleep(min(self._retry_history_poll_interval_seconds, remaining))
 
     async def receive(self) -> dict[str, Any]:
         while True:
@@ -419,7 +453,21 @@ class OpenClawChatConnection(ResidentChatConnection):
                     if state == "error" and str(payload.get("errorMessage") or "").strip() == (
                         "terminated"
                     ):
-                        continue
+                        text = await self._await_native_retry()
+                        self._active_runs.discard(run_id)
+                        self._run_text.pop(run_id, None)
+                        self._initial.put_nowait(
+                            {
+                                "type": "content_block_delta",
+                                "delta": {"type": "text_delta", "text": text},
+                            }
+                        )
+                        self._initial.put_nowait({"type": "result", "result": ""})
+                        return {
+                            "type": "assistant",
+                            "message": {"role": "assistant", "model": self._model, "content": []},
+                            "participant": _PARTICIPANT,
+                        }
                     self._active_runs.discard(run_id)
                     self._run_text.pop(run_id, None)
                     return {
@@ -458,6 +506,11 @@ class OpenClawChatConnection(ResidentChatConnection):
         else:
             text = str(content or "")
         request_id = str(frame.get("request_id") or uuid4())
+        history = await self._gateway.request(
+            "chat.history",
+            {"sessionKey": self._session_key, "limit": 1000},
+        )
+        self._history_message_count = len(_history_messages(history))
         await self._gateway.request(
             "chat.send",
             {
@@ -484,9 +537,18 @@ class OpenClawChatConnection(ResidentChatConnection):
 class OpenClawResidentSessionController(ResidentSessionController):
     """OpenClaw implementation of resident-native session lifecycle and chat."""
 
-    def __init__(self, runtime_controller: Any, credential_store: CredentialStorePort) -> None:
+    def __init__(
+        self,
+        runtime_controller: Any,
+        credential_store: CredentialStorePort,
+        *,
+        retry_history_timeout_seconds: float = _RETRY_HISTORY_TIMEOUT_SECONDS,
+        retry_history_poll_interval_seconds: float = _RETRY_HISTORY_POLL_INTERVAL_SECONDS,
+    ) -> None:
         self._runtime = runtime_controller
         self._credentials = credential_store
+        self._retry_history_timeout_seconds = retry_history_timeout_seconds
+        self._retry_history_poll_interval_seconds = retry_history_poll_interval_seconds
 
     @property
     def engine(self) -> ResidentEngine:
@@ -630,4 +692,11 @@ class OpenClawResidentSessionController(ResidentSessionController):
         except Exception:
             await connection.close()
             raise
-        return OpenClawChatConnection(connection, key, _history_turns(history), runtime.model)
+        return OpenClawChatConnection(
+            connection,
+            key,
+            history,
+            runtime.model,
+            retry_history_timeout_seconds=self._retry_history_timeout_seconds,
+            retry_history_poll_interval_seconds=self._retry_history_poll_interval_seconds,
+        )
