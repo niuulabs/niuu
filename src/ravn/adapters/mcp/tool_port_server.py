@@ -5,9 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import select
 import sys
-import threading
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -85,7 +83,8 @@ async def _stdio_server():
     read_writer, read_stream = anyio.create_memory_object_stream[SessionMessage | Exception](0)
     write_stream, write_reader = anyio.create_memory_object_stream[SessionMessage](0)
     loop = asyncio.get_running_loop()
-    stopped = threading.Event()
+    stdin_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+    pending = bytearray()
 
     async def deliver(line: bytes) -> None:
         try:
@@ -95,33 +94,27 @@ async def _stdio_server():
             return
         await read_writer.send(SessionMessage(message))
 
-    def read_stdin() -> None:
-        fd = 0
-        pending = bytearray()
-        while not stopped.is_set():
-            readable, _, _ = select.select([fd], [], [], 0.1)
-            if not readable:
-                continue
-            try:
-                chunk = os.read(fd, 64 * 1024)
-            except InterruptedError:
-                continue
-            except BlockingIOError:
-                continue
-            if not chunk:
-                break
-            pending.extend(chunk)
-            while (newline := pending.find(b"\n")) >= 0:
-                line = bytes(pending[: newline + 1])
-                del pending[: newline + 1]
-                future = asyncio.run_coroutine_threadsafe(deliver(line), loop)
-                try:
-                    future.result()
-                except Exception:
-                    return
-        if pending:
-            asyncio.run_coroutine_threadsafe(deliver(bytes(pending)), loop)
-        asyncio.run_coroutine_threadsafe(read_writer.aclose(), loop)
+    def read_ready() -> None:
+        try:
+            chunk = os.read(0, 64 * 1024)
+        except (InterruptedError, BlockingIOError):
+            return
+        if not chunk:
+            loop.remove_reader(0)
+            if pending:
+                stdin_queue.put_nowait(bytes(pending))
+                pending.clear()
+            stdin_queue.put_nowait(None)
+            return
+        pending.extend(chunk)
+        while (newline := pending.find(b"\n")) >= 0:
+            stdin_queue.put_nowait(bytes(pending[: newline + 1]))
+            del pending[: newline + 1]
+
+    async def deliver_stdin() -> None:
+        async with read_writer:
+            while (line := await stdin_queue.get()) is not None:
+                await deliver(line)
 
     async def write_stdout() -> None:
         async with write_reader:
@@ -133,12 +126,13 @@ async def _stdio_server():
                 sys.stdout.write(payload + "\n")
                 sys.stdout.flush()
 
-    reader_thread = threading.Thread(target=read_stdin, name="ravn-mcp-stdin", daemon=True)
-    reader_thread.start()
+    loop.add_reader(0, read_ready)
+    reader_task = asyncio.create_task(deliver_stdin())
     writer_task = asyncio.create_task(write_stdout())
     try:
         yield read_stream, write_stream
     finally:
-        stopped.set()
+        loop.remove_reader(0)
+        reader_task.cancel()
         writer_task.cancel()
-        await asyncio.gather(writer_task, return_exceptions=True)
+        await asyncio.gather(reader_task, writer_task, return_exceptions=True)
