@@ -34,6 +34,7 @@ from ravn.adapters.tools.cascade_tools import (
     TaskStatusTool,
     TaskStopTool,
     build_cascade_tools,
+    build_flock_tools,
 )
 from ravn.config import InitiativeConfig, Settings
 from ravn.domain.models import AgentTask, OutputMode
@@ -820,6 +821,27 @@ class TestBuildCascadeTools:
         assert create_tool._remote_tasks is status_tool._remote_tasks
         assert create_tool._remote_tasks is stop_tool._remote_tasks
         assert create_tool._remote_tasks is collect_tool._remote_tasks
+
+
+class TestBuildFlockTools:
+    def test_remote_only(self):
+        mesh = MagicMock()
+        discovery = _FakeDiscovery({})
+
+        tools = build_flock_tools(mesh=mesh, discovery=discovery)
+
+        names = {tool.name for tool in tools}
+        assert names == {
+            "flock_status",
+            "task_collect",
+            "task_create",
+            "task_list",
+            "task_status",
+            "task_stop",
+        }
+        create_tool = next(tool for tool in tools if tool.name == "task_create")
+        assert create_tool._drive_loop is None
+        assert create_tool._spawn is None
 
 
 # ---------------------------------------------------------------------------

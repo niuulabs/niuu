@@ -768,14 +768,13 @@ async def _run_tool_mcp(settings: Settings, *, persona_config: Any | None) -> No
             )
             await participant.start()
 
-            from ravn.adapters.tools.cascade_tools import build_cascade_tools
+            from ravn.adapters.tools.cascade_tools import build_flock_tools
             from ravn.adapters.tools.mesh_routing_tools import build_mesh_routing_tools
 
-            remote_tools = build_cascade_tools(
-                drive_loop=None,
+            remote_tools = build_flock_tools(
                 mesh=mesh,
                 discovery=discovery,
-                cascade_config=settings.cascade,
+                task_config=settings.cascade,
             )
             remote_tools.extend(build_mesh_routing_tools(mesh=mesh, discovery=discovery))
             tools.extend(_filter_tools(remote_tools, settings, persona_config))

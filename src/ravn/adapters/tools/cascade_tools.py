@@ -1025,7 +1025,7 @@ class FlockTerminateTool(ToolPort):
 # ---------------------------------------------------------------------------
 
 
-def build_cascade_tools(
+def _build_task_tools(
     drive_loop: DriveLoop | None,
     mesh: MeshPort | None = None,
     discovery: DiscoveryPort | None = None,
@@ -1034,7 +1034,7 @@ def build_cascade_tools(
     allowed_target_personas: set[str] | None = None,
     allowed_target_resolver: Callable[[], set[str] | None] | None = None,
 ) -> list[ToolPort]:
-    """Build and return all cascade tools.
+    """Build task delegation tools for a local cascade or remote flock.
 
     Shared ``remote_tasks`` dict wires task_create → task_status/stop/collect
     so they can look up which peer owns a remote task.
@@ -1101,3 +1101,39 @@ def build_cascade_tools(
         tools.append(FlockTerminateTool(spawn_adapter=spawn_adapter))
 
     return tools
+
+
+def build_cascade_tools(
+    drive_loop: DriveLoop | None,
+    mesh: MeshPort | None = None,
+    discovery: DiscoveryPort | None = None,
+    spawn_adapter: SpawnPort | None = None,
+    cascade_config: object | None = None,
+    allowed_target_personas: set[str] | None = None,
+    allowed_target_resolver: Callable[[], set[str] | None] | None = None,
+) -> list[ToolPort]:
+    """Build the local, mesh, and optional spawn tools used by cascades."""
+    return _build_task_tools(
+        drive_loop=drive_loop,
+        mesh=mesh,
+        discovery=discovery,
+        spawn_adapter=spawn_adapter,
+        cascade_config=cascade_config,
+        allowed_target_personas=allowed_target_personas,
+        allowed_target_resolver=allowed_target_resolver,
+    )
+
+
+def build_flock_tools(
+    *,
+    mesh: MeshPort,
+    discovery: DiscoveryPort,
+    task_config: object | None = None,
+) -> list[ToolPort]:
+    """Build remote task tools for an existing flock without local fallback or spawning."""
+    return _build_task_tools(
+        drive_loop=None,
+        mesh=mesh,
+        discovery=discovery,
+        cascade_config=task_config,
+    )
