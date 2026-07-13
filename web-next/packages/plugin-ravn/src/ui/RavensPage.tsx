@@ -432,7 +432,9 @@ function RavensFleet({ ravens }: { ravens: Ravn[] }) {
                                   deleteFlock.reset();
                                   setFlockDeleteTarget({
                                     label: titleCase(groupLabel),
-                                    ravens: [...groupRavns],
+                                    ravens: ravnList.filter(
+                                      (ravn) => ravn.flockId === groupRavns[0]!.flockId,
+                                    ),
                                   });
                                 }
                               : undefined

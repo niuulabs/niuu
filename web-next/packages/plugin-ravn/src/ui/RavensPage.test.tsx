@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { RavensPage } from './RavensPage';
+import type { Ravn } from '../domain/ravn';
 import {
   createMockRavenStream,
   createMockBudgetStream,
@@ -47,6 +48,28 @@ function wrap(services = makeServices()) {
 beforeEach(() => {
   localStorage.clear();
 });
+
+const TEST_FLOCK_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+function makeFlockRaven(overrides: Partial<Ravn> = {}): Ravn {
+  return {
+    id: '11111111-1111-4111-8111-111111111111',
+    personaName: 'coordinator',
+    residentName: 'Proof ravn',
+    status: 'active',
+    model: 'gpt-5.6',
+    createdAt: '2026-07-13T10:00:00Z',
+    managed: true,
+    kind: 'resident',
+    backend: 'openshell',
+    engine: 'ravn',
+    instanceId: 'target-a',
+    instanceName: 'Alpha',
+    flockId: TEST_FLOCK_ID,
+    flockRole: 'coordinator',
+    ...overrides,
+  };
+}
 
 describe('RavensPage', () => {
   it('shows loading state initially', () => {
@@ -156,46 +179,22 @@ describe('RavensPage', () => {
 
   it('deletes every resident in a flock from one group action', async () => {
     const flockRavens = [
-      {
-        id: '11111111-1111-4111-8111-111111111111',
-        personaName: 'coordinator',
-        residentName: 'Proof ravn',
-        status: 'active' as const,
-        model: 'gpt-5.6',
-        createdAt: '2026-07-13T10:00:00Z',
-        managed: true,
-        kind: 'resident' as const,
-        backend: 'openshell' as const,
-        engine: 'ravn' as const,
-        instanceId: 'target-a',
-        instanceName: 'Alpha',
-        flockId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-        flockRole: 'coordinator',
-      },
-      {
+      makeFlockRaven(),
+      makeFlockRaven({
         id: '22222222-2222-4222-8222-222222222222',
         personaName: 'specialist',
         residentName: 'Proof hermes',
-        status: 'active' as const,
         model: 'nemotron',
-        createdAt: '2026-07-13T10:00:00Z',
-        managed: true,
-        kind: 'resident' as const,
-        backend: 'openshell' as const,
-        engine: 'hermes' as const,
-        instanceId: 'target-a',
-        instanceName: 'Alpha',
-        flockId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        engine: 'hermes',
         flockRole: 'specialist',
-      },
+      }),
     ];
-    const independent = {
-      ...flockRavens[0]!,
+    const independent = makeFlockRaven({
       id: '33333333-3333-4333-8333-333333333333',
       residentName: 'Independent ravn',
       flockId: undefined,
       flockRole: undefined,
-    };
+    });
     const remove = vi.fn().mockResolvedValue(undefined);
     render(<RavensPage />, {
       wrapper: wrap(
@@ -213,7 +212,10 @@ describe('RavensPage', () => {
     });
 
     await waitFor(() => expect(screen.getByTestId('group-btn-flock')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('ravens-search'), { target: { value: 'Proof ravn' } });
+    expect(screen.getAllByTestId('ravn-list-row')).toHaveLength(1);
     fireEvent.click(screen.getByTestId('group-btn-flock'));
+    expect(screen.queryByRole('button', { name: 'Delete Independent' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Delete Flock Aaaaaaaa' }));
     expect(screen.getByText(/all 2 residents/i)).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('flock-delete-confirm'));
@@ -225,22 +227,7 @@ describe('RavensPage', () => {
   });
 
   it('keeps flock deletion failures visible', async () => {
-    const flockRaven = {
-      id: '11111111-1111-4111-8111-111111111111',
-      personaName: 'coordinator',
-      residentName: 'Proof ravn',
-      status: 'active' as const,
-      model: 'gpt-5.6',
-      createdAt: '2026-07-13T10:00:00Z',
-      managed: true,
-      kind: 'resident' as const,
-      backend: 'openshell' as const,
-      engine: 'ravn' as const,
-      instanceId: 'target-a',
-      instanceName: 'Alpha',
-      flockId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      flockRole: 'coordinator',
-    };
+    const flockRaven = makeFlockRaven();
     render(<RavensPage />, {
       wrapper: wrap(
         makeServices({
@@ -265,6 +252,73 @@ describe('RavensPage', () => {
       expect(screen.getByRole('alert')).toHaveTextContent('Failed to delete 1 of 1 flock members'),
     );
     expect(screen.getByTestId('flock-delete-confirm')).toBeInTheDocument();
+  });
+
+  it('supports closing and cancelling flock deletion without deleting', async () => {
+    const remove = vi.fn();
+    render(<RavensPage />, {
+      wrapper: wrap(
+        makeServices({
+          'ravn.ravens': {
+            listRavens: vi.fn().mockResolvedValue([makeFlockRaven()]),
+            getRaven: vi.fn(),
+          },
+          'ravn.residents': {
+            ...makeServices()['ravn.residents'],
+            delete: remove,
+          },
+        }),
+      ),
+    });
+
+    await waitFor(() => expect(screen.getByTestId('group-btn-flock')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('group-btn-flock'));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Flock Aaaaaaaa' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByText('Delete flock')).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Flock Aaaaaaaa' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByText('Delete flock')).not.toBeInTheDocument());
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('locks flock deletion controls while all members are being removed', async () => {
+    let finishDelete: (() => void) | undefined;
+    const remove = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishDelete = resolve;
+        }),
+    );
+    render(<RavensPage />, {
+      wrapper: wrap(
+        makeServices({
+          'ravn.ravens': {
+            listRavens: vi.fn().mockResolvedValue([makeFlockRaven()]),
+            getRaven: vi.fn(),
+          },
+          'ravn.residents': {
+            ...makeServices()['ravn.residents'],
+            delete: remove,
+          },
+        }),
+      ),
+    });
+
+    await waitFor(() => expect(screen.getByTestId('group-btn-flock')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('group-btn-flock'));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Flock Aaaaaaaa' }));
+    fireEvent.click(screen.getByTestId('flock-delete-confirm'));
+
+    await waitFor(() => expect(screen.getByText('Deleting…')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    expect(screen.getByTestId('flock-delete-confirm')).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.getByText('Delete flock')).toBeInTheDocument();
+
+    finishDelete?.();
+    await waitFor(() => expect(screen.queryByText('Delete flock')).not.toBeInTheDocument());
   });
 
   it('switches the selected ravn when a different list row is clicked', async () => {
