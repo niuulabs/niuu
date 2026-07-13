@@ -12,6 +12,7 @@ from volundr.adapters.outbound import local_resident_runtime as local_runtime
 from volundr.adapters.outbound.local_resident_runtime import (
     LocalContainerResidentRuntimeController,
 )
+from volundr.adapters.outbound.resident_container_spec import _resident_hermes_config
 from volundr.domain.models import (
     ResidentBackend,
     ResidentCapability,
@@ -245,6 +246,7 @@ async def test_local_openclaw_uses_machine_credentials_and_device_approval(
         "X-Tenant-ID": "local",
         "X-Session-ID": str(runtime.id),
     }
+    assert openclaw_config["tools"]["exec"] == {"security": "full", "ask": "off"}
     runtime = runtime.model_copy(update={"backend_ref": deployed.backend_ref})
     await controller.approve_resident_device(
         runtime,
@@ -263,6 +265,16 @@ def test_local_controller_rejects_profiles_owned_by_other_backends(
     profile = _profile().model_copy(update={"backend": ResidentBackend.OPENSHELL})
 
     assert controller.supports(profile) is False
+
+
+def test_local_hermes_uses_native_yolo_mode() -> None:
+    config = _resident_hermes_config(
+        _runtime(ResidentEngine.HERMES),
+        {"resident": {"llm": {"provider": {"kwargs": {"base_url": "http://bifrost.test/v1"}}}}},
+        18789,
+    )
+
+    assert config["approvals"] == {"mode": "off"}
 
 
 @pytest.mark.asyncio

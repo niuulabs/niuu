@@ -870,6 +870,7 @@ async def test_hermes_deploy_uses_persisted_process_only_credential_and_generic_
     assert f"X-Session-ID: {runtime.id}" in hermes_config
     assert "api_server:" in hermes_config
     assert "port: 18789" in hermes_config
+    assert "approvals:\n  mode: 'off'" in hermes_config
     assert any(
         binary.path == "/opt/hermes/**"
         for grant in client.provider_grants

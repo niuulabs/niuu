@@ -563,24 +563,33 @@ async def test_lifecycle_observation_and_delete_use_one_record(runtime_service) 
 async def test_delete_record_removes_resident_trace_spans() -> None:
     repository = MemoryResidentRuntimeRepository()
     spans = AsyncMock()
-    service = ResidentRuntimeService(repository, _profiles(), span_repository=spans)
+    events = AsyncMock()
+    service = ResidentRuntimeService(
+        repository,
+        _profiles(),
+        span_repository=spans,
+        event_repository=events,
+    )
     principal = _principal()
     runtime = await service.create_record(principal, name="Muninn", profile_id="ravn-openshell")
 
     assert await service.delete_record(principal, runtime.id)
 
     spans.delete_by_session.assert_awaited_once_with(runtime.id)
+    events.delete_by_session.assert_awaited_once_with(runtime.id)
 
 
 async def test_delete_removes_resident_trace_spans_after_backend_cleanup() -> None:
     repository = MemoryResidentRuntimeRepository()
     controller = MemoryResidentRuntimeController()
     spans = AsyncMock()
+    events = AsyncMock()
     service = ResidentRuntimeService(
         repository,
         _profiles(),
         [controller],
         span_repository=spans,
+        event_repository=events,
     )
     principal = _principal()
     runtime = await service.create_record(principal, name="Muninn", profile_id="ravn-openshell")
@@ -589,6 +598,7 @@ async def test_delete_removes_resident_trace_spans_after_backend_cleanup() -> No
 
     assert controller.actions == ["delete"]
     spans.delete_by_session.assert_awaited_once_with(runtime.id)
+    events.delete_by_session.assert_awaited_once_with(runtime.id)
 
 
 async def test_delete_waits_for_in_flight_deployment_before_cleanup() -> None:

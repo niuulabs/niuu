@@ -9,13 +9,11 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field
 
+from volundr.adapters.inbound.auth import check_session_or_resident_access
 from volundr.domain.models import SessionSpan, SessionSpanStatus
 from volundr.domain.ports import SessionSpanRepository
-from volundr.domain.services.resident_runtime import (
-    ResidentRuntimeNotFoundError,
-    ResidentRuntimeService,
-)
-from volundr.domain.services.session import SessionAccessDeniedError, SessionService
+from volundr.domain.services.resident_runtime import ResidentRuntimeService
+from volundr.domain.services.session import SessionService
 
 
 def _utc_now() -> datetime:
@@ -200,33 +198,13 @@ def create_trace_router(
     async def _check_event_access(
         request: Request, session_id: UUID, action: str = "emit_trace"
     ) -> None:
-        if session_service is None and resident_runtime_service is None:
-            return
-        from volundr.adapters.inbound.auth import extract_principal
-
-        principal = await extract_principal(request)
-        session = await session_service.get_session(session_id) if session_service else None
-        if session is not None and session_service is not None:
-            try:
-                await session_service._check_access(session, principal, action)
-            except SessionAccessDeniedError:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Not authorized to access trace for session {session_id}",
-                )
-            return
-
-        if resident_runtime_service is not None:
-            try:
-                await resident_runtime_service.get(principal, session_id)
-            except ResidentRuntimeNotFoundError:
-                pass
-            else:
-                return
-
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Session or resident runtime not found: {session_id}",
+        await check_session_or_resident_access(
+            request,
+            session_id,
+            session_service=session_service,
+            resident_runtime_service=resident_runtime_service,
+            action=action,
+            resource_name="trace",
         )
 
     @router.post(

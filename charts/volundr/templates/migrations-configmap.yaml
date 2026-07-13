@@ -1500,4 +1500,32 @@ data:
         END IF;
     END
     $$;
+  000059_resident_session_events.up.sql: |
+    -- Session analytics events can belong to a Forge session or resident runtime.
+    -- The REST adapter authorizes either subject before accepting events.
+    ALTER TABLE session_events
+        DROP CONSTRAINT IF EXISTS session_events_session_id_fkey;
+  000059_resident_session_events.down.sql: |
+    -- Resident-owned events cannot satisfy the original sessions-only constraint.
+    DELETE FROM session_events AS event
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM sessions AS session
+        WHERE session.id = event.session_id
+    );
+
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'session_events_session_id_fkey'
+              AND conrelid = 'session_events'::regclass
+        ) THEN
+            ALTER TABLE session_events
+                ADD CONSTRAINT session_events_session_id_fkey
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE;
+        END IF;
+    END
+    $$;
 {{- end }}

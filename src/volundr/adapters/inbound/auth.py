@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import inspect
 import logging
+from typing import Any
+from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
 
@@ -17,6 +19,48 @@ from volundr.domain.ports import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def check_session_or_resident_access(
+    request: Request,
+    subject_id: UUID,
+    *,
+    session_service: Any | None,
+    resident_runtime_service: Any | None,
+    action: str,
+    resource_name: str,
+) -> None:
+    """Authorize an existing Forge session or resident runtime subject."""
+    if session_service is None and resident_runtime_service is None:
+        return
+
+    from volundr.domain.services.resident_runtime import ResidentRuntimeNotFoundError
+    from volundr.domain.services.session import SessionAccessDeniedError
+
+    principal = await extract_principal(request)
+    session = await session_service.get_session(subject_id) if session_service else None
+    if session is not None and session_service is not None:
+        try:
+            await session_service._check_access(session, principal, action)
+        except SessionAccessDeniedError:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Not authorized to access {resource_name} for session {subject_id}",
+            )
+        return
+
+    if resident_runtime_service is not None:
+        try:
+            await resident_runtime_service.get(principal, subject_id)
+        except ResidentRuntimeNotFoundError:
+            pass
+        else:
+            return
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Session or resident runtime not found: {subject_id}",
+    )
 
 
 def _split_roles(raw: str) -> list[str]:

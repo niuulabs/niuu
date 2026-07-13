@@ -438,6 +438,9 @@ def create_app(
             stats_repository = PostgresStatsRepository(pool)
             token_tracker = PostgresTokenTracker(pool)
             span_repository = PostgresSpanRepository(pool)
+            pg_event_sink = PostgresEventSink(
+                pool, buffer_size=settings.event_pipeline.postgres_buffer_size
+            )
             from ravn.adapters.personas.postgres_registry import PostgresPersonaRegistry
 
             persona_registry = PostgresPersonaRegistry(pool)
@@ -596,6 +599,7 @@ def create_app(
                 resident_controllers,
                 resident_session_controllers,
                 span_repository=span_repository,
+                event_repository=pg_event_sink,
             )
             resident_flock_adapter = (
                 ResidentFlockAdapter(
@@ -1028,9 +1032,6 @@ def create_app(
             app.include_router(create_audit_router(audit_repository))
 
             # Event pipeline: sinks + ingestion service + REST endpoints
-            pg_event_sink = PostgresEventSink(
-                pool, buffer_size=settings.event_pipeline.postgres_buffer_size
-            )
             event_sinks: list = [pg_event_sink]
 
             # Optional: RabbitMQ sink
@@ -1101,6 +1102,7 @@ def create_app(
                 event_ingestion,
                 pg_event_sink,
                 session_service=session_service,
+                resident_runtime_service=resident_runtime_service,
                 prefix="/api/v1/forge",
             )
             app.include_router(events_router)

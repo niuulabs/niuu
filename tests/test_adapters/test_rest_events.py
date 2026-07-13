@@ -1,7 +1,7 @@
 """Tests for the event pipeline REST endpoints."""
 
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -11,6 +11,7 @@ from volundr.adapters.inbound.rest_events import create_events_router
 from volundr.domain.models import SessionEvent, SessionEventType
 from volundr.domain.ports import EventSink, SessionEventRepository
 from volundr.domain.services.event_ingestion import EventIngestionService
+from volundr.domain.services.resident_runtime import ResidentRuntimeNotFoundError
 
 
 class InMemoryEventSink(EventSink, SessionEventRepository):
@@ -306,3 +307,86 @@ class TestSinkHealth:
         body = resp.json()
         assert "sinks" in body
         assert body["sinks"]["test"] is True
+
+
+class _SessionService:
+    async def get_session(self, _session_id):
+        return None
+
+
+class _ResidentRuntimeService:
+    def __init__(self, runtime_id: UUID) -> None:
+        self.runtime_id = runtime_id
+
+    async def get(self, _principal, runtime_id):
+        if runtime_id != self.runtime_id:
+            raise ResidentRuntimeNotFoundError(f"Resident runtime not found: {runtime_id}")
+        return object()
+
+
+def _resident_event_client(runtime_id: UUID) -> tuple[TestClient, InMemoryEventSink]:
+    sink = InMemoryEventSink()
+    app = FastAPI()
+    app.state.identity = object()
+    app.include_router(
+        create_events_router(
+            EventIngestionService(sinks=[sink]),
+            sink,
+            session_service=_SessionService(),
+            resident_runtime_service=_ResidentRuntimeService(runtime_id),
+        )
+    )
+    return TestClient(app), sink
+
+
+def _auth_headers() -> dict[str, str]:
+    return {
+        "x-auth-user-id": "user-a",
+        "x-auth-tenant": "tenant-a",
+        "x-auth-roles": "volundr:developer",
+    }
+
+
+def test_resident_runtime_can_emit_and_read_existing_session_events() -> None:
+    runtime_id = uuid4()
+    client, sink = _resident_event_client(runtime_id)
+
+    response = client.post(
+        "/api/v1/forge/events",
+        headers=_auth_headers(),
+        json={
+            "session_id": str(runtime_id),
+            "event_type": "message_assistant",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "data": {"content_preview": "resident output"},
+            "sequence": 1,
+        },
+    )
+
+    assert response.status_code == 201
+    assert sink._events[0].session_id == runtime_id
+    events = client.get(
+        f"/api/v1/forge/sessions/{runtime_id}/events",
+        headers=_auth_headers(),
+    )
+    assert events.status_code == 200
+    assert events.json()[0]["session_id"] == str(runtime_id)
+
+
+def test_unknown_event_subject_is_rejected() -> None:
+    client, sink = _resident_event_client(uuid4())
+
+    response = client.post(
+        "/api/v1/forge/events",
+        headers=_auth_headers(),
+        json={
+            "session_id": str(uuid4()),
+            "event_type": "message_assistant",
+            "timestamp": datetime.now(UTC).isoformat(),
+            "data": {},
+            "sequence": 1,
+        },
+    )
+
+    assert response.status_code == 404
+    assert sink._events == []

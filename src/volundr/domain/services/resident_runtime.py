@@ -29,6 +29,7 @@ from volundr.domain.ports import (
     ResidentRuntimeProxyTargetResolver,
     ResidentRuntimeRepository,
     ResidentSessionController,
+    SessionEventRepository,
     SessionSpanRepository,
 )
 
@@ -69,6 +70,7 @@ class ResidentRuntimeService:
         controllers: list[ResidentRuntimeController] | None = None,
         session_controllers: list[ResidentSessionController] | None = None,
         span_repository: SessionSpanRepository | None = None,
+        event_repository: SessionEventRepository | None = None,
     ) -> None:
         self._repository = repository
         self._profiles = profiles
@@ -81,6 +83,7 @@ class ResidentRuntimeService:
         if len(self._session_controllers) != len(session_controllers or []):
             raise ValueError("Resident session controller engines must be unique")
         self._span_repository = span_repository
+        self._event_repository = event_repository
         self._deployment_tasks: dict[UUID, asyncio.Task[None]] = {}
 
     def list_profiles(self) -> list[ResidentDeploymentProfile]:
@@ -414,6 +417,8 @@ class ResidentRuntimeService:
         deleted = await self._repository.delete(runtime_id)
         if deleted and self._span_repository is not None:
             await self._span_repository.delete_by_session(runtime_id)
+        if deleted and self._event_repository is not None:
+            await self._event_repository.delete_by_session(runtime_id)
         return deleted
 
     async def delete(self, principal: Principal, runtime_id: UUID) -> bool:
@@ -452,6 +457,8 @@ class ResidentRuntimeService:
         deleted = await self._repository.delete(runtime_id)
         if deleted and self._span_repository is not None:
             await self._span_repository.delete_by_session(runtime_id)
+        if deleted and self._event_repository is not None:
+            await self._event_repository.delete_by_session(runtime_id)
         return existed
 
     async def logs(

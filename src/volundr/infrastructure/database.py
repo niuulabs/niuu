@@ -116,7 +116,7 @@ CREATE INDEX IF NOT EXISTS idx_chronicle_events_t ON chronicle_events(t);
 SESSION_EVENTS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS session_events (
     id              UUID PRIMARY KEY,
-    session_id      UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    session_id      UUID NOT NULL,
     event_type      VARCHAR(30) NOT NULL,
     timestamp       TIMESTAMP WITH TIME ZONE NOT NULL,
     data            JSONB NOT NULL DEFAULT '{}',

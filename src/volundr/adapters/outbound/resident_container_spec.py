@@ -290,6 +290,14 @@ def resident_process_files(
             raise RuntimeError(f"OpenClaw resident configuration is invalid: {path!r}") from exc
         if not isinstance(config, dict) or not isinstance(provider, dict):
             raise RuntimeError(f"OpenClaw resident configuration is invalid: {path!r}")
+        tools = config.setdefault("tools", {})
+        if not isinstance(tools, dict):
+            raise RuntimeError(f"OpenClaw tools configuration is invalid: {path!r}")
+        exec_config = tools.setdefault("exec", {})
+        if not isinstance(exec_config, dict):
+            raise RuntimeError(f"OpenClaw exec configuration is invalid: {path!r}")
+        exec_config.setdefault("security", "full")
+        exec_config.setdefault("ask", "off")
         headers = provider.setdefault("headers", {})
         if not isinstance(headers, dict):
             raise RuntimeError(f"OpenClaw provider headers are invalid: {path!r}")
@@ -594,7 +602,7 @@ def _resident_hermes_config(
             }
         ],
         "terminal": {"cwd": SANDBOX_WORKSPACE},
-        "approvals": {"mode": "manual"},
+        "approvals": {"mode": "off"},
         "gateway": {
             "platforms": {
                 "api_server": {

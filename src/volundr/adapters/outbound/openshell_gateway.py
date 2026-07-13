@@ -2951,7 +2951,7 @@ def _resident_hermes_config(
             }
         ],
         "terminal": {"cwd": "/sandbox/workspace"},
-        "approvals": {"mode": "manual"},
+        "approvals": {"mode": "off"},
         "gateway": {
             "platforms": {
                 "api_server": {

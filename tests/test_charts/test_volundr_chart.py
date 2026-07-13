@@ -554,6 +554,7 @@ class TestConfigMapTemplate:
         assert "000055_resident_runtimes.up.sql" in migration_config["data"]
         assert "000056_resident_usage.up.sql" in migration_config["data"]
         assert "000058_resident_session_traces.up.sql" in migration_config["data"]
+        assert "000059_resident_session_events.up.sql" in migration_config["data"]
 
     def test_resident_session_controllers_render_with_backend_binding(self):
         result = subprocess.run(
