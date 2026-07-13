@@ -65,12 +65,16 @@ async def test_stdio_handshake_does_not_depend_on_anyio_worker_pool() -> None:
         """
         import asyncio
         import threading
+        from concurrent.futures import ThreadPoolExecutor
 
         import anyio
 
         from ravn.adapters.mcp.tool_port_server import ToolPortMcpServer
 
         async def main():
+            loop = asyncio.get_running_loop()
+            loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+            loop.run_in_executor(None, threading.Event().wait)
             limiter = anyio.to_thread.current_default_thread_limiter()
             limiter.total_tokens = 1
             asyncio.create_task(

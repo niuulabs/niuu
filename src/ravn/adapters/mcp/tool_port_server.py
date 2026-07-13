@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import sys
+import threading
 from contextlib import asynccontextmanager
 from typing import Any
 
 import anyio
 from mcp import types
 from mcp.server import Server
-from mcp.server.stdio import stdio_server as threaded_stdio_server
 from mcp.shared.message import SessionMessage
 
 from ravn.ports.tool import ToolPort
@@ -74,30 +73,31 @@ class ToolPortMcpServer:
 
 @asynccontextmanager
 async def _stdio_server():
-    """Run MCP stdio without consuming AnyIO's shared worker pool on Unix."""
-    if os.name == "nt":
-        async with threaded_stdio_server() as streams:
-            yield streams
-        return
-
+    """Run MCP stdio with a dedicated reader, independent of shared worker pools."""
     read_writer, read_stream = anyio.create_memory_object_stream[SessionMessage | Exception](0)
     write_stream, write_reader = anyio.create_memory_object_stream[SessionMessage](0)
-    reader = asyncio.StreamReader()
-    protocol = asyncio.StreamReaderProtocol(reader)
-    transport, _ = await asyncio.get_running_loop().connect_read_pipe(
-        lambda: protocol,
-        sys.stdin.buffer,
-    )
+    loop = asyncio.get_running_loop()
+    stopped = threading.Event()
 
-    async def read_stdin() -> None:
-        async with read_writer:
-            while line := await reader.readline():
-                try:
-                    message = types.JSONRPCMessage.model_validate_json(line)
-                except Exception as exc:
-                    await read_writer.send(exc)
-                    continue
-                await read_writer.send(SessionMessage(message))
+    async def deliver(line: bytes) -> None:
+        try:
+            message = types.JSONRPCMessage.model_validate_json(line)
+        except Exception as exc:
+            await read_writer.send(exc)
+            return
+        await read_writer.send(SessionMessage(message))
+
+    def read_stdin() -> None:
+        while not stopped.is_set():
+            line = sys.stdin.buffer.readline()
+            if not line:
+                break
+            future = asyncio.run_coroutine_threadsafe(deliver(line), loop)
+            try:
+                future.result()
+            except Exception:
+                break
+        asyncio.run_coroutine_threadsafe(read_writer.aclose(), loop)
 
     async def write_stdout() -> None:
         async with write_reader:
@@ -109,13 +109,12 @@ async def _stdio_server():
                 sys.stdout.write(payload + "\n")
                 sys.stdout.flush()
 
+    reader_thread = threading.Thread(target=read_stdin, name="ravn-mcp-stdin", daemon=True)
+    reader_thread.start()
+    writer_task = asyncio.create_task(write_stdout())
     try:
-        async with anyio.create_task_group() as task_group:
-            task_group.start_soon(read_stdin)
-            task_group.start_soon(write_stdout)
-            try:
-                yield read_stream, write_stream
-            finally:
-                task_group.cancel_scope.cancel()
+        yield read_stream, write_stream
     finally:
-        transport.close()
+        stopped.set()
+        writer_task.cancel()
+        await asyncio.gather(writer_task, return_exceptions=True)
