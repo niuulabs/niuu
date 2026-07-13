@@ -111,6 +111,25 @@ describe('RavensPage', () => {
     expect(screen.getByTestId('layout-split')).toBeInTheDocument();
   });
 
+  it('shows a managed resident persona instead of the generic role label', async () => {
+    const resident = makeFlockRaven({
+      personaName: 'security-auditor',
+      role: 'build',
+      engine: 'hermes',
+    });
+    const stream = {
+      listRavens: vi.fn().mockResolvedValue([resident]),
+      getRaven: vi.fn().mockResolvedValue(resident),
+    };
+
+    render(<RavensPage />, {
+      wrapper: wrap(makeServices({ 'ravn.ravens': stream })),
+    });
+
+    const row = await screen.findByTestId('ravn-list-row');
+    expect(within(row).getByText('security auditor · hermes')).toBeInTheDocument();
+  });
+
   it('selects a ravn by default and shows its detail pane', async () => {
     render(<RavensPage />, { wrapper: wrap() });
 
@@ -259,7 +278,7 @@ describe('RavensPage', () => {
     expect(unnamedRow).toHaveTextContent('planner · helm release');
     expect(unnamedRow).toHaveTextContent('test zone');
     await waitFor(() => expect(unnamedRow).toHaveTextContent('1 sess'));
-    expect(screen.getAllByTestId('ravn-list-row')[1]).toHaveTextContent('coder · ravn');
+    expect(screen.getAllByTestId('ravn-list-row')[1]).toHaveTextContent('coordinator · ravn');
     expect(screen.getAllByTestId('ravn-list-row')[1]).toHaveTextContent('unknown');
 
     fireEvent.change(screen.getByTestId('ravens-search'), { target: { value: 'not-present' } });

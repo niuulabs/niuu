@@ -1181,6 +1181,14 @@ class OpenShellGatewayPodManager(
             files={}, providers=(), environment={}, process_environment={}
         )
         grants: tuple[OpenShellProviderGrant, ...] = ()
+        sandbox = await asyncio.to_thread(self._client.get_sandbox, sandbox_name)
+        if sandbox is not None:
+            resident_label = dict(sandbox.labels or {}).get("volundr.niuu.io/resident")
+            if resident_label != str(runtime.id):
+                raise RuntimeError(
+                    f"OpenShell sandbox {sandbox_name!r} is not owned by resident {runtime.id}"
+                )
+        resumed_deployment = sandbox is not None
         try:
             if runtime.engine is ResidentEngine.OPENCLAW:
                 from volundr.adapters.outbound.openclaw_gateway import (
@@ -1214,24 +1222,25 @@ class OpenShellGatewayPodManager(
                 await asyncio.to_thread(self._client.ensure_providers_v2)
             env.update(credential_context.environment)
             mesh_labels, mesh_annotations = resident_mesh_pod_metadata(runtime)
-            sandbox = await asyncio.to_thread(
-                self._client.create_sandbox,
-                name=sandbox_name,
-                image=_image_from_values(values, default=self._sandbox_image),
-                env=env,
-                labels={
-                    "app.kubernetes.io/managed-by": "volundr",
-                    "volundr.niuu.io/resident": str(runtime.id),
-                    "volundr.niuu.io/runtime": runtime.engine.value,
-                    **resident_flock_labels(runtime, prefix="volundr.niuu.io"),
-                    **mesh_labels,
-                },
-                annotations=mesh_annotations,
-                resources=_resources_from_values(values, cpu=self._cpu, memory=self._memory),
-                driver_config=_driver_config_from_values(values),
-                providers=provider_names,
-                policy=self._sandbox_policy,
-            )
+            if not resumed_deployment:
+                sandbox = await asyncio.to_thread(
+                    self._client.create_sandbox,
+                    name=sandbox_name,
+                    image=_image_from_values(values, default=self._sandbox_image),
+                    env=env,
+                    labels={
+                        "app.kubernetes.io/managed-by": "volundr",
+                        "volundr.niuu.io/resident": str(runtime.id),
+                        "volundr.niuu.io/runtime": runtime.engine.value,
+                        **resident_flock_labels(runtime, prefix="volundr.niuu.io"),
+                        **mesh_labels,
+                    },
+                    annotations=mesh_annotations,
+                    resources=_resources_from_values(values, cpu=self._cpu, memory=self._memory),
+                    driver_config=_driver_config_from_values(values),
+                    providers=provider_names,
+                    policy=self._sandbox_policy,
+                )
             ready = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
             files = {
                 **credential_context.files,
@@ -1250,7 +1259,10 @@ class OpenShellGatewayPodManager(
                 process_env["OPENCLAW_GATEWAY_TOKEN"] = machine_credential["gateway_token"]
             if runtime.engine is ResidentEngine.HERMES and machine_credential is not None:
                 process_env[HERMES_API_SERVER_KEY_ENV] = machine_credential["api_key"]
-            await self._launch_resident_processes(ready.id, process_env, processes)
+            if resumed_deployment:
+                await self._launch_missing_resident_processes(ready.id, process_env, processes)
+            else:
+                await self._launch_resident_processes(ready.id, process_env, processes)
             await self._wait_for_resident_processes(
                 ready.id,
                 processes,
@@ -1543,6 +1555,17 @@ class OpenShellGatewayPodManager(
                 raise RuntimeError(
                     f"OpenShell resident process {process.name!r} failed with exit {exit_code}"
                 )
+
+    async def _launch_missing_resident_processes(
+        self,
+        sandbox_id: str,
+        env: dict[str, str],
+        processes: Sequence[OpenShellRuntimeProcess],
+    ) -> None:
+        for process in processes:
+            if await self._resident_processes_ready(sandbox_id, (process,)):
+                continue
+            await self._launch_resident_processes(sandbox_id, env, (process,))
 
     def _resident_processes(
         self,

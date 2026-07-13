@@ -66,6 +66,7 @@ function formatBudgetText(budget?: BudgetState): string {
 }
 
 function subtitleForRavn(ravn: Ravn): string {
+  if (ravn.kind === 'resident' && ravn.personaName) return normalizeLabel(ravn.personaName);
   return ROLE_LABELS[ravn.role ?? 'build'];
 }
 

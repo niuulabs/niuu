@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from uuid import UUID
 
 import pytest
@@ -34,7 +35,6 @@ from volundr.domain.services.resident_runtime import (
     ResidentProfileNotFoundError,
     ResidentRuntimeAccessError,
     ResidentRuntimeConflictError,
-    ResidentRuntimeDeploymentError,
     ResidentRuntimeNotFoundError,
     ResidentRuntimeService,
     ResidentRuntimeValidationError,
@@ -337,12 +337,17 @@ async def test_create_deploys_and_persists_real_observation(runtime_service) -> 
         persona_name="product-steward",
     )
 
-    assert runtime.observed_state is ResidentObservedState.ACTIVE
-    assert runtime.backend_ref["kind"] == "Sandbox"
-    assert repository.items[runtime.id] == runtime
+    assert runtime.observed_state is ResidentObservedState.DEPLOYING
+    assert runtime.backend_ref == {}
+
+    await asyncio.gather(*tuple(service._deployment_tasks.values()))
+
+    deployed = repository.items[runtime.id]
+    assert deployed.observed_state is ResidentObservedState.ACTIVE
+    assert deployed.backend_ref["kind"] == "Sandbox"
 
 
-async def test_create_rolls_back_record_and_backend_on_deployment_failure() -> None:
+async def test_create_retains_failed_record_when_background_deployment_fails() -> None:
     repository = MemoryResidentRuntimeRepository()
 
     class FailingController(MemoryResidentRuntimeController):
@@ -353,22 +358,50 @@ async def test_create_rolls_back_record_and_backend_on_deployment_failure() -> N
     controller = FailingController()
     service = ResidentRuntimeService(repository, _profiles(), [controller])
 
-    with pytest.raises(ResidentRuntimeDeploymentError, match="gateway unavailable"):
-        await service.create(
-            _principal(),
-            name="Muninn",
-            profile_id="ravn-openshell",
-        )
+    runtime = await service.create(
+        _principal(),
+        name="Muninn",
+        profile_id="ravn-openshell",
+    )
+    await asyncio.gather(*tuple(service._deployment_tasks.values()))
 
-    assert repository.items == {}
-    assert controller.actions == ["deploy", "delete"]
+    failed = repository.items[runtime.id]
+    assert failed.observed_state is ResidentObservedState.FAILED
+    assert failed.conditions[0].reason == "DeploymentFailed"
+    assert failed.conditions[0].message == "gateway unavailable"
+    assert controller.actions == ["deploy"]
+
+
+async def test_background_deployment_records_controller_loss() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    service = ResidentRuntimeService(
+        repository,
+        _profiles(),
+        [MemoryResidentRuntimeController()],
+    )
+
+    runtime = await service.create(
+        _principal(),
+        name="Muninn",
+        profile_id="ravn-openshell",
+    )
+    service._controllers.clear()
+    await asyncio.gather(*tuple(service._deployment_tasks.values()))
+
+    failed = repository.items[runtime.id]
+    assert failed.observed_state is ResidentObservedState.FAILED
+    assert failed.conditions[0].reason == "DeploymentFailed"
 
 
 async def test_reconcile_refreshes_capabilities_from_profile(runtime_service) -> None:
     service, repository = runtime_service
     runtime = await service.create_record(_principal(), name="Muninn", profile_id="ravn-openshell")
     repository.items[runtime.id] = runtime.model_copy(
-        update={"capabilities": [ResidentCapability.CHAT, ResidentCapability.METRICS]}
+        update={
+            "observed_state": ResidentObservedState.ACTIVE,
+            "backend_ref": {"kind": "Sandbox", "name": str(runtime.id)},
+            "capabilities": [ResidentCapability.CHAT, ResidentCapability.METRICS],
+        }
     )
 
     reconciled = await service.reconcile(runtime.id)
@@ -379,6 +412,32 @@ async def test_reconcile_refreshes_capabilities_from_profile(runtime_service) ->
         ResidentCapability.FLOCK,
     ]
     assert repository.items[runtime.id] == reconciled
+
+
+async def test_reconcile_resumes_unfinished_background_deployment(runtime_service) -> None:
+    service, repository = runtime_service
+    runtime = await service.create_record(_principal(), name="Muninn", profile_id="ravn-openshell")
+
+    reconciled = await service.reconcile(runtime.id)
+
+    assert reconciled == runtime
+    await asyncio.gather(*tuple(service._deployment_tasks.values()))
+    assert repository.items[runtime.id].observed_state is ResidentObservedState.ACTIVE
+
+
+async def test_reconcile_all_records_unavailable_controller_and_continues() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    service = ResidentRuntimeService(repository, _profiles())
+    runtime = await service.create_record(
+        _principal(),
+        name="Muninn",
+        profile_id="ravn-openshell",
+    )
+
+    await service.reconcile_all()
+
+    failed = repository.items[runtime.id]
+    assert failed.conditions[0].reason == "ReconcileFailed"
 
 
 async def test_create_record_rejects_unavailable_profile_and_model(runtime_service) -> None:
@@ -500,12 +559,50 @@ async def test_lifecycle_observation_and_delete_use_one_record(runtime_service) 
     assert runtime.id not in repository.items
 
 
+async def test_delete_waits_for_in_flight_deployment_before_cleanup() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    deployment_started = asyncio.Event()
+    finish_deployment = asyncio.Event()
+
+    class BlockingController(MemoryResidentRuntimeController):
+        async def deploy(self, runtime, profile):
+            self.actions.append("deploy")
+            deployment_started.set()
+            await finish_deployment.wait()
+            return self._observation(runtime)
+
+    controller = BlockingController()
+    service = ResidentRuntimeService(repository, _profiles(), [controller])
+    principal = _principal()
+    runtime = await service.create(
+        principal,
+        name="Muninn",
+        profile_id="ravn-openshell",
+    )
+    await deployment_started.wait()
+
+    deletion = asyncio.create_task(service.delete(principal, runtime.id))
+    await asyncio.sleep(0)
+    assert not deletion.done()
+
+    finish_deployment.set()
+    assert await deletion
+    assert controller.actions == ["deploy", "delete"]
+    assert runtime.id not in repository.items
+
+
 async def test_reconcile_converges_through_runtime_profile(runtime_service) -> None:
     service, repository = runtime_service
     runtime = await service.create_record(
         _principal(),
         name="Muninn",
         profile_id="ravn-openshell",
+    )
+    repository.items[runtime.id] = runtime.model_copy(
+        update={
+            "observed_state": ResidentObservedState.ACTIVE,
+            "backend_ref": {"kind": "Sandbox", "name": str(runtime.id)},
+        }
     )
 
     reconciled = await service.reconcile(runtime.id)

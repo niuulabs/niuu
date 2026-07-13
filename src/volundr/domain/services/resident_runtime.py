@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from uuid import UUID
@@ -77,6 +78,7 @@ class ResidentRuntimeService:
         }
         if len(self._session_controllers) != len(session_controllers or []):
             raise ValueError("Resident session controller engines must be unique")
+        self._deployment_tasks: dict[UUID, asyncio.Task[None]] = {}
 
     def list_profiles(self) -> list[ResidentDeploymentProfile]:
         """Return profiles that are actually enabled on this target."""
@@ -101,9 +103,9 @@ class ResidentRuntimeService:
         flock_role: str = "",
         flock_peer_id: str = "",
     ) -> ResidentRuntime:
-        """Create one durable record and its real backend deployment."""
+        """Persist one resident and provision its backend asynchronously."""
         profile = self._require_profile(profile_id)
-        controller = self._require_controller(profile)
+        self._require_controller(profile)
         runtime = await self.create_record(
             principal,
             name=name,
@@ -115,21 +117,81 @@ class ResidentRuntimeService:
             flock_role=flock_role,
             flock_peer_id=flock_peer_id,
         )
+        deploying = runtime.model_copy(
+            update={
+                "observed_state": ResidentObservedState.DEPLOYING,
+                "conditions": [
+                    ResidentCondition(
+                        type="BackendReady",
+                        status="unknown",
+                        reason="Provisioning",
+                        message="Resident backend provisioning is in progress",
+                    )
+                ],
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        deploying = await self._repository.update(deploying)
+        self._schedule_deployment(deploying, profile)
+        return deploying
+
+    def _schedule_deployment(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> None:
+        existing = self._deployment_tasks.get(runtime.id)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(
+            self._deploy_background(runtime, profile),
+            name=f"resident-deploy-{runtime.id}",
+        )
+        self._deployment_tasks[runtime.id] = task
+        task.add_done_callback(
+            lambda completed, runtime_id=runtime.id: self._deployment_done(runtime_id, completed)
+        )
+
+    def _deployment_done(self, runtime_id: UUID, task: asyncio.Task[None]) -> None:
+        if self._deployment_tasks.get(runtime_id) is task:
+            self._deployment_tasks.pop(runtime_id, None)
         try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("Resident deployment task %s failed", runtime_id)
+
+    async def _deploy_background(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> None:
+        try:
+            controller = self._require_controller(profile)
             observation = await controller.deploy(runtime, profile)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
+            current = await self._repository.get(runtime.id)
+            if current is not None:
+                await self._record_backend_failure(
+                    current,
+                    "DeploymentFailed",
+                    str(exc),
+                    observed_state=ResidentObservedState.FAILED,
+                )
+            logger.error("Failed to deploy resident %s: %s", runtime.id, exc)
+            return
+
+        current = await self._repository.get(runtime.id)
+        if current is None or current.desired_state is ResidentDesiredState.DELETED:
             try:
                 await controller.delete(runtime)
             except Exception:
-                logger.exception("Failed to clean up backend for resident %s", runtime.id)
-            try:
-                await self._repository.delete(runtime.id)
-            except Exception:
-                logger.exception("Failed to roll back resident record %s", runtime.id)
-            raise ResidentRuntimeDeploymentError(
-                f"Failed to deploy resident {runtime.name}: {exc}"
-            ) from exc
-        return await self._apply_observation(runtime, observation)
+                logger.exception("Failed to clean up deleted resident %s", runtime.id)
+            return
+        await self._apply_observation(current, observation)
 
     async def create_record(
         self,
@@ -269,6 +331,16 @@ class ResidentRuntimeService:
         try:
             profile = self._require_profile(runtime.profile_id)
             controller = self._require_controller(profile)
+            if (
+                runtime.observed_state
+                in {
+                    ResidentObservedState.PENDING,
+                    ResidentObservedState.DEPLOYING,
+                }
+                and not runtime.backend_ref
+            ):
+                self._schedule_deployment(runtime, profile)
+                return runtime
             runtime = runtime.model_copy(update={"capabilities": profile.capabilities})
             observation = await controller.reconcile(runtime, profile)
         except Exception as exc:
@@ -342,6 +414,19 @@ class ResidentRuntimeService:
         """Delete backend resources before removing the durable record."""
         self._require_write_role(principal)
         runtime = await self.get(principal, runtime_id)
+        deployment = self._deployment_tasks.get(runtime_id)
+        if deployment is not None:
+            try:
+                await asyncio.shield(deployment)
+            except Exception:
+                logger.warning(
+                    "Resident deployment %s failed while deletion waited for it",
+                    runtime_id,
+                    exc_info=True,
+                )
+            current = await self._repository.get(runtime_id)
+            if current is not None:
+                runtime = current
         controller = self._require_controller_for_runtime(runtime)
         deleting = runtime.model_copy(
             update={
@@ -584,6 +669,8 @@ class ResidentRuntimeService:
         runtime: ResidentRuntime,
         reason: str,
         message: str,
+        *,
+        observed_state: ResidentObservedState | None = None,
     ) -> ResidentRuntime:
         condition = ResidentCondition(
             type="BackendReady",
@@ -594,11 +681,21 @@ class ResidentRuntimeService:
         return await self._repository.update(
             runtime.model_copy(
                 update={
+                    **({"observed_state": observed_state} if observed_state is not None else {}),
                     "conditions": [condition],
                     "updated_at": datetime.now(UTC),
                 }
             )
         )
+
+    async def close(self) -> None:
+        """Cancel in-flight resident deployments during service shutdown."""
+        tasks = tuple(self._deployment_tasks.values())
+        self._deployment_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     @staticmethod
     def _is_admin(principal: Principal) -> bool:

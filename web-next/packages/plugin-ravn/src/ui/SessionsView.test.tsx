@@ -756,6 +756,42 @@ describe('SessionsView — live chat', () => {
     );
   });
 
+  it('uses the shared disconnected chat while a resident is provisioning', async () => {
+    const session = liveRunningSession({ status: 'idle', chatEndpoint: null });
+    const resident = {
+      id: session.ravnId,
+      personaName: 'council-chair',
+      residentName: 'Council flock',
+      kind: 'resident' as const,
+      managed: true,
+      status: 'idle' as const,
+      observedState: 'deploying' as const,
+      model: session.model,
+      createdAt: session.createdAt,
+    };
+    const ravenStream = {
+      async listRavens() {
+        return [resident];
+      },
+      async getRaven() {
+        return resident;
+      },
+    };
+
+    render(<SessionsView />, {
+      wrapper: wrap({
+        'ravn.sessions': singleSessionStream(session),
+        'ravn.ravens': ravenStream,
+        'ravn.personas': createMockPersonaStore(),
+        'ravn.budget': createMockBudgetStream(),
+      }),
+    });
+
+    expect(await screen.findByTestId('sessions-disconnected-chat')).toBeInTheDocument();
+    expect(screen.getByText('Disconnected')).toBeInTheDocument();
+    expect(useSkuldChatMock).not.toHaveBeenCalled();
+  });
+
   it('keeps the read-only transcript for a running session without a chatEndpoint', async () => {
     render(<SessionsView />, {
       wrapper: wrap(servicesWith(singleSessionStream(liveRunningSession({ chatEndpoint: null })))),

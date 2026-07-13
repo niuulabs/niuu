@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createElement, type ReactNode } from 'react';
@@ -61,6 +61,52 @@ describe('useSessions', () => {
     });
 
     await waitFor(() => expect(result.current.isError).toBe(true));
+  });
+
+  it('polls until an idle resident receives its chat endpoint', async () => {
+    vi.useFakeTimers();
+    const ready = {
+      ...SAMPLE_SESSION,
+      status: 'running' as const,
+      chatEndpoint: 'wss://sessions.example.test/session',
+    };
+    let resolveReady!: (sessions: Session[]) => void;
+    const svc = {
+      listSessions: vi
+        .fn()
+        .mockResolvedValueOnce([{ ...SAMPLE_SESSION, status: 'idle', chatEndpoint: null }])
+        .mockImplementationOnce(
+          () =>
+            new Promise<Session[]>((resolve) => {
+              resolveReady = resolve;
+            }),
+        ),
+      getSession: vi.fn(),
+      getMessages: vi.fn(),
+    };
+
+    try {
+      const { result } = renderHook(() => useSessions(), {
+        wrapper: makeWrapper({ 'ravn.sessions': svc }),
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(result.current.data?.[0]?.status).toBe('idle');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      await act(async () => {
+        resolveReady([ready]);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(svc.listSessions).toHaveBeenCalledTimes(2);
+      expect(result.current.data?.[0]?.chatEndpoint).toBe(ready.chatEndpoint);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

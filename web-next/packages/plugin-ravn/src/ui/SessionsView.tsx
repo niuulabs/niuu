@@ -1100,6 +1100,21 @@ function LiveSessionChat({
   );
 }
 
+function DisconnectedSessionChat({ sessionName }: { sessionName: string }) {
+  return (
+    <div className="rv-rs__live-chat" data-testid="sessions-disconnected-chat">
+      <SessionChat
+        className="rv-rs__live-chat-session"
+        messages={[]}
+        connected={false}
+        historyLoaded
+        sessionName={sessionName}
+        onSend={() => undefined}
+      />
+    </div>
+  );
+}
+
 function VolundrSessionObservability({
   session,
   tab,
@@ -1589,6 +1604,15 @@ export function SessionsView() {
                   onInternalVisibilitySender={(sender) => {
                     setInternalVisibilityRef.current = sender;
                   }}
+                />
+              ) : selectedRavn?.kind === 'resident' &&
+                ['pending', 'deploying'].includes(selectedRavn.observedState ?? '') ? (
+                <DisconnectedSessionChat
+                  sessionName={
+                    selectedRavn.residentName ||
+                    selectedRavn.personaName ||
+                    selectedSession.personaName
+                  }
                 />
               ) : (
                 <>

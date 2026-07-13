@@ -1245,6 +1245,7 @@ def create_app(
                     pass
                 if resident_flock_adapter is not None:
                     await resident_flock_adapter.stop()
+                await resident_runtime_service.close()
                 await event_ingestion.close_all()
                 if hasattr(pod_manager, "close"):
                     await pod_manager.close()

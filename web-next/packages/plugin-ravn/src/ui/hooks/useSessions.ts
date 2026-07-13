@@ -2,11 +2,17 @@ import { useQuery, useQueries } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import type { ISessionStream } from '../../ports';
 
+const SESSION_PROGRESS_POLL_MS = 2_000;
+
 export function useSessions() {
   const service = useService<ISessionStream>('ravn.sessions');
   return useQuery({
     queryKey: ['ravn', 'sessions'],
     queryFn: () => service.listSessions(),
+    refetchInterval: (query) =>
+      query.state.data?.some((session) => session.status === 'idle' && !session.chatEndpoint)
+        ? SESSION_PROGRESS_POLL_MS
+        : false,
   });
 }
 

@@ -201,9 +201,13 @@ class _FakeOpenShellGatewayClient:
         self.grant_profile = None
         self.provider_environment = {}
         self.closed = False
+        self.sandbox_exists = True
+        self.sandbox_labels: dict[str, str] = {}
 
     def create_sandbox(self, **kwargs):
         self.created = kwargs
+        self.sandbox_exists = True
+        self.sandbox_labels = dict(kwargs.get("labels") or {})
         return self._adapter.OpenShellSandbox(
             id="sandbox-id",
             name=kwargs["name"],
@@ -218,11 +222,14 @@ class _FakeOpenShellGatewayClient:
             else:
                 self.cleanup_events.append("sandbox-gone")
                 return None
+        if not self.sandbox_exists:
+            return None
         return self._adapter.OpenShellSandbox(
             id="sandbox-id",
             name=name,
             phase=self._adapter.openshell_pb2.SANDBOX_PHASE_READY,
             ready=True,
+            labels=self.sandbox_labels,
             providers=tuple(self.created.get("providers", ())) if self.created else (),
         )
 
@@ -824,6 +831,7 @@ async def test_hermes_deploy_uses_persisted_process_only_credential_and_generic_
     runtime = _hermes_runtime()
     profile = _hermes_profile()
     client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_exists = False
     store = _FakeCredentialStore({})
     manager = adapter.OpenShellGatewayPodManager(
         client=client,
@@ -916,6 +924,7 @@ async def test_hermes_rollback_and_delete_cleanup_machine_credential(
     runtime = _hermes_runtime()
     profile = _hermes_profile()
     client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_exists = False
     client.exec_detached = lambda **_kwargs: 1
     store = _FakeCredentialStore({})
     manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
@@ -1012,6 +1021,7 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
     runtime = _resident_runtime()
     profile = _resident_profile()
     client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_exists = False
     store = _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
     issuer = _FakeWorkloadTokenIssuer()
     manager = adapter.OpenShellGatewayPodManager(
@@ -1069,6 +1079,57 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
         "skuld.transports.codex_ws.CodexWebSocketTransport"
     )
     assert client.execs[1]["env"]["SKULD__SKIP_PERMISSIONS"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_resident_deploy_resumes_owned_sandbox_and_launches_missing_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _resident_runtime()
+    profile = _resident_profile()
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_labels = {"volundr.niuu.io/resident": str(runtime.id)}
+    health_results = iter((0, 1, 0))
+
+    def exec_script(**kwargs):
+        client.bootstrap_execs.append(kwargs)
+        return next(health_results), ""
+
+    client.exec_script = exec_script
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client,
+        volundr_api_url="https://volundr.example.test",
+        workload_audiences=["volundr-api", "mimir", "guild"],
+        ready_timeout=0.1,
+    )
+    manager.set_credential_store(
+        _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
+    )
+    manager.set_workload_token_issuer(_FakeWorkloadTokenIssuer())
+
+    observation = await manager.deploy(runtime, profile)
+
+    assert observation.observed_state is ResidentObservedState.ACTIVE
+    assert client.created is None
+    assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/ravn.pid"]
+
+
+@pytest.mark.asyncio
+async def test_resident_deploy_rejects_unowned_existing_sandbox_without_deleting_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _resident_runtime()
+    client = _FakeOpenShellGatewayClient(adapter)
+
+    with pytest.raises(RuntimeError, match="is not owned by resident"):
+        await adapter.OpenShellGatewayPodManager(client=client).deploy(
+            runtime,
+            _resident_profile(),
+        )
+
+    assert client.deleted == []
 
 
 @pytest.mark.asyncio
@@ -1143,6 +1204,7 @@ async def test_resident_materializes_raw_protocol_credential_from_openbao(
         }
     ]
     client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_exists = False
     manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
     manager.set_credential_store(
         _FakeCredentialStore(
