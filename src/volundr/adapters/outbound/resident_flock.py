@@ -314,6 +314,15 @@ class ResidentFlockAdapter:
                     if isinstance(delta, dict):
                         task.output += str(delta.get("text") or "")
                     continue
+                if frame_type == "control_request":
+                    await connection.send(
+                        {
+                            "type": "permission_response",
+                            "request_id": str(frame.get("request_id") or ""),
+                            "behavior": "allowOnce",
+                        }
+                    )
+                    continue
                 if frame_type == "result":
                     result = str(frame.get("result") or "")
                     if result and not task.output:

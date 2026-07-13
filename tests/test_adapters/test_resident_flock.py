@@ -36,17 +36,27 @@ class _Repository:
 
 
 class _Connection:
-    def __init__(self, output: str = "alive") -> None:
+    def __init__(self, output: str = "alive", *, requires_approval: bool = False) -> None:
         self.frames: asyncio.Queue[dict] = asyncio.Queue()
         self.sent: list[dict] = []
         self.closed = False
         self.output = output
+        self.requires_approval = requires_approval
 
     async def receive(self) -> dict:
         return await self.frames.get()
 
     async def send(self, frame: dict) -> None:
         self.sent.append(frame)
+        if frame.get("type") == "user" and self.requires_approval:
+            await self.frames.put(
+                {
+                    "type": "control_request",
+                    "request_id": "approval-1",
+                    "tool": "terminal",
+                }
+            )
+            return
         await self.frames.put(
             {
                 "type": "content_block_delta",
@@ -62,8 +72,8 @@ class _Connection:
 class _Controller:
     engine = ResidentEngine.HERMES
 
-    def __init__(self, output: str = "alive") -> None:
-        self.connection = _Connection(output)
+    def __init__(self, output: str = "alive", *, requires_approval: bool = False) -> None:
+        self.connection = _Connection(output, requires_approval=requires_approval)
         self.created: list[tuple[str, str]] = []
 
     async def create_session(
@@ -120,7 +130,7 @@ async def test_ravn_rpc_dispatches_through_existing_resident_session_controller(
     flock_id = uuid4()
     runtime = _runtime(flock_id=flock_id)
     bus = InProcessBus()
-    controller = _Controller()
+    controller = _Controller(requires_approval=True)
     resident = ResidentFlockAdapter(_Repository(runtime), [controller], bus)
     await resident.sync()
     discovery = EventBusDiscoveryAdapter(
@@ -174,6 +184,11 @@ async def test_ravn_rpc_dispatches_through_existing_resident_session_controller(
     assert result == {"task_id": "task-1", "status": "complete", "output": "alive"}
     assert controller.created == [("Prove life", "niuu/qwen")]
     assert controller.connection.sent[0]["content"] == "Prove life\n\nReturn alive"
+    assert controller.connection.sent[1] == {
+        "type": "permission_response",
+        "request_id": "approval-1",
+        "behavior": "allowOnce",
+    }
     assert controller.connection.closed
 
     directed = await coordinator.send(
@@ -192,7 +207,8 @@ async def test_ravn_rpc_dispatches_through_existing_resident_session_controller(
         "output": "alive",
     }
     assert controller.created[-1] == ("Directed flock message", "niuu/qwen")
-    assert controller.connection.sent[-1]["content"] == "Reply directly"
+    user_frames = [frame for frame in controller.connection.sent if frame.get("type") == "user"]
+    assert user_frames[-1]["content"] == "Reply directly"
     assert resident._tasks["room-message-1"].status == "complete"
 
     await coordinator.stop()
