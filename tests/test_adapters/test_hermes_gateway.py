@@ -365,6 +365,81 @@ async def test_chat_stream_normalizes_history_approval_tools_and_usage() -> None
 
 
 @pytest.mark.asyncio
+async def test_chat_polling_resumes_when_event_stream_ends_before_run() -> None:
+    session_key = "api_slow"
+    run_id = "run_slow"
+    store = MemoryCredentialStore()
+    runtime = _runtime()
+    token = await ensure_hermes_api_key(store, runtime)
+    status_reads = 0
+
+    async def list_sessions(request: web.Request) -> web.Response:
+        _assert_auth(request, token)
+        return web.json_response({"data": [{"id": session_key}]})
+
+    async def get_session(request: web.Request) -> web.Response:
+        _assert_auth(request, token)
+        return web.json_response({"session": {"id": session_key}})
+
+    async def get_messages(request: web.Request) -> web.Response:
+        _assert_auth(request, token)
+        return web.json_response({"data": []})
+
+    async def create_run(request: web.Request) -> web.Response:
+        _assert_auth(request, token)
+        return web.json_response({"run_id": run_id}, status=202)
+
+    async def run_events(request: web.Request) -> web.StreamResponse:
+        _assert_auth(request, token)
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        return response
+
+    async def get_run(request: web.Request) -> web.Response:
+        nonlocal status_reads
+        _assert_auth(request, token)
+        status_reads += 1
+        if status_reads == 1:
+            return web.json_response({"status": "running"})
+        return web.json_response(
+            {
+                "status": "completed",
+                "output": "SLOW_API_OK",
+                "usage": {"total_tokens": 4},
+            }
+        )
+
+    app = web.Application()
+    app.router.add_get("/api/sessions", list_sessions)
+    app.router.add_get("/api/sessions/{session_id}", get_session)
+    app.router.add_get("/api/sessions/{session_id}/messages", get_messages)
+    app.router.add_post("/v1/runs", create_run)
+    app.router.add_get("/v1/runs/{run_id}/events", run_events)
+    app.router.add_get("/v1/runs/{run_id}", get_run)
+
+    async with _serve(app) as port:
+        chat = await HermesResidentSessionController(_Route(port), store).connect_chat(
+            runtime, _session_uuid(session_key)
+        )
+        await chat.receive()
+        await chat.receive()
+        await chat.send({"type": "user", "content": "Slow request"})
+        await chat.receive()
+        assistant = await chat.receive()
+        delta = await chat.receive()
+        result = await chat.receive()
+        assert assistant["type"] == "assistant"
+        assert delta["delta"]["text"] == "SLOW_API_OK"
+        assert result == {
+            "type": "result",
+            "result": "SLOW_API_OK",
+            "usage": {"total_tokens": 4},
+        }
+        assert status_reads == 2
+        await chat.close()
+
+
+@pytest.mark.asyncio
 async def test_interrupt_uses_run_stop_api_and_steer_is_not_advertised() -> None:
     session_key = "api_interrupt"
     run_id = "run_interrupt"

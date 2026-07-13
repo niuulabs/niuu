@@ -30,6 +30,7 @@ _TOKEN_FIELD = "api_key"
 _LEGACY_TOKEN_FIELD = "session_token"
 HERMES_REQUEST_TIMEOUT_SECONDS = 30
 HERMES_SESSION_PAGE_SIZE = 200
+HERMES_RUN_STATUS_POLL_SECONDS = 0.5
 NIUU_MODEL_PREFIX = "niuu/"
 VOLUNDR_DELETED_END_REASON = "volundr_deleted"
 _PARTICIPANT = {
@@ -242,12 +243,24 @@ class HermesChatConnection(ResidentChatConnection):
     async def _consume_run(self, run_id: str) -> None:
         terminal = False
         try:
-            async for event in self._api.stream_run(run_id):
-                terminal = await self._enqueue_event(run_id, event) or terminal
+            try:
+                async for event in self._api.stream_run(run_id):
+                    terminal = await self._enqueue_event(run_id, event) or terminal
+            except httpx.TransportError:
+                pass
             if terminal:
                 return
-            status = await self._api.request("GET", f"/v1/runs/{quote(run_id, safe='')}")
-            await self._enqueue_run_status(run_id, status)
+            while True:
+                status = await self._api.request("GET", f"/v1/runs/{quote(run_id, safe='')}")
+                if str(status.get("status") or "") not in {
+                    "pending",
+                    "queued",
+                    "running",
+                    "started",
+                }:
+                    await self._enqueue_run_status(run_id, status)
+                    return
+                await asyncio.sleep(HERMES_RUN_STATUS_POLL_SECONDS)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

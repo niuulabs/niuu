@@ -161,6 +161,21 @@ async def test_openclaw_sessions_and_shared_chat_use_native_gateway_contract() -
                                 "runId": "run-1",
                                 "sessionKey": key,
                                 "seq": 1,
+                                "state": "error",
+                                "errorMessage": "terminated",
+                            },
+                        }
+                    )
+                )
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "type": "event",
+                            "event": "chat",
+                            "payload": {
+                                "runId": "run-1",
+                                "sessionKey": key,
+                                "seq": 2,
                                 "state": "delta",
                                 "message": {
                                     "role": "assistant",
@@ -178,7 +193,7 @@ async def test_openclaw_sessions_and_shared_chat_use_native_gateway_contract() -
                             "payload": {
                                 "runId": "run-1",
                                 "sessionKey": key,
-                                "seq": 2,
+                                "seq": 3,
                                 "state": "final",
                                 "message": {
                                     "role": "assistant",

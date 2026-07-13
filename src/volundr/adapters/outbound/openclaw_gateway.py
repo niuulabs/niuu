@@ -416,6 +416,10 @@ class OpenClawChatConnection(ResidentChatConnection):
                     self._run_text.pop(run_id, None)
                     return {"type": "result", "result": ""}
                 if state in {"error", "aborted"}:
+                    if state == "error" and str(payload.get("errorMessage") or "").strip() == (
+                        "terminated"
+                    ):
+                        continue
                     self._active_runs.discard(run_id)
                     self._run_text.pop(run_id, None)
                     return {
