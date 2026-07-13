@@ -47,14 +47,14 @@ def build_transport(adapter: str, **kwargs: Any) -> Any | None:
 
     try:
         cls = import_class(fq_class)
-    except Exception as exc:
-        logger.warning("transport: failed to import %s: %s", fq_class, exc)
+    except Exception:
+        logger.warning("Configured transport could not be imported")
         return None
 
     try:
         return cls(**kwargs)
-    except Exception as exc:
-        logger.warning("transport: failed to instantiate %s: %s", fq_class, exc)
+    except Exception:
+        logger.warning("Configured transport could not be initialized")
         return None
 
 
