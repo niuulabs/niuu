@@ -45,6 +45,7 @@ from volundr.domain.ports import (
     SessionContribution,
     SessionContributor,
     SessionRepository,
+    SessionSpanRepository,
     StoragePort,
 )
 
@@ -121,6 +122,7 @@ class SessionService:
         attention_notifier: AttentionNotifier | None = None,
         runtime_backend: str = "kubernetes",
         public_origin: str = "http://localhost:8080",
+        span_repository: SessionSpanRepository | None = None,
     ):
         self._repository = repository
         self._pod_manager = pod_manager
@@ -142,6 +144,7 @@ class SessionService:
         self._sleipnir_publisher = sleipnir_publisher
         self._communication_route_repository = communication_route_repository
         self._session_communication_port = session_communication_port
+        self._span_repository = span_repository
         self._runtime_backend = runtime_backend
         normalized_public_origin = public_origin.rstrip("/")
         if normalized_public_origin.startswith("https://"):
@@ -689,6 +692,8 @@ class SessionService:
 
         # Run optional resource cleanup after session record is gone
         if deleted:
+            if self._span_repository is not None:
+                await self._span_repository.delete_by_session(session_id)
             await self._run_targeted_cleanup(session_id, targets)
 
         if deleted and self._broadcaster is not None:

@@ -29,6 +29,7 @@ from volundr.domain.ports import (
     ResidentRuntimeProxyTargetResolver,
     ResidentRuntimeRepository,
     ResidentSessionController,
+    SessionSpanRepository,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,7 @@ class ResidentRuntimeService:
         profiles: ResidentDeploymentProfileProvider,
         controllers: list[ResidentRuntimeController] | None = None,
         session_controllers: list[ResidentSessionController] | None = None,
+        span_repository: SessionSpanRepository | None = None,
     ) -> None:
         self._repository = repository
         self._profiles = profiles
@@ -78,6 +80,7 @@ class ResidentRuntimeService:
         }
         if len(self._session_controllers) != len(session_controllers or []):
             raise ValueError("Resident session controller engines must be unique")
+        self._span_repository = span_repository
         self._deployment_tasks: dict[UUID, asyncio.Task[None]] = {}
 
     def list_profiles(self) -> list[ResidentDeploymentProfile]:
@@ -408,7 +411,10 @@ class ResidentRuntimeService:
         """Delete an authorized record after its deployment adapter has cleaned up."""
         self._require_write_role(principal)
         await self.get(principal, runtime_id)
-        return await self._repository.delete(runtime_id)
+        deleted = await self._repository.delete(runtime_id)
+        if deleted and self._span_repository is not None:
+            await self._span_repository.delete_by_session(runtime_id)
+        return deleted
 
     async def delete(self, principal: Principal, runtime_id: UUID) -> bool:
         """Delete backend resources before removing the durable record."""
@@ -443,7 +449,9 @@ class ResidentRuntimeService:
             raise ResidentRuntimeDeploymentError(
                 f"Failed to delete resident {runtime.name}: {exc}"
             ) from exc
-        await self._repository.delete(runtime_id)
+        deleted = await self._repository.delete(runtime_id)
+        if deleted and self._span_repository is not None:
+            await self._span_repository.delete_by_session(runtime_id)
         return existed
 
     async def logs(

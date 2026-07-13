@@ -384,6 +384,43 @@ class TestOutcomeTranslation:
 
 class TestActivityTranslation:
     @pytest.mark.asyncio
+    async def test_task_started_event_translated_to_task_started_frame(self):
+        room = _make_room_bridge(known_peers=["hermes-01"])
+        bridge = RoomMeshBridge(
+            subscriber=InProcessBus(),
+            room_bridge=room,
+            session_id="sess-abc",
+        )
+        evt = _make_event(
+            source="ravn:hermes-01",
+            payload={
+                "ravn_event": {
+                    "task_id": "reaction-1",
+                    "title": "React to proof.started",
+                    "persona": "Hermes",
+                },
+                "ravn_type": "RavnEventType.TASK_STARTED",
+                "ravn_source": "hermes-01",
+                "ravn_session_id": "sess-abc",
+                "ravn_task_id": "reaction-1",
+            },
+        )
+
+        await bridge._handle_event(evt)
+
+        room.handle_ravn_frame.assert_awaited_once_with(
+            "hermes-01",
+            {
+                "type": "task_started",
+                "data": "React to proof.started",
+                "metadata": {
+                    "title": "React to proof.started",
+                    "task_id": "reaction-1",
+                },
+            },
+        )
+
+    @pytest.mark.asyncio
     async def test_tool_start_event_translated_to_tool_start_frame(self):
         room = _make_room_bridge(known_peers=["skuld-01"])
         bus = InProcessBus()

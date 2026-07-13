@@ -33,12 +33,19 @@ class _Repository:
 
 
 class _Connection:
-    def __init__(self, output: str = "alive", *, requires_approval: bool = False) -> None:
+    def __init__(
+        self,
+        output: str = "alive",
+        *,
+        requires_approval: bool = False,
+        emit_tool_frames: bool = False,
+    ) -> None:
         self.frames: asyncio.Queue[dict] = asyncio.Queue()
         self.sent: list[dict] = []
         self.closed = False
         self.output = output
         self.requires_approval = requires_approval
+        self.emit_tool_frames = emit_tool_frames
 
     async def receive(self) -> dict:
         return await self.frames.get()
@@ -54,6 +61,24 @@ class _Connection:
                 }
             )
             return
+        if self.emit_tool_frames:
+            await self.frames.put(
+                {
+                    "type": "tool_start",
+                    "data": "terminal",
+                    "metadata": {
+                        "tool_name": "terminal",
+                        "input": {"command": "printf proof"},
+                    },
+                }
+            )
+            await self.frames.put(
+                {
+                    "type": "tool_result",
+                    "data": "proof",
+                    "metadata": {"tool_name": "terminal", "is_error": False},
+                }
+            )
         await self.frames.put(
             {
                 "type": "content_block_delta",
@@ -69,8 +94,18 @@ class _Connection:
 class _Controller:
     engine = ResidentEngine.HERMES
 
-    def __init__(self, output: str = "alive", *, requires_approval: bool = False) -> None:
-        self.connection = _Connection(output, requires_approval=requires_approval)
+    def __init__(
+        self,
+        output: str = "alive",
+        *,
+        requires_approval: bool = False,
+        emit_tool_frames: bool = False,
+    ) -> None:
+        self.connection = _Connection(
+            output,
+            requires_approval=requires_approval,
+            emit_tool_frames=emit_tool_frames,
+        )
         self.created: list[tuple[str, str]] = []
 
     async def create_session(
@@ -142,7 +177,7 @@ async def test_persona_event_runs_native_reaction_and_publishes_response_and_out
     )
     provider = _PersonaProvider(persona)
     output = "---outcome---\nsummary: HERMES_EVENT_OK\n---end---"
-    controller = _Controller(output, requires_approval=True)
+    controller = _Controller(output, requires_approval=True, emit_tool_frames=True)
     bus = InProcessBus()
     resident = ResidentFlockAdapter(
         _Repository(runtime),
@@ -195,9 +230,17 @@ async def test_persona_event_runs_native_reaction_and_publishes_response_and_out
         "request_id": "approval-1",
         "behavior": "allowOnce",
     }
-    assert len(surfaced) == 1
-    assert surfaced[0].payload["ravn_event"]["text"] == output
-    assert surfaced[0].payload["ravn_session_id"] == "room-1"
+    assert [item.payload["ravn_type"] for item in surfaced] == [
+        "task_started",
+        "tool_start",
+        "tool_result",
+        "response",
+    ]
+    assert surfaced[0].payload["ravn_event"]["title"].startswith("React to proof.started")
+    assert surfaced[1].payload["ravn_event"]["input"] == {"command": "printf proof"}
+    assert surfaced[2].payload["ravn_event"]["result"] == "proof"
+    assert surfaced[3].payload["ravn_event"]["text"] == output
+    assert all(item.payload["ravn_session_id"] == "room-1" for item in surfaced)
     assert len(outcomes) == 1
     assert outcomes[0].payload["ravn_event"]["event_type"] == "proof.hermes.completed"
     assert outcomes[0].payload["ravn_event"]["fields"] == {"summary": "HERMES_EVENT_OK"}
@@ -267,9 +310,9 @@ async def test_matching_persona_event_wakes_resident_and_surfaces_response() -> 
     assert len(reaction_title.rsplit("(", 1)[1].removesuffix(")")) == 8
     assert controller.created[0][1] == "niuu/qwen"
     assert "Event type: proof.started" in controller.connection.sent[0]["content"]
-    assert len(surfaced) == 1
-    assert surfaced[0].payload["ravn_event"]["text"] == "EVENT_REACTION_OK"
-    assert surfaced[0].payload["ravn_session_id"] == "room-1"
+    assert [item.payload["ravn_type"] for item in surfaced] == ["task_started", "response"]
+    assert surfaced[1].payload["ravn_event"]["text"] == "EVENT_REACTION_OK"
+    assert surfaced[1].payload["ravn_session_id"] == "room-1"
     assert len(outcomes) == 1
     assert outcomes[0].payload["ravn_event"]["event_type"] == "proof.hermes.completed"
     assert outcomes[0].payload["ravn_root_correlation_id"] == "room-1"
@@ -326,10 +369,9 @@ async def test_event_reaction_without_assistant_output_surfaces_error() -> None:
 
     assert reaction.status == "failed"
     assert reaction.error == "Resident reaction completed without an assistant response"
-    assert len(surfaced) == 1
-    assert surfaced[0].payload["ravn_type"] == "error"
-    assert surfaced[0].payload["ravn_event"]["message"] == reaction.error
-    assert surfaced[0].payload["ravn_session_id"] == "room-1"
+    assert [item.payload["ravn_type"] for item in surfaced] == ["task_started", "error"]
+    assert surfaced[1].payload["ravn_event"]["message"] == reaction.error
+    assert surfaced[1].payload["ravn_session_id"] == "room-1"
 
     await resident.stop()
 
@@ -378,9 +420,8 @@ async def test_event_reaction_failure_surfaces_correlated_error() -> None:
 
     assert reaction.status == "failed"
     assert reaction.error == "native resident unavailable"
-    assert len(surfaced) == 1
-    assert surfaced[0].payload["ravn_type"] == "error"
-    assert surfaced[0].payload["ravn_event"]["message"] == reaction.error
-    assert surfaced[0].payload["ravn_root_correlation_id"] == "room-1"
+    assert [item.payload["ravn_type"] for item in surfaced] == ["task_started", "error"]
+    assert surfaced[1].payload["ravn_event"]["message"] == reaction.error
+    assert surfaced[1].payload["ravn_root_correlation_id"] == "room-1"
 
     await resident.stop()

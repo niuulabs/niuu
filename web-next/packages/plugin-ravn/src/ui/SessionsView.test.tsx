@@ -471,12 +471,13 @@ describe('SessionsView — live chat', () => {
         'ravn.personas': createMockPersonaStore(),
         'ravn.budget': createMockBudgetStream(),
         'ravn.residents': { getLogs },
+        volundr: {},
       }),
     });
 
     expect(await screen.findByTestId('sessions-live-chat')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: /trace/i }));
-    expect(screen.getByText('Session traces are not exposed by this runtime.')).toBeInTheDocument();
+    expect(screen.getByTestId('volundr-trace-tab')).toHaveTextContent(`trace ${resident.id}`);
 
     fireEvent.click(screen.getByRole('tab', { name: /logs/i }));
     expect(await screen.findByText('session ready')).toBeInTheDocument();

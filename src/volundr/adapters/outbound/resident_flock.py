@@ -222,6 +222,7 @@ class ResidentFlockAdapter:
             persona = peer.persona if peer is not None else None
             if persona is not None and persona.system_prompt:
                 prompt = f"{persona.system_prompt}\n\nSubscribed event:\n{prompt}"
+            await self._publish_reaction_started(runtime, reaction)
             session = await controller.create_session(
                 runtime,
                 title=reaction.title,
@@ -249,6 +250,9 @@ class ResidentFlockAdapter:
                             "behavior": "allowOnce",
                         }
                     )
+                    continue
+                if frame_type in {"tool_start", "tool_result"}:
+                    await self._publish_reaction_tool_frame(runtime, reaction, frame)
                     continue
                 if frame_type == "result":
                     result = str(frame.get("result") or "")
@@ -284,6 +288,68 @@ class ResidentFlockAdapter:
             reaction.connection = None
             if connection is not None:
                 await connection.close()
+
+    async def _publish_reaction_started(
+        self,
+        runtime: Any,
+        reaction: _ResidentReaction,
+    ) -> None:
+        peer = self._peers.get(reaction.runtime_id)
+        if peer is None:
+            return
+        event = RavnEvent(
+            type=RavnEventType.TASK_STARTED,
+            source=runtime.flock_peer_id,
+            payload={
+                "task_id": reaction.reaction_id,
+                "title": reaction.title,
+                "persona": runtime.persona_name or runtime.name,
+            },
+            timestamp=datetime.now(UTC),
+            urgency=0.2,
+            correlation_id=reaction.session_id or reaction.reaction_id,
+            session_id=reaction.session_id,
+            task_id=reaction.reaction_id,
+            root_correlation_id=reaction.root_correlation_id,
+        )
+        await peer.mesh.publish(event, topic=f"activity.{runtime.flock_peer_id}")
+
+    async def _publish_reaction_tool_frame(
+        self,
+        runtime: Any,
+        reaction: _ResidentReaction,
+        frame: dict[str, Any],
+    ) -> None:
+        peer = self._peers.get(reaction.runtime_id)
+        if peer is None:
+            return
+        frame_type = str(frame.get("type") or "")
+        metadata = frame.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        payload: dict[str, Any] = {
+            "tool_name": str(metadata.get("tool_name") or frame.get("data") or "tool"),
+            "persona": runtime.persona_name or runtime.name,
+        }
+        if frame_type == "tool_start":
+            payload["input"] = metadata.get("input") or {}
+            event_type = RavnEventType.TOOL_START
+        else:
+            payload["result"] = str(frame.get("data") or "")
+            payload["is_error"] = bool(metadata.get("is_error"))
+            event_type = RavnEventType.TOOL_RESULT
+        event = RavnEvent(
+            type=event_type,
+            source=runtime.flock_peer_id,
+            payload=payload,
+            timestamp=datetime.now(UTC),
+            urgency=0.3,
+            correlation_id=reaction.session_id or reaction.reaction_id,
+            session_id=reaction.session_id,
+            task_id=reaction.reaction_id,
+            root_correlation_id=reaction.root_correlation_id,
+        )
+        await peer.mesh.publish(event, topic=f"activity.{runtime.flock_peer_id}")
 
     async def _publish_reaction_error(
         self,

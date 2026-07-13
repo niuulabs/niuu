@@ -378,6 +378,37 @@ async def _find_resident_owner(
     )
 
 
+async def _find_trace_owner(
+    service: InstanceService,
+    principal: Principal,
+    request: Request,
+    subject_id: str,
+    *,
+    embedded_app: ASGIApp | None = None,
+) -> RegisteredInstance:
+    try:
+        instance, _ = await _find_session_owner(
+            service,
+            principal,
+            request,
+            subject_id,
+            embedded_app=embedded_app,
+        )
+        return instance
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_404_NOT_FOUND:
+            raise
+
+    instance, _ = await _find_resident_owner(
+        service,
+        principal,
+        request,
+        subject_id,
+        embedded_app=embedded_app,
+    )
+    return instance
+
+
 async def _resolve_target_instance(
     service: InstanceService,
     principal: Principal,
@@ -1658,7 +1689,7 @@ def create_volundr_router(
         session_id: str = Path(description="Volundr session identifier"),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
-        instance, _ = await _find_session_owner(
+        instance = await _find_trace_owner(
             service,
             principal,
             request,
@@ -1683,7 +1714,7 @@ def create_volundr_router(
         session_id: str = Path(description="Volundr session identifier"),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
-        instance, _ = await _find_session_owner(
+        instance = await _find_trace_owner(
             service,
             principal,
             request,

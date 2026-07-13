@@ -1118,9 +1118,11 @@ function DisconnectedSessionChat({ sessionName }: { sessionName: string }) {
 function VolundrSessionObservability({
   session,
   tab,
+  traceSubjectId = session.id,
 }: {
   session: Session;
   tab: 'trace' | 'logs';
+  traceSubjectId?: string;
 }) {
   const volundr = useService<IVolundrService>('volundr');
 
@@ -1128,7 +1130,7 @@ function VolundrSessionObservability({
     return (
       <div className="rv-rs__observability-panel rv-rs__observability-panel--trace">
         <TelemetryTab
-          sessionId={session.id}
+          sessionId={traceSubjectId}
           session={null}
           runLabel={titleForSession(session)}
           volundr={volundr}
@@ -1167,14 +1169,13 @@ function SessionObservabilityPanel({
     );
   }
 
-  if (ravn?.managed && tab === 'trace') {
-    return (
-      <div className="rv-rs__observability-empty">
-        Session traces are not exposed by this runtime.
-      </div>
-    );
-  }
-  return <VolundrSessionObservability session={session} tab={tab} />;
+  return (
+    <VolundrSessionObservability
+      session={session}
+      tab={tab}
+      traceSubjectId={ravn?.managed ? ravn.id : session.id}
+    />
+  );
 }
 
 function SessionSurfaceTabs({

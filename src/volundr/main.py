@@ -437,6 +437,7 @@ def create_app(
             communication_cursor_repository = PostgresCommunicationCursorRepository(pool)
             stats_repository = PostgresStatsRepository(pool)
             token_tracker = PostgresTokenTracker(pool)
+            span_repository = PostgresSpanRepository(pool)
             from ravn.adapters.personas.postgres_registry import PostgresPersonaRegistry
 
             persona_registry = PostgresPersonaRegistry(pool)
@@ -594,6 +595,7 @@ def create_app(
                 resident_profile_provider,
                 resident_controllers,
                 resident_session_controllers,
+                span_repository=span_repository,
             )
             resident_flock_adapter = (
                 ResidentFlockAdapter(
@@ -685,6 +687,7 @@ def create_app(
                 session_communication_port=session_room_port,
                 attention_notifier=attention_notifier,
                 runtime_backend=_runtime_backend(settings),
+                span_repository=span_repository,
             )
             # Local-process brokers notify the session service when they exit so
             # the DB row is reconciled promptly (pod-status authoritative) rather
@@ -1028,7 +1031,6 @@ def create_app(
             pg_event_sink = PostgresEventSink(
                 pool, buffer_size=settings.event_pipeline.postgres_buffer_size
             )
-            span_repository = PostgresSpanRepository(pool)
             event_sinks: list = [pg_event_sink]
 
             # Optional: RabbitMQ sink
@@ -1131,6 +1133,7 @@ def create_app(
             trace_router = create_trace_router(
                 span_repository,
                 session_service=session_service,
+                resident_runtime_service=resident_runtime_service,
                 prefix="/api/v1/forge",
             )
             app.include_router(trace_router)

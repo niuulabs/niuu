@@ -846,6 +846,43 @@ def test_proxy_routes_forward_to_session_owner(
     assert route.called
 
 
+@pytest.mark.parametrize(
+    ("suffix", "payload"),
+    [
+        ("trace", {"spans": [{"id": "span-1"}], "lanes": []}),
+        ("trace/summary", {"turn_count": 1, "tool_call_count": 0}),
+    ],
+)
+@respx.mock
+def test_trace_routes_fall_back_to_resident_owner(suffix: str, payload: dict[str, Any]) -> None:
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha"),
+            _instance("beta", base_url="http://beta"),
+        ]
+    )
+    for base_url in ("http://alpha", "http://beta"):
+        respx.get(f"{base_url}/api/v1/forge/sessions/resident-1").mock(return_value=Response(404))
+    respx.get("http://alpha/api/v1/forge/resident-runtimes/resident-1").mock(
+        return_value=Response(404)
+    )
+    respx.get("http://beta/api/v1/forge/resident-runtimes/resident-1").mock(
+        return_value=Response(200, json={"id": "resident-1", "name": "Hermes"})
+    )
+    route = respx.get(f"http://beta/api/v1/forge/sessions/resident-1/{suffix}").mock(
+        return_value=Response(200, json=payload)
+    )
+
+    response = client.get(
+        f"/api/v1/forge/sessions/resident-1/{suffix}",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == payload
+    assert route.called
+
+
 @respx.mock
 def test_resolve_workflow_gate_proxies_to_owner_with_encoded_gate_id_and_intent() -> None:
     client = _client([_instance("beta", base_url="http://beta")])

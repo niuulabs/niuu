@@ -144,7 +144,7 @@ CREATE INDEX IF NOT EXISTS idx_session_events_sequence
 SESSION_SPANS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS session_spans (
     id              UUID PRIMARY KEY,
-    session_id      UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    session_id      UUID NOT NULL,
     trace_id        UUID NOT NULL,
     parent_span_id  UUID,
     kind            VARCHAR(64) NOT NULL,
