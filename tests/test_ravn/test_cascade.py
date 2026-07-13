@@ -560,6 +560,31 @@ class TestTaskCreateTool:
         assert created_task.root_correlation_id == "root-123"
 
     @pytest.mark.asyncio
+    async def test_inherits_parent_context_across_resident_tool_request(self):
+        dl = _make_drive_loop()
+        parent = _make_agent_task("parent-task")
+        parent.session_id = "sess-123"
+        parent.root_correlation_id = "root-123"
+        dl._active_task_contexts[parent.task_id] = parent
+        peer = _FakePeer("peer-abc", status="idle")
+        mesh = AsyncMock()
+        mesh.send = AsyncMock(return_value={"status": "accepted"})
+        tool = TaskCreateTool(
+            drive_loop=dl,
+            mesh=mesh,
+            discovery=_FakeDiscovery({"peer-abc": peer}),
+        )
+
+        result = await tool.execute(
+            {"prompt": "remote work", "title": "remote task", "peer_id": "peer-abc"}
+        )
+
+        assert not result.is_error
+        task = mesh.send.await_args.kwargs["message"]["task"]
+        assert task["session_id"] == "sess-123"
+        assert task["root_correlation_id"] == "root-123"
+
+    @pytest.mark.asyncio
     async def test_rejects_duplicate_dispatch_to_same_persona_within_node(self):
         dl = _make_drive_loop()
         parent = _make_agent_task("parent-task")
