@@ -48,6 +48,7 @@ function makeChatState(overrides: Record<string, unknown> = {}) {
     capabilities: {},
     sendMessage: vi.fn(),
     sendDirectedMessages: vi.fn(),
+    publishEvent: vi.fn(),
     sendResendPrompt: vi.fn(),
     respondToPermission: vi.fn(),
     respondToInput: vi.fn(),
@@ -350,7 +351,7 @@ describe('SessionsView — live chat', () => {
   it('uses an advertised chatEndpoint without requiring a duplicate resident capability', async () => {
     const resident = {
       id: 'a3f1b2c4-8e7d-4a6f-9b0c-1d2e3f4a5b6c',
-      personaName: 'flock-coordinator',
+      personaName: 'event-coordinator',
       residentName: 'Coordinator',
       kind: 'resident' as const,
       managed: true,
@@ -594,12 +595,11 @@ describe('SessionsView — live chat', () => {
 
   it('shows a flock as one room using the coordinator room participants', async () => {
     const flockId = '11111111-1111-4111-8111-111111111111';
-    const coordinatorSend = vi.fn();
-    const sendDirectedMessages = vi.fn();
+    const publishEvent = vi.fn();
     const coordinator = liveRunningSession({
       id: '10000001-0000-4000-8000-0000000000c1',
       ravnId: '20000001-0000-4000-8000-0000000000c1',
-      personaName: 'flock-coordinator',
+      personaName: 'event-coordinator',
       title: 'Coordinator',
       createdAt: '2026-07-01T10:00:01Z',
       chatEndpoint: 'wss://skuld.example/coordinator/session',
@@ -652,7 +652,7 @@ describe('SessionsView — live chat', () => {
     ];
     const coordinatorParticipant = {
       peerId: 'ravn-coordinator',
-      persona: 'flock-coordinator',
+      persona: 'event-coordinator',
       displayName: 'Coordinator',
       participantType: 'ravn',
     };
@@ -661,6 +661,7 @@ describe('SessionsView — live chat', () => {
       persona: 'hermes-specialist',
       displayName: 'Hermes',
       participantType: 'ravn',
+      subscribesTo: ['review.requested'],
     };
     useSkuldChatMock.mockImplementation(() =>
       makeChatState({
@@ -686,8 +687,7 @@ describe('SessionsView — live chat', () => {
           [coordinatorParticipant.peerId, coordinatorParticipant],
           [hermesParticipant.peerId, hermesParticipant],
         ]),
-        sendMessage: coordinatorSend,
-        sendDirectedMessages,
+        publishEvent,
       }),
     );
     const sessionStream: ISessionStream = {
@@ -740,17 +740,19 @@ describe('SessionsView — live chat', () => {
     fireEvent.change(screen.getByTestId('chat-textarea'), {
       target: { value: 'Coordinate this work' },
     });
-    fireEvent.click(screen.getByTestId('send-btn'));
-    expect(coordinatorSend).toHaveBeenCalledWith('Coordinate this work', []);
+    expect(screen.getByTestId('send-btn')).toBeDisabled();
 
     fireEvent.change(screen.getByTestId('chat-textarea'), {
-      target: { value: '@hermes-specialist verify this result' },
+      target: { value: '@', selectionStart: 1 },
+    });
+    fireEvent.click(screen.getByRole('option', { name: /Hermes.*review\.requested/ }));
+    fireEvent.change(screen.getByTestId('chat-textarea'), {
+      target: { value: 'Verify this result' },
     });
     fireEvent.click(screen.getByTestId('send-btn'));
-    expect(sendDirectedMessages).toHaveBeenCalledWith(
-      [hermesParticipant],
-      '@hermes-specialist verify this result',
-      [],
+    expect(publishEvent).toHaveBeenCalledWith(
+      { participant: hermesParticipant, eventType: 'review.requested' },
+      '@Hermes Verify this result',
     );
   });
 

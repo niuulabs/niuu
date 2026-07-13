@@ -256,13 +256,7 @@ async def _run_daemon(
             gw_tasks.append("telegram")
 
         if channels_cfg.http.enabled:
-            ht = HttpGateway(
-                channels_cfg.http,
-                gw,
-                resident_tool_provider=lambda: (
-                    getattr(drive_loop, "_cascade_tools", []) if drive_loop is not None else []
-                ),
-            )
+            ht = HttpGateway(channels_cfg.http, gw)
             tasks.append(asyncio.create_task(ht.run(), name="http"))
             gw_tasks.append("http")
 

@@ -1,4 +1,4 @@
-"""Expose resident-native sessions as Ravn mesh task peers."""
+"""Attach resident-native sessions to persona event subscriptions."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from niuu.mesh.identity import MeshIdentity
 from ravn.adapters.discovery.event_bus import EventBusDiscoveryAdapter
 from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
 from ravn.domain.events import RavnEvent, RavnEventType
-from ravn.domain.models import OutputMode
 from volundr.domain.models import ResidentObservedState
 from volundr.domain.ports import (
     ResidentChatConnection,
@@ -30,9 +29,13 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class _ResidentTask:
-    task_id: str
+class _ResidentReaction:
+    reaction_id: str
     runtime_id: UUID
+    title: str
+    prompt: str
+    session_id: str
+    root_correlation_id: str
     status: str = "queued"
     output: str = ""
     error: str = ""
@@ -63,10 +66,10 @@ class ResidentFlockAdapter:
         self._bus = bus
         self._persona_provider = persona_provider
         self._peers: dict[UUID, _ResidentPeer] = {}
-        self._tasks: dict[str, _ResidentTask] = {}
+        self._reactions: dict[str, _ResidentReaction] = {}
 
     async def sync(self) -> None:
-        """Converge mesh RPC listeners with active flock-enabled residents."""
+        """Converge persona event subscribers with active flock residents."""
         runtimes = await self._repository.list_for_reconciliation()
         desired = {
             runtime.id: runtime
@@ -95,9 +98,6 @@ class ResidentFlockAdapter:
                 own_peer_id=runtime.flock_peer_id,
                 environment_id=str(runtime.flock_id),
                 manage_transport_lifecycle=False,
-            )
-            peer.set_rpc_handler(
-                lambda message, resident_id=runtime_id: self._handle_rpc(resident_id, message)
             )
             discovery = EventBusDiscoveryAdapter(
                 MeshIdentity(
@@ -166,153 +166,80 @@ class ResidentFlockAdapter:
                 event.root_correlation_id,
             )
         )
-        task_id = f"event_{hashlib.sha256(identity.encode()).hexdigest()[:20]}"
+        reaction_id = f"event_{hashlib.sha256(identity.encode()).hexdigest()[:20]}"
+        if reaction_id in self._reactions:
+            return
+
+        message = str(
+            event.payload.get("prompt") or event.payload.get("task_description") or ""
+        ).strip()
         payload = json.dumps(event.payload, sort_keys=True, default=str)
-        result = await self._dispatch(
-            runtime_id,
-            {
-                "task_id": task_id,
-                "title": f"React to {event_type} ({task_id[-8:]})",
-                "initiative_context": (
-                    f"A subscribed flock event was received.\n"
-                    f"Event type: {event_type}\n"
-                    f"Source: {event.source}\n"
-                    f"Payload: {payload}"
-                ),
-                "triggered_by": f"mesh:event:{event_type}",
-                "output_mode": OutputMode.SURFACE,
-                "session_id": event.session_id,
-                "root_correlation_id": event.root_correlation_id or event.correlation_id,
-            },
+        prompt_parts = [
+            f"Event type: {event_type}",
+            f"Source: {event.source}",
+        ]
+        if message:
+            prompt_parts.extend(("Message:", message))
+        prompt_parts.extend(("Event payload:", payload))
+        reaction = _ResidentReaction(
+            reaction_id=reaction_id,
+            runtime_id=runtime_id,
+            title=f"React to {event_type} ({reaction_id[-8:]})",
+            prompt="\n".join(prompt_parts),
+            session_id=event.session_id,
+            root_correlation_id=event.root_correlation_id or event.correlation_id,
         )
-        if result.get("status") != "accepted":
-            logger.warning(
-                "Resident persona event rejected runtime=%s event_type=%s error=%s",
-                runtime_id,
-                event_type,
-                result.get("error", "unknown"),
-            )
+        self._reactions[reaction_id] = reaction
+        reaction.runner = asyncio.create_task(
+            self._run_reaction(reaction),
+            name=f"resident-event-{reaction_id}",
+        )
 
     async def stop(self) -> None:
-        """Stop RPC listeners and active resident task connections."""
+        """Stop event subscribers and active resident reactions."""
         for peer in list(self._peers.values()):
             await peer.mesh.stop()
             await peer.discovery.stop()
         self._peers.clear()
-        for task in self._tasks.values():
-            if task.runner and not task.runner.done():
-                task.runner.cancel()
+        for reaction in self._reactions.values():
+            if reaction.runner and not reaction.runner.done():
+                reaction.runner.cancel()
         await asyncio.gather(
-            *(task.runner for task in self._tasks.values() if task.runner),
+            *(reaction.runner for reaction in self._reactions.values() if reaction.runner),
             return_exceptions=True,
         )
 
-    async def _handle_rpc(self, runtime_id: UUID, message: dict[str, Any]) -> dict[str, Any]:
-        message_type = str(message.get("type") or "")
-        if message_type == "work_request":
-            request_id = str(message.get("request_id") or "").strip()
-            if not request_id:
-                return {"status": "error", "error": "request_id is required"}
-            accepted = await self._dispatch(
-                runtime_id,
-                {
-                    "task_id": request_id,
-                    "title": "Directed flock message",
-                    "prompt": str(message.get("prompt") or ""),
-                    "session_id": str(message.get("session_id") or ""),
-                    "root_correlation_id": str(message.get("root_correlation_id") or ""),
-                },
-            )
-            if accepted.get("status") != "accepted":
-                return accepted
-            task = self._tasks[request_id]
-            if task.runner is not None:
-                await task.runner
-            return {
-                "status": task.status,
-                "request_id": request_id,
-                "output": task.output,
-                **({"error": task.error} if task.error else {}),
-            }
-        if message_type == "task_dispatch":
-            return await self._dispatch(runtime_id, message.get("task"))
-        if message_type == "task_list":
-            runtime_tasks = [item for item in self._tasks.values() if item.runtime_id == runtime_id]
-            return {
-                "active": [item.task_id for item in runtime_tasks if item.status == "running"],
-                "queued": [item.task_id for item in runtime_tasks if item.status == "queued"],
-            }
-        task_id = str(message.get("task_id") or "")
-        task = self._tasks.get(task_id)
-        if task is None or task.runtime_id != runtime_id:
-            return {"error": "task_not_found", "task_id": task_id}
-        if message_type == "task_status":
-            response = {"task_id": task_id, "status": task.status}
-            if message.get("include_progress"):
-                response["progress"] = task.output
-            return response
-        if message_type == "task_result":
-            return {
-                "task_id": task_id,
-                "status": task.status,
-                "output": task.output,
-                **({"error": task.error} if task.error else {}),
-            }
-        if message_type == "task_cancel":
-            if task.connection is not None:
-                await task.connection.send({"type": "interrupt"})
-            task.status = "cancelled"
-            if task.runner is not None and not task.runner.done():
-                task.runner.cancel()
-            return {"task_id": task_id, "status": "cancelled"}
-        return {"error": "unsupported_message", "type": message_type}
-
-    async def _dispatch(self, runtime_id: UUID, raw_task: Any) -> dict[str, Any]:
-        task_payload = raw_task if isinstance(raw_task, dict) else {}
-        task_id = str(task_payload.get("task_id") or "").strip()
-        if not task_id:
-            return {"status": "rejected", "error": "task_id is required"}
-        existing = self._tasks.get(task_id)
-        if existing is not None:
-            if existing.runtime_id == runtime_id:
-                return {"status": "accepted", "task_id": task_id}
-            return {"status": "rejected", "error": "task_id belongs to another resident"}
-        task = _ResidentTask(task_id=task_id, runtime_id=runtime_id)
-        self._tasks[task_id] = task
-        task.runner = asyncio.create_task(
-            self._run_task(task, task_payload),
-            name=f"resident-flock-{task_id}",
-        )
-        return {"status": "accepted", "task_id": task_id}
-
-    async def _run_task(self, task: _ResidentTask, payload: dict[str, Any]) -> None:
+    async def _run_reaction(self, reaction: _ResidentReaction) -> None:
         connection: ResidentChatConnection | None = None
+        runtime: Any = None
         try:
-            runtime = await self._repository.get(task.runtime_id)
+            runtime = await self._repository.get(reaction.runtime_id)
             if runtime is None:
-                raise RuntimeError(f"Resident runtime {task.runtime_id} no longer exists")
+                raise RuntimeError(f"Resident runtime {reaction.runtime_id} no longer exists")
             controller = self._controllers[runtime.engine]
-            title = str(payload.get("title") or "Remote flock task")
-            context = str(payload.get("initiative_context") or "").strip()
-            prompt = str(payload.get("prompt") or "").strip()
-            if not prompt:
-                prompt = f"{title}\n\n{context}" if context else title
-            peer = self._peers.get(task.runtime_id)
+            prompt = reaction.prompt
+            peer = self._peers.get(reaction.runtime_id)
             persona = peer.persona if peer is not None else None
             if persona is not None and persona.system_prompt:
-                prompt = f"{persona.system_prompt}\n\nTask:\n{prompt}"
-            session = await controller.create_session(runtime, title=title, model=runtime.model)
+                prompt = f"{persona.system_prompt}\n\nSubscribed event:\n{prompt}"
+            session = await controller.create_session(
+                runtime,
+                title=reaction.title,
+                model=runtime.model,
+            )
             connection = await controller.connect_chat(runtime, session.id)
-            task.connection = connection
-            task.status = "running"
-            await connection.send({"type": "user", "content": prompt, "request_id": task.task_id})
-            while task.status == "running":
+            reaction.connection = connection
+            reaction.status = "running"
+            await connection.send(
+                {"type": "user", "content": prompt, "request_id": reaction.reaction_id}
+            )
+            while reaction.status == "running":
                 frame = await connection.receive()
                 frame_type = str(frame.get("type") or "")
                 if frame_type == "content_block_delta":
                     delta = frame.get("delta")
                     if isinstance(delta, dict):
-                        task.output += str(delta.get("text") or "")
+                        reaction.output += str(delta.get("text") or "")
                     continue
                 if frame_type == "control_request":
                     await connection.send(
@@ -325,98 +252,90 @@ class ResidentFlockAdapter:
                     continue
                 if frame_type == "result":
                     result = str(frame.get("result") or "")
-                    if result and not task.output:
-                        task.output = result
-                    if not task.output.strip():
-                        task.error = "Resident task completed without an assistant response"
-                        task.status = "failed"
-                        await self._publish_task_error(runtime, task, payload)
+                    if result and not reaction.output:
+                        reaction.output = result
+                    if not reaction.output.strip():
+                        reaction.error = "Resident reaction completed without an assistant response"
+                        reaction.status = "failed"
+                        await self._publish_reaction_error(runtime, reaction)
                         return
-                    task.status = "complete"
-                    await self._publish_task_output(runtime, task, payload, persona)
+                    reaction.status = "complete"
+                    await self._publish_reaction_output(runtime, reaction, persona)
                     return
                 if frame_type == "error":
-                    task.error = str(frame.get("error") or "Resident task failed")
-                    task.status = "failed"
-                    await self._publish_task_error(runtime, task, payload)
+                    reaction.error = str(frame.get("error") or "Resident reaction failed")
+                    reaction.status = "failed"
+                    await self._publish_reaction_error(runtime, reaction)
                     return
         except asyncio.CancelledError:
-            task.status = "cancelled"
+            reaction.status = "cancelled"
             raise
         except Exception as exc:
-            task.error = str(exc)
-            task.status = "failed"
+            reaction.error = str(exc)
+            reaction.status = "failed"
             logger.exception(
-                "Resident flock task failed runtime=%s task=%s",
-                task.runtime_id,
-                task.task_id,
+                "Resident event reaction failed runtime=%s reaction=%s",
+                reaction.runtime_id,
+                reaction.reaction_id,
             )
+            if runtime is not None:
+                await self._publish_reaction_error(runtime, reaction)
         finally:
-            task.connection = None
+            reaction.connection = None
             if connection is not None:
                 await connection.close()
 
-    async def _publish_task_error(
+    async def _publish_reaction_error(
         self,
         runtime: Any,
-        task: _ResidentTask,
-        payload: dict[str, Any],
+        reaction: _ResidentReaction,
     ) -> None:
-        peer = self._peers.get(task.runtime_id)
+        peer = self._peers.get(reaction.runtime_id)
         if peer is None:
             return
-        output_mode = OutputMode(str(payload.get("output_mode") or OutputMode.SILENT))
-        if output_mode != OutputMode.SURFACE:
-            return
-        session_id = str(payload.get("session_id") or "")
-        root_correlation_id = str(payload.get("root_correlation_id") or session_id or task.task_id)
         error = RavnEvent(
             type=RavnEventType.ERROR,
             source=runtime.flock_peer_id,
             payload={
-                "message": task.error,
+                "message": reaction.error,
                 "persona": runtime.persona_name or runtime.name,
             },
             timestamp=datetime.now(UTC),
             urgency=0.6,
-            correlation_id=session_id or task.task_id,
-            session_id=session_id,
-            task_id=task.task_id,
-            root_correlation_id=root_correlation_id,
+            correlation_id=reaction.session_id or reaction.reaction_id,
+            session_id=reaction.session_id,
+            task_id=reaction.reaction_id,
+            root_correlation_id=reaction.root_correlation_id,
         )
         await peer.mesh.publish(error, topic=f"activity.{runtime.flock_peer_id}")
 
-    async def _publish_task_output(
+    async def _publish_reaction_output(
         self,
         runtime: Any,
-        task: _ResidentTask,
-        payload: dict[str, Any],
+        reaction: _ResidentReaction,
         persona: SessionPersona | None,
     ) -> None:
-        peer = self._peers.get(task.runtime_id)
+        peer = self._peers.get(reaction.runtime_id)
         if peer is None:
             return
-        session_id = str(payload.get("session_id") or "")
-        root_correlation_id = str(payload.get("root_correlation_id") or session_id or task.task_id)
-        output_mode = OutputMode(str(payload.get("output_mode") or OutputMode.SILENT))
-        if output_mode == OutputMode.SURFACE and task.output:
+        if reaction.output:
             response = RavnEvent(
                 type=RavnEventType.RESPONSE,
                 source=runtime.flock_peer_id,
-                payload={"text": task.output, "persona": runtime.persona_name or runtime.name},
+                payload={"text": reaction.output, "persona": runtime.persona_name or runtime.name},
                 timestamp=datetime.now(UTC),
                 urgency=0.2,
-                correlation_id=session_id or task.task_id,
-                session_id=session_id,
-                task_id=task.task_id,
-                root_correlation_id=root_correlation_id,
+                correlation_id=reaction.session_id or reaction.reaction_id,
+                session_id=reaction.session_id,
+                task_id=reaction.reaction_id,
+                root_correlation_id=reaction.root_correlation_id,
             )
             await peer.mesh.publish(response, topic=f"activity.{runtime.flock_peer_id}")
 
         if persona is None or not persona.produces_event_type:
             return
         schema = OutcomeSchema(persona.produces_schema) if persona.produces_schema else None
-        parsed = parse_outcome_block(task.output, schema)
+        parsed = parse_outcome_block(reaction.output, schema)
         fields = dict(parsed.fields) if parsed is not None else {}
         outcome_payload: dict[str, Any] = {
             "persona": persona.name,
@@ -425,7 +344,7 @@ class ResidentFlockAdapter:
             "outcome": fields,
             "fields": fields,
             "valid": bool(parsed.valid) if parsed is not None else not persona.produces_schema,
-            "task_id": task.task_id,
+            "task_id": reaction.reaction_id,
             "bubble_up": True,
         }
         summary = fields.get("summary")
@@ -437,9 +356,9 @@ class ResidentFlockAdapter:
             payload=outcome_payload,
             timestamp=datetime.now(UTC),
             urgency=0.3,
-            correlation_id=task.task_id,
-            session_id=session_id,
-            task_id=task.task_id,
-            root_correlation_id=root_correlation_id,
+            correlation_id=reaction.reaction_id,
+            session_id=reaction.session_id,
+            task_id=reaction.reaction_id,
+            root_correlation_id=reaction.root_correlation_id,
         )
         await peer.mesh.publish(outcome, topic=persona.produces_event_type)

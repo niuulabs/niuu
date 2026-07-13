@@ -895,20 +895,20 @@ class Broker(
             return True
         return bool(self._room_bridge.is_connected(peer_id))
 
-    async def _wait_for_workflow_trigger_consumers(
+    async def _wait_for_event_consumers(
         self,
         event_type: str,
         timeout_s: float,
         *,
         poll_interval_s: float = 0.05,
+        settle_s: float = 0.0,
     ) -> bool:
-        """Wait until the initial workflow-trigger consumers are connected.
+        """Wait until subscribers for an event are connected.
 
-        Workflow kickoff events are pub/sub outcomes. If we publish them before
-        the first consumer peer finishes its WebSocket registration, the event
-        can be dropped and the flock stalls indefinitely. We treat the trigger
-        subscribers as required startup dependencies and wait briefly for them
-        to connect before dispatching the initial event.
+        Events are pub/sub outcomes. If we publish them before the first
+        consumer peer finishes its registration, the event can be dropped.
+        Initial workflow dispatches can request an additional startup settle;
+        interactive events publish as soon as consumers are ready.
         """
         required_peers = self._workflow_trigger_consumer_peer_ids(event_type)
         if not required_peers or self._room_bridge is None:
@@ -943,10 +943,8 @@ class Broker(
             )
             return False
 
-        # Static mesh discovery can register a peer before the daemon has
-        # finished wiring its topic subscriptions. Give the participant
-        # processes a real startup beat before the first pub/sub event.
-        await asyncio.sleep(max(poll_interval_s, 5.0))
+        if settle_s > 0:
+            await asyncio.sleep(settle_s)
         logger.info(
             "Workflow trigger consumers ready event_type=%s peers=%s",
             event_type,
@@ -965,9 +963,10 @@ class Broker(
         # give them a more realistic readiness window and fail closed rather
         # than silently dropping the first workflow event.
         wait_timeout_s = max(float(cfg.startup_delay_s or 0.0), 20.0)
-        consumers_ready = await self._wait_for_workflow_trigger_consumers(
+        consumers_ready = await self._wait_for_event_consumers(
             cfg.event_type,
             wait_timeout_s,
+            settle_s=5.0,
         )
         if not consumers_ready:
             raise RuntimeError(f"workflow trigger consumers for {cfg.event_type} did not connect")
@@ -1042,6 +1041,7 @@ class Broker(
         *,
         source: str = "external",
         payload: dict[str, Any] | None = None,
+        request_id: str | None = None,
     ) -> str:
         """Inject an operator event into the current flock through Skuld."""
         event_type = event_type.strip()
@@ -1052,12 +1052,25 @@ class Broker(
             raise ValueError("Event task description is required")
         if self._mesh_adapter is None:
             raise RuntimeError("Flock mesh is not available")
-        consumers_ready = await self._wait_for_workflow_trigger_consumers(
+        consumers_ready = await self._wait_for_event_consumers(
             event_type,
             20.0,
         )
         if not consumers_ready:
             raise RuntimeError(f"mesh event consumers for {event_type} did not connect")
+        routing_metadata = {
+            "event_type": event_type,
+            "routing": "mesh_event",
+            "session_id": self.session_id,
+            "root_correlation_id": self.session_id,
+        }
+        await self.handle_human_room_message(
+            task_description,
+            source=source,
+            request_id=request_id,
+            metadata=routing_metadata,
+            deliver_to_transport=False,
+        )
         return await self._publish_mesh_event(
             event_type,
             task_description,
@@ -2954,6 +2967,7 @@ class Broker(
                         payload=data.get("payload")
                         if isinstance(data.get("payload"), dict)
                         else None,
+                        request_id=self._extract_request_id(data),
                     )
                 except (ValueError, RuntimeError) as exc:
                     if sender_ws:

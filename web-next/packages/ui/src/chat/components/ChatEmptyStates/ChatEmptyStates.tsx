@@ -10,9 +10,14 @@ const SUGGESTIONS = [
 interface SessionEmptyChatProps {
   sessionName: string;
   onSuggestionClick: (text: string) => void;
+  suggestionsEnabled?: boolean;
 }
 
-export function SessionEmptyChat({ sessionName, onSuggestionClick }: SessionEmptyChatProps) {
+export function SessionEmptyChat({
+  sessionName,
+  onSuggestionClick,
+  suggestionsEnabled = true,
+}: SessionEmptyChatProps) {
   return (
     <div className="niuu-chat-empty-wrapper" data-testid="session-empty-chat">
       <div className="niuu-chat-empty-inner">
@@ -23,18 +28,20 @@ export function SessionEmptyChat({ sessionName, onSuggestionClick }: SessionEmpt
         <div className="niuu-chat-empty-subtitle">
           Start working — ask a question or give an instruction.
         </div>
-        <div className="niuu-chat-empty-suggestions">
-          {SUGGESTIONS.map((text) => (
-            <button
-              key={text}
-              type="button"
-              className="niuu-chat-empty-suggestion"
-              onClick={() => onSuggestionClick(text)}
-            >
-              {text}
-            </button>
-          ))}
-        </div>
+        {suggestionsEnabled && (
+          <div className="niuu-chat-empty-suggestions">
+            {SUGGESTIONS.map((text) => (
+              <button
+                key={text}
+                type="button"
+                className="niuu-chat-empty-suggestion"
+                onClick={() => onSuggestionClick(text)}
+              >
+                {text}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

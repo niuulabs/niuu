@@ -502,7 +502,7 @@ class TestBroker:
 
         with patch.object(
             broker,
-            "_wait_for_workflow_trigger_consumers",
+            "_wait_for_event_consumers",
             new=AsyncMock(return_value=False),
         ):
             with pytest.raises(RuntimeError, match="workflow trigger consumers"):
@@ -521,16 +521,18 @@ class TestBroker:
 
         with patch.object(
             broker,
-            "_wait_for_workflow_trigger_consumers",
+            "_wait_for_event_consumers",
             new=AsyncMock(return_value=True),
-        ):
+        ) as wait_for_consumers:
             event_id = await broker.handle_publish_mesh_event(
                 "code.changed",
                 "Review commit abc123",
                 source="browser",
                 payload={"commit": "abc123"},
+                request_id="request-1",
             )
 
+        wait_for_consumers.assert_awaited_once_with("code.changed", 20.0)
         broker._mesh_adapter.publish.assert_awaited_once()
         event, topic = broker._mesh_adapter.publish.await_args.args
         assert topic == "code.changed"
@@ -544,6 +546,14 @@ class TestBroker:
             "prompt": "Review commit abc123",
             "task_description": "Review commit abc123",
             "trigger_source": "browser",
+        }
+        assert broker._conversation_turns[-1].role == "user"
+        assert broker._conversation_turns[-1].content == "Review commit abc123"
+        assert broker._conversation_turns[-1].metadata == {
+            "event_type": "code.changed",
+            "routing": "mesh_event",
+            "session_id": "flock-session",
+            "root_correlation_id": "flock-session",
         }
 
     @pytest.mark.asyncio
@@ -2157,6 +2167,7 @@ class TestDispatchBrowserMessage:
                 "eventType": "code.changed",
                 "content": "Review the latest change",
                 "payload": {"commit": "abc123"},
+                "request_id": "request-1",
             },
             sender_ws=sender_ws,
         )
@@ -2166,6 +2177,7 @@ class TestDispatchBrowserMessage:
             "Review the latest change",
             source="browser",
             payload={"commit": "abc123"},
+            request_id="request-1",
         )
         sender_ws.send_json.assert_awaited_once_with(
             {

@@ -20,7 +20,6 @@ from ravn.cli.commands import (
     _chat,
     _dedupe_preserve_order,
     _derive_capabilities,
-    _filter_tools,
     _join_mode_to_fan_in,
     _mimir_ingest_event_fields_from_mcp_result,
     _mimir_mount_name_from_mcp_server_name,
@@ -29,7 +28,6 @@ from ravn.cli.commands import (
     _print_usage,
     _resolve_persona_model,
     _run_daemon,
-    _run_tool_mcp,
     _run_turn,
     _split_workflow_edge_label,
     _stage_personas,
@@ -1340,44 +1338,6 @@ class TestWorkflowRuntimeForPersona:
             "ravn",
         ]
 
-    def test_cascade_group_allows_runtime_delegation_tools(self) -> None:
-        settings = Settings()
-        persona = PersonaConfig(name="coordinator", allowed_tools=["cascade"])
-        tools = [MagicMock() for _ in range(4)]
-        for tool, name in zip(
-            tools,
-            ("task_create", "task_collect", "flock_status", "read_file"),
-            strict=True,
-        ):
-            tool.name = name
-
-        filtered = _filter_tools(tools, settings, persona)
-
-        assert [tool.name for tool in filtered] == [
-            "task_create",
-            "task_collect",
-            "flock_status",
-        ]
-
-    def test_flock_group_allows_resident_delegation_tools(self) -> None:
-        settings = Settings()
-        persona = PersonaConfig(name="coordinator", allowed_tools=["flock"])
-        tools = [MagicMock() for _ in range(4)]
-        for tool, name in zip(
-            tools,
-            ("task_create", "task_collect", "flock_status", "read_file"),
-            strict=True,
-        ):
-            tool.name = name
-
-        filtered = _filter_tools(tools, settings, persona)
-
-        assert [tool.name for tool in filtered] == [
-            "task_create",
-            "task_collect",
-            "flock_status",
-        ]
-
     def test_wire_cron_registers_trigger_and_returns_tools(self, tmp_path: Path) -> None:
         drive_loop = MagicMock()
         trigger = MagicMock()
@@ -1476,60 +1436,3 @@ class TestDaemonAgentFactory:
                 "url": "",
             }
         ]
-
-
-class TestToolMcp:
-    async def test_tool_mcp_proxies_flock_tools_from_resident_daemon(self) -> None:
-        settings = Settings()
-        settings.gateway.channels.http.enabled = True
-        settings.gateway.channels.http.port = 7781
-        persona = PersonaConfig(name="coordinator", allowed_tools=["flock"])
-        static_tool = MagicMock()
-        static_tool.name = "todo_read"
-        resident_tool = MagicMock()
-        resident_tool.name = "flock_status"
-        server = MagicMock()
-        server.return_value.run_stdio = AsyncMock()
-
-        with (
-            patch("ravn.cli.commands._build_tool_mcp_tools", return_value=[static_tool]),
-            patch(
-                "ravn.adapters.tools.resident_proxy.load_resident_tools",
-                new=AsyncMock(return_value=[resident_tool]),
-            ) as load_tools,
-            patch("ravn.adapters.mcp.tool_port_server.ToolPortMcpServer", server),
-        ):
-            await _run_tool_mcp(settings, persona_config=persona)
-
-        load_tools.assert_awaited_once_with(
-            base_url="http://127.0.0.1:7781",
-            connect_timeout_s=settings.mesh.rpc_timeout_s,
-        )
-        server.assert_called_once_with([static_tool, resident_tool])
-        server.return_value.run_stdio.assert_awaited_once_with()
-
-    async def test_tool_mcp_requires_resident_flock_tools(self) -> None:
-        settings = Settings()
-        settings.gateway.channels.http.enabled = True
-        persona = PersonaConfig(name="coordinator", allowed_tools=["flock"])
-
-        with (
-            patch("ravn.cli.commands._build_tool_mcp_tools", return_value=[]),
-            patch(
-                "ravn.adapters.tools.resident_proxy.load_resident_tools",
-                new=AsyncMock(return_value=[]),
-            ),
-            pytest.raises(RuntimeError, match="did not expose flock tools"),
-        ):
-            await _run_tool_mcp(settings, persona_config=persona)
-
-    async def test_tool_mcp_requires_resident_http_gateway_for_flock(self) -> None:
-        settings = Settings()
-        settings.gateway.channels.http.enabled = False
-        persona = PersonaConfig(name="coordinator", allowed_tools=["flock"])
-
-        with (
-            patch("ravn.cli.commands._build_tool_mcp_tools", return_value=[]),
-            pytest.raises(RuntimeError, match="require the resident HTTP gateway"),
-        ):
-            await _run_tool_mcp(settings, persona_config=persona)

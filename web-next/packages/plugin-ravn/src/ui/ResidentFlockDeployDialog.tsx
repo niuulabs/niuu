@@ -45,8 +45,10 @@ function defaultMemberName(
   return `${flockName.trim() || 'flock'}-${profile?.engine ?? 'member'}-${index + 1}`;
 }
 
-function coordinatorPersonas(personas: PersonaSummary[]): PersonaSummary[] {
-  return personas.filter((persona) => persona.allowedTools.includes('flock'));
+function eventPersonas(personas: PersonaSummary[]): PersonaSummary[] {
+  return personas.filter(
+    (persona) => persona.consumesEvents.length > 0 && Boolean(persona.producesEvent),
+  );
 }
 
 export function ResidentFlockDeployDialog({
@@ -69,15 +71,14 @@ export function ResidentFlockDeployDialog({
     [profilesQuery.data],
   );
   const personas = useMemo(
-    () => [...(personasQuery.data ?? [])].sort((a, b) => a.name.localeCompare(b.name)),
+    () =>
+      eventPersonas([...(personasQuery.data ?? [])]).sort((a, b) => a.name.localeCompare(b.name)),
     [personasQuery.data],
   );
-  const coordinators = useMemo(() => coordinatorPersonas(personas), [personas]);
   const coordinatorProfiles = useMemo(
     () => profiles.filter((profile) => profile.capabilities.includes('flock')),
     [profiles],
   );
-  const preferredCoordinator = coordinators.find((persona) => persona.name === 'flock-coordinator');
   const selectedProfiles = drafts.map((draft) =>
     selectedResidentProfile(draft, draft.role === 'coordinator' ? coordinatorProfiles : profiles),
   );
@@ -91,9 +92,7 @@ export function ResidentFlockDeployDialog({
     .every(
       (draft) =>
         Boolean(selectedResidentProfile(draft, coordinatorProfiles)) &&
-        coordinators.some(
-          (persona) => persona.name === (draft.personaName || preferredCoordinator?.name),
-        ),
+        personas.some((persona) => persona.name === draft.personaName),
     );
   const valid =
     Boolean(flockName.trim()) &&
@@ -101,7 +100,11 @@ export function ResidentFlockDeployDialog({
     coordinatorCount === 1 &&
     coordinatorReady &&
     duplicateNames.size === 0 &&
-    drafts.every((draft, index) => Boolean(draft.name.trim() && selectedProfiles[index]));
+    drafts.every(
+      (draft, index) =>
+        Boolean(draft.name.trim() && selectedProfiles[index]) &&
+        personas.some((persona) => persona.name === draft.personaName),
+    );
 
   function setOpen(nextOpen: boolean) {
     if (!nextOpen) deploy.reset();
@@ -178,10 +181,7 @@ export function ResidentFlockDeployDialog({
           name: draft.name.trim(),
           profileId: profile.id,
           instanceId: profile.instanceId,
-          personaName:
-            draft.role === 'coordinator'
-              ? (draft.personaName || preferredCoordinator?.name || '').trim()
-              : draft.personaName.trim(),
+          personaName: draft.personaName.trim(),
           model: draft.model || profile.defaultModel,
           flockId,
           flockMemberId: memberId,
@@ -237,9 +237,9 @@ export function ResidentFlockDeployDialog({
               {errorMessage(personasQuery.error)}
             </div>
           )}
-          {!personasQuery.isLoading && coordinators.length === 0 && (
+          {!personasQuery.isLoading && personas.length === 0 && (
             <div className="rv-form-error" role="alert">
-              A persona with flock tools is required for the coordinator.
+              A persona with input and output event contracts is required.
             </div>
           )}
           {drafts.length < 2 && profiles.length > 0 && (
@@ -302,15 +302,9 @@ export function ResidentFlockDeployDialog({
                       </button>
                     </div>
                     <ResidentDeployFields
-                      draft={{
-                        ...draft,
-                        personaName:
-                          coordinator && !draft.personaName && preferredCoordinator
-                            ? preferredCoordinator.name
-                            : draft.personaName,
-                      }}
+                      draft={draft}
                       profiles={memberProfiles}
-                      personas={coordinator ? coordinators : personas}
+                      personas={personas}
                       onChange={(nextDraft) => updateDraft(index, nextDraft)}
                       testIdPrefix={`flock-member-${index}`}
                       showRole

@@ -34,7 +34,6 @@ from ravn.adapters.tools.cascade_tools import (
     TaskStatusTool,
     TaskStopTool,
     build_cascade_tools,
-    build_flock_tools,
 )
 from ravn.config import InitiativeConfig, Settings
 from ravn.domain.models import AgentTask, OutputMode
@@ -208,70 +207,6 @@ async def test_mesh_rpc_task_list():
 
 
 @pytest.mark.asyncio
-async def test_mesh_rpc_work_request_generates_request_id():
-    dl = _make_drive_loop()
-
-    from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
-
-    settings = MagicMock(spec=Settings)
-    settings.cascade = MagicMock()
-    settings.cascade.enabled = True
-    settings.mesh = MagicMock()
-    settings.mesh.enabled = False
-    settings.discovery = MagicMock()
-    settings.discovery.enabled = False
-
-    with patch("ravn.cli.commands._build_mesh", side_effect=RuntimeError):
-        with patch("ravn.cli.commands._build_discovery", side_effect=RuntimeError):
-            _wire_cascade(dl, settings)
-
-    reply = await dl.handle_rpc({"type": "work_request", "prompt": "review", "timeout_s": 0.0})
-
-    assert reply["status"] == "timeout"
-    assert reply["request_id"]
-    assert dl.task_status(f"work_{reply['request_id']}") == "queued"
-
-
-@pytest.mark.asyncio
-async def test_mesh_rpc_work_request_preserves_room_correlation():
-    dl = _make_drive_loop()
-
-    from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
-
-    settings = MagicMock(spec=Settings)
-    settings.cascade = MagicMock()
-    settings.cascade.enabled = True
-    settings.mesh = MagicMock()
-    settings.mesh.enabled = False
-    settings.discovery = MagicMock()
-    settings.discovery.enabled = False
-
-    with patch("ravn.cli.commands._build_mesh", side_effect=RuntimeError):
-        with patch("ravn.cli.commands._build_discovery", side_effect=RuntimeError):
-            _wire_cascade(dl, settings)
-
-    reply = await dl.handle_rpc(
-        {
-            "type": "work_request",
-            "request_id": "room-message-1",
-            "prompt": "review",
-            "session_id": "room-1",
-            "root_correlation_id": "room-1",
-            "timeout_s": 0.0,
-        }
-    )
-
-    task = next(
-        task
-        for _priority, _counter, task in dl._queue._queue
-        if task.task_id == "work_room-message-1"
-    )
-    assert reply["status"] == "timeout"
-    assert task.session_id == "room-1"
-    assert task.root_correlation_id == "room-1"
-
-
-@pytest.mark.asyncio
 async def test_mesh_rpc_task_cancel():
     dl = _make_drive_loop()
     # Fake an active task
@@ -353,78 +288,6 @@ class TestTaskCreateTool:
         assert data["status"] == "accepted"
         assert not result.is_error
         mesh.send.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_mesh_delegation_to_explicit_discovered_peer(self):
-        dl = _make_drive_loop()
-        hermes = _FakePeer("hermes-peer", status="idle", capabilities=["chat", "flock"])
-        openclaw = _FakePeer("openclaw-peer", status="idle", capabilities=["chat", "flock"])
-        discovery = _FakeDiscovery({"hermes-peer": hermes, "openclaw-peer": openclaw})
-        mesh = AsyncMock()
-        mesh.send = AsyncMock(return_value={"status": "accepted", "task_id": "t1"})
-
-        tool = TaskCreateTool(drive_loop=dl, mesh=mesh, discovery=discovery)
-        result = await tool.execute(
-            {
-                "prompt": "use Hermes",
-                "title": "targeted task",
-                "peer_id": "hermes-peer",
-                "required_caps": ["flock"],
-            }
-        )
-
-        assert json.loads(result.content)["location"] == "hermes-peer"
-        assert mesh.send.await_args.kwargs["target_peer_id"] == "hermes-peer"
-
-    @pytest.mark.asyncio
-    async def test_remote_only_coordinator_dispatches_to_explicit_peer(self):
-        hermes = _FakePeer("hermes-peer", status="idle", capabilities=["chat", "flock"])
-        discovery = _FakeDiscovery({"hermes-peer": hermes})
-        mesh = AsyncMock()
-        mesh.send = AsyncMock(return_value={"status": "accepted", "task_id": "t1"})
-
-        tool = TaskCreateTool(drive_loop=None, mesh=mesh, discovery=discovery)
-        result = await tool.execute(
-            {
-                "prompt": "use Hermes",
-                "title": "targeted task",
-                "peer_id": "hermes-peer",
-            }
-        )
-
-        assert not result.is_error
-        assert json.loads(result.content)["location"] == "hermes-peer"
-
-    @pytest.mark.asyncio
-    async def test_remote_only_coordinator_fails_when_no_peer_is_available(self):
-        tool = TaskCreateTool(
-            drive_loop=None,
-            mesh=AsyncMock(),
-            discovery=_FakeDiscovery({}),
-        )
-
-        result = await tool.execute({"prompt": "work", "title": "task"})
-
-        assert result.is_error
-        assert json.loads(result.content) == {"error": "no_remote_peer"}
-
-    @pytest.mark.asyncio
-    async def test_explicit_peer_must_be_discovered(self):
-        tool = TaskCreateTool(
-            drive_loop=_make_drive_loop(),
-            mesh=AsyncMock(),
-            discovery=_FakeDiscovery({}),
-        )
-
-        result = await tool.execute(
-            {"prompt": "work", "title": "targeted task", "peer_id": "missing"}
-        )
-
-        assert result.is_error
-        assert json.loads(result.content) == {
-            "error": "peer_not_found",
-            "peer_id": "missing",
-        }
 
     @pytest.mark.asyncio
     async def test_no_idle_peer_falls_back_local(self):
@@ -885,27 +748,6 @@ class TestBuildCascadeTools:
         assert create_tool._remote_tasks is status_tool._remote_tasks
         assert create_tool._remote_tasks is stop_tool._remote_tasks
         assert create_tool._remote_tasks is collect_tool._remote_tasks
-
-
-class TestBuildFlockTools:
-    def test_remote_only(self):
-        mesh = MagicMock()
-        discovery = _FakeDiscovery({})
-
-        tools = build_flock_tools(mesh=mesh, discovery=discovery)
-
-        names = {tool.name for tool in tools}
-        assert names == {
-            "flock_status",
-            "task_collect",
-            "task_create",
-            "task_list",
-            "task_status",
-            "task_stop",
-        }
-        create_tool = next(tool for tool in tools if tool.name == "task_create")
-        assert create_tool._drive_loop is None
-        assert create_tool._spawn is None
 
 
 # ---------------------------------------------------------------------------

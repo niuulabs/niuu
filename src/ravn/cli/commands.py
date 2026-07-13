@@ -9,7 +9,6 @@ import logging
 import os
 import signal
 import sys
-import uuid  # noqa: F401 - exported to focused runtime modules
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -746,30 +745,11 @@ def tool_mcp(
     ravn_profile = _resolve_profile(profile)
     effective_persona = persona or (ravn_profile.persona if ravn_profile else "")
     persona_config = _resolve_persona(effective_persona, project_config, settings=settings)
-    asyncio.run(_run_tool_mcp(settings, persona_config=persona_config))
+    tools = _build_tool_mcp_tools(settings, persona_config=persona_config)
 
-
-async def _run_tool_mcp(settings: Settings, *, persona_config: Any | None) -> None:
-    """Serve static tools plus resident-owned flock tools over MCP stdio."""
     from ravn.adapters.mcp.tool_port_server import ToolPortMcpServer
 
-    tools = _build_tool_mcp_tools(settings, persona_config=persona_config)
-    if _tool_mcp_allows(persona_config, ["flock_status"]):
-        if not settings.gateway.channels.http.enabled:
-            raise RuntimeError("Flock MCP tools require the resident HTTP gateway")
-        from ravn.adapters.tools.resident_proxy import load_resident_tools
-
-        base_url = f"http://127.0.0.1:{settings.gateway.channels.http.port}"
-        resident_tools = await load_resident_tools(
-            base_url=base_url,
-            connect_timeout_s=settings.mesh.rpc_timeout_s,
-        )
-        allowed_resident_tools = _filter_tools(resident_tools, settings, persona_config)
-        if not any(tool.name == "flock_status" for tool in allowed_resident_tools):
-            raise RuntimeError("Resident daemon did not expose flock tools")
-        tools.extend(allowed_resident_tools)
-
-    await ToolPortMcpServer(tools).run_stdio()
+    asyncio.run(ToolPortMcpServer(tools).run_stdio())
 
 
 def _build_tool_mcp_tools(settings: Settings, *, persona_config: Any | None) -> list[Any]:

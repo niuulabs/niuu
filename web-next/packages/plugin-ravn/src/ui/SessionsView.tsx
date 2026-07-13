@@ -1045,12 +1045,14 @@ function LiveSessionChat({
   chatEndpoint,
   sessionName,
   socketHistory,
+  eventRouting,
   showInternalMessages,
   onInternalVisibilitySender,
 }: {
   chatEndpoint: string;
   sessionName: string;
   socketHistory: boolean;
+  eventRouting: boolean;
   showInternalMessages: boolean;
   onInternalVisibilitySender: (sender: ((visible: boolean) => void) | null) => void;
 }) {
@@ -1085,8 +1087,10 @@ function LiveSessionChat({
         sessionName={sessionName}
         showInternalToggle={false}
         internalVisibility={showInternalMessages}
+        eventRouting={eventRouting}
         onSend={chat.sendMessage}
         onSendDirected={chat.sendDirectedMessages}
+        onPublishEvent={chat.publishEvent}
         onStop={chat.sendInterrupt}
         onPermissionRespond={chat.respondToPermission}
         onInputRespond={chat.respondToInput}
@@ -1580,6 +1584,7 @@ export function SessionsView() {
                     selectedSession.personaName
                   }
                   socketHistory={selectedRavn?.kind === 'resident'}
+                  eventRouting={Boolean(selectedSession.flockId)}
                   showInternalMessages={showInternalMessages}
                   onInternalVisibilitySender={(sender) => {
                     setInternalVisibilityRef.current = sender;

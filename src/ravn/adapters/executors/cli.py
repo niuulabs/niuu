@@ -567,7 +567,6 @@ def _with_ravn_tool_mcp_server(
         env["RAVN_CONFIG"] = config
     if pythonpath := os.environ.get("PYTHONPATH"):
         env["PYTHONPATH"] = pythonpath
-    env_vars = [name for name in ("RAVN_NATS_PASSWORD",) if name in os.environ]
 
     args = ["-m", "ravn", "tool-mcp"]
     if persona:
@@ -581,7 +580,5 @@ def _with_ravn_tool_mcp_server(
             "command": sys.executable,
             "args": args,
             "env": env,
-            "env_vars": env_vars,
-            "required": True,
         },
     ]

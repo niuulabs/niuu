@@ -5,24 +5,32 @@ import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { ResidentFlockDeployDialog } from './ResidentFlockDeployDialog';
 
 describe('ResidentFlockDeployDialog', () => {
-  const coordinatorPersona = {
-    name: 'flock-coordinator',
-    role: 'coord',
-    letter: 'F',
+  const eventPersona = {
+    name: 'reviewer',
+    role: 'review',
+    letter: 'R',
     color: 'ice',
-    summary: 'Coordinates resident flocks',
+    summary: 'Reviews subscribed changes',
     permissionMode: 'full-access',
-    allowedTools: ['flock'],
+    allowedTools: [],
     iterationBudget: 40,
     isBuiltin: true,
     hasOverride: false,
-    producesEvent: '',
-    consumesEvents: [],
+    producesEvent: 'review.completed',
+    consumesEvents: ['code.changed'],
   };
 
   const personaService = {
-    listPersonas: vi.fn().mockResolvedValue([coordinatorPersona]),
+    listPersonas: vi.fn().mockResolvedValue([eventPersona]),
   };
+
+  function selectEventPersona(memberCount: number) {
+    for (let index = 0; index < memberCount; index += 1) {
+      fireEvent.change(screen.getByTestId(`flock-member-${index}-persona`), {
+        target: { value: eventPersona.name },
+      });
+    }
+  }
 
   it('deploys three profiles with one shared flock identity', async () => {
     const deploy = vi.fn().mockImplementation(async (request) => ({
@@ -68,6 +76,7 @@ describe('ResidentFlockDeployDialog', () => {
     await screen.findByTestId('flock-member-0-name');
     fireEvent.click(screen.getByTestId('flock-add-member'));
     fireEvent.click(screen.getByTestId('flock-add-member'));
+    selectEventPersona(3);
     fireEvent.click(screen.getByTestId('flock-deploy-submit'));
 
     await waitFor(() => expect(deploy).toHaveBeenCalledTimes(3));
@@ -83,6 +92,11 @@ describe('ResidentFlockDeployDialog', () => {
       'ravn-local',
       'openclaw-local',
       'hermes-local',
+    ]);
+    expect(requests.map((request) => request.personaName)).toEqual([
+      'reviewer',
+      'reviewer',
+      'reviewer',
     ]);
   });
 
@@ -142,6 +156,7 @@ describe('ResidentFlockDeployDialog', () => {
     await screen.findByTestId('flock-member-0-name');
     fireEvent.click(screen.getByTestId('flock-add-member'));
     fireEvent.click(screen.getByTestId('flock-add-member'));
+    selectEventPersona(3);
     fireEvent.click(screen.getByTestId('flock-deploy-submit'));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('NemoClaw unavailable');
@@ -216,6 +231,7 @@ describe('ResidentFlockDeployDialog', () => {
     for (let index = 0; index < 4; index += 1) {
       fireEvent.click(screen.getByTestId('flock-add-member'));
     }
+    selectEventPersona(5);
     fireEvent.click(screen.getByTestId('flock-deploy-submit'));
 
     await waitFor(() => expect(deploy).toHaveBeenCalledTimes(5));
@@ -312,6 +328,56 @@ describe('ResidentFlockDeployDialog', () => {
     });
 
     expect(screen.getByRole('alert')).toHaveTextContent('Member names must be unique');
+    expect(screen.getByTestId('flock-deploy-submit')).toBeDisabled();
+  });
+
+  it('only offers personas with input and output event contracts', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const profiles = [
+      {
+        id: 'ravn-local',
+        displayName: 'Ravn',
+        description: 'Ravn resident',
+        backend: 'local',
+        engine: 'ravn',
+        capabilities: ['chat', 'flock'],
+        instanceId: 'local',
+        instanceName: 'Local',
+        instanceSlug: 'local',
+        allowedModels: [],
+        defaultModel: 'niuu/qwen',
+        labels: [],
+      },
+    ];
+    const listPersonas = vi.fn().mockResolvedValue([
+      eventPersona,
+      {
+        ...eventPersona,
+        name: 'chat-only',
+        producesEvent: '',
+        consumesEvents: [],
+      },
+    ]);
+
+    render(
+      <QueryClientProvider client={client}>
+        <ServicesProvider
+          services={{
+            'ravn.residents': {
+              listProfiles: vi.fn().mockResolvedValue(profiles),
+              deploy: vi.fn(),
+            },
+            'ravn.personas': { listPersonas },
+          }}
+        >
+          <ResidentFlockDeployDialog open onOpenChange={vi.fn()} onDeployed={vi.fn()} />
+        </ServicesProvider>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByTestId('flock-member-0-persona');
+    expect(screen.getByRole('option', { name: 'reviewer · review' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'chat-only · review' })).not.toBeInTheDocument();
     expect(screen.getByTestId('flock-deploy-submit')).toBeDisabled();
   });
 });

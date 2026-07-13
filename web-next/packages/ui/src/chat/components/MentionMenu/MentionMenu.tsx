@@ -34,7 +34,7 @@ export function MentionMenu({
             const idx = items.indexOf(item);
             return (
               <button
-                key={participant.peerId}
+                key={`${participant.peerId}:${item.eventType ?? ''}`}
                 type="button"
                 className={cn(
                   'niuu-chat-mention-item',
@@ -50,7 +50,12 @@ export function MentionMenu({
                   style={{ backgroundColor: color }}
                   aria-hidden="true"
                 />
-                <span className="niuu-chat-mention-item-name">{participant.persona}</span>
+                <span className="niuu-chat-mention-item-name">
+                  {participant.displayName || participant.persona}
+                </span>
+                {item.eventType && (
+                  <span className="niuu-chat-mention-event-badge">{item.eventType}</span>
+                )}
               </button>
             );
           })}

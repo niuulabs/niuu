@@ -465,18 +465,18 @@ describe('RavensPage', () => {
           'ravn.personas': {
             listPersonas: vi.fn().mockResolvedValue([
               {
-                name: 'flock-coordinator',
-                role: 'coord',
-                letter: 'F',
+                name: 'reviewer',
+                role: 'review',
+                letter: 'R',
                 color: 'ice',
-                summary: 'Coordinates resident flocks',
+                summary: 'Reviews subscribed changes',
                 permissionMode: 'full-access',
-                allowedTools: ['flock'],
+                allowedTools: [],
                 iterationBudget: 40,
                 isBuiltin: true,
                 hasOverride: false,
-                producesEvent: '',
-                consumesEvents: [],
+                producesEvent: 'review.completed',
+                consumesEvents: ['code.changed'],
               },
             ]),
           },
@@ -489,6 +489,12 @@ describe('RavensPage', () => {
     fireEvent.change(screen.getByTestId('flock-name'), { target: { value: 'fleet proof' } });
     await screen.findByTestId('flock-member-0-name');
     fireEvent.click(screen.getByTestId('flock-add-member'));
+    fireEvent.change(screen.getByTestId('flock-member-0-persona'), {
+      target: { value: 'reviewer' },
+    });
+    fireEvent.change(screen.getByTestId('flock-member-1-persona'), {
+      target: { value: 'reviewer' },
+    });
     fireEvent.click(screen.getByTestId('flock-deploy-submit'));
 
     await waitFor(() => expect(deploy).toHaveBeenCalledTimes(2));

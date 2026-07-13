@@ -164,8 +164,6 @@ class TestConstruction:
                     "command": "python3",
                     "args": ["-m", "ravn", "tool-mcp"],
                     "env": {"RAVN_CONFIG": "/etc/ravn/config.yaml"},
-                    "env_vars": ["RAVN_NATS_PASSWORD"],
-                    "required": True,
                 }
             ],
         )
@@ -175,11 +173,6 @@ class TestConstruction:
             '"/etc/ravn/config.yaml"',
         ) in t._mcp_overrides
         assert not any(key == "mcp_servers.ravn-tools.env" for key, _ in t._mcp_overrides)
-        assert (
-            "mcp_servers.ravn-tools.env_vars",
-            '["RAVN_NATS_PASSWORD"]',
-        ) in t._mcp_overrides
-        assert ("mcp_servers.ravn-tools.required", "true") in t._mcp_overrides
 
     @pytest.mark.asyncio
     async def test_connect_ws_uses_configured_large_message_limit(self, tmp_path):

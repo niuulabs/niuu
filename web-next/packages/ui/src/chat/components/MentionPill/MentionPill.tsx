@@ -1,5 +1,6 @@
 import { X, File, Folder } from 'lucide-react';
 import { resolveParticipantColor } from '../../utils/participantColor';
+import { mentionId } from '../../hooks/useMentionMenu';
 import type { SelectedMention } from '../../hooks/useMentionMenu';
 import './MentionPill.css';
 
@@ -22,11 +23,14 @@ export function MentionPill({ mention, onRemove }: MentionPillProps) {
           style={{ backgroundColor: color }}
           aria-hidden="true"
         />
-        <span className="niuu-chat-mention-pill-text">{participant.persona}</span>
+        <span className="niuu-chat-mention-pill-text">
+          {participant.displayName || participant.persona}
+          {mention.eventType ? ` · ${mention.eventType}` : ''}
+        </span>
         <button
           type="button"
           className="niuu-chat-mention-pill-remove"
-          onClick={() => onRemove(participant.peerId)}
+          onClick={() => onRemove(mentionId(mention))}
           aria-label={`Remove mention of ${participant.persona}`}
         >
           <X className="niuu-chat-mention-pill-remove-icon" />

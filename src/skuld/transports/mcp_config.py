@@ -29,14 +29,10 @@ def normalize_mcp_servers(raw_servers: object) -> list[dict[str, Any]]:
             entry["args"] = [str(arg) for arg in raw["args"]]
         if isinstance(raw.get("env"), dict):
             entry["env"] = {str(k): str(v) for k, v in raw["env"].items()}
-        if isinstance(raw.get("env_vars"), list):
-            entry["env_vars"] = [str(name) for name in raw["env_vars"] if str(name).strip()]
         if raw.get("description"):
             entry["description"] = str(raw["description"])
         if raw.get("cwd"):
             entry["cwd"] = str(raw["cwd"])
-        if isinstance(raw.get("required"), bool):
-            entry["required"] = raw["required"]
         servers.append(entry)
     return servers
 
@@ -104,10 +100,6 @@ def build_codex_mcp_overrides(raw_servers: object) -> list[tuple[str, str]]:
             if server.get("env"):
                 for env_key, env_value in dict(server["env"]).items():
                     overrides.append((f"{base}.env.{env_key}", json.dumps(env_value)))
-            if server.get("env_vars"):
-                overrides.append((f"{base}.env_vars", json.dumps(server["env_vars"])))
             if server.get("cwd"):
                 overrides.append((f"{base}.cwd", json.dumps(server["cwd"])))
-        if "required" in server:
-            overrides.append((f"{base}.required", json.dumps(server["required"])))
     return overrides
