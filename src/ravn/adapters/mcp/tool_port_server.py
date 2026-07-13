@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import sys
+from contextlib import asynccontextmanager
 from typing import Any
 
+import anyio
 from mcp import types
 from mcp.server import Server
-from mcp.server.stdio import stdio_server
+from mcp.server.stdio import stdio_server as threaded_stdio_server
+from mcp.shared.message import SessionMessage
 
 from ravn.ports.tool import ToolPort
 
@@ -58,9 +64,58 @@ class ToolPortMcpServer:
         )
 
     async def run_stdio(self) -> None:
-        async with stdio_server() as (read_stream, write_stream):
+        async with _stdio_server() as (read_stream, write_stream):
             await self._server.run(
                 read_stream,
                 write_stream,
                 self._server.create_initialization_options(),
             )
+
+
+@asynccontextmanager
+async def _stdio_server():
+    """Run MCP stdio without consuming AnyIO's shared worker pool on Unix."""
+    if os.name == "nt":
+        async with threaded_stdio_server() as streams:
+            yield streams
+        return
+
+    read_writer, read_stream = anyio.create_memory_object_stream[SessionMessage | Exception](0)
+    write_stream, write_reader = anyio.create_memory_object_stream[SessionMessage](0)
+    reader = asyncio.StreamReader()
+    protocol = asyncio.StreamReaderProtocol(reader)
+    transport, _ = await asyncio.get_running_loop().connect_read_pipe(
+        lambda: protocol,
+        sys.stdin.buffer,
+    )
+
+    async def read_stdin() -> None:
+        async with read_writer:
+            while line := await reader.readline():
+                try:
+                    message = types.JSONRPCMessage.model_validate_json(line)
+                except Exception as exc:
+                    await read_writer.send(exc)
+                    continue
+                await read_writer.send(SessionMessage(message))
+
+    async def write_stdout() -> None:
+        async with write_reader:
+            async for session_message in write_reader:
+                payload = session_message.message.model_dump_json(
+                    by_alias=True,
+                    exclude_none=True,
+                )
+                sys.stdout.write(payload + "\n")
+                sys.stdout.flush()
+
+    try:
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(read_stdin)
+            task_group.start_soon(write_stdout)
+            try:
+                yield read_stream, write_stream
+            finally:
+                task_group.cancel_scope.cancel()
+    finally:
+        transport.close()
