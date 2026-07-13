@@ -323,7 +323,7 @@ async def test_resident_persona_subscribes_surfaces_and_emits_declared_outcome()
     await resident.stop()
 
 
-async def test_matching_persona_event_wakes_resident_without_surface_response() -> None:
+async def test_matching_persona_event_wakes_resident_and_surfaces_response() -> None:
     flock_id = uuid4()
     runtime = _runtime(flock_id=flock_id, persona_name="event-hermes")
     persona = SessionPersona(
@@ -376,7 +376,9 @@ async def test_matching_persona_event_wakes_resident_without_surface_response() 
 
     assert controller.created == [("React to proof.started", "niuu/qwen")]
     assert "Event type: proof.started" in controller.connection.sent[0]["content"]
-    assert surfaced == []
+    assert len(surfaced) == 1
+    assert surfaced[0].payload["ravn_event"]["text"] == "EVENT_REACTION_OK"
+    assert surfaced[0].payload["ravn_session_id"] == "room-1"
     assert len(outcomes) == 1
     assert outcomes[0].payload["ravn_event"]["event_type"] == "proof.hermes.completed"
     assert outcomes[0].payload["ravn_root_correlation_id"] == "room-1"

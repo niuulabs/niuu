@@ -180,7 +180,7 @@ class ResidentFlockAdapter:
                     f"Payload: {payload}"
                 ),
                 "triggered_by": f"mesh:event:{event_type}",
-                "output_mode": OutputMode.SILENT,
+                "output_mode": OutputMode.SURFACE,
                 "session_id": event.session_id,
                 "root_correlation_id": event.root_correlation_id or event.correlation_id,
             },
