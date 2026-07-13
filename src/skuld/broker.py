@@ -3677,6 +3677,10 @@ class Broker(
         participant = self._room_bridge.participants.get(target_peer_id)
         display_target = participant.persona if participant else target_peer_id
         target_prefix = f"@{display_target}"
+        routing_metadata = dict(metadata or {})
+        if self.session_id:
+            routing_metadata.setdefault("session_id", self.session_id)
+            routing_metadata.setdefault("root_correlation_id", self.session_id)
         rendered_content = (
             content if content.lstrip().startswith(target_prefix) else f"{target_prefix} {content}"
         )
@@ -3684,15 +3688,15 @@ class Broker(
             rendered_content,
             source=source,
             request_id=request_id,
-            metadata=metadata,
-            participant_id=_non_empty_str(metadata.get("participant_id")) if metadata else None,
+            metadata=routing_metadata,
+            participant_id=_non_empty_str(routing_metadata.get("participant_id")),
             deliver_to_transport=False,
         )
 
         delivered = await self._room_bridge.route_directed_message(
             target_peer_id,
             content,
-            metadata=metadata,
+            metadata=routing_metadata,
         )
         if (
             not delivered
@@ -3713,7 +3717,7 @@ class Broker(
                     {
                         "type": "response" if status == "complete" else "error",
                         "data": output,
-                        "metadata": metadata or {},
+                        "metadata": routing_metadata,
                     },
                 )
                 delivered = True

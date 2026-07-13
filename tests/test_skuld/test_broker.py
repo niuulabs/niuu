@@ -5267,8 +5267,29 @@ class TestBrokerRoomBridge:
         payload = json.loads(register_ws.send_text.await_args.args[0])
         assert payload["type"] == "directed_message"
         assert payload["content"] == "Please investigate this"
+        assert payload["metadata"]["session_id"] == room_settings.session.id
+        assert payload["metadata"]["root_correlation_id"] == room_settings.session.id
+        assert b._conversation_turns[-1].metadata["session_id"] == room_settings.session.id
         transport.start.assert_not_awaited()
         transport.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_directed_room_message_preserves_explicit_routing_context(self, room_settings):
+        b = Broker(settings=room_settings)
+        b._transport = AsyncMock()
+        assert b._room_bridge is not None
+        register_ws = AsyncMock()
+        await b._room_bridge.register("peer-1", "coder", register_ws, display_name="Coder")
+
+        await b.handle_directed_room_message(
+            "peer-1",
+            "Continue the existing workflow",
+            metadata={"session_id": "workflow-session", "root_correlation_id": "workflow-root"},
+        )
+
+        payload = json.loads(register_ws.send_text.await_args.args[0])
+        assert payload["metadata"]["session_id"] == "workflow-session"
+        assert payload["metadata"]["root_correlation_id"] == "workflow-root"
 
     @pytest.mark.asyncio
     async def test_directed_room_message_does_not_double_prefix(self, room_settings):

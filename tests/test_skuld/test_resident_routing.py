@@ -125,7 +125,10 @@ class TestPlainMessageRouting:
             {
                 "type": "response",
                 "data": "Hermes reply",
-                "metadata": {},
+                "metadata": {
+                    "session_id": "resident-session",
+                    "root_correlation_id": "resident-session",
+                },
             },
         )
 
