@@ -9,6 +9,7 @@ import logging
 import os
 import signal
 import sys
+import uuid  # noqa: F401 - exported to focused runtime modules
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
