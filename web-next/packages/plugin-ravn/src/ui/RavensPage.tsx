@@ -1,5 +1,13 @@
 import { useMemo, useState } from 'react';
-import { PersonaAvatar, StateDot, cn, ErrorState, LoadingState } from '@niuulabs/ui';
+import {
+  Dialog,
+  DialogContent,
+  PersonaAvatar,
+  StateDot,
+  cn,
+  ErrorState,
+  LoadingState,
+} from '@niuulabs/ui';
 import type { BudgetState, PersonaRole } from '@niuulabs/domain';
 import type { Ravn } from '../domain/ravn';
 import { useRavens } from './hooks/useRavens';
@@ -9,7 +17,8 @@ import { groupRavens, ravnStatusToDotState, type GroupKey } from './grouping';
 import { RavnDetail } from './RavnDetail';
 import { ResidentDeployDialog } from './ResidentDeployDialog';
 import { ResidentFlockDeployDialog } from './ResidentFlockDeployDialog';
-import { Plus, Users } from 'lucide-react';
+import { useDeleteResidentFlock } from './hooks/useResidentControl';
+import { Plus, Trash2, Users } from 'lucide-react';
 import { loadStorage, saveStorage } from './storage';
 import './RavensPage.css';
 
@@ -151,15 +160,35 @@ function RavnListRow({ ravn, budget, sessionCount, selected, onClick }: RavnList
 interface FleetGroupProps {
   label: string;
   count: number;
+  onDelete?: () => void;
 }
 
-function FleetGroupHeader({ label, count }: FleetGroupProps) {
+function FleetGroupHeader({ label, count, onDelete }: FleetGroupProps) {
   return (
     <div className="rv-group-header">
       <span className="rv-group-header__label">{label}</span>
-      <span className="rv-group-header__count">{count}</span>
+      <span className="rv-group-header__actions">
+        <span className="rv-group-header__count">{count}</span>
+        {onDelete && (
+          <button
+            type="button"
+            className="rv-group-header__delete"
+            onClick={onDelete}
+            aria-label={`Delete ${label}`}
+            title={`Delete ${label}`}
+            data-testid="flock-delete-open"
+          >
+            <Trash2 size={13} aria-hidden="true" />
+          </button>
+        )}
+      </span>
     </div>
   );
+}
+
+interface FlockDeleteTarget {
+  label: string;
+  ravens: Ravn[];
 }
 
 export function RavensPage() {
@@ -196,8 +225,10 @@ function RavensFleet({ ravens }: { ravens: Ravn[] }) {
   );
   const [deployOpen, setDeployOpen] = useState(false);
   const [flockDeployOpen, setFlockDeployOpen] = useState(false);
+  const [flockDeleteTarget, setFlockDeleteTarget] = useState<FlockDeleteTarget | null>(null);
 
   const { data: sessions } = useSessions();
+  const deleteFlock = useDeleteResidentFlock();
 
   const ravnList = useMemo(() => ravens, [ravens]);
   const budgets = useRavnBudgets(ravnList.map((ravn) => ravn.id));
@@ -236,6 +267,16 @@ function RavensFleet({ ravens }: { ravens: Ravn[] }) {
 
   const activeCount = ravnList.filter((ravn) => ravn.status === 'active').length;
   const failedCount = ravnList.filter((ravn) => ravn.status === 'failed').length;
+
+  const removeFlock = async (target: FlockDeleteTarget) => {
+    try {
+      await deleteFlock.mutateAsync(target.ravens);
+    } catch {
+      return;
+    }
+    setFlockDeleteTarget(null);
+    setSelectedRavnId(null);
+  };
 
   return (
     <div data-testid="ravens-page" className="rv-ravens">
@@ -382,7 +423,21 @@ function RavensFleet({ ravens }: { ravens: Ravn[] }) {
                   groupedEntries.map(([groupLabel, groupRavns]) => (
                     <section key={groupLabel} className="rv-fleet__section">
                       {groupBy !== 'none' && (
-                        <FleetGroupHeader label={titleCase(groupLabel)} count={groupRavns.length} />
+                        <FleetGroupHeader
+                          label={titleCase(groupLabel)}
+                          count={groupRavns.length}
+                          onDelete={
+                            groupBy === 'flock' && groupRavns.every((ravn) => ravn.flockId)
+                              ? () => {
+                                  deleteFlock.reset();
+                                  setFlockDeleteTarget({
+                                    label: titleCase(groupLabel),
+                                    ravens: [...groupRavns],
+                                  });
+                                }
+                              : undefined
+                          }
+                        />
                       )}
 
                       <div className="rv-fleet__rows">
@@ -436,6 +491,44 @@ function RavensFleet({ ravens }: { ravens: Ravn[] }) {
           saveStorage(GROUP_STORAGE_KEY, 'flock');
         }}
       />
+      {flockDeleteTarget && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open && !deleteFlock.isPending) setFlockDeleteTarget(null);
+          }}
+        >
+          <DialogContent
+            title="Delete flock"
+            description={`This removes all ${flockDeleteTarget.ravens.length} residents in ${flockDeleteTarget.label} and their backend resources.`}
+          >
+            {deleteFlock.isError && (
+              <div className="rv-form-error" role="alert">
+                {deleteFlock.error.message}
+              </div>
+            )}
+            <div className="rv-form-actions">
+              <button
+                type="button"
+                className="rv-action-btn"
+                onClick={() => setFlockDeleteTarget(null)}
+                disabled={deleteFlock.isPending}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="rv-action-btn rv-action-btn--danger"
+                onClick={() => void removeFlock(flockDeleteTarget)}
+                disabled={deleteFlock.isPending}
+                data-testid="flock-delete-confirm"
+              >
+                {deleteFlock.isPending ? 'Deleting…' : 'Delete flock'}
+              </button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }

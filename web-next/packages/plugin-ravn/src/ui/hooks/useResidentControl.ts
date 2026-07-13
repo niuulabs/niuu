@@ -86,6 +86,28 @@ export function useDeleteResident() {
   });
 }
 
+export function useDeleteResidentFlock() {
+  const control = useControl();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (ravens: Ravn[]) => {
+      const results = await Promise.allSettled(ravens.map((ravn) => control.delete(ravn)));
+      const failed = results.flatMap((result, index) =>
+        result.status === 'rejected' ? [ravens[index]!] : [],
+      );
+      if (failed.length === 0) return;
+
+      throw new Error(`Failed to delete ${failed.length} of ${ravens.length} flock members`);
+    },
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['ravn', 'ravens'] }),
+        queryClient.invalidateQueries({ queryKey: ['ravn', 'sessions'] }),
+      ]);
+    },
+  });
+}
+
 export function useResidentSessions(ravn: Ravn, enabled: boolean) {
   const control = useControl();
   return useQuery({
