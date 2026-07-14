@@ -13,6 +13,12 @@ describe('MentionPill', () => {
     entry: { name: 'index.ts', path: '/src/index.ts', type: 'file' as const },
   };
 
+  const eventMention = {
+    kind: 'agent' as const,
+    participant: { peerId: 'peer-2', persona: 'reviewer', displayName: 'Hermes reviewer' },
+    eventType: 'review.requested',
+  };
+
   it('renders agent pill with persona name', () => {
     render(<MentionPill mention={agentMention} onRemove={vi.fn()} />);
     expect(screen.getByTestId('mention-pill-agent')).toBeInTheDocument();
@@ -24,6 +30,17 @@ describe('MentionPill', () => {
     render(<MentionPill mention={agentMention} onRemove={onRemove} />);
     fireEvent.click(screen.getByRole('button'));
     expect(onRemove).toHaveBeenCalledWith('peer-1');
+  });
+
+  it('renders an event pill with event and subscriber labels', () => {
+    const onRemove = vi.fn();
+    render(<MentionPill mention={eventMention} onRemove={onRemove} />);
+
+    expect(screen.getByTestId('mention-pill-event')).toHaveTextContent(
+      'review.requested · Hermes reviewer',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Remove event review.requested' }));
+    expect(onRemove).toHaveBeenCalledWith('peer-2:review.requested');
   });
 
   it('renders file pill with path', () => {

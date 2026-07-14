@@ -260,13 +260,14 @@ describe('ChatInput', () => {
     expect(screen.getByTestId('send-btn')).toBeDisabled();
 
     fireEvent.change(textarea, { target: { value: '@', selectionStart: 1 } });
-    fireEvent.click(screen.getByRole('option', { name: /Hermes reviewer.*review\.requested/ }));
-    fireEvent.change(textarea, { target: { value: 'Review this' } });
+    fireEvent.click(screen.getByRole('option', { name: /review\.requested.*Hermes reviewer/ }));
+    expect(textarea).toHaveValue('@review.requested ');
+    fireEvent.change(textarea, { target: { value: '@review.requested Review this' } });
     fireEvent.click(screen.getByTestId('send-btn'));
 
     expect(onPublishEvent).toHaveBeenCalledWith(
       { participant: hermes, eventType: 'review.requested' },
-      '@Hermes reviewer Review this',
+      '@review.requested Review this',
     );
     expect(onSend).not.toHaveBeenCalled();
     expect(onSendDirected).not.toHaveBeenCalled();

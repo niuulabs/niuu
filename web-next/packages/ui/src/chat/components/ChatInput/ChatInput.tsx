@@ -165,9 +165,8 @@ export function ChatInput({
 
     if (eventRouting) {
       if (!selectedEventMention || !onPublishEvent) return;
-      const displayName =
-        selectedEventMention.participant.displayName || selectedEventMention.participant.persona;
-      const fullMessage = `@${displayName} ${trimmed}`;
+      const eventPrefix = `@${selectedEventMention.eventType}`;
+      const fullMessage = trimmed.startsWith(eventPrefix) ? trimmed : `${eventPrefix} ${trimmed}`;
       onPublishEvent(
         {
           participant: selectedEventMention.participant,

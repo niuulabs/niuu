@@ -114,7 +114,7 @@ export function useMentionMenu(
       return already ? prev : [...prev, nextMention];
     });
     setIsOpen(false);
-    return item.participant.displayName || item.participant.persona;
+    return item.eventType ?? item.participant.displayName ?? item.participant.persona;
   }, []);
 
   const expandDirectory = useCallback(

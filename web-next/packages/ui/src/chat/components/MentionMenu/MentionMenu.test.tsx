@@ -12,6 +12,11 @@ describe('MentionMenu', () => {
     kind: 'file',
     entry: { name: 'index.ts', path: '/src/index.ts', type: 'file' },
   };
+  const eventItem: MentionMenuItem = {
+    kind: 'agent',
+    participant: { peerId: 'peer-2', persona: 'reviewer', displayName: 'Hermes reviewer' },
+    eventType: 'review.requested',
+  };
   const dirItem: MentionMenuItem = {
     kind: 'file',
     entry: { name: 'src', path: '/src', type: 'directory' },
@@ -43,6 +48,25 @@ describe('MentionMenu', () => {
     );
     expect(screen.getByText('Files')).toBeInTheDocument();
     expect(screen.getByText('index.ts')).toBeInTheDocument();
+  });
+
+  it('renders events separately with the event as the primary label', () => {
+    render(
+      <MentionMenu
+        items={[eventItem, agentItem, fileItem]}
+        selectedIndex={0}
+        loading={false}
+        onSelect={vi.fn()}
+        onExpand={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Events')).toBeInTheDocument();
+    expect(screen.getByText('Agents')).toBeInTheDocument();
+    expect(screen.getByText('Files')).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /review\.requested.*Hermes reviewer/ })).toHaveClass(
+      'niuu-chat-mention-item--selected',
+    );
   });
 
   it('calls onSelect when file clicked', () => {

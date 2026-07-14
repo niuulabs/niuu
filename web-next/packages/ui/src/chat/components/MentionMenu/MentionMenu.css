@@ -71,6 +71,13 @@
   color: var(--color-brand);
 }
 
+.niuu-chat-mention-event-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--color-accent-cyan);
+}
+
 .niuu-chat-mention-item-name {
   flex: 1;
   overflow: hidden;
@@ -87,17 +94,13 @@
   font-family: var(--font-mono);
 }
 
-.niuu-chat-mention-event-badge {
+.niuu-chat-mention-item-context {
   max-width: 45%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 10px;
-  padding: 1px 4px;
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--color-accent-cyan) 15%, transparent);
-  color: var(--color-accent-cyan);
-  font-family: var(--font-mono);
+  color: var(--color-text-muted);
 }
 
 .niuu-chat-mention-loading {

@@ -269,7 +269,11 @@ describe('useMentionMenu — selectItem', () => {
       { kind: 'agent', participant: hermes, eventType: 'review.requested' },
     ]);
 
-    act(() => result.current.selectItem(result.current.items[0]!));
+    let selectedLabel = '';
+    act(() => {
+      selectedLabel = result.current.selectItem(result.current.items[0]!);
+    });
+    expect(selectedLabel).toBe('code.changed');
     expect(result.current.mentions).toEqual([
       { kind: 'agent', participant: hermes, eventType: 'code.changed' },
     ]);
