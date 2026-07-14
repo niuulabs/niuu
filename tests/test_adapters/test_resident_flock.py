@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -39,6 +40,9 @@ class _Connection:
         *,
         requires_approval: bool = False,
         emit_tool_frames: bool = False,
+        result_only: bool = False,
+        error: str = "",
+        hang: bool = False,
     ) -> None:
         self.frames: asyncio.Queue[dict] = asyncio.Queue()
         self.sent: list[dict] = []
@@ -46,12 +50,20 @@ class _Connection:
         self.output = output
         self.requires_approval = requires_approval
         self.emit_tool_frames = emit_tool_frames
+        self.result_only = result_only
+        self.error = error
+        self.hang = hang
 
     async def receive(self) -> dict:
         return await self.frames.get()
 
     async def send(self, frame: dict) -> None:
         self.sent.append(frame)
+        if self.hang:
+            return
+        if self.error:
+            await self.frames.put({"type": "error", "error": self.error})
+            return
         if frame.get("type") == "user" and self.requires_approval:
             await self.frames.put(
                 {
@@ -79,12 +91,13 @@ class _Connection:
                     "metadata": {"tool_name": "terminal", "is_error": False},
                 }
             )
-        await self.frames.put(
-            {
-                "type": "content_block_delta",
-                "delta": {"type": "text_delta", "text": self.output},
-            }
-        )
+        if not self.result_only:
+            await self.frames.put(
+                {
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": self.output},
+                }
+            )
         await self.frames.put({"type": "result", "result": self.output})
 
     async def close(self) -> None:
@@ -100,11 +113,17 @@ class _Controller:
         *,
         requires_approval: bool = False,
         emit_tool_frames: bool = False,
+        result_only: bool = False,
+        error: str = "",
+        hang: bool = False,
     ) -> None:
         self.connection = _Connection(
             output,
             requires_approval=requires_approval,
             emit_tool_frames=emit_tool_frames,
+            result_only=result_only,
+            error=error,
+            hang=hang,
         )
         self.created: list[tuple[str, str]] = []
 
@@ -425,3 +444,169 @@ async def test_event_reaction_failure_surfaces_correlated_error() -> None:
     assert surfaced[1].payload["ravn_root_correlation_id"] == "room-1"
 
     await resident.stop()
+
+
+async def test_sync_reuses_replaces_and_removes_resident_peers() -> None:
+    flock_id = uuid4()
+    runtime = _runtime(flock_id=flock_id, persona_name="event-hermes")
+    persona = SessionPersona(
+        name="event-hermes",
+        system_prompt="",
+        consumes_event_types=("proof.started",),
+    )
+    repository = _Repository(runtime)
+    resident = ResidentFlockAdapter(
+        repository,
+        [_Controller()],
+        InProcessBus(),
+        persona_provider=_PersonaProvider(persona),
+    )
+
+    await resident.sync()
+    first = resident._peers[runtime.id]
+    await resident.sync()
+    assert resident._peers[runtime.id] is first
+
+    repository.runtime = runtime.model_copy(update={"persona_name": "missing"})
+    await resident.sync()
+    replacement = resident._peers[runtime.id]
+    assert replacement is not first
+    assert replacement.persona is None
+
+    repository.runtime = runtime.model_copy(
+        update={"observed_state": ResidentObservedState.FAILED}
+    )
+    await resident.sync()
+    assert resident._peers == {}
+    await resident.stop()
+
+
+async def test_self_and_missing_runtime_events_do_not_create_reactions() -> None:
+    flock_id = uuid4()
+    runtime = _runtime(flock_id=flock_id, persona_name="event-hermes")
+    persona = SessionPersona(
+        name="event-hermes",
+        system_prompt="",
+        consumes_event_types=("proof.started",),
+    )
+    repository = _Repository(runtime)
+    resident = ResidentFlockAdapter(
+        repository,
+        [_Controller()],
+        InProcessBus(),
+        persona_provider=_PersonaProvider(persona),
+    )
+    event = RavnEvent(
+        type=RavnEventType.OUTCOME,
+        source=runtime.flock_peer_id,
+        payload={"event_type": "proof.started"},
+        timestamp=datetime.now(UTC),
+        urgency=0.3,
+        correlation_id="self-event",
+        session_id="room-1",
+    )
+
+    await resident._handle_persona_event(runtime.id, event)
+    repository.runtime = runtime.model_copy(update={"id": uuid4()})
+    await resident._handle_persona_event(runtime.id, replace(event, source="peer"))
+
+    assert resident._reactions == {}
+
+
+async def test_result_only_and_error_frames_surface_native_engine_results() -> None:
+    async def run(controller: _Controller):
+        flock_id = uuid4()
+        runtime = _runtime(flock_id=flock_id, persona_name="event-hermes")
+        persona = SessionPersona(
+            name="event-hermes",
+            system_prompt="",
+            consumes_event_types=("proof.started",),
+        )
+        bus = InProcessBus()
+        resident = ResidentFlockAdapter(
+            _Repository(runtime),
+            [controller],
+            bus,
+            persona_provider=_PersonaProvider(persona),
+        )
+        await resident.sync()
+        surfaced: list[object] = []
+        prefix = mesh_event_prefix(str(flock_id))
+        await bus.subscribe([f"{prefix}.activity.hermes_worker"], surfaced.append)
+        await resident._peers[runtime.id].mesh.publish(
+            RavnEvent(
+                type=RavnEventType.OUTCOME,
+                source="coordinator",
+                payload={"event_type": "proof.started"},
+                timestamp=datetime.now(UTC),
+                urgency=0.3,
+                correlation_id="source-event",
+                session_id="room-1",
+                root_correlation_id="room-1",
+            ),
+            topic="proof.started",
+        )
+        await bus.flush()
+        reaction = next(iter(resident._reactions.values()))
+        assert reaction.runner is not None
+        await reaction.runner
+        await bus.flush()
+        await resident.stop()
+        return reaction, surfaced
+
+    completed, completed_events = await run(_Controller("RESULT_ONLY_OK", result_only=True))
+    failed, failed_events = await run(_Controller(error="native engine failed"))
+
+    assert completed.status == "complete"
+    assert completed.output == "RESULT_ONLY_OK"
+    assert [event.payload["ravn_type"] for event in completed_events] == [
+        "task_started",
+        "response",
+    ]
+    assert failed.status == "failed"
+    assert failed.error == "native engine failed"
+    assert [event.payload["ravn_type"] for event in failed_events] == [
+        "task_started",
+        "error",
+    ]
+
+
+async def test_stop_cancels_running_native_reaction() -> None:
+    flock_id = uuid4()
+    runtime = _runtime(flock_id=flock_id, persona_name="event-hermes")
+    persona = SessionPersona(
+        name="event-hermes",
+        system_prompt="",
+        consumes_event_types=("proof.started",),
+    )
+    bus = InProcessBus()
+    resident = ResidentFlockAdapter(
+        _Repository(runtime),
+        [_Controller(hang=True)],
+        bus,
+        persona_provider=_PersonaProvider(persona),
+    )
+    await resident.sync()
+    await resident._peers[runtime.id].mesh.publish(
+        RavnEvent(
+            type=RavnEventType.OUTCOME,
+            source="coordinator",
+            payload={"event_type": "proof.started"},
+            timestamp=datetime.now(UTC),
+            urgency=0.3,
+            correlation_id="source-event",
+            session_id="room-1",
+        ),
+        topic="proof.started",
+    )
+    await bus.flush()
+    reaction = next(iter(resident._reactions.values()))
+    for _ in range(20):
+        if reaction.status == "running":
+            break
+        await asyncio.sleep(0)
+
+    await resident.stop()
+
+    assert reaction.status == "cancelled"
+    assert reaction.connection is None

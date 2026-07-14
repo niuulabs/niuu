@@ -685,10 +685,10 @@ def _observed_state(status: str) -> ResidentObservedState:
     if status == "paused":
         return ResidentObservedState.SUSPENDED
     if status in {"created", "restarting"}:
-        return ResidentObservedState.PROVISIONING
+        return ResidentObservedState.DEPLOYING
     if status in {"exited", "dead"}:
         return ResidentObservedState.FAILED
-    return ResidentObservedState.UNKNOWN
+    return ResidentObservedState.PENDING
 
 
 def _parse_logs(

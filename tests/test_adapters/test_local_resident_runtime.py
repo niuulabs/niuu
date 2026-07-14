@@ -296,3 +296,203 @@ async def test_reconcile_applies_the_persisted_desired_state(
     observation = await controller.reconcile(runtime, profile)
 
     assert observation.observed_state is ResidentObservedState.SUSPENDED
+
+
+def test_local_controller_supports_only_complete_local_profiles(
+    tmp_path,
+    docker_client: _DockerClient,
+) -> None:
+    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
+    no_image = _profile().model_copy(
+        update={"deployment": {"values": {"runtime": {}}}}
+    )
+    flock_without_transport = _profile().model_copy(
+        update={
+            "capabilities": [ResidentCapability.FLOCK],
+            "deployment": {
+                "values": {
+                    "image": "resident",
+                    "runtime": {},
+                }
+            },
+        }
+    )
+    malformed = _profile(ResidentEngine.OPENCLAW).model_copy(
+        update={
+            "deployment": {
+                "values": {
+                    "image": "resident",
+                    "runtime": {
+                        "processMode": "replace",
+                        "processes": ["invalid"],
+                    },
+                }
+            }
+        }
+    )
+
+    assert controller.backend is ResidentBackend.LOCAL
+    assert controller.supports(no_image) is False
+    assert controller.supports(flock_without_transport) is False
+    assert controller.supports(malformed) is False
+
+
+@pytest.mark.asyncio
+async def test_deploy_reuses_or_replaces_container_by_spec_hash(
+    tmp_path,
+    docker_client: _DockerClient,
+) -> None:
+    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
+    runtime = _runtime()
+    profile = _profile()
+    await controller.deploy(runtime, profile)
+    original = docker_client.containers.container
+
+    original.status = "paused"
+    reused = await controller.deploy(runtime, profile)
+    assert reused.observed_state is ResidentObservedState.ACTIVE
+    assert docker_client.containers.container is original
+
+    original.labels[local_runtime.SPEC_HASH_LABEL] = "stale"
+    replaced = await controller.deploy(runtime, profile)
+    assert replaced.observed_state is ResidentObservedState.ACTIVE
+    assert docker_client.containers.container is not original
+
+
+@pytest.mark.asyncio
+async def test_reconcile_deploys_missing_and_replaces_changed_container(
+    tmp_path,
+    docker_client: _DockerClient,
+) -> None:
+    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
+    runtime = _runtime()
+    profile = _profile()
+
+    deployed = await controller.reconcile(runtime, profile)
+    assert deployed.observed_state is ResidentObservedState.ACTIVE
+    original = docker_client.containers.container
+
+    changed = runtime.model_copy(update={"model": "gpt-5.6-terra"})
+    reconciled = await controller.reconcile(changed, profile)
+    assert reconciled.observed_state is ResidentObservedState.ACTIVE
+    assert docker_client.containers.container is not original
+
+
+@pytest.mark.asyncio
+async def test_local_lifecycle_handles_nonrunning_and_missing_containers(
+    tmp_path,
+    docker_client: _DockerClient,
+) -> None:
+    controller = LocalContainerResidentRuntimeController(
+        residents_dir=str(tmp_path),
+        retain_data_on_delete=True,
+    )
+    runtime = _runtime()
+    profile = _profile()
+    deployed = await controller.deploy(runtime, profile)
+    runtime = runtime.model_copy(update={"backend_ref": deployed.backend_ref})
+    container = docker_client.containers.container
+
+    container.status = "created"
+    resumed = await controller.resume(runtime)
+    assert resumed.observed_state is ResidentObservedState.ACTIVE
+
+    container.status = "paused"
+    suspended = await controller.suspend(runtime)
+    assert suspended.observed_state is ResidentObservedState.SUSPENDED
+
+    container.remove(force=True)
+    assert await controller.delete(runtime) is False
+    with pytest.raises(RuntimeError, match="does not exist"):
+        await controller.restart(runtime, profile)
+
+
+@pytest.mark.asyncio
+async def test_local_readiness_reports_exit_and_timeout(
+    tmp_path,
+    docker_client: _DockerClient,
+) -> None:
+    runtime = _runtime()
+    profile = _profile()
+    controller = LocalContainerResidentRuntimeController(
+        residents_dir=str(tmp_path),
+        ready_timeout=0,
+    )
+    spec = await controller._materialize(runtime, profile)
+    container = _Container(docker_client.containers, {"name": "resident", "labels": {}})
+
+    with pytest.raises(TimeoutError, match="not ready"):
+        await controller._wait_for_ready(runtime, container, spec)
+
+    controller._ready_timeout = 1
+    container.status = "exited"
+    with pytest.raises(RuntimeError, match="exited before readiness"):
+        await controller._wait_for_ready(runtime, container, spec)
+
+
+@pytest.mark.asyncio
+async def test_local_device_failure_and_missing_machine_store_are_explicit(
+    tmp_path,
+    docker_client: _DockerClient,
+) -> None:
+    controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
+    openclaw = _runtime(ResidentEngine.OPENCLAW)
+    hermes = _runtime(ResidentEngine.HERMES)
+
+    with pytest.raises(RuntimeError, match="require a credential store"):
+        await controller._machine_environment(openclaw)
+    with pytest.raises(RuntimeError, match="require a credential store"):
+        await controller._machine_environment(hermes)
+
+    runtime = _runtime()
+    await controller.deploy(runtime, _profile())
+    container = docker_client.containers.container
+    container.exec_run = lambda *_args, **_kwargs: SimpleNamespace(
+        exit_code=1,
+        output=b"approval denied",
+    )
+    with pytest.raises(RuntimeError, match="approval denied"):
+        await controller.approve_resident_device(
+            runtime,
+            request_id="pairing-request",
+            gateway_token="token",
+        )
+
+
+def test_local_runtime_helpers_cover_states_paths_and_log_filters(tmp_path) -> None:
+    root = tmp_path / "sandbox"
+    assert local_runtime._host_runtime_path(
+        root,
+        "/sandbox/workspace/project/file.txt",
+    ) == root / "workspace" / "project" / "file.txt"
+    with pytest.raises(RuntimeError, match="not backed"):
+        local_runtime._host_runtime_path(root, "/tmp/file")
+
+    assert local_runtime._observed_state("running") is ResidentObservedState.ACTIVE
+    assert local_runtime._observed_state("paused") is ResidentObservedState.SUSPENDED
+    assert local_runtime._observed_state("created") is ResidentObservedState.DEPLOYING
+    assert local_runtime._observed_state("dead") is ResidentObservedState.FAILED
+    assert local_runtime._observed_state("unknown") is ResidentObservedState.PENDING
+    assert local_runtime._published_port(SimpleNamespace(attrs={}), 9200) == 0
+
+    entries = local_runtime._parse_logs(
+        "\n".join(
+            [
+                "invalid-time [api] error details",
+                "2026-07-12T12:00:00Z [api] WARNING retrying",
+                "2026-07-12T12:00:01Z [api] fatal failure",
+                "2026-07-12T12:00:02Z [other] error ignored",
+            ]
+        ),
+        ("api",),
+        "warning",
+    )
+    assert [(entry.level, entry.message) for entry in entries] == [
+        ("error", "error details"),
+        ("warning", "WARNING retrying"),
+        ("critical", "fatal failure"),
+    ]
+    assert local_runtime._log_level("exception raised") == "error"
+    assert local_runtime._log_level("warn soon") == "warning"
+    assert local_runtime._log_level("debug details") == "debug"
+    assert local_runtime._log_level("ready") == "info"
