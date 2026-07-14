@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from ravn.adapters.personas.loader import PersonaConfig, PersonaConsumes
 from ravn.adapters.tools.cascade_tools import (
     FlockSpawnTool,
     FlockStatusTool,
@@ -36,6 +38,7 @@ from ravn.adapters.tools.cascade_tools import (
     build_cascade_tools,
 )
 from ravn.config import InitiativeConfig, Settings
+from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.drive_loop import DriveLoop
 from ravn.ports.spawn import SpawnConfig
@@ -113,6 +116,43 @@ class TestDriveLoopRpcHandler:
 # ---------------------------------------------------------------------------
 # Mesh RPC handler (wired via _wire_cascade)
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mesh_outcome_subscription_enqueues_work():
+    """The production mesh callback accepts an outcome and queues its task."""
+    dl = _make_drive_loop()
+    settings = Settings()
+    settings.mesh.enabled = True
+    settings.discovery.enabled = False
+    mesh = MagicMock()
+    persona = PersonaConfig(
+        name="coder",
+        consumes=PersonaConsumes(event_types=["code.requested"]),
+    )
+
+    from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
+
+    with patch("ravn.cli.commands._build_mesh", return_value=mesh):
+        _wire_cascade(dl, settings, persona)
+
+    topic, handler = mesh._pending_outcome_subscriptions[0]
+    assert topic == "code.requested"
+
+    await handler(
+        RavnEvent(
+            type=RavnEventType.OUTCOME,
+            source="skuld",
+            payload={"event_type": "code.requested", "persona": "skuld"},
+            timestamp=datetime.now(UTC),
+            urgency=0.5,
+            correlation_id="session-123",
+            session_id="session-123",
+            root_correlation_id="session-123",
+        )
+    )
+
+    assert dl.queued_task_ids() == ["event_coder_session-"]
 
 
 @pytest.mark.asyncio

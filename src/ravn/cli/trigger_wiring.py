@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ravn.domain.events import RavnEvent, RavnEventType
+
 # Dependencies are supplied by the CLI compatibility facade immediately before
 # invocation so established command patch points remain effective.
 # ruff: noqa: F821
