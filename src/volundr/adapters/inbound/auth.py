@@ -49,6 +49,12 @@ async def check_session_or_resident_access(
             )
         return
 
+    # Session telemetry historically accepts late events after the session row
+    # has gone away. Only resident-aware routers can validate the alternate
+    # subject type and therefore reject an unknown identifier safely.
+    if resident_runtime_service is None:
+        return
+
     if resident_runtime_service is not None:
         try:
             await resident_runtime_service.get(principal, subject_id)
