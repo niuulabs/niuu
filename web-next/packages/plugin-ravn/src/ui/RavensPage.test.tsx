@@ -327,7 +327,7 @@ describe('RavensPage', () => {
     expect(screen.getAllByTestId('ravn-list-row')).toHaveLength(1);
     fireEvent.click(screen.getByTestId('group-btn-flock'));
     expect(screen.queryByRole('button', { name: 'Delete Independent' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Delete Flock Aaaaaaaa' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Mesh Aaaaaaaa' }));
     expect(screen.getByText(/all 2 residents/i)).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('flock-delete-confirm'));
 
@@ -356,11 +356,11 @@ describe('RavensPage', () => {
 
     await waitFor(() => expect(screen.getByTestId('group-btn-flock')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('group-btn-flock'));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete Flock Aaaaaaaa' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Mesh Aaaaaaaa' }));
     fireEvent.click(screen.getByTestId('flock-delete-confirm'));
 
     await waitFor(() =>
-      expect(screen.getByRole('alert')).toHaveTextContent('Failed to delete 1 of 1 flock members'),
+      expect(screen.getByRole('alert')).toHaveTextContent('Failed to delete 1 of 1 mesh members'),
     );
     expect(screen.getByTestId('flock-delete-confirm')).toBeInTheDocument();
   });
@@ -384,13 +384,13 @@ describe('RavensPage', () => {
 
     await waitFor(() => expect(screen.getByTestId('group-btn-flock')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('group-btn-flock'));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete Flock Aaaaaaaa' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Mesh Aaaaaaaa' }));
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-    await waitFor(() => expect(screen.queryByText('Delete flock')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('Delete mesh')).not.toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete Flock Aaaaaaaa' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Mesh Aaaaaaaa' }));
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    await waitFor(() => expect(screen.queryByText('Delete flock')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('Delete mesh')).not.toBeInTheDocument());
     expect(remove).not.toHaveBeenCalled();
   });
 
@@ -419,17 +419,17 @@ describe('RavensPage', () => {
 
     await waitFor(() => expect(screen.getByTestId('group-btn-flock')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('group-btn-flock'));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete Flock Aaaaaaaa' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Mesh Aaaaaaaa' }));
     fireEvent.click(screen.getByTestId('flock-delete-confirm'));
 
     await waitFor(() => expect(screen.getByText('Deleting…')).toBeInTheDocument());
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
     expect(screen.getByTestId('flock-delete-confirm')).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-    expect(screen.getByText('Delete flock')).toBeInTheDocument();
+    expect(screen.getByText('Delete mesh')).toBeInTheDocument();
 
     finishDelete?.();
-    await waitFor(() => expect(screen.queryByText('Delete flock')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('Delete mesh')).not.toBeInTheDocument());
   });
 
   it('selects and groups the coordinator after deploying a flock', async () => {
@@ -503,7 +503,7 @@ describe('RavensPage', () => {
       ),
     });
 
-    await waitFor(() => expect(screen.getByTestId('flock-deploy-open')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Mesh' })).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('flock-deploy-open'));
     fireEvent.change(screen.getByTestId('flock-name'), { target: { value: 'fleet proof' } });
     await screen.findByTestId('flock-member-0-name');

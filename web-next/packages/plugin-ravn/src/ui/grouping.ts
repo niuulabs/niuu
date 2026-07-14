@@ -31,7 +31,7 @@ export function groupRavens(ravens: Ravn[], by: GroupKey): Record<string, Ravn[]
   for (const r of sorted) {
     let key: string;
 
-    if (by === 'flock') key = r.flockId ? `flock ${r.flockId.slice(0, 8)}` : 'independent';
+    if (by === 'flock') key = r.flockId ? `mesh ${r.flockId.slice(0, 8)}` : 'independent';
     else if (by === 'persona') key = r.personaName || r.residentName || 'unassigned';
     else if (by === 'state') key = r.status;
     else key = r.instanceName || r.location || 'unplaced';

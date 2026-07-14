@@ -98,7 +98,7 @@ describe('groupRavens', () => {
         index < 2 ? { ...ravn, flockId: '11111111-1111-1111-1111-111111111111' } : ravn,
       );
       const result = groupRavens(flocked, 'flock');
-      expect(result['flock 11111111']).toHaveLength(2);
+      expect(result['mesh 11111111']).toHaveLength(2);
       expect(result.independent).toHaveLength(2);
     });
   });

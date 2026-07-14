@@ -28,7 +28,7 @@ const GROUP_OPTIONS: Array<{ key: GroupKey; label: string }> = [
   { key: 'location', label: 'loc' },
   { key: 'persona', label: 'persona' },
   { key: 'state', label: 'state' },
-  { key: 'flock', label: 'flock' },
+  { key: 'flock', label: 'mesh' },
   { key: 'none', label: 'flat' },
 ];
 
@@ -355,7 +355,7 @@ function RavensFleet({ ravens }: { ravens: Ravn[] }) {
                       data-testid="flock-deploy-open"
                     >
                       <Users size={14} aria-hidden="true" />
-                      Flock
+                      Mesh
                     </button>
                     <button
                       type="button"
@@ -502,7 +502,7 @@ function RavensFleet({ ravens }: { ravens: Ravn[] }) {
           }}
         >
           <DialogContent
-            title="Delete flock"
+            title="Delete mesh"
             description={`This removes all ${flockDeleteTarget.ravens.length} residents in ${flockDeleteTarget.label} and their backend resources.`}
           >
             {deleteFlock.isError && (
@@ -526,7 +526,7 @@ function RavensFleet({ ravens }: { ravens: Ravn[] }) {
                 disabled={deleteFlock.isPending}
                 data-testid="flock-delete-confirm"
               >
-                {deleteFlock.isPending ? 'Deleting…' : 'Delete flock'}
+                {deleteFlock.isPending ? 'Deleting…' : 'Delete mesh'}
               </button>
             </div>
           </DialogContent>

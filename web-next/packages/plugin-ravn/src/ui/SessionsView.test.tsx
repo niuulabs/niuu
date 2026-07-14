@@ -594,7 +594,7 @@ describe('SessionsView — live chat', () => {
     );
   });
 
-  it('shows a flock as one room using the coordinator room participants', async () => {
+  it('shows a mesh as one room using the coordinator room participants', async () => {
     const flockId = '11111111-1111-4111-8111-111111111111';
     const publishEvent = vi.fn();
     const coordinator = liveRunningSession({
@@ -726,13 +726,14 @@ describe('SessionsView — live chat', () => {
     });
 
     expect(await screen.findByTestId('sessions-live-chat')).toBeInTheDocument();
-    expect(screen.queryByRole('tab', { name: 'Flock' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Mesh' })).not.toBeInTheDocument();
     expect(useSkuldChatMock).toHaveBeenCalledTimes(1);
     expect(useSkuldChatMock).toHaveBeenCalledWith(
       'wss://skuld.example/coordinator/session',
       expect.anything(),
     );
     const rail = screen.getByRole('complementary', { name: 'Sessions' });
+    expect(within(rail).getByText('Mesh 11111111')).toBeInTheDocument();
     expect(within(rail).getAllByRole('button', { name: /Open session/ })).toHaveLength(1);
     expect(screen.getByTestId('peer-card-ravn-coordinator')).toBeInTheDocument();
     expect(screen.getByTestId('peer-card-hermes-specialist')).toBeInTheDocument();
@@ -746,14 +747,14 @@ describe('SessionsView — live chat', () => {
     fireEvent.change(screen.getByTestId('chat-textarea'), {
       target: { value: '@', selectionStart: 1 },
     });
-    fireEvent.click(screen.getByRole('option', { name: /Hermes.*review\.requested/ }));
+    fireEvent.click(screen.getByRole('option', { name: /review\.requested.*Hermes/ }));
     fireEvent.change(screen.getByTestId('chat-textarea'), {
       target: { value: 'Verify this result' },
     });
     fireEvent.click(screen.getByTestId('send-btn'));
     expect(publishEvent).toHaveBeenCalledWith(
       { participant: hermesParticipant, eventType: 'review.requested' },
-      '@Hermes Verify this result',
+      '@review.requested Verify this result',
     );
   });
 

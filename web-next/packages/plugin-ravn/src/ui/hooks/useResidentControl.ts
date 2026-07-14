@@ -97,7 +97,7 @@ export function useDeleteResidentFlock() {
       );
       if (failed.length === 0) return;
 
-      throw new Error(`Failed to delete ${failed.length} of ${ravens.length} flock members`);
+      throw new Error(`Failed to delete ${failed.length} of ${ravens.length} mesh members`);
     },
     onSettled: async () => {
       await Promise.all([

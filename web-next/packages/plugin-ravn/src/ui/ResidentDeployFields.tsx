@@ -138,7 +138,7 @@ export function ResidentDeployFields({
 
       {showRole && (
         <label className="rv-form-field">
-          <span>Flock role</span>
+          <span>Mesh role</span>
           <input
             value={draft.role}
             onChange={(event) => onChange({ ...draft, role: event.target.value })}

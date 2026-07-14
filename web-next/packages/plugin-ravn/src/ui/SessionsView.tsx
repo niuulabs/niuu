@@ -608,7 +608,7 @@ export function groupSessionRavnsByFlock(groups: SessionRavnGroup[]): SessionFlo
     const key = flockId || `independent:${group.key}`;
     const flock = flocks.get(key) ?? {
       key,
-      label: flockId ? `Flock ${flockId.slice(0, 8)}` : 'Independent',
+      label: flockId ? `Mesh ${flockId.slice(0, 8)}` : 'Independent',
       ravns: [],
     };
     flock.ravns.push(group);

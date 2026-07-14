@@ -34,7 +34,7 @@ function initialDraft(role = 'specialist'): FlockMemberDraft {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'Flock deployment failed';
+  return error instanceof Error ? error.message : 'Mesh deployment failed';
 }
 
 function defaultMemberName(
@@ -42,7 +42,7 @@ function defaultMemberName(
   profile: ResidentDeploymentProfile | undefined,
   index: number,
 ): string {
-  return `${flockName.trim() || 'flock'}-${profile?.engine ?? 'member'}-${index + 1}`;
+  return `${flockName.trim() || 'mesh'}-${profile?.engine ?? 'member'}-${index + 1}`;
 }
 
 function eventPersonas(personas: PersonaSummary[]): PersonaSummary[] {
@@ -118,7 +118,7 @@ export function ResidentFlockDeployDialog({
   }
 
   function updateFlockName(name: string) {
-    const previous = flockName.trim() || 'flock';
+    const previous = flockName.trim() || 'mesh';
     setFlockName(name);
     setDrafts((current) =>
       current.map((draft, index) => ({
@@ -200,13 +200,13 @@ export function ResidentFlockDeployDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent
-        title="Deploy flock"
-        description="Compose a resident flock from the deployment profiles available on your targets."
+        title="Deploy mesh"
+        description="Compose a resident mesh from the deployment profiles available on your targets."
         className="rv-flock-deploy-dialog"
       >
         <form className="rv-deploy-form" onSubmit={(event) => void submit(event)}>
           <label className="rv-form-field">
-            <span>Flock name</span>
+            <span>Mesh name</span>
             <input
               value={flockName}
               onChange={(event) => updateFlockName(event.target.value)}
@@ -229,7 +229,7 @@ export function ResidentFlockDeployDialog({
           )}
           {!profilesQuery.isLoading && profiles.length > 0 && coordinatorProfiles.length === 0 && (
             <div className="rv-form-error" role="alert">
-              A flock-capable resident profile is required for the coordinator.
+              A mesh-capable resident profile is required for the coordinator.
             </div>
           )}
           {personasQuery.isError && (
@@ -247,7 +247,7 @@ export function ResidentFlockDeployDialog({
           )}
           {coordinatorCount !== 1 && (
             <div className="rv-form-error" role="alert">
-              A flock requires exactly one coordinator.
+              A mesh requires exactly one coordinator.
             </div>
           )}
           {duplicateNames.size > 0 && (
@@ -340,7 +340,7 @@ export function ResidentFlockDeployDialog({
               data-testid="flock-deploy-submit"
             >
               <Users size={14} aria-hidden="true" />
-              {deploy.isPending ? 'Deploying…' : 'Deploy flock'}
+              {deploy.isPending ? 'Deploying…' : 'Deploy mesh'}
             </button>
           </div>
         </form>

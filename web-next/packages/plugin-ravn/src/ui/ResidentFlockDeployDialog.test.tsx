@@ -72,6 +72,8 @@ describe('ResidentFlockDeployDialog', () => {
       </QueryClientProvider>,
     );
 
+    expect(screen.getByRole('heading', { name: 'Deploy mesh' })).toBeInTheDocument();
+    expect(screen.getByText('Mesh name')).toBeInTheDocument();
     fireEvent.change(screen.getByTestId('flock-name'), { target: { value: 'proof' } });
     await screen.findByTestId('flock-member-0-name');
     fireEvent.click(screen.getByTestId('flock-add-member'));
@@ -182,7 +184,7 @@ describe('ResidentFlockDeployDialog', () => {
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByText('Flock deployment failed')).toBeInTheDocument();
+    expect(await screen.findByText('Mesh deployment failed')).toBeInTheDocument();
     expect(screen.getByTestId('flock-deploy-submit')).toBeDisabled();
   });
 
