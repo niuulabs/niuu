@@ -64,6 +64,7 @@ type CliStreamEvent = {
     name?: string;
     tool_use_id?: string;
     content?: string;
+    phase?: 'commentary' | 'final_answer';
   };
   delta?: {
     type?: string;
@@ -1013,9 +1014,16 @@ export function useSkuldChat(
                 syncStreamingMessage();
               }
             } else if (blockType === 'text') {
+              const itemId = event.content_block?.id;
+              const phase = event.content_block?.phase;
               streamingPartsRef.current = [
                 ...streamingPartsRef.current,
-                { type: 'text', text: '' },
+                {
+                  type: 'text',
+                  text: '',
+                  ...(itemId ? { id: itemId } : {}),
+                  ...(phase ? { phase } : {}),
+                },
               ];
               setStreamingParts([...streamingPartsRef.current]);
               syncStreamingMessage();
@@ -1079,10 +1087,12 @@ export function useSkuldChat(
                 : (event.delta?.text ?? null);
             if (!textChunk) break;
 
-            streamingTextRef.current = `${streamingTextRef.current}${textChunk}`;
-            setStreamingContent(streamingTextRef.current);
             const next = [...streamingPartsRef.current];
             const last = next[next.length - 1];
+            const separator =
+              last?.type === 'text' && !last.text && streamingTextRef.current ? '\n\n' : '';
+            streamingTextRef.current = `${streamingTextRef.current}${separator}${textChunk}`;
+            setStreamingContent(streamingTextRef.current);
             if (last?.type === 'text') {
               next[next.length - 1] = { ...last, text: `${last.text ?? ''}${textChunk}` };
             } else {

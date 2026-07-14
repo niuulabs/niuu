@@ -271,6 +271,38 @@ async def test_parity_full_turn_text_reasoning_tools_user_and_result(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_parity_preserves_codex_agent_message_boundaries_and_phases(tmp_path):
+    b = _broker(tmp_path)
+    frames = [
+        {"type": "user", "uuid": "U-2", "message": {"role": "user", "content": "work"}},
+        {
+            "type": "content_block_start",
+            "content_block": {"type": "text", "id": "msg-1", "phase": "commentary"},
+        },
+        {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "First."}},
+        {"type": "content_block_stop"},
+        {
+            "type": "content_block_start",
+            "content_block": {"type": "text", "id": "msg-2", "phase": "final_answer"},
+        },
+        {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Second."}},
+        {"type": "content_block_stop"},
+        {"type": "result", "result": "", "stop_reason": "end_turn", "modelUsage": {}},
+    ]
+    await _drive(b, frames)
+
+    live = _live_turns(b)
+    rebuilt = _rebuilt_turns(b)
+
+    assert live == rebuilt
+    assert live[1]["content"] == "First.\n\nSecond."
+    assert live[1]["parts"] == [
+        {"type": "text", "text": "First.", "id": "msg-1", "phase": "commentary"},
+        {"type": "text", "text": "Second.", "id": "msg-2", "phase": "final_answer"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_parity_tool_use_only_turn_closed_by_nonempty_result(tmp_path):
     """B-2 / INV-4 / FR-3: a turn that streamed NO assistant text — only a tool_use block —
     closed by a result carrying text. The live viewer saw the result text as the turn content;

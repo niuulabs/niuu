@@ -273,10 +273,31 @@ def apply_assistant_blocks(acc: TurnAccumulator, content_blocks: list) -> None:
         acc.content = f"{acc.content}\n{text_content}" if acc.content else text_content
 
 
+def apply_content_block_start(acc: TurnAccumulator, block: dict) -> None:
+    """Preserve a structured streaming text-item boundary when the transport supplies one."""
+    if not isinstance(block, dict) or block.get("type") != "text":
+        return
+    item_id = block.get("id")
+    phase = block.get("phase")
+    part = {"type": "text", "text": ""}
+    if isinstance(item_id, str) and item_id:
+        part["id"] = item_id
+    if isinstance(phase, str) and phase:
+        part["phase"] = phase
+    acc.parts.append(part)
+
+
 def apply_text_delta(acc: TurnAccumulator, text: str) -> None:
     """Fold a streaming text delta into ``acc`` (HTTP streaming format)."""
-    if text:
-        acc.content += text
+    if not text:
+        return
+    part = acc.parts[-1] if acc.parts else None
+    structured_part = isinstance(part, dict) and part.get("type") == "text"
+    if structured_part:
+        if not part.get("text") and acc.content:
+            acc.content += "\n\n"
+        part["text"] = f"{part.get('text', '')}{text}"
+    acc.content += text
 
 
 def apply_thinking_delta(acc: TurnAccumulator, thinking: str) -> None:
@@ -338,7 +359,7 @@ def finalize_parts(acc: TurnAccumulator) -> list[dict]:
     """The turn's parts at flush time: accumulated parts plus a trailing reasoning summary
     (reasoning is appended AT FLUSH on both paths — this fixes the old ordering divergence).
     """
-    parts = list(acc.parts)
+    parts = [part for part in acc.parts if part.get("type") != "text" or part.get("text")]
     if acc.reasoning:
         parts.append({"type": "reasoning", "text": acc.reasoning[-_REASONING_TAIL:]})
     return parts
@@ -528,6 +549,12 @@ def reduce_frames(
 
         if k == "assistant":
             apply_assistant_blocks(acc, _content_blocks(p))
+            acc.touch(ts, seq)
+            continue
+
+        if k == "content_block_start":
+            block = p.get("content_block", {})
+            apply_content_block_start(acc, block if isinstance(block, dict) else {})
             acc.touch(ts, seq)
             continue
 

@@ -24,6 +24,7 @@ export interface ChatMessagePart {
   readonly input?: Record<string, unknown>;
   readonly tool_use_id?: string;
   readonly content?: string;
+  readonly phase?: 'commentary' | 'final_answer';
 }
 
 export interface ParticipantMeta {

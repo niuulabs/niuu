@@ -1035,11 +1035,22 @@ class TestItemLifecycle:
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
-        await t._handle_item_started({"type": "agentMessage", "id": "msg-1", "text": ""})
+        await t._handle_item_started(
+            {
+                "type": "agentMessage",
+                "id": "msg-1",
+                "text": "",
+                "phase": "commentary",
+            }
+        )
 
         block_starts = _events_of_type(emit, "content_block_start")
         assert len(block_starts) == 1
-        assert block_starts[0]["content_block"]["type"] == "text"
+        assert block_starts[0]["content_block"] == {
+            "type": "text",
+            "id": "msg-1",
+            "phase": "commentary",
+        }
 
     @pytest.mark.asyncio
     async def test_agent_message_completed_emits_stop(self, tmp_path):

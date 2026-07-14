@@ -24,6 +24,7 @@ from niuu.domain.outcome import parse_outcome_block
 from niuu.domain.transcript_reducer import (
     TurnAccumulator,
     apply_assistant_blocks,
+    apply_content_block_start,
     apply_result_content,
     apply_text_delta,
     apply_thinking_delta,
@@ -2527,6 +2528,12 @@ class Broker(
             acc = self._pending_accumulator()
             apply_assistant_blocks(acc, content_blocks)
             self._pending_assistant_content = acc.content
+            self._pending_assistant_last_seq = self._event_log_seq
+
+        if event_type == "content_block_start":
+            block = data.get("content_block", {})
+            acc = self._pending_accumulator()
+            apply_content_block_start(acc, block if isinstance(block, dict) else {})
             self._pending_assistant_last_seq = self._event_log_seq
 
         # HTTP streaming format: accumulate deltas

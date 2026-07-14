@@ -1219,7 +1219,11 @@ class CodexWebSocketTransport(CLITransport):
 
         if item_type == "agentMessage":
             # Start a text content block — deltas will follow via agentMessage/delta.
-            await self._emit_content_block_start({"type": "text"})
+            block = {"type": "text", "id": item_id}
+            phase = item.get("phase")
+            if isinstance(phase, str) and phase:
+                block["phase"] = phase
+            await self._emit_content_block_start(block)
             return
 
         if item_type == "reasoning":

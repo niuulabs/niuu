@@ -2277,6 +2277,49 @@ page_path: council/demo/opinion-b.md
     ]);
   });
 
+  it('separates Codex commentary and final-answer items while streaming', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      wsHandlers.onMessage?.(
+        JSON.stringify({ type: 'assistant', message: { model: 'gpt-5.6-sol', content: [] } }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'content_block_start',
+          content_block: { type: 'text', id: 'msg-1', phase: 'commentary' },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'content_block_delta',
+          delta: { type: 'text_delta', text: 'Checking the repository.' },
+        }),
+      );
+      wsHandlers.onMessage?.(JSON.stringify({ type: 'content_block_stop' }));
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'content_block_start',
+          content_block: { type: 'text', id: 'msg-2', phase: 'final_answer' },
+        }),
+      );
+      wsHandlers.onMessage?.(
+        JSON.stringify({
+          type: 'content_block_delta',
+          delta: { type: 'text_delta', text: 'Done.' },
+        }),
+      );
+    });
+
+    expect(result.current.streamingContent).toBe('Checking the repository.\n\nDone.');
+    expect(result.current.streamingParts).toEqual([
+      { type: 'text', text: 'Checking the repository.', id: 'msg-1', phase: 'commentary' },
+      { type: 'text', text: 'Done.', id: 'msg-2', phase: 'final_answer' },
+    ]);
+  });
+
   it('builds fallback reasoning and text parts before finalizing an anonymous stream', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 
