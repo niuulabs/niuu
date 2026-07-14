@@ -72,9 +72,7 @@ def _flock_values() -> dict:
                     "nats": {"servers": ["nats://nats:4222"]},
                 },
                 "discovery": {
-                    "adapters": [
-                        "ravn.adapters.discovery.event_bus.EventBusDiscoveryAdapter"
-                    ]
+                    "adapters": ["ravn.adapters.discovery.event_bus.EventBusDiscoveryAdapter"]
                 },
             }
         }
@@ -241,7 +239,12 @@ def test_runtime_process_parser_materializes_valid_processes() -> None:
     [
         (["invalid"], "entries must be objects"),
         ([{"name": "bad name", "command": ["run"]}], "invalid name"),
-        ([{"name": "run"},], "has no command"),
+        (
+            [
+                {"name": "run"},
+            ],
+            "has no command",
+        ),
         ([{"name": "run", "command": ["bad\x00command"]}], "invalid command"),
         (
             [{"name": "run", "command": ["run"], "files": ["invalid"]}],
@@ -310,9 +313,7 @@ def test_openclaw_process_files_apply_attribution_and_permissions() -> None:
     config = json.loads(materialized[path])
 
     assert config["tools"]["exec"] == {"security": "full", "ask": "off"}
-    assert config["models"]["providers"]["niuu"]["headers"] == resident_attribution_headers(
-        runtime
-    )
+    assert config["models"]["providers"]["niuu"]["headers"] == resident_attribution_headers(runtime)
     assert materialized["/sandbox/workspace/readme.txt"] == b"untouched"
     assert resident_process_files(runtime.model_copy(update={"model": "nemotron"}), files) == files
 
@@ -323,15 +324,9 @@ def test_openclaw_process_files_apply_attribution_and_permissions() -> None:
         b"not-json",
         b"{}",
         json.dumps({"models": {"providers": {"niuu": []}}}).encode(),
-        json.dumps(
-            {"models": {"providers": {"niuu": {}}}, "tools": []}
-        ).encode(),
-        json.dumps(
-            {"models": {"providers": {"niuu": {}}}, "tools": {"exec": []}}
-        ).encode(),
-        json.dumps(
-            {"models": {"providers": {"niuu": {"headers": []}}}}
-        ).encode(),
+        json.dumps({"models": {"providers": {"niuu": {}}}, "tools": []}).encode(),
+        json.dumps({"models": {"providers": {"niuu": {}}}, "tools": {"exec": []}}).encode(),
+        json.dumps({"models": {"providers": {"niuu": {"headers": []}}}}).encode(),
     ],
 )
 def test_openclaw_process_files_reject_invalid_config(config: bytes) -> None:
@@ -358,9 +353,7 @@ def test_materialize_hermes_container_uses_provider_and_permissive_runtime() -> 
             "approvalPolicy": "never",
             "skipPermissions": True,
         },
-        "resident": {
-            "llm": {"provider": {"kwargs": {"base_url": "http://bifrost/v1"}}}
-        },
+        "resident": {"llm": {"provider": {"kwargs": {"base_url": "http://bifrost/v1"}}}},
         "runtime": {
             "processMode": "replace",
             "service": {"name": "hermes", "port": 8642},

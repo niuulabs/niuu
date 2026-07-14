@@ -371,16 +371,19 @@ def test_openclaw_history_helpers_filter_and_normalize_gateway_payloads() -> Non
     assert openclaw_runtime._message_text("invalid") == ""
     assert openclaw_runtime._message_text({"content": "plain"}) == "plain"
     assert openclaw_runtime._message_text({"content": {}}) == ""
-    assert openclaw_runtime._message_text(
-        {
-            "content": [
-                {"type": "text", "text": "one"},
-                {"type": "output_text", "text": " two"},
-                {"type": "image", "text": "ignored"},
-                "invalid",
-            ]
-        }
-    ) == "one two"
+    assert (
+        openclaw_runtime._message_text(
+            {
+                "content": [
+                    {"type": "text", "text": "one"},
+                    {"type": "output_text", "text": " two"},
+                    {"type": "image", "text": "ignored"},
+                    "invalid",
+                ]
+            }
+        )
+        == "one two"
+    )
     assert openclaw_runtime._history_messages(None) == []
     assert openclaw_runtime._history_messages({"messages": {}}) == []
 
@@ -501,8 +504,6 @@ async def test_openclaw_chat_reports_closed_connection_and_retry_timeout() -> No
     with pytest.raises(OpenClawGatewayError, match="history timeout"):
         await chat._await_native_retry()
 
-    await gateway.events.put(
-        {"type": "event", "event": "connection.closed", "payload": {}}
-    )
+    await gateway.events.put({"type": "event", "event": "connection.closed", "payload": {}})
     with pytest.raises(OpenClawGatewayError, match="connection closed"):
         await chat.receive()

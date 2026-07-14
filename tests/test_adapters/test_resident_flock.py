@@ -473,9 +473,7 @@ async def test_sync_reuses_replaces_and_removes_resident_peers() -> None:
     assert replacement is not first
     assert replacement.persona is None
 
-    repository.runtime = runtime.model_copy(
-        update={"observed_state": ResidentObservedState.FAILED}
-    )
+    repository.runtime = runtime.model_copy(update={"observed_state": ResidentObservedState.FAILED})
     await resident.sync()
     assert resident._peers == {}
     await resident.stop()

@@ -303,9 +303,7 @@ def test_local_controller_supports_only_complete_local_profiles(
     docker_client: _DockerClient,
 ) -> None:
     controller = LocalContainerResidentRuntimeController(residents_dir=str(tmp_path))
-    no_image = _profile().model_copy(
-        update={"deployment": {"values": {"runtime": {}}}}
-    )
+    no_image = _profile().model_copy(update={"deployment": {"values": {"runtime": {}}}})
     flock_without_transport = _profile().model_copy(
         update={
             "capabilities": [ResidentCapability.FLOCK],
@@ -461,10 +459,13 @@ async def test_local_device_failure_and_missing_machine_store_are_explicit(
 
 def test_local_runtime_helpers_cover_states_paths_and_log_filters(tmp_path) -> None:
     root = tmp_path / "sandbox"
-    assert local_runtime._host_runtime_path(
-        root,
-        "/sandbox/workspace/project/file.txt",
-    ) == root / "workspace" / "project" / "file.txt"
+    assert (
+        local_runtime._host_runtime_path(
+            root,
+            "/sandbox/workspace/project/file.txt",
+        )
+        == root / "workspace" / "project" / "file.txt"
+    )
     with pytest.raises(RuntimeError, match="not backed"):
         local_runtime._host_runtime_path(root, "/tmp/file")
 
