@@ -8,10 +8,12 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel, Field
 
+from volundr.adapters.inbound.auth import check_session_or_resident_access
 from volundr.domain.models import SessionEvent, SessionEventType
 from volundr.domain.ports import SessionEventRepository
 from volundr.domain.services.event_ingestion import EventIngestionService
-from volundr.domain.services.session import SessionAccessDeniedError, SessionService
+from volundr.domain.services.resident_runtime import ResidentRuntimeService
+from volundr.domain.services.session import SessionService
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +168,7 @@ def create_events_router(
     ingestion_service: EventIngestionService,
     event_repository: SessionEventRepository,
     session_service: SessionService | None = None,
+    resident_runtime_service: ResidentRuntimeService | None = None,
     *,
     prefix: str = "/api/v1/forge",
 ) -> APIRouter:
@@ -175,22 +178,15 @@ def create_events_router(
     async def _check_event_access(
         request: Request, session_id: UUID, action: str = "emit_event"
     ) -> None:
-        """Check that the caller is authorized to emit events for a session."""
-        if session_service is None:
-            return
-        from volundr.adapters.inbound.auth import extract_principal
-
-        principal = await extract_principal(request)
-        session = await session_service.get_session(session_id)
-        if session is None:
-            return
-        try:
-            await session_service._check_access(session, principal, action)
-        except SessionAccessDeniedError:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Not authorized to emit events for session {session_id}",
-            )
+        """Check that the caller can access this telemetry subject."""
+        await check_session_or_resident_access(
+            request,
+            session_id,
+            session_service=session_service,
+            resident_runtime_service=resident_runtime_service,
+            action=action,
+            resource_name="events",
+        )
 
     @router.post(
         "/events",
@@ -275,6 +271,7 @@ def create_events_router(
         tags=["Events"],
     )
     async def get_session_events(
+        request: Request,
         session_id: UUID = Path(description="Session UUID to query events for"),
         event_type: str | None = Query(
             default=None,
@@ -301,6 +298,7 @@ def create_events_router(
         ),
     ) -> list[SessionEventResponse]:
         """Query events for a session."""
+        await _check_event_access(request, session_id, action="read_events")
         types = None
         if event_type:
             try:
@@ -326,9 +324,11 @@ def create_events_router(
         tags=["Events"],
     )
     async def get_event_counts(
+        request: Request,
         session_id: UUID = Path(description="Session UUID to get event counts for"),
     ) -> dict[str, int]:
         """Get event type counts for a session."""
+        await _check_event_access(request, session_id, action="read_events")
         return await event_repository.get_event_counts(session_id)
 
     @router.get(
@@ -337,6 +337,7 @@ def create_events_router(
         tags=["Events"],
     )
     async def get_token_timeline(
+        request: Request,
         session_id: UUID = Path(description="Session UUID to get token timeline for"),
         bucket_seconds: int = Query(
             default=300,
@@ -346,6 +347,7 @@ def create_events_router(
         ),
     ) -> list[dict]:
         """Get token burn timeline for a session."""
+        await _check_event_access(request, session_id, action="read_events")
         return await event_repository.get_token_timeline(session_id, bucket_seconds)
 
     @router.get("/events/health", response_model=SinkHealthResponse, tags=["Events"])

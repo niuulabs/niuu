@@ -32,9 +32,10 @@ class PostgresResidentRuntimeRepository(ResidentRuntimeRepository):
             INSERT INTO resident_runtimes
                 (id, owner_id, tenant_id, name, persona_name, model, backend,
                  engine, profile_id, desired_state, observed_state, backend_ref,
-                 endpoints, capabilities, conditions, created_at, updated_at)
+                 endpoints, capabilities, conditions, flock_id, flock_member_id,
+                 flock_role, flock_peer_id, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                    $13, $14, $15, $16, $17)
+                    $13, $14, $15, $16, $17, $18, $19, $20, $21)
             """,
             runtime.id,
             runtime.owner_id,
@@ -51,6 +52,10 @@ class PostgresResidentRuntimeRepository(ResidentRuntimeRepository):
             json.dumps([endpoint.model_dump(mode="json") for endpoint in runtime.endpoints]),
             [capability.value for capability in runtime.capabilities],
             json.dumps([condition.model_dump(mode="json") for condition in runtime.conditions]),
+            runtime.flock_id,
+            runtime.flock_member_id,
+            runtime.flock_role,
+            runtime.flock_peer_id,
             runtime.created_at,
             runtime.updated_at,
         )
@@ -106,7 +111,9 @@ class PostgresResidentRuntimeRepository(ResidentRuntimeRepository):
             SET name = $2, persona_name = $3, model = $4, backend = $5,
                 engine = $6, profile_id = $7, desired_state = $8,
                 observed_state = $9, backend_ref = $10, endpoints = $11,
-                capabilities = $12, conditions = $13, updated_at = $14
+                capabilities = $12, conditions = $13, flock_id = $14,
+                flock_member_id = $15, flock_role = $16, flock_peer_id = $17,
+                updated_at = $18
             WHERE id = $1
             """,
             runtime.id,
@@ -122,6 +129,10 @@ class PostgresResidentRuntimeRepository(ResidentRuntimeRepository):
             json.dumps([endpoint.model_dump(mode="json") for endpoint in runtime.endpoints]),
             [capability.value for capability in runtime.capabilities],
             json.dumps([condition.model_dump(mode="json") for condition in runtime.conditions]),
+            runtime.flock_id,
+            runtime.flock_member_id,
+            runtime.flock_role,
+            runtime.flock_peer_id,
             runtime.updated_at,
         )
         return runtime
@@ -189,6 +200,10 @@ class PostgresResidentRuntimeRepository(ResidentRuntimeRepository):
             backend=ResidentBackend(row["backend"]),
             engine=ResidentEngine(row["engine"]),
             profile_id=row["profile_id"],
+            flock_id=row.get("flock_id"),
+            flock_member_id=row.get("flock_member_id"),
+            flock_role=row.get("flock_role", ""),
+            flock_peer_id=row.get("flock_peer_id", ""),
             desired_state=ResidentDesiredState(row["desired_state"]),
             observed_state=ResidentObservedState(row["observed_state"]),
             backend_ref=cls._json(row["backend_ref"], {}),

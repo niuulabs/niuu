@@ -11,7 +11,12 @@ from typing import Any
 
 import yaml
 
-from volundr.domain.models import ResidentEngine, ResidentRuntime
+from volundr.domain.models import (
+    ResidentCapability,
+    ResidentDeploymentProfile,
+    ResidentEngine,
+    ResidentRuntime,
+)
 
 PLATFORM_ACCESS_TOKEN_ENV = "NIUU_VOLUNDR_ACCESS_TOKEN"
 HERMES_API_SERVER_KEY_ENV = "API_SERVER_KEY"
@@ -42,6 +47,125 @@ class ResidentContainerSpec:
     environment: dict[str, str]
     files: dict[str, bytes]
     processes: tuple[ResidentContainerProcess, ...]
+
+
+def resident_flock_labels(runtime: ResidentRuntime, *, prefix: str) -> dict[str, str]:
+    """Return common labels for one resident's optional flock membership."""
+    if runtime.flock_id is None:
+        return {}
+    labels = {f"{prefix}/flock-id": str(runtime.flock_id)}
+    if runtime.flock_member_id is not None:
+        labels[f"{prefix}/flock-member-id"] = str(runtime.flock_member_id)
+    if runtime.flock_role:
+        labels[f"{prefix}/flock-role"] = runtime.flock_role
+    if runtime.flock_peer_id:
+        labels[f"{prefix}/flock-peer-id"] = runtime.flock_peer_id
+    return labels
+
+
+def resident_flock_environment(runtime: ResidentRuntime) -> dict[str, str]:
+    """Return common runtime identity variables for a flock member."""
+    if runtime.flock_id is None:
+        return {}
+    environment = {"NIUU_FLOCK_ID": str(runtime.flock_id)}
+    if runtime.flock_member_id is not None:
+        environment["NIUU_FLOCK_MEMBER_ID"] = str(runtime.flock_member_id)
+    if runtime.flock_role:
+        environment["NIUU_FLOCK_ROLE"] = runtime.flock_role
+    if runtime.flock_peer_id:
+        environment["NIUU_FLOCK_PEER_ID"] = runtime.flock_peer_id
+    return environment
+
+
+def resident_mesh_pod_metadata(runtime: ResidentRuntime) -> tuple[dict[str, str], dict[str, str]]:
+    """Return labels and annotations consumed by Ravn Kubernetes discovery."""
+    if runtime.flock_id is None or not runtime.flock_peer_id:
+        return {}, {}
+    return (
+        {
+            "ravn.niuu.world/realm": str(runtime.flock_id),
+            "ravn.niuu.world/role": "agent",
+        },
+        {
+            "ravn.niuu.world/peer-id": runtime.flock_peer_id,
+            "ravn.niuu.world/persona": runtime.persona_name or runtime.name,
+            "ravn.niuu.world/capabilities": ",".join(
+                capability.value for capability in runtime.capabilities
+            ),
+            "ravn.niuu.world/permission-mode": "permissive",
+        },
+    )
+
+
+def resident_flock_runtime_config(
+    config: dict[str, Any],
+    runtime: ResidentRuntime,
+    values: dict[str, Any],
+) -> None:
+    """Apply the profile-selected mesh and discovery adapters for a flock member."""
+    if runtime.flock_id is None:
+        return
+    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
+    flock = resident.get("flock") if isinstance(resident.get("flock"), dict) else {}
+    mesh_options = flock.get("mesh") if isinstance(flock.get("mesh"), dict) else {}
+    mesh_adapters = mesh_options.get("adapters")
+    if isinstance(mesh_adapters, list) and mesh_adapters:
+        config["mesh"]["adapters"] = list(mesh_adapters)
+        config["mesh"].pop("adapter", None)
+    nats = mesh_options.get("nats")
+    if isinstance(nats, dict) and nats:
+        config["mesh"]["nats"] = nats
+    config["mesh"]["own_peer_id"] = runtime.flock_peer_id
+
+    discovery_options = flock.get("discovery") if isinstance(flock.get("discovery"), dict) else {}
+    discovery_adapters = discovery_options.get("adapters")
+    if isinstance(discovery_adapters, list):
+        config["discovery"]["adapters"].extend(discovery_adapters)
+    config["discovery"]["realm_id"] = str(runtime.flock_id)
+
+
+def resident_flock_skuld_config(
+    config: dict[str, Any],
+    runtime: ResidentRuntime,
+    values: dict[str, Any],
+) -> None:
+    """Apply the profile-selected flock transport to the resident room broker."""
+    if runtime.flock_id is None:
+        return
+    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
+    flock = resident.get("flock") if isinstance(resident.get("flock"), dict) else {}
+    mesh_options = flock.get("mesh") if isinstance(flock.get("mesh"), dict) else {}
+    discovery = flock.get("discovery") if isinstance(flock.get("discovery"), dict) else {}
+    mesh = config["mesh"]
+    local_discovery = list(mesh.get("discovery_adapters") or mesh.get("adapters") or [])
+    adapters = mesh_options.get("adapters")
+    if isinstance(adapters, list) and adapters:
+        mesh["adapters"] = list(adapters)
+        mesh["discovery_adapters"] = [
+            *local_discovery,
+            *list(discovery.get("adapters") or []),
+        ]
+    nats = mesh_options.get("nats")
+    if isinstance(nats, dict) and nats:
+        mesh["nats"] = nats
+    mesh["realm_id"] = str(runtime.flock_id)
+
+
+def resident_flock_profile_configured(
+    profile: ResidentDeploymentProfile,
+    values: dict[str, Any],
+) -> bool:
+    """Return whether a native Ravn flock profile selects mesh and discovery adapters."""
+    if (
+        ResidentCapability.FLOCK not in profile.capabilities
+        or profile.engine is not ResidentEngine.RAVN
+    ):
+        return True
+    resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
+    flock = resident.get("flock") if isinstance(resident.get("flock"), dict) else {}
+    mesh = flock.get("mesh") if isinstance(flock.get("mesh"), dict) else {}
+    discovery = flock.get("discovery") if isinstance(flock.get("discovery"), dict) else {}
+    return bool(mesh.get("adapters")) and bool(discovery.get("adapters"))
 
 
 def resident_profile_values(profile_id: str, deployment: dict[str, Any]) -> dict[str, Any]:
@@ -166,6 +290,14 @@ def resident_process_files(
             raise RuntimeError(f"OpenClaw resident configuration is invalid: {path!r}") from exc
         if not isinstance(config, dict) or not isinstance(provider, dict):
             raise RuntimeError(f"OpenClaw resident configuration is invalid: {path!r}")
+        tools = config.setdefault("tools", {})
+        if not isinstance(tools, dict):
+            raise RuntimeError(f"OpenClaw tools configuration is invalid: {path!r}")
+        exec_config = tools.setdefault("exec", {})
+        if not isinstance(exec_config, dict):
+            raise RuntimeError(f"OpenClaw exec configuration is invalid: {path!r}")
+        exec_config.setdefault("security", "full")
+        exec_config.setdefault("ask", "off")
         headers = provider.setdefault("headers", {})
         if not isinstance(headers, dict):
             raise RuntimeError(f"OpenClaw provider headers are invalid: {path!r}")
@@ -319,9 +451,10 @@ def _resident_skuld_config(
 ) -> dict[str, Any]:
     persona = runtime.persona_name or "product-steward"
     route_id = runtime.id.hex[:12]
+    ravn_peer = runtime.flock_peer_id or f"flock-{persona}"
     broker = values.get("broker") if isinstance(values.get("broker"), dict) else {}
     session_values = values.get("session") if isinstance(values.get("session"), dict) else {}
-    return {
+    config = {
         "session": {
             "id": str(runtime.id),
             "name": runtime.name,
@@ -349,9 +482,8 @@ def _resident_skuld_config(
         "usage_report_path": f"/api/v1/forge/resident-runtimes/{runtime.id}/usage",
         "room": {
             "enabled": True,
-            "max_participants": 2,
             "presence_sweep_interval_s": 0,
-            "default_target_peer_id": f"flock-{persona}",
+            "default_target_peer_id": ravn_peer,
         },
         "mesh": {
             "enabled": True,
@@ -364,6 +496,8 @@ def _resident_skuld_config(
             "adapters": [],
         },
     }
+    resident_flock_skuld_config(config, runtime, values)
+    return config
 
 
 def _resident_ravn_config(
@@ -431,6 +565,7 @@ def _resident_ravn_config(
         config["llm"] = llm
     if isinstance(resident.get("wakefulness"), dict):
         config["wakefulness"] = resident["wakefulness"]
+    resident_flock_runtime_config(config, runtime, values)
     return config
 
 
@@ -467,7 +602,7 @@ def _resident_hermes_config(
             }
         ],
         "terminal": {"cwd": SANDBOX_WORKSPACE},
-        "approvals": {"mode": "manual"},
+        "approvals": {"mode": "off"},
         "gateway": {
             "platforms": {
                 "api_server": {

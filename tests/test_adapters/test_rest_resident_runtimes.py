@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
@@ -9,6 +10,7 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from volundr.adapters.inbound.auth import extract_principal
 from volundr.adapters.inbound.rest_resident_runtimes import create_resident_runtimes_router
@@ -24,9 +26,12 @@ from volundr.domain.models import (
     ResidentSession,
 )
 from volundr.domain.services.resident_runtime import (
+    ResidentProfileNotFoundError,
+    ResidentRuntimeAccessError,
     ResidentRuntimeConflictError,
     ResidentRuntimeDeploymentError,
     ResidentRuntimeNotFoundError,
+    ResidentRuntimeValidationError,
 )
 
 _PRINCIPAL = Principal(
@@ -223,6 +228,8 @@ def test_native_resident_session_crud_uses_authenticated_service() -> None:
 
 
 def test_create_and_lifecycle_routes_use_authenticated_service() -> None:
+    flock_id = uuid4()
+    member_id = uuid4()
     runtime = ResidentRuntime(
         id=uuid4(),
         owner_id="user-a",
@@ -246,6 +253,10 @@ def test_create_and_lifecycle_routes_use_authenticated_service() -> None:
             "profileId": "ravn-helm",
             "personaName": "product-steward",
             "model": "gpt-5.6",
+            "flockId": str(flock_id),
+            "flockMemberId": str(member_id),
+            "flockRole": "coordinator",
+            "flockPeerId": f"ravn-{member_id}",
         },
     )
     restarted = client.post(f"/api/v1/forge/resident-runtimes/{runtime.id}/restart")
@@ -262,6 +273,10 @@ def test_create_and_lifecycle_routes_use_authenticated_service() -> None:
         profile_id="ravn-helm",
         persona_name="product-steward",
         model="gpt-5.6",
+        flock_id=flock_id,
+        flock_member_id=member_id,
+        flock_role="coordinator",
+        flock_peer_id=f"ravn-{member_id}",
     )
     service.delete.assert_awaited_once_with(_PRINCIPAL, runtime.id)
 
@@ -278,7 +293,11 @@ def test_delete_is_idempotent_when_record_is_already_absent() -> None:
 @pytest.mark.parametrize(
     ("error", "expected_status"),
     [
+        (ResidentRuntimeAccessError("forbidden"), 403),
+        (ResidentRuntimeNotFoundError("missing"), 404),
         (ResidentRuntimeConflictError("duplicate"), 409),
+        (ResidentProfileNotFoundError("profile missing"), 422),
+        (ResidentRuntimeValidationError("invalid"), 422),
         (ResidentRuntimeDeploymentError("flux failed"), 502),
     ],
 )
@@ -292,3 +311,125 @@ def test_create_maps_domain_failures(error, expected_status) -> None:
     )
 
     assert response.status_code == expected_status
+
+
+@pytest.mark.parametrize(
+    ("service_method", "http_method", "path_suffix", "body"),
+    [
+        ("restart", "post", "/restart", None),
+        ("logs", "get", "/logs", None),
+        ("record_usage", "post", "/usage", {"tokens": 1}),
+        ("list_sessions", "get", "/sessions", None),
+        ("create_session", "post", "/sessions", {"title": "Work"}),
+        ("delete_session", "delete", f"/sessions/{uuid4()}", None),
+        ("set_desired_state", "post", "/suspend", None),
+        ("set_desired_state", "post", "/resume", None),
+        ("delete", "delete", "", None),
+    ],
+)
+def test_resident_routes_map_access_failures(
+    service_method: str,
+    http_method: str,
+    path_suffix: str,
+    body: dict | None,
+) -> None:
+    service = Mock()
+    setattr(
+        service,
+        service_method,
+        AsyncMock(side_effect=ResidentRuntimeAccessError("forbidden")),
+    )
+    request = getattr(_client(service), http_method)
+    kwargs = {"json": body} if body is not None else {}
+
+    response = request(
+        f"/api/v1/forge/resident-runtimes/{uuid4()}{path_suffix}",
+        **kwargs,
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "forbidden"}
+
+
+def test_unknown_resident_failure_is_not_hidden() -> None:
+    service = Mock()
+    service.create = AsyncMock(side_effect=ValueError("unexpected"))
+
+    with pytest.raises(ValueError, match="unexpected"):
+        _client(service).post(
+            "/api/v1/forge/resident-runtimes",
+            json={"name": "Muninn", "profileId": "ravn-helm"},
+        )
+
+
+class _ChatConnection:
+    def __init__(self) -> None:
+        self.sent: list[dict] = []
+        self.closed = False
+        self._replies: asyncio.Queue[dict] = asyncio.Queue()
+
+    async def send(self, payload: dict) -> None:
+        self.sent.append(payload)
+        await self._replies.put({"type": "message", "content": payload["content"]})
+
+    async def receive(self) -> dict:
+        return await self._replies.get()
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def test_resident_chat_websocket_relays_authenticated_messages() -> None:
+    runtime_id = uuid4()
+    session_id = uuid4()
+    connection = _ChatConnection()
+    service = Mock()
+    service.connect_chat = AsyncMock(return_value=connection)
+    client = _client(service)
+
+    with client.websocket_connect(
+        f"/api/v1/forge/resident-runtimes/{runtime_id}/sessions/{session_id}/chat",
+        headers={
+            "x-auth-user-id": "user-a",
+            "x-auth-tenant": "tenant-a",
+            "x-auth-roles": "volundr:developer",
+        },
+    ) as websocket:
+        websocket.send_json({"type": "message", "content": "hello"})
+        assert websocket.receive_json() == {"type": "message", "content": "hello"}
+
+    service.connect_chat.assert_awaited_once_with(
+        Principal(
+            user_id="user-a",
+            email="",
+            tenant_id="tenant-a",
+            roles=["volundr:developer"],
+        ),
+        runtime_id,
+        session_id,
+    )
+    assert connection.sent == [{"type": "message", "content": "hello"}]
+    assert connection.closed
+
+
+@pytest.mark.parametrize("authenticated", [False, True])
+def test_resident_chat_websocket_rejects_missing_identity_or_session(
+    authenticated: bool,
+) -> None:
+    service = Mock()
+    service.connect_chat = AsyncMock(side_effect=RuntimeError("unavailable"))
+    client = _client(service)
+    headers = {"x-auth-user-id": "user-a"} if authenticated else {}
+
+    with pytest.raises(WebSocketDisconnect) as disconnected:
+        with client.websocket_connect(
+            f"/api/v1/forge/resident-runtimes/{uuid4()}/sessions/{uuid4()}/chat",
+            headers=headers,
+        ) as websocket:
+            websocket.receive_json()
+
+    assert disconnected.value.code == 1008
+    if authenticated:
+        service.connect_chat.assert_awaited_once()
+    else:
+        service.connect_chat.assert_not_awaited()

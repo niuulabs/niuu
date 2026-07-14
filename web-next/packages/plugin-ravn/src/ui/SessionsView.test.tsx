@@ -43,12 +43,15 @@ function makeChatState(overrides: Record<string, unknown> = {}) {
     meshEvents: [],
     agentEvents: new Map(),
     pendingPermissions: [],
+    pendingInputRequests: [],
     availableCommands: [],
     capabilities: {},
     sendMessage: vi.fn(),
     sendDirectedMessages: vi.fn(),
+    publishEvent: vi.fn(),
     sendResendPrompt: vi.fn(),
     respondToPermission: vi.fn(),
+    respondToInput: vi.fn(),
     sendInterrupt: vi.fn(),
     sendSetModel: vi.fn(),
     sendSetThinkingTokens: vi.fn(),
@@ -345,6 +348,42 @@ describe('SessionsView — live chat', () => {
     expect(screen.queryByTestId('sessions-context')).not.toBeInTheDocument();
   });
 
+  it('uses an advertised chatEndpoint without requiring a duplicate resident capability', async () => {
+    const resident = {
+      id: 'a3f1b2c4-8e7d-4a6f-9b0c-1d2e3f4a5b6c',
+      personaName: 'event-coordinator',
+      residentName: 'Coordinator',
+      kind: 'resident' as const,
+      managed: true,
+      status: 'active' as const,
+      model: 'gpt-5.6-sol',
+      createdAt: '2026-07-13T14:29:00Z',
+      capabilities: ['session.list' as const],
+    };
+    const ravenStream = {
+      async listRavens() {
+        return [resident];
+      },
+      async getRaven() {
+        return resident;
+      },
+    };
+
+    render(<SessionsView />, {
+      wrapper: wrap({
+        'ravn.sessions': singleSessionStream(liveRunningSession({ ravnId: resident.id })),
+        'ravn.ravens': ravenStream,
+        'ravn.personas': createMockPersonaStore(),
+        'ravn.budget': createMockBudgetStream(),
+      }),
+    });
+
+    expect(await screen.findByTestId('sessions-live-chat')).toBeInTheDocument();
+    expect(useSkuldChatMock).toHaveBeenCalledWith(LIVE_CHAT_ENDPOINT, {
+      historyMode: 'none',
+    });
+  });
+
   it('uses websocket-owned history for engine-native resident sessions', async () => {
     const resident = {
       id: 'a3f1b2c4-8e7d-4a6f-9b0c-1d2e3f4a5b6c',
@@ -432,12 +471,13 @@ describe('SessionsView — live chat', () => {
         'ravn.personas': createMockPersonaStore(),
         'ravn.budget': createMockBudgetStream(),
         'ravn.residents': { getLogs },
+        volundr: {},
       }),
     });
 
     expect(await screen.findByTestId('sessions-live-chat')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: /trace/i }));
-    expect(screen.getByText('Session traces are not exposed by this runtime.')).toBeInTheDocument();
+    expect(screen.getByTestId('volundr-trace-tab')).toHaveTextContent(`trace ${resident.id}`);
 
     fireEvent.click(screen.getByRole('tab', { name: /logs/i }));
     expect(await screen.findByText('session ready')).toBeInTheDocument();
@@ -552,6 +592,206 @@ describe('SessionsView — live chat', () => {
       '@product-steward research solvent defaults',
       [],
     );
+  });
+
+  it('shows a mesh as one room using the coordinator room participants', async () => {
+    const flockId = '11111111-1111-4111-8111-111111111111';
+    const publishEvent = vi.fn();
+    const coordinator = liveRunningSession({
+      id: '10000001-0000-4000-8000-0000000000c1',
+      ravnId: '20000001-0000-4000-8000-0000000000c1',
+      personaName: 'event-coordinator',
+      title: 'Coordinator',
+      createdAt: '2026-07-01T10:00:01Z',
+      chatEndpoint: 'wss://skuld.example/coordinator/session',
+      flockId,
+      flockRole: 'coordinator',
+      flockPeerId: 'ravn-coordinator',
+    });
+    const hermes = liveRunningSession({
+      id: '10000001-0000-4000-8000-0000000000e1',
+      ravnId: '20000001-0000-4000-8000-0000000000e1',
+      personaName: 'hermes-specialist',
+      title: 'Delegated analysis',
+      createdAt: '2026-07-01T10:00:02Z',
+      chatEndpoint: 'wss://skuld.example/hermes/session',
+      flockId,
+      flockRole: 'specialist',
+      flockPeerId: 'hermes-specialist',
+    });
+    const ravens = [
+      {
+        id: coordinator.ravnId,
+        personaName: coordinator.personaName,
+        residentName: 'Coordinator',
+        kind: 'resident' as const,
+        managed: true,
+        status: 'active' as const,
+        model: coordinator.model,
+        createdAt: coordinator.createdAt,
+        flockId,
+        flockRole: 'coordinator',
+        flockPeerId: coordinator.flockPeerId,
+        engine: 'ravn' as const,
+        capabilities: ['chat' as const],
+      },
+      {
+        id: hermes.ravnId,
+        personaName: hermes.personaName,
+        residentName: 'Hermes',
+        kind: 'resident' as const,
+        managed: true,
+        status: 'active' as const,
+        model: hermes.model,
+        createdAt: hermes.createdAt,
+        flockId,
+        flockRole: 'specialist',
+        flockPeerId: hermes.flockPeerId,
+        engine: 'hermes' as const,
+        capabilities: ['chat' as const],
+      },
+    ];
+    const coordinatorParticipant = {
+      peerId: 'ravn-coordinator',
+      persona: 'event-coordinator',
+      displayName: 'Coordinator',
+      participantType: 'ravn',
+    };
+    const hermesParticipant = {
+      peerId: 'hermes-specialist',
+      persona: 'hermes-specialist',
+      displayName: 'Hermes',
+      participantType: 'ravn',
+      subscribesTo: ['review.requested'],
+    };
+    useSkuldChatMock.mockImplementation(() =>
+      makeChatState({
+        messages: [
+          {
+            id: 'coordinator-message',
+            role: 'assistant',
+            content: 'Coordinator ready',
+            createdAt: new Date('2026-07-01T10:00:02Z'),
+            status: 'done',
+            participant: coordinatorParticipant,
+          },
+          {
+            id: 'hermes-message',
+            role: 'assistant',
+            content: 'Hermes result',
+            createdAt: new Date('2026-07-01T10:00:03Z'),
+            status: 'done',
+            participant: hermesParticipant,
+          },
+        ],
+        participants: new Map([
+          [coordinatorParticipant.peerId, coordinatorParticipant],
+          [hermesParticipant.peerId, hermesParticipant],
+        ]),
+        publishEvent,
+      }),
+    );
+    const sessionStream: ISessionStream = {
+      async listSessions() {
+        return [coordinator, hermes];
+      },
+      async getSession() {
+        return coordinator;
+      },
+      async getMessages() {
+        return [];
+      },
+    };
+    const ravenStream = {
+      async listRavens() {
+        return ravens;
+      },
+      async getRaven() {
+        return ravens[0]!;
+      },
+    };
+
+    window.history.replaceState(
+      null,
+      '',
+      `/ravn/sessions?session=${hermes.id}&ravn_id=${hermes.ravnId}`,
+    );
+    render(<SessionsView />, {
+      wrapper: wrap({
+        'ravn.sessions': sessionStream,
+        'ravn.ravens': ravenStream,
+        'ravn.personas': createMockPersonaStore(),
+        'ravn.budget': createMockBudgetStream(),
+      }),
+    });
+
+    expect(await screen.findByTestId('sessions-live-chat')).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Mesh' })).not.toBeInTheDocument();
+    expect(useSkuldChatMock).toHaveBeenCalledTimes(1);
+    expect(useSkuldChatMock).toHaveBeenCalledWith(
+      'wss://skuld.example/coordinator/session',
+      expect.anything(),
+    );
+    const rail = screen.getByRole('complementary', { name: 'Sessions' });
+    expect(within(rail).getByText('Mesh 11111111')).toBeInTheDocument();
+    expect(within(rail).getAllByRole('button', { name: /Open session/ })).toHaveLength(1);
+    expect(screen.getByTestId('peer-card-ravn-coordinator')).toBeInTheDocument();
+    expect(screen.getByTestId('peer-card-hermes-specialist')).toBeInTheDocument();
+    expect(screen.getByText('Coordinator ready')).toBeInTheDocument();
+    expect(screen.getByText('Hermes result')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('chat-textarea'), {
+      target: { value: 'Coordinate this work' },
+    });
+    expect(screen.getByTestId('send-btn')).toBeDisabled();
+
+    fireEvent.change(screen.getByTestId('chat-textarea'), {
+      target: { value: '@', selectionStart: 1 },
+    });
+    fireEvent.click(screen.getByRole('option', { name: /review\.requested.*Hermes/ }));
+    fireEvent.change(screen.getByTestId('chat-textarea'), {
+      target: { value: 'Verify this result' },
+    });
+    fireEvent.click(screen.getByTestId('send-btn'));
+    expect(publishEvent).toHaveBeenCalledWith(
+      { participant: hermesParticipant, eventType: 'review.requested' },
+      '@review.requested Verify this result',
+    );
+  });
+
+  it('uses the shared disconnected chat while a resident is provisioning', async () => {
+    const session = liveRunningSession({ status: 'idle', chatEndpoint: null });
+    const resident = {
+      id: session.ravnId,
+      personaName: 'council-chair',
+      residentName: 'Council flock',
+      kind: 'resident' as const,
+      managed: true,
+      status: 'idle' as const,
+      observedState: 'deploying' as const,
+      model: session.model,
+      createdAt: session.createdAt,
+    };
+    const ravenStream = {
+      async listRavens() {
+        return [resident];
+      },
+      async getRaven() {
+        return resident;
+      },
+    };
+
+    render(<SessionsView />, {
+      wrapper: wrap({
+        'ravn.sessions': singleSessionStream(session),
+        'ravn.ravens': ravenStream,
+        'ravn.personas': createMockPersonaStore(),
+        'ravn.budget': createMockBudgetStream(),
+      }),
+    });
+
+    expect(await screen.findByTestId('sessions-disconnected-chat')).toBeInTheDocument();
+    expect(screen.getByText('Disconnected')).toBeInTheDocument();
+    expect(useSkuldChatMock).not.toHaveBeenCalled();
   });
 
   it('keeps the read-only transcript for a running session without a chatEndpoint', async () => {

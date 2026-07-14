@@ -232,6 +232,48 @@ describe('ChatInput', () => {
     expect(onSend).toHaveBeenCalledWith('@Ada hello', []);
   });
 
+  it('publishes a typed event selected from a flock participant subscription', () => {
+    const onSend = vi.fn();
+    const onSendDirected = vi.fn();
+    const onPublishEvent = vi.fn();
+    const hermes = {
+      peerId: 'hermes-1',
+      persona: 'reviewer',
+      displayName: 'Hermes reviewer',
+      participantType: 'ravn',
+      subscribesTo: ['review.requested'],
+    };
+    const participants = new Map([[hermes.peerId, hermes]]);
+    render(
+      <ChatInput
+        {...defaultProps}
+        onSend={onSend}
+        onSendDirected={onSendDirected}
+        onPublishEvent={onPublishEvent}
+        eventRouting
+        participants={participants}
+      />,
+    );
+
+    const textarea = screen.getByTestId('chat-textarea');
+    fireEvent.change(textarea, { target: { value: 'Review this' } });
+    expect(screen.getByTestId('send-btn')).toBeDisabled();
+
+    fireEvent.change(textarea, { target: { value: '@', selectionStart: 1 } });
+    fireEvent.click(screen.getByRole('option', { name: /review\.requested.*Hermes reviewer/ }));
+    expect(textarea).toHaveValue('@review.requested ');
+    fireEvent.change(textarea, { target: { value: '@review.requested Review this' } });
+    fireEvent.click(screen.getByTestId('send-btn'));
+
+    expect(onPublishEvent).toHaveBeenCalledWith(
+      { participant: hermes, eventType: 'review.requested' },
+      '@review.requested Review this',
+    );
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onSendDirected).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('attach-btn')).not.toBeInTheDocument();
+  });
+
   it('handles attach clicks, empty file selections, and removable files', async () => {
     const { rerender } = render(<ChatInput {...defaultProps} />);
     const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;

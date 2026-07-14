@@ -27,6 +27,13 @@
   color: var(--color-brand);
 }
 
+.niuu-chat-mention-pill-event-icon {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  color: var(--color-accent-cyan);
+}
+
 .niuu-chat-mention-pill-text {
   overflow: hidden;
   text-overflow: ellipsis;

@@ -502,13 +502,59 @@ class TestBroker:
 
         with patch.object(
             broker,
-            "_wait_for_workflow_trigger_consumers",
+            "_wait_for_event_consumers",
             new=AsyncMock(return_value=False),
         ):
             with pytest.raises(RuntimeError, match="workflow trigger consumers"):
                 await broker._publish_workflow_trigger()
 
         broker._mesh_adapter.publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_operator_event_uses_existing_mesh_publisher(self, tmp_path):
+        settings = SkuldSettings(
+            session={"id": "flock-session", "workspace_dir": str(tmp_path)},
+            mesh={"enabled": True, "peer_id": "skuld-flock"},
+        )
+        broker = Broker(settings=settings)
+        broker._mesh_adapter = MagicMock(peer_id="skuld-flock", publish=AsyncMock())
+
+        with patch.object(
+            broker,
+            "_wait_for_event_consumers",
+            new=AsyncMock(return_value=True),
+        ) as wait_for_consumers:
+            event_id = await broker.handle_publish_mesh_event(
+                "code.changed",
+                "Review commit abc123",
+                source="browser",
+                payload={"commit": "abc123"},
+                request_id="request-1",
+            )
+
+        wait_for_consumers.assert_awaited_once_with("code.changed", 20.0)
+        broker._mesh_adapter.publish.assert_awaited_once()
+        event, topic = broker._mesh_adapter.publish.await_args.args
+        assert topic == "code.changed"
+        assert event.correlation_id == event_id
+        assert event.root_correlation_id == "flock-session"
+        assert event.payload == {
+            "commit": "abc123",
+            "event_type": "code.changed",
+            "session_id": "flock-session",
+            "persona": "skuld",
+            "prompt": "Review commit abc123",
+            "task_description": "Review commit abc123",
+            "trigger_source": "browser",
+        }
+        assert broker._conversation_turns[-1].role == "user"
+        assert broker._conversation_turns[-1].content == "Review commit abc123"
+        assert broker._conversation_turns[-1].metadata == {
+            "event_type": "code.changed",
+            "routing": "mesh_event",
+            "session_id": "flock-session",
+            "root_correlation_id": "flock-session",
+        }
 
     @pytest.mark.asyncio
     async def test_shutdown_stops_transport(self, test_broker):
@@ -2109,6 +2155,37 @@ class TestDispatchBrowserMessage:
     async def test_dispatch_user_message_empty_ignored(self, test_broker):
         await test_broker._dispatch_browser_message({"content": ""})
         test_broker._transport.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_publish_event_injects_through_mesh(self, test_broker):
+        sender_ws = AsyncMock()
+        test_broker.handle_publish_mesh_event = AsyncMock(return_value="event-1")
+
+        await test_broker._dispatch_browser_message(
+            {
+                "type": "publish_event",
+                "eventType": "code.changed",
+                "content": "Review the latest change",
+                "payload": {"commit": "abc123"},
+                "request_id": "request-1",
+            },
+            sender_ws=sender_ws,
+        )
+
+        test_broker.handle_publish_mesh_event.assert_awaited_once_with(
+            "code.changed",
+            "Review the latest change",
+            source="browser",
+            payload={"commit": "abc123"},
+            request_id="request-1",
+        )
+        sender_ws.send_json.assert_awaited_once_with(
+            {
+                "type": "mesh_event_published",
+                "event_id": "event-1",
+                "event_type": "code.changed",
+            }
+        )
 
     @pytest.mark.asyncio
     async def test_dispatch_user_message_rejected_for_workflow_room_session(self, tmp_path):
@@ -5202,8 +5279,29 @@ class TestBrokerRoomBridge:
         payload = json.loads(register_ws.send_text.await_args.args[0])
         assert payload["type"] == "directed_message"
         assert payload["content"] == "Please investigate this"
+        assert payload["metadata"]["session_id"] == room_settings.session.id
+        assert payload["metadata"]["root_correlation_id"] == room_settings.session.id
+        assert b._conversation_turns[-1].metadata["session_id"] == room_settings.session.id
         transport.start.assert_not_awaited()
         transport.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_directed_room_message_preserves_explicit_routing_context(self, room_settings):
+        b = Broker(settings=room_settings)
+        b._transport = AsyncMock()
+        assert b._room_bridge is not None
+        register_ws = AsyncMock()
+        await b._room_bridge.register("peer-1", "coder", register_ws, display_name="Coder")
+
+        await b.handle_directed_room_message(
+            "peer-1",
+            "Continue the existing workflow",
+            metadata={"session_id": "workflow-session", "root_correlation_id": "workflow-root"},
+        )
+
+        payload = json.loads(register_ws.send_text.await_args.args[0])
+        assert payload["metadata"]["session_id"] == "workflow-session"
+        assert payload["metadata"]["root_correlation_id"] == "workflow-root"
 
     @pytest.mark.asyncio
     async def test_directed_room_message_does_not_double_prefix(self, room_settings):

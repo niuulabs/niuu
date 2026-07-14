@@ -31,10 +31,12 @@ def _default_nats_kwargs(servers: list[str] | None = None) -> dict[str, Any]:
         "ensure_stream": True,
         "publish_timeout_s": 10.0,
         "tls_ca_file": "",
+        "tls_ca_pem": "",
         "tls_cert_file": "",
         "tls_key_file": "",
         "tls_hostname": "",
         "tls_handshake_first": False,
+        "tls_legacy_ca": False,
         "tls_insecure_skip_verify": False,
         "user": "",
         "password": "",
@@ -144,8 +146,10 @@ class TestResolveTransportKwargs:
                 "mesh.nats.servers": ["tls://nats-valhalla.nats.svc.cluster.local:4222"],
                 "mesh.nats.ensure_stream": False,
                 "mesh.nats.tls_ca_file": "/etc/nats/ca.crt",
+                "mesh.nats.tls_ca_pem": "certificate-pem",
                 "mesh.nats.tls_hostname": "nats-valhalla.nats.svc.cluster.local",
                 "mesh.nats.tls_handshake_first": True,
+                "mesh.nats.tls_legacy_ca": True,
                 "mesh.nats.tls_insecure_skip_verify": True,
                 "mesh.nats.user": "valkyrie-valhalla",
                 "mesh.nats.password_env": "VALKYRIE_NATS_PASSWORD",
@@ -165,8 +169,10 @@ class TestResolveTransportKwargs:
             **_default_nats_kwargs(["tls://nats-valhalla.nats.svc.cluster.local:4222"]),
             "ensure_stream": False,
             "tls_ca_file": "/etc/nats/ca.crt",
+            "tls_ca_pem": "certificate-pem",
             "tls_hostname": "nats-valhalla.nats.svc.cluster.local",
             "tls_handshake_first": True,
+            "tls_legacy_ca": True,
             "tls_insecure_skip_verify": True,
             "user": "valkyrie-valhalla",
             "password": "secret",
@@ -223,12 +229,19 @@ class TestBuildMesh:
 
         settings = _make_settings()
         settings.mesh.adapters = [{"role": "pub_sub", "transport": "nng"}]
+        settings.discovery.realm_id = "flock-a"
 
         captured: list = []
 
         def _fake_build_mesh(
-            adapters, own_peer_id, rpc_timeout_s, discovery, sleipnir_transport_builder
+            adapters,
+            own_peer_id,
+            rpc_timeout_s,
+            discovery,
+            sleipnir_transport_builder,
+            environment_id,
         ):
+            assert environment_id == "flock-a"
             captured.append(sleipnir_transport_builder)
             return MagicMock()
 
@@ -252,7 +265,12 @@ class TestBuildMesh:
         captured: list = []
 
         def _fake_build_mesh(
-            adapters, own_peer_id, rpc_timeout_s, discovery, sleipnir_transport_builder
+            adapters,
+            own_peer_id,
+            rpc_timeout_s,
+            discovery,
+            sleipnir_transport_builder,
+            environment_id,
         ):
             captured.append(sleipnir_transport_builder)
             return MagicMock()

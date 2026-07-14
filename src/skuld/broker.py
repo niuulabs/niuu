@@ -482,6 +482,10 @@ class Broker(
                     parts=t.get("parts", []),
                     created_at=t.get("created_at", ""),
                     metadata=t.get("metadata", {}),
+                    participant_id=t.get("participant_id"),
+                    participant_meta=t.get("participant_meta"),
+                    thread_id=t.get("thread_id"),
+                    visibility=t.get("visibility", "public"),
                 )
                 for t in turns
             ]
@@ -624,17 +628,45 @@ class Broker(
         Uses niuu.mesh functions to build transport and discovery, then wraps
         them in a MeshParticipant for unified lifecycle management (NIU-634).
         """
-        from niuu.mesh import build_in_process_mesh, resolve_peer_id
+        from niuu.mesh import (
+            build_in_process_mesh,
+            build_mesh_from_adapters_list,
+            resolve_peer_id,
+        )
         from niuu.mesh.participant import MeshParticipant
-        from niuu.mesh.transport_builder import build_nng_transport
+        from niuu.mesh.transport_builder import (
+            build_nng_transport,
+            build_transport,
+            resolve_transport_kwargs,
+        )
         from skuld.mesh_adapter import SkuldMeshAdapter
 
         mesh_cfg = self._settings.mesh
         own_peer_id = resolve_peer_id(mesh_cfg.peer_id)
 
-        # Build mesh transport (nng preferred, in-process fallback)
+        def _sleipnir_transport(entry: dict[str, Any]) -> Any:
+            transport_name = str(entry.get("transport") or mesh_cfg.transport or "nng")
+            kwargs = resolve_transport_kwargs(
+                self._settings,
+                transport_name,
+                service_prefix="skuld",
+            )
+            if transport_name in ("sleipnir", "rabbitmq") and not kwargs:
+                return None
+            return build_transport(transport_name, **kwargs)
+
+        # New configs select transport and discovery independently. Legacy
+        # configs keep adapters as discovery entries and use local NNG.
         mesh = None
-        if mesh_cfg.transport != "in_process":
+        if mesh_cfg.discovery_adapters and mesh_cfg.adapters:
+            mesh = build_mesh_from_adapters_list(
+                adapters=list(mesh_cfg.adapters),
+                own_peer_id=own_peer_id,
+                rpc_timeout_s=mesh_cfg.rpc_timeout_s,
+                sleipnir_transport_builder=_sleipnir_transport,
+                environment_id=mesh_cfg.realm_id,
+            )
+        elif mesh_cfg.transport != "in_process":
             try:
                 from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter  # noqa: PLC0415
 
@@ -656,26 +688,62 @@ class Broker(
                         subscriber=nng,
                         own_peer_id=own_peer_id,
                         rpc_timeout_s=mesh_cfg.rpc_timeout_s,
+                        environment_id=mesh_cfg.realm_id,
                     )
             except ImportError:
                 logger.warning("mesh: nng transport not available, falling back to in-process")
 
         if mesh is None:
-            mesh = build_in_process_mesh(own_peer_id, mesh_cfg.rpc_timeout_s)
+            mesh = build_in_process_mesh(
+                own_peer_id,
+                mesh_cfg.rpc_timeout_s,
+                environment_id=mesh_cfg.realm_id,
+            )
 
         # Build discovery adapter using shared niuu.mesh.discovery_builder
         own_identity = MeshIdentity(
             peer_id=mesh_cfg.peer_id or self.session_id or "skuld",
-            realm_id="",
+            realm_id=mesh_cfg.realm_id,
             persona=mesh_cfg.persona,
             capabilities=list(mesh_cfg.capabilities),
             permission_mode="full_access",
             version="0.1.0",
         )
         discovery = build_discovery_adapters(
-            adapters_config=mesh_cfg.adapters,
+            adapters_config=list(mesh_cfg.discovery_adapters or mesh_cfg.adapters),
             own_identity=own_identity,
+            sleipnir_transport_builder=_sleipnir_transport,
         )
+
+        if self._room_bridge is not None and discovery is not None:
+            loop = asyncio.get_running_loop()
+
+            async def _register_discovered_peer(peer: Any) -> None:
+                await self._room_bridge.register_mesh_peer(
+                    peer_id=peer.peer_id,
+                    persona=peer.persona,
+                    display_name=peer.persona,
+                    subscribes_to=list(getattr(peer, "consumes_event_types", [])),
+                    emits=list(getattr(peer, "emits_event_types", [])),
+                    tools=list(getattr(peer, "capabilities", [])),
+                    environment_id=getattr(peer, "realm_id", "") or mesh_cfg.realm_id,
+                    participant_kind="mesh",
+                    heartbeat_ttl_s=0.0,
+                )
+
+            def _on_join(peer: Any) -> None:
+                loop.create_task(
+                    _register_discovered_peer(peer),
+                    name=f"skuld-room-peer-join-{peer.peer_id}",
+                )
+
+            def _on_leave(peer: Any) -> None:
+                loop.create_task(
+                    self._room_bridge.unregister(peer.peer_id),
+                    name=f"skuld-room-peer-leave-{peer.peer_id}",
+                )
+
+            await discovery.watch(_on_join, _on_leave)
 
         participant = MeshParticipant(
             mesh=mesh,
@@ -714,16 +782,7 @@ class Broker(
             has_peers = discovery is not None and hasattr(discovery, "peers")
             if self._room_bridge is not None and has_peers:
                 for peer in discovery.peers().values():
-                    await self._room_bridge.register_mesh_peer(
-                        peer_id=peer.peer_id,
-                        persona=peer.persona,
-                        display_name=peer.persona,
-                        subscribes_to=list(getattr(peer, "consumes_event_types", [])),
-                        emits=list(getattr(peer, "emits_event_types", [])),
-                        tools=list(getattr(peer, "capabilities", [])),
-                        participant_kind="mesh",
-                        heartbeat_ttl_s=0.0,
-                    )
+                    await _register_discovered_peer(peer)
 
             # Start room mesh bridge so outcomes from any mesh peer flow to the
             # room UI via Sleipnir — eliminates the dual-publish pattern.
@@ -746,6 +805,7 @@ class Broker(
                         subscriber=sleipnir_subscriber,
                         room_bridge=self._room_bridge,
                         session_id=self.session_id,
+                        environment_id=mesh_cfg.realm_id,
                         report_usage=self._report_usage,
                     )
                     await self._room_mesh_bridge.start()
@@ -835,20 +895,20 @@ class Broker(
             return True
         return bool(self._room_bridge.is_connected(peer_id))
 
-    async def _wait_for_workflow_trigger_consumers(
+    async def _wait_for_event_consumers(
         self,
         event_type: str,
         timeout_s: float,
         *,
         poll_interval_s: float = 0.05,
+        settle_s: float = 0.0,
     ) -> bool:
-        """Wait until the initial workflow-trigger consumers are connected.
+        """Wait until subscribers for an event are connected.
 
-        Workflow kickoff events are pub/sub outcomes. If we publish them before
-        the first consumer peer finishes its WebSocket registration, the event
-        can be dropped and the flock stalls indefinitely. We treat the trigger
-        subscribers as required startup dependencies and wait briefly for them
-        to connect before dispatching the initial event.
+        Events are pub/sub outcomes. If we publish them before the first
+        consumer peer finishes its registration, the event can be dropped.
+        Initial workflow dispatches can request an additional startup settle;
+        interactive events publish as soon as consumers are ready.
         """
         required_peers = self._workflow_trigger_consumer_peer_ids(event_type)
         if not required_peers or self._room_bridge is None:
@@ -883,10 +943,8 @@ class Broker(
             )
             return False
 
-        # Static mesh discovery can register a peer before the daemon has
-        # finished wiring its topic subscriptions. Give the participant
-        # processes a real startup beat before the first pub/sub event.
-        await asyncio.sleep(max(poll_interval_s, 5.0))
+        if settle_s > 0:
+            await asyncio.sleep(settle_s)
         logger.info(
             "Workflow trigger consumers ready event_type=%s peers=%s",
             event_type,
@@ -899,17 +957,16 @@ class Broker(
         if self._mesh_adapter is None or not self._has_workflow_trigger():
             return
 
-        from ravn.domain.events import RavnEvent, RavnEventType
-
         cfg = self._settings.workflow_trigger
         # Workflow kickoff is a required dependency for flock-backed workflows.
         # Large flocks can take several seconds to finish peer startup, so we
         # give them a more realistic readiness window and fail closed rather
         # than silently dropping the first workflow event.
         wait_timeout_s = max(float(cfg.startup_delay_s or 0.0), 20.0)
-        consumers_ready = await self._wait_for_workflow_trigger_consumers(
+        consumers_ready = await self._wait_for_event_consumers(
             cfg.event_type,
             wait_timeout_s,
+            settle_s=5.0,
         )
         if not consumers_ready:
             raise RuntimeError(f"workflow trigger consumers for {cfg.event_type} did not connect")
@@ -921,31 +978,104 @@ class Broker(
                 delay_s,
             )
             await asyncio.sleep(delay_s)
-        event = RavnEvent(
-            type=RavnEventType.OUTCOME,
-            source=f"skuld:{self._mesh_adapter.peer_id}",
-            payload={
-                "event_type": cfg.event_type,
-                "session_id": self.session_id,
-                "persona": "skuld",
+        await self._publish_mesh_event(
+            cfg.event_type,
+            self._settings.session.initial_prompt,
+            source=cfg.source,
+            correlation_id=self.session_id,
+            extra_payload={
                 "summary": f"Workflow dispatch: {cfg.label or cfg.event_type}",
-                "task_description": self._settings.session.initial_prompt,
-                "trigger_source": cfg.source,
                 "workflow_trigger_label": cfg.label,
                 "workflow_trigger_node_id": cfg.node_id,
                 "workspace_path": self.workspace_dir,
             },
-            timestamp=datetime.now(UTC),
-            urgency=0.8,
-            correlation_id=self.session_id,
-            session_id=self.session_id,
-            root_correlation_id=self.session_id,
         )
-        await self._mesh_adapter.publish(event, cfg.event_type)
         logger.info(
             "Workflow trigger dispatched onto mesh event_type=%s node_id=%s",
             cfg.event_type,
             cfg.node_id,
+        )
+
+    async def _publish_mesh_event(
+        self,
+        event_type: str,
+        task_description: str,
+        *,
+        source: str,
+        correlation_id: str = "",
+        extra_payload: dict[str, Any] | None = None,
+    ) -> str:
+        """Publish one task event through Skuld's configured mesh adapter."""
+        from ravn.domain.events import RavnEvent, RavnEventType
+
+        if self._mesh_adapter is None:
+            raise RuntimeError("Flock mesh is not available")
+        event_id = correlation_id or str(uuid.uuid4())
+        payload = {
+            **(extra_payload or {}),
+            "event_type": event_type,
+            "session_id": self.session_id,
+            "persona": "skuld",
+            "prompt": task_description,
+            "task_description": task_description,
+            "trigger_source": source,
+        }
+        event = RavnEvent(
+            type=RavnEventType.OUTCOME,
+            source=f"skuld:{self._mesh_adapter.peer_id}",
+            payload=payload,
+            timestamp=datetime.now(UTC),
+            urgency=0.8,
+            correlation_id=event_id,
+            session_id=self.session_id,
+            task_id=None if correlation_id else event_id,
+            root_correlation_id=self.session_id,
+        )
+        await self._mesh_adapter.publish(event, event_type)
+        return event_id
+
+    async def handle_publish_mesh_event(
+        self,
+        event_type: str,
+        task_description: str,
+        *,
+        source: str = "external",
+        payload: dict[str, Any] | None = None,
+        request_id: str | None = None,
+    ) -> str:
+        """Inject an operator event into the current flock through Skuld."""
+        event_type = event_type.strip()
+        task_description = task_description.strip()
+        if not event_type:
+            raise ValueError("Event type is required")
+        if not task_description:
+            raise ValueError("Event task description is required")
+        if self._mesh_adapter is None:
+            raise RuntimeError("Flock mesh is not available")
+        consumers_ready = await self._wait_for_event_consumers(
+            event_type,
+            20.0,
+        )
+        if not consumers_ready:
+            raise RuntimeError(f"mesh event consumers for {event_type} did not connect")
+        routing_metadata = {
+            "event_type": event_type,
+            "routing": "mesh_event",
+            "session_id": self.session_id,
+            "root_correlation_id": self.session_id,
+        }
+        await self.handle_human_room_message(
+            task_description,
+            source=source,
+            request_id=request_id,
+            metadata=routing_metadata,
+            deliver_to_transport=False,
+        )
+        return await self._publish_mesh_event(
+            event_type,
+            task_description,
+            source=source,
+            extra_payload=payload,
         )
 
     async def _run_workflow_trigger_task(self) -> None:
@@ -2828,6 +2958,35 @@ class Broker(
                         {"type": "room_prompt_resent", "message_id": message_id},
                     )
 
+            case "publish_event":
+                try:
+                    event_id = await self.handle_publish_mesh_event(
+                        str(data.get("eventType") or data.get("event_type") or ""),
+                        str(data.get("content") or data.get("prompt") or ""),
+                        source="browser",
+                        payload=data.get("payload")
+                        if isinstance(data.get("payload"), dict)
+                        else None,
+                        request_id=self._extract_request_id(data),
+                    )
+                except (ValueError, RuntimeError) as exc:
+                    if sender_ws:
+                        await self._send_broker_frame_to(
+                            sender_ws, {"type": "error", "content": str(exc)}
+                        )
+                    return
+                if sender_ws:
+                    await self._send_broker_frame_to(
+                        sender_ws,
+                        {
+                            "type": "mesh_event_published",
+                            "event_id": event_id,
+                            "event_type": str(
+                                data.get("eventType") or data.get("event_type") or ""
+                            ),
+                        },
+                    )
+
             # Default: treat as user message (backward compat with {"content": "..."})
             case _:
                 message = data.get("content", "")
@@ -3532,6 +3691,10 @@ class Broker(
         participant = self._room_bridge.participants.get(target_peer_id)
         display_target = participant.persona if participant else target_peer_id
         target_prefix = f"@{display_target}"
+        routing_metadata = dict(metadata or {})
+        if self.session_id:
+            routing_metadata.setdefault("session_id", self.session_id)
+            routing_metadata.setdefault("root_correlation_id", self.session_id)
         rendered_content = (
             content if content.lstrip().startswith(target_prefix) else f"{target_prefix} {content}"
         )
@@ -3539,16 +3702,46 @@ class Broker(
             rendered_content,
             source=source,
             request_id=request_id,
-            metadata=metadata,
-            participant_id=_non_empty_str(metadata.get("participant_id")) if metadata else None,
+            metadata=routing_metadata,
+            participant_id=_non_empty_str(routing_metadata.get("participant_id")),
             deliver_to_transport=False,
         )
 
         delivered = await self._room_bridge.route_directed_message(
             target_peer_id,
             content,
-            metadata=metadata,
+            metadata=routing_metadata,
         )
+        if (
+            not delivered
+            and participant is not None
+            and participant.participant_kind == "mesh"
+            and self._mesh_adapter is not None
+        ):
+            try:
+                response = await self._mesh_adapter.request_work(
+                    target_peer_id,
+                    content,
+                    request_id=request_id or msg_id,
+                )
+                status = str(response.get("status") or "error")
+                output = str(response.get("output") or response.get("error") or status)
+                await self._room_bridge.handle_ravn_frame(
+                    target_peer_id,
+                    {
+                        "type": "response" if status == "complete" else "error",
+                        "data": output,
+                        "metadata": routing_metadata,
+                    },
+                )
+                delivered = True
+            except Exception as exc:
+                logger.warning(
+                    "Mesh-directed room message failed target=%s: %s",
+                    target_peer_id,
+                    exc,
+                    exc_info=True,
+                )
         if not delivered:
             raise LookupError(f"Unknown room participant: {target_peer_id}")
         return msg_id

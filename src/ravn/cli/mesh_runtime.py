@@ -41,6 +41,7 @@ def _build_mesh(settings: Settings, discovery: Any = None) -> Any:
             rpc_timeout_s=mesh_cfg.rpc_timeout_s,
             discovery=discovery,
             sleipnir_transport_builder=_sleipnir_tb,
+            environment_id=settings.discovery.realm_id,
         )
 
     # Legacy single-adapter mode for backward compatibility
@@ -65,6 +66,7 @@ def _build_mesh(settings: Settings, discovery: Any = None) -> Any:
         own_peer_id=own_peer_id,
         discovery=discovery,
         rpc_timeout_s=mesh_cfg.rpc_timeout_s,
+        environment_id=settings.discovery.realm_id,
     )
 
 
@@ -73,83 +75,9 @@ def _resolve_transport_kwargs(
     adapter: str,
 ) -> dict[str, Any]:
     """Build constructor kwargs for a Sleipnir transport from settings."""
-    if adapter == "nng":
-        from niuu.mesh.cluster import read_cluster_pub_addresses  # noqa: PLC0415
+    from niuu.mesh.transport_builder import resolve_transport_kwargs  # noqa: PLC0415
 
-        nng_cfg = settings.mesh.nng
-        adapters_config = list(getattr(getattr(settings, "discovery", None), "adapters", []))
-        peer_addresses = read_cluster_pub_addresses(adapters_config)
-        return {
-            "address": nng_cfg.pub_sub_address,
-            "service_id": f"ravn:{settings.mesh.own_peer_id}",
-            "peer_addresses": peer_addresses or None,
-        }
-
-    if adapter in ("sleipnir", "rabbitmq"):
-        amqp_url = os.environ.get(settings.sleipnir.amqp_url_env, "")
-        if not amqp_url:
-            logger.warning(
-                "mesh: %s not set, rabbitmq transport unavailable",
-                settings.sleipnir.amqp_url_env,
-            )
-            return {}
-        return {"amqp_url": amqp_url}
-
-    if adapter == "nats":
-        nats_cfg = settings.mesh.nats
-        servers = list(nats_cfg.servers)
-        kwargs: dict[str, Any] = {
-            "servers": servers or ["nats://localhost:4222"],
-            "stream_name": nats_cfg.stream_name,
-            "jetstream_domain": nats_cfg.jetstream_domain,
-            "subject_prefix": nats_cfg.subject_prefix,
-            "retention": nats_cfg.retention,
-            "max_age_seconds": nats_cfg.max_age_seconds,
-            "max_bytes": nats_cfg.max_bytes,
-            "ring_buffer_depth": nats_cfg.ring_buffer_depth,
-            "connect_timeout_s": nats_cfg.connect_timeout_s,
-            "max_reconnect_attempts": nats_cfg.max_reconnect_attempts,
-            "ensure_stream": nats_cfg.ensure_stream,
-            "publish_timeout_s": nats_cfg.publish_timeout_s,
-            "tls_ca_file": nats_cfg.tls_ca_file,
-            "tls_cert_file": nats_cfg.tls_cert_file,
-            "tls_key_file": nats_cfg.tls_key_file,
-            "tls_hostname": nats_cfg.tls_hostname,
-            "tls_handshake_first": nats_cfg.tls_handshake_first,
-            "tls_insecure_skip_verify": nats_cfg.tls_insecure_skip_verify,
-            "user": os.environ.get(nats_cfg.user_env, nats_cfg.user)
-            if nats_cfg.user_env
-            else nats_cfg.user,
-            "password": os.environ.get(nats_cfg.password_env, "") if nats_cfg.password_env else "",
-            "token": os.environ.get(nats_cfg.token_env, "") if nats_cfg.token_env else "",
-            "nkeys_seed_file": nats_cfg.nkeys_seed_file,
-            "nkeys_seed": os.environ.get(nats_cfg.nkeys_seed_env, "")
-            if nats_cfg.nkeys_seed_env
-            else "",
-            "extra_subscriptions": [
-                {
-                    "subject": entry.subject,
-                    "stream_name": entry.stream_name,
-                    "event_types": list(entry.event_types),
-                }
-                for entry in nats_cfg.extra_subscriptions
-                if entry.subject
-            ],
-            "core_subscriptions": [
-                {"subject": entry.subject} for entry in nats_cfg.core_subscriptions if entry.subject
-            ],
-        }
-        if nats_cfg.consumer_group:
-            kwargs["consumer_group"] = nats_cfg.consumer_group
-        if nats_cfg.replay_from_sequence is not None:
-            kwargs["replay_from_sequence"] = nats_cfg.replay_from_sequence
-        return kwargs
-
-    if adapter == "redis":
-        redis_url = os.environ.get(settings.mesh.redis_url_env, "redis://localhost:6379")
-        return {"redis_url": redis_url}
-
-    return {}
+    return resolve_transport_kwargs(settings, adapter, service_prefix="ravn")
 
 
 def _build_discovery(
@@ -169,7 +97,7 @@ def _build_discovery(
 
     peer_id = settings.mesh.own_peer_id or load_or_create_peer_id()
     realm_key = load_or_create_realm_key()
-    realm_id = realm_id_from_key(realm_key)
+    realm_id = settings.discovery.realm_id or realm_id_from_key(realm_key)
 
     try:
         version = importlib.metadata.version("ravn")
@@ -204,12 +132,19 @@ def _build_discovery(
     )
 
     from niuu.mesh.discovery_builder import build_discovery_adapters  # noqa: PLC0415
+    from niuu.mesh.transport_builder import build_transport  # noqa: PLC0415
+
+    def _event_bus_transport(entry: dict[str, Any]) -> Any:
+        transport_name = str(entry.get("transport") or "nats")
+        kwargs = _resolve_transport_kwargs(settings, transport_name)
+        return build_transport(transport_name, **kwargs) if kwargs else None
 
     return build_discovery_adapters(
         adapters_config=list(getattr(settings.discovery, "adapters", [])),
         own_identity=identity,
         heartbeat_interval_s=settings.discovery.heartbeat_interval_s,
         peer_ttl_s=settings.discovery.peer_ttl_s,
+        sleipnir_transport_builder=_event_bus_transport,
     )
 
 

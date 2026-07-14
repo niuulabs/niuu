@@ -1475,6 +1475,41 @@ page_path: council/demo/opinion-b.md
     expect(sendJson).toHaveBeenCalledWith({ type: 'set_internal_visibility', visible: true });
   });
 
+  it('publishes typed flock events without direct peer routing', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+    sendJson.mockClear();
+
+    act(() => {
+      result.current.publishEvent(
+        {
+          participant: {
+            peerId: 'hermes-1',
+            persona: 'reviewer',
+            participantType: 'ravn',
+          },
+          eventType: 'review.requested',
+        },
+        '@Hermes reviewer Review this change',
+      );
+    });
+
+    expect(sendJson).toHaveBeenCalledWith({
+      type: 'publish_event',
+      eventType: 'review.requested',
+      content: '@Hermes reviewer Review this change',
+      request_id: expect.any(String),
+    });
+    expect(sendJson).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'directed_message' }),
+    );
+    expect(result.current.messages.at(-1)).toMatchObject({
+      role: 'user',
+      content: '@Hermes reviewer Review this change',
+    });
+  });
+
   it('ignores unsuccessful room_outcome events', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 

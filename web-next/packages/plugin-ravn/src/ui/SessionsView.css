@@ -111,6 +111,21 @@
   padding: 12px 0 6px;
 }
 
+.rv-rs__flock + .rv-rs__flock {
+  border-top: 1px solid rgba(150, 160, 180, 0.18);
+}
+
+.rv-rs__flock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 14px 7px;
+  color: #8e96a6;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
 .rv-rs__group-head {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) auto;
@@ -451,6 +466,11 @@
 }
 
 .rv-rs__body--chat-only .rv-rs__chat {
+  border-right: 0;
+}
+
+.rv-rs__chat--flock {
+  flex: 1;
   border-right: 0;
 }
 

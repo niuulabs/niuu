@@ -1,5 +1,13 @@
 import { useMemo, useState } from 'react';
-import { PersonaAvatar, StateDot, cn, ErrorState, LoadingState } from '@niuulabs/ui';
+import {
+  Dialog,
+  DialogContent,
+  PersonaAvatar,
+  StateDot,
+  cn,
+  ErrorState,
+  LoadingState,
+} from '@niuulabs/ui';
 import type { BudgetState, PersonaRole } from '@niuulabs/domain';
 import type { Ravn } from '../domain/ravn';
 import { useRavens } from './hooks/useRavens';
@@ -8,7 +16,9 @@ import { useSessions } from './hooks/useSessions';
 import { groupRavens, ravnStatusToDotState, type GroupKey } from './grouping';
 import { RavnDetail } from './RavnDetail';
 import { ResidentDeployDialog } from './ResidentDeployDialog';
-import { Plus } from 'lucide-react';
+import { ResidentFlockDeployDialog } from './ResidentFlockDeployDialog';
+import { useDeleteResidentFlock } from './hooks/useResidentControl';
+import { Plus, Trash2, Users } from 'lucide-react';
 import { loadStorage, saveStorage } from './storage';
 import './RavensPage.css';
 
@@ -18,10 +28,11 @@ const GROUP_OPTIONS: Array<{ key: GroupKey; label: string }> = [
   { key: 'location', label: 'loc' },
   { key: 'persona', label: 'persona' },
   { key: 'state', label: 'state' },
+  { key: 'flock', label: 'mesh' },
   { key: 'none', label: 'flat' },
 ];
 
-const ROLE_LABELS: Partial<Record<PersonaRole, string>> = {
+const ROLE_LABELS: Record<PersonaRole, string> = {
   arbiter: 'arbiter',
   audit: 'auditor',
   autonomy: 'autonomous',
@@ -55,7 +66,8 @@ function formatBudgetText(budget?: BudgetState): string {
 }
 
 function subtitleForRavn(ravn: Ravn): string {
-  return ROLE_LABELS[ravn.role ?? 'build'] ?? ravn.role ?? 'raven';
+  if (ravn.kind === 'resident' && ravn.personaName) return normalizeLabel(ravn.personaName);
+  return ROLE_LABELS[ravn.role ?? 'build'];
 }
 
 function nameForRavn(ravn: Ravn): string {
@@ -81,6 +93,9 @@ function matchesQuery(ravn: Ravn, query: string): boolean {
     ravn.backend,
     ravn.engine,
     ravn.instanceName,
+    ravn.flockId,
+    ravn.flockRole,
+    ravn.flockPeerId,
   ];
 
   return fields.some((value) => value?.toLowerCase().includes(needle));
@@ -146,15 +161,35 @@ function RavnListRow({ ravn, budget, sessionCount, selected, onClick }: RavnList
 interface FleetGroupProps {
   label: string;
   count: number;
+  onDelete?: () => void;
 }
 
-function FleetGroupHeader({ label, count }: FleetGroupProps) {
+function FleetGroupHeader({ label, count, onDelete }: FleetGroupProps) {
   return (
     <div className="rv-group-header">
       <span className="rv-group-header__label">{label}</span>
-      <span className="rv-group-header__count">{count}</span>
+      <span className="rv-group-header__actions">
+        <span className="rv-group-header__count">{count}</span>
+        {onDelete && (
+          <button
+            type="button"
+            className="rv-group-header__delete"
+            onClick={onDelete}
+            aria-label={`Delete ${label}`}
+            title={`Delete ${label}`}
+            data-testid="flock-delete-open"
+          >
+            <Trash2 size={13} aria-hidden="true" />
+          </button>
+        )}
+      </span>
     </div>
   );
+}
+
+interface FlockDeleteTarget {
+  label: string;
+  ravens: Ravn[];
 }
 
 export function RavensPage() {
@@ -190,8 +225,11 @@ function RavensFleet({ ravens }: { ravens: Ravn[] }) {
     pickDefaultRavn(ravens),
   );
   const [deployOpen, setDeployOpen] = useState(false);
+  const [flockDeployOpen, setFlockDeployOpen] = useState(false);
+  const [flockDeleteTarget, setFlockDeleteTarget] = useState<FlockDeleteTarget | null>(null);
 
   const { data: sessions } = useSessions();
+  const deleteFlock = useDeleteResidentFlock();
 
   const ravnList = useMemo(() => ravens, [ravens]);
   const budgets = useRavnBudgets(ravnList.map((ravn) => ravn.id));
@@ -230,6 +268,16 @@ function RavensFleet({ ravens }: { ravens: Ravn[] }) {
 
   const activeCount = ravnList.filter((ravn) => ravn.status === 'active').length;
   const failedCount = ravnList.filter((ravn) => ravn.status === 'failed').length;
+
+  const removeFlock = async (target: FlockDeleteTarget) => {
+    try {
+      await deleteFlock.mutateAsync(target.ravens);
+    } catch {
+      return;
+    }
+    setFlockDeleteTarget(null);
+    setSelectedRavnId(null);
+  };
 
   return (
     <div data-testid="ravens-page" className="rv-ravens">
@@ -302,6 +350,15 @@ function RavensFleet({ ravens }: { ravens: Ravn[] }) {
                   <div className="rv-fleet__title-actions">
                     <button
                       type="button"
+                      onClick={() => setFlockDeployOpen(true)}
+                      className="rv-fleet__deploy"
+                      data-testid="flock-deploy-open"
+                    >
+                      <Users size={14} aria-hidden="true" />
+                      Mesh
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => setDeployOpen(true)}
                       className="rv-fleet__deploy"
                       data-testid="resident-deploy-open"
@@ -367,7 +424,23 @@ function RavensFleet({ ravens }: { ravens: Ravn[] }) {
                   groupedEntries.map(([groupLabel, groupRavns]) => (
                     <section key={groupLabel} className="rv-fleet__section">
                       {groupBy !== 'none' && (
-                        <FleetGroupHeader label={titleCase(groupLabel)} count={groupRavns.length} />
+                        <FleetGroupHeader
+                          label={titleCase(groupLabel)}
+                          count={groupRavns.length}
+                          onDelete={
+                            groupBy === 'flock' && groupRavns.every((ravn) => ravn.flockId)
+                              ? () => {
+                                  deleteFlock.reset();
+                                  setFlockDeleteTarget({
+                                    label: titleCase(groupLabel),
+                                    ravens: ravnList.filter(
+                                      (ravn) => ravn.flockId === groupRavns[0]!.flockId,
+                                    ),
+                                  });
+                                }
+                              : undefined
+                          }
+                        />
                       )}
 
                       <div className="rv-fleet__rows">
@@ -411,6 +484,54 @@ function RavensFleet({ ravens }: { ravens: Ravn[] }) {
         onOpenChange={setDeployOpen}
         onDeployed={(ravn) => setSelectedRavnId(ravnKey(ravn))}
       />
+      <ResidentFlockDeployDialog
+        open={flockDeployOpen}
+        onOpenChange={setFlockDeployOpen}
+        onDeployed={(deployed) => {
+          const coordinator = deployed.find((ravn) => ravn.flockRole === 'coordinator');
+          setSelectedRavnId(ravnKey(coordinator ?? deployed[0]!));
+          setGroupBy('flock');
+          saveStorage(GROUP_STORAGE_KEY, 'flock');
+        }}
+      />
+      {flockDeleteTarget && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open && !deleteFlock.isPending) setFlockDeleteTarget(null);
+          }}
+        >
+          <DialogContent
+            title="Delete mesh"
+            description={`This removes all ${flockDeleteTarget.ravens.length} residents in ${flockDeleteTarget.label} and their backend resources.`}
+          >
+            {deleteFlock.isError && (
+              <div className="rv-form-error" role="alert">
+                {deleteFlock.error.message}
+              </div>
+            )}
+            <div className="rv-form-actions">
+              <button
+                type="button"
+                className="rv-action-btn"
+                onClick={() => setFlockDeleteTarget(null)}
+                disabled={deleteFlock.isPending}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="rv-action-btn rv-action-btn--danger"
+                onClick={() => void removeFlock(flockDeleteTarget)}
+                disabled={deleteFlock.isPending}
+                data-testid="flock-delete-confirm"
+              >
+                {deleteFlock.isPending ? 'Deleting…' : 'Delete mesh'}
+              </button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }

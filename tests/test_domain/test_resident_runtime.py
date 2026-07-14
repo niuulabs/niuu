@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from uuid import UUID
+import asyncio
+from unittest.mock import AsyncMock
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -24,11 +26,13 @@ from volundr.domain.models import (
     ResidentLogPage,
     ResidentObservedState,
     ResidentRuntime,
+    ResidentSession,
 )
 from volundr.domain.ports import (
     ResidentRuntimeLogReader,
     ResidentRuntimeObservation,
     ResidentRuntimeProxyTargetResolver,
+    ResidentSessionController,
 )
 from volundr.domain.services.resident_runtime import (
     ResidentProfileNotFoundError,
@@ -159,6 +163,64 @@ class ProxyResidentRuntimeController(
         )
 
 
+class MemoryResidentSessionController(ResidentSessionController):
+    engine = ResidentEngine.RAVN
+
+    def __init__(self) -> None:
+        self.sessions: dict[UUID, ResidentSession] = {}
+        self.actions: list[tuple] = []
+        self.connection = object()
+
+    async def list_sessions(self, runtime: ResidentRuntime) -> list[ResidentSession]:
+        self.actions.append(("list", runtime.id))
+        return list(self.sessions.values())
+
+    async def create_session(
+        self,
+        runtime: ResidentRuntime,
+        *,
+        title: str,
+        model: str,
+    ) -> ResidentSession:
+        self.actions.append(("create", runtime.id, title, model))
+        session = ResidentSession(
+            id=uuid4(),
+            resident_id=runtime.id,
+            title=title,
+            model=model,
+        )
+        self.sessions[session.id] = session
+        return session
+
+    async def delete_session(self, runtime: ResidentRuntime, session_id: UUID) -> None:
+        self.actions.append(("delete", runtime.id, session_id))
+        self.sessions.pop(session_id, None)
+
+    async def connect_chat(self, runtime: ResidentRuntime, session_id: UUID):
+        self.actions.append(("connect", runtime.id, session_id))
+        return self.connection
+
+
+class FailingResidentSessionController(MemoryResidentSessionController):
+    async def list_sessions(self, runtime: ResidentRuntime) -> list[ResidentSession]:
+        raise RuntimeError("list unavailable")
+
+    async def create_session(
+        self,
+        runtime: ResidentRuntime,
+        *,
+        title: str,
+        model: str,
+    ) -> ResidentSession:
+        raise RuntimeError("create unavailable")
+
+    async def delete_session(self, runtime: ResidentRuntime, session_id: UUID) -> None:
+        raise RuntimeError("delete unavailable")
+
+    async def connect_chat(self, runtime: ResidentRuntime, session_id: UUID):
+        raise RuntimeError("chat unavailable")
+
+
 def _principal(
     user_id: str = "user-a",
     tenant_id: str = "tenant-a",
@@ -180,7 +242,11 @@ def _profiles() -> ConfigResidentDeploymentProfileProvider:
                 display_name="Ravn on OpenShell",
                 backend=ResidentBackend.OPENSHELL,
                 engine=ResidentEngine.RAVN,
-                capabilities=[ResidentCapability.CHAT, ResidentCapability.LOGS],
+                capabilities=[
+                    ResidentCapability.CHAT,
+                    ResidentCapability.LOGS,
+                    ResidentCapability.FLOCK,
+                ],
                 default_model="gpt-5.6",
                 allowed_models=["gpt-5.6"],
                 deployment={"image": "ghcr.io/niuulabs/niuu@sha256:real"},
@@ -192,6 +258,28 @@ def _profiles() -> ConfigResidentDeploymentProfileProvider:
                 backend=ResidentBackend.HELMRELEASE,
                 engine=ResidentEngine.RAVN,
             ),
+        ]
+    )
+
+
+def _session_profiles() -> ConfigResidentDeploymentProfileProvider:
+    return ConfigResidentDeploymentProfileProvider(
+        [
+            ResidentProfileConfig(
+                id="ravn-native",
+                display_name="Native Ravn",
+                backend=ResidentBackend.OPENSHELL,
+                engine=ResidentEngine.RAVN,
+                capabilities=[
+                    ResidentCapability.CHAT,
+                    ResidentCapability.SESSION_LIST,
+                    ResidentCapability.SESSION_CREATE,
+                    ResidentCapability.SESSION_DELETE,
+                ],
+                default_model="gpt-5.6",
+                allowed_models=["gpt-5.6", "gpt-5.6-sol"],
+                deployment={"image": "ghcr.io/niuulabs/niuu@sha256:real"},
+            )
         ]
     )
 
@@ -293,12 +381,18 @@ def runtime_service() -> tuple[ResidentRuntimeService, MemoryResidentRuntimeRepo
 
 async def test_create_record_derives_identity_and_runtime_from_profile(runtime_service) -> None:
     service, _ = runtime_service
+    flock_id = UUID("11111111-1111-1111-1111-111111111111")
+    member_id = UUID("22222222-2222-2222-2222-222222222222")
 
     runtime = await service.create_record(
         _principal(),
         name="Muninn",
         profile_id="ravn-openshell",
         persona_name="product-steward",
+        flock_id=flock_id,
+        flock_member_id=member_id,
+        flock_role="coordinator",
+        flock_peer_id="ravn-coordinator",
     )
 
     assert runtime.owner_id == "user-a"
@@ -306,7 +400,15 @@ async def test_create_record_derives_identity_and_runtime_from_profile(runtime_s
     assert runtime.backend is ResidentBackend.OPENSHELL
     assert runtime.engine is ResidentEngine.RAVN
     assert runtime.model == "gpt-5.6"
-    assert runtime.capabilities == [ResidentCapability.CHAT, ResidentCapability.LOGS]
+    assert runtime.capabilities == [
+        ResidentCapability.CHAT,
+        ResidentCapability.LOGS,
+        ResidentCapability.FLOCK,
+    ]
+    assert runtime.flock_id == flock_id
+    assert runtime.flock_member_id == member_id
+    assert runtime.flock_role == "coordinator"
+    assert runtime.flock_peer_id == "ravn-coordinator"
 
 
 async def test_create_deploys_and_persists_real_observation(runtime_service) -> None:
@@ -319,12 +421,17 @@ async def test_create_deploys_and_persists_real_observation(runtime_service) -> 
         persona_name="product-steward",
     )
 
-    assert runtime.observed_state is ResidentObservedState.ACTIVE
-    assert runtime.backend_ref["kind"] == "Sandbox"
-    assert repository.items[runtime.id] == runtime
+    assert runtime.observed_state is ResidentObservedState.DEPLOYING
+    assert runtime.backend_ref == {}
+
+    await asyncio.gather(*tuple(service._deployment_tasks.values()))
+
+    deployed = repository.items[runtime.id]
+    assert deployed.observed_state is ResidentObservedState.ACTIVE
+    assert deployed.backend_ref["kind"] == "Sandbox"
 
 
-async def test_create_rolls_back_record_and_backend_on_deployment_failure() -> None:
+async def test_create_retains_failed_record_when_background_deployment_fails() -> None:
     repository = MemoryResidentRuntimeRepository()
 
     class FailingController(MemoryResidentRuntimeController):
@@ -335,28 +442,86 @@ async def test_create_rolls_back_record_and_backend_on_deployment_failure() -> N
     controller = FailingController()
     service = ResidentRuntimeService(repository, _profiles(), [controller])
 
-    with pytest.raises(ResidentRuntimeDeploymentError, match="gateway unavailable"):
-        await service.create(
-            _principal(),
-            name="Muninn",
-            profile_id="ravn-openshell",
-        )
+    runtime = await service.create(
+        _principal(),
+        name="Muninn",
+        profile_id="ravn-openshell",
+    )
+    await asyncio.gather(*tuple(service._deployment_tasks.values()))
 
-    assert repository.items == {}
-    assert controller.actions == ["deploy", "delete"]
+    failed = repository.items[runtime.id]
+    assert failed.observed_state is ResidentObservedState.FAILED
+    assert failed.conditions[0].reason == "DeploymentFailed"
+    assert failed.conditions[0].message == "gateway unavailable"
+    assert controller.actions == ["deploy"]
+
+
+async def test_background_deployment_records_controller_loss() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    service = ResidentRuntimeService(
+        repository,
+        _profiles(),
+        [MemoryResidentRuntimeController()],
+    )
+
+    runtime = await service.create(
+        _principal(),
+        name="Muninn",
+        profile_id="ravn-openshell",
+    )
+    service._controllers.clear()
+    await asyncio.gather(*tuple(service._deployment_tasks.values()))
+
+    failed = repository.items[runtime.id]
+    assert failed.observed_state is ResidentObservedState.FAILED
+    assert failed.conditions[0].reason == "DeploymentFailed"
 
 
 async def test_reconcile_refreshes_capabilities_from_profile(runtime_service) -> None:
     service, repository = runtime_service
     runtime = await service.create_record(_principal(), name="Muninn", profile_id="ravn-openshell")
     repository.items[runtime.id] = runtime.model_copy(
-        update={"capabilities": [ResidentCapability.CHAT, ResidentCapability.METRICS]}
+        update={
+            "observed_state": ResidentObservedState.ACTIVE,
+            "backend_ref": {"kind": "Sandbox", "name": str(runtime.id)},
+            "capabilities": [ResidentCapability.CHAT, ResidentCapability.METRICS],
+        }
     )
 
     reconciled = await service.reconcile(runtime.id)
 
-    assert reconciled.capabilities == [ResidentCapability.CHAT, ResidentCapability.LOGS]
+    assert reconciled.capabilities == [
+        ResidentCapability.CHAT,
+        ResidentCapability.LOGS,
+        ResidentCapability.FLOCK,
+    ]
     assert repository.items[runtime.id] == reconciled
+
+
+async def test_reconcile_resumes_unfinished_background_deployment(runtime_service) -> None:
+    service, repository = runtime_service
+    runtime = await service.create_record(_principal(), name="Muninn", profile_id="ravn-openshell")
+
+    reconciled = await service.reconcile(runtime.id)
+
+    assert reconciled == runtime
+    await asyncio.gather(*tuple(service._deployment_tasks.values()))
+    assert repository.items[runtime.id].observed_state is ResidentObservedState.ACTIVE
+
+
+async def test_reconcile_all_records_unavailable_controller_and_continues() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    service = ResidentRuntimeService(repository, _profiles())
+    runtime = await service.create_record(
+        _principal(),
+        name="Muninn",
+        profile_id="ravn-openshell",
+    )
+
+    await service.reconcile_all()
+
+    failed = repository.items[runtime.id]
+    assert failed.conditions[0].reason == "ReconcileFailed"
 
 
 async def test_create_record_rejects_unavailable_profile_and_model(runtime_service) -> None:
@@ -370,6 +535,20 @@ async def test_create_record_rejects_unavailable_profile_and_model(runtime_servi
             name="Muninn",
             profile_id="ravn-openshell",
             model="not-allowed",
+        )
+    with pytest.raises(ResidentRuntimeValidationError, match="require flock_id"):
+        await service.create_record(
+            _principal(),
+            name="Partial flock",
+            profile_id="ravn-openshell",
+            flock_peer_id="partial",
+        )
+    with pytest.raises(ResidentRuntimeValidationError, match="requires member id"):
+        await service.create_record(
+            _principal(),
+            name="Missing member",
+            profile_id="ravn-openshell",
+            flock_id=UUID("33333333-3333-3333-3333-333333333333"),
         )
 
 
@@ -464,12 +643,91 @@ async def test_lifecycle_observation_and_delete_use_one_record(runtime_service) 
     assert runtime.id not in repository.items
 
 
+async def test_delete_record_removes_resident_trace_spans() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    spans = AsyncMock()
+    events = AsyncMock()
+    service = ResidentRuntimeService(
+        repository,
+        _profiles(),
+        span_repository=spans,
+        event_repository=events,
+    )
+    principal = _principal()
+    runtime = await service.create_record(principal, name="Muninn", profile_id="ravn-openshell")
+
+    assert await service.delete_record(principal, runtime.id)
+
+    spans.delete_by_session.assert_awaited_once_with(runtime.id)
+    events.delete_by_session.assert_awaited_once_with(runtime.id)
+
+
+async def test_delete_removes_resident_trace_spans_after_backend_cleanup() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    controller = MemoryResidentRuntimeController()
+    spans = AsyncMock()
+    events = AsyncMock()
+    service = ResidentRuntimeService(
+        repository,
+        _profiles(),
+        [controller],
+        span_repository=spans,
+        event_repository=events,
+    )
+    principal = _principal()
+    runtime = await service.create_record(principal, name="Muninn", profile_id="ravn-openshell")
+
+    assert await service.delete(principal, runtime.id)
+
+    assert controller.actions == ["delete"]
+    spans.delete_by_session.assert_awaited_once_with(runtime.id)
+    events.delete_by_session.assert_awaited_once_with(runtime.id)
+
+
+async def test_delete_waits_for_in_flight_deployment_before_cleanup() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    deployment_started = asyncio.Event()
+    finish_deployment = asyncio.Event()
+
+    class BlockingController(MemoryResidentRuntimeController):
+        async def deploy(self, runtime, profile):
+            self.actions.append("deploy")
+            deployment_started.set()
+            await finish_deployment.wait()
+            return self._observation(runtime)
+
+    controller = BlockingController()
+    service = ResidentRuntimeService(repository, _profiles(), [controller])
+    principal = _principal()
+    runtime = await service.create(
+        principal,
+        name="Muninn",
+        profile_id="ravn-openshell",
+    )
+    await deployment_started.wait()
+
+    deletion = asyncio.create_task(service.delete(principal, runtime.id))
+    await asyncio.sleep(0)
+    assert not deletion.done()
+
+    finish_deployment.set()
+    assert await deletion
+    assert controller.actions == ["deploy", "delete"]
+    assert runtime.id not in repository.items
+
+
 async def test_reconcile_converges_through_runtime_profile(runtime_service) -> None:
     service, repository = runtime_service
     runtime = await service.create_record(
         _principal(),
         name="Muninn",
         profile_id="ravn-openshell",
+    )
+    repository.items[runtime.id] = runtime.model_copy(
+        update={
+            "observed_state": ResidentObservedState.ACTIVE,
+            "backend_ref": {"kind": "Sandbox", "name": str(runtime.id)},
+        }
     )
 
     reconciled = await service.reconcile(runtime.id)
@@ -600,3 +858,395 @@ async def test_usage_is_atomically_recorded_on_resident() -> None:
     assert updated.tokens_used == 123
     assert float(updated.cost) == pytest.approx(0.42)
     assert updated.message_count == 1
+
+
+async def test_native_session_api_round_trip_uses_engine_controller() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    sessions = MemoryResidentSessionController()
+    service = ResidentRuntimeService(
+        repository,
+        _session_profiles(),
+        [MemoryResidentRuntimeController()],
+        [sessions],
+    )
+    assert [profile.id for profile in service.list_profiles()] == ["ravn-native"]
+    principal = _principal()
+    runtime = await service.create_record(
+        principal,
+        name="Muninn",
+        profile_id="ravn-native",
+    )
+
+    created = await service.create_session(
+        principal,
+        runtime.id,
+        title="Persistent work",
+    )
+    listed = await service.list_sessions(principal, runtime.id)
+    connection = await service.connect_chat(principal, runtime.id, created.id)
+    await service.delete_session(principal, runtime.id, created.id)
+
+    assert created.model == "gpt-5.6"
+    assert listed == [created]
+    assert connection is sessions.connection
+    assert sessions.sessions == {}
+    assert sessions.actions == [
+        ("create", runtime.id, "Persistent work", "gpt-5.6"),
+        ("list", runtime.id),
+        ("connect", runtime.id, created.id),
+        ("delete", runtime.id, created.id),
+    ]
+
+
+async def test_native_session_api_maps_engine_failures() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    service = ResidentRuntimeService(
+        repository,
+        _session_profiles(),
+        [MemoryResidentRuntimeController()],
+        [FailingResidentSessionController()],
+    )
+    principal = _principal()
+    runtime = await service.create_record(
+        principal,
+        name="Muninn",
+        profile_id="ravn-native",
+    )
+    session_id = uuid4()
+
+    with pytest.raises(ResidentRuntimeDeploymentError, match="Failed to list sessions"):
+        await service.list_sessions(principal, runtime.id)
+    with pytest.raises(ResidentRuntimeDeploymentError, match="Failed to create a session"):
+        await service.create_session(
+            principal,
+            runtime.id,
+            title="Persistent work",
+        )
+    with pytest.raises(ResidentRuntimeDeploymentError, match="Failed to delete session"):
+        await service.delete_session(principal, runtime.id, session_id)
+    with pytest.raises(ResidentRuntimeDeploymentError, match="Failed to connect"):
+        await service.connect_chat(principal, runtime.id, session_id)
+
+
+async def test_native_session_api_enforces_profile_contract() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    sessions = MemoryResidentSessionController()
+    service = ResidentRuntimeService(
+        repository,
+        _session_profiles(),
+        [MemoryResidentRuntimeController()],
+        [sessions],
+    )
+    principal = _principal()
+    runtime = await service.create_record(
+        principal,
+        name="Muninn",
+        profile_id="ravn-native",
+    )
+
+    with pytest.raises(ResidentRuntimeValidationError, match="not allowed"):
+        await service.create_session(
+            principal,
+            runtime.id,
+            title="Wrong model",
+            model="unknown",
+        )
+
+    without_delete = runtime.model_copy(
+        update={
+            "capabilities": [
+                capability
+                for capability in runtime.capabilities
+                if capability is not ResidentCapability.SESSION_DELETE
+            ]
+        }
+    )
+    await repository.update(without_delete)
+    with pytest.raises(ResidentRuntimeValidationError, match=r"session\.delete"):
+        await service.delete_session(principal, runtime.id, uuid4())
+
+    unavailable = ResidentRuntimeService(
+        repository,
+        _session_profiles(),
+        [MemoryResidentRuntimeController()],
+    )
+    assert unavailable.list_profiles() == []
+    with pytest.raises(ResidentProfileNotFoundError, match="not deployable"):
+        await unavailable.create(
+            principal,
+            name="Huginn",
+            profile_id="ravn-native",
+        )
+
+
+def test_duplicate_session_controllers_fail_at_composition_boundary() -> None:
+    with pytest.raises(ValueError, match="engines must be unique"):
+        ResidentRuntimeService(
+            MemoryResidentRuntimeRepository(),
+            _session_profiles(),
+            [MemoryResidentRuntimeController()],
+            [MemoryResidentSessionController(), MemoryResidentSessionController()],
+        )
+
+
+async def test_optional_resident_ports_fail_closed() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    service = ResidentRuntimeService(
+        repository,
+        _profiles(),
+        [MemoryResidentRuntimeController()],
+    )
+    principal = _principal()
+    runtime = await service.create_record(
+        principal,
+        name="Muninn",
+        profile_id="ravn-openshell",
+    )
+
+    assert await service.proxy_target(uuid4()) is None
+    assert await service.proxy_target(runtime.id) is None
+    with pytest.raises(ResidentRuntimeDeploymentError, match="does not implement logs"):
+        await service.logs(principal, runtime.id, lines=10)
+    with pytest.raises(ResidentRuntimeValidationError, match="does not report usage"):
+        await service.record_usage(
+            principal,
+            runtime.id,
+            tokens=1,
+            cost=0,
+            message_count=1,
+        )
+
+
+async def test_lifecycle_backend_failures_preserve_durable_failure_state() -> None:
+    class FailingLifecycleController(MemoryResidentRuntimeController):
+        async def restart(self, runtime, profile):
+            raise RuntimeError("restart unavailable")
+
+        async def suspend(self, runtime):
+            raise RuntimeError("suspend unavailable")
+
+        async def delete(self, runtime):
+            raise RuntimeError("delete unavailable")
+
+    repository = MemoryResidentRuntimeRepository()
+    service = ResidentRuntimeService(
+        repository,
+        _profiles(),
+        [FailingLifecycleController()],
+    )
+    principal = _principal()
+
+    restartable = await service.create_record(
+        principal,
+        name="Muninn",
+        profile_id="ravn-openshell",
+    )
+    restartable = restartable.model_copy(
+        update={
+            "observed_state": ResidentObservedState.ACTIVE,
+            "capabilities": [
+                *restartable.capabilities,
+                ResidentCapability.RUNTIME_RESTART,
+            ],
+        }
+    )
+    await repository.update(restartable)
+    with pytest.raises(ResidentRuntimeDeploymentError, match="restart unavailable"):
+        await service.restart(principal, restartable.id)
+    assert repository.items[restartable.id].conditions[0].reason == "RestartFailed"
+
+    suspendable = await service.create_record(
+        principal,
+        name="Huginn",
+        profile_id="ravn-openshell",
+    )
+    suspendable = suspendable.model_copy(
+        update={
+            "capabilities": [
+                *suspendable.capabilities,
+                ResidentCapability.RUNTIME_SUSPEND,
+            ]
+        }
+    )
+    await repository.update(suspendable)
+    with pytest.raises(ResidentRuntimeDeploymentError, match="suspend unavailable"):
+        await service.set_desired_state(
+            principal,
+            suspendable.id,
+            ResidentDesiredState.SUSPENDED,
+        )
+    assert repository.items[suspendable.id].conditions[0].reason == "LifecycleFailed"
+
+    removable = await service.create_record(
+        principal,
+        name="Odin",
+        profile_id="ravn-openshell",
+    )
+    with pytest.raises(ResidentRuntimeDeploymentError, match="delete unavailable"):
+        await service.delete(principal, removable.id)
+    assert repository.items[removable.id].conditions[0].reason == "DeleteFailed"
+
+
+async def test_invalid_lifecycle_and_missing_records_fail_explicitly(runtime_service) -> None:
+    service, _ = runtime_service
+    principal = _principal()
+    runtime = await service.create_record(
+        principal,
+        name="Muninn",
+        profile_id="ravn-openshell",
+    )
+
+    with pytest.raises(ResidentRuntimeValidationError, match="Use delete"):
+        await service.set_desired_state(
+            principal,
+            runtime.id,
+            ResidentDesiredState.DELETED,
+        )
+    with pytest.raises(ResidentRuntimeNotFoundError):
+        await service.reconcile(uuid4())
+    with pytest.raises(ResidentRuntimeNotFoundError):
+        await service.update_observation(
+            uuid4(),
+            observed_state=ResidentObservedState.ACTIVE,
+        )
+
+
+async def test_close_cancels_pending_resident_deployments(runtime_service) -> None:
+    service, _ = runtime_service
+    sleeper = asyncio.create_task(asyncio.sleep(60))
+    service._deployment_tasks[uuid4()] = sleeper
+
+    await service.close()
+
+    assert sleeper.cancelled()
+    assert service._deployment_tasks == {}
+
+
+async def test_create_record_rejects_flock_on_non_flock_profile() -> None:
+    service = ResidentRuntimeService(
+        MemoryResidentRuntimeRepository(),
+        _session_profiles(),
+        [MemoryResidentRuntimeController()],
+        [MemoryResidentSessionController()],
+    )
+    with pytest.raises(ResidentRuntimeValidationError, match="does not support flock"):
+        await service.create_record(
+            _principal(),
+            name="Muninn",
+            profile_id="ravn-native",
+            flock_id=uuid4(),
+            flock_member_id=uuid4(),
+            flock_role="coordinator",
+            flock_peer_id="ravn-coordinator",
+        )
+
+
+async def test_unexpected_repository_create_failure_is_not_hidden() -> None:
+    class FailingRepository(MemoryResidentRuntimeRepository):
+        async def create(self, runtime):
+            raise RuntimeError("database unavailable")
+
+    service = ResidentRuntimeService(
+        FailingRepository(),
+        _profiles(),
+        [MemoryResidentRuntimeController()],
+    )
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await service.create_record(
+            _principal(),
+            name="Muninn",
+            profile_id="ravn-openshell",
+        )
+
+
+async def test_restart_requires_capability_and_running_state_then_uses_backend() -> None:
+    repository = MemoryResidentRuntimeRepository()
+    controller = MemoryResidentRuntimeController()
+    service = ResidentRuntimeService(repository, _profiles(), [controller])
+    principal = _principal()
+    runtime = await service.create_record(
+        principal,
+        name="Muninn",
+        profile_id="ravn-openshell",
+    )
+
+    with pytest.raises(ResidentRuntimeValidationError, match="does not support restart"):
+        await service.restart(principal, runtime.id)
+
+    restartable = runtime.model_copy(
+        update={
+            "capabilities": [
+                *runtime.capabilities,
+                ResidentCapability.RUNTIME_RESTART,
+            ],
+            "desired_state": ResidentDesiredState.SUSPENDED,
+        }
+    )
+    await repository.update(restartable)
+    with pytest.raises(ResidentRuntimeValidationError, match="Only running"):
+        await service.restart(principal, runtime.id)
+
+    await repository.update(
+        restartable.model_copy(update={"desired_state": ResidentDesiredState.RUNNING})
+    )
+    restarted = await service.restart(principal, runtime.id)
+    assert restarted.observed_state is ResidentObservedState.ACTIVE
+    assert controller.actions == ["restart"]
+
+
+async def test_missing_optional_adapters_and_usage_record_fail_explicitly() -> None:
+    class VanishingUsageRepository(MemoryResidentRuntimeRepository):
+        async def add_usage(self, runtime_id, *, tokens, cost, message_count):
+            return None
+
+    repository = VanishingUsageRepository()
+    principal = _principal()
+    no_backend = ResidentRuntimeService(repository, _profiles())
+    runtime = await no_backend.create_record(
+        principal,
+        name="Muninn",
+        profile_id="ravn-openshell",
+    )
+    with pytest.raises(ResidentRuntimeDeploymentError, match="backend is unavailable"):
+        await no_backend.logs(principal, runtime.id, lines=10)
+
+    runtime = runtime.model_copy(
+        update={"capabilities": [*runtime.capabilities, ResidentCapability.USAGE]}
+    )
+    await repository.update(runtime)
+    with pytest.raises(ResidentRuntimeNotFoundError):
+        await no_backend.record_usage(
+            principal,
+            runtime.id,
+            tokens=1,
+            cost=0,
+            message_count=1,
+        )
+
+    no_session_api = ResidentRuntimeService(
+        repository,
+        _session_profiles(),
+        [MemoryResidentRuntimeController()],
+    )
+    native = await no_session_api.create_record(
+        principal,
+        name="Huginn",
+        profile_id="ravn-native",
+    )
+    with pytest.raises(ResidentRuntimeDeploymentError, match="session API is unavailable"):
+        await no_session_api.list_sessions(principal, native.id)
+
+
+async def test_access_checks_hide_missing_and_cross_tenant_residents(runtime_service) -> None:
+    service, _ = runtime_service
+    with pytest.raises(ResidentRuntimeNotFoundError):
+        await service.get(_principal(), uuid4())
+
+    runtime = await service.create_record(
+        _principal(),
+        name="Muninn",
+        profile_id="ravn-openshell",
+    )
+    with pytest.raises(ResidentRuntimeNotFoundError):
+        await service.get(_principal(tenant_id="tenant-b"), runtime.id)

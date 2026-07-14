@@ -69,18 +69,27 @@ import asyncio
 import hashlib
 import logging
 import ssl
+import time
 from collections import deque
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import ParseResult, urlparse
+from urllib.request import getproxies
 
 try:
     import nats
     import nats.js.api as js_api
+    from nats.aio.client import DEFAULT_BUFFER_SIZE
+    from nats.aio.client import Client as NatsClient
+    from nats.aio.transport import TcpTransport
 
     _NATS_AVAILABLE = True
 except ImportError:  # pragma: no cover
+    DEFAULT_BUFFER_SIZE = 0
+    NatsClient = None  # type: ignore[assignment,misc]
+    TcpTransport = object  # type: ignore[assignment,misc]
     _NATS_AVAILABLE = False
 
 from sleipnir.adapters._subscriber_support import (
@@ -123,17 +132,130 @@ DEFAULT_MAX_RECONNECT_ATTEMPTS = 60
 DEFAULT_PUBLISH_TIMEOUT_S = 10.0
 
 
+def _sandbox_proxy_url(explicit: str = "") -> str:
+    """Return the configured or operating-system CONNECT proxy, if any."""
+    if explicit:
+        return explicit
+    proxies = getproxies()
+    return str(proxies.get("all") or proxies.get("https") or proxies.get("http") or "").strip()
+
+
+class _HttpConnectTcpTransport(TcpTransport):
+    """nats-py TCP transport tunneled through an HTTP CONNECT proxy."""
+
+    def __init__(self, proxy_url: str) -> None:
+        super().__init__()
+        proxy = urlparse(proxy_url)
+        if proxy.scheme != "http" or not proxy.hostname:
+            raise ValueError("NATS proxy URL must use http:// with a hostname")
+        if proxy.username or proxy.password:
+            raise ValueError("Authenticated NATS proxy URLs are not supported")
+        self._proxy_host = proxy.hostname
+        self._proxy_port = proxy.port or 80
+
+    async def connect(self, uri: ParseResult, buffer_size: int, connect_timeout: int) -> None:
+        host = uri.hostname
+        port = uri.port
+        if not host or not port:
+            raise ValueError("NATS server URL must include a hostname and port")
+        authority = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(
+                host=self._proxy_host,
+                port=self._proxy_port,
+                limit=buffer_size,
+            ),
+            connect_timeout,
+        )
+        writer.write(f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode("ascii"))
+        await writer.drain()
+        try:
+            response = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), connect_timeout)
+        except Exception:
+            writer.close()
+            await writer.wait_closed()
+            raise
+        status_line = response.split(b"\r\n", 1)[0]
+        parts = status_line.split(b" ", 2)
+        if len(parts) < 2 or parts[1] != b"200":
+            writer.close()
+            await writer.wait_closed()
+            detail = status_line.decode("ascii", errors="replace")
+            raise OSError(f"NATS proxy CONNECT failed: {detail}")
+        self._bare_io_reader = self._io_reader = reader
+        self._bare_io_writer = self._io_writer = writer
+
+
+class _HttpConnectNatsClient(NatsClient):
+    """nats-py client that preserves the CONNECT transport before it is connected."""
+
+    def __init__(self, proxy_url: str) -> None:
+        super().__init__()
+        self._proxy_url = proxy_url
+
+    async def _connect_to_server(self, server: Any) -> None:
+        server.last_attempt = time.monotonic()
+        if not self._transport:
+            if server.uri.scheme in ("ws", "wss"):
+                raise ValueError("NATS WebSocket URLs cannot use the TCP CONNECT transport")
+            self._transport = _HttpConnectTcpTransport(self._proxy_url)
+        await self._transport.connect(
+            server.uri,
+            buffer_size=DEFAULT_BUFFER_SIZE,
+            connect_timeout=self.options["connect_timeout"],
+        )
+
+
+async def _connect_nats(
+    *,
+    servers: list[str],
+    connect_timeout: float,
+    max_reconnect_attempts: int,
+    proxy_url: str,
+    options: dict[str, Any],
+) -> Any:
+    resolved_proxy = _sandbox_proxy_url(proxy_url)
+    if not resolved_proxy:
+        return await nats.connect(
+            servers=servers,
+            connect_timeout=connect_timeout,
+            max_reconnect_attempts=max_reconnect_attempts,
+            **options,
+        )
+    client = _HttpConnectNatsClient(resolved_proxy)
+    await client.connect(
+        servers=servers,
+        connect_timeout=connect_timeout,
+        max_reconnect_attempts=max_reconnect_attempts,
+        **options,
+    )
+    return client
+
+
 def _build_tls_context(
     *,
     tls_ca_file: str = "",
+    tls_ca_pem: str = "",
     tls_cert_file: str = "",
     tls_key_file: str = "",
+    tls_legacy_ca: bool = False,
     tls_insecure_skip_verify: bool = False,
 ) -> ssl.SSLContext | None:
     """Build an SSL context for NATS TLS, or return None when TLS files are unset."""
-    if not tls_ca_file and not tls_cert_file and not tls_key_file and not tls_insecure_skip_verify:
+    if (
+        not tls_ca_file
+        and not tls_ca_pem
+        and not tls_cert_file
+        and not tls_key_file
+        and not tls_legacy_ca
+        and not tls_insecure_skip_verify
+    ):
         return None
     context = ssl.create_default_context(cafile=tls_ca_file or None)
+    if tls_ca_pem:
+        context.load_verify_locations(cadata=tls_ca_pem)
+    if tls_legacy_ca:
+        context.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
     if tls_insecure_skip_verify:
         logger.warning(
             "NATS TLS certificate verification is DISABLED "
@@ -156,10 +278,12 @@ def _read_optional_file(path: str) -> str:
 def _connect_options(
     *,
     tls_ca_file: str = "",
+    tls_ca_pem: str = "",
     tls_cert_file: str = "",
     tls_key_file: str = "",
     tls_hostname: str = "",
     tls_handshake_first: bool = False,
+    tls_legacy_ca: bool = False,
     tls_insecure_skip_verify: bool = False,
     user: str = "",
     password: str = "",
@@ -170,8 +294,10 @@ def _connect_options(
     options: dict[str, Any] = {}
     tls_context = _build_tls_context(
         tls_ca_file=tls_ca_file,
+        tls_ca_pem=tls_ca_pem,
         tls_cert_file=tls_cert_file,
         tls_key_file=tls_key_file,
+        tls_legacy_ca=tls_legacy_ca,
         tls_insecure_skip_verify=tls_insecure_skip_verify,
     )
     if tls_context is not None:
@@ -427,16 +553,19 @@ class NatsPublisher(SleipnirPublisher):
         ensure_stream: bool = True,
         publish_timeout_s: float = DEFAULT_PUBLISH_TIMEOUT_S,
         tls_ca_file: str = "",
+        tls_ca_pem: str = "",
         tls_cert_file: str = "",
         tls_key_file: str = "",
         tls_hostname: str = "",
         tls_handshake_first: bool = False,
+        tls_legacy_ca: bool = False,
         tls_insecure_skip_verify: bool = False,
         user: str = "",
         password: str = "",
         token: str = "",
         nkeys_seed_file: str = "",
         nkeys_seed: str = "",
+        proxy_url: str = "",
     ) -> None:
         _require_nats()
         self._servers = servers or DEFAULT_SERVERS
@@ -450,12 +579,15 @@ class NatsPublisher(SleipnirPublisher):
         self._max_reconnect_attempts = max_reconnect_attempts
         self._ensure_stream = ensure_stream
         self._publish_timeout_s = publish_timeout_s
+        self._proxy_url = proxy_url
         self._connect_options = _connect_options(
             tls_ca_file=tls_ca_file,
+            tls_ca_pem=tls_ca_pem,
             tls_cert_file=tls_cert_file,
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,
             tls_handshake_first=tls_handshake_first,
+            tls_legacy_ca=tls_legacy_ca,
             tls_insecure_skip_verify=tls_insecure_skip_verify,
             user=user,
             password=password,
@@ -468,11 +600,12 @@ class NatsPublisher(SleipnirPublisher):
 
     async def start(self) -> None:
         """Connect to NATS and ensure the JetStream stream exists."""
-        self._client = await nats.connect(
+        self._client = await _connect_nats(
             servers=self._servers,
             connect_timeout=self._connect_timeout_s,
             max_reconnect_attempts=self._max_reconnect_attempts,
-            **self._connect_options,
+            proxy_url=self._proxy_url,
+            options=self._connect_options,
         )
         js_options = {"domain": self._jetstream_domain} if self._jetstream_domain else {}
         self._js = self._client.jetstream(**js_options)
@@ -560,28 +693,34 @@ class NatsCorePublisher(SleipnirPublisher):
         connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
         max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS,
         tls_ca_file: str = "",
+        tls_ca_pem: str = "",
         tls_cert_file: str = "",
         tls_key_file: str = "",
         tls_hostname: str = "",
         tls_handshake_first: bool = False,
+        tls_legacy_ca: bool = False,
         tls_insecure_skip_verify: bool = False,
         user: str = "",
         password: str = "",
         token: str = "",
         nkeys_seed_file: str = "",
         nkeys_seed: str = "",
+        proxy_url: str = "",
     ) -> None:
         _require_nats()
         self._servers = servers or DEFAULT_SERVERS
         self._subject_prefix = subject_prefix
         self._connect_timeout_s = connect_timeout_s
         self._max_reconnect_attempts = max_reconnect_attempts
+        self._proxy_url = proxy_url
         self._connect_options = _connect_options(
             tls_ca_file=tls_ca_file,
+            tls_ca_pem=tls_ca_pem,
             tls_cert_file=tls_cert_file,
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,
             tls_handshake_first=tls_handshake_first,
+            tls_legacy_ca=tls_legacy_ca,
             tls_insecure_skip_verify=tls_insecure_skip_verify,
             user=user,
             password=password,
@@ -592,11 +731,12 @@ class NatsCorePublisher(SleipnirPublisher):
         self._client: Any = None
 
     async def start(self) -> None:
-        self._client = await nats.connect(
+        self._client = await _connect_nats(
             servers=self._servers,
             connect_timeout=self._connect_timeout_s,
             max_reconnect_attempts=self._max_reconnect_attempts,
-            **self._connect_options,
+            proxy_url=self._proxy_url,
+            options=self._connect_options,
         )
         logger.debug(
             "NatsCorePublisher: connected to %s, subject_prefix=%r",
@@ -685,16 +825,19 @@ class NatsSubscriber(SleipnirSubscriber):
         max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS,
         ensure_stream: bool = True,
         tls_ca_file: str = "",
+        tls_ca_pem: str = "",
         tls_cert_file: str = "",
         tls_key_file: str = "",
         tls_hostname: str = "",
         tls_handshake_first: bool = False,
+        tls_legacy_ca: bool = False,
         tls_insecure_skip_verify: bool = False,
         user: str = "",
         password: str = "",
         token: str = "",
         nkeys_seed_file: str = "",
         nkeys_seed: str = "",
+        proxy_url: str = "",
         extra_subscriptions: list[dict[str, str]] | None = None,
         core_subscriptions: list[str | dict[str, str]] | None = None,
     ) -> None:
@@ -715,12 +858,15 @@ class NatsSubscriber(SleipnirSubscriber):
         self._connect_timeout_s = connect_timeout_s
         self._max_reconnect_attempts = max_reconnect_attempts
         self._ensure_stream = ensure_stream
+        self._proxy_url = proxy_url
         self._connect_options = _connect_options(
             tls_ca_file=tls_ca_file,
+            tls_ca_pem=tls_ca_pem,
             tls_cert_file=tls_cert_file,
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,
             tls_handshake_first=tls_handshake_first,
+            tls_legacy_ca=tls_legacy_ca,
             tls_insecure_skip_verify=tls_insecure_skip_verify,
             user=user,
             password=password,
@@ -772,11 +918,12 @@ class NatsSubscriber(SleipnirSubscriber):
 
     async def start(self) -> None:
         """Connect to NATS and ensure the JetStream stream exists."""
-        self._client = await nats.connect(
+        self._client = await _connect_nats(
             servers=self._servers,
             connect_timeout=self._connect_timeout_s,
             max_reconnect_attempts=self._max_reconnect_attempts,
-            **self._connect_options,
+            proxy_url=self._proxy_url,
+            options=self._connect_options,
         )
         js_options = {"domain": self._jetstream_domain} if self._jetstream_domain else {}
         self._js = self._client.jetstream(**js_options)
@@ -1063,16 +1210,19 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
         ensure_stream: bool = True,
         publish_timeout_s: float = DEFAULT_PUBLISH_TIMEOUT_S,
         tls_ca_file: str = "",
+        tls_ca_pem: str = "",
         tls_cert_file: str = "",
         tls_key_file: str = "",
         tls_hostname: str = "",
         tls_handshake_first: bool = False,
+        tls_legacy_ca: bool = False,
         tls_insecure_skip_verify: bool = False,
         user: str = "",
         password: str = "",
         token: str = "",
         nkeys_seed_file: str = "",
         nkeys_seed: str = "",
+        proxy_url: str = "",
         extra_subscriptions: list[dict[str, str]] | None = None,
         core_subscriptions: list[str | dict[str, str]] | None = None,
     ) -> None:
@@ -1090,16 +1240,19 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             ensure_stream=ensure_stream,
             publish_timeout_s=publish_timeout_s,
             tls_ca_file=tls_ca_file,
+            tls_ca_pem=tls_ca_pem,
             tls_cert_file=tls_cert_file,
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,
             tls_handshake_first=tls_handshake_first,
+            tls_legacy_ca=tls_legacy_ca,
             tls_insecure_skip_verify=tls_insecure_skip_verify,
             user=user,
             password=password,
             token=token,
             nkeys_seed_file=nkeys_seed_file,
             nkeys_seed=nkeys_seed,
+            proxy_url=proxy_url,
         )
         self._subscriber = NatsSubscriber(
             servers=servers,
@@ -1117,16 +1270,19 @@ class NatsTransport(SleipnirPublisher, SleipnirSubscriber):
             max_reconnect_attempts=max_reconnect_attempts,
             ensure_stream=ensure_stream,
             tls_ca_file=tls_ca_file,
+            tls_ca_pem=tls_ca_pem,
             tls_cert_file=tls_cert_file,
             tls_key_file=tls_key_file,
             tls_hostname=tls_hostname,
             tls_handshake_first=tls_handshake_first,
+            tls_legacy_ca=tls_legacy_ca,
             tls_insecure_skip_verify=tls_insecure_skip_verify,
             user=user,
             password=password,
             token=token,
             nkeys_seed_file=nkeys_seed_file,
             nkeys_seed=nkeys_seed,
+            proxy_url=proxy_url,
             extra_subscriptions=extra_subscriptions,
             core_subscriptions=core_subscriptions,
         )

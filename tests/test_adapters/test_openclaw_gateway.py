@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 import websockets
@@ -13,7 +14,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from niuu.adapters.memory_credential_store import MemoryCredentialStore
 from niuu.ports.session_proxy import SessionProxyTarget
+from volundr.adapters.outbound import openclaw_gateway as openclaw_runtime
 from volundr.adapters.outbound.openclaw_gateway import (
+    OpenClawChatConnection,
+    OpenClawGatewayError,
     OpenClawResidentSessionController,
 )
 from volundr.domain.models import (
@@ -49,6 +53,105 @@ def _runtime() -> ResidentRuntime:
         engine=ResidentEngine.OPENCLAW,
         profile_id="nemoclaw-openshell",
     )
+
+
+class _RetryHistoryGateway:
+    def __init__(self) -> None:
+        self.events: asyncio.Queue[dict] = asyncio.Queue()
+        self.history_requests = 0
+        self.closed = False
+
+    async def request(self, method: str, _params: dict) -> dict:
+        if method == "chat.send":
+            return {"ok": True}
+        if method != "chat.history":
+            raise AssertionError(f"unexpected Gateway method: {method}")
+        self.history_requests += 1
+        messages = [
+            {
+                "id": "old-assistant",
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": "Old answer"}],
+            }
+        ]
+        if self.history_requests >= 3:
+            messages.extend(
+                [
+                    {
+                        "id": "retry-error",
+                        "role": "assistant",
+                        "stopReason": "error",
+                        "content": [{"type": "text", "text": "terminated"}],
+                    },
+                    {
+                        "id": "retry-success",
+                        "role": "assistant",
+                        "stopReason": "stop",
+                        "content": [{"type": "text", "text": "Recovered answer"}],
+                    },
+                ]
+            )
+        return {"messages": messages}
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _QueueGateway:
+    def __init__(self) -> None:
+        self.events: asyncio.Queue[dict] = asyncio.Queue()
+        self.requests: list[tuple[str, dict]] = []
+        self.closed = False
+
+    async def request(self, method: str, params: dict) -> dict:
+        self.requests.append((method, params))
+        if method == "chat.history":
+            return {"messages": []}
+        return {"ok": True}
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_openclaw_recovers_completed_native_retry_from_history() -> None:
+    gateway = _RetryHistoryGateway()
+    key = "agent:main:niuu-11111111-2222-4333-8444-555555555555"
+    initial_history = await gateway.request("chat.history", {})
+    chat = OpenClawChatConnection(
+        gateway,  # type: ignore[arg-type]
+        key,
+        initial_history,
+        "openai/gpt-5.6",
+        retry_history_timeout_seconds=0.1,
+        retry_history_poll_interval_seconds=0.001,
+    )
+
+    assert (await chat.receive())["type"] == "capabilities"
+    assert (await chat.receive())["turns"][0]["content"] == "Old answer"
+    await chat.send({"type": "user", "content": "New question", "request_id": "request-1"})
+    assert (await chat.receive())["type"] == "user_confirmed"
+    await gateway.events.put(
+        {
+            "type": "event",
+            "event": "chat",
+            "payload": {
+                "sessionKey": key,
+                "runId": "run-1",
+                "state": "error",
+                "errorMessage": "terminated",
+            },
+        }
+    )
+
+    assert (await chat.receive())["type"] == "assistant"
+    assert (await chat.receive())["delta"]["text"] == "Recovered answer"
+    assert (await chat.receive())["type"] == "result"
+    await chat.close()
+
+    assert gateway.history_requests == 3
+    assert gateway.closed is True
 
 
 @pytest.mark.asyncio
@@ -255,3 +358,152 @@ async def test_openclaw_sessions_and_shared_chat_use_native_gateway_contract() -
     credential = await store.get_value("resident", str(runtime.id), "openclaw-gateway")
     assert credential is not None
     assert credential["device_token"] == "paired-device-token"
+
+
+def test_openclaw_history_helpers_filter_and_normalize_gateway_payloads() -> None:
+    session_id = uuid4()
+    key = f"agent:main:niuu-{session_id}"
+
+    assert openclaw_runtime._session_uuid(key) == session_id
+    assert openclaw_runtime._session_uuid("agent:main:other") is None
+    assert openclaw_runtime._session_uuid("agent:main:niuu-invalid") is None
+    assert openclaw_runtime._session_key(session_id) == key
+    assert openclaw_runtime._message_text("invalid") == ""
+    assert openclaw_runtime._message_text({"content": "plain"}) == "plain"
+    assert openclaw_runtime._message_text({"content": {}}) == ""
+    assert (
+        openclaw_runtime._message_text(
+            {
+                "content": [
+                    {"type": "text", "text": "one"},
+                    {"type": "output_text", "text": " two"},
+                    {"type": "image", "text": "ignored"},
+                    "invalid",
+                ]
+            }
+        )
+        == "one two"
+    )
+    assert openclaw_runtime._history_messages(None) == []
+    assert openclaw_runtime._history_messages({"messages": {}}) == []
+
+    turns = openclaw_runtime._history_turns(
+        {
+            "messages": [
+                {"role": "system", "content": "ignored"},
+                {
+                    "id": "user-1",
+                    "role": "user",
+                    "content": "hello",
+                    "timestamp": 1_720_000_000_000,
+                },
+                {"role": "assistant", "content": "hi"},
+                "invalid",
+            ]
+        }
+    )
+    assert [turn["role"] for turn in turns] == ["user", "assistant"]
+    assert turns[0]["id"] == "user-1"
+    assert "participant_meta" not in turns[0]
+    assert turns[1]["participant_meta"]["peer_id"] == "openclaw-primary"
+
+
+@pytest.mark.asyncio
+async def test_openclaw_chat_supports_attachments_and_final_only_responses() -> None:
+    gateway = _QueueGateway()
+    key = f"agent:main:niuu-{uuid4()}"
+    chat = OpenClawChatConnection(
+        gateway,  # type: ignore[arg-type]
+        key,
+        {},
+        "openai/gpt-5.6",
+    )
+    await chat.receive()
+    await chat.receive()
+
+    with pytest.raises(OpenClawGatewayError, match="Unsupported"):
+        await chat.send({"type": "control"})
+    await chat.send(
+        {
+            "type": "user",
+            "request_id": "request-1",
+            "content": [
+                {"type": "text", "text": "inspect "},
+                "invalid",
+                {"type": "image", "source": "invalid"},
+                {
+                    "type": "image",
+                    "source": {
+                        "media_type": "image/jpeg",
+                        "data": "base64-data",
+                    },
+                },
+            ],
+        }
+    )
+    send_request = next(params for method, params in gateway.requests if method == "chat.send")
+    assert send_request["message"] == "inspect "
+    assert send_request["attachments"] == [
+        {
+            "mimeType": "image/jpeg",
+            "fileName": "attachment-4",
+            "content": "base64-data",
+        }
+    ]
+    assert (await chat.receive())["type"] == "user_confirmed"
+
+    await gateway.events.put(
+        {"type": "event", "event": "chat", "payload": {"sessionKey": "foreign"}}
+    )
+    await gateway.events.put(
+        {
+            "type": "event",
+            "event": "chat",
+            "payload": {
+                "sessionKey": key,
+                "runId": "run-final",
+                "state": "final",
+                "message": {"content": "Final answer"},
+            },
+        }
+    )
+    assert (await chat.receive())["type"] == "assistant"
+    assert (await chat.receive())["delta"]["text"] == "Final answer"
+    assert (await chat.receive())["type"] == "result"
+
+    await gateway.events.put(
+        {
+            "type": "event",
+            "event": "chat",
+            "payload": {
+                "sessionKey": key,
+                "runId": "run-aborted",
+                "state": "aborted",
+            },
+        }
+    )
+    assert await chat.receive() == {"type": "error", "error": "aborted"}
+    await chat.close()
+    assert gateway.closed
+
+
+@pytest.mark.asyncio
+async def test_openclaw_chat_reports_closed_connection_and_retry_timeout() -> None:
+    gateway = _QueueGateway()
+    key = f"agent:main:niuu-{uuid4()}"
+    chat = OpenClawChatConnection(
+        gateway,  # type: ignore[arg-type]
+        key,
+        {},
+        "openai/gpt-5.6",
+        retry_history_timeout_seconds=0,
+    )
+    await chat.receive()
+    await chat.receive()
+
+    with pytest.raises(OpenClawGatewayError, match="history timeout"):
+        await chat._await_native_retry()
+
+    await gateway.events.put({"type": "event", "event": "connection.closed", "payload": {}})
+    with pytest.raises(OpenClawGatewayError, match="connection closed"):
+        await chat.receive()

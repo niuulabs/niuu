@@ -49,6 +49,14 @@ from volundr.adapters.outbound.resident_container_spec import (
     resident_attribution_headers as _shared_resident_attribution_headers,
 )
 from volundr.adapters.outbound.resident_container_spec import (
+    resident_flock_environment,
+    resident_flock_labels,
+    resident_flock_profile_configured,
+    resident_flock_runtime_config,
+    resident_flock_skuld_config,
+    resident_mesh_pod_metadata,
+)
+from volundr.adapters.outbound.resident_container_spec import (
     resident_process_files as _shared_resident_process_files,
 )
 from volundr.adapters.outbound.resident_container_spec import (
@@ -166,6 +174,7 @@ class OpenShellCredentialContext:
     files: dict[str, bytes]
     providers: tuple[str, ...]
     environment: dict[str, str]
+    process_environment: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -986,7 +995,9 @@ class OpenShellGatewayPodManager(
         sandbox_name = self._sandbox_name(session)
         session_id = str(session.id)
         env = self._build_env(session, spec)
-        credential_context = OpenShellCredentialContext(files={}, providers=(), environment={})
+        credential_context = OpenShellCredentialContext(
+            files={}, providers=(), environment={}, process_environment={}
+        )
         grants: tuple[OpenShellProviderGrant, ...] = ()
         for env_key in SECRET_ENV_KEYS:
             env.pop(env_key, None)
@@ -1008,6 +1019,7 @@ class OpenShellGatewayPodManager(
             )
             credential_context = await self._resolve_credential_env(session, spec)
             env.update(credential_context.environment)
+            process_env = {**env, **credential_context.process_environment}
             runtime_processes = _runtime_processes_from_spec(spec)
             provider_names = (*platform_providers, *credential_context.providers)
             grants = tuple(
@@ -1049,7 +1061,7 @@ class OpenShellGatewayPodManager(
                     self._client.exec_detached,
                     sandbox_id=ready.id,
                     command=process.command,
-                    env={**env, **process.env},
+                    env={**process_env, **process.env},
                     log_path=process.log_path,
                 )
                 if process_exit != 0:
@@ -1061,7 +1073,7 @@ class OpenShellGatewayPodManager(
                 self._client.exec_detached,
                 sandbox_id=ready.id,
                 command=self._sandbox_command,
-                env=env,
+                env=process_env,
                 log_path=self._command_log_path,
             )
             if exit_code != 0:
@@ -1126,7 +1138,10 @@ class OpenShellGatewayPodManager(
         ):
             return False
         if profile.engine is ResidentEngine.RAVN:
-            return True
+            try:
+                return resident_flock_profile_configured(profile, _resident_profile_values(profile))
+            except RuntimeError:
+                return False
         if profile.engine not in {ResidentEngine.OPENCLAW, ResidentEngine.HERMES}:
             return False
         try:
@@ -1153,6 +1168,7 @@ class OpenShellGatewayPodManager(
         subject = self._resident_subject(runtime)
         sandbox_name = self._resident_sandbox_name(runtime)
         env = self._resident_environment(runtime, values)
+        env.update(resident_flock_environment(runtime))
         service_name, service_port = _resident_service(
             values, self._service_name, self._service_port
         )
@@ -1161,8 +1177,18 @@ class OpenShellGatewayPodManager(
             raise RuntimeError("OpenClaw residents require the configured credential store")
         if runtime.engine is ResidentEngine.HERMES and self._credential_store is None:
             raise RuntimeError("Hermes residents require the configured credential store")
-        credential_context = OpenShellCredentialContext(files={}, providers=(), environment={})
+        credential_context = OpenShellCredentialContext(
+            files={}, providers=(), environment={}, process_environment={}
+        )
         grants: tuple[OpenShellProviderGrant, ...] = ()
+        sandbox = await asyncio.to_thread(self._client.get_sandbox, sandbox_name)
+        if sandbox is not None:
+            resident_label = dict(sandbox.labels or {}).get("volundr.niuu.io/resident")
+            if resident_label != str(runtime.id):
+                raise RuntimeError(
+                    f"OpenShell sandbox {sandbox_name!r} is not owned by resident {runtime.id}"
+                )
+        resumed_deployment = sandbox is not None
         try:
             if runtime.engine is ResidentEngine.OPENCLAW:
                 from volundr.adapters.outbound.openclaw_gateway import (
@@ -1195,22 +1221,26 @@ class OpenShellGatewayPodManager(
             if grants:
                 await asyncio.to_thread(self._client.ensure_providers_v2)
             env.update(credential_context.environment)
-            sandbox = await asyncio.to_thread(
-                self._client.create_sandbox,
-                name=sandbox_name,
-                image=_image_from_values(values, default=self._sandbox_image),
-                env=env,
-                labels={
-                    "app.kubernetes.io/managed-by": "volundr",
-                    "volundr.niuu.io/resident": str(runtime.id),
-                    "volundr.niuu.io/runtime": runtime.engine.value,
-                },
-                annotations={},
-                resources=_resources_from_values(values, cpu=self._cpu, memory=self._memory),
-                driver_config=_driver_config_from_values(values),
-                providers=provider_names,
-                policy=self._sandbox_policy,
-            )
+            mesh_labels, mesh_annotations = resident_mesh_pod_metadata(runtime)
+            if not resumed_deployment:
+                sandbox = await asyncio.to_thread(
+                    self._client.create_sandbox,
+                    name=sandbox_name,
+                    image=_image_from_values(values, default=self._sandbox_image),
+                    env=env,
+                    labels={
+                        "app.kubernetes.io/managed-by": "volundr",
+                        "volundr.niuu.io/resident": str(runtime.id),
+                        "volundr.niuu.io/runtime": runtime.engine.value,
+                        **resident_flock_labels(runtime, prefix="volundr.niuu.io"),
+                        **mesh_labels,
+                    },
+                    annotations=mesh_annotations,
+                    resources=_resources_from_values(values, cpu=self._cpu, memory=self._memory),
+                    driver_config=_driver_config_from_values(values),
+                    providers=provider_names,
+                    policy=self._sandbox_policy,
+                )
             ready = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
             files = {
                 **credential_context.files,
@@ -1224,12 +1254,15 @@ class OpenShellGatewayPodManager(
                 sandbox_id=ready.id,
                 files=files,
             )
-            process_env = dict(env)
+            process_env = {**env, **credential_context.process_environment}
             if runtime.engine is ResidentEngine.OPENCLAW and machine_credential is not None:
                 process_env["OPENCLAW_GATEWAY_TOKEN"] = machine_credential["gateway_token"]
             if runtime.engine is ResidentEngine.HERMES and machine_credential is not None:
                 process_env[HERMES_API_SERVER_KEY_ENV] = machine_credential["api_key"]
-            await self._launch_resident_processes(ready.id, process_env, processes)
+            if resumed_deployment:
+                await self._launch_missing_resident_processes(ready.id, process_env, processes)
+            else:
+                await self._launch_resident_processes(ready.id, process_env, processes)
             await self._wait_for_resident_processes(
                 ready.id,
                 processes,
@@ -1311,6 +1344,18 @@ class OpenShellGatewayPodManager(
                 service_port=service_port,
             )
         service_url = str(runtime.backend_ref.get("service_url") or "")
+        if not service_url and runtime.engine is ResidentEngine.HERMES:
+            service_url = HERMES_INTERNAL_SERVICE_URL
+        if not service_url:
+            service_url = await asyncio.to_thread(
+                self._client.expose_service,
+                sandbox_name=self._resident_sandbox_name(runtime),
+                target_port=service_port,
+                service=service_name,
+            )
+            service_url = (service_url or self._gateway_public_url).rstrip("/")
+            if service_url:
+                self._service_urls[str(runtime.id)] = service_url
         return self._resident_observation(
             runtime,
             sandbox,
@@ -1510,6 +1555,17 @@ class OpenShellGatewayPodManager(
                 raise RuntimeError(
                     f"OpenShell resident process {process.name!r} failed with exit {exit_code}"
                 )
+
+    async def _launch_missing_resident_processes(
+        self,
+        sandbox_id: str,
+        env: dict[str, str],
+        processes: Sequence[OpenShellRuntimeProcess],
+    ) -> None:
+        for process in processes:
+            if await self._resident_processes_ready(sandbox_id, (process,)):
+                continue
+            await self._launch_resident_processes(sandbox_id, env, (process,))
 
     def _resident_processes(
         self,
@@ -2011,7 +2067,9 @@ class OpenShellGatewayPodManager(
         mappings = _credential_mappings_from_values(values)
         codex_auth = _codex_auth_from_values(values)
         if not mappings and not codex_auth:
-            return OpenShellCredentialContext(files={}, providers=(), environment={})
+            return OpenShellCredentialContext(
+                files={}, providers=(), environment={}, process_environment={}
+            )
         if not subject.owner_id:
             raise RuntimeError("OpenShell credential mappings require a workload owner")
         if self._credential_store is None:
@@ -2020,6 +2078,7 @@ class OpenShellGatewayPodManager(
         files: dict[str, bytes] = {}
         providers: list[str] = []
         environment: dict[str, str] = {}
+        process_environment: dict[str, str] = {}
         try:
             if codex_auth:
                 await self._resolve_codex_auth(
@@ -2042,6 +2101,7 @@ class OpenShellGatewayPodManager(
                     mapping,
                     files=files,
                     providers=providers,
+                    process_environment=process_environment,
                     excluded_env_names={"OPENAI_API_KEY"} if codex_auth else set(),
                 )
         except Exception:
@@ -2059,6 +2119,7 @@ class OpenShellGatewayPodManager(
             files=files,
             providers=tuple(providers),
             environment=environment,
+            process_environment=process_environment,
         )
 
     async def _resolve_platform_provider(
@@ -2172,6 +2233,7 @@ class OpenShellGatewayPodManager(
         *,
         files: dict[str, bytes],
         providers: list[str],
+        process_environment: dict[str, str],
         excluded_env_names: set[str] | None = None,
     ) -> None:
         credential_name = str(mapping.get("credentialName") or mapping.get("credential_name") or "")
@@ -2205,6 +2267,19 @@ class OpenShellGatewayPodManager(
                 f"Credential {credential_name!r} does not contain fields: "
                 + ", ".join(missing_fields)
             )
+        if mapping.get("materializeEnvironment") or mapping.get("materialize_environment"):
+            values = await self._credential_store.get_value(
+                "user",
+                subject.owner_id,
+                credential_name,
+            )
+            for env_name, field_name in env_mappings.items():
+                value = values.get(field_name) if values else None
+                if not value:
+                    raise RuntimeError(
+                        f"Credential {credential_name!r} does not contain field {field_name!r}"
+                    )
+                process_environment[env_name] = value
         for env_name, field_name in env_mappings.items():
             if not _valid_env_name(env_name):
                 raise RuntimeError(
@@ -2220,6 +2295,7 @@ class OpenShellGatewayPodManager(
                 profile_id=provider_name,
                 env_name=env_name,
                 token_endpoint=self._credential_token_endpoint,
+                target_config=mapping.get("provider"),
             )
             if provider_name in providers:
                 continue
@@ -2549,7 +2625,7 @@ def _resident_skuld_config(
 ) -> dict[str, Any]:
     persona = runtime.persona_name or "product-steward"
     route_id = runtime.id.hex[:12]
-    ravn_peer = f"flock-{persona}"
+    ravn_peer = runtime.flock_peer_id or f"flock-{persona}"
     skuld_peer = f"skuld-{route_id}"
     broker = values.get("broker") if isinstance(values.get("broker"), dict) else {}
     session_values = values.get("session") if isinstance(values.get("session"), dict) else {}
@@ -2581,7 +2657,6 @@ def _resident_skuld_config(
         "usage_report_path": f"/api/v1/forge/resident-runtimes/{runtime.id}/usage",
         "room": {
             "enabled": True,
-            "max_participants": 2,
             "presence_sweep_interval_s": 0,
             "default_target_peer_id": ravn_peer,
         },
@@ -2618,6 +2693,7 @@ def _resident_skuld_config(
             raise RuntimeError("OpenShell resident skuldConfig must be an object")
         if isinstance(overlay, dict):
             _deep_merge(config, overlay)
+    resident_flock_skuld_config(config, runtime, values)
     return config
 
 
@@ -2647,7 +2723,7 @@ def _resident_ravn_config(
 ) -> dict[str, Any]:
     persona = runtime.persona_name or "product-steward"
     route_id = runtime.id.hex[:12]
-    ravn_peer = f"flock-{persona}"
+    ravn_peer = runtime.flock_peer_id or f"flock-{persona}"
     skuld_peer = f"skuld-{route_id}"
     resident = values.get("resident") if isinstance(values.get("resident"), dict) else {}
     platform = resident.get("platform") if isinstance(resident.get("platform"), dict) else {}
@@ -2717,6 +2793,7 @@ def _resident_ravn_config(
         config["llm"] = llm
     if isinstance(resident.get("wakefulness"), dict):
         config["wakefulness"] = resident["wakefulness"]
+    resident_flock_runtime_config(config, runtime, values)
     if resident.get("dailyBudgetUsd") or resident.get("daily_budget_usd"):
         config["budget"] = {
             "daily_cap_usd": float(
@@ -2874,7 +2951,7 @@ def _resident_hermes_config(
             }
         ],
         "terminal": {"cwd": "/sandbox/workspace"},
-        "approvals": {"mode": "manual"},
+        "approvals": {"mode": "off"},
         "gateway": {
             "platforms": {
                 "api_server": {
@@ -3092,8 +3169,9 @@ def _provider_profile(
     env_name: str,
     token_endpoint: str,
     cache_ttl_seconds: int = 300,
+    target_config: Any = None,
 ) -> Any:
-    target = _provider_target(env_name)
+    target = _provider_target(env_name, target_config)
     audience = f"{GRANT_AUDIENCE_PREFIX}{profile_id}"
     credential = openshell_pb2.ProviderProfileCredential(
         name="access_token",
@@ -3110,7 +3188,7 @@ def _provider_profile(
             cache_ttl_seconds=cache_ttl_seconds,
         ),
     )
-    endpoints = [
+    endpoints = target.get("endpoints") or [
         sandbox_pb2.NetworkEndpoint(
             host=host,
             port=443,
@@ -3198,7 +3276,46 @@ def _platform_provider_profile(
     )
 
 
-def _provider_target(env_name: str) -> dict[str, Any]:
+def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
+    if isinstance(config, dict):
+        raw_endpoints = config.get("endpoints")
+        raw_binaries = config.get("binaries")
+        if not isinstance(raw_endpoints, list) or not raw_endpoints:
+            raise RuntimeError("OpenShell credential provider endpoints must be a non-empty list")
+        if not isinstance(raw_binaries, list) or not raw_binaries:
+            raise RuntimeError("OpenShell credential provider binaries must be a non-empty list")
+        endpoints = []
+        for raw in raw_endpoints:
+            if not isinstance(raw, dict) or not raw.get("host") or not raw.get("port"):
+                raise RuntimeError("OpenShell credential provider endpoint requires host and port")
+            allowed_ips = raw.get("allowedIps") or raw.get("allowed_ips") or []
+            if not isinstance(allowed_ips, list):
+                raise RuntimeError("OpenShell credential provider allowed_ips must be a list")
+            endpoints.append(
+                sandbox_pb2.NetworkEndpoint(
+                    host=str(raw["host"]),
+                    port=int(raw["port"]),
+                    protocol=str(raw.get("protocol") or ""),
+                    tls=str(raw.get("tls") or "skip"),
+                    enforcement=str(raw.get("enforcement") or "enforce"),
+                    access=str(raw.get("access") or "full"),
+                    allowed_ips=[str(item) for item in allowed_ips],
+                )
+            )
+        binaries = [
+            str(item.get("path") if isinstance(item, dict) else item) for item in raw_binaries
+        ]
+        if any(not path for path in binaries):
+            raise RuntimeError("OpenShell credential provider binary path is required")
+        return {
+            "auth_style": str(config.get("authStyle") or config.get("auth_style") or "bearer"),
+            "header_name": str(
+                config.get("headerName") or config.get("header_name") or "Authorization"
+            ),
+            "endpoints": endpoints,
+            "binaries": binaries,
+            "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
+        }
     if env_name == CODEX_ACCESS_TOKEN_ENV:
         return {
             "auth_style": "bearer",

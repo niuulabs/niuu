@@ -201,9 +201,13 @@ class _FakeOpenShellGatewayClient:
         self.grant_profile = None
         self.provider_environment = {}
         self.closed = False
+        self.sandbox_exists = True
+        self.sandbox_labels: dict[str, str] = {}
 
     def create_sandbox(self, **kwargs):
         self.created = kwargs
+        self.sandbox_exists = True
+        self.sandbox_labels = dict(kwargs.get("labels") or {})
         return self._adapter.OpenShellSandbox(
             id="sandbox-id",
             name=kwargs["name"],
@@ -218,11 +222,14 @@ class _FakeOpenShellGatewayClient:
             else:
                 self.cleanup_events.append("sandbox-gone")
                 return None
+        if not self.sandbox_exists:
+            return None
         return self._adapter.OpenShellSandbox(
             id="sandbox-id",
             name=name,
             phase=self._adapter.openshell_pb2.SANDBOX_PHASE_READY,
             ready=True,
+            labels=self.sandbox_labels,
             providers=tuple(self.created.get("providers", ())) if self.created else (),
         )
 
@@ -535,6 +542,71 @@ def _resident_profile() -> ResidentDeploymentProfile:
     )
 
 
+def test_resident_ravn_config_uses_profile_selected_flock_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    flock_id = uuid4()
+    member_id = uuid4()
+    runtime = _resident_runtime().model_copy(
+        update={
+            "flock_id": flock_id,
+            "flock_member_id": member_id,
+            "flock_role": "coordinator",
+            "flock_peer_id": f"ravn-{member_id}",
+            "capabilities": [*_resident_runtime().capabilities, ResidentCapability.FLOCK],
+        }
+    )
+    values = _resident_profile().deployment["values"]
+    values["resident"]["flock"] = {
+        "mesh": {
+            "adapters": [{"adapter": "sleipnir", "transport": "nats"}],
+            "nats": {
+                "servers": ["tls://nats.example.test:4222"],
+                "user_env": "RAVN_NATS_USER",
+                "password_env": "RAVN_NATS_PASSWORD",
+                "tls_ca_pem": "-----BEGIN CERTIFICATE-----\nproof\n-----END CERTIFICATE-----\n",
+            },
+        },
+        "discovery": {
+            "adapters": [{"adapter": "event_bus", "transport": "nats"}],
+        },
+    }
+    manager = adapter.OpenShellGatewayPodManager(client=_FakeOpenShellGatewayClient(adapter))
+    missing_transport = _resident_profile().model_copy(
+        update={"capabilities": [*_resident_profile().capabilities, ResidentCapability.FLOCK]}
+    )
+    configured = missing_transport.model_copy(update={"deployment": {"values": values}})
+
+    config = adapter._resident_ravn_config(runtime, values, 9200)
+    skuld_config = adapter._resident_skuld_config(
+        runtime,
+        values,
+        9200,
+        "https://volundr.example.test",
+    )
+
+    assert manager.supports(missing_transport) is False
+    assert manager.supports(configured) is True
+    assert config["mesh"]["own_peer_id"] == f"ravn-{member_id}"
+    assert config["mesh"]["adapters"] == [{"adapter": "sleipnir", "transport": "nats"}]
+    assert config["mesh"]["nats"]["user_env"] == "RAVN_NATS_USER"
+    assert config["mesh"]["nats"]["tls_ca_pem"].startswith("-----BEGIN CERTIFICATE-----")
+    assert config["discovery"]["realm_id"] == str(flock_id)
+    assert config["discovery"]["adapters"][-1] == {
+        "adapter": "event_bus",
+        "transport": "nats",
+    }
+    assert skuld_config["mesh"]["realm_id"] == str(flock_id)
+    assert skuld_config["mesh"]["adapters"] == [{"adapter": "sleipnir", "transport": "nats"}]
+    assert skuld_config["mesh"]["discovery_adapters"][-1] == {
+        "adapter": "event_bus",
+        "transport": "nats",
+    }
+    assert skuld_config["mesh"]["nats"]["user_env"] == "RAVN_NATS_USER"
+    assert "max_participants" not in skuld_config["room"]
+
+
 def _hermes_runtime() -> ResidentRuntime:
     return _resident_runtime().model_copy(
         update={
@@ -759,6 +831,7 @@ async def test_hermes_deploy_uses_persisted_process_only_credential_and_generic_
     runtime = _hermes_runtime()
     profile = _hermes_profile()
     client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_exists = False
     store = _FakeCredentialStore({})
     manager = adapter.OpenShellGatewayPodManager(
         client=client,
@@ -797,6 +870,7 @@ async def test_hermes_deploy_uses_persisted_process_only_credential_and_generic_
     assert f"X-Session-ID: {runtime.id}" in hermes_config
     assert "api_server:" in hermes_config
     assert "port: 18789" in hermes_config
+    assert "approvals:\n  mode: 'off'" in hermes_config
     assert any(
         binary.path == "/opt/hermes/**"
         for grant in client.provider_grants
@@ -851,6 +925,7 @@ async def test_hermes_rollback_and_delete_cleanup_machine_credential(
     runtime = _hermes_runtime()
     profile = _hermes_profile()
     client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_exists = False
     client.exec_detached = lambda **_kwargs: 1
     store = _FakeCredentialStore({})
     manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
@@ -909,6 +984,36 @@ def test_platform_provider_adds_resident_engine_binary(
     ]
 
 
+def test_dynamic_provider_accepts_configured_tcp_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+
+    profile = adapter._provider_profile(
+        profile_id="resident-nats",
+        env_name="RAVN_NATS_PASSWORD",
+        token_endpoint="https://volundr.example.test/token",
+        target_config={
+            "endpoints": [
+                {
+                    "host": "nats-noatun.nats.svc.cluster.local",
+                    "port": 4222,
+                    "tls": "skip",
+                    "allowed_ips": ["10.191.72.34"],
+                }
+            ],
+            "binaries": ["/opt/niuu/bin/python"],
+        },
+    )
+
+    assert profile.endpoints[0].host == "nats-noatun.nats.svc.cluster.local"
+    assert profile.endpoints[0].port == 4222
+    assert profile.endpoints[0].protocol == ""
+    assert profile.endpoints[0].tls == "skip"
+    assert list(profile.endpoints[0].allowed_ips) == ["10.191.72.34"]
+    assert [binary.path for binary in profile.binaries] == ["/opt/niuu/bin/python"]
+
+
 @pytest.mark.asyncio
 async def test_resident_controller_deploys_real_sandbox_and_processes(
     monkeypatch: pytest.MonkeyPatch,
@@ -917,6 +1022,7 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
     runtime = _resident_runtime()
     profile = _resident_profile()
     client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_exists = False
     store = _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
     issuer = _FakeWorkloadTokenIssuer()
     manager = adapter.OpenShellGatewayPodManager(
@@ -974,6 +1080,151 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
         "skuld.transports.codex_ws.CodexWebSocketTransport"
     )
     assert client.execs[1]["env"]["SKULD__SKIP_PERMISSIONS"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_resident_deploy_resumes_owned_sandbox_and_launches_missing_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _resident_runtime()
+    profile = _resident_profile()
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_labels = {"volundr.niuu.io/resident": str(runtime.id)}
+    health_results = iter((0, 1, 0))
+
+    def exec_script(**kwargs):
+        client.bootstrap_execs.append(kwargs)
+        return next(health_results), ""
+
+    client.exec_script = exec_script
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client,
+        volundr_api_url="https://volundr.example.test",
+        workload_audiences=["volundr-api", "mimir", "guild"],
+        ready_timeout=0.1,
+    )
+    manager.set_credential_store(
+        _FakeCredentialStore({"codex-credentials": {"auth.json": _codex_auth_document()}})
+    )
+    manager.set_workload_token_issuer(_FakeWorkloadTokenIssuer())
+
+    observation = await manager.deploy(runtime, profile)
+
+    assert observation.observed_state is ResidentObservedState.ACTIVE
+    assert client.created is None
+    assert [process["pid_path"] for process in client.execs] == ["/sandbox/.volundr/ravn.pid"]
+
+
+@pytest.mark.asyncio
+async def test_resident_deploy_rejects_unowned_existing_sandbox_without_deleting_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _resident_runtime()
+    client = _FakeOpenShellGatewayClient(adapter)
+
+    with pytest.raises(RuntimeError, match="is not owned by resident"):
+        await adapter.OpenShellGatewayPodManager(client=client).deploy(
+            runtime,
+            _resident_profile(),
+        )
+
+    assert client.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_resident_reconcile_recovers_missing_service_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _resident_runtime().model_copy(
+        update={
+            "backend_ref": {
+                "kind": "OpenShellSandbox",
+                "id": "sandbox-id",
+                "name": "resident-existing",
+                "service_url": "",
+            }
+        }
+    )
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+
+    observation = await manager.reconcile(runtime, _resident_profile())
+
+    assert client.exposed == {
+        "sandbox_name": f"resident-{runtime.id.hex[:19]}",
+        "target_port": 9200,
+        "service": "skuld",
+    }
+    assert observation.backend_ref["service_url"] == client.service_url
+    assert observation.endpoints[0].url == f"/s/{runtime.id}/session"
+
+
+@pytest.mark.asyncio
+async def test_hermes_reconcile_recovers_internal_service_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _hermes_runtime()
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+
+    observation = await manager.reconcile(runtime, _hermes_profile())
+
+    assert client.exposed is None
+    assert observation.backend_ref["service_url"] == adapter.HERMES_INTERNAL_SERVICE_URL
+    assert observation.endpoints[0].kind == "sessions"
+
+
+@pytest.mark.asyncio
+async def test_resident_materializes_raw_protocol_credential_from_openbao(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    runtime = _resident_runtime()
+    profile = _resident_profile()
+    values = profile.deployment["values"]
+    values["openshell"]["credentialMappings"] = [
+        {
+            "credentialName": "nats-flock-noatun",
+            "envMappings": {"RAVN_NATS_PASSWORD": "password"},
+            "materializeEnvironment": True,
+            "provider": {
+                "endpoints": [
+                    {
+                        "host": "10.191.72.34",
+                        "port": 4222,
+                        "tls": "skip",
+                        "allowed_ips": ["10.191.72.34"],
+                    }
+                ],
+                "binaries": ["/opt/niuu/bin/python"],
+            },
+        }
+    ]
+    client = _FakeOpenShellGatewayClient(adapter)
+    client.sandbox_exists = False
+    manager = adapter.OpenShellGatewayPodManager(client=client, ready_timeout=0.1)
+    manager.set_credential_store(
+        _FakeCredentialStore(
+            {
+                "codex-credentials": {"auth.json": _codex_auth_document()},
+                "nats-flock-noatun": {"password": "nats-from-openbao"},
+            }
+        )
+    )
+
+    await manager.deploy(runtime, profile)
+
+    assert client.created is not None
+    assert "RAVN_NATS_PASSWORD" not in client.created["env"]
+    assert client.execs[1]["env"]["RAVN_NATS_PASSWORD"] == "nats-from-openbao"
+    assert any(
+        grant["profile"].credentials[0].env_vars == ["RAVN_NATS_PASSWORD"]
+        for grant in client.provider_grants
+    )
 
 
 @pytest.mark.asyncio

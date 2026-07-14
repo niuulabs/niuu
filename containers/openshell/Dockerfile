@@ -19,7 +19,7 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/niuu
 COPY pyproject.toml uv.lock README.md /app/
 COPY src/ /app/src/
 COPY scripts/openshell-run-installed-skuld.sh /usr/local/bin/openshell-run-installed-skuld
-RUN uv sync --frozen --no-dev --no-editable \
+RUN uv sync --frozen --no-dev --no-editable --extra nats \
     && mkdir -p /run/secrets \
     && chmod 0755 /usr/local/bin/openshell-run-installed-skuld \
     && chown -R sandbox:sandbox /opt/niuu /run/secrets

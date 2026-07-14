@@ -1138,6 +1138,59 @@ data:
     DROP INDEX IF EXISTS idx_niuu_instances_scope_slug;
     DROP TABLE IF EXISTS niuu_instances;
 
+  000041_expand_niuu_instance_kinds.up.sql: |
+    ALTER TABLE niuu_instances
+        DROP CONSTRAINT IF EXISTS niuu_instances_kind_check;
+
+    ALTER TABLE niuu_instances
+        ADD CONSTRAINT niuu_instances_kind_check
+        CHECK (kind IN ('volundr', 'ting', 'mimir', 'bifrost', 'ravn', 'observatory', 'generic'));
+
+  000041_expand_niuu_instance_kinds.down.sql: |
+    ALTER TABLE niuu_instances
+        DROP CONSTRAINT IF EXISTS niuu_instances_kind_check;
+
+    ALTER TABLE niuu_instances
+        ADD CONSTRAINT niuu_instances_kind_check
+        CHECK (kind IN ('volundr'));
+
+  000042_session_spans.up.sql: |
+    CREATE TABLE IF NOT EXISTS session_spans (
+        id UUID PRIMARY KEY,
+        session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        trace_id UUID NOT NULL,
+        parent_span_id UUID,
+        kind VARCHAR(64) NOT NULL,
+        name TEXT NOT NULL,
+        status VARCHAR(24) NOT NULL,
+        started_at TIMESTAMP WITH TIME ZONE NOT NULL,
+        ended_at TIMESTAMP WITH TIME ZONE,
+        duration_ms INTEGER,
+        actor_type VARCHAR(32),
+        actor_id TEXT,
+        actor_label TEXT,
+        source_service VARCHAR(32) NOT NULL,
+        attributes JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_session_spans_session_started
+        ON session_spans(session_id, started_at);
+    CREATE INDEX IF NOT EXISTS idx_session_spans_parent
+        ON session_spans(parent_span_id);
+    CREATE INDEX IF NOT EXISTS idx_session_spans_trace
+        ON session_spans(trace_id);
+    CREATE INDEX IF NOT EXISTS idx_session_spans_kind
+        ON session_spans(kind);
+
+  000042_session_spans.down.sql: |
+    DROP INDEX IF EXISTS idx_session_spans_kind;
+    DROP INDEX IF EXISTS idx_session_spans_trace;
+    DROP INDEX IF EXISTS idx_session_spans_parent;
+    DROP INDEX IF EXISTS idx_session_spans_session_started;
+    DROP TABLE IF EXISTS session_spans;
+
   000043_niuu_instance_tags.up.sql: |
     -- Add freeform tags to registered instances for label-based targeting.
 
@@ -1453,4 +1506,79 @@ data:
         DROP COLUMN IF EXISTS cost,
         DROP COLUMN IF EXISTS tokens_used,
         DROP COLUMN IF EXISTS message_count;
+  000057_resident_flock_membership.up.sql: |
+    ALTER TABLE resident_runtimes
+        ADD COLUMN IF NOT EXISTS flock_id UUID,
+        ADD COLUMN IF NOT EXISTS flock_member_id UUID,
+        ADD COLUMN IF NOT EXISTS flock_role VARCHAR(100) NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS flock_peer_id VARCHAR(255) NOT NULL DEFAULT '';
+
+    CREATE INDEX IF NOT EXISTS idx_resident_runtimes_flock
+        ON resident_runtimes (flock_id)
+        WHERE flock_id IS NOT NULL;
+
+  000057_resident_flock_membership.down.sql: |
+    DROP INDEX IF EXISTS idx_resident_runtimes_flock;
+
+    ALTER TABLE resident_runtimes
+        DROP COLUMN IF EXISTS flock_peer_id,
+        DROP COLUMN IF EXISTS flock_role,
+        DROP COLUMN IF EXISTS flock_member_id,
+        DROP COLUMN IF EXISTS flock_id;
+  000058_resident_session_traces.up.sql: |
+    -- A trace subject can be either a Forge session or a resident runtime. Access
+    -- checks at the trace API validate the subject before spans are accepted.
+    ALTER TABLE session_spans
+        DROP CONSTRAINT IF EXISTS session_spans_session_id_fkey;
+  000058_resident_session_traces.down.sql: |
+    -- Resident-owned spans cannot satisfy the original sessions-only constraint.
+    DELETE FROM session_spans AS span
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM sessions AS session
+        WHERE session.id = span.session_id
+    );
+
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'session_spans_session_id_fkey'
+              AND conrelid = 'session_spans'::regclass
+        ) THEN
+            ALTER TABLE session_spans
+                ADD CONSTRAINT session_spans_session_id_fkey
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE;
+        END IF;
+    END
+    $$;
+  000059_resident_session_events.up.sql: |
+    -- Session analytics events can belong to a Forge session or resident runtime.
+    -- The REST adapter authorizes either subject before accepting events.
+    ALTER TABLE session_events
+        DROP CONSTRAINT IF EXISTS session_events_session_id_fkey;
+  000059_resident_session_events.down.sql: |
+    -- Resident-owned events cannot satisfy the original sessions-only constraint.
+    DELETE FROM session_events AS event
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM sessions AS session
+        WHERE session.id = event.session_id
+    );
+
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'session_events_session_id_fkey'
+              AND conrelid = 'session_events'::regclass
+        ) THEN
+            ALTER TABLE session_events
+                ADD CONSTRAINT session_events_session_id_fkey
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE;
+        END IF;
+    END
+    $$;
 {{- end }}

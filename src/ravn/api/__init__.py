@@ -14,6 +14,7 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
@@ -81,6 +82,10 @@ class ResidentCreateRequest(BaseModel):
     profile_id: str = Field(min_length=1, max_length=100)
     persona_name: str = Field(default="", max_length=255)
     model: str = Field(default="", max_length=255)
+    flock_id: UUID | None = None
+    flock_member_id: UUID | None = None
+    flock_role: str = Field(default="", max_length=100)
+    flock_peer_id: str = Field(default="", max_length=255)
 
 
 def _raise_platform_error(exc: httpx.HTTPStatusError) -> None:
@@ -392,7 +397,7 @@ def create_app(
         auth_headers, auth_params = forward_auth(request)
         try:
             return await resident_directory.create_raven(
-                body.model_dump(),
+                body.model_dump(mode="json"),
                 auth_headers,
                 auth_params,
             )

@@ -248,6 +248,41 @@ describe('useMentionMenu — selectItem', () => {
     });
     expect(result.current.mentions).toHaveLength(0);
   });
+
+  it('routes event mentions through advertised participant subscriptions', () => {
+    const hermes: RoomParticipant = {
+      peerId: 'hermes-1',
+      persona: 'reviewer',
+      displayName: 'Hermes reviewer',
+      participantType: 'ravn',
+      subscribesTo: ['code.changed', 'review.requested'],
+    };
+    const eventParticipants = new Map([[hermes.peerId, hermes]]);
+    const { result } = renderHook(() =>
+      useMentionMenu(null, null, null, eventParticipants, undefined, true),
+    );
+
+    act(() => result.current.handleChange('@', 1));
+
+    expect(result.current.items).toEqual([
+      { kind: 'agent', participant: hermes, eventType: 'code.changed' },
+      { kind: 'agent', participant: hermes, eventType: 'review.requested' },
+    ]);
+
+    let selectedLabel = '';
+    act(() => {
+      selectedLabel = result.current.selectItem(result.current.items[0]!);
+    });
+    expect(selectedLabel).toBe('code.changed');
+    expect(result.current.mentions).toEqual([
+      { kind: 'agent', participant: hermes, eventType: 'code.changed' },
+    ]);
+
+    act(() => result.current.selectItem(result.current.items[1]!));
+    expect(result.current.mentions).toEqual([
+      { kind: 'agent', participant: hermes, eventType: 'review.requested' },
+    ]);
+  });
 });
 
 describe('useMentionMenu — close', () => {

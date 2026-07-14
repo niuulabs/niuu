@@ -93,7 +93,7 @@ envoy:
   # -- Upstream connect timeout
   connectTimeout: "0.25s"
   # -- Upstream request timeout
-  upstreamTimeout: "60s"
+  upstreamTimeout: "300s"
   # -- Resource limits for the Envoy sidecar
   resources:
     requests:

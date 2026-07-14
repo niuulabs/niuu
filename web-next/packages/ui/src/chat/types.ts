@@ -46,6 +46,11 @@ export interface ParticipantMeta {
 
 export type RoomParticipant = ParticipantMeta;
 
+export interface AgentEventTarget {
+  participant: RoomParticipant;
+  eventType: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';

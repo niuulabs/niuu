@@ -23,6 +23,7 @@ DISCOVERY_ALIASES: dict[str, str] = {
     "sleipnir": "ravn.adapters.discovery.sleipnir.SleipnirDiscoveryAdapter",
     "k8s": "ravn.adapters.discovery.k8s.K8sDiscoveryAdapter",
     "static": "ravn.adapters.discovery.static.StaticDiscoveryAdapter",
+    "event_bus": "ravn.adapters.discovery.event_bus.EventBusDiscoveryAdapter",
 }
 
 
@@ -32,6 +33,7 @@ def build_discovery_adapters(
     *,
     heartbeat_interval_s: float = 5.0,
     peer_ttl_s: float = 30.0,
+    sleipnir_transport_builder: Any | None = None,
 ) -> Any | None:
     """Build discovery adapters from a list-based config using dynamic import.
 
@@ -84,6 +86,14 @@ def build_discovery_adapters(
         kwargs["own_identity"] = own_identity
         kwargs.setdefault("heartbeat_interval_s", heartbeat_interval_s)
         kwargs.setdefault("peer_ttl_s", peer_ttl_s)
+        if getattr(cls, "requires_sleipnir_transport", False) and sleipnir_transport_builder:
+            transport = sleipnir_transport_builder(entry)
+            if transport is None:
+                logger.warning("discovery: failed to build event bus transport, skipping")
+                continue
+            kwargs["publisher"] = transport
+            kwargs["subscriber"] = transport
+            kwargs.pop("transport", None)
 
         try:
             backend = cls(**kwargs)

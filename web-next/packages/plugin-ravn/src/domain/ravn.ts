@@ -39,6 +39,7 @@ export const residentCapabilitySchema = z.enum([
   'logs',
   'metrics',
   'usage',
+  'flock',
 ]);
 export type ResidentCapability = z.infer<typeof residentCapabilitySchema>;
 
@@ -132,6 +133,10 @@ export const ravnSchema = z
     backend: residentBackendSchema.optional(),
     engine: residentEngineSchema.optional(),
     profileId: z.string().optional(),
+    flockId: z.string().uuid().optional(),
+    flockMemberId: z.string().uuid().optional(),
+    flockRole: z.string().optional(),
+    flockPeerId: z.string().optional(),
     desiredState: z.enum(['running', 'suspended', 'deleted']).optional(),
     observedState: z
       .enum(['pending', 'deploying', 'active', 'suspended', 'failed', 'deleting'])

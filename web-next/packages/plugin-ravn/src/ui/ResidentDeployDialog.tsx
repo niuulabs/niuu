@@ -1,10 +1,14 @@
 import { useMemo, useState } from 'react';
 import { Dialog, DialogContent } from '@niuulabs/ui';
 import { Rocket } from 'lucide-react';
-import type { Ravn, ResidentDeploymentProfile } from '../domain/ravn';
+import type { Ravn } from '../domain/ravn';
 import { useDeployResident, useResidentProfiles } from './hooks/useResidentControl';
-import { ResidentModelSelect } from './ResidentModelSelect';
 import { useOptionalPersonas } from './usePersonas';
+import {
+  ResidentDeployFields,
+  selectedResidentProfile,
+  type ResidentMemberDraft,
+} from './ResidentDeployFields';
 
 interface ResidentDeployDialogProps {
   open: boolean;
@@ -16,10 +20,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Resident deployment failed';
 }
 
-function targetLabel(profile: ResidentDeploymentProfile): string {
-  return profile.instanceName || profile.instanceSlug || profile.instanceId;
-}
-
 export function ResidentDeployDialog({
   open,
   onOpenChange,
@@ -28,11 +28,14 @@ export function ResidentDeployDialog({
   const profilesQuery = useResidentProfiles(open);
   const personasQuery = useOptionalPersonas(open);
   const deploy = useDeployResident();
-  const [instanceId, setInstanceId] = useState('');
-  const [profileId, setProfileId] = useState('');
-  const [name, setName] = useState('');
-  const [personaName, setPersonaName] = useState('');
-  const [model, setModel] = useState('');
+  const [draft, setDraft] = useState<ResidentMemberDraft>({
+    name: '',
+    instanceId: '',
+    profileId: '',
+    personaName: '',
+    model: '',
+    role: '',
+  });
 
   const profiles = useMemo(() => profilesQuery.data ?? [], [profilesQuery.data]);
   const personas = useMemo(
@@ -40,66 +43,34 @@ export function ResidentDeployDialog({
       [...(personasQuery.data ?? [])].sort((left, right) => left.name.localeCompare(right.name)),
     [personasQuery.data],
   );
-  const targets = useMemo(() => {
-    const byId = new Map<string, ResidentDeploymentProfile>();
-    for (const profile of profiles) byId.set(profile.instanceId, profile);
-    return Array.from(byId.values()).sort((left, right) =>
-      targetLabel(left).localeCompare(targetLabel(right)),
-    );
-  }, [profiles]);
-  const selectedInstanceId = profiles.some((profile) => profile.instanceId === instanceId)
-    ? instanceId
-    : (profiles[0]?.instanceId ?? '');
-  const compatibleProfiles = profiles.filter(
-    (profile) => profile.instanceId === selectedInstanceId,
-  );
-  const selectedProfile =
-    compatibleProfiles.find((profile) => profile.id === profileId) ?? compatibleProfiles[0];
-  const selectedModel = selectedProfile?.allowedModels.includes(model)
-    ? model
-    : (selectedProfile?.defaultModel ?? '');
-
-  function selectTarget(nextInstanceId: string) {
-    const profile = profiles.find((candidate) => candidate.instanceId === nextInstanceId);
-    setInstanceId(nextInstanceId);
-    setProfileId(profile?.id ?? '');
-    setModel(profile?.defaultModel ?? '');
-  }
-
-  function selectProfile(nextProfileId: string) {
-    const profile = compatibleProfiles.find((candidate) => candidate.id === nextProfileId);
-    setProfileId(nextProfileId);
-    setModel(profile?.defaultModel ?? '');
-  }
+  const selectedProfile = selectedResidentProfile(draft, profiles);
 
   function setOpen(nextOpen: boolean) {
     if (!nextOpen) {
       deploy.reset();
-      setName('');
-      setPersonaName('');
+      setDraft((current) => ({ ...current, name: '', personaName: '' }));
     }
     onOpenChange(nextOpen);
   }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!selectedProfile || !name.trim()) return;
+    if (!selectedProfile || !draft.name.trim()) return;
     let ravn: Ravn;
     try {
       ravn = await deploy.mutateAsync({
-        name: name.trim(),
+        name: draft.name.trim(),
         profileId: selectedProfile.id,
         instanceId: selectedProfile.instanceId,
-        personaName: personaName.trim(),
-        model: selectedModel,
+        personaName: draft.personaName.trim(),
+        model: draft.model || selectedProfile.defaultModel,
       });
     } catch {
       return;
     }
     onDeployed(ravn);
     setOpen(false);
-    setName('');
-    setPersonaName('');
+    setDraft((current) => ({ ...current, name: '', personaName: '' }));
   }
 
   return (
@@ -123,94 +94,13 @@ export function ResidentDeployDialog({
 
           {profiles.length > 0 && (
             <>
-              <label className="rv-form-field">
-                <span>Target</span>
-                <select
-                  value={selectedInstanceId}
-                  onChange={(event) => selectTarget(event.target.value)}
-                  data-testid="resident-target"
-                >
-                  {targets.map((target) => (
-                    <option key={target.instanceId} value={target.instanceId}>
-                      {targetLabel(target)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="rv-form-field">
-                <span>Profile</span>
-                <select
-                  value={selectedProfile?.id ?? ''}
-                  onChange={(event) => selectProfile(event.target.value)}
-                  data-testid="resident-profile"
-                >
-                  {compatibleProfiles.map((profile) => (
-                    <option key={`${profile.instanceId}:${profile.id}`} value={profile.id}>
-                      {profile.displayName}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              {selectedProfile && (
-                <div className="rv-profile-summary" data-testid="resident-profile-summary">
-                  <div>
-                    <strong>{selectedProfile.engine}</strong>
-                    <span>{selectedProfile.backend}</span>
-                  </div>
-                  <p>{selectedProfile.description}</p>
-                </div>
-              )}
-
-              <label className="rv-form-field">
-                <span>Name</span>
-                <input
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  required
-                  maxLength={255}
-                  data-testid="resident-name"
-                />
-              </label>
-
-              <label className="rv-form-field">
-                <span>Persona</span>
-                {personas.length > 0 ? (
-                  <select
-                    value={personaName}
-                    onChange={(event) => setPersonaName(event.target.value)}
-                    data-testid="resident-persona"
-                  >
-                    <option value="">No persona</option>
-                    {personas.map((persona) => (
-                      <option key={persona.name} value={persona.name}>
-                        {persona.name} · {persona.role}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    value={personaName}
-                    onChange={(event) => setPersonaName(event.target.value)}
-                    maxLength={255}
-                    data-testid="resident-persona"
-                  />
-                )}
-              </label>
-
-              {selectedProfile && selectedProfile.allowedModels.length > 0 && (
-                <label className="rv-form-field">
-                  <span>Model</span>
-                  <ResidentModelSelect
-                    allowedModels={selectedProfile.allowedModels}
-                    modelPrefix={selectedProfile.modelPrefix ?? ''}
-                    value={selectedModel}
-                    onChange={setModel}
-                    testId="resident-model"
-                  />
-                </label>
-              )}
+              <ResidentDeployFields
+                draft={draft}
+                profiles={profiles}
+                personas={personas}
+                onChange={setDraft}
+                testIdPrefix="resident"
+              />
             </>
           )}
 
@@ -227,7 +117,7 @@ export function ResidentDeployDialog({
             <button
               type="submit"
               className="rv-action-btn rv-action-btn--primary"
-              disabled={!selectedProfile || !name.trim() || deploy.isPending}
+              disabled={!selectedProfile || !draft.name.trim() || deploy.isPending}
               data-testid="resident-deploy-submit"
             >
               <Rocket size={14} aria-hidden="true" />

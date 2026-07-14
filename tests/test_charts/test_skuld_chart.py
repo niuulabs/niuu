@@ -563,6 +563,41 @@ class TestResidentWorkloadIdentityConfigFirst:
         env_names = {entry["name"] for entry in broker.get("env", [])}
         assert "SKULD__VOLUNDR_API_URL" not in env_names
 
+    def test_ravn_container_receives_only_resident_env_secrets(self, tmp_path):
+        values = dict(self.RESIDENT_VALUES)
+        values["envSecrets"] = [
+            {
+                "envVar": "BROKER_ONLY",
+                "secretName": "broker-secret",
+                "secretKey": "value",
+            }
+        ]
+        values["resident"] = {
+            **values["resident"],
+            "envSecrets": [
+                {
+                    "envVar": "RAVN_NATS_PASSWORD",
+                    "secretName": "flock-nats",
+                    "secretKey": "password",
+                }
+            ],
+        }
+
+        rendered = _render_skuld_chart(tmp_path, values)
+        deployment = _deployment_from_rendered(rendered)
+        ravn = next(
+            container
+            for container in deployment["spec"]["template"]["spec"]["containers"]
+            if container["name"] == "ravn"
+        )
+        env = {entry["name"]: entry for entry in ravn["env"]}
+
+        assert "BROKER_ONLY" not in env
+        assert env["RAVN_NATS_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
+            "name": "flock-nats",
+            "key": "password",
+        }
+
     def test_ravn_config_carries_platform_workload_fields(self, rendered):
         configmaps = self._configmaps(rendered)
         ravn_cm = next(cm for name, cm in configmaps.items() if name.endswith("-ravn-config"))

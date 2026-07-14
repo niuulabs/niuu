@@ -3,6 +3,7 @@ import { getAuthHeaders } from '@niuulabs/query';
 import { extractOutcomeBlock } from '../components/OutcomeCard';
 import type {
   AgentInternalEvent,
+  AgentEventTarget,
   AttachmentMeta,
   ChatMessage,
   ChatMessagePart,
@@ -165,6 +166,7 @@ interface UseSkuldChatResult {
     text: string,
     attachments: FileAttachment[],
   ) => void;
+  publishEvent: (target: AgentEventTarget, text: string) => void;
   sendResendPrompt: () => void;
   respondToPermission: (requestId: string, behavior: PermissionBehavior) => void;
   respondToInput: (requestId: string, values: string[]) => void;
@@ -1769,6 +1771,32 @@ export function useSkuldChat(
     [sendJson],
   );
 
+  const publishEvent = useCallback(
+    (target: AgentEventTarget, text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed || !target.eventType.trim()) return;
+      const requestId = generateId();
+      optimisticUserMessagesRef.current.set(requestId, requestId);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: requestId,
+          role: 'user',
+          content: trimmed,
+          createdAt: new Date(),
+          status: 'done',
+        },
+      ]);
+      sendJson({
+        type: 'publish_event',
+        eventType: target.eventType,
+        content: trimmed,
+        request_id: requestId,
+      });
+    },
+    [sendJson],
+  );
+
   const sendResendPrompt = useCallback(() => {
     sendJson({ type: 'resend_initial_prompt' });
   }, [sendJson]);
@@ -1838,6 +1866,7 @@ export function useSkuldChat(
     capabilities,
     sendMessage,
     sendDirectedMessages,
+    publishEvent,
     sendResendPrompt,
     respondToPermission,
     respondToInput,

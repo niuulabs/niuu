@@ -180,6 +180,16 @@ class TestRoomMeshBridgeLifecycle:
         assert bridge._patterns == MESH_PATTERNS
 
     @pytest.mark.asyncio
+    async def test_default_pattern_is_scoped_to_flock(self):
+        bus = InProcessBus()
+        bridge = RoomMeshBridge(
+            subscriber=bus,
+            room_bridge=_make_room_bridge(),
+            environment_id="flock-a",
+        )
+        assert bridge._patterns == ["ravn.mesh.realm_flock_a.*"]
+
+    @pytest.mark.asyncio
     async def test_custom_patterns_accepted(self):
         bus = InProcessBus()
         custom = ["ravn.mesh.code.*"]
@@ -374,6 +384,43 @@ class TestOutcomeTranslation:
 
 class TestActivityTranslation:
     @pytest.mark.asyncio
+    async def test_task_started_event_translated_to_task_started_frame(self):
+        room = _make_room_bridge(known_peers=["hermes-01"])
+        bridge = RoomMeshBridge(
+            subscriber=InProcessBus(),
+            room_bridge=room,
+            session_id="sess-abc",
+        )
+        evt = _make_event(
+            source="ravn:hermes-01",
+            payload={
+                "ravn_event": {
+                    "task_id": "reaction-1",
+                    "title": "React to proof.started",
+                    "persona": "Hermes",
+                },
+                "ravn_type": "RavnEventType.TASK_STARTED",
+                "ravn_source": "hermes-01",
+                "ravn_session_id": "sess-abc",
+                "ravn_task_id": "reaction-1",
+            },
+        )
+
+        await bridge._handle_event(evt)
+
+        room.handle_ravn_frame.assert_awaited_once_with(
+            "hermes-01",
+            {
+                "type": "task_started",
+                "data": "React to proof.started",
+                "metadata": {
+                    "title": "React to proof.started",
+                    "task_id": "reaction-1",
+                },
+            },
+        )
+
+    @pytest.mark.asyncio
     async def test_tool_start_event_translated_to_tool_start_frame(self):
         room = _make_room_bridge(known_peers=["skuld-01"])
         bus = InProcessBus()
@@ -459,6 +506,43 @@ class TestActivityTranslation:
         _, frame = room.handle_ravn_frame.call_args[0]
         assert frame["type"] == "response"
         assert frame["data"] == "Here is the answer"
+        await bridge.stop()
+
+    @pytest.mark.asyncio
+    async def test_error_event_translated_to_persisted_error_frame(self):
+        room = _make_room_bridge(known_peers=["hermes-01"])
+        bus = InProcessBus()
+        bridge = RoomMeshBridge(
+            subscriber=bus,
+            room_bridge=room,
+            session_id="sess-abc",
+        )
+        await bridge.start()
+
+        evt = _make_event(
+            source="ravn:hermes-01",
+            payload={
+                "ravn_event": {
+                    "message": "Resident task completed without an assistant response",
+                    "persona": "Hermes",
+                },
+                "ravn_type": "RavnEventType.ERROR",
+                "ravn_source": "hermes-01",
+                "ravn_session_id": "sess-abc",
+                "ravn_urgency": 0.6,
+                "ravn_task_id": "task-1",
+            },
+        )
+        await bridge._handle_event(evt)
+
+        room.handle_ravn_frame.assert_awaited_once_with(
+            "hermes-01",
+            {
+                "type": "error",
+                "data": "Resident task completed without an assistant response",
+                "metadata": {},
+            },
+        )
         await bridge.stop()
 
     @pytest.mark.asyncio

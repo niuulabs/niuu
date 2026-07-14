@@ -1,6 +1,7 @@
 """Tests for domain services."""
 
 import asyncio
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -253,6 +254,15 @@ class TestSessionServiceDelete:
 
         assert result is True
         assert await repository.get(created.id) is None
+
+    async def test_delete_existing_removes_trace_spans(self, repository: Repo, pod_manager: Pods):
+        spans = AsyncMock()
+        service = SessionService(repository, pod_manager, span_repository=spans)
+        created = await service.create_session(name="test", model="claude-3-opus")
+
+        assert await service.delete_session(created.id)
+
+        spans.delete_by_session.assert_awaited_once_with(created.id)
 
     async def test_delete_nonexistent(self, repository: Repo, pod_manager: Pods):
         """Deleting a nonexistent session returns False."""

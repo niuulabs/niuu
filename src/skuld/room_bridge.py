@@ -1068,7 +1068,11 @@ class RoomBridge:
         """Translate a response/error frame into a room_message event."""
         msg_id = str(uuid.uuid4())
         content = frame.get("data", "")
-        thread_id = frame.get("metadata", {}).get("thread_id")
+        metadata = frame.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        thread_id = metadata.get("thread_id")
+        visibility = frame.get("visibility") or "public"
 
         room_event: dict = {
             "type": "room_message",
@@ -1076,7 +1080,7 @@ class RoomBridge:
             "participantId": meta.peer_id,
             "participant": asdict(meta),
             "content": content,
-            "visibility": frame.get("visibility", "public"),
+            "visibility": visibility,
         }
         if is_error:
             room_event["error"] = True
@@ -1099,10 +1103,11 @@ class RoomBridge:
                 id=msg_id,
                 role="assistant",
                 content=content,
+                metadata=metadata,
                 participant_id=meta.peer_id,
                 participant_meta=asdict(meta),
                 thread_id=thread_id,
-                visibility="public",
+                visibility=visibility,
             )
             self._append_turn(turn)
 
@@ -1116,7 +1121,7 @@ class RoomBridge:
                 content=content,
                 visibility=room_event["visibility"],
                 thread_id=thread_id or "",
-                metadata=frame.get("metadata", {}),
+                metadata=metadata,
             )
 
     async def _handle_activity_frame(

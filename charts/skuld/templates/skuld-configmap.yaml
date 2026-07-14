@@ -68,7 +68,7 @@ data:
       enabled: true
       max_participants: 2
       presence_sweep_interval_s: 0
-      default_target_peer_id: {{ printf "flock-%s" $persona | quote }}
+      default_target_peer_id: {{ .Values.resident.flock.peerId | default (printf "flock-%s" $persona) | quote }}
 
     # Resident: in-pod nng mesh between the broker and the ravn daemon.
     mesh:
@@ -90,7 +90,7 @@ data:
               consumes_event_types: []
               emits_event_types:
                 - code.changed
-            - peer_id: {{ printf "flock-%s" $persona | quote }}
+            - peer_id: {{ .Values.resident.flock.peerId | default (printf "flock-%s" $persona) | quote }}
               persona: {{ $persona | quote }}
               pub_address: "tcp://127.0.0.1:7482"
               rep_address: "tcp://127.0.0.1:7483"

@@ -32,6 +32,7 @@ import { extractOutcomeBlock } from '../OutcomeCard';
 import { Dialog, DialogContent } from '../../../primitives/Dialog';
 import type {
   AgentInternalEvent,
+  AgentEventTarget,
   ChatMessage,
   ChatMessagePart,
   InputRequest,
@@ -279,6 +280,8 @@ export interface SessionChatProps {
   showInternalToggle?: boolean;
   /** Controlled internal visibility state for external toolbar integrations. */
   internalVisibility?: boolean;
+  /** Route @ mentions through participant event subscriptions. */
+  eventRouting?: boolean;
 
   /* ── Callbacks ── */
   onSend: (text: string, attachments: FileAttachment[]) => void;
@@ -287,6 +290,7 @@ export interface SessionChatProps {
     text: string,
     attachments: FileAttachment[],
   ) => void;
+  onPublishEvent?: (target: AgentEventTarget, text: string) => void;
   onStop?: () => void;
   onClear?: () => void;
   /**
@@ -340,8 +344,10 @@ export function SessionChat({
   showToolbar = true,
   showInternalToggle = true,
   internalVisibility,
+  eventRouting = false,
   onSend,
   onSendDirected,
+  onPublishEvent,
   onStop,
   onClear,
   onSetInternalVisibility,
@@ -597,6 +603,14 @@ export function SessionChat({
       onSendDirected?.(agentParticipants, text, fileAttachments);
     },
     [onSendDirected],
+  );
+
+  const handlePublishEvent = useCallback(
+    (target: AgentEventTarget, text: string) => {
+      userSentRef.current = true;
+      onPublishEvent?.(target, text);
+    },
+    [onPublishEvent],
   );
 
   const handlePermissionRespond = useCallback(
@@ -961,6 +975,7 @@ export function SessionChat({
           <SessionEmptyChat
             sessionName={sessionName}
             onSuggestionClick={(text) => handleSend(text, [])}
+            suggestionsEnabled={!eventRouting}
           />
         )}
 
@@ -994,6 +1009,8 @@ export function SessionChat({
             <ChatInput
               onSend={handleSend}
               onSendDirected={handleSendDirected}
+              onPublishEvent={handlePublishEvent}
+              eventRouting={eventRouting}
               isLoading={false}
               onStop={onStop ?? (() => undefined)}
               disabled={!connected}

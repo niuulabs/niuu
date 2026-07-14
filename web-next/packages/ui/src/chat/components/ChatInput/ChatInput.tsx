@@ -10,11 +10,11 @@ import { ArrowUp, Paperclip, Square, X } from 'lucide-react';
 import { cn } from '../../../utils/cn';
 import { useFileAttachments, type FileAttachment } from '../../hooks/useFileAttachments';
 import { useSlashMenu } from '../../hooks/useSlashMenu';
-import { useMentionMenu } from '../../hooks/useMentionMenu';
+import { mentionId, useMentionMenu } from '../../hooks/useMentionMenu';
 import { SlashCommandMenu } from '../SlashCommandMenu';
 import { MentionMenu } from '../MentionMenu';
 import { MentionPill } from '../MentionPill';
-import type { RoomParticipant, FileEntry } from '../../types';
+import type { AgentEventTarget, RoomParticipant, FileEntry } from '../../types';
 import type { SlashCommand } from '../../utils/slashCommands';
 import type { SelectedMention } from '../../hooks/useMentionMenu';
 import './ChatInput.css';
@@ -79,6 +79,8 @@ interface ChatInputProps {
     text: string,
     attachments: FileAttachment[],
   ) => void;
+  onPublishEvent?: (target: AgentEventTarget, text: string) => void;
+  eventRouting?: boolean;
   isLoading: boolean;
   onStop: () => void;
   disabled?: boolean;
@@ -95,6 +97,8 @@ interface ChatInputProps {
 export function ChatInput({
   onSend,
   onSendDirected,
+  onPublishEvent,
+  eventRouting = false,
   isLoading,
   onStop,
   disabled = false,
@@ -118,6 +122,7 @@ export function ChatInput({
     chatEndpoint,
     participants,
     onFetchFiles,
+    eventRouting,
   );
   const {
     attachments: fileAttachmentsList,
@@ -132,6 +137,11 @@ export function ChatInput({
   } = useFileAttachments();
 
   const hasContent = input.trim().length > 0 || fileAttachmentsList.length > 0;
+  const selectedEventMention = mentionMenu.mentions.find(
+    (mention): mention is Extract<SelectedMention, { kind: 'agent' }> & { eventType: string } =>
+      mention.kind === 'agent' && Boolean(mention.eventType),
+  );
+  const canSend = hasContent && (!eventRouting || Boolean(selectedEventMention));
 
   const resetTextareaHeight = useCallback(() => {
     const textarea = textareaRef.current;
@@ -153,8 +163,27 @@ export function ChatInput({
     const trimmed = input.trim();
     if (!trimmed || disabled) return;
 
+    if (eventRouting) {
+      if (!selectedEventMention || !onPublishEvent) return;
+      const eventPrefix = `@${selectedEventMention.eventType}`;
+      const fullMessage = trimmed.startsWith(eventPrefix) ? trimmed : `${eventPrefix} ${trimmed}`;
+      onPublishEvent(
+        {
+          participant: selectedEventMention.participant,
+          eventType: selectedEventMention.eventType,
+        },
+        fullMessage,
+      );
+      setInput('');
+      clearFileAttachments();
+      for (const mention of mentionMenu.mentions) {
+        mentionMenu.removeMention(mentionId(mention));
+      }
+      return;
+    }
+
     const selectedAgentMentions = mentionMenu.mentions
-      .filter((m): m is { kind: 'agent'; participant: RoomParticipant } => m.kind === 'agent')
+      .filter((m): m is Extract<SelectedMention, { kind: 'agent' }> => m.kind === 'agent')
       .map((m) => m.participant);
     const inlineAgentMentions = resolveInlineAgentMentions(trimmed, participants);
     const agentMentions = Array.from(
@@ -183,15 +212,17 @@ export function ChatInput({
 
     setInput('');
     clearFileAttachments();
-    for (const m of mentionMenu.mentions) {
-      const id = m.kind === 'file' ? m.entry.path : m.participant.peerId;
-      mentionMenu.removeMention(id);
+    for (const mention of mentionMenu.mentions) {
+      mentionMenu.removeMention(mentionId(mention));
     }
   }, [
     input,
     disabled,
     onSend,
     onSendDirected,
+    onPublishEvent,
+    eventRouting,
+    selectedEventMention,
     mentionMenu,
     fileAttachmentsList,
     clearFileAttachments,
@@ -279,17 +310,17 @@ export function ChatInput({
       className={cn('niuu-chat-input-wrapper', className)}
       data-disabled={disabled || undefined}
       data-drag-over={isDragging || undefined}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-      onPaste={handlePaste}
+      onDragOver={eventRouting ? undefined : handleDragOver}
+      onDragLeave={eventRouting ? undefined : handleDragLeave}
+      onDrop={eventRouting ? undefined : handleDrop}
+      onPaste={eventRouting ? undefined : handlePaste}
       data-testid="chat-input"
     >
       {(fileAttachmentsList.length > 0 || mentionMenu.mentions.length > 0) && (
         <div className="niuu-chat-input-attachments">
           {mentionMenu.mentions.map((mention) => (
             <MentionPill
-              key={mention.kind === 'file' ? mention.entry.path : mention.participant.peerId}
+              key={mentionId(mention)}
               mention={mention}
               onRemove={mentionMenu.removeMention}
             />
@@ -360,7 +391,13 @@ export function ChatInput({
           value={input}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
-          placeholder={disabled ? 'Start session to chat...' : 'Message...'}
+          placeholder={
+            disabled
+              ? 'Start session to chat...'
+              : eventRouting
+                ? 'Select a participant event with @...'
+                : 'Message...'
+          }
           disabled={disabled}
           rows={1}
           data-testid="chat-textarea"
@@ -369,24 +406,28 @@ export function ChatInput({
 
       <div className="niuu-chat-input-bottom-bar">
         <div className="niuu-chat-input-left-actions">
-          <button
-            type="button"
-            className="niuu-chat-input-icon-btn"
-            onClick={handleAttachClick}
-            data-disabled={disabled || undefined}
-            aria-label="Attach file"
-            data-testid="attach-btn"
-          >
-            <Paperclip className="niuu-chat-input-btn-icon" />
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            className="niuu-chat-input-hidden"
-            accept={ACCEPTED_FILE_TYPES}
-            onChange={handleFileChange}
-            multiple
-          />
+          {!eventRouting && (
+            <>
+              <button
+                type="button"
+                className="niuu-chat-input-icon-btn"
+                onClick={handleAttachClick}
+                data-disabled={disabled || undefined}
+                aria-label="Attach file"
+                data-testid="attach-btn"
+              >
+                <Paperclip className="niuu-chat-input-btn-icon" />
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="niuu-chat-input-hidden"
+                accept={ACCEPTED_FILE_TYPES}
+                onChange={handleFileChange}
+                multiple
+              />
+            </>
+          )}
         </div>
 
         <div className="niuu-chat-input-right-actions">
@@ -406,9 +447,9 @@ export function ChatInput({
           <button
             type="button"
             className="niuu-chat-send-btn"
-            data-active={(hasContent && !disabled) || undefined}
+            data-active={(canSend && !disabled) || undefined}
             onClick={handleSend}
-            disabled={!hasContent || disabled}
+            disabled={!canSend || disabled}
             aria-label="Send message"
             data-testid="send-btn"
           >

@@ -68,7 +68,16 @@ class TestConversationHistoryPersistence:
 
     def test_save_and_load_history(self, test_broker):
         turn1 = ConversationTurn(id="1", role="user", content="Hello")
-        turn2 = ConversationTurn(id="2", role="assistant", content="Hi!")
+        turn2 = ConversationTurn(
+            id="2",
+            role="assistant",
+            content="Hi!",
+            metadata={"resident_session_id": "worker-session-1"},
+            participant_id="hermes-1",
+            participant_meta={"peer_id": "hermes-1", "persona": "Hermes"},
+            thread_id="thread-1",
+            visibility="internal",
+        )
 
         test_broker._conversation_turns = [turn1, turn2]
         test_broker._save_conversation_history()
@@ -89,6 +98,16 @@ class TestConversationHistoryPersistence:
         assert len(test_broker._conversation_turns) == 2
         assert test_broker._conversation_turns[0].content == "Hello"
         assert test_broker._conversation_turns[1].content == "Hi!"
+        assert test_broker._conversation_turns[1].metadata == {
+            "resident_session_id": "worker-session-1"
+        }
+        assert test_broker._conversation_turns[1].participant_id == "hermes-1"
+        assert test_broker._conversation_turns[1].participant_meta == {
+            "peer_id": "hermes-1",
+            "persona": "Hermes",
+        }
+        assert test_broker._conversation_turns[1].thread_id == "thread-1"
+        assert test_broker._conversation_turns[1].visibility == "internal"
 
     def test_load_nonexistent_file(self, test_broker):
         test_broker._load_conversation_history()

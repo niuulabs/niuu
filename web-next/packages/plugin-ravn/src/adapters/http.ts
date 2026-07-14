@@ -252,6 +252,10 @@ interface RawRavn {
   backend?: string;
   engine?: string;
   profile_id?: string;
+  flock_id?: string;
+  flock_member_id?: string;
+  flock_role?: string;
+  flock_peer_id?: string;
   desired_state?: string;
   observed_state?: string;
   backend_ref?: Record<string, unknown>;
@@ -315,6 +319,10 @@ interface RawSession {
   cost?: number | string;
   chat_endpoint?: string | null;
   instance_id?: string;
+  flock_id?: string;
+  flock_member_id?: string;
+  flock_role?: string;
+  flock_peer_id?: string;
 }
 
 interface RawResidentLogPage {
@@ -493,6 +501,10 @@ function toRavn(raw: RawRavn): Ravn {
     ...(raw.backend !== undefined && { backend: raw.backend as Ravn['backend'] }),
     ...(raw.engine !== undefined && { engine: raw.engine as Ravn['engine'] }),
     ...(raw.profile_id !== undefined && { profileId: raw.profile_id }),
+    ...(raw.flock_id && { flockId: raw.flock_id }),
+    ...(raw.flock_member_id && { flockMemberId: raw.flock_member_id }),
+    ...(raw.flock_role && { flockRole: raw.flock_role }),
+    ...(raw.flock_peer_id && { flockPeerId: raw.flock_peer_id }),
     ...(raw.desired_state !== undefined && {
       desiredState: raw.desired_state as Ravn['desiredState'],
     }),
@@ -529,6 +541,10 @@ function toSession(raw: RawSession): Session {
     costUsd: raw.cost === undefined ? undefined : Number(raw.cost),
     chatEndpoint: withInstanceQuery(raw.chat_endpoint, raw.instance_id),
     instanceId: raw.instance_id,
+    flockId: raw.flock_id,
+    flockMemberId: raw.flock_member_id,
+    flockRole: raw.flock_role,
+    flockPeerId: raw.flock_peer_id,
   };
 }
 
@@ -796,6 +812,10 @@ export function buildRavnResidentControlAdapter(client: ApiClient): IResidentCon
         instance_id: request.instanceId,
         persona_name: request.personaName ?? '',
         model: request.model ?? '',
+        ...(request.flockId && { flock_id: request.flockId }),
+        ...(request.flockMemberId && { flock_member_id: request.flockMemberId }),
+        ...(request.flockRole && { flock_role: request.flockRole }),
+        ...(request.flockPeerId && { flock_peer_id: request.flockPeerId }),
       });
       return toRavn(raw);
     },

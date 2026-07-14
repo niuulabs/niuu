@@ -10,6 +10,11 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from volundr.adapters.outbound.resident_container_spec import (
+    resident_flock_labels,
+    resident_flock_profile_configured,
+    resident_mesh_pod_metadata,
+)
 from volundr.domain.models import (
     ResidentBackend,
     ResidentCondition,
@@ -412,9 +417,13 @@ class FluxPodManager(PodManager, ResidentRuntimeController):
         return ResidentBackend.HELMRELEASE
 
     def supports(self, profile: ResidentDeploymentProfile) -> bool:
-        return (
-            profile.backend is ResidentBackend.HELMRELEASE and profile.engine is ResidentEngine.RAVN
-        )
+        if (
+            profile.backend is not ResidentBackend.HELMRELEASE
+            or profile.engine is not ResidentEngine.RAVN
+        ):
+            return False
+        values = profile.deployment.get("values") or {}
+        return isinstance(values, dict) and resident_flock_profile_configured(profile, values)
 
     @staticmethod
     def _resident_release_name(runtime: ResidentRuntime) -> str:
@@ -464,6 +473,16 @@ class FluxPodManager(PodManager, ResidentRuntimeController):
         }
         if runtime.model:
             resident_values["llm"] = {"model": runtime.model}
+        if runtime.flock_id is not None:
+            resident_values["flock"] = {
+                "id": str(runtime.flock_id),
+                "memberId": str(runtime.flock_member_id or ""),
+                "role": runtime.flock_role,
+                "peerId": runtime.flock_peer_id,
+            }
+
+        flock_labels = resident_flock_labels(runtime, prefix="niuu.world")
+        mesh_labels, mesh_annotations = resident_mesh_pod_metadata(runtime)
 
         runtime_values: dict[str, Any] = {
             "replicaCount": (0 if runtime.desired_state is ResidentDesiredState.SUSPENDED else 1),
@@ -478,6 +497,8 @@ class FluxPodManager(PodManager, ResidentRuntimeController):
                 "niuu.world/resident-id": str(runtime.id),
                 "niuu.world/backend": runtime.backend.value,
                 "niuu.world/engine": runtime.engine.value,
+                **flock_labels,
+                **mesh_labels,
             },
             "podAnnotations": {
                 "niuu.world/resident-id": str(runtime.id),
@@ -486,6 +507,8 @@ class FluxPodManager(PodManager, ResidentRuntimeController):
                 "niuu.world/tenant-id": runtime.tenant_id,
                 "niuu.world/visibility": "user",
                 "niuu.world/profile-id": runtime.profile_id,
+                **flock_labels,
+                **mesh_annotations,
             },
         }
         if runtime.model:
@@ -507,11 +530,13 @@ class FluxPodManager(PodManager, ResidentRuntimeController):
                 "niuu.world/kind": "resident",
                 "niuu.world/resident-id": str(runtime.id),
                 "niuu.world/backend": runtime.backend.value,
+                **resident_flock_labels(runtime, prefix="niuu.world"),
             },
             annotations={
                 "niuu.world/owner-id": runtime.owner_id,
                 "niuu.world/tenant-id": runtime.tenant_id,
                 "niuu.world/profile-id": runtime.profile_id,
+                **resident_flock_labels(runtime, prefix="niuu.world"),
             },
         )
         return ResidentRuntimeObservation(

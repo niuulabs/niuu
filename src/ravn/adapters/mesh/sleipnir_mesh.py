@@ -23,16 +23,12 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from niuu.mesh import mesh_event_prefix
 from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.ports.mesh import PeerNotFoundError
 from sleipnir.ports.events import SleipnirPublisher, SleipnirSubscriber, Subscription
 
 logger = logging.getLogger(__name__)
-
-# Event type prefixes for mesh communication
-_MESH_EVENT_PREFIX = "ravn.mesh"
-_RPC_REQUEST_PREFIX = "ravn.mesh.rpc"
-_RPC_REPLY_PREFIX = "ravn.mesh.rpc.reply"
 
 
 def _sanitize_for_event_type(s: str) -> str:
@@ -49,12 +45,18 @@ def _sanitize_topic(topic: str) -> str:
     return ".".join(_sanitize_for_event_type(segment) for segment in topic.split("."))
 
 
-def _ravn_to_sleipnir(event: RavnEvent, topic: str, source_peer_id: str) -> dict:
+def _ravn_to_sleipnir(
+    event: RavnEvent,
+    topic: str,
+    source_peer_id: str,
+    event_prefix: str,
+    environment_id: str,
+) -> dict:
     """Convert RavnEvent to SleipnirEvent dict for publishing."""
     from sleipnir.domain.events import SleipnirEvent
 
     # Use topic as part of the event type
-    event_type = f"{_MESH_EVENT_PREFIX}.{_sanitize_topic(topic)}"
+    event_type = f"{event_prefix}.{_sanitize_topic(topic)}"
 
     return SleipnirEvent(
         event_type=event_type,
@@ -67,6 +69,7 @@ def _ravn_to_sleipnir(event: RavnEvent, topic: str, source_peer_id: str) -> dict
             "ravn_session_id": event.session_id,
             "ravn_task_id": event.task_id,
             "ravn_root_correlation_id": event.root_correlation_id,
+            "ravn_environment_id": environment_id,
         },
         summary=f"Mesh event: {topic}",
         urgency=event.urgency,
@@ -128,6 +131,7 @@ class SleipnirMeshAdapter:
         discovery: object | None = None,
         rpc_timeout_s: float = 10.0,
         environment_id: str = "",
+        manage_transport_lifecycle: bool = True,
     ) -> None:
         self._publisher = publisher
         self._subscriber = subscriber
@@ -135,6 +139,10 @@ class SleipnirMeshAdapter:
         self._discovery = discovery
         self._rpc_timeout_s = rpc_timeout_s
         self._environment_id = environment_id or "-"
+        self._event_prefix = mesh_event_prefix(environment_id)
+        self._rpc_request_prefix = f"{self._event_prefix}.rpc"
+        self._rpc_reply_prefix = f"{self._rpc_request_prefix}.reply"
+        self._manage_transport_lifecycle = manage_transport_lifecycle
 
         self._subscriptions: dict[str, Subscription] = {}
         self._rpc_handler: Callable[[dict], Awaitable[dict]] | None = None
@@ -149,7 +157,13 @@ class SleipnirMeshAdapter:
 
     async def publish(self, event: RavnEvent, topic: str) -> None:
         """Broadcast *event* to all subscribers of *topic*."""
-        sleipnir_event = _ravn_to_sleipnir(event, topic, self._own_peer_id)
+        sleipnir_event = _ravn_to_sleipnir(
+            event,
+            topic,
+            self._own_peer_id,
+            self._event_prefix,
+            "" if self._environment_id == "-" else self._environment_id,
+        )
         try:
             await self._publisher.publish(sleipnir_event)
         except Exception as exc:
@@ -171,7 +185,7 @@ class SleipnirMeshAdapter:
         handler: Callable[[RavnEvent], Awaitable[None]],
     ) -> None:
         """Register *handler* for events on *topic*."""
-        event_type_pattern = f"{_MESH_EVENT_PREFIX}.{_sanitize_topic(topic)}"
+        event_type_pattern = f"{self._event_prefix}.{_sanitize_topic(topic)}"
 
         async def _wrapped_handler(sleipnir_event: Any) -> None:
             try:
@@ -222,7 +236,7 @@ class SleipnirMeshAdapter:
         safe_own_id = _sanitize_for_event_type(self._own_peer_id)
         safe_target_id = _sanitize_for_event_type(target_peer_id)
         correlation_id = f"{self._own_peer_id}.{nonce}"
-        reply_topic = f"{_RPC_REPLY_PREFIX}.{safe_own_id}.{nonce}"
+        reply_topic = f"{self._rpc_reply_prefix}.{safe_own_id}.{nonce}"
 
         # Create future for the response
         response_future: asyncio.Future[dict] = asyncio.get_event_loop().create_future()
@@ -242,11 +256,12 @@ class SleipnirMeshAdapter:
             from sleipnir.domain.events import SleipnirEvent
 
             request_event = SleipnirEvent(
-                event_type=f"{_RPC_REQUEST_PREFIX}.{safe_target_id}",
+                event_type=f"{self._rpc_request_prefix}.{safe_target_id}",
                 source=f"ravn:{self._own_peer_id}",
                 payload={
                     "rpc_request": message,
                     "reply_topic": reply_topic,
+                    "environment_id": "" if self._environment_id == "-" else self._environment_id,
                 },
                 summary=f"RPC request to {target_peer_id}",
                 urgency=0.5,
@@ -294,15 +309,19 @@ class SleipnirMeshAdapter:
     async def start(self) -> None:
         """Start listening for incoming RPC requests."""
         # Start the transport if it has a start method (nng, rabbitmq, etc.)
-        if hasattr(self._publisher, "start"):
+        if self._manage_transport_lifecycle and hasattr(self._publisher, "start"):
             await self._publisher.start()
         # If subscriber is different from publisher, start it too
-        if self._subscriber is not self._publisher and hasattr(self._subscriber, "start"):
+        if (
+            self._manage_transport_lifecycle
+            and self._subscriber is not self._publisher
+            and hasattr(self._subscriber, "start")
+        ):
             await self._subscriber.start()
 
         # Subscribe to RPC requests for this peer
         safe_own_id = _sanitize_for_event_type(self._own_peer_id)
-        rpc_pattern = f"{_RPC_REQUEST_PREFIX}.{safe_own_id}"
+        rpc_pattern = f"{self._rpc_request_prefix}.{safe_own_id}"
         self._rpc_subscription = await self._subscriber.subscribe(
             [rpc_pattern], self._handle_rpc_request
         )
@@ -330,9 +349,13 @@ class SleipnirMeshAdapter:
         self._pending_rpc.clear()
 
         # Stop the transport if it has a stop method
-        if hasattr(self._publisher, "stop"):
+        if self._manage_transport_lifecycle and hasattr(self._publisher, "stop"):
             await self._publisher.stop()
-        if self._subscriber is not self._publisher and hasattr(self._subscriber, "stop"):
+        if (
+            self._manage_transport_lifecycle
+            and self._subscriber is not self._publisher
+            and hasattr(self._subscriber, "stop")
+        ):
             await self._subscriber.stop()
 
         logger.info(

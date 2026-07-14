@@ -340,7 +340,7 @@ residentRuntimeProfiles: []
 #   description: Long-lived Ravn deployed through the existing Skuld chart
 #   backend: helmrelease
 #   engine: ravn
-#   capabilities: [chat, runtime.restart, runtime.suspend, logs, metrics, usage]
+#   capabilities: [chat, runtime.restart, runtime.suspend, logs, metrics, usage, flock]
 #   defaultModel: claude-sonnet-4-6
 #   # Engine compatibility policy; only IDs currently enabled in Bifrost are exposed.
 #   allowedModels: [claude-sonnet-4-6]
@@ -358,6 +358,11 @@ residentRuntimeProfiles: []
 #         platform:
 #           enabled: true
 #           baseUrl: http://niuu-volundr.volundr.svc.cluster.local
+#         flock:
+#           mesh:
+#             adapters: [{adapter: sleipnir, transport: nats}]
+#             nats:
+#               servers: [nats://sleipnir.sleipnir.svc.cluster.local:4222]
 
 # Additional resident backend adapters. A PodManager that also implements the
 # resident controller port is registered automatically and should not be repeated.
@@ -376,6 +381,13 @@ residentRuntimeSessionControllers: []
 
 # -- Seconds between resident HelmRelease/Deployment reconciliation passes
 residentRuntimeReconciliationIntervalSeconds: 10.0
+
+# Sleipnir is the transport for cross-runtime flock RPC and platform events.
+sleipnir:
+  enabled: false
+  adapter: sleipnir.adapters.in_process.InProcessBus
+  kwargs: {}
+  secretKwargs: []
 
 # Chronicle configuration
 chronicle:
