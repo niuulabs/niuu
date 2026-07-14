@@ -14,6 +14,7 @@ from observatory.entity_discovery import (
     FluxHelmReleaseSessionDiscoveryAdapter,
     HttpObservatoryDiscoveryAdapter,
     KubernetesDiscoveryAdapter,
+    RavnValkyrieDiscoveryAdapter,
     StaticRelationshipDiscoveryAdapter,
     VolundrSessionsDiscoveryAdapter,
     WardenSpecDiscoveryAdapter,
@@ -91,6 +92,53 @@ async def test_kubernetes_discovery_projects_labels_to_topology(tmp_path, monkey
     assert namespace["layoutHints"]["packGroup"] == "namespace"
     assert cluster["layoutHints"]["packGroup"] == "cluster"
     assert snapshot["edges"] == []
+
+
+@pytest.mark.asyncio
+async def test_kubernetes_discovery_projects_valkyrie_type(tmp_path, monkeypatch) -> None:
+    service_account = tmp_path / "sa"
+    service_account.mkdir()
+    (service_account / "token").write_text("token", encoding="utf-8")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["labelSelector"] == "niuu.world/cluster=ymir"
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "metadata": {
+                            "name": "valkyrie-ymir-k8s",
+                            "namespace": "nats",
+                            "uid": "uid-valkyrie",
+                            "labels": {
+                                "niuu.world/cluster": "ymir",
+                                "niuu.world/entity-id": "valkyrie-ymir-k8s",
+                                "observatory.niuu.world/type": "valkyrie",
+                                "app.kubernetes.io/name": "valkyrie",
+                                "app.kubernetes.io/component": "resident-agent",
+                            },
+                        },
+                        "status": {"replicas": 1, "readyReplicas": 1, "availableReplicas": 1},
+                    }
+                ]
+            },
+        )
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        label_selector="niuu.world/cluster=ymir",
+        include_kinds=["deployments"],
+        service_account_root=str(service_account),
+        transport=httpx.MockTransport(handler),
+    )
+
+    snapshot = topology_from_discovery(await adapter.discover())
+    valkyrie = next(node for node in snapshot["nodes"] if node["typeId"] == "valkyrie")
+
+    assert valkyrie["id"] == "runtime:ymir:nats:valkyrie:valkyrie-ymir-k8s"
+    assert valkyrie["status"] == "healthy"
 
 
 @pytest.mark.asyncio
@@ -418,6 +466,47 @@ async def test_http_observatory_adapter_merges_remote_snapshot() -> None:
     assert [entity.id for entity in result.entities] == ["cluster-valhalla"]
     assert result.entities[0].cluster == "valhalla"
     assert json.loads(json.dumps(result.events))[0]["id"] == "event-1"
+
+
+@pytest.mark.asyncio
+async def test_ravn_valkyrie_adapter_projects_cross_cluster_dashboard() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/ravn/valkyrie/dashboard"
+        return httpx.Response(
+            200,
+            json={
+                "environments": [{"id": "eitri", "health": "watch"}],
+                "valkyries": [
+                    {
+                        "id": "valkyrie-eitri-k8s",
+                        "name": "Bryn",
+                        "environmentId": "eitri",
+                        "status": "online",
+                        "persona": "k8s-valkyrie",
+                        "specialty": "workshop operator",
+                        "autonomyMode": "guarded",
+                        "wakefulness": "watching",
+                        "flockId": "flock-k8s",
+                        "confidence": 0.82,
+                    }
+                ],
+            },
+        )
+
+    adapter = RavnValkyrieDiscoveryAdapter(
+        base_url="https://ravn.example",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    assert len(result.entities) == 1
+    valkyrie = result.entities[0]
+    assert valkyrie.id == "runtime:eitri:nats:valkyrie:valkyrie-eitri-k8s"
+    assert valkyrie.kind == "valkyrie"
+    assert valkyrie.name == "Bryn"
+    assert valkyrie.status == "healthy"
+    assert valkyrie.metadata["environmentHealth"] == "watch"
 
 
 @pytest.mark.asyncio

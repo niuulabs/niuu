@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import socket
@@ -14,6 +15,7 @@ from urllib.parse import quote
 
 import httpx
 
+from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class, resolve_secret_kwargs
 from observatory.contracts import ObservatoryEdge, ObservatoryEvent, ObservatorySnapshot
 
@@ -31,6 +33,7 @@ _KNOWN_TYPE_IDS = {
     "service",
     "skuld",
     "ting",
+    "valkyrie",
     "vaettir",
     "volundr",
     "warden",
@@ -49,6 +52,8 @@ _COMPONENT_TYPES = {
     "saga-coordinator": "ting",
     "shared-services": "service",
     "ting": "ting",
+    "resident-agent": "valkyrie",
+    "valkyrie": "valkyrie",
     "volundr": "volundr",
     "warden": "warden",
     "web": "volundr",
@@ -176,6 +181,19 @@ def _status_from_session(status: str) -> str:
         return "failed"
     if normalized in {"stopped", "archived"}:
         return "idle"
+    return "unknown"
+
+
+def _status_from_valkyrie(status: str) -> str:
+    normalized = status.strip().lower()
+    if normalized in {"online", "healthy", "watching", "wakeful"}:
+        return "healthy"
+    if normalized in {"watch", "degraded", "observing"}:
+        return "observing"
+    if normalized in {"sleeping", "dreaming", "idle"}:
+        return "idle"
+    if normalized in {"offline", "failed"}:
+        return "failed"
     return "unknown"
 
 
@@ -792,6 +810,88 @@ class HttpObservatoryDiscoveryAdapter:
         if self._base_url.endswith("/api/v1/observatory"):
             return f"{self._base_url}/topology/snapshot"
         return f"{self._base_url}/api/v1/observatory/topology/snapshot"
+
+
+class RavnValkyrieDiscoveryAdapter:
+    """Discover cross-cluster Valkyries from Ravn's live dashboard projection."""
+
+    def __init__(
+        self,
+        base_url: str,
+        namespace: str = "nats",
+        timeout_seconds: float = 5.0,
+        auth_adapter: str = "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter",
+        auth_kwargs: dict[str, Any] | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._namespace = namespace
+        self._timeout_seconds = timeout_seconds
+        self._auth: HttpAuthPort = import_class(auth_adapter)(**(auth_kwargs or {}))
+        self._transport = transport
+
+    async def discover(self) -> DiscoveryResult:
+        try:
+            headers = await asyncio.to_thread(self._auth.headers)
+            async with httpx.AsyncClient(
+                timeout=self._timeout_seconds,
+                follow_redirects=True,
+                transport=self._transport,
+            ) as client:
+                response = await client.get(
+                    f"{self._base_url}/api/v1/ravn/valkyrie/dashboard",
+                    headers=headers,
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except Exception as exc:
+            return DiscoveryResult(
+                events=[_adapter_warning("ravn-valkyrie", f"{self._base_url}: {exc}")]
+            )
+
+        if not isinstance(payload, dict):
+            return DiscoveryResult()
+
+        environments = {
+            str(item.get("id") or ""): item
+            for item in payload.get("environments", [])
+            if isinstance(item, dict) and str(item.get("id") or "")
+        }
+        entities: list[DiscoveredEntity] = []
+        for item in payload.get("valkyries", []):
+            if not isinstance(item, dict):
+                continue
+            valkyrie_id = str(item.get("id") or "").strip()
+            environment_id = str(item.get("environmentId") or "").strip()
+            if not valkyrie_id or not environment_id:
+                continue
+            environment = environments.get(environment_id, {})
+            entities.append(
+                DiscoveredEntity(
+                    id=(
+                        f"runtime:{_slug(environment_id)}:{_slug(self._namespace)}:"
+                        f"valkyrie:{_slug(valkyrie_id)}"
+                    ),
+                    kind="valkyrie",
+                    name=str(item.get("name") or valkyrie_id),
+                    cluster=environment_id,
+                    namespace=self._namespace,
+                    status=_status_from_valkyrie(str(item.get("status") or "")),
+                    source_adapter=self.__class__.__name__,
+                    source_kind="ravn:valkyrie-dashboard",
+                    source_uid=valkyrie_id,
+                    metadata={
+                        "environmentHealth": str(environment.get("health") or ""),
+                        "persona": str(item.get("persona") or ""),
+                        "specialty": str(item.get("specialty") or ""),
+                        "autonomy": str(item.get("autonomyMode") or ""),
+                        "wakefulness": str(item.get("wakefulness") or ""),
+                        "flockId": str(item.get("flockId") or ""),
+                        "confidence": item.get("confidence"),
+                    },
+                )
+            )
+        return DiscoveryResult(entities=entities)
 
 
 class KubernetesDiscoveryAdapter:
