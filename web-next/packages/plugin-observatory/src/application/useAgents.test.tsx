@@ -3,9 +3,9 @@ import { renderHook, waitFor } from '@testing-library/react';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import type { ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import type { AgentDirectoryPage } from '../domain';
+import type { AgentDirectoryEntry, AgentDirectoryPage } from '../domain';
 import type { IAgentDirectory } from '../ports';
-import { useAgents } from './useAgents';
+import { useAgent, useAgents } from './useAgents';
 
 const emptyPage: AgentDirectoryPage = {
   items: [],
@@ -53,5 +53,20 @@ describe('useAgents', () => {
 
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.error).toEqual(new Error('observatory unavailable'));
+  });
+});
+
+describe('useAgent', () => {
+  it('loads one directory entry by its stable ID', async () => {
+    const entry = { id: 'agent-one' } as AgentDirectoryEntry;
+    const getAgent = vi.fn().mockResolvedValue(entry);
+    const directory = { listAgents: vi.fn(), getAgent } as IAgentDirectory;
+    const { result } = renderHook(() => useAgent('agent-one'), {
+      wrapper: wrap(directory),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual(entry);
+    expect(getAgent).toHaveBeenCalledWith('agent-one');
   });
 });

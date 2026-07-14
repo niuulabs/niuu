@@ -76,6 +76,7 @@ def test_agent_directory_chart_config_exposes_bounded_runtime_settings(chart: st
     assert ".Values.directory.cardTimeoutSeconds" in template
     assert ".Values.directory.guildMaxConcurrency" in template
     assert ".Values.directory.signatureAlgorithms" in template
+    assert ".Values.directory.authenticatedCardOrigins" in template
 
 
 @pytest.mark.parametrize("chart", CHARTS)

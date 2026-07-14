@@ -30,7 +30,7 @@ def test_session_response_rejects_credential_bearing_or_non_http_a2a_urls() -> N
     session = Session(
         name="unsafe-workflow",
         workload_config={
-            "a2a_card_url": "https://user:password@agent.example.test/card.json",
+            "a2a_card_url": "https://agent.example.test/card.json?token=secret",
             "a2a_endpoint_url": "file:///tmp/a2a.sock",
         },
     )

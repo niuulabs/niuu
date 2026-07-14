@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 
 from niuu.domain.models import Principal
 
@@ -13,180 +14,92 @@ AgentKind = Literal["steward", "resident", "workflow-session"]
 SourceHealthStatus = Literal["healthy", "degraded", "failed"]
 
 
-class AgentInterface(BaseModel):
+class _AgentDirectoryModel(BaseModel):
+    """Directory model with one consistent snake_case/camelCase boundary."""
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class AgentInterface(_AgentDirectoryModel):
     """One protocol binding declared by an A2A Agent Card."""
 
-    model_config = ConfigDict(populate_by_name=True)
-
     url: str
-    protocol_binding: str = Field(
-        serialization_alias="protocolBinding",
-        validation_alias="protocolBinding",
-    )
-    protocol_version: str = Field(
-        serialization_alias="protocolVersion",
-        validation_alias="protocolVersion",
-    )
+    protocol_binding: str
+    protocol_version: str
     tenant: str = ""
 
 
-class AgentProvenance(BaseModel):
+class AgentProvenance(_AgentDirectoryModel):
     """Source coordinates retained while aggregating equivalent agents."""
 
-    model_config = ConfigDict(populate_by_name=True)
-
-    source_agent_id: str = Field(
-        serialization_alias="sourceAgentId",
-        validation_alias="sourceAgentId",
-    )
-    source_instance_id: str = Field(
-        serialization_alias="sourceInstanceId",
-        validation_alias="sourceInstanceId",
-    )
-    cluster_id: str = Field(serialization_alias="clusterId", validation_alias="clusterId")
-    environment_id: str | None = Field(
-        default=None,
-        serialization_alias="environmentId",
-        validation_alias="environmentId",
-    )
-    topology_node_id: str = Field(
-        serialization_alias="topologyNodeId",
-        validation_alias="topologyNodeId",
-    )
+    source_agent_id: str
+    source_instance_id: str
+    cluster_id: str
+    environment_id: str | None = None
+    topology_node_id: str
 
 
-class AgentDirectoryEntry(BaseModel):
+class AgentDirectoryEntry(_AgentDirectoryModel):
     """Searchable projection of one addressable A2A agent."""
 
-    model_config = ConfigDict(populate_by_name=True)
-
     id: str
-    canonical_id: str = Field(
-        serialization_alias="canonicalId",
-        validation_alias="canonicalId",
-    )
-    source_agent_id: str = Field(
-        serialization_alias="sourceAgentId",
-        validation_alias="sourceAgentId",
-    )
-    source_instance_id: str = Field(
-        serialization_alias="sourceInstanceId",
-        validation_alias="sourceInstanceId",
-    )
-    cluster_id: str = Field(serialization_alias="clusterId", validation_alias="clusterId")
-    environment_id: str | None = Field(
-        default=None,
-        serialization_alias="environmentId",
-        validation_alias="environmentId",
-    )
-    topology_node_id: str = Field(
-        serialization_alias="topologyNodeId",
-        validation_alias="topologyNodeId",
-    )
+    canonical_id: str
+    source_agent_id: str
+    source_instance_id: str
+    cluster_id: str
+    environment_id: str | None = None
+    topology_node_id: str
     name: str
     description: str
     kind: AgentKind
-    card_url: str = Field(serialization_alias="cardUrl", validation_alias="cardUrl")
-    card_version: str = Field(
-        serialization_alias="cardVersion",
-        validation_alias="cardVersion",
-    )
-    card_hash: str = Field(serialization_alias="cardHash", validation_alias="cardHash")
-    signature_verified: bool | None = Field(
-        default=None,
-        serialization_alias="signatureVerified",
-        validation_alias="signatureVerified",
-    )
-    signature_key_ids: list[str] = Field(
-        default_factory=list,
-        serialization_alias="signatureKeyIds",
-        validation_alias="signatureKeyIds",
-    )
-    skill_ids: list[str] = Field(
-        default_factory=list,
-        serialization_alias="skillIds",
-        validation_alias="skillIds",
-    )
+    card_url: str
+    card_version: str
+    card_hash: str
+    signature_verified: bool | None = None
+    signature_key_ids: list[str] = Field(default_factory=list)
+    signature_key_fingerprints: list[str] = Field(default_factory=list)
+    skill_ids: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
-    default_input_modes: list[str] = Field(
-        default_factory=list,
-        serialization_alias="defaultInputModes",
-        validation_alias="defaultInputModes",
-    )
-    default_output_modes: list[str] = Field(
-        default_factory=list,
-        serialization_alias="defaultOutputModes",
-        validation_alias="defaultOutputModes",
-    )
-    supported_interfaces: list[AgentInterface] = Field(
-        default_factory=list,
-        serialization_alias="supportedInterfaces",
-        validation_alias="supportedInterfaces",
-    )
+    default_input_modes: list[str] = Field(default_factory=list)
+    default_output_modes: list[str] = Field(default_factory=list)
+    supported_interfaces: list[AgentInterface] = Field(default_factory=list)
     capabilities: dict[str, Any] = Field(default_factory=dict)
-    observed_status: str = Field(
-        serialization_alias="observedStatus",
-        validation_alias="observedStatus",
-    )
+    security_schemes: dict[str, Any] = Field(default_factory=dict)
+    security_requirements: list[dict[str, Any]] = Field(default_factory=list)
+    observed_status: str
     activity: str = ""
-    last_seen: str = Field(
-        default="",
-        serialization_alias="lastSeen",
-        validation_alias="lastSeen",
-    )
-    owner_id: str | None = Field(
-        default=None,
-        serialization_alias="ownerId",
-        validation_alias="ownerId",
-    )
-    tenant_id: str | None = Field(
-        default=None,
-        serialization_alias="tenantId",
-        validation_alias="tenantId",
-    )
+    last_seen: str = ""
+    owner_id: str | None = None
+    tenant_id: str | None = None
     visibility: str
     environment_member_ids: list[str] = Field(
         default_factory=list,
         exclude=True,
-        validation_alias="environmentMemberIds",
     )
     provenance: list[AgentProvenance] = Field(default_factory=list)
 
 
-class AgentDirectoryWarning(BaseModel):
+class AgentDirectoryWarning(_AgentDirectoryModel):
     """A source-scoped problem that did not invalidate the whole response."""
 
-    model_config = ConfigDict(populate_by_name=True)
-
-    source_instance_id: str = Field(
-        serialization_alias="sourceInstanceId",
-        validation_alias="sourceInstanceId",
-    )
+    source_instance_id: str
     code: str
     message: str
-    source_agent_id: str | None = Field(
-        default=None,
-        serialization_alias="sourceAgentId",
-        validation_alias="sourceAgentId",
-    )
+    source_agent_id: str | None = None
 
 
-class AgentDirectorySourceHealth(BaseModel):
+class AgentDirectorySourceHealth(_AgentDirectoryModel):
     """Per-Observatory health included with partial aggregate results."""
 
-    model_config = ConfigDict(populate_by_name=True)
-
-    instance_id: str = Field(serialization_alias="instanceId", validation_alias="instanceId")
-    cluster_id: str = Field(serialization_alias="clusterId", validation_alias="clusterId")
+    instance_id: str
+    cluster_id: str
     status: SourceHealthStatus
     revision: str = ""
     message: str = ""
 
 
-class AgentDirectoryPage(BaseModel):
+class AgentDirectoryPage(_AgentDirectoryModel):
     """List response shared by local Observatory and Guild aggregation."""
-
-    model_config = ConfigDict(populate_by_name=True)
 
     items: list[AgentDirectoryEntry] = Field(default_factory=list)
     warnings: list[AgentDirectoryWarning] = Field(default_factory=list)
@@ -207,21 +120,62 @@ class AgentDirectoryFilters:
     cluster_ids: tuple[str, ...] = ()
     instance_ids: tuple[str, ...] = ()
 
+    @classmethod
+    def from_values(
+        cls,
+        *,
+        skills: list[str] | None = None,
+        tags: list[str] | None = None,
+        kinds: list[str] | None = None,
+        statuses: list[str] | None = None,
+        environment_ids: list[str] | None = None,
+        cluster_ids: list[str] | None = None,
+        instance_ids: list[str] | None = None,
+    ) -> AgentDirectoryFilters:
+        """Build immutable filters from transport-level optional lists."""
+        return cls(
+            skills=tuple(skills or ()),
+            tags=tuple(tags or ()),
+            kinds=tuple(kinds or ()),
+            statuses=tuple(statuses or ()),
+            environment_ids=tuple(environment_ids or ()),
+            cluster_ids=tuple(cluster_ids or ()),
+            instance_ids=tuple(instance_ids or ()),
+        )
+
 
 def is_agent_visible(entry: AgentDirectoryEntry, principal: Principal) -> bool:
     """Apply owner, tenant, Environment membership, and explicit visibility."""
-    if entry.tenant_id and entry.tenant_id != principal.tenant_id:
+    return is_agent_scope_visible(
+        owner_id=entry.owner_id,
+        tenant_id=entry.tenant_id,
+        visibility=entry.visibility,
+        environment_member_ids=entry.environment_member_ids,
+        principal=principal,
+    )
+
+
+def is_agent_scope_visible(
+    *,
+    owner_id: str | None,
+    tenant_id: str | None,
+    visibility: str,
+    environment_member_ids: list[str],
+    principal: Principal,
+) -> bool:
+    """Evaluate visibility without constructing a complete directory entry."""
+    if tenant_id and tenant_id != principal.tenant_id:
         return False
-    if entry.environment_member_ids and principal.user_id not in entry.environment_member_ids:
+    if environment_member_ids and principal.user_id not in environment_member_ids:
         return False
 
-    visibility = entry.visibility.strip().lower()
-    if visibility in {"system", "public"}:
+    normalized_visibility = visibility.strip().lower()
+    if normalized_visibility in {"system", "public"}:
         return True
-    if visibility == "tenant":
-        return bool(entry.tenant_id) and entry.tenant_id == principal.tenant_id
-    if visibility in {"user", "private"}:
-        return bool(entry.owner_id) and entry.owner_id == principal.user_id
+    if normalized_visibility == "tenant":
+        return bool(tenant_id) and tenant_id == principal.tenant_id
+    if normalized_visibility in {"user", "private"}:
+        return bool(owner_id) and owner_id == principal.user_id
     return False
 
 

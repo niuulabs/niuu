@@ -23,9 +23,12 @@ class ResolvedAgentCard:
     default_output_modes: tuple[str, ...]
     supported_interfaces: tuple[AgentInterface, ...]
     capabilities: dict[str, Any] = field(default_factory=dict)
+    security_schemes: dict[str, Any] = field(default_factory=dict)
+    security_requirements: tuple[dict[str, Any], ...] = ()
     card_hash: str = ""
     signature_verified: bool | None = None
     signature_key_ids: tuple[str, ...] = ()
+    signature_key_fingerprints: tuple[str, ...] = ()
 
 
 class AgentCardResolutionError(RuntimeError):

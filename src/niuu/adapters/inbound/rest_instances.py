@@ -215,26 +215,6 @@ def _forward_headers(request: Request) -> dict[str, str]:
     return headers
 
 
-def _agent_filters(
-    skill: list[str] | None,
-    tag: list[str] | None,
-    kind: list[str] | None,
-    observed_status: list[str] | None,
-    environment_id: list[str] | None,
-    cluster: list[str] | None,
-    instance: list[str] | None,
-) -> AgentDirectoryFilters:
-    return AgentDirectoryFilters(
-        skills=tuple(skill or ()),
-        tags=tuple(tag or ()),
-        kinds=tuple(kind or ()),
-        statuses=tuple(observed_status or ()),
-        environment_ids=tuple(environment_id or ()),
-        cluster_ids=tuple(cluster or ()),
-        instance_ids=tuple(instance or ()),
-    )
-
-
 def _slug(value: str) -> str:
     return "".join(ch.lower() if ch.isalnum() else "-" for ch in value).strip("-") or "service"
 
@@ -864,14 +844,14 @@ def create_instances_router(
             instances,
             principal,
             headers=_forward_headers(request),
-            filters=_agent_filters(
-                skill,
-                tag,
-                kind,
-                observed_status,
-                environment_id,
-                cluster,
-                instance,
+            filters=AgentDirectoryFilters.from_values(
+                skills=skill,
+                tags=tag,
+                kinds=kind,
+                statuses=observed_status,
+                environment_ids=environment_id,
+                cluster_ids=cluster,
+                instance_ids=instance,
             ),
         )
 

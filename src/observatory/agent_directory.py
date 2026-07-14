@@ -14,7 +14,7 @@ from niuu.domain.agent_directory import (
     AgentDirectorySourceHealth,
     AgentDirectoryWarning,
     AgentProvenance,
-    is_agent_visible,
+    is_agent_scope_visible,
     matches_agent_filters,
 )
 from niuu.domain.models import Principal
@@ -148,17 +148,7 @@ class AgentDirectoryService:
         """Resolve a visible detail without disclosing inaccessible identifiers."""
         page = await self.list_agents(principal, headers=headers)
         return next(
-            (
-                entry
-                for entry in page.items
-                if agent_id
-                in {
-                    entry.id,
-                    entry.canonical_id,
-                    entry.source_agent_id,
-                    entry.topology_node_id,
-                }
-            ),
+            (entry for entry in page.items if entry.id == agent_id),
             None,
         )
 
@@ -204,12 +194,23 @@ class AgentDirectoryService:
         visibility = _string_metadata(metadata, "visibility", "a2aVisibility")
         if not visibility and "volundr-session" in entity.source_kind:
             visibility = "user"
-        entry_scope = self._scope_entry(
-            entity,
-            source_agent_id=source_agent_id,
-            visibility=visibility,
+        owner_id = _string_metadata(metadata, "ownerId", "owner_id") or None
+        tenant_id = _string_metadata(metadata, "tenantId", "tenant_id") or None
+        environment_id = _string_metadata(metadata, "environmentId", "environment_id") or None
+        environment_member_ids = _string_list_metadata(
+            metadata,
+            "environmentMemberIds",
+            "environment_member_ids",
         )
-        if not is_agent_visible(entry_scope, principal):
+        if environment_id and not environment_member_ids and principal.user_id != owner_id:
+            return None, None
+        if not is_agent_scope_visible(
+            owner_id=owner_id,
+            tenant_id=tenant_id,
+            visibility=visibility,
+            environment_member_ids=environment_member_ids,
+            principal=principal,
+        ):
             return None, None
 
         card_url = entity.endpoints["a2aCard"]
@@ -239,42 +240,6 @@ class AgentDirectoryService:
             return None, None
         return entry, None
 
-    def _scope_entry(
-        self,
-        entity: DiscoveredEntity,
-        *,
-        source_agent_id: str,
-        visibility: str,
-    ) -> AgentDirectoryEntry:
-        """Build the visibility-only shell used before any restricted card fetch."""
-        metadata = entity.metadata
-        cluster_id = entity.cluster or self._cluster_id
-        environment_id = _string_metadata(metadata, "environmentId", "environment_id") or None
-        return AgentDirectoryEntry(
-            id="scope-only",
-            canonicalId="scope-only",
-            sourceAgentId=source_agent_id,
-            sourceInstanceId=self._instance_id,
-            clusterId=cluster_id,
-            environmentId=environment_id,
-            topologyNodeId=entity.id,
-            name=entity.name,
-            description="",
-            kind=self._agent_kind(entity),
-            cardUrl=entity.endpoints["a2aCard"],
-            cardVersion="",
-            cardHash="",
-            observedStatus=entity.status,
-            ownerId=_string_metadata(metadata, "ownerId", "owner_id") or None,
-            tenantId=_string_metadata(metadata, "tenantId", "tenant_id") or None,
-            visibility=visibility,
-            environmentMemberIds=_string_list_metadata(
-                metadata,
-                "environmentMemberIds",
-                "environment_member_ids",
-            ),
-        )
-
     def _entry_from_card(
         self,
         entity: DiscoveredEntity,
@@ -287,9 +252,10 @@ class AgentDirectoryService:
         metadata = entity.metadata
         cluster_id = entity.cluster or self._cluster_id
         environment_id = _string_metadata(metadata, "environmentId", "environment_id") or None
+        fingerprint_identity = ",".join(card.signature_key_fingerprints)
         canonical_id = (
-            f"a2a-card:{card.card_hash}"
-            if card.signature_verified
+            f"a2a-card:{card.card_hash}:keys:{fingerprint_identity}"
+            if card.signature_verified and card.card_hash and fingerprint_identity
             else f"a2a-source:{self._instance_id}:{entity.id}"
         )
         provenance = AgentProvenance(
@@ -315,12 +281,15 @@ class AgentDirectoryService:
             cardHash=card.card_hash,
             signatureVerified=card.signature_verified,
             signatureKeyIds=list(card.signature_key_ids),
+            signatureKeyFingerprints=list(card.signature_key_fingerprints),
             skillIds=list(card.skills),
             tags=list(card.tags),
             defaultInputModes=list(card.default_input_modes),
             defaultOutputModes=list(card.default_output_modes),
             supportedInterfaces=list(card.supported_interfaces),
             capabilities=card.capabilities,
+            securitySchemes=card.security_schemes,
+            securityRequirements=list(card.security_requirements),
             observedStatus=entity.status,
             activity=_string_metadata(metadata, "activity", "activityState", "activity_state"),
             lastSeen=_string_metadata(metadata, "lastSeen", "lastActive", "last_active"),

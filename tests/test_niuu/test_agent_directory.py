@@ -55,6 +55,7 @@ def _entry(
     tenant_id: str = "tenant-a",
     card_hash: str = "card-hash",
     signature_verified: bool | None = None,
+    signature_key_fingerprints: tuple[str, ...] = ("signer-fingerprint",),
 ) -> AgentDirectoryEntry:
     topology_node_id = f"runtime:{source_instance_id}:skuld:{source_agent_id}"
     provenance = AgentProvenance(
@@ -78,6 +79,7 @@ def _entry(
         cardVersion="1.0.0",
         cardHash=card_hash,
         signatureVerified=signature_verified,
+        signatureKeyFingerprints=(list(signature_key_fingerprints) if signature_verified else []),
         skillIds=["code"],
         tags=["engineering"],
         defaultInputModes=["text/plain"],
@@ -204,10 +206,45 @@ async def test_aggregate_reconciles_only_verified_card_identity() -> None:
     page = await service.list_agents(instances, _principal(), headers={})
 
     assert len(page.items) == 1
-    assert page.items[0].canonical_id == "signed:verified-hash"
+    assert page.items[0].canonical_id == "signed:verified-hash:keys:signer-fingerprint"
     assert {
         (source.source_instance_id, source.source_agent_id) for source in page.items[0].provenance
     } == {("observatory-a", "agent-a"), ("observatory-b", "agent-b")}
+
+
+@pytest.mark.asyncio
+async def test_aggregate_does_not_merge_same_card_signed_by_different_keys() -> None:
+    instances = [_instance("observatory-a", "cluster-a"), _instance("observatory-b", "cluster-b")]
+    client = _StubClient(
+        {
+            "observatory-a": _page(
+                "local-a",
+                _entry(
+                    "local-a",
+                    "agent-a",
+                    card_hash="copied-card",
+                    signature_verified=True,
+                    signature_key_fingerprints=("signer-a",),
+                ),
+            ),
+            "observatory-b": _page(
+                "local-b",
+                _entry(
+                    "local-b",
+                    "agent-b",
+                    card_hash="copied-card",
+                    signature_verified=True,
+                    signature_key_fingerprints=("signer-b",),
+                ),
+            ),
+        }
+    )
+    service = AgentDirectoryAggregationService(client=client, max_concurrency=2)  # type: ignore[arg-type]
+
+    page = await service.list_agents(instances, _principal(), headers={})
+
+    assert len(page.items) == 2
+    assert len({entry.canonical_id for entry in page.items}) == 2
 
 
 @pytest.mark.asyncio
@@ -227,6 +264,7 @@ async def test_aggregate_returns_healthy_results_with_failed_source_warning() ->
     assert page.partial is True
     assert page.warnings[0].source_instance_id == "observatory-b"
     assert page.warnings[0].code == "observatory-unavailable"
+    assert page.warnings[0].message == "Observatory Agent Directory request failed"
     assert any(source.status == "failed" for source in page.sources)
 
 

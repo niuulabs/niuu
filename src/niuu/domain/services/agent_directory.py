@@ -26,6 +26,13 @@ def _aggregate_id(canonical_id: str) -> str:
     return f"agent-{digest}"
 
 
+def _verified_identity(entry: AgentDirectoryEntry) -> str | None:
+    fingerprints = sorted(set(entry.signature_key_fingerprints))
+    if not entry.signature_verified or not entry.card_hash or not fingerprints:
+        return None
+    return f"signed:{entry.card_hash}:keys:{','.join(fingerprints)}"
+
+
 class AgentDirectoryAggregationService:
     """Fan out to visible Observatory instances and reconcile proven identities."""
 
@@ -81,7 +88,11 @@ class AgentDirectoryAggregationService:
                 instance.config.get("cluster") or instance.config.get("environment") or ""
             )
             if error is not None or page is None:
-                message = str(error) if error is not None else "Empty Observatory response"
+                message = (
+                    "Observatory Agent Directory request failed"
+                    if error is not None
+                    else "Observatory returned an empty Agent Directory response"
+                )
                 warnings.append(
                     AgentDirectoryWarning(
                         sourceInstanceId=instance.id,
@@ -193,10 +204,9 @@ class AgentDirectoryAggregationService:
             entries,
             key=lambda item: (item.source_instance_id, item.source_agent_id),
         ):
-            if entry.signature_verified and entry.card_hash:
-                merge_key = f"signed:{entry.card_hash}"
-            else:
-                merge_key = f"source:{entry.source_instance_id}:{entry.source_agent_id}"
+            merge_key = _verified_identity(entry) or (
+                f"source:{entry.source_instance_id}:{entry.source_agent_id}"
+            )
             current = merged.get(merge_key)
             if current is None:
                 merged[merge_key] = entry.model_copy(

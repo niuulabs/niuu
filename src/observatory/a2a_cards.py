@@ -17,6 +17,7 @@ import httpx
 from a2a.client.card_resolver import parse_agent_card
 from a2a.types import AgentCard
 from a2a.utils.signing import create_signature_verifier
+from cryptography.hazmat.primitives import serialization
 from google.protobuf.json_format import MessageToDict, ParseError
 from jwt.api_jwk import PyJWK
 from jwt.utils import base64url_decode
@@ -39,15 +40,53 @@ class _CardCacheEntry:
     expires_at: float
 
 
-def _validate_http_url(value: str, *, require_https: bool = False) -> str:
-    parsed = urlsplit(value)
+def _validate_http_url(
+    value: str,
+    *,
+    require_https: bool = False,
+    allow_query: bool = False,
+) -> str:
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError as exc:
+        raise AgentCardResolutionError("Agent Card URL is invalid") from exc
     allowed_schemes = {"https"} if require_https else {"http", "https"}
-    if parsed.scheme.lower() not in allowed_schemes or not parsed.netloc:
+    if parsed.scheme.lower() not in allowed_schemes or not hostname:
         requirement = "absolute HTTPS" if require_https else "absolute HTTP(S)"
         raise AgentCardResolutionError(f"Agent Card URL must be an {requirement} URL")
     if parsed.username or parsed.password:
         raise AgentCardResolutionError("Agent Card URLs must not embed credentials")
+    if parsed.fragment or (parsed.query and not allow_query):
+        raise AgentCardResolutionError(
+            "Agent Card and signature-key URLs cannot use query strings or fragments"
+        )
     return value
+
+
+def _origin(value: str) -> str:
+    parsed = urlsplit(_validate_http_url(value))
+    port = parsed.port
+    hostname = parsed.hostname or ""
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    default_port = 443 if parsed.scheme.lower() == "https" else 80
+    authority = host if port in {None, default_port} else f"{host}:{port}"
+    return f"{parsed.scheme.lower()}://{authority}"
+
+
+def _key_fingerprint(key: PyJWK) -> str:
+    """Return a stable fingerprint of verified asymmetric public-key material."""
+    try:
+        encoded = key.key.public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise AgentCardResolutionError(
+            "JWKS signature key is not an asymmetric public key"
+        ) from exc
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _cache_ttl(response: httpx.Response, default_ttl_seconds: float) -> float | None:
@@ -142,6 +181,7 @@ class HttpAgentCardResolver(AgentCardResolverPort):
         timeout_seconds: float,
         default_cache_ttl_seconds: float,
         signature_algorithms: list[str],
+        authenticated_card_origins: list[str] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._timeout_seconds = timeout_seconds
@@ -152,6 +192,9 @@ class HttpAgentCardResolver(AgentCardResolverPort):
                 f"Unsupported Agent Card signature algorithm(s): {', '.join(sorted(unsupported))}"
             )
         self._signature_algorithms = list(signature_algorithms)
+        self._authenticated_card_origins = frozenset(
+            _origin(value.strip()) for value in authenticated_card_origins or ()
+        )
         self._transport = transport
         self._cache: dict[tuple[str, str], _CardCacheEntry] = {}
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
@@ -178,7 +221,9 @@ class HttpAgentCardResolver(AgentCardResolverPort):
             if cached is not None and cached.expires_at > now:
                 return cached.card
 
-            request_headers = dict(headers)
+            request_headers = (
+                dict(headers) if _origin(card_url) in self._authenticated_card_origins else {}
+            )
             request_headers.setdefault("Accept", "application/a2a+json, application/json")
             if cached is not None and cached.etag:
                 request_headers["If-None-Match"] = cached.etag
@@ -204,7 +249,7 @@ class HttpAgentCardResolver(AgentCardResolverPort):
                     response.raise_for_status()
                     payload = response.json()
                     card = self._parse_card(payload)
-                    signature_verified, key_ids = await self._verify_signatures(
+                    signature_verified, key_ids, key_fingerprints = await self._verify_signatures(
                         card,
                         client=client,
                     )
@@ -217,6 +262,7 @@ class HttpAgentCardResolver(AgentCardResolverPort):
                 card,
                 signature_verified=signature_verified,
                 signature_key_ids=key_ids,
+                signature_key_fingerprints=key_fingerprints,
             )
             ttl = _cache_ttl(response, self._default_cache_ttl_seconds)
             if ttl is not None:
@@ -238,7 +284,7 @@ class HttpAgentCardResolver(AgentCardResolverPort):
                 f"Agent Card is missing required fields: {', '.join(missing)}"
             )
         for interface in card.supported_interfaces:
-            _validate_http_url(interface.url)
+            _validate_http_url(interface.url, allow_query=True)
             if not interface.protocol_binding.strip() or not interface.protocol_version.strip():
                 raise AgentCardResolutionError(
                     "Agent Card interfaces require protocolBinding and protocolVersion"
@@ -257,13 +303,14 @@ class HttpAgentCardResolver(AgentCardResolverPort):
         card: AgentCard,
         *,
         client: httpx.AsyncClient,
-    ) -> tuple[bool | None, tuple[str, ...]]:
+    ) -> tuple[bool | None, tuple[str, ...], tuple[str, ...]]:
         if not card.signatures:
-            return None, ()
+            return None, (), ()
 
         protected_headers = _protected_headers(card)
         keys: dict[tuple[str, str], PyJWK] = {}
         key_ids: list[str] = []
+        key_fingerprints: list[str] = []
         for header in protected_headers:
             key_id = str(header.get("kid") or "").strip()
             jwks_url = str(header.get("jku") or "").strip()
@@ -296,7 +343,12 @@ class HttpAgentCardResolver(AgentCardResolverPort):
             )
             if matching is None:
                 raise AgentCardResolutionError(f"JWKS does not contain signature key {key_id}")
-            keys[(key_id, jwks_url)] = PyJWK.from_dict(matching)
+            try:
+                key = PyJWK.from_dict(matching)
+            except Exception as exc:
+                raise AgentCardResolutionError("JWKS contains an invalid signature key") from exc
+            keys[(key_id, jwks_url)] = key
+            key_fingerprints.append(_key_fingerprint(key))
 
         verifier = create_signature_verifier(
             lambda kid, jku: keys[(str(kid or ""), str(jku or ""))],
@@ -306,7 +358,11 @@ class HttpAgentCardResolver(AgentCardResolverPort):
             verifier(card)
         except Exception as exc:
             raise AgentCardResolutionError("Agent Card signature verification failed") from exc
-        return True, tuple(dict.fromkeys(key_ids))
+        return (
+            True,
+            tuple(dict.fromkeys(key_ids)),
+            tuple(sorted(set(key_fingerprints))),
+        )
 
     @staticmethod
     def _to_resolved(
@@ -314,9 +370,12 @@ class HttpAgentCardResolver(AgentCardResolverPort):
         *,
         signature_verified: bool | None,
         signature_key_ids: tuple[str, ...],
+        signature_key_fingerprints: tuple[str, ...],
     ) -> ResolvedAgentCard:
         card_payload = MessageToDict(card)
         capabilities = card_payload.get("capabilities", {})
+        security_schemes = card_payload.get("securitySchemes", {})
+        security_requirements = card_payload.get("securityRequirements", [])
         return ResolvedAgentCard(
             name=card.name,
             description=card.description,
@@ -335,7 +394,14 @@ class HttpAgentCardResolver(AgentCardResolverPort):
                 for interface in card.supported_interfaces
             ),
             capabilities=capabilities if isinstance(capabilities, dict) else {},
+            security_schemes=(security_schemes if isinstance(security_schemes, dict) else {}),
+            security_requirements=(
+                tuple(item for item in security_requirements if isinstance(item, dict))
+                if isinstance(security_requirements, list)
+                else ()
+            ),
             card_hash=_canonical_card_hash(card),
             signature_verified=signature_verified,
             signature_key_ids=signature_key_ids,
+            signature_key_fingerprints=signature_key_fingerprints,
         )

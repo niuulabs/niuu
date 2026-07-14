@@ -199,6 +199,8 @@ directory:
     - RS384
     - PS256
     - EdDSA
+  # -- Card origins explicitly trusted to receive forwarded caller authentication.
+  authenticatedCardOrigins: []
 
 nodeSelector: {}
 tolerations: []

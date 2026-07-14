@@ -41,6 +41,15 @@ def _card_payload(
         ],
         "version": "1.2.3",
         "capabilities": {"streaming": True},
+        "securitySchemes": {
+            "bearer": {
+                "httpAuthSecurityScheme": {
+                    "scheme": "bearer",
+                    "bearerFormat": "JWT",
+                }
+            }
+        },
+        "securityRequirements": [{"schemes": {"bearer": {"list": []}}}],
         "defaultInputModes": ["text/plain"],
         "defaultOutputModes": ["application/json"],
         "skills": [
@@ -122,6 +131,7 @@ def _entity(
     *,
     tenant_id: str = "tenant-a",
     environment_members: list[str] | None = None,
+    visibility: str = "user",
 ) -> DiscoveredEntity:
     return DiscoveredEntity(
         id=f"runtime:noatun:skuld:skuld:{session_id}",
@@ -136,7 +146,7 @@ def _entity(
         metadata={
             "ownerId": owner_id,
             "tenantId": tenant_id,
-            "visibility": "user",
+            "visibility": visibility,
             "agentKind": "workflow-session",
             "environmentId": "environment-a",
             "environmentMemberIds": environment_members or [],
@@ -261,6 +271,30 @@ async def test_directory_hides_cross_tenant_owner_and_environment_non_member() -
 
 
 @pytest.mark.asyncio
+async def test_directory_fails_closed_without_authoritative_environment_membership() -> None:
+    card_url = "https://agent.example.test/.well-known/agent-card.json"
+    resolver = _StubCardResolver(
+        {
+            card_url: _resolved_card(
+                "Builder",
+                skill="code",
+                tag="engineering",
+                card_hash="hash",
+            )
+        }
+    )
+    service = _service(
+        [_entity("session-a", "user-b", card_url, visibility="tenant")],
+        resolver,
+    )
+
+    page = await service.list_agents(_principal(), headers={})
+
+    assert page.items == []
+    assert resolver.calls == []
+
+
+@pytest.mark.asyncio
 async def test_directory_returns_visible_card_warning_without_failing_page() -> None:
     card_url = "https://agent.example.test/.well-known/agent-card.json"
     resolver = _StubCardResolver({card_url: AgentCardResolutionError("card timed out")})
@@ -294,6 +328,7 @@ async def test_http_resolver_validates_and_conditionally_revalidates_agent_cards
         timeout_seconds=1.0,
         default_cache_ttl_seconds=5.0,
         signature_algorithms=["RS256"],
+        authenticated_card_origins=["https://agent.example.test"],
         transport=httpx.MockTransport(handler),
     )
     url = "https://agent.example.test/.well-known/agent-card.json"
@@ -312,7 +347,38 @@ async def test_http_resolver_validates_and_conditionally_revalidates_agent_cards
     assert first == second
     assert first.skills == ("code",)
     assert first.signature_verified is None
+    assert first.security_schemes["bearer"]["httpAuthSecurityScheme"]["scheme"] == "bearer"
+    assert first.security_requirements == ({"schemes": {"bearer": {}}},)
     assert calls[0].headers["authorization"] == "Bearer caller"
+
+
+@pytest.mark.asyncio
+async def test_http_resolver_only_forwards_auth_to_explicitly_trusted_origins() -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=_card_payload())
+
+    resolver = HttpAgentCardResolver(
+        timeout_seconds=1.0,
+        default_cache_ttl_seconds=5.0,
+        signature_algorithms=["RS256"],
+        authenticated_card_origins=["https://trusted.example.test"],
+        transport=httpx.MockTransport(handler),
+    )
+
+    await resolver.resolve(
+        "https://untrusted.example.test/.well-known/agent-card.json",
+        principal_key="tenant-a\0user-a",
+        headers={
+            "authorization": "Bearer caller",
+            "x-auth-user-id": "user-a",
+        },
+    )
+
+    assert "authorization" not in calls[0].headers
+    assert "x-auth-user-id" not in calls[0].headers
 
 
 @pytest.mark.asyncio
@@ -384,6 +450,7 @@ async def test_http_resolver_verifies_signed_agent_card() -> None:
 
     assert resolved.signature_verified is True
     assert resolved.signature_key_ids == ("agent-key",)
+    assert len(resolved.signature_key_fingerprints) == 1
 
     unsigned_resolver = HttpAgentCardResolver(
         timeout_seconds=1.0,
@@ -413,6 +480,12 @@ async def test_http_resolver_rejects_invalid_or_credential_bearing_cards() -> No
     with pytest.raises(AgentCardResolutionError, match="must not embed credentials"):
         await resolver.resolve(
             "https://user:secret@agent.example.test/card",
+            principal_key="principal",
+            headers={},
+        )
+    with pytest.raises(AgentCardResolutionError, match="cannot use query strings"):
+        await resolver.resolve(
+            "https://agent.example.test/card?token=secret",
             principal_key="principal",
             headers={},
         )

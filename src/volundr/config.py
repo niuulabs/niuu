@@ -1536,6 +1536,10 @@ class AgentDirectoryConfig(BaseModel):
         min_length=1,
         description="Accepted Agent Card JWS algorithms.",
     )
+    authenticated_card_origins: list[str] = Field(
+        default_factory=list,
+        description="HTTP(S) origins trusted to receive caller authentication for card retrieval.",
+    )
 
 
 class ObservatoryConfig(BaseModel):

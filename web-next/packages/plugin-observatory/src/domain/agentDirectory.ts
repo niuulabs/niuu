@@ -34,12 +34,15 @@ export interface AgentDirectoryEntry {
   cardHash: string;
   signatureVerified: boolean | null;
   signatureKeyIds: string[];
+  signatureKeyFingerprints: string[];
   skillIds: string[];
   tags: string[];
   defaultInputModes: string[];
   defaultOutputModes: string[];
   supportedInterfaces: AgentInterface[];
   capabilities: Record<string, unknown>;
+  securitySchemes: Record<string, unknown>;
+  securityRequirements: Array<Record<string, unknown>>;
   observedStatus: string;
   activity: string;
   lastSeen: string;

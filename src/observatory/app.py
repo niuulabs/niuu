@@ -85,26 +85,6 @@ def _forward_headers(request: Request) -> dict[str, str]:
     return headers
 
 
-def _directory_filters(
-    skill: list[str] | None,
-    tag: list[str] | None,
-    kind: list[str] | None,
-    observed_status: list[str] | None,
-    environment_id: list[str] | None,
-    cluster: list[str] | None,
-    instance: list[str] | None,
-) -> AgentDirectoryFilters:
-    return AgentDirectoryFilters(
-        skills=tuple(skill or ()),
-        tags=tuple(tag or ()),
-        kinds=tuple(kind or ()),
-        statuses=tuple(observed_status or ()),
-        environment_ids=tuple(environment_id or ()),
-        cluster_ids=tuple(cluster or ()),
-        instance_ids=tuple(instance or ()),
-    )
-
-
 async def _topology_stream(
     discovery: ObservatoryDiscoveryService,
     headers: dict[str, str] | None = None,
@@ -172,14 +152,14 @@ def create_router() -> APIRouter:
         return await _agent_directory(request).list_agents(
             principal,
             headers=_forward_headers(request),
-            filters=_directory_filters(
-                skill,
-                tag,
-                kind,
-                observed_status,
-                environment_id,
-                cluster,
-                instance,
+            filters=AgentDirectoryFilters.from_values(
+                skills=skill,
+                tags=tag,
+                kinds=kind,
+                statuses=observed_status,
+                environment_ids=environment_id,
+                cluster_ids=cluster,
+                instance_ids=instance,
             ),
         )
 
@@ -377,6 +357,7 @@ def create_app(
                 timeout_seconds=directory_cfg.card_timeout_seconds,
                 default_cache_ttl_seconds=directory_cfg.card_cache_ttl_seconds,
                 signature_algorithms=directory_cfg.signature_algorithms,
+                authenticated_card_origins=directory_cfg.authenticated_card_origins,
             ),
             instance_id=directory_cfg.instance_id,
             cluster_id=directory_cfg.cluster_id,

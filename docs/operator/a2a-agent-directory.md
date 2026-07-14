@@ -11,7 +11,7 @@ Compatibility was rechecked on 2026-07-14 against the official A2A materials. Th
 stable protocol release is 1.0.1, and `a2a-sdk` 1.1 implements the 1.0 protocol. The A2A
 discovery documentation explicitly leaves curated registries to deployments, so these REST
 directory endpoints are Niuu-specific. Agent Cards, supported interfaces, cache validators,
-and JWS signatures retain their official A2A semantics.
+security declarations, and JWS signatures retain their official A2A semantics.
 
 - [A2A discovery](https://a2a-protocol.org/latest/topics/agent-discovery/)
 - [A2A specification](https://a2a-protocol.org/latest/specification/)
@@ -37,15 +37,19 @@ skills and tags and treated as allowed alternatives for the placement/status fie
 Responses contain `items`, source-scoped `warnings`, `sources`, `partial`, and `revision`.
 An unavailable or invalid source degrades the response instead of hiding healthy sources.
 Aggregate IDs are collision-safe. Identically named agents remain distinct unless both cards
-have verified signatures and the same card hash; merged entries retain every provenance
-coordinate.
+have verified signatures, the same card hash, and the same verified public-key fingerprints;
+merged entries retain every provenance coordinate.
 
 ## Principal isolation and card safety
 
 Observatory filters discovery records by owner, tenant, Environment membership, and explicit
 visibility before fetching a card. Guild independently rechecks owner, tenant, and visibility
 after fan-out; Environment membership remains enforced by each principal-aware Observatory source.
-Authentication headers are forwarded to restricted Observatory and Agent Card endpoints.
+An Environment-scoped entry without authoritative membership metadata fails closed for everyone
+except its explicit owner.
+Authentication headers are forwarded to registered Observatory instances. Agent Card endpoints
+receive caller authentication only when their origin is explicitly trusted through
+`authenticatedCardOrigins`; public and untrusted card origins receive no caller credentials.
 Missing and inaccessible detail records both return the same `404` response.
 
 Card caches are keyed by caller identity and card URL, preventing one principal's authenticated
@@ -65,7 +69,7 @@ workloadConfig:
   a2aCardUrl: https://agent.example.com/.well-known/agent-card.json
   a2aEndpointUrl: https://agent.example.com/a2a
   environmentId: environment-production
-  a2aVisibility: tenant
+  a2aVisibility: user
 ```
 
 Snake-case equivalents are accepted. Volundr exposes only those four allowlisted values; raw
@@ -86,9 +90,11 @@ directory:
   guildTimeoutSeconds: 5.0
   guildMaxConcurrency: 8
   signatureAlgorithms: [ES256, ES384, RS256, RS384, PS256, EdDSA]
+  authenticatedCardOrigins: [https://agents.internal.example]
 ```
 
 `global.niuu.cluster` supplies the deployment cluster. Guild only queries enabled,
 principal-visible registered instances whose kind is `observatory`. Observatory discovery
 adapters remain dynamically configured under `observatory.discovery`; no seeded agents or
-special demo discovery path is used.
+special demo discovery path is used. Keep `authenticatedCardOrigins` empty unless a card service
+requires caller authentication, and list only origins controlled by the deployment operator.

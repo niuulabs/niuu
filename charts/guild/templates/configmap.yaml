@@ -45,6 +45,7 @@ data:
         guild_timeout_seconds: {{ .Values.directory.guildTimeoutSeconds | default 5.0 }}
         guild_max_concurrency: {{ .Values.directory.guildMaxConcurrency | default 8 }}
         signature_algorithms: {{ .Values.directory.signatureAlgorithms | toJson }}
+        authenticated_card_origins: {{ .Values.directory.authenticatedCardOrigins | toJson }}
 
     workload_identity:
       enabled: {{ .Values.workloadIdentity.enabled | default false }}

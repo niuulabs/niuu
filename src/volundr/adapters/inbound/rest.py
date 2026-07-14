@@ -120,9 +120,9 @@ def _public_workload_url(session: Session, *keys: str) -> str | None:
         parsed = urlsplit(value)
     except ValueError:
         return None
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         return None
-    if parsed.username or parsed.password:
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
         return None
     return value
 
