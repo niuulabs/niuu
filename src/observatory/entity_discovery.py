@@ -866,21 +866,23 @@ class RavnValkyrieDiscoveryAdapter:
             if not valkyrie_id or not environment_id:
                 continue
             environment = environments.get(environment_id, {})
+            topology_cluster = environment_id.removeprefix("env-k8s-") or environment_id
             entities.append(
                 DiscoveredEntity(
                     id=(
-                        f"runtime:{_slug(environment_id)}:{_slug(self._namespace)}:"
+                        f"runtime:{_slug(topology_cluster)}:{_slug(self._namespace)}:"
                         f"valkyrie:{_slug(valkyrie_id)}"
                     ),
                     kind="valkyrie",
                     name=str(item.get("name") or valkyrie_id),
-                    cluster=environment_id,
+                    cluster=topology_cluster,
                     namespace=self._namespace,
                     status=_status_from_valkyrie(str(item.get("status") or "")),
                     source_adapter=self.__class__.__name__,
                     source_kind="ravn:valkyrie-dashboard",
                     source_uid=valkyrie_id,
                     metadata={
+                        "ravnEnvironmentId": environment_id,
                         "environmentHealth": str(environment.get("health") or ""),
                         "persona": str(item.get("persona") or ""),
                         "specialty": str(item.get("specialty") or ""),

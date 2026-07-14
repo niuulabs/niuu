@@ -475,12 +475,12 @@ async def test_ravn_valkyrie_adapter_projects_cross_cluster_dashboard() -> None:
         return httpx.Response(
             200,
             json={
-                "environments": [{"id": "eitri", "health": "watch"}],
+                "environments": [{"id": "env-k8s-eitri", "health": "watch"}],
                 "valkyries": [
                     {
                         "id": "valkyrie-eitri-k8s",
                         "name": "Bryn",
-                        "environmentId": "eitri",
+                        "environmentId": "env-k8s-eitri",
                         "status": "online",
                         "persona": "k8s-valkyrie",
                         "specialty": "workshop operator",
@@ -505,7 +505,9 @@ async def test_ravn_valkyrie_adapter_projects_cross_cluster_dashboard() -> None:
     assert valkyrie.id == "runtime:eitri:nats:valkyrie:valkyrie-eitri-k8s"
     assert valkyrie.kind == "valkyrie"
     assert valkyrie.name == "Bryn"
+    assert valkyrie.cluster == "eitri"
     assert valkyrie.status == "healthy"
+    assert valkyrie.metadata["ravnEnvironmentId"] == "env-k8s-eitri"
     assert valkyrie.metadata["environmentHealth"] == "watch"
 
 
