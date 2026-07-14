@@ -1,4 +1,4 @@
-FROM python:3.12-slim-trixie@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf AS builder
+FROM python:3.14-slim-trixie@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1 AS builder
 
 ARG TARGETARCH
 
@@ -27,7 +27,7 @@ COPY src/ /app/src/
 RUN uv sync --frozen --no-dev --no-editable --extra k8s --extra nats --extra openshell \
     && mkdir -p /dist-root/data/mimir
 
-FROM python:3.12-slim-trixie@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf
+FROM python:3.14-slim-trixie@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
 
 
 LABEL org.opencontainers.image.title="niuu"
