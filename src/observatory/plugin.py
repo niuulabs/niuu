@@ -54,6 +54,11 @@ class ObservatoryPlugin(ServicePlugin):
     def api_route_domains(self) -> tuple[APIRouteDomain, ...]:
         return (
             APIRouteDomain(
+                name="observatory-agents-api",
+                prefixes=("/api/v1/observatory/agents",),
+                description="Principal-aware A2A Agent Directory routes.",
+            ),
+            APIRouteDomain(
                 name="observatory-registry-api",
                 prefixes=("/api/v1/observatory/registry",),
                 description="Observatory entity-type registry routes.",

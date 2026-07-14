@@ -104,6 +104,29 @@ def _public_session_endpoint(
     )
 
 
+def _public_workload_url(session: Session, *keys: str) -> str | None:
+    """Expose one explicitly configured HTTP(S) workload URL without leaking config."""
+    value = next(
+        (
+            str(session.workload_config.get(key) or "").strip()
+            for key in keys
+            if str(session.workload_config.get(key) or "").strip()
+        ),
+        "",
+    )
+    if not value:
+        return None
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    if parsed.username or parsed.password:
+        return None
+    return value
+
+
 def _server_side_ws_connect_overrides(
     ws_url: str,
     *,
@@ -724,6 +747,26 @@ class SessionResponse(BaseModel):
     code_endpoint: str | None = Field(
         description="Editor IDE URL (null when not running)",
     )
+    a2a_card_url: str | None = Field(
+        default=None,
+        serialization_alias="a2aCardUrl",
+        description="Standard Agent Card URL when this workflow session is A2A-addressable",
+    )
+    a2a_endpoint_url: str | None = Field(
+        default=None,
+        serialization_alias="a2aEndpointUrl",
+        description="Preferred A2A protocol endpoint when explicitly published by the workload",
+    )
+    environment_id: str | None = Field(
+        default=None,
+        serialization_alias="environmentId",
+        description="Environment containing the addressable workflow session",
+    )
+    a2a_visibility: str = Field(
+        default="user",
+        serialization_alias="a2aVisibility",
+        description="Explicit Agent Directory visibility scope",
+    )
     created_at: str = Field(description="ISO 8601 creation timestamp")
     updated_at: str = Field(description="ISO 8601 last update timestamp")
     last_active: str = Field(description="ISO 8601 last activity timestamp")
@@ -849,6 +892,32 @@ class SessionResponse(BaseModel):
                 public_host=public_host,
             ),
             code_endpoint=session.code_endpoint,
+            a2a_card_url=_public_workload_url(
+                session,
+                "a2aCardUrl",
+                "a2a_card_url",
+            ),
+            a2a_endpoint_url=_public_workload_url(
+                session,
+                "a2aEndpointUrl",
+                "a2a_endpoint_url",
+            ),
+            environment_id=(
+                str(
+                    session.workload_config.get("environmentId")
+                    or session.workload_config.get("environment_id")
+                    or ""
+                ).strip()
+                or None
+            ),
+            a2a_visibility=(
+                str(
+                    session.workload_config.get("a2aVisibility")
+                    or session.workload_config.get("a2a_visibility")
+                    or "user"
+                ).strip()
+                or "user"
+            ),
             created_at=session.created_at.isoformat(),
             updated_at=session.updated_at.isoformat(),
             last_active=(

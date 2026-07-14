@@ -39,8 +39,15 @@ export {
   buildObservatoryRegistryHttpAdapter,
   buildObservatoryTopologySseStream,
   buildObservatoryEventsSseStream,
+  buildObservatoryAgentDirectoryHttpAdapter,
 } from './adapters/http';
-export type { IRegistryRepository, ILiveTopologyStream, IEventStream } from './ports';
+export type {
+  IRegistryRepository,
+  ILiveTopologyStream,
+  IEventStream,
+  IAgentDirectory,
+} from './ports';
+export { useAgent, useAgents } from './application/useAgents';
 export type {
   EntityType,
   EntityTypeField,
@@ -63,7 +70,17 @@ export type {
   Run,
   ObservatoryEventType,
   ObservatoryEvent,
+  AgentKind,
+  AgentInterface,
+  AgentProvenance,
+  AgentDirectoryEntry,
+  AgentDirectoryWarning,
+  AgentDirectorySourceHealth,
+  AgentDirectorySourceStatus,
+  AgentDirectoryPage,
+  AgentDirectoryFilters,
 } from './domain';
+export { findAgentTopologyNode } from './domain';
 
 // Overlay components — re-exported for consumers who want to embed them
 export { EntityDrawer } from './ui/overlays/EntityDrawer';

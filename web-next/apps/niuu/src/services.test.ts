@@ -62,6 +62,10 @@ const observatoryMocks = vi.hoisted(() => ({
   buildObservatoryRegistryHttpAdapter: vi.fn(() => ({})),
   buildObservatoryTopologySseStream: vi.fn(() => ({})),
   buildObservatoryEventsSseStream: vi.fn(() => ({})),
+  buildObservatoryAgentDirectoryHttpAdapter: vi.fn((client) => ({
+    kind: 'observatory-agents',
+    client,
+  })),
 }));
 
 const valkyrieMocks = vi.hoisted(() => ({
@@ -602,6 +606,12 @@ describe('buildServiceBackendStatus', () => {
       transport: 'http',
       target: 'http://localhost:8080/api/v1/observatory/topology',
       source: 'observatory',
+    });
+    expect(status['observatory.agents']).toEqual({
+      mode: 'live',
+      transport: 'http',
+      target: 'http://localhost:8080/api/v1/niuu/observatory',
+      source: 'niuu',
     });
     expect(status['ravn.personas']).toEqual({
       mode: 'live',
@@ -1744,6 +1754,34 @@ describe('buildServices', () => {
     expect(observatoryMocks.buildObservatoryEventsSseStream).toHaveBeenCalledWith(
       'http://localhost:8080/api/v1/observatory/events',
     );
+    expect(observatoryMocks.buildObservatoryAgentDirectoryHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/observatory',
+    });
+  });
+
+  it('normalizes an explicit aggregate agent directory endpoint to its service root', () => {
+    const services = buildServices({
+      demoMode: false,
+      theme: 'ice',
+      plugins: {},
+      services: {
+        'observatory.agents': {
+          mode: 'http',
+          baseUrl: 'https://guild.example.test/api/v1/niuu/observatory/agents',
+        },
+      },
+    } as any);
+
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith(
+      'https://guild.example.test/api/v1/niuu/observatory',
+    );
+    expect(observatoryMocks.buildObservatoryAgentDirectoryHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'https://guild.example.test/api/v1/niuu/observatory',
+    });
+    expect(services['observatory.agents']).toEqual({
+      kind: 'observatory-agents',
+      client: { basePath: 'https://guild.example.test/api/v1/niuu/observatory' },
+    });
   });
 
   it('prefers explicit observatory surface overrides over the grouped observatory base', () => {

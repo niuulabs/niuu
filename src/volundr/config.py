@@ -1494,11 +1494,56 @@ class ObservatoryGuildConfig(BaseModel):
     auth: HttpAuthAdapterConfig = Field(default_factory=HttpAuthAdapterConfig)
 
 
+class AgentDirectoryConfig(BaseModel):
+    """Local card resolution and Guild fan-out bounds for the Agent Directory."""
+
+    instance_id: str = Field(
+        default="local-observatory",
+        min_length=1,
+        description="Stable identity of this Observatory source.",
+    )
+    cluster_id: str = Field(
+        default="",
+        description="Cluster identity used when discovery records omit placement.",
+    )
+    card_timeout_seconds: float = Field(
+        default=4.0,
+        gt=0,
+        description="Timeout for Agent Card and signature-key retrieval.",
+    )
+    card_cache_ttl_seconds: float = Field(
+        default=300.0,
+        ge=0,
+        description="Fallback card cache TTL when the owning service omits Cache-Control.",
+    )
+    local_max_concurrency: int = Field(
+        default=8,
+        ge=1,
+        description="Maximum concurrent Agent Card resolutions per local directory request.",
+    )
+    guild_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description="Timeout for each Guild-to-Observatory directory request.",
+    )
+    guild_max_concurrency: int = Field(
+        default=8,
+        ge=1,
+        description="Maximum concurrent Observatory fan-out requests from Guild.",
+    )
+    signature_algorithms: list[str] = Field(
+        default_factory=lambda: ["ES256", "ES384", "RS256", "RS384", "PS256", "EdDSA"],
+        min_length=1,
+        description="Accepted Agent Card JWS algorithms.",
+    )
+
+
 class ObservatoryConfig(BaseModel):
     """Observatory plugin configuration."""
 
     guild: ObservatoryGuildConfig = Field(default_factory=ObservatoryGuildConfig)
     discovery: list[DynamicAdapterConfig] = Field(default_factory=list)
+    directory: AgentDirectoryConfig = Field(default_factory=AgentDirectoryConfig)
 
 
 class Settings(BaseSettings):

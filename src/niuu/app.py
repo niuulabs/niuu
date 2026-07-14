@@ -115,6 +115,7 @@ _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
     "niuu-repos-api": "niuu",
     "niuu-shared-api": "niuu",
     "observatory-api": "observatory",
+    "observatory-agents-api": "observatory",
     "observatory-events-api": "observatory",
     "observatory-registry-api": "observatory",
     "observatory-topology-api": "observatory",

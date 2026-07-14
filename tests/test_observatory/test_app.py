@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 
 from starlette.testclient import TestClient
 
+from niuu.domain.agent_directory import AgentDirectoryEntry, AgentDirectoryPage
 from observatory.app import _events_stream, _topology_stream, create_app
 from observatory.registry import (
     InMemoryObservatoryRegistryRepository,
@@ -109,6 +110,46 @@ class _RaisingRepository(InMemoryObservatoryRegistryRepository):
         raise RegistryNotFoundError(type_id)
 
 
+def _directory_entry() -> AgentDirectoryEntry:
+    return AgentDirectoryEntry(
+        id="agent-1",
+        canonicalId="source:observatory-a:session-a",
+        sourceAgentId="session-a",
+        sourceInstanceId="observatory-a",
+        clusterId="noatun",
+        environmentId="environment-a",
+        topologyNodeId="runtime:noatun:skuld:skuld:session-a",
+        name="Builder",
+        description="Builds software",
+        kind="workflow-session",
+        cardUrl="https://agents.example.test/.well-known/agent-card.json",
+        cardVersion="1.0.0",
+        cardHash="card-hash",
+        skillIds=["code"],
+        tags=["engineering"],
+        observedStatus="healthy",
+        activity="tooling",
+        ownerId="user-a",
+        tenantId="tenant-a",
+        visibility="user",
+    )
+
+
+class _StubAgentDirectory:
+    def __init__(self) -> None:
+        self.entry = _directory_entry()
+        self.list_calls: list[dict[str, object]] = []
+        self.get_calls: list[dict[str, object]] = []
+
+    async def list_agents(self, principal, *, headers, filters):
+        self.list_calls.append({"principal": principal, "headers": headers, "filters": filters})
+        return AgentDirectoryPage(items=[self.entry], revision="revision-a")
+
+    async def get_agent(self, agent_id, principal, *, headers):
+        self.get_calls.append({"agent_id": agent_id, "principal": principal, "headers": headers})
+        return self.entry if agent_id == self.entry.id else None
+
+
 def _extract_sse_payload(chunk: str) -> dict[str, object]:
     for line in chunk.splitlines():
         if line.startswith("data: "):
@@ -188,6 +229,61 @@ class TestObservatoryApp:
             assert payload["title"] == "Observatory"
             assert payload["sections"][0]["id"] == "streams"
             assert any(field["key"] == "guild_url" for field in payload["sections"][0]["fields"])
+
+    def test_agent_directory_forwards_principal_auth_and_all_filters(self) -> None:
+        directory = _StubAgentDirectory()
+        app = create_app(
+            registry_repository=InMemoryObservatoryRegistryRepository(),
+            discovery_service=_FakeDiscoveryService(),
+            agent_directory_service=directory,
+        )
+        headers = {
+            "authorization": "Bearer token",
+            "x-auth-user-id": "user-a",
+            "x-auth-tenant": "tenant-a",
+        }
+        with TestClient(app) as client:
+            response = client.get(
+                "/api/v1/observatory/agents"
+                "?skill=code&tag=engineering&kind=workflow-session&status=healthy"
+                "&environmentId=environment-a&cluster=noatun&instance=observatory-a",
+                headers=headers,
+            )
+
+        assert response.status_code == 200
+        assert response.json()["items"][0]["topologyNodeId"].endswith("session-a")
+        call = directory.list_calls[-1]
+        assert call["principal"].user_id == "user-a"
+        assert call["headers"]["authorization"] == "Bearer token"
+        assert call["filters"].skills == ("code",)
+        assert call["filters"].tags == ("engineering",)
+        assert call["filters"].kinds == ("workflow-session",)
+        assert call["filters"].statuses == ("healthy",)
+        assert call["filters"].environment_ids == ("environment-a",)
+        assert call["filters"].cluster_ids == ("noatun",)
+        assert call["filters"].instance_ids == ("observatory-a",)
+
+    def test_agent_directory_detail_does_not_disclose_missing_agent(self) -> None:
+        directory = _StubAgentDirectory()
+        app = create_app(
+            registry_repository=InMemoryObservatoryRegistryRepository(),
+            discovery_service=_FakeDiscoveryService(),
+            agent_directory_service=directory,
+        )
+        with TestClient(app) as client:
+            found = client.get(
+                "/api/v1/observatory/agents/agent-1",
+                headers={"x-auth-user-id": "user-a", "x-auth-tenant": "tenant-a"},
+            )
+            missing = client.get(
+                "/api/v1/observatory/agents/inaccessible",
+                headers={"x-auth-user-id": "user-a", "x-auth-tenant": "tenant-a"},
+            )
+
+        assert found.status_code == 200
+        assert found.json()["sourceAgentId"] == "session-a"
+        assert missing.status_code == 404
+        assert missing.json() == {"detail": "Agent not found"}
 
     def test_topology_stream_aliases_return_sse(self) -> None:
         first_chunk = asyncio.run(anext(_topology_stream(_FakeDiscoveryService())))

@@ -4,8 +4,15 @@ import {
   buildObservatoryRegistryHttpAdapter,
   buildObservatoryTopologySseStream,
   buildObservatoryEventsSseStream,
+  buildObservatoryAgentDirectoryHttpAdapter,
 } from './http';
-import type { Registry, Topology, ObservatoryEvent } from '../domain';
+import type {
+  AgentDirectoryEntry,
+  AgentDirectoryPage,
+  Registry,
+  Topology,
+  ObservatoryEvent,
+} from '../domain';
 
 const emptyRegistry: Registry = {
   version: 1,
@@ -110,6 +117,56 @@ describe('buildObservatoryRegistryHttpAdapter', () => {
     const result = await adapter.saveRegistry(emptyRegistry);
     expect(result).toEqual(emptyRegistry);
     expect(saved).toEqual([emptyRegistry]);
+  });
+});
+
+describe('buildObservatoryAgentDirectoryHttpAdapter', () => {
+  it('encodes every repeatable directory filter and loads detail safely', async () => {
+    const calls: string[] = [];
+    const page = {
+      items: [],
+      warnings: [],
+      sources: [],
+      partial: false,
+      revision: 'revision-a',
+    } satisfies AgentDirectoryPage;
+    const detail = { id: 'agent/one' } as AgentDirectoryEntry;
+    const client = {
+      ...fakeClient(emptyRegistry),
+      async get<T>(endpoint: string): Promise<T> {
+        calls.push(endpoint);
+        return (endpoint.startsWith('/agents?') ? page : detail) as T;
+      },
+    };
+    const adapter = buildObservatoryAgentDirectoryHttpAdapter(client);
+
+    await expect(
+      adapter.listAgents({
+        skills: ['code', 'review'],
+        tags: ['engineering'],
+        kinds: ['workflow-session'],
+        statuses: ['healthy'],
+        environmentIds: ['environment-a'],
+        clusterIds: ['noatun'],
+        instanceIds: ['observatory-a'],
+      }),
+    ).resolves.toEqual(page);
+    await expect(adapter.getAgent('agent/one')).resolves.toEqual(detail);
+
+    expect(calls[0]).toBe(
+      '/agents?skill=code&skill=review&tag=engineering&kind=workflow-session&status=healthy&environmentId=environment-a&cluster=noatun&instance=observatory-a',
+    );
+    expect(calls[1]).toBe('/agents/agent%2Fone');
+  });
+
+  it('propagates transport failures', async () => {
+    const client = {
+      ...fakeClient(emptyRegistry),
+      get: vi.fn().mockRejectedValue(new Error('directory failed')),
+    };
+    const adapter = buildObservatoryAgentDirectoryHttpAdapter(client);
+
+    await expect(adapter.listAgents()).rejects.toThrow('directory failed');
   });
 });
 

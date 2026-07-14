@@ -184,6 +184,22 @@ autoscaling:
 podDisruptionBudget:
   enabled: false
 
+# -- Principal-aware A2A Agent Directory card resolution and fan-out bounds.
+directory:
+  instanceId: ""
+  cardTimeoutSeconds: 4.0
+  cardCacheTtlSeconds: 300.0
+  localMaxConcurrency: 8
+  guildTimeoutSeconds: 5.0
+  guildMaxConcurrency: 8
+  signatureAlgorithms:
+    - ES256
+    - ES384
+    - RS256
+    - RS384
+    - PS256
+    - EdDSA
+
 nodeSelector: {}
 tolerations: []
 affinity: {}

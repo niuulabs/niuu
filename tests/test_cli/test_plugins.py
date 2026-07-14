@@ -707,21 +707,23 @@ class TestObservatoryPlugin:
         route_domains = plugin.api_route_domains()
         assert route_domains
         assert [route_domain.name for route_domain in route_domains] == [
+            "observatory-agents-api",
             "observatory-registry-api",
             "observatory-topology-api",
             "observatory-events-api",
             "observatory-api",
         ]
-        assert route_domains[0].prefixes == ("/api/v1/observatory/registry",)
-        assert route_domains[1].prefixes == (
+        assert route_domains[0].prefixes == ("/api/v1/observatory/agents",)
+        assert route_domains[1].prefixes == ("/api/v1/observatory/registry",)
+        assert route_domains[2].prefixes == (
             "/api/v1/observatory/topology/stream",
             "/api/v1/observatory/topology",
         )
-        assert route_domains[2].prefixes == (
+        assert route_domains[3].prefixes == (
             "/api/v1/observatory/events/stream",
             "/api/v1/observatory/events",
         )
-        assert route_domains[3].prefixes == ("/api/v1/observatory",)
+        assert route_domains[4].prefixes == ("/api/v1/observatory",)
 
     def test_api_client_returns_instance(self) -> None:
         plugin = ObservatoryPlugin()

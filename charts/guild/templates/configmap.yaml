@@ -35,6 +35,17 @@ data:
       min_pool_size: {{ .Values.database.minPoolSize | default 5 }}
       max_pool_size: {{ .Values.database.maxPoolSize | default 20 }}
 
+    observatory:
+      directory:
+        instance_id: {{ .Values.directory.instanceId | default (printf "%s-guild" .Release.Name) | quote }}
+        cluster_id: {{ .Values.global.niuu.cluster | default "unknown" | quote }}
+        card_timeout_seconds: {{ .Values.directory.cardTimeoutSeconds | default 4.0 }}
+        card_cache_ttl_seconds: {{ .Values.directory.cardCacheTtlSeconds | default 300.0 }}
+        local_max_concurrency: {{ .Values.directory.localMaxConcurrency | default 8 }}
+        guild_timeout_seconds: {{ .Values.directory.guildTimeoutSeconds | default 5.0 }}
+        guild_max_concurrency: {{ .Values.directory.guildMaxConcurrency | default 8 }}
+        signature_algorithms: {{ .Values.directory.signatureAlgorithms | toJson }}
+
     workload_identity:
       enabled: {{ .Values.workloadIdentity.enabled | default false }}
       issuer: {{ .Values.workloadIdentity.issuer | default "" | quote }}

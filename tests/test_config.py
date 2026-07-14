@@ -1,6 +1,7 @@
 """Tests for configuration module."""
 
 from volundr.config import (
+    AgentDirectoryConfig,
     DatabaseConfig,
     EventPipelineConfig,
     FeatureModuleConfig,
@@ -115,6 +116,26 @@ class TestSettings:
         assert any(
             "./start-dev" in pattern for pattern in settings.permission_auto_approval.allowlist
         )
+
+    def test_agent_directory_config_is_bounded_and_configurable(self):
+        settings = Settings(
+            observatory={
+                "directory": {
+                    "instance_id": "observatory-noatun",
+                    "cluster_id": "noatun",
+                    "local_max_concurrency": 3,
+                    "guild_max_concurrency": 4,
+                    "signature_algorithms": ["ES256"],
+                }
+            }
+        )
+
+        assert isinstance(settings.observatory.directory, AgentDirectoryConfig)
+        assert settings.observatory.directory.instance_id == "observatory-noatun"
+        assert settings.observatory.directory.cluster_id == "noatun"
+        assert settings.observatory.directory.local_max_concurrency == 3
+        assert settings.observatory.directory.guild_max_concurrency == 4
+        assert settings.observatory.directory.signature_algorithms == ["ES256"]
 
 
 class TestGitHubConfig:

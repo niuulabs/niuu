@@ -147,6 +147,14 @@
     "plugin": "observatory"
   },
   {
+    "name": "observatory-agents-api",
+    "prefixes": [
+      "/api/v1/observatory/agents"
+    ],
+    "source": "plugin",
+    "plugin": "observatory"
+  },
+  {
     "name": "observatory-events-api",
     "prefixes": [
       "/api/v1/observatory/events/stream",

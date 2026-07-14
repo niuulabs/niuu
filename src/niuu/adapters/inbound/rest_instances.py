@@ -13,12 +13,18 @@ from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.auth import extract_principal
 from niuu.adapters.inbound.remote_urls import build_remote_url
+from niuu.domain.agent_directory import (
+    AgentDirectoryEntry,
+    AgentDirectoryFilters,
+    AgentDirectoryPage,
+)
 from niuu.domain.models import (
     InstanceKind,
     InstanceVisibility,
     Principal,
     RegisteredInstance,
 )
+from niuu.domain.services.agent_directory import AgentDirectoryAggregationService
 from niuu.domain.services.instances import (
     InstanceAccessError,
     InstanceService,
@@ -207,6 +213,26 @@ def _forward_headers(request: Request) -> dict[str, str]:
         if value:
             headers[name] = value
     return headers
+
+
+def _agent_filters(
+    skill: list[str] | None,
+    tag: list[str] | None,
+    kind: list[str] | None,
+    observed_status: list[str] | None,
+    environment_id: list[str] | None,
+    cluster: list[str] | None,
+    instance: list[str] | None,
+) -> AgentDirectoryFilters:
+    return AgentDirectoryFilters(
+        skills=tuple(skill or ()),
+        tags=tuple(tag or ()),
+        kinds=tuple(kind or ()),
+        statuses=tuple(observed_status or ()),
+        environment_ids=tuple(environment_id or ()),
+        cluster_ids=tuple(cluster or ()),
+        instance_ids=tuple(instance or ()),
+    )
 
 
 def _slug(value: str) -> str:
@@ -648,6 +674,7 @@ def create_instances_router(
     service: InstanceService,
     *,
     embedded_forge_app: ASGIApp | None = None,
+    agent_directory: AgentDirectoryAggregationService | None = None,
 ) -> APIRouter:
     """Create the shared instance registry router."""
     router = APIRouter(prefix="/api/v1/niuu", tags=["Shared"])
@@ -806,5 +833,76 @@ def create_instances_router(
     ) -> dict[str, Any]:
         instances = await service.list_visible(principal, enabled_only=True)
         return await _build_observatory_snapshot(instances, request=request)
+
+    @router.get(
+        "/observatory/agents",
+        response_model=AgentDirectoryPage,
+        summary="Aggregate principal-visible A2A agents across Observatory instances",
+    )
+    async def list_observatory_agents(
+        request: Request,
+        skill: list[str] | None = Query(default=None),
+        tag: list[str] | None = Query(default=None),
+        kind: list[str] | None = Query(default=None),
+        observed_status: list[str] | None = Query(default=None, alias="status"),
+        environment_id: list[str] | None = Query(default=None, alias="environmentId"),
+        cluster: list[str] | None = Query(default=None),
+        instance: list[str] | None = Query(default=None),
+        principal: Principal = Depends(extract_principal),
+    ) -> AgentDirectoryPage:
+        if agent_directory is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Agent Directory aggregation is not configured",
+            )
+        instances = await service.list_visible(
+            principal,
+            kind=InstanceKind.OBSERVATORY,
+            enabled_only=True,
+        )
+        return await agent_directory.list_agents(
+            instances,
+            principal,
+            headers=_forward_headers(request),
+            filters=_agent_filters(
+                skill,
+                tag,
+                kind,
+                observed_status,
+                environment_id,
+                cluster,
+                instance,
+            ),
+        )
+
+    @router.get(
+        "/observatory/agents/{agent_id}",
+        response_model=AgentDirectoryEntry,
+        summary="Get one principal-visible aggregate A2A agent",
+    )
+    async def get_observatory_agent(
+        request: Request,
+        agent_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> AgentDirectoryEntry:
+        if agent_directory is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Agent Directory aggregation is not configured",
+            )
+        instances = await service.list_visible(
+            principal,
+            kind=InstanceKind.OBSERVATORY,
+            enabled_only=True,
+        )
+        entry = await agent_directory.get_agent(
+            agent_id,
+            instances,
+            principal,
+            headers=_forward_headers(request),
+        )
+        if entry is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+        return entry
 
     return router

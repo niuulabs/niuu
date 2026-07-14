@@ -569,6 +569,8 @@ class VolundrSessionsDiscoveryAdapter:
                 for key, value in {
                     "chat": session.get("chat_endpoint"),
                     "code": session.get("code_endpoint"),
+                    "a2a": session.get("a2aEndpointUrl") or session.get("a2a_endpoint_url"),
+                    "a2aCard": session.get("a2aCardUrl") or session.get("a2a_card_url"),
                 }.items()
                 if value
             }
@@ -594,6 +596,13 @@ class VolundrSessionsDiscoveryAdapter:
                         "createdAt": str(session.get("created_at") or ""),
                         "lastActive": str(session.get("last_active") or ""),
                         "workloadType": str(session.get("workload_type") or "session"),
+                        "agentKind": "workflow-session",
+                        "visibility": str(
+                            session.get("a2aVisibility") or session.get("a2a_visibility") or "user"
+                        ),
+                        "environmentId": str(
+                            session.get("environmentId") or session.get("environment_id") or ""
+                        ),
                     },
                 )
             )

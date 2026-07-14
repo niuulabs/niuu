@@ -46,6 +46,8 @@ import {
   buildObservatoryRegistryHttpAdapter,
   buildObservatoryTopologySseStream,
   buildObservatoryEventsSseStream,
+  buildObservatoryAgentDirectoryHttpAdapter,
+  type IAgentDirectory,
 } from '@niuulabs/plugin-observatory';
 import {
   createMockVolundrService,
@@ -438,20 +440,31 @@ function resolveTingServiceBase(
 
 function resolveObservatoryServiceBase(
   config: Pick<NiuuConfig, 'services'>,
-  serviceKey: 'observatory.registry' | 'observatory.topology' | 'observatory.events',
+  serviceKey:
+    'observatory.registry' | 'observatory.topology' | 'observatory.events' | 'observatory.agents',
 ): string | null {
   const explicitBase = resolveDirectServiceBase(config, serviceKey);
   if (explicitBase) {
     if (serviceKey === 'observatory.registry') {
       return explicitBase.replace(/\/registry\/?$/, '');
     }
+    if (serviceKey === 'observatory.agents') {
+      return explicitBase.replace(/\/agents\/?$/, '');
+    }
     return explicitBase;
+  }
+
+  if (serviceKey === 'observatory.agents') {
+    const aggregateBase = resolveNiuuRegistryBase(config);
+    if (aggregateBase) return `${aggregateBase}/observatory`;
   }
 
   const groupedBase = resolveDirectServiceBase(config, 'observatory');
   if (!groupedBase) return null;
 
-  if (serviceKey === 'observatory.registry') return groupedBase;
+  if (serviceKey === 'observatory.registry' || serviceKey === 'observatory.agents') {
+    return groupedBase;
+  }
   if (serviceKey === 'observatory.topology') return `${groupedBase}/topology`;
   return `${groupedBase}/events`;
 }
@@ -661,20 +674,36 @@ function resolveCanonicalServiceStatus(
 
 function resolveObservatoryServiceStatus(
   config: Pick<NiuuConfig, 'services'>,
-  serviceKey: 'observatory.registry' | 'observatory.topology' | 'observatory.events',
+  serviceKey:
+    'observatory.registry' | 'observatory.topology' | 'observatory.events' | 'observatory.agents',
 ): ServiceBackendStatus {
   const explicit = resolveDirectServiceStatus(config, 'http', serviceKey);
   if (explicit.mode === 'live') {
     if (serviceKey === 'observatory.registry' && explicit.target) {
       return { ...explicit, target: explicit.target.replace(/\/registry\/?$/, '') };
     }
+    if (serviceKey === 'observatory.agents' && explicit.target) {
+      return { ...explicit, target: explicit.target.replace(/\/agents\/?$/, '') };
+    }
     return explicit;
+  }
+
+  if (serviceKey === 'observatory.agents') {
+    const aggregateBase = resolveNiuuRegistryBase(config);
+    if (aggregateBase) {
+      return {
+        mode: 'live',
+        transport: 'http',
+        target: `${aggregateBase}/observatory`,
+        source: 'niuu',
+      };
+    }
   }
 
   const grouped = resolveDirectServiceStatus(config, 'http', 'observatory');
   if (grouped.mode !== 'live' || !grouped.target) return grouped;
 
-  if (serviceKey === 'observatory.registry') {
+  if (serviceKey === 'observatory.registry' || serviceKey === 'observatory.agents') {
     return { ...grouped, source: 'observatory' };
   }
   if (serviceKey === 'observatory.topology') {
@@ -698,6 +727,7 @@ export function buildServiceBackendStatus(
     'observatory.registry': resolveObservatoryServiceStatus(config, 'observatory.registry'),
     'observatory.topology': resolveObservatoryServiceStatus(config, 'observatory.topology'),
     'observatory.events': resolveObservatoryServiceStatus(config, 'observatory.events'),
+    'observatory.agents': resolveObservatoryServiceStatus(config, 'observatory.agents'),
     'ravn.personas': resolveRavnServiceStatus(config, 'ravn.personas'),
     'ravn.ravens': resolveRavnServiceStatus(config, 'ravn.ravens'),
     'ravn.residents': resolveRavnServiceStatus(config, 'ravn.ravens'),
@@ -1397,6 +1427,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const observatoryRegistryBase = resolveObservatoryServiceBase(config, 'observatory.registry');
   const observatoryTopologyBase = resolveObservatoryServiceBase(config, 'observatory.topology');
   const observatoryEventsBase = resolveObservatoryServiceBase(config, 'observatory.events');
+  const observatoryAgentsBase = resolveObservatoryServiceBase(config, 'observatory.agents');
   const observatoryRegistry = observatoryRegistryBase
     ? buildObservatoryRegistryHttpAdapter(createApiClient(observatoryRegistryBase))
     : demoService(config, 'observatory.registry', createMockRegistryRepository);
@@ -1406,6 +1437,9 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const observatoryEvents = observatoryEventsBase
     ? buildObservatoryEventsSseStream(observatoryEventsBase)
     : demoService(config, 'observatory.events', createMockEventStream);
+  const observatoryAgents = observatoryAgentsBase
+    ? buildObservatoryAgentDirectoryHttpAdapter(createApiClient(observatoryAgentsBase))
+    : unavailableService<IAgentDirectory>('observatory.agents');
   // ── Valkyrie ──
   const valkyrieBase = resolveValkyrieServiceBase(config, 'valkyrie');
   const valkyrieReviewsBase = resolveValkyrieServiceBase(config, 'valkyrie.reviews');
@@ -1517,6 +1551,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'observatory.registry': observatoryRegistry,
     'observatory.topology': observatoryTopology,
     'observatory.events': observatoryEvents,
+    'observatory.agents': observatoryAgents,
     valkyrie,
     'valkyrie.reviews': valkyrieReviews,
     'valkyrie.skills': valkyrieSkills,

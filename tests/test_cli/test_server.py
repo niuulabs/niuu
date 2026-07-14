@@ -380,6 +380,7 @@ class TestRouteDomainSelection:
             "niuu-repos-api",
             "niuu-shared-api",
             "observatory-api",
+            "observatory-agents-api",
             "observatory-events-api",
             "observatory-registry-api",
             "observatory-topology-api",
