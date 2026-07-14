@@ -498,6 +498,9 @@ resident:
   dailyBudgetUsd: ""
   # -- Ravn llm config dict rendered verbatim into the node config
   llm: {}
+  # -- Secrets injected only into the resident Ravn daemon.
+  # Uses the same envVar/secretName/secretKey shape as top-level envSecrets.
+  envSecrets: []
   # -- Optional heterogeneous flock membership supplied by Volundr.
   flock:
     id: ""

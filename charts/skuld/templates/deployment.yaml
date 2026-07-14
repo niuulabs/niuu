@@ -419,6 +419,13 @@ spec:
               value: /workspace
             - name: RAVN_STATE_DIR
               value: /workspace/.ravn
+            {{- range .Values.resident.envSecrets }}
+            - name: {{ .envVar }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
           ports:
             - name: ravn-pub
               containerPort: 7482
