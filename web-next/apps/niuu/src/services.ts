@@ -722,7 +722,6 @@ export function buildServiceBackendStatus(
               source: 'forge',
             }
           : forgePtyStatus,
-    'forge.metrics': resolveDirectServiceStatus(config, 'http', 'forge.metrics'),
     ting: resolveDirectServiceStatus(config, 'http', 'ting'),
     'ting.dispatcher': resolveDirectServiceStatus(config, 'http', 'ting.dispatcher', 'ting'),
     'ting.sessions': resolveDirectServiceStatus(config, 'http', 'ting.sessions', 'ting'),

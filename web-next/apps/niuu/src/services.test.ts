@@ -584,12 +584,7 @@ describe('buildServiceBackendStatus', () => {
       target: 'http://localhost:8080/api/v1/forge',
       source: 'forge',
     });
-    expect(status['forge.metrics']).toEqual({
-      mode: 'live',
-      transport: 'http',
-      target: 'http://localhost:8080/api/v1/forge/metrics',
-      source: 'forge.metrics',
-    });
+    expect(status).not.toHaveProperty('forge.metrics');
     expect(status['forge.pty']).toEqual({
       mode: 'live',
       transport: 'ws',
