@@ -322,6 +322,10 @@ class PodManager(ABC):
         """Return the deterministic chat endpoint before pods are ready, if known."""
         return None
 
+    def initial_code_endpoint(self, session: Session) -> str | None:
+        """Return the deterministic code endpoint before pods are ready, if known."""
+        return None
+
     @abstractmethod
     async def start(
         self,
@@ -354,7 +358,7 @@ class PodManager(ABC):
     async def wait_for_ready(self, session: Session, timeout: float) -> SessionStatus:
         """Block until infrastructure is ready or failed.
 
-        Returns RUNNING if ready, FAILED if failed/timeout.
+        Returns the backend's current status when the wait ends.
         Each adapter implements this optimally for its backend.
         """
 

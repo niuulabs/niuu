@@ -35,6 +35,10 @@ def _session(
     )
 
 
+async def _async_status(status: SessionStatus) -> SessionStatus:
+    return status
+
+
 @pytest.fixture
 def repo() -> InMemorySessionRepository:
     return InMemorySessionRepository()
@@ -244,6 +248,123 @@ class TestReconcileActiveSessions:
         updated = await repo.get(session.id)
         assert updated.status == SessionStatus.RUNNING
         assert started == [f"routes:{session.id}", f"started:{session.id}"]
+
+    async def test_ready_runtime_recovers_failed_kubernetes_row(self, service, repo, pod_manager):
+        session = _session(SessionStatus.FAILED, datetime.now(UTC)).model_copy(
+            update={"chat_endpoint": None, "code_endpoint": None, "error": "timed out"}
+        )
+        await repo.create(session)
+        pod_manager.status = lambda _session: _async_status(SessionStatus.RUNNING)  # type: ignore[method-assign]
+        pod_manager.initial_chat_endpoint = lambda _session: "wss://restored/session"  # type: ignore[method-assign]
+        pod_manager.initial_code_endpoint = lambda _session: "https://restored/code"  # type: ignore[method-assign]
+
+        count = await service.reconcile_active_sessions()
+
+        assert count == 1
+        updated = await repo.get(session.id)
+        assert updated.status == SessionStatus.RUNNING
+        assert updated.error is None
+        assert updated.chat_endpoint == "wss://restored/session"
+        assert updated.code_endpoint == "https://restored/code"
+
+    async def test_progressing_runtime_recovers_failed_row_to_provisioning(
+        self, service, repo, pod_manager
+    ):
+        session = _session(SessionStatus.FAILED, datetime.now(UTC)).model_copy(
+            update={"error": "timed out"}
+        )
+        await repo.create(session)
+        pod_manager.status = lambda _session: _async_status(SessionStatus.STARTING)  # type: ignore[method-assign]
+
+        await service.reconcile_active_sessions()
+
+        updated = await repo.get(session.id)
+        assert updated.status == SessionStatus.PROVISIONING
+        assert updated.error is None
+
+    async def test_failed_helmrelease_is_removed_without_losing_failure(
+        self, service, repo, pod_manager
+    ):
+        session = _session(SessionStatus.FAILED, datetime.now(UTC)).model_copy(
+            update={"error": "install failed"}
+        )
+        await repo.create(session)
+
+        count = await service.reconcile_active_sessions()
+
+        assert count == 1
+        assert pod_manager.stop_calls == [session]
+        assert (await repo.get(session.id)).status == SessionStatus.FAILED
+
+    async def test_missing_failed_runtime_preserves_failure(self, service, repo, pod_manager):
+        session = _session(SessionStatus.FAILED, datetime.now(UTC)).model_copy(
+            update={"error": "install failed"}
+        )
+        await repo.create(session)
+        pod_manager.status = lambda _session: _async_status(SessionStatus.STOPPED)  # type: ignore[method-assign]
+
+        count = await service.reconcile_active_sessions()
+
+        assert count == 0
+        assert pod_manager.stop_calls == []
+        updated = await repo.get(session.id)
+        assert updated.status == SessionStatus.FAILED
+        assert updated.error == "install failed"
+
+    async def test_stopping_row_finishes_when_runtime_is_gone(self, service, repo, pod_manager):
+        session = _session(SessionStatus.STOPPING, datetime.now(UTC))
+        await repo.create(session)
+        pod_manager.status = lambda _session: _async_status(SessionStatus.STOPPED)  # type: ignore[method-assign]
+
+        count = await service.reconcile_active_sessions()
+
+        assert count == 1
+        updated = await repo.get(session.id)
+        assert updated.status == SessionStatus.STOPPED
+        assert updated.chat_endpoint is None
+        assert updated.error is None
+
+    @pytest.mark.parametrize("status", [SessionStatus.STOPPED, SessionStatus.ARCHIVED])
+    async def test_terminal_row_removes_live_runtime(self, service, repo, pod_manager, status):
+        session = _session(status, datetime.now(UTC))
+        await repo.create(session)
+        pod_manager.status = lambda _session: _async_status(SessionStatus.RUNNING)  # type: ignore[method-assign]
+
+        count = await service.reconcile_active_sessions()
+
+        assert count == 1
+        assert pod_manager.stop_calls == [session]
+        assert (await repo.get(session.id)).status == status
+
+    async def test_session_lookup_recovers_failed_row_from_ready_runtime(
+        self, service, repo, pod_manager
+    ):
+        session = _session(SessionStatus.FAILED, datetime.now(UTC))
+        await repo.create(session)
+        pod_manager.status = lambda _session: _async_status(SessionStatus.RUNNING)  # type: ignore[method-assign]
+
+        result = await service.reconcile_session_if_active(session.id)
+
+        assert result is not None
+        assert result.status == SessionStatus.RUNNING
+
+    async def test_non_kubernetes_backend_does_not_reconcile_failed_rows(
+        self, repo, pod_manager, broadcaster
+    ):
+        session = _session(SessionStatus.FAILED, datetime.now(UTC))
+        await repo.create(session)
+        service = SessionService(
+            repository=repo,
+            pod_manager=pod_manager,
+            broadcaster=broadcaster,
+            validate_repos=False,
+            runtime_backend="process",
+        )
+
+        count = await service.reconcile_active_sessions()
+
+        assert count == 0
+        assert pod_manager.stop_calls == []
 
     async def test_mark_session_dead_reconciles_single_row(self, service, repo, pod_manager):
         session = _session(SessionStatus.RUNNING, datetime.now(UTC))

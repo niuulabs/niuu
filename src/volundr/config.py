@@ -524,10 +524,12 @@ class SessionLivenessConfig(BaseModel):
     see nothing). Two complementary mechanisms keep the row truthful:
 
     1. **Pod-status reconcile** (``reconcile_enabled``, ON by default). A periodic
-       loop probes ``pod_manager.status()`` for every STARTING/RUNNING session
-       and corrects the row when the pod is actually gone. Because it consults
-       the authoritative pod manager rather than a heartbeat clock, it never
-       false-reaps a quiet-but-alive session, so it is safe to enable by default.
+       loop probes ``pod_manager.status()`` for active sessions and corrects the
+       row when the runtime state diverges. Kubernetes sessions additionally
+       recover failed rows from Ready HelmReleases and remove runtime resources
+       behind terminal rows. Because it consults the authoritative pod manager
+       rather than a heartbeat clock, it never false-reaps a quiet-but-alive
+       session, so it is safe to enable by default.
 
     2. **Heartbeat reaper** (``enabled``, OFF by default). The legacy reaper marks
        running sessions that have gone silent — no activity heartbeat for
@@ -552,7 +554,7 @@ class SessionLivenessConfig(BaseModel):
     reconcile_enabled: bool = Field(
         default=True,
         description=(
-            "Periodically reconcile STARTING/RUNNING rows against pod_manager.status(). "
+            "Periodically reconcile session rows against pod_manager.status(). "
             "Pod-status authoritative, so it never false-reaps idle-but-alive sessions."
         ),
     )

@@ -124,6 +124,9 @@ class FluxPodManager(PodManager, ResidentRuntimeController):
             return f"https://{self._gateway_domain}/s/{session_id}/"
         return f"{self._code_scheme}://{self._session_host(session_name)}{self._code_path}"
 
+    def initial_code_endpoint(self, session: Session) -> str | None:
+        return self._code_endpoint(session.name, str(session.id))
+
     def _build_helmrelease(
         self,
         name: str,
@@ -404,7 +407,7 @@ class FluxPodManager(PodManager, ResidentRuntimeController):
         finally:
             w.stop()
 
-        return SessionStatus.FAILED
+        return await self.status(session)
 
     async def close(self) -> None:
         """Close the Kubernetes API client."""

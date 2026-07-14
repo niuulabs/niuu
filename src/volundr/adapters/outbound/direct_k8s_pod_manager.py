@@ -285,6 +285,9 @@ class DirectK8sPodManager(PodManager):
         """Build the editor endpoint URL."""
         return f"http://{self._ingress_backend}{self._session_path(session)}/"
 
+    def initial_code_endpoint(self, session: Session) -> str | None:
+        return self._code_endpoint(session)
+
     def _build_labels(self, session: Session) -> dict[str, str]:
         """Build standard labels for Kubernetes resources."""
         return {
@@ -1298,7 +1301,7 @@ echo "Git credential helper configured"
             elapsed += self._poll_interval
 
         logger.warning("Timed out waiting for session %s after %.1fs", session.id, timeout)
-        return SessionStatus.FAILED
+        return await self.status(session)
 
     async def close(self) -> None:
         """Close the Kubernetes API client."""

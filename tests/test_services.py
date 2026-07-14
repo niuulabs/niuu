@@ -372,8 +372,10 @@ class TestSessionProvisioningState:
         assert updated.status == SessionStatus.RUNNING
 
     @pytest.mark.asyncio
-    async def test_poll_readiness_transitions_to_failed_on_timeout(self, repository, broadcaster):
-        """Background poller transitions PROVISIONING -> FAILED on timeout."""
+    async def test_poll_readiness_transitions_to_failed_on_backend_failure(
+        self, repository, broadcaster
+    ):
+        """Background poller transitions PROVISIONING -> FAILED on backend failure."""
         from tests.conftest import MockPodManager
 
         pod_manager = MockPodManager(wait_for_ready_result=SessionStatus.FAILED)
@@ -398,7 +400,35 @@ class TestSessionProvisioningState:
 
         updated = await repository.get(session.id)
         assert updated.status == SessionStatus.FAILED
-        assert "Provisioning timed out" in updated.error
+        assert "infrastructure reported failure" in updated.error
+
+    @pytest.mark.asyncio
+    async def test_poll_readiness_keeps_progressing_session_provisioning(
+        self, repository, broadcaster
+    ):
+        """A bounded wait ending while the runtime progresses is not a failure."""
+        from tests.conftest import MockPodManager
+
+        pod_manager = MockPodManager(wait_for_ready_result=SessionStatus.STARTING)
+        service = SessionService(
+            repository=repository,
+            pod_manager=pod_manager,
+            broadcaster=broadcaster,
+            provisioning_initial_delay=0,
+            provisioning_timeout=0.1,
+        )
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+
+        await service.start_session(session.id)
+        await asyncio.sleep(0.2)
+
+        updated = await repository.get(session.id)
+        assert updated.status == SessionStatus.PROVISIONING
+        assert updated.error is None
 
     @pytest.mark.asyncio
     async def test_can_stop_provisioning_session(self, service, repository):

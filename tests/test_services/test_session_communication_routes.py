@@ -29,6 +29,9 @@ class _FakeSessionRepository:
 
 
 class _FakePodManager:
+    def initial_code_endpoint(self, session: Session) -> str | None:
+        return None
+
     async def wait_for_ready(self, session: Session, timeout: float):
         return SessionStatus.RUNNING
 

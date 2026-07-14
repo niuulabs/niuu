@@ -92,6 +92,19 @@ class TestConstructor:
         assert pm._namespace == "test"
 
 
+class TestWaitForReady:
+    async def test_timeout_returns_current_deployment_status(
+        self,
+        pod_manager: DirectK8sPodManager,
+        sample_session: Session,
+    ) -> None:
+        pod_manager.status = AsyncMock(return_value=SessionStatus.STARTING)  # type: ignore[method-assign]
+
+        result = await pod_manager.wait_for_ready(sample_session, timeout=0)
+
+        assert result == SessionStatus.STARTING
+
+
 class TestResourceNames:
     """Test resource name generation."""
 

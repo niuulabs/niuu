@@ -289,12 +289,11 @@ async def _reconcile_active_loop(
     *,
     interval_seconds: int,
 ) -> None:
-    """Periodically reconcile STARTING/RUNNING rows against pod_manager.status().
+    """Periodically reconcile session rows against pod_manager.status().
 
-    Pod-status authoritative (INV-9): a row is only corrected when the pod manager
-    reports the session is actually gone, so an idle-but-alive session is never
-    false-reaped. This is the always-on truth mechanism the heartbeat reaper
-    could not safely provide.
+    Pod-status authoritative (INV-9): active rows follow runtime state, while
+    Kubernetes terminal rows release orphaned runtime resources. This is the
+    always-on truth mechanism the heartbeat reaper could not safely provide.
     """
     logger.info(
         "Active-session reconcile loop started, interval=%ds",
@@ -305,7 +304,7 @@ async def _reconcile_active_loop(
             await asyncio.sleep(interval_seconds)
             count = await session_service.reconcile_active_sessions()
             if count:
-                logger.info("Reconcile: corrected %d divergent active session(s)", count)
+                logger.info("Reconcile: corrected %d divergent session(s)", count)
         except asyncio.CancelledError:
             logger.info("Active-session reconcile loop cancelled")
             break

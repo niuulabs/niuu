@@ -796,10 +796,10 @@ class TestFluxPodManagerWaitForReadyErrors:
 
         mock_watch.stop.assert_called_once()
 
-    async def test_wait_returns_failed_on_timeout(
+    async def test_wait_returns_current_status_on_timeout(
         self, pod_manager: FluxPodManager, sample_session: Session, mock_api
     ):
-        """When the watch stream ends without a terminal status, returns FAILED."""
+        """A watch timeout does not override a still-progressing HelmRelease."""
         mock_api.get_namespaced_custom_object.return_value = {
             "status": {"conditions": []},
         }
@@ -826,7 +826,7 @@ class TestFluxPodManagerWaitForReadyErrors:
         ):
             result = await pod_manager.wait_for_ready(sample_session, timeout=5)
 
-        assert result == SessionStatus.FAILED
+        assert result == SessionStatus.STARTING
 
     async def test_wait_skips_non_dict_events(
         self, pod_manager: FluxPodManager, sample_session: Session, mock_api

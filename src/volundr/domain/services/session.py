@@ -1042,40 +1042,37 @@ class SessionService:
         *,
         skip_initial_delay: bool = False,
     ) -> None:
-        """Wait for backend readiness, then transition to RUNNING or FAILED."""
+        """Wait for backend readiness and persist a terminal runtime verdict."""
         if not skip_initial_delay:
             await asyncio.sleep(self._provisioning_initial_delay)
 
-        error_detail = ""
         try:
             result_status = await self._pod_manager.wait_for_ready(
                 session, self._provisioning_timeout
             )
         except asyncio.CancelledError:
             return
-        except Exception as exc:
-            result_status = SessionStatus.FAILED
-            error_detail = str(exc)
+        except Exception:
             logger.exception("Readiness check failed for session %s", session.id)
+            return
 
         # Re-fetch to check it's still PROVISIONING (could have been stopped/deleted)
         current = await self._repository.get(session.id)
         if current is None or current.status != SessionStatus.PROVISIONING:
             return
 
-        if result_status == SessionStatus.RUNNING:
-            running = current.with_status(SessionStatus.RUNNING)
-            await self._repository.update(running)
-            if self._broadcaster is not None:
-                await self._broadcaster.publish_session_updated(running)
-            await self._register_communication_routes(running)
-            await self._emit_session_started(running)
+        if result_status in {SessionStatus.STARTING, SessionStatus.PROVISIONING}:
+            logger.info(
+                "Session %s is still reconciling after readiness wait",
+                session.id,
+            )
             return
 
-        if error_detail:
-            msg = f"Provisioning failed: {error_detail}"
-        else:
-            msg = "Provisioning timed out: infrastructure did not become ready"
+        if result_status != SessionStatus.FAILED:
+            await self._persist_reconciled_session(current, result_status)
+            return
+
+        msg = "Provisioning failed: infrastructure reported failure"
         failed = current.with_status(SessionStatus.FAILED).with_error(msg)
         await self._repository.update(failed)
         if self._broadcaster is not None:
@@ -1337,16 +1334,11 @@ class SessionService:
                 lambda t, sid=session.id: self._provisioning_tasks.pop(sid, None)
             )
 
-    @staticmethod
-    def _reconciled_session(session: Session, actual_status: SessionStatus) -> Session:
+    def _reconciled_session(self, session: Session, actual_status: SessionStatus) -> Session:
         """Return the corrected session row for a pod-status divergence.
 
-        A RUNNING/STARTING row whose pod is gone is flipped to the pod manager's
-        verdict, its live-looking endpoints are cleared, and a queryable
-        ``liveness:`` error is stamped so the divergence is a loud, attributable
-        signal rather than a silent dead endpoint (INV-9). The ``liveness:``
-        prefix matches ``update_activity``'s clear-on-heartbeat rule, so a healthy
-        relaunch wipes the marker automatically.
+        Dead runtimes clear endpoints and stamp a queryable ``liveness:`` error.
+        Recovered runtimes clear stale errors and restore deterministic endpoints.
         """
         if actual_status == SessionStatus.STOPPED:
             return (
@@ -1360,16 +1352,41 @@ class SessionService:
                 .with_cleared_endpoints()
                 .with_error("liveness: session runtime is no longer available")
             )
-        return session.with_status(actual_status)
+
+        target_status = actual_status
+        if session.status == SessionStatus.FAILED and actual_status == SessionStatus.STARTING:
+            target_status = SessionStatus.PROVISIONING
+        updated = session.with_status(target_status)
+        return updated.model_copy(
+            update={
+                "chat_endpoint": session.chat_endpoint
+                or self._pod_manager.initial_chat_endpoint(session),
+                "code_endpoint": session.code_endpoint
+                or self._pod_manager.initial_code_endpoint(session),
+                "error": None,
+            }
+        )
+
+    async def _persist_reconciled_session(
+        self,
+        session: Session,
+        actual_status: SessionStatus,
+    ) -> Session:
+        updated = self._reconciled_session(session, actual_status)
+        final = await self._repository.update(updated)
+        if self._broadcaster is not None:
+            await self._broadcaster.publish_session_updated(final)
+        if session.status != SessionStatus.RUNNING and final.status == SessionStatus.RUNNING:
+            await self._register_communication_routes(final)
+            await self._emit_session_started(final)
+        return final
 
     async def reconcile_active_sessions(self) -> int:
-        """Reconcile stored STARTING/RUNNING sessions against the pod manager.
+        """Reconcile stored session rows against the pod manager.
 
-        Local-process sessions can outlive the in-memory Skuld registry after a
-        restart. The pod manager is the authority on liveness — if it reports that
-        a supposedly active session is actually stopped or failed, the persisted
-        row is corrected (status flipped, endpoints cleared, queryable
-        ``liveness:`` error stamped) so clients stop dialing dead chat endpoints.
+        Active rows follow runtime state. In Kubernetes mode, failed rows may
+        recover from a Ready HelmRelease and terminal rows shed orphaned runtime
+        resources. Intentional terminal states are never resurrected.
 
         Because the verdict comes from ``pod_manager.status()`` and not a
         heartbeat clock, an idle-but-alive session is never false-reaped — this is
@@ -1377,14 +1394,57 @@ class SessionService:
 
         Returns the number of sessions reconciled.
         """
-        active_sessions = [
-            *await self._repository.list(status=SessionStatus.STARTING),
-            *await self._repository.list(status=SessionStatus.PROVISIONING),
-            *await self._repository.list(status=SessionStatus.RUNNING),
+        statuses = [
+            SessionStatus.STARTING,
+            SessionStatus.PROVISIONING,
+            SessionStatus.RUNNING,
+        ]
+        if self._runtime_backend == "kubernetes":
+            statuses.extend(
+                [
+                    SessionStatus.FAILED,
+                    SessionStatus.STOPPING,
+                    SessionStatus.STOPPED,
+                    SessionStatus.ARCHIVED,
+                ]
+            )
+        sessions = [
+            session for status in statuses for session in await self._repository.list(status=status)
         ]
         reconciled = 0
-        for session in active_sessions:
+        for session in sessions:
             actual_status = await self._pod_manager.status(session)
+
+            if session.status in {
+                SessionStatus.STOPPING,
+                SessionStatus.STOPPED,
+                SessionStatus.ARCHIVED,
+            }:
+                if actual_status == SessionStatus.STOPPED:
+                    if session.status != SessionStatus.STOPPING:
+                        continue
+                    stopped = (
+                        session.with_status(SessionStatus.STOPPED)
+                        .with_cleared_endpoints()
+                        .model_copy(update={"error": None})
+                    )
+                    final = await self._repository.update(stopped)
+                    if self._broadcaster is not None:
+                        await self._broadcaster.publish_session_updated(final)
+                    reconciled += 1
+                    continue
+                if await self._pod_manager.stop(session):
+                    reconciled += 1
+                continue
+
+            if session.status == SessionStatus.FAILED and actual_status in {
+                SessionStatus.FAILED,
+                SessionStatus.STOPPED,
+            }:
+                if actual_status == SessionStatus.FAILED and await self._pod_manager.stop(session):
+                    reconciled += 1
+                continue
+
             if actual_status == session.status:
                 continue
 
@@ -1394,26 +1454,25 @@ class SessionService:
                 session.status.value,
                 actual_status.value,
             )
-            updated = self._reconciled_session(session, actual_status)
-            final = await self._repository.update(updated)
+            final = await self._persist_reconciled_session(session, actual_status)
             reconciled += 1
-            if self._broadcaster is not None:
-                await self._broadcaster.publish_session_updated(final)
-            if session.status != SessionStatus.RUNNING and final.status == SessionStatus.RUNNING:
-                await self._register_communication_routes(final)
-                await self._emit_session_started(final)
+            if actual_status == SessionStatus.FAILED and self._runtime_backend == "kubernetes":
+                await self._pod_manager.stop(final)
         return reconciled
 
     async def reconcile_session_if_active(self, session_id: UUID) -> Session | None:
-        """Reconcile one active session against the pod manager and return it."""
+        """Reconcile one active or recoverable failed row and return it."""
         session = await self._repository.get(session_id)
         if session is None:
             return None
-        if session.status not in {
+        reconcilable_statuses = {
             SessionStatus.STARTING,
             SessionStatus.PROVISIONING,
             SessionStatus.RUNNING,
-        }:
+        }
+        if self._runtime_backend == "kubernetes":
+            reconcilable_statuses.add(SessionStatus.FAILED)
+        if session.status not in reconcilable_statuses:
             return session
 
         actual_status = await self._pod_manager.status(session)
@@ -1426,14 +1485,13 @@ class SessionService:
             session.status.value,
             actual_status.value,
         )
-        updated = self._reconciled_session(session, actual_status)
-        final = await self._repository.update(updated)
-        if self._broadcaster is not None:
-            await self._broadcaster.publish_session_updated(final)
-        if session.status != SessionStatus.RUNNING and final.status == SessionStatus.RUNNING:
-            await self._register_communication_routes(final)
-            await self._emit_session_started(final)
-        return final
+        if session.status == SessionStatus.FAILED and actual_status in {
+            SessionStatus.FAILED,
+            SessionStatus.STOPPED,
+        }:
+            return session
+
+        return await self._persist_reconciled_session(session, actual_status)
 
     async def mark_session_dead(self, session_id: UUID) -> Session | None:
         """Force a single session to be reconciled against the pod manager NOW.
