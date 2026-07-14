@@ -37,7 +37,6 @@ LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.source="https://github.com/niuulabs/volundr"
 
 ENV VIRTUAL_ENV=/opt/venv
-ENV PYTHONPATH=/opt/venv/lib/python3.12/site-packages
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 COPY --from=builder --chown=65532:65532 /opt/venv /opt/venv
@@ -49,4 +48,4 @@ WORKDIR /app
 
 EXPOSE 8082
 
-ENTRYPOINT ["/usr/local/bin/python3", "-m", "uvicorn", "cli.shared_host:app", "--host", "0.0.0.0", "--port", "8082"]
+ENTRYPOINT ["/opt/venv/bin/python", "-m", "uvicorn", "cli.shared_host:app", "--host", "0.0.0.0", "--port", "8082"]
