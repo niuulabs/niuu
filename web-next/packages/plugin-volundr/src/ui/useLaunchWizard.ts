@@ -24,6 +24,7 @@ import {
   buildPresetRuntimePayload,
   buildResourceConfig,
   buildSessionSource,
+  buildWorkloadConfig,
   deriveSessionName,
   definitionToTaskType,
   filterModelsForDefinition,
@@ -85,6 +86,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
     mountPath: '~/code/niuu',
     sessionName: '',
     personaName: '',
+    workloadConfig: {},
     systemPrompt: '',
     initialPrompt: '',
     trackerQuery: '',
@@ -302,6 +304,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
         systemPrompt: preset.systemPrompt ?? '',
         personaName:
           typeof preset.workloadConfig.persona === 'string' ? preset.workloadConfig.persona : '',
+        workloadConfig: { ...preset.workloadConfig },
         selectedCredentials: [...preset.envSecretRefs],
         selectedIntegrations: [...preset.integrationIds],
         mcpServers: [...preset.mcpServers],
@@ -484,7 +487,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef }: LaunchWizardProp
         resourceConfig: buildResourceConfig(form),
         systemPrompt: form.systemPrompt.trim() || undefined,
         initialPrompt: form.initialPrompt.trim() || undefined,
-        workloadConfig: {},
+        workloadConfig: buildWorkloadConfig(form),
       });
 
       setCreatedSessionId(session.id);

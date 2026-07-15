@@ -709,6 +709,14 @@ class FluxHelmReleaseSessionDiscoveryAdapter:
                 f"runtime:{_slug(self._cluster or 'local')}:"
                 f"{_slug(self._namespace)}:skuld:{_slug(session_id)}"
             )
+            endpoints = {
+                key: str(value)
+                for key, value in {
+                    "a2a": session_values.get("a2aEndpointUrl"),
+                    "a2aCard": session_values.get("a2aCardUrl"),
+                }.items()
+                if value
+            }
             entities.append(
                 DiscoveredEntity(
                     id=entity_id,
@@ -720,10 +728,15 @@ class FluxHelmReleaseSessionDiscoveryAdapter:
                     source_adapter=self.__class__.__name__,
                     source_kind="flux-helmrelease",
                     source_uid=str(metadata.get("uid") or ""),
+                    endpoints=endpoints,
                     metadata={
                         "sessionId": session_id,
                         "model": str(session_values.get("model") or ""),
                         "imageTag": str(image_values.get("tag") or ""),
+                        "ownerId": str(session_values.get("ownerId") or ""),
+                        "tenantId": str(session_values.get("tenantId") or ""),
+                        "visibility": str(session_values.get("a2aVisibility") or "user"),
+                        "environmentId": str(session_values.get("environmentId") or ""),
                         "resources": [
                             {
                                 "kind": "helmrelease",

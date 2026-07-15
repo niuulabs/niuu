@@ -377,6 +377,9 @@ integration_ids:
   - github-primary
 setup_scripts:
   - pnpm lint
+workload_config:
+  a2aCardUrl: https://anybrowse.dev/.well-known/agent-card.json
+  a2aVisibility: public
 source:
   type: local_mount
   local_path: ~/code/niuu/custom
@@ -409,6 +412,46 @@ source:
     expect(screen.getByText('LOG_LEVEL=debug')).toBeInTheDocument();
     expect(screen.getByText('pnpm lint')).toBeInTheDocument();
     expect(screen.getByText(/Keep answers short\./)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('wizard-back'));
+    await screen.findByTestId('step-runtime-content');
+    fireEvent.click(screen.getByText('show advanced'));
+    fireEvent.click(screen.getByText('edit as yaml'));
+    expect(
+      (screen.getByPlaceholderText('Launch spec YAML') as HTMLTextAreaElement).value,
+    ).toContain('a2aCardUrl: https://anybrowse.dev/.well-known/agent-card.json');
+  });
+
+  it('launches with arbitrary workload config entered as yaml', async () => {
+    const service = createMockVolundrService();
+    const startSession = vi.spyOn(service, 'startSession');
+    wrap(true, vi.fn(), service);
+
+    await advanceToRuntime();
+    fireEvent.click(screen.getByText('show advanced'));
+    fireEvent.click(screen.getByText('edit as yaml'));
+
+    const yamlEditor = screen.getByPlaceholderText('Launch spec YAML') as HTMLTextAreaElement;
+    fireEvent.change(yamlEditor, {
+      target: {
+        value: `${yamlEditor.value}\nworkload_config:\n  a2aCardUrl: https://anybrowse.dev/.well-known/agent-card.json\n  a2aVisibility: public\n`,
+      },
+    });
+    fireEvent.click(screen.getByText('form view'));
+    fireEvent.click(screen.getByTestId('wizard-next'));
+    await screen.findByTestId('step-confirm-content');
+    fireEvent.click(screen.getByTestId('wizard-next'));
+
+    await waitFor(() =>
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workloadConfig: {
+            a2aCardUrl: 'https://anybrowse.dev/.well-known/agent-card.json',
+            a2aVisibility: 'public',
+          },
+        }),
+      ),
+    );
   });
 
   it('applies a saved preset and can clear back to custom runtime settings', async () => {

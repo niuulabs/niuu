@@ -190,7 +190,7 @@ class AgentDirectoryService:
         filters: AgentDirectoryFilters,
     ) -> tuple[AgentDirectoryEntry | None, AgentDirectoryWarning | None]:
         metadata = entity.metadata
-        source_agent_id = entity.source_uid or entity.id
+        source_agent_id = _string_metadata(metadata, "sessionId") or entity.source_uid or entity.id
         visibility = _string_metadata(metadata, "visibility", "a2aVisibility")
         if not visibility and "volundr-session" in entity.source_kind:
             visibility = "user"
