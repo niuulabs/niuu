@@ -215,6 +215,23 @@ def create_app(
             for offset, line in enumerate(lines[start:])
         ]
 
+    def read_confined_log_entries(
+        warden_dir: Path,
+        configured_path: str,
+        *,
+        default_name: str,
+        source: str,
+        limit: int,
+    ) -> list[WardenLogEntry]:
+        root = warden_dir.expanduser().resolve()
+        candidate = Path(configured_path).expanduser() if configured_path else root / default_name
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        candidate = candidate.resolve()
+        if not candidate.is_relative_to(root):
+            return []
+        return read_log_entries(candidate, source=source, limit=limit)
+
     def merge_log_entries(*groups: list[WardenLogEntry], limit: int) -> list[WardenLogEntry]:
         merged = [entry for group in groups for entry in group]
         merged.sort(key=lambda entry: (_entry_sort_timestamp(entry.timestamp), entry.id))
@@ -603,15 +620,18 @@ def create_app(
 
         normalized_stream = stream.strip().lower()
         limit = max(1, min(limit, 1000))
-        default_stdout = store.warden_dir(warden_id) / "warden.log"
-        default_stderr = store.warden_dir(warden_id) / "warden.error.log"
-        stdout_entries = read_log_entries(
-            Path(warden.supervisor.stdout_log or default_stdout),
+        warden_dir = store.warden_dir(warden_id)
+        stdout_entries = read_confined_log_entries(
+            warden_dir,
+            warden.supervisor.stdout_log,
+            default_name="warden.log",
             source="stdout",
             limit=limit,
         )
-        stderr_entries = read_log_entries(
-            Path(warden.supervisor.stderr_log or default_stderr),
+        stderr_entries = read_confined_log_entries(
+            warden_dir,
+            warden.supervisor.stderr_log,
+            default_name="warden.error.log",
             source="stderr",
             limit=limit,
         )
@@ -642,15 +662,18 @@ def create_app(
                 detail="Warden not found",
             )
         limit = max(1, min(limit, 1000))
-        default_stdout = store.warden_dir(warden_id) / "warden.log"
-        stdout_entries = read_log_entries(
-            Path(warden.supervisor.stdout_log or default_stdout),
+        warden_dir = store.warden_dir(warden_id)
+        stdout_entries = read_confined_log_entries(
+            warden_dir,
+            warden.supervisor.stdout_log,
+            default_name="warden.log",
             source="stdout",
             limit=limit,
         )
-        default_stderr = store.warden_dir(warden_id) / "warden.error.log"
-        stderr_entries = read_log_entries(
-            Path(warden.supervisor.stderr_log or default_stderr),
+        stderr_entries = read_confined_log_entries(
+            warden_dir,
+            warden.supervisor.stderr_log,
+            default_name="warden.error.log",
             source="stderr",
             limit=limit,
         )

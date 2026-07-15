@@ -2737,6 +2737,26 @@ def test_get_warden_logs_supports_all_streams_and_parsed_lines(tmp_path):
     assert {entry["source"] for entry in merged} == {"stdout", "stderr"}
 
 
+def test_get_warden_logs_cannot_read_outside_warden_directory(tmp_path):
+    outside_log = tmp_path / "outside.log"
+    outside_log.write_text("secret\n", encoding="utf-8")
+    store = _store(tmp_path / "wardens")
+    created = store.create(WardenSpec(id="", name="Research Warden"))
+    store.save(
+        created.model_copy(
+            update={
+                "supervisor": created.supervisor.model_copy(update={"stdout_log": str(outside_log)})
+            }
+        )
+    )
+    client = TestClient(create_app(warden_store=store))
+
+    resp = client.get(f"/api/v1/ravn/wardens/{created.id}/logs?stream=stdout")
+
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
 def test_get_warden_logs_rejects_invalid_stream(tmp_path):
     store = _store(tmp_path)
     created = store.create(WardenSpec(id="", name="Research Warden"))

@@ -56,6 +56,10 @@ from ravn.domain.mimir import MimirMount, WriteRouting
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_log(value: object) -> str:
+    return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
 class CompositeMimirAdapter(MimirPort):
     """Fan-out across multiple MimirPort instances with configurable routing.
 
@@ -322,9 +326,9 @@ class CompositeMimirAdapter(MimirPort):
             mount = self._mount_map.get(name)
             if mount is None:
                 logger.warning(
-                    "composite mimir: write routing named unknown mount %r for path %r",
-                    name,
-                    path,
+                    "composite mimir: write routing named unknown mount %s for path %s",
+                    _sanitize_log(name),
+                    _sanitize_log(path),
                 )
                 continue
             try:
@@ -406,6 +410,14 @@ class CompositeMimirAdapter(MimirPort):
                 continue
             try:
                 await mount.port.upsert_page(path, content, meta=meta)
-                logger.debug("composite mimir: wrote %r to mount %r", path, name)
+                logger.debug(
+                    "composite mimir: wrote %s to mount %s",
+                    _sanitize_log(path),
+                    _sanitize_log(name),
+                )
             except Exception as exc:
-                logger.warning("composite mimir: upsert_page failed on %r: %s", name, exc)
+                logger.warning(
+                    "composite mimir: upsert_page failed on %s: %s",
+                    _sanitize_log(name),
+                    _sanitize_log(exc),
+                )
