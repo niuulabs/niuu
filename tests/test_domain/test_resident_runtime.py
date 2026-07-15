@@ -678,7 +678,9 @@ async def test_delete_removes_resident_trace_spans_after_backend_cleanup() -> No
     principal = _principal()
     runtime = await service.create_record(principal, name="Muninn", profile_id="ravn-openshell")
 
-    assert await service.delete(principal, runtime.id)
+    deleted = await service.delete(principal, runtime.id)
+
+    assert deleted
 
     assert controller.actions == ["delete"]
     spans.delete_by_session.assert_awaited_once_with(runtime.id)
