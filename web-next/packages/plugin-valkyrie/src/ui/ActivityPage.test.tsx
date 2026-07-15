@@ -282,6 +282,7 @@ describe('ActivityPage', () => {
           pendingTotal: 0,
           pendingByKind: {},
           pendingByRisk: {},
+          pendingByEnvironment: {},
           countsByStatus: {},
         }),
     };

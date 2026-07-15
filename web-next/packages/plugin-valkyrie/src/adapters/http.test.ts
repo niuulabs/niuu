@@ -247,9 +247,19 @@ describe('buildOdinReviewHttpAdapter', () => {
     client.get.mockResolvedValue([rawItem()]);
     const adapter = buildOdinReviewHttpAdapter(client);
 
-    const items = await adapter.listReviews({ status: 'pending', kind: 'evolution_build' });
+    const items = await adapter.listReviews({
+      status: 'pending',
+      kind: 'evolution_build',
+      environmentId: 'env-a',
+      riskClass: 'high',
+      query: 'restart',
+      limit: 21,
+      offset: 20,
+    });
 
-    expect(client.get).toHaveBeenCalledWith('/reviews?status=pending&kind=evolution_build');
+    expect(client.get).toHaveBeenCalledWith(
+      '/reviews?status=pending&kind=evolution_build&environment_id=env-a&risk_class=high&q=restart&limit=21&offset=20',
+    );
     expect(items[0]?.itemId).toBe('review:evolution_build:abc');
     expect(items[0]?.kind).toBe('evolution_build');
     expect(items[0]?.evidence.artifact).toEqual({
@@ -306,8 +316,10 @@ describe('buildOdinReviewHttpAdapter', () => {
     client.get.mockResolvedValue({ pendingTotal: 2 });
     const adapter = buildOdinReviewHttpAdapter(client);
 
-    await adapter.getSummary();
-    expect(client.get).toHaveBeenCalledWith('/reviews/summary');
+    await adapter.getSummary({ environmentId: 'env-a', riskClass: 'high', query: 'restart' });
+    expect(client.get).toHaveBeenCalledWith(
+      '/reviews/summary?environment_id=env-a&risk_class=high&q=restart',
+    );
   });
 });
 

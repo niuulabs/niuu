@@ -87,6 +87,37 @@ async def test_requested_events_land_pending_and_decide_publishes(tmp_path) -> N
     assert [p.item_id for p in publisher.items] == [item.item_id]
 
 
+async def test_review_list_filters_searches_and_pages(tmp_path) -> None:
+    service, _publisher = _service(tmp_path)
+    for minute, title in enumerate(("Restart checkout", "Restart payments", "Ignore noise")):
+        item = _item(
+            environment_id="cluster-b",
+            risk_class="high" if title.startswith("Restart") else "low",
+            title=title,
+        )
+        item.requested_at = f"2026-07-14T12:0{minute}:00+00:00"
+        await service.store.upsert(item)
+
+    first = await service.list_items(
+        status="pending",
+        environment_id="cluster-b",
+        risk_class="high",
+        query="restart",
+        limit=1,
+    )
+    second = await service.list_items(
+        status="pending",
+        environment_id="cluster-b",
+        risk_class="high",
+        query="restart",
+        limit=1,
+        offset=1,
+    )
+
+    assert [item.title for item in first] == ["Restart payments"]
+    assert [item.title for item in second] == ["Restart checkout"]
+
+
 async def test_reannounce_never_regresses_a_settled_item(tmp_path) -> None:
     service, _publisher = _service(tmp_path)
     item = _item()
@@ -172,6 +203,7 @@ class _FakePool:
     def __init__(self) -> None:
         self.rows: dict[str, dict[str, Any]] = {}
         self.executed: list[str] = []
+        self.fetched: list[tuple[str, tuple[Any, ...]]] = []
 
     async def execute(self, sql: str, *params: Any) -> None:
         self.executed.append(" ".join(sql.split()))
@@ -189,6 +221,7 @@ class _FakePool:
         return self.rows.get(params[0])
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        self.fetched.append((" ".join(sql.split()), params))
         rows = list(self.rows.values())
         if "GROUP BY status" in sql:
             totals: dict[str, int] = {}
@@ -215,6 +248,14 @@ async def test_postgres_store_round_trips_items() -> None:
 
     listed = await store.list_items(status="pending")
     assert [entry.item_id for entry in listed] == [item.item_id]
+
+    await store.list_items(risk_class="high", query="probe", limit=20, offset=20)
+    sql, params = pool.fetched[-1]
+    assert "payload->>'risk_class' = $1" in sql
+    assert "payload->>'title' ILIKE $2" in sql
+    assert "LIMIT $3 OFFSET $4" in sql
+    assert params == ("high", "%probe%", 20, 20)
+
     assert await store.counts() == {"pending": 1}
 
 
@@ -250,6 +291,7 @@ async def test_rest_lists_decides_and_summarises(tmp_path) -> None:
     summary = client.get("/api/v1/ravn/odin/reviews/summary").json()
     assert summary["pendingTotal"] == 1
     assert summary["pendingByKind"] == {"evolution_build": 1}
+    assert summary["pendingByEnvironment"] == {"cluster-a": 1}
 
     detail = client.get(f"/api/v1/ravn/odin/reviews/{item.item_id}").json()
     assert detail["evidence"] == item.evidence
@@ -270,6 +312,39 @@ async def test_rest_lists_decides_and_summarises(tmp_path) -> None:
 
     missing = client.get("/api/v1/ravn/odin/reviews/review:none")
     assert missing.status_code == 404
+
+
+async def test_rest_filters_and_pages_reviews(tmp_path) -> None:
+    service, _publisher = _service(tmp_path)
+    for minute, title, risk in (
+        (0, "Restart checkout", "high"),
+        (1, "Restart payments", "high"),
+        (2, "Ignore noise", "low"),
+    ):
+        item = _item(environment_id="cluster-b", title=title, risk_class=risk)
+        item.requested_at = f"2026-07-14T12:0{minute}:00+00:00"
+        await service.store.upsert(item)
+    client = _client(service)
+
+    response = client.get(
+        "/api/v1/ravn/odin/reviews",
+        params={
+            "status": "pending",
+            "environment_id": "cluster-b",
+            "risk_class": "high",
+            "q": "restart",
+            "limit": 1,
+            "offset": 1,
+        },
+    )
+    summary = client.get(
+        "/api/v1/ravn/odin/reviews/summary",
+        params={"risk_class": "high", "q": "restart"},
+    ).json()
+
+    assert [item["title"] for item in response.json()] == ["Restart checkout"]
+    assert summary["pendingTotal"] == 2
+    assert summary["pendingByEnvironment"] == {"cluster-b": 2}
 
 
 async def test_rest_reject_requires_reason(tmp_path) -> None:

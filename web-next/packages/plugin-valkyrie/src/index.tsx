@@ -184,6 +184,7 @@ export type {
   LearningRevisionResult,
   ReviewDecisionRequest,
   ReviewListFilters,
+  ReviewSummaryFilters,
   SignalHistoryFilters,
   TrustGrantCreate,
 } from './ports';

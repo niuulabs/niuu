@@ -180,9 +180,9 @@ export function referencedSkillName(
 }
 
 /**
- * The newest N items is what a human ever needs at a glance. Every list panel
- * (decisions, learning & tools, inbox) fetches or slices to this cap and shows
- * a "latest 20 · N total" line when there are more.
+ * Keep each visible list page small enough to scan. Panels either slice to this
+ * cap or use it as their page size; filters and pagination can still reach
+ * older items.
  */
 export const LIST_LIMIT = 20;
 
@@ -1041,6 +1041,7 @@ export interface ReviewSummary {
   pendingTotal: number;
   pendingByKind: Record<string, number>;
   pendingByRisk: Record<string, number>;
+  pendingByEnvironment: Record<string, number>;
   countsByStatus: Record<string, number>;
 }
 

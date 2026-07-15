@@ -1487,6 +1487,24 @@ export function createMockOdinReviewService(
       if (filters.environmentId) {
         rows = rows.filter((item) => item.environmentId === filters.environmentId);
       }
+      if (filters.riskClass) rows = rows.filter((item) => item.riskClass === filters.riskClass);
+      if (filters.query) {
+        const needle = filters.query.toLocaleLowerCase();
+        rows = rows.filter((item) =>
+          [
+            item.title,
+            item.summary,
+            item.environmentId,
+            item.valkyrieId,
+            item.kind,
+            item.requestedAction,
+          ]
+            .join(' ')
+            .toLocaleLowerCase()
+            .includes(needle),
+        );
+      }
+      if (filters.offset) rows = rows.slice(Math.max(filters.offset, 0));
       if (filters.limit !== undefined) rows = rows.slice(0, Math.max(filters.limit, 0));
       return rows;
     },
@@ -1519,22 +1537,26 @@ export function createMockOdinReviewService(
       items.set(item.itemId, decided);
       return decided;
     },
-    async getSummary(): Promise<ReviewSummary> {
-      const rows = [...items.values()];
+    async getSummary(filters = {}): Promise<ReviewSummary> {
+      const rows = await this.listReviews({ ...filters, status: 'pending' });
       const countsByStatus: Record<string, number> = {};
       const pendingByKind: Record<string, number> = {};
       const pendingByRisk: Record<string, number> = {};
-      for (const item of rows) {
+      const pendingByEnvironment: Record<string, number> = {};
+      for (const item of items.values()) {
         countsByStatus[item.status] = (countsByStatus[item.status] ?? 0) + 1;
-        if (item.status === 'pending') {
-          pendingByKind[item.kind] = (pendingByKind[item.kind] ?? 0) + 1;
-          pendingByRisk[item.riskClass] = (pendingByRisk[item.riskClass] ?? 0) + 1;
-        }
+      }
+      for (const item of rows) {
+        pendingByKind[item.kind] = (pendingByKind[item.kind] ?? 0) + 1;
+        pendingByRisk[item.riskClass] = (pendingByRisk[item.riskClass] ?? 0) + 1;
+        pendingByEnvironment[item.environmentId] =
+          (pendingByEnvironment[item.environmentId] ?? 0) + 1;
       }
       return {
-        pendingTotal: rows.filter((item) => item.status === 'pending').length,
+        pendingTotal: rows.length,
         pendingByKind,
         pendingByRisk,
+        pendingByEnvironment,
         countsByStatus,
       };
     },

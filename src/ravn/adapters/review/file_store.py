@@ -33,10 +33,33 @@ class FileReviewQueueStore(ReviewQueueStore):
         status: str | None = None,
         kind: str | None = None,
         environment_id: str | None = None,
+        risk_class: str | None = None,
+        query: str | None = None,
         limit: int | None = None,
+        offset: int = 0,
     ) -> list[ReviewItem]:
         rows = self._store.list(status=status, kind=kind, environment_id=environment_id)
         rows.reverse()
+        if risk_class:
+            rows = [item for item in rows if item.risk_class == risk_class]
+        if query:
+            needle = query.casefold()
+            rows = [
+                item
+                for item in rows
+                if needle
+                in " ".join(
+                    (
+                        item.title,
+                        item.summary,
+                        item.environment_id,
+                        item.valkyrie_id,
+                        item.kind,
+                        item.requested_action,
+                    )
+                ).casefold()
+            ]
+        rows = rows[max(offset, 0) :]
         if limit is not None:
             rows = rows[: max(limit, 0)]
         return rows

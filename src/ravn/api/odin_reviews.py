@@ -90,29 +90,49 @@ def create_odin_review_router(
         status: str = "",
         kind: str = "",
         environment_id: str = "",
+        risk_class: str = "",
+        q: str = "",
         limit: int = 200,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         items = await service.list_items(
             status=status or None,
             kind=kind or None,
             environment_id=environment_id or None,
+            risk_class=risk_class or None,
+            query=q.strip() or None,
             limit=limit,
+            offset=offset,
         )
         return [item.to_payload() for item in items]
 
     @router.get("/reviews/summary")
-    async def review_summary() -> dict[str, Any]:
+    async def review_summary(
+        kind: str = "",
+        environment_id: str = "",
+        risk_class: str = "",
+        q: str = "",
+    ) -> dict[str, Any]:
         counts = await service.counts()
-        pending = await service.list_items(status=ReviewStatus.PENDING.value)
+        pending = await service.list_items(
+            status=ReviewStatus.PENDING.value,
+            kind=kind or None,
+            environment_id=environment_id or None,
+            risk_class=risk_class or None,
+            query=q.strip() or None,
+        )
         by_kind: dict[str, int] = {}
         by_risk: dict[str, int] = {}
+        by_environment: dict[str, int] = {}
         for item in pending:
             by_kind[item.kind] = by_kind.get(item.kind, 0) + 1
             by_risk[item.risk_class] = by_risk.get(item.risk_class, 0) + 1
+            by_environment[item.environment_id] = by_environment.get(item.environment_id, 0) + 1
         return {
             "countsByStatus": counts,
             "pendingByKind": by_kind,
             "pendingByRisk": by_risk,
+            "pendingByEnvironment": by_environment,
             "pendingTotal": len(pending),
         }
 

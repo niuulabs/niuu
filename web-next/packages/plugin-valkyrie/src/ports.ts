@@ -14,6 +14,7 @@ import type {
   RealmTrustGrant,
   ReviewItem,
   ReviewKind,
+  ReviewRiskClass,
   ReviewStatus,
   ReviewSummary,
   SignalHistoryEntry,
@@ -132,8 +133,16 @@ export interface ReviewListFilters {
   status?: ReviewStatus | '';
   kind?: ReviewKind | '';
   environmentId?: string;
+  riskClass?: ReviewRiskClass | '';
+  query?: string;
   limit?: number;
+  offset?: number;
 }
+
+export type ReviewSummaryFilters = Pick<
+  ReviewListFilters,
+  'kind' | 'environmentId' | 'riskClass' | 'query'
+>;
 
 export interface ReviewDecisionRequest {
   itemId: string;
@@ -146,7 +155,7 @@ export interface IOdinReviewService {
   listReviews(filters?: ReviewListFilters): Promise<ReviewItem[]>;
   getReview(itemId: string): Promise<ReviewItem | null>;
   decideReview(request: ReviewDecisionRequest): Promise<ReviewItem>;
-  getSummary(): Promise<ReviewSummary>;
+  getSummary(filters?: ReviewSummaryFilters): Promise<ReviewSummary>;
 }
 
 /** Body for POST /api/v1/realms/{slug}/trust-grants (exact backend casing). */

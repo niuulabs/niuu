@@ -25,7 +25,10 @@ class ReviewQueueStore(ABC):
         status: str | None = None,
         kind: str | None = None,
         environment_id: str | None = None,
+        risk_class: str | None = None,
+        query: str | None = None,
         limit: int | None = None,
+        offset: int = 0,
     ) -> list[ReviewItem]:
         """Return items newest-first, optionally filtered."""
 

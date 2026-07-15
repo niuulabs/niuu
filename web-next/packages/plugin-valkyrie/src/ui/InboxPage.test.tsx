@@ -138,6 +138,26 @@ describe('InboxPage', () => {
     });
   });
 
+  it('searches and filters the full queue, then groups the visible page', async () => {
+    const user = userEvent.setup();
+    renderInbox();
+    await screen.findAllByTestId('review-card');
+
+    await user.selectOptions(screen.getByLabelText('Filter by environment'), 'env-noatun');
+    await user.selectOptions(screen.getByLabelText('Filter by risk'), 'high');
+    await user.type(screen.getByLabelText('Search review inbox'), 'checkout');
+    await user.click(screen.getByRole('button', { name: 'Search' }));
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('review-card')).toHaveLength(1);
+    });
+    expect(screen.getByTestId('inbox-list-range')).toHaveTextContent('1–1 of 1 matching');
+    expect(screen.getByText('env-noatun · 1')).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText('Group reviews by'), 'risk');
+    expect(screen.getByText('high risk · 1')).toBeInTheDocument();
+  });
+
   it('renders a morning brief with its digest markdown and effect statement', async () => {
     const user = userEvent.setup();
     const withBrief = createMockOdinReviewService([...createSeedReviewItems(), morningBriefItem()]);
@@ -175,7 +195,8 @@ describe('InboxPage', () => {
     expect(await screen.findByTestId('inbox-error')).toHaveTextContent('queue offline');
   });
 
-  it('fetches at most LIST_LIMIT items and says how many more are pending', async () => {
+  it('pages through the full queue while rendering at most LIST_LIMIT items', async () => {
+    const user = userEvent.setup();
     const base = createSeedReviewItems()[0]!;
     const many = Array.from({ length: 25 }, (_, index) => ({
       ...base,
@@ -193,11 +214,15 @@ describe('InboxPage', () => {
     const cards = await screen.findAllByTestId('review-card');
     expect(cards).toHaveLength(LIST_LIMIT);
     expect(screen.getByTestId('inbox-pending-count')).toHaveTextContent('25 pending');
-    expect(screen.getByTestId('inbox-list-capped')).toHaveTextContent(
-      `latest ${LIST_LIMIT} · 25 total`,
+    expect(screen.getByTestId('inbox-list-range')).toHaveTextContent('1–20 of 25 matching');
+    expect(listSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: LIST_LIMIT + 1, offset: 0 }),
     );
-    for (const call of listSpy.mock.calls) {
-      expect(call[0]?.limit).toBe(LIST_LIMIT);
-    }
+
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(screen.getAllByTestId('review-card')).toHaveLength(5));
+    expect(screen.getByTestId('inbox-list-range')).toHaveTextContent('21–25 of 25 matching');
+    expect(screen.getByText('2 / 2')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
   });
 });

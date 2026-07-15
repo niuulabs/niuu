@@ -58,7 +58,10 @@ class PostgresReviewQueueStore(ReviewQueueStore):
         status: str | None = None,
         kind: str | None = None,
         environment_id: str | None = None,
+        risk_class: str | None = None,
+        query: str | None = None,
         limit: int | None = None,
+        offset: int = 0,
     ) -> list[ReviewItem]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -71,11 +74,34 @@ class PostgresReviewQueueStore(ReviewQueueStore):
         if environment_id:
             params.append(environment_id)
             clauses.append(f"environment_id = ${len(params)}")
+        if risk_class:
+            params.append(risk_class)
+            clauses.append(f"payload->>'risk_class' = ${len(params)}")
+        if query:
+            params.append(f"%{query}%")
+            placeholder = f"${len(params)}"
+            clauses.append(
+                "("
+                + " OR ".join(
+                    (
+                        f"payload->>'title' ILIKE {placeholder}",
+                        f"payload->>'summary' ILIKE {placeholder}",
+                        f"environment_id ILIKE {placeholder}",
+                        f"valkyrie_id ILIKE {placeholder}",
+                        f"kind ILIKE {placeholder}",
+                        f"payload->>'requested_action' ILIKE {placeholder}",
+                    )
+                )
+                + ")"
+            )
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = f"SELECT payload FROM odin_review_items {where} ORDER BY requested_at DESC"
         if limit is not None:
             params.append(max(limit, 0))
             sql += f" LIMIT ${len(params)}"
+        if offset:
+            params.append(max(offset, 0))
+            sql += f" OFFSET ${len(params)}"
         rows = await self._pool.fetch(sql, *params)
         return [_item_from_row(row) for row in rows]
 

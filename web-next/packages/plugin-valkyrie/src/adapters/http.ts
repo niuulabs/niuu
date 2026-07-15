@@ -31,6 +31,7 @@ import type {
   LearningRevisionResult,
   ReviewDecisionRequest,
   ReviewListFilters,
+  ReviewSummaryFilters,
   SignalHistoryFilters,
   TrustGrantCreate,
 } from '../ports';
@@ -173,14 +174,16 @@ export function buildValkyrieSkillsHttpAdapter(client: ApiClient): IValkyrieSkil
 export function buildOdinReviewHttpAdapter(client: ApiClient): IOdinReviewService {
   return {
     async listReviews(filters: ReviewListFilters = {}) {
-      const params = new URLSearchParams();
-      if (filters.status) params.set('status', filters.status);
-      if (filters.kind) params.set('kind', filters.kind);
-      if (filters.environmentId) params.set('environment_id', filters.environmentId);
-      if (filters.limit !== undefined) params.set('limit', String(filters.limit));
-      const query = params.toString();
       const rows = await client.get<Record<string, unknown>[]>(
-        `/reviews${query ? `?${query}` : ''}`,
+        `/reviews${query({
+          status: filters.status,
+          kind: filters.kind,
+          environment_id: filters.environmentId,
+          risk_class: filters.riskClass,
+          q: filters.query,
+          limit: filters.limit,
+          offset: filters.offset,
+        })}`,
       );
       return rows.map(normalizeReviewItem);
     },
@@ -205,8 +208,15 @@ export function buildOdinReviewHttpAdapter(client: ApiClient): IOdinReviewServic
       );
       return normalizeReviewItem(response.item);
     },
-    getSummary() {
-      return client.get('/reviews/summary');
+    getSummary(filters: ReviewSummaryFilters = {}) {
+      return client.get(
+        `/reviews/summary${query({
+          kind: filters.kind,
+          environment_id: filters.environmentId,
+          risk_class: filters.riskClass,
+          q: filters.query,
+        })}`,
+      );
     },
   };
 }

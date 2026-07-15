@@ -193,6 +193,14 @@ describe('createMockOdinReviewService', () => {
 
     const limited = await service.listReviews({ limit: 1 });
     expect(limited).toHaveLength(1);
+
+    const filtered = await service.listReviews({
+      environmentId: 'env-noatun',
+      riskClass: 'high',
+      query: 'checkout',
+      offset: 0,
+    });
+    expect(filtered.map((item) => item.itemId)).toEqual(['review:court_escalation:seed03']);
   });
 
   it('returns one item by id and null for unknown ids', async () => {
@@ -244,6 +252,11 @@ describe('createMockOdinReviewService', () => {
       summary.pendingTotal,
     );
     expect(summary.countsByStatus.pending).toBe(summary.pendingTotal);
+    expect(summary.pendingByEnvironment['env-ymir']).toBe(2);
+
+    const filtered = await service.getSummary({ riskClass: 'high', query: 'checkout' });
+    expect(filtered.pendingTotal).toBe(1);
+    expect(filtered.pendingByEnvironment).toEqual({ 'env-noatun': 1 });
   });
 });
 

@@ -1,5 +1,17 @@
 import { useMemo, useState } from 'react';
-import { Check, Gavel, GraduationCap, Hammer, Shield, Sunrise, TrendingUp, X } from 'lucide-react';
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Gavel,
+  GraduationCap,
+  Hammer,
+  Search,
+  Shield,
+  Sunrise,
+  TrendingUp,
+  X,
+} from 'lucide-react';
 import { HighlightedCode, MarkdownContent, SegmentedFilter } from '@niuulabs/ui';
 import {
   reviewArtifactEvidence,
@@ -9,6 +21,7 @@ import {
   LIST_LIMIT,
   type ReviewItem,
   type ReviewKind,
+  type ReviewRiskClass,
 } from '../domain';
 import { useDecideReview, useReviewList, useReviewSummary } from '../application/useReviews';
 import { KIND_LABELS, riskClasses, sortByUrgency, statusClasses, timeAgo } from './reviewFormat';
@@ -295,23 +308,87 @@ function QueueCard({
   );
 }
 
+const FILTER_KINDS: ReviewKind[] = [
+  'evolution_build',
+  'skill_promotion',
+  'flock_learning',
+  'court_escalation',
+  'autonomy_change',
+  'morning_brief',
+];
+const FILTER_RISKS: ReviewRiskClass[] = ['critical', 'high', 'medium', 'low'];
+type InboxGroup = 'environment' | 'kind' | 'risk' | 'none';
+
+function groupLabel(item: ReviewItem, groupBy: InboxGroup): string {
+  if (groupBy === 'environment') return item.environmentId || 'Unknown environment';
+  if (groupBy === 'kind') return KIND_LABELS[item.kind];
+  if (groupBy === 'risk') return `${item.riskClass} risk`;
+  return '';
+}
+
 export function InboxPage() {
   const [kindFilter, setKindFilter] = useState<ReviewKind | ''>('');
+  const [riskFilter, setRiskFilter] = useState<ReviewRiskClass | ''>('');
+  const [environmentFilter, setEnvironmentFilter] = useState('');
+  const [groupBy, setGroupBy] = useState<InboxGroup>('environment');
+  const [queryInput, setQueryInput] = useState('');
+  const [query, setQuery] = useState('');
+  const [offset, setOffset] = useState(0);
   const [selectedId, setSelectedId] = useState<string>('');
-  const { data: summary } = useReviewSummary();
-  // Only ever fetch the newest window; the endpoint honours `limit`.
+  const hasFilters = Boolean(kindFilter || riskFilter || environmentFilter || query);
+  const summaryFilters = useMemo(
+    () =>
+      hasFilters
+        ? {
+            kind: kindFilter,
+            riskClass: riskFilter,
+            environmentId: environmentFilter,
+            query,
+          }
+        : {},
+    [environmentFilter, hasFilters, kindFilter, query, riskFilter],
+  );
+  const { data: globalSummary } = useReviewSummary();
+  const { data: filteredSummary } = useReviewSummary(summaryFilters);
+  // The extra row tells us whether another page exists without rendering it.
   const { data, isLoading, error } = useReviewList({
     status: 'pending',
-    kind: kindFilter,
-    limit: LIST_LIMIT,
+    ...summaryFilters,
+    limit: LIST_LIMIT + 1,
+    offset,
   });
 
-  const items = useMemo(() => sortByUrgency(data ?? []), [data]);
+  const items = useMemo(() => sortByUrgency((data ?? []).slice(0, LIST_LIMIT)), [data]);
   const selected = items.find((item) => item.itemId === selectedId) ?? items[0];
-  // The true pending count comes from the summary; when it exceeds what we
-  // render, say so rather than implying the list is complete.
-  const pendingTotal = summary?.pendingTotal ?? items.length;
-  const cappedByLimit = !kindFilter && pendingTotal > items.length && items.length >= LIST_LIMIT;
+  const matchingTotal = filteredSummary?.pendingTotal ?? items.length;
+  const pendingTotal = globalSummary?.pendingTotal ?? matchingTotal;
+  const hasNextPage = (data?.length ?? 0) > LIST_LIMIT;
+  const page = Math.floor(offset / LIST_LIMIT) + 1;
+  const pageCount = Math.max(1, Math.ceil(matchingTotal / LIST_LIMIT));
+  const rangeStart = items.length > 0 ? offset + 1 : 0;
+  const rangeEnd = Math.min(offset + items.length, matchingTotal);
+  const environments = Object.keys(globalSummary?.pendingByEnvironment ?? {}).sort();
+  const groupedItems = useMemo(() => {
+    const groups = new Map<string, ReviewItem[]>();
+    for (const item of items) {
+      const label = groupLabel(item, groupBy);
+      groups.set(label, [...(groups.get(label) ?? []), item]);
+    }
+    return [...groups.entries()];
+  }, [groupBy, items]);
+  const resetPage = () => {
+    setOffset(0);
+    setSelectedId('');
+  };
+
+  const clearFilters = () => {
+    setKindFilter('');
+    setRiskFilter('');
+    setEnvironmentFilter('');
+    setQueryInput('');
+    setQuery('');
+    resetPage();
+  };
 
   if (isLoading) {
     return (
@@ -337,54 +414,173 @@ export function InboxPage() {
       data-testid="inbox-page"
       className="niuu:flex niuu:h-full niuu:min-h-0 niuu:flex-col niuu:gap-3 niuu:bg-bg-primary niuu:p-3"
     >
-      <header className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-2">
+      <header className="niuu:flex niuu:flex-col niuu:gap-2">
         <div className="niuu:flex niuu:items-center niuu:gap-3">
           <h1 className="niuu:text-base niuu:text-text-primary">Review inbox</h1>
           <span data-testid="inbox-pending-count" className={`niuu:text-xs ${MUTED}`}>
-            {summary?.pendingTotal ?? items.length} pending
+            {pendingTotal} pending
           </span>
-          {summary &&
-          (summary.pendingByRisk.high ?? 0) + (summary.pendingByRisk.critical ?? 0) > 0 ? (
+          {globalSummary &&
+          (globalSummary.pendingByRisk.high ?? 0) + (globalSummary.pendingByRisk.critical ?? 0) >
+            0 ? (
             <span className="niuu:rounded-md niuu:bg-critical-bg niuu:px-2 niuu:py-0.5 niuu:text-xs niuu:text-critical">
-              {(summary.pendingByRisk.high ?? 0) + (summary.pendingByRisk.critical ?? 0)} high risk
+              {(globalSummary.pendingByRisk.high ?? 0) +
+                (globalSummary.pendingByRisk.critical ?? 0)}{' '}
+              high risk
             </span>
           ) : null}
         </div>
-        <select
-          aria-label="Filter by kind"
-          value={kindFilter}
-          onChange={(event) => setKindFilter(event.target.value as ReviewKind | '')}
-          className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:px-2 niuu:py-1.5 niuu:text-xs niuu:text-text-primary"
+        <form
+          role="search"
+          className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setQuery(queryInput.trim());
+            resetPage();
+          }}
         >
-          <option value="">all kinds</option>
-          <option value="evolution_build">builds</option>
-          <option value="skill_promotion">promotions</option>
-          <option value="flock_learning">learnings</option>
-          <option value="court_escalation">escalations</option>
-          <option value="autonomy_change">autonomy</option>
-        </select>
+          <label className="niuu:flex niuu:min-w-64 niuu:flex-1 niuu:items-center niuu:gap-2 niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:px-2">
+            <Search size={14} className={MUTED} aria-hidden="true" />
+            <input
+              aria-label="Search review inbox"
+              value={queryInput}
+              onChange={(event) => setQueryInput(event.target.value)}
+              placeholder="Search title, environment, valkyrie, action…"
+              className="niuu:min-w-0 niuu:flex-1 niuu:bg-transparent niuu:py-1.5 niuu:text-xs niuu:text-text-primary niuu:outline-none"
+            />
+          </label>
+          <button type="submit" className={BUTTON}>
+            Search
+          </button>
+          <select
+            aria-label="Filter by environment"
+            value={environmentFilter}
+            onChange={(event) => {
+              setEnvironmentFilter(event.target.value);
+              resetPage();
+            }}
+            className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:px-2 niuu:py-1.5 niuu:text-xs niuu:text-text-primary"
+          >
+            <option value="">all environments</option>
+            {environments.map((environment) => (
+              <option key={environment} value={environment}>
+                {environment} ({globalSummary?.pendingByEnvironment[environment] ?? 0})
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Filter by kind"
+            value={kindFilter}
+            onChange={(event) => {
+              setKindFilter(event.target.value as ReviewKind | '');
+              resetPage();
+            }}
+            className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:px-2 niuu:py-1.5 niuu:text-xs niuu:text-text-primary"
+          >
+            <option value="">all kinds</option>
+            {FILTER_KINDS.map((kind) => (
+              <option key={kind} value={kind}>
+                {KIND_LABELS[kind]} ({globalSummary?.pendingByKind[kind] ?? 0})
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Filter by risk"
+            value={riskFilter}
+            onChange={(event) => {
+              setRiskFilter(event.target.value as ReviewRiskClass | '');
+              resetPage();
+            }}
+            className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:px-2 niuu:py-1.5 niuu:text-xs niuu:text-text-primary"
+          >
+            <option value="">all risks</option>
+            {FILTER_RISKS.map((risk) => (
+              <option key={risk} value={risk}>
+                {risk} ({globalSummary?.pendingByRisk[risk] ?? 0})
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Group reviews by"
+            value={groupBy}
+            onChange={(event) => setGroupBy(event.target.value as InboxGroup)}
+            className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-secondary niuu:px-2 niuu:py-1.5 niuu:text-xs niuu:text-text-primary"
+          >
+            <option value="environment">group: environment</option>
+            <option value="kind">group: kind</option>
+            <option value="risk">group: risk</option>
+            <option value="none">no grouping</option>
+          </select>
+          {hasFilters ? (
+            <button type="button" className={BUTTON} onClick={clearFilters}>
+              Clear
+            </button>
+          ) : null}
+        </form>
       </header>
       {items.length === 0 ? (
         <div data-testid="inbox-empty" className={`${PANEL} niuu:p-6 niuu:text-sm ${MUTED}`}>
-          Nothing needs you. Held builds, guarded promotions, peer learnings, and court escalations
-          will appear here the moment a valkyrie wants a decision.
+          {hasFilters
+            ? 'No pending reviews match these filters.'
+            : 'Nothing needs you. Held builds, guarded promotions, peer learnings, and court escalations will appear here the moment a valkyrie wants a decision.'}
         </div>
       ) : (
         <div className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:gap-3">
-          <aside className="niuu:flex niuu:w-72 niuu:shrink-0 niuu:flex-col niuu:gap-2 niuu:overflow-auto">
-            {cappedByLimit ? (
-              <p data-testid="inbox-list-capped" className={`niuu:px-1 niuu:text-xs ${MUTED}`}>
-                latest {LIST_LIMIT} · {pendingTotal} total
-              </p>
-            ) : null}
-            {items.map((item) => (
-              <QueueCard
-                key={item.itemId}
-                item={item}
-                selected={selected?.itemId === item.itemId}
-                onSelect={setSelectedId}
-              />
-            ))}
+          <aside className="niuu:flex niuu:w-80 niuu:shrink-0 niuu:flex-col niuu:gap-2 niuu:overflow-hidden">
+            <p data-testid="inbox-list-range" className={`niuu:px-1 niuu:text-xs ${MUTED}`}>
+              {rangeStart}–{rangeEnd} of {matchingTotal} matching
+            </p>
+            <div className="niuu:flex niuu:min-h-0 niuu:flex-1 niuu:flex-col niuu:gap-2 niuu:overflow-auto">
+              {groupedItems.map(([label, group]) => (
+                <div key={label || 'all'} className="niuu:flex niuu:flex-col niuu:gap-2">
+                  {label ? (
+                    <p className="niuu:sticky niuu:top-0 niuu:z-10 niuu:bg-bg-primary niuu:px-1 niuu:py-1 niuu:text-xs niuu:font-medium niuu:text-text-secondary">
+                      {label} · {group.length}
+                    </p>
+                  ) : null}
+                  {group.map((item) => (
+                    <QueueCard
+                      key={item.itemId}
+                      item={item}
+                      selected={selected?.itemId === item.itemId}
+                      onSelect={setSelectedId}
+                    />
+                  ))}
+                </div>
+              ))}
+            </div>
+            <nav
+              aria-label="Inbox pages"
+              className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-2"
+            >
+              <button
+                type="button"
+                className={BUTTON}
+                disabled={offset === 0}
+                onClick={() => {
+                  setOffset(Math.max(0, offset - LIST_LIMIT));
+                  setSelectedId('');
+                }}
+              >
+                <ChevronLeft size={14} aria-hidden="true" />
+                Previous
+              </button>
+              <span className={`niuu:text-xs ${MUTED}`}>
+                {page} / {pageCount}
+              </span>
+              <button
+                type="button"
+                className={BUTTON}
+                disabled={!hasNextPage}
+                onClick={() => {
+                  setOffset(offset + LIST_LIMIT);
+                  setSelectedId('');
+                }}
+              >
+                Next
+                <ChevronRight size={14} aria-hidden="true" />
+              </button>
+            </nav>
           </aside>
           {selected ? <ReviewDetail item={selected} /> : null}
         </div>

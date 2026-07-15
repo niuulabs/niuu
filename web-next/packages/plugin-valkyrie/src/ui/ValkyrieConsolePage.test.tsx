@@ -232,6 +232,7 @@ describe('ValkyrieConsolePage', () => {
         pendingTotal: 5,
         pendingByKind: {},
         pendingByRisk: {},
+        pendingByEnvironment: {},
         countsByStatus: {},
       }),
     };
