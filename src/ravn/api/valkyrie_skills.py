@@ -77,10 +77,25 @@ def skill_record_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
     adopted_at = str(payload.get("adopted_at") or "")
     if not adopted_at and event_type == EVOLUTION_ACTIVATED_EVENT:
         adopted_at = observed_at
+    valkyrie_id = str(payload.get("valkyrie_id") or "")
+    source_valkyrie_id = str(payload.get("source_valkyrie_id") or "")
+    learning_scope = str(payload.get("learning_scope") or payload.get("scope") or "")
+    learning_source = str(payload.get("learning_source") or "")
+    learning_origin = str(payload.get("learning_origin") or "")
+    if not learning_origin:
+        if source_valkyrie_id:
+            learning_origin = "local" if source_valkyrie_id == valkyrie_id else "peer"
+        elif learning_source.startswith("flock-learning:") or learning_scope in {
+            "flock",
+            "shared",
+        }:
+            learning_origin = "unknown"
+        else:
+            learning_origin = "local"
     return {
         "skillName": skill_name,
         "environmentId": canonical_environment_id(payload.get("environment_id")),
-        "valkyrieId": str(payload.get("valkyrie_id") or ""),
+        "valkyrieId": valkyrie_id,
         "description": str(payload.get("summary_text") or ""),
         "content": str(payload.get("skill_content") or ""),
         "toolCode": str(payload.get("tool_code") or ""),
@@ -88,6 +103,11 @@ def skill_record_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
         "requirements": [str(entry) for entry in list(payload.get("requirements") or [])],
         "manifest": dict(manifest) if isinstance(manifest, dict) else {},
         "learningId": str(payload.get("learning_id") or ""),
+        "learningOrigin": learning_origin,
+        "learningScope": learning_scope,
+        "learningSource": learning_source,
+        "sourceEnvironmentId": str(payload.get("source_environment_id") or ""),
+        "sourceValkyrieId": source_valkyrie_id,
         "adoptedAt": adopted_at,
         "observedAt": observed_at,
     }

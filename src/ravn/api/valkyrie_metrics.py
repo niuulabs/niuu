@@ -47,6 +47,10 @@ def render_valkyrie_skill_metrics(
             valkyrie_id=skill.get("valkyrieId", ""),
             skill_name=skill.get("skillName", ""),
             has_code=str(bool(skill.get("hasCode"))).lower(),
+            learning_origin=skill.get("learningOrigin", "unknown"),
+            learning_scope=skill.get("learningScope", ""),
+            source_environment_id=skill.get("sourceEnvironmentId", ""),
+            source_valkyrie_id=skill.get("sourceValkyrieId", ""),
         )
         lines.append(f"ravn_valkyrie_skill_installed{labels} 1")
 
