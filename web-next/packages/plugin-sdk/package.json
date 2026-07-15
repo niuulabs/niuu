@@ -1,6 +1,6 @@
 {
   "name": "@niuulabs/plugin-sdk",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Plugin descriptor, service DI, config, and feature-catalog primitives for Niuu plugins",
   "license": "Apache-2.0",
   "type": "module",
