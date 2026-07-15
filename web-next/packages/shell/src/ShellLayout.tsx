@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, type ReactNode } from 'react';
+import { createElement, useCallback, useEffect, useMemo, type ReactNode } from 'react';
 import clsx from 'clsx';
 import { Outlet, useRouter, useRouterState } from '@tanstack/react-router';
 import { useConfig, type PluginCtx, type PluginDescriptor } from '@niuulabs/plugin-sdk';
@@ -27,15 +27,14 @@ function activePluginId(pathname: string, plugins: PluginDescriptor[]): string |
   return null;
 }
 
-function PluginSlot({
+export function PluginSlot({
   render,
   ctx,
 }: {
   render?: ((ctx: PluginCtx) => ReactNode) | null;
   ctx: PluginCtx;
 }) {
-  if (!render) return null;
-  return <>{render(ctx)}</>;
+  return render ? createElement(render, ctx) : null;
 }
 
 function RailTooltipContent({ title, subtitle }: { title: string; subtitle?: string }) {
