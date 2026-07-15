@@ -29,6 +29,12 @@ _DISPLAY_WORDS = {
     "statefulset": "StatefulSet",
 }
 
+_OUTCOME_DISPLAY = {
+    "using_adopted_learning": "Successful use",
+    "adopted_learning_failed": "Failed",
+    "adopted_learning_regressed": "Regressed",
+}
+
 
 class SkillStatsReader(Protocol):
     async def skill_stats(self, *, environment_id: str = "") -> list[dict[str, Any]]: ...
@@ -65,6 +71,11 @@ def _timestamp(value: Any) -> float:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
     except ValueError:
         return 0.0
+
+
+def _outcome_display(value: Any) -> str:
+    outcome = str(value).strip()
+    return _OUTCOME_DISPLAY.get(outcome, _display_name(outcome))
 
 
 def render_valkyrie_skill_metrics(
@@ -115,11 +126,14 @@ def render_valkyrie_skill_metrics(
         )
     )
     for stat in stats:
+        last_outcome = stat.get("lastOutcome", "")
         labels = _labels(
             environment_id=stat.get("environmentId", ""),
             skill_name=stat.get("skillName", ""),
             skill_display_name=_display_name(stat.get("skillName", "")),
             capability=stat.get("capability", ""),
+            last_outcome=last_outcome,
+            last_outcome_display=_outcome_display(last_outcome),
         )
         lines.append(
             "ravn_valkyrie_skill_last_used_timestamp_seconds"
