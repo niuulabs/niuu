@@ -417,6 +417,7 @@ class ResidentLearningRuntime:
                     "requirements": list(artifact.requirements),
                     "summary_text": manifest.description,
                     "learning_id": artifact.artifact_id,
+                    "adopted_at": artifact.created_at,
                 }
             )
         return records
@@ -450,6 +451,7 @@ class ResidentLearningRuntime:
                     "requirements": [],
                     "summary_text": str(skill.get("description") or ""),
                     "learning_id": str(metadata.get("skill_id") or ""),
+                    "adopted_at": str(metadata.get("created_at") or skill.get("created_at") or ""),
                 }
             )
         return records
@@ -483,6 +485,7 @@ class ResidentLearningRuntime:
                         "skill_name": record["skill_name"],
                         "status": SKILL_INVENTORY_STATUS_PRESENT,
                         "learning_id": record.get("learning_id") or "",
+                        "adopted_at": record.get("adopted_at") or "",
                         "skill_content": record.get("skill_content") or "",
                         "learned_tool_manifest": dict(record.get("learned_tool_manifest") or {}),
                         "tool_code": record.get("tool_code") or "",

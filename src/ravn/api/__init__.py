@@ -946,6 +946,7 @@ def create_app(
         create_odin_review_router,
     )
     from ravn.api.valkyrie_history_service import ValkyrieHistoryService  # noqa: PLC0415
+    from ravn.api.valkyrie_metrics import create_valkyrie_metrics_router  # noqa: PLC0415
     from ravn.api.valkyrie_skills import (  # noqa: PLC0415
         ValkyrieSkillMirror,
         create_valkyrie_skills_router,
@@ -1053,6 +1054,7 @@ def create_app(
         )
     )
     app.include_router(create_valkyrie_skills_router(valkyrie_skills))
+    app.include_router(create_valkyrie_metrics_router(valkyrie_skills, valkyrie_history))
     app.include_router(
         create_odin_review_router(
             odin_review_service,

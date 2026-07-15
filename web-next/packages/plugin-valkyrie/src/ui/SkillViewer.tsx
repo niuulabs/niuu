@@ -80,8 +80,8 @@ export function SkillViewer({
             <>
               <p className="niuu:leading-6 niuu:text-text-primary">{skill.description}</p>
               <p className="niuu:text-xs niuu:text-text-muted">
-                Adopted {timeAgo(skill.adoptedAt)} ago by {skill.valkyrieId} · learning{' '}
-                {skill.learningId}
+                {skill.adoptedAt ? `Installed ${timeAgo(skill.adoptedAt)} ago` : 'Installed'} by{' '}
+                {skill.valkyrieId} · learning {skill.learningId}
               </p>
               {skill.requirements.length > 0 ? (
                 <div>

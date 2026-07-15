@@ -536,6 +536,7 @@ async def test_publish_skill_inventory_emits_one_event_per_learned_tool(tmp_path
     assert "def run(input)" in payload["tool_code"]
     assert payload["learned_tool_manifest"]["name"] == SKILL
     assert payload["skill_content"]  # non-empty synthesized skill body
+    assert payload["adopted_at"]
 
 
 async def test_publish_skill_inventory_includes_managed_skills(tmp_path) -> None:
@@ -559,6 +560,7 @@ async def test_publish_skill_inventory_includes_managed_skills(tmp_path) -> None
     drain = next(e for e in events if e.payload["skill_name"] == "valkyrie-drain-node")
     assert drain.payload["skill_content"].startswith("# skill: valkyrie-drain-node")
     assert drain.payload["summary_text"] == "Drain a node safely."
+    assert drain.payload["adopted_at"]
 
 
 async def test_publish_skill_inventory_skips_a_bad_artifact(tmp_path) -> None:

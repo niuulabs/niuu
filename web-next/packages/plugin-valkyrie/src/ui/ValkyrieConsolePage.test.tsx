@@ -570,7 +570,9 @@ describe('ValkyrieConsolePage', () => {
       ).toBeInTheDocument(),
     );
     expect(panel).toHaveTextContent('Read-only probe that inspects');
-    expect(panel).toHaveTextContent('adopted');
+    expect(panel).toHaveTextContent('installed');
+    expect(panel).toHaveTextContent('recorded use');
+    expect(panel).toHaveTextContent('no recorded use');
     expect(within(panel).getByTestId('learned-skill-registry_token_refresh_check')).toBeVisible();
   });
 
@@ -654,7 +656,7 @@ describe('ValkyrieConsolePage', () => {
 
     const panel = screen.getByTestId('valkyrie-learned-skills');
     await waitFor(() =>
-      expect(panel).toHaveTextContent('No learned skills adopted on this environment yet'),
+      expect(panel).toHaveTextContent('No learned skills installed on this environment yet'),
     );
   });
 

@@ -1746,6 +1746,7 @@ export function createSeedLearnedSkills(): LearnedSkillRecord[] {
         'Read-only probe that inspects OOMKilled pods and correlates them with memory limits.',
       learningId: 'learning-oom-probe',
       adoptedAt: '2026-06-01T09:00:00Z',
+      observedAt: '2026-07-15T10:00:00Z',
       hasCode: true,
       content: SEED_SKILL_CONTENT,
       toolCode: SEED_TOOL_CODE,
@@ -1760,6 +1761,7 @@ export function createSeedLearnedSkills(): LearnedSkillRecord[] {
       description: 'Checks image pull-secret freshness after a registry token rollover.',
       learningId: 'learning-registry-check',
       adoptedAt: '2026-05-28T16:30:00Z',
+      observedAt: '2026-07-15T10:00:00Z',
       hasCode: false,
       content:
         '# skill: registry-token-refresh-check\n\n## Overview\nVerify image pull secrets ' +
@@ -1780,6 +1782,7 @@ function toLearnedSkillSummary(record: LearnedSkillRecord): LearnedSkillSummary 
     description: record.description,
     learningId: record.learningId,
     adoptedAt: record.adoptedAt,
+    observedAt: record.observedAt,
     hasCode: record.hasCode,
   };
 }

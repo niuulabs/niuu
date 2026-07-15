@@ -144,6 +144,7 @@ export interface LearnedSkillSummary {
   description: string;
   learningId: string;
   adoptedAt: string;
+  observedAt?: string;
   hasCode: boolean;
 }
 

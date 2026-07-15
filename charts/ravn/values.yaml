@@ -45,6 +45,12 @@ service:
   targetPort: 8084
   annotations: {}
 
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /api/v1/ravn/metrics
+
 config:
   host: "0.0.0.0"
   port: 8084
