@@ -52,11 +52,13 @@ def test_create_api_app_returns_fastapi(monkeypatch) -> None:
 def test_api_route_domains_include_registry_topology_and_events() -> None:
     plugin = ObservatoryPlugin()
     domains = plugin.api_route_domains()
-    assert len(domains) == 4
-    assert domains[0].name == "observatory-registry-api"
-    assert "/api/v1/observatory/topology/stream" in domains[1].prefixes
-    assert "/api/v1/observatory/events" in domains[2].prefixes
-    assert domains[3].prefixes == ("/api/v1/observatory",)
+    assert len(domains) == 5
+    assert domains[0].name == "observatory-agents-api"
+    assert domains[0].prefixes == ("/api/v1/observatory/agents",)
+    assert domains[1].name == "observatory-registry-api"
+    assert "/api/v1/observatory/topology/stream" in domains[2].prefixes
+    assert "/api/v1/observatory/events" in domains[3].prefixes
+    assert domains[4].prefixes == ("/api/v1/observatory",)
 
 
 def test_create_api_client_returns_cli_client() -> None:

@@ -7,6 +7,7 @@ license = {text = "Apache-2.0"}
 keywords = ["development-platform", "remote-coding", "ai", "kubernetes", "self-hosted"]
 requires-python = ">=3.12"
 dependencies = [
+    "a2a-sdk>=1.1.0,<2",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
     "pyyaml>=6.0.3",

@@ -504,6 +504,16 @@ commandments — exactly "rough frame, look around, revise."
 
 ---
 
+### 4.11 Addressable agents and capability discovery
+
+The steward must discover callable agents through the principal-aware Observatory Agent
+Directory, not from a static agent list. Directory entries project the existing topology and
+link back through `topologyNodeId`; skills and tags provide capability search, while owner,
+tenant, Environment membership, and visibility constrain what the steward may see. Cross-realm
+or cross-cluster discovery uses Guild's partial-result aggregate and retains source provenance.
+Only equivalent, signed Agent Cards may collapse into one canonical identity. Operational and
+protocol details live in [A2A Agent Directory](operator/a2a-agent-directory.md).
+
 ## 5. Data, events, config, boundaries
 
 - **Postgres** (raw SQL + asyncpg, **no ORM** — `.claude/rules/database.md`):
@@ -626,4 +636,3 @@ the whole reframe before we invest in execution and embodiment.
 - **Additive only.** Every phase composes existing primitives; nothing above requires
   rewriting ravn/ting/volundr/mimir.
 ```
-

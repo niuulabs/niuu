@@ -206,6 +206,24 @@ autoscaling:
 podDisruptionBudget:
   enabled: false
 
+# -- Guild-to-Observatory Agent Directory fan-out and validation settings.
+directory:
+  instanceId: ""
+  cardTimeoutSeconds: 4.0
+  cardCacheTtlSeconds: 300.0
+  localMaxConcurrency: 8
+  guildTimeoutSeconds: 5.0
+  guildMaxConcurrency: 8
+  signatureAlgorithms:
+    - ES256
+    - ES384
+    - RS256
+    - RS384
+    - PS256
+    - EdDSA
+  # -- Card origins explicitly trusted to receive forwarded caller authentication.
+  authenticatedCardOrigins: []
+
 nodeSelector: {}
 tolerations: []
 affinity: {}

@@ -586,6 +586,10 @@ async def test_volundr_sessions_adapter_projects_running_sessions() -> None:
                     "model": "codex",
                     "tokens_used": 2048,
                     "chat_endpoint": "wss://sessions.example/session",
+                    "a2aCardUrl": "https://sessions.example/.well-known/agent-card.json",
+                    "a2aEndpointUrl": "https://sessions.example/a2a",
+                    "environmentId": "environment-a",
+                    "a2aVisibility": "tenant",
                 }
             ],
         )
@@ -622,6 +626,14 @@ async def test_volundr_sessions_adapter_projects_running_sessions() -> None:
     assert session["parentId"] == "namespace-noatun-skuld"
     assert session["status"] == "healthy"
     assert session["tokens"] == 2048
+    assert session["endpoints"] == {
+        "chat": "wss://sessions.example/session",
+        "a2a": "https://sessions.example/a2a",
+        "a2aCard": "https://sessions.example/.well-known/agent-card.json",
+    }
+    assert session["environmentId"] == "environment-a"
+    assert session["visibility"] == "tenant"
+    assert session["agentKind"] == "workflow-session"
     assert snapshot["edges"] == [
         {
             "id": (

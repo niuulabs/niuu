@@ -20,8 +20,43 @@ import type {
   IEventStream,
   TopologyListener,
   ObservatoryEventListener,
+  IAgentDirectory,
 } from '../ports';
-import type { Registry, Topology, ObservatoryEvent } from '../domain';
+import type {
+  AgentDirectoryEntry,
+  AgentDirectoryFilters,
+  AgentDirectoryPage,
+  Registry,
+  Topology,
+  ObservatoryEvent,
+} from '../domain';
+
+function agentDirectoryQuery(filters: AgentDirectoryFilters = {}): string {
+  const query = new URLSearchParams();
+  const append = (name: string, values: readonly string[] | undefined) => {
+    for (const value of values ?? []) query.append(name, value);
+  };
+  append('skill', filters.skills);
+  append('tag', filters.tags);
+  append('kind', filters.kinds);
+  append('status', filters.statuses);
+  append('environmentId', filters.environmentIds);
+  append('cluster', filters.clusterIds);
+  append('instance', filters.instanceIds);
+  const encoded = query.toString();
+  return encoded ? `?${encoded}` : '';
+}
+
+export function buildObservatoryAgentDirectoryHttpAdapter(client: ApiClient): IAgentDirectory {
+  return {
+    listAgents(filters): Promise<AgentDirectoryPage> {
+      return client.get<AgentDirectoryPage>(`/agents${agentDirectoryQuery(filters)}`);
+    },
+    getAgent(agentId): Promise<AgentDirectoryEntry> {
+      return client.get<AgentDirectoryEntry>(`/agents/${encodeURIComponent(agentId)}`);
+    },
+  };
+}
 
 function toObservatoryEventType(raw: Record<string, unknown>): ObservatoryEvent['type'] {
   const explicitType = typeof raw.type === 'string' ? raw.type.toUpperCase() : '';

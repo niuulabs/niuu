@@ -28,6 +28,7 @@ class DiscoverySnapshot:
 
     topology: ObservatorySnapshot
     events: list[dict[str, str]]
+    result: DiscoveryResult
 
 
 def _utc_now() -> datetime:
@@ -80,9 +81,18 @@ class ObservatoryDiscoveryService:
     ) -> list[dict[str, str]]:
         return deepcopy((await self._get_snapshot(headers=headers)).events)
 
+    async def get_discovery_result(
+        self,
+        headers: Mapping[str, str] | None = None,
+    ) -> DiscoveryResult:
+        """Return the cached unfiltered source result for principal-aware projections."""
+        return deepcopy((await self._get_snapshot(headers=headers)).result)
+
     async def _get_snapshot(self, headers: Mapping[str, str] | None = None) -> DiscoverySnapshot:
         now = _utc_now()
-        cache_key = "request" if headers else "default"
+        # Discovery is source truth fetched with adapter-owned credentials. Principal-aware
+        # projections filter after this cache, so no restricted response is shared here.
+        cache_key = "source"
         cached = self._cached.get(cache_key)
         if cached is not None:
             cached_at, cached_snapshot = cached
@@ -120,7 +130,7 @@ class ObservatoryDiscoveryService:
             result = await self._discovery_adapter.discover()
         topology = topology_from_discovery(result)
         events = topology.pop("events", [])
-        return DiscoverySnapshot(topology=topology, events=events)
+        return DiscoverySnapshot(topology=topology, events=events, result=result)
 
     async def _safe_fetch(self, fetch: JsonFetcher, path: str) -> Any:
         try:

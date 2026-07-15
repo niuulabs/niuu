@@ -64,6 +64,21 @@ def test_volundr_chart_uses_uvicorn_import_path() -> None:
     ]
 
 
+@pytest.mark.parametrize("chart", ["guild", "observatory"])
+def test_agent_directory_chart_config_exposes_bounded_runtime_settings(chart: str) -> None:
+    values = _load_values(chart)
+    template = (CHARTS_DIR / chart / "templates" / "configmap.yaml").read_text()
+
+    assert values["directory"]["cardTimeoutSeconds"] > 0
+    assert values["directory"]["localMaxConcurrency"] >= 1
+    assert values["directory"]["guildMaxConcurrency"] >= 1
+    assert "observatory:" in template
+    assert ".Values.directory.cardTimeoutSeconds" in template
+    assert ".Values.directory.guildMaxConcurrency" in template
+    assert ".Values.directory.signatureAlgorithms" in template
+    assert ".Values.directory.authenticatedCardOrigins" in template
+
+
 @pytest.mark.parametrize("chart", CHARTS)
 def test_charts_default_niuu_deployment_cluster_value(chart: str) -> None:
     values = _load_values(chart)
