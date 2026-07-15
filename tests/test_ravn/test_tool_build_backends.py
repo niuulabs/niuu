@@ -544,6 +544,28 @@ def test_client_from_workload_identity_exchanges_projected_token(tmp_path: Path)
     assert client._headers()["Authorization"] == "Bearer workload-jwt"
 
 
+def test_ting_backend_requests_end_to_end_build_scopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_client_from_workload_identity(**kwargs: object) -> _FakeHttpClient:
+        captured.update(kwargs)
+        return _FakeHttpClient({})
+
+    monkeypatch.setattr(
+        "ravn.adapters.tool_build.ting_workflow.client_from_workload_identity",
+        fake_client_from_workload_identity,
+    )
+
+    TingWorkflowToolBuildBackend(base_url="https://ting.example", workflow_id="wf-1")
+
+    assert captured["workload_scopes"] == [
+        "ting:workflow:launch",
+        "forge:session:create",
+    ]
+
+
 def test_client_external_token_env_is_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("EXTERNAL_TOOL_BUILD_TOKEN", "external-123")
 
