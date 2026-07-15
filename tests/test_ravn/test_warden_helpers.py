@@ -63,6 +63,20 @@ def test_local_python_executable_falls_back_when_sys_executable_is_empty() -> No
         assert local_python_executable() == "/usr/bin/python3"
 
 
+def test_runtime_config_payload_rejects_warden_id_path_traversal() -> None:
+    spec = WardenSpec(id="../outside", name="Outside")
+
+    with pytest.raises(ValueError, match="configured root"):
+        runtime_config_payload(spec)
+
+
+def test_warden_store_rejects_id_path_traversal(tmp_path: Path) -> None:
+    store = WardenStore(root=tmp_path / "wardens")
+
+    with pytest.raises(ValueError, match="configured root"):
+        store.warden_dir("../outside")
+
+
 def test_runtime_config_payload_defaults_write_mount_and_enables_secondary_roles(
     tmp_path: Path,
 ) -> None:
