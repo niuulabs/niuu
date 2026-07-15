@@ -657,7 +657,8 @@ export const LEARNING_FEEDBACK_VERDICTS: ReadonlyArray<{
 ];
 
 /** Human label for a feedback verdict ("wrong_tier" → "Wrong tier"). */
-export function learningFeedbackVerdictLabel(verdict: string): string {
+export function learningFeedbackVerdictLabel(verdict?: string): string {
+  if (!verdict) return 'Awaiting';
   const known = LEARNING_FEEDBACK_VERDICTS.find((entry) => entry.verdict === verdict);
   if (known) return known.label;
   return verdict.replace(/_/g, ' ');

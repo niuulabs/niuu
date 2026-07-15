@@ -850,4 +850,8 @@ describe('learning feedback verdicts', () => {
     expect(learningFeedbackVerdictLabel('useful')).toBe('Useful');
     expect(learningFeedbackVerdictLabel('vetoed_by_odin')).toBe('vetoed by odin');
   });
+
+  it('treats an incomplete feedback payload as awaiting', () => {
+    expect(learningFeedbackVerdictLabel(undefined)).toBe('Awaiting');
+  });
 });
