@@ -1116,6 +1116,7 @@ export function GraphView({
     const el = svgRef.current;
     if (!el) return;
     function handleWheel(e: WheelEvent) {
+      if (!e.metaKey && !e.ctrlKey) return;
       e.preventDefault();
       setTransform((prev) => {
         const delta = e.deltaY < 0 ? 1.1 : 0.9;
