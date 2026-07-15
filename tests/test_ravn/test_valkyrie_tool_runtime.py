@@ -440,7 +440,7 @@ async def test_peer_adoption_reviews_canaries_and_installs_agent_tool(tmp_path) 
 
 async def test_existing_agent_tool_is_registered_and_used_on_matching_signal(tmp_path) -> None:
     peer = _runtime(tmp_path, "k8s-existing-agent-tool")
-    capability = "inspect.kubernetes.pod.oomkilled"
+    capability = "inspect.pod.oomkilled"
     learned = LearnedToolArtifact(
         artifact_id=f"learned-tool:{capability}:v1",
         manifest=LearnedToolManifest(

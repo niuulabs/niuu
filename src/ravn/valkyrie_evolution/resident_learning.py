@@ -1686,17 +1686,20 @@ class ResidentLearningRuntime:
 
     async def _find_installed_skill_by_capability(self, capability: str) -> Any | None:
         rows = await self._skills.list_skills()
-        marker = f"capability: {capability}"
+        capabilities = [capability]
+        if capability.startswith("inspect.kubernetes."):
+            capabilities.append(capability.replace("inspect.kubernetes.", "inspect.", 1))
+        markers = [f"capability: {candidate}" for candidate in capabilities]
         for row in rows:
             skill = row["skill"]
-            if marker in str(skill.get("content", "")):
+            if any(marker in str(skill.get("content", "")) for marker in markers):
                 return type("RunnableSkill", (), skill)()
 
         # Agent-tool artifacts installed before they were represented in the
         # managed skill registry still need to be discoverable and metered.
         # Register the durable envelope lazily, then use it for this signal.
         for record in self._iter_learned_tool_inventory():
-            if marker not in record["skill_content"]:
+            if not any(marker in record["skill_content"] for marker in markers):
                 continue
             try:
                 skill = await self._skills.create(
