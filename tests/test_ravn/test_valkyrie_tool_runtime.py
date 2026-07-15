@@ -434,6 +434,51 @@ async def test_peer_adoption_reviews_canaries_and_installs_agent_tool(tmp_path) 
     installed = read_learned_tool_artifact(artifact_path)
     assert installed.manifest.name == "mimir_metric_window"
     assert installed.manifest.declared_reach[0].kind == "network"
+    registered = await peer.skills.show("mimir_metric_window")
+    assert "capability: mimir_metric_window" in registered["skill"]["content"]
+
+
+async def test_existing_agent_tool_is_registered_and_used_on_matching_signal(tmp_path) -> None:
+    peer = _runtime(tmp_path, "k8s-existing-agent-tool")
+    capability = "inspect.kubernetes.pod.oomkilled"
+    learned = LearnedToolArtifact(
+        artifact_id=f"learned-tool:{capability}:v1",
+        manifest=LearnedToolManifest(
+            name=capability,
+            description="Inspect a recurring Kubernetes event without mutating it.",
+            input_schema={
+                "type": "object",
+                "properties": {"namespace": {"type": "string"}},
+                "required": ["namespace"],
+            },
+            required_permission="kubernetes:read",
+            declared_reach=[ToolReachGrant(kind="pure_compute", access="read")],
+        ),
+        tool_code=(
+            "def run(input):\n"
+            "    return {'inspected': True, 'namespace': input.get('namespace', '')}\n"
+        ),
+        provenance={
+            "scope": "flock",
+            "source_environment_id": "env-k8s-teacher",
+            "source_valkyrie_id": "valkyrie:k8s-teacher",
+        },
+    )
+    state_dir = tmp_path / "k8s-existing-agent-tool"
+    write_learned_tool(tools_dir=state_dir / "learned_tools", artifact=learned)
+    write_learned_tool_artifact(
+        artifacts_dir=state_dir / "learned_tool_artifacts",
+        artifact=learned,
+    )
+
+    result = await peer.process_signal(_signal())
+
+    assert result["usedAdoptedLearning"] is True
+    assert result["skillName"] == capability
+    assert result["toolResult"] == {"inspected": True, "namespace": "payments"}
+    registered = await peer.skills.show(capability)
+    assert registered["metadata"]["run_count"] == 1
+    assert registered["metadata"]["source_environment_id"] == "env-k8s-teacher"
 
 
 async def test_review_approval_installs_self_authored_agent_tool(tmp_path) -> None:

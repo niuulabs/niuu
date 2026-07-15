@@ -27,7 +27,9 @@ from ravn.odin.review import (
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
 from ravn.valkyrie_evolution.learned_tools import (
+    LocalLearnedToolRunner,
     learned_tool_artifact_path,
+    learned_tool_path,
     learned_tool_storage,
     learned_tool_venvs_dir,
     manifest_review_boundaries,
@@ -249,6 +251,13 @@ class ResidentLearningRuntime:
         self._policy = policy or ResidentLearningPolicy()
         self._source = source or identity.valkyrie_id
         self._tools_dir = Path(tools_dir) if tools_dir else None
+        self._learned_tool_runner = (
+            LocalLearnedToolRunner(
+                venvs_dir=learned_tool_venvs_dir(self._tools_dir.parent),
+            )
+            if self._tools_dir is not None
+            else None
+        )
         self._tool_timeout_seconds = tool_timeout_seconds
         self._rollback_consecutive_failures = rollback_consecutive_failures
         self._feedback_confidence_bump = feedback_confidence_bump
@@ -832,19 +841,37 @@ class ResidentLearningRuntime:
         if self._tools_dir is None:
             return None
         tool_path = tool_path_for_skill(self._tools_dir, str(skill.name))
-        if not tool_path.is_file():
+        payload = {
+            "signal_id": signal.signal_id,
+            "event_type": signal.event_type,
+            "severity": signal.severity,
+            "summary": signal.summary,
+            "payload": signal.payload,
+        }
+        if tool_path.is_file():
+            return await run_tool(
+                tool_path,
+                payload,
+                entry_point=_tool_entry_point_from_content(str(skill.content)),
+                timeout_seconds=self._tool_timeout_seconds,
+            )
+
+        code_dir, artifacts_dir = learned_tool_storage(self._tools_dir.parent)
+        artifact_path = learned_tool_artifact_path(artifacts_dir, str(skill.name))
+        if not artifact_path.is_file() or self._learned_tool_runner is None:
             return None
-        return await run_tool(
-            tool_path,
-            {
-                "signal_id": signal.signal_id,
-                "event_type": signal.event_type,
-                "severity": signal.severity,
-                "summary": signal.summary,
-                "payload": signal.payload,
-            },
-            entry_point=_tool_entry_point_from_content(str(skill.content)),
+        artifact = read_learned_tool_artifact(artifact_path)
+        # Agent tools declare their own input schema. Surface the operational
+        # payload at the top level while retaining the signal envelope for tools
+        # that need event metadata.
+        learned_payload = {**payload, **signal.payload}
+        return await self._learned_tool_runner.run(
+            learned_tool_path(code_dir, artifact.manifest.name),
+            learned_payload,
+            entry_point=artifact.manifest.entry_point,
             timeout_seconds=self._tool_timeout_seconds,
+            requirements=artifact.requirements,
+            declared_reach=artifact.manifest.declared_reach,
         )
 
     async def _handle_learning_event(self, event: SleipnirEvent) -> None:
@@ -1590,18 +1617,18 @@ class ResidentLearningRuntime:
         artifact: ResidentLearningArtifact,
         build: BuildResult,
     ) -> str:
+        skill_name = build.skill_name
         if build.artifact_type == "agent_tool":
-            tool_name = _install_learned_tool_artifact(
+            skill_name = _install_learned_tool_artifact(
                 tools_dir=self._tools_dir,
                 artifact=artifact,
                 build=build,
             )
-            return tool_name
 
         scope = _normalise_scope(artifact.scope)
         try:
             await self._skills.create(
-                name=build.skill_name,
+                name=skill_name,
                 content=build.skill_content,
                 description=build.description,
                 scope=scope,
@@ -1614,7 +1641,7 @@ class ResidentLearningRuntime:
             )
         except ValueError:
             await self._skills.update(
-                name=build.skill_name,
+                name=skill_name,
                 content=build.skill_content,
                 description=build.description,
                 source=f"flock-learning:{artifact.learning_id}",
@@ -1622,18 +1649,22 @@ class ResidentLearningRuntime:
                 source_valkyrie_id=artifact.source_valkyrie_id,
             )
             await self._skills.promote(
-                build.skill_name,
+                skill_name,
                 scope=scope,
                 environment_id=self.identity.environment_id,
                 domain=self.identity.domain or artifact.domain,
             )
-        if build.has_tool_implementation and self._tools_dir is not None:
+        if (
+            build.artifact_type != "agent_tool"
+            and build.has_tool_implementation
+            and self._tools_dir is not None
+        ):
             write_tool(
                 tools_dir=self._tools_dir,
-                skill_name=build.skill_name,
+                skill_name=skill_name,
                 tool_code=build.tool_code,
             )
-        return build.skill_name
+        return skill_name
 
     async def _archive_learning_skill(self, artifact: ResidentLearningArtifact) -> str:
         rows = await self._skills.list_skills(include_archived=True)
@@ -1660,6 +1691,29 @@ class ResidentLearningRuntime:
             skill = row["skill"]
             if marker in str(skill.get("content", "")):
                 return type("RunnableSkill", (), skill)()
+
+        # Agent-tool artifacts installed before they were represented in the
+        # managed skill registry still need to be discoverable and metered.
+        # Register the durable envelope lazily, then use it for this signal.
+        for record in self._iter_learned_tool_inventory():
+            if marker not in record["skill_content"]:
+                continue
+            try:
+                skill = await self._skills.create(
+                    name=record["skill_name"],
+                    content=record["skill_content"],
+                    description=record["summary_text"],
+                    scope=_normalise_scope(record["learning_scope"]),
+                    environment_id=self.identity.environment_id,
+                    domain=self.identity.domain,
+                    source=record["learning_source"],
+                    source_environment_id=record["source_environment_id"],
+                    source_valkyrie_id=record["source_valkyrie_id"],
+                    action_safety_class=_safety_class_from_content(record["skill_content"]),
+                )
+            except ValueError:
+                continue
+            return skill
         return None
 
     async def _publish_odin_decision(
@@ -2127,7 +2181,7 @@ def _agent_tool_content(
     return (
         f"# learned tool: {manifest.name}\n"
         "metadata:\n"
-        f"  capability: tool.{manifest.name}\n"
+        f"  capability: {manifest.name}\n"
         f"  source: {artifact.source_valkyrie_id or 'resident-agent'}\n"
         f"  safety_class: {safety_class}\n"
         f"  tool_entry_point: {manifest.entry_point}\n"
