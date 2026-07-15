@@ -169,7 +169,7 @@ class VolundrSessionTool(_PlatformAuthMixin, ToolPort):
         exchange_url: str = "",
         audiences: list[str] | None = None,
     ) -> None:
-        self._set_platform_auth(
+        super().__init__(
             base_url=base_url,
             timeout=timeout,
             pat_token=pat_token,
@@ -351,7 +351,7 @@ class VolundrGitTool(_PlatformAuthMixin, ToolPort):
         exchange_url: str = "",
         audiences: list[str] | None = None,
     ) -> None:
-        self._set_platform_auth(
+        super().__init__(
             base_url=base_url,
             timeout=timeout,
             pat_token=pat_token,
@@ -573,7 +573,7 @@ class TingSagaTool(_PlatformAuthMixin, ToolPort):
         exchange_url: str = "",
         audiences: list[str] | None = None,
     ) -> None:
-        self._set_platform_auth(
+        super().__init__(
             base_url=base_url,
             timeout=timeout,
             pat_token=pat_token,
@@ -805,7 +805,7 @@ class TingWorkflowTool(_PlatformAuthMixin, ToolPort):
         workflow_aliases: dict[str, dict[str, Any]] | None = None,
         session_join_manager: Any | None = None,
     ) -> None:
-        self._set_platform_auth(
+        super().__init__(
             base_url=base_url,
             timeout=timeout,
             pat_token=pat_token,
@@ -1388,7 +1388,7 @@ class TrackerIssueTool(_PlatformAuthMixin, ToolPort):
         exchange_url: str = "",
         audiences: list[str] | None = None,
     ) -> None:
-        self._set_platform_auth(
+        super().__init__(
             base_url=base_url,
             timeout=timeout,
             pat_token=pat_token,

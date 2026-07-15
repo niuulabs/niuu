@@ -13,6 +13,7 @@ import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 from fastapi import FastAPI, WebSocketDisconnect
@@ -468,7 +469,7 @@ def _app_with_session_service(service, **cfg_kwargs) -> tuple[FastAPI, InMemoryL
 
     class _AllowAll(AllowAllIdentityAdapter):
         def __init__(self) -> None:  # noqa: D401
-            self._default_tenant_id = "default"
+            super().__init__(user_repository=MagicMock(), default_tenant_id="default")
 
     app.state.identity = _AllowAll()
     return app, repo
