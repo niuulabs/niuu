@@ -38,10 +38,9 @@ logger = logging.getLogger(__name__)
 _DONE_STATUSES = frozenset({"completed", "complete", "failed", "error", "cancelled"})
 _FAILED_STATUSES = frozenset({"failed", "error", "cancelled"})
 
-#: The one scope this backend's launch endpoint enforces
-#: (ting POST /api/v1/ting/workflows/{id}/launch). Requested at the workload
-#: exchange so the build token is least-privilege.
-TING_BUILD_SCOPE = "ting:workflow:launch"
+#: Scopes required by the Ting launch and its downstream Forge session spawn.
+#: Ting forwards the caller's token to Forge, so both are required end to end.
+TING_BUILD_SCOPES = ("ting:workflow:launch", "forge:session:create")
 
 
 class TingWorkflowToolBuildBackend(ToolBuildBackend):
@@ -73,7 +72,7 @@ class TingWorkflowToolBuildBackend(ToolBuildBackend):
                 workload_token_file=workload_token_file,
                 workload_exchange_url=workload_exchange_url,
                 workload_audiences=workload_audiences,
-                workload_scopes=[TING_BUILD_SCOPE],
+                workload_scopes=list(TING_BUILD_SCOPES),
             )
         )
         self._base_url = base_url.rstrip("/")
