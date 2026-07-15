@@ -36,6 +36,7 @@ def _stats() -> list[dict[str, Any]]:
             "successes": 2,
             "failures": 1,
             "lastUsedAt": "2026-07-15T10:00:00+00:00",
+            "lastOutcome": "adopted_learning_regressed",
         }
     ]
 
@@ -52,6 +53,8 @@ def test_render_metrics_exposes_inventory_and_judgment_backed_usage() -> None:
     assert "ravn_valkyrie_skill_successes{" in body
     assert "ravn_valkyrie_skill_failures{" in body
     assert "ravn_valkyrie_skill_last_used_timestamp_seconds{" in body
+    assert 'last_outcome="adopted_learning_regressed"' in body
+    assert 'last_outcome_display="Regressed"' in body
 
 
 def test_render_metrics_handles_absent_usage_without_inventing_it() -> None:
