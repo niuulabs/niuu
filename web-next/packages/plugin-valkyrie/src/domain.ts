@@ -227,7 +227,7 @@ export function decisionNeedsApproval(
   return decisionHasRealAction(decision);
 }
 
-const REDUNDANT_PREFIX = /^valkyrie[\s:]+\S+\s+in\s+\S+\s+/i;
+const REDUNDANT_PREFIX = /^valkyrie(?:\s+|:\s*)\S+\s+in\s+\S+\s+/i;
 
 /**
  * The row headline: the record's own `summary` sentence, stripped of any

@@ -36,8 +36,8 @@ def create_openshell_credentials_router(
                 audience=value("audience"),
                 scope=value("scope"),
             )
-        except (UnicodeDecodeError, ValueError) as exc:
-            return _oauth_error("invalid_grant", str(exc), 401)
+        except (UnicodeDecodeError, ValueError):
+            return _oauth_error("invalid_grant", "credential grant rejected", 401)
 
         return JSONResponse(
             {

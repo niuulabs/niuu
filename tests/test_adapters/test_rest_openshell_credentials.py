@@ -59,5 +59,8 @@ def test_token_endpoint_returns_oauth_error_without_secret_details() -> None:
     )
 
     assert response.status_code == 401
-    assert response.json()["error"] == "invalid_grant"
+    assert response.json() == {
+        "error": "invalid_grant",
+        "error_description": "credential grant rejected",
+    }
     assert response.headers["cache-control"] == "no-store"
