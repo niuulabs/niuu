@@ -401,8 +401,11 @@ describe('GraphView', () => {
       value: () => ({ left: 0, top: 0, width: 800, height: 600 }),
     });
 
-    fireEvent.wheel(svg, { deltaY: -100 });
     const graphLayer = svg.querySelector('g');
+    fireEvent.wheel(svg, { deltaY: -100 });
+    expect(graphLayer).toHaveAttribute('transform', 'translate(0,0) scale(1)');
+
+    fireEvent.wheel(svg, { deltaY: -100, ctrlKey: true });
     expect(graphLayer).toHaveAttribute('transform', 'translate(0,0) scale(1.1)');
 
     fireEvent.mouseDown(svg, { clientX: 10, clientY: 20 });
