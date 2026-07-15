@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -9,6 +10,24 @@ from fastapi import APIRouter
 from fastapi.responses import PlainTextResponse
 
 from ravn.api.valkyrie_skills import ValkyrieSkillMirror
+
+_DISPLAY_WORDS = {
+    "backofflimitexceeded": "Backoff Limit Exceeded",
+    "clustersecretstore": "ClusterSecretStore",
+    "cnpg": "CNPG",
+    "cronjob": "CronJob",
+    "daemonset": "DaemonSet",
+    "deadlineexceeded": "Deadline Exceeded",
+    "failedattachvolume": "Failed Attach Volume",
+    "failedmount": "Failed Mount",
+    "k8s": "K8s",
+    "oidc": "OIDC",
+    "openbao": "OpenBao",
+    "outofcpu": "OutOfCPU",
+    "pvc": "PVC",
+    "replicaset": "ReplicaSet",
+    "statefulset": "StatefulSet",
+}
 
 
 class SkillStatsReader(Protocol):
@@ -21,6 +40,22 @@ def _escape(value: Any) -> str:
 
 def _labels(**values: Any) -> str:
     return "{" + ",".join(f'{key}="{_escape(value)}"' for key, value in values.items()) + "}"
+
+
+def _display_name(value: Any) -> str:
+    name = str(value).strip()
+    if not name or " " in name:
+        return name
+    name = re.sub(
+        r"^(?:valkyrie[-_.])?inspect[-_.](?:kubernetes|k8s)[-_.]",
+        "",
+        name,
+        flags=re.IGNORECASE,
+    )
+    name = re.sub(r"^valkyrie[-_.]", "", name, flags=re.IGNORECASE)
+    return " ".join(
+        _DISPLAY_WORDS.get(word.lower(), word.capitalize()) for word in re.split(r"[-_.]+", name)
+    )
 
 
 def _timestamp(value: Any) -> float:
@@ -46,6 +81,7 @@ def render_valkyrie_skill_metrics(
             environment_id=skill.get("environmentId", ""),
             valkyrie_id=skill.get("valkyrieId", ""),
             skill_name=skill.get("skillName", ""),
+            skill_display_name=_display_name(skill.get("skillName", "")),
             has_code=str(bool(skill.get("hasCode"))).lower(),
             learning_origin=skill.get("learningOrigin", "unknown"),
             learning_scope=skill.get("learningScope", ""),
@@ -66,6 +102,7 @@ def render_valkyrie_skill_metrics(
             labels = _labels(
                 environment_id=stat.get("environmentId", ""),
                 skill_name=stat.get("skillName", ""),
+                skill_display_name=_display_name(stat.get("skillName", "")),
                 capability=stat.get("capability", ""),
             )
             lines.append(f"{name}{labels} {int(stat.get(field) or 0)}")
@@ -81,6 +118,7 @@ def render_valkyrie_skill_metrics(
         labels = _labels(
             environment_id=stat.get("environmentId", ""),
             skill_name=stat.get("skillName", ""),
+            skill_display_name=_display_name(stat.get("skillName", "")),
             capability=stat.get("capability", ""),
         )
         lines.append(

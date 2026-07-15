@@ -61,6 +61,18 @@ def test_render_metrics_handles_absent_usage_without_inventing_it() -> None:
     assert "ravn_valkyrie_skill_uses{" not in body
 
 
+def test_render_metrics_exposes_readable_names_without_changing_identity() -> None:
+    skill = {
+        **_skills()[0],
+        "skillName": "valkyrie-inspect-kubernetes-pod-failedmount",
+    }
+
+    body = render_valkyrie_skill_metrics([skill], [])
+
+    assert 'skill_name="valkyrie-inspect-kubernetes-pod-failedmount"' in body
+    assert 'skill_display_name="Pod Failed Mount"' in body
+
+
 def test_metrics_endpoint_reads_current_mirror_and_history() -> None:
     class History:
         async def skill_stats(self, *, environment_id: str = "") -> list[dict[str, Any]]:
