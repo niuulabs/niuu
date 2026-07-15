@@ -18,6 +18,10 @@ def _skills() -> list[dict[str, Any]]:
             "valkyrieId": "valkyrie-ymir-k8s",
             "skillName": 'Detect "OIDC"',
             "hasCode": False,
+            "learningOrigin": "peer",
+            "learningScope": "environment",
+            "sourceEnvironmentId": "env-k8s-valhalla",
+            "sourceValkyrieId": "valkyrie-valhalla-k8s",
         }
     ]
 
@@ -40,7 +44,9 @@ def test_render_metrics_exposes_inventory_and_judgment_backed_usage() -> None:
     body = render_valkyrie_skill_metrics(_skills(), _stats())
 
     assert 'skill_name="Detect \\"OIDC\\""' in body
-    assert 'has_code="false"} 1' in body
+    assert 'has_code="false"' in body
+    assert 'learning_origin="peer"' in body
+    assert 'source_valkyrie_id="valkyrie-valhalla-k8s"' in body
     assert "ravn_valkyrie_skill_uses{" in body
     assert "} 3" in body
     assert "ravn_valkyrie_skill_successes{" in body

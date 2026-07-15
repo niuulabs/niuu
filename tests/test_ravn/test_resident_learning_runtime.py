@@ -648,6 +648,9 @@ async def test_start_publishes_inventory_snapshot_and_stop_cancels_heartbeat(tmp
         description="Already here.",
         scope="environment",
         environment_id="cluster-b",
+        source="flock-learning:peer-learning-1",
+        source_environment_id="cluster-a",
+        source_valkyrie_id="valkyrie:k8s-a",
     )
     runtime = ResidentLearningRuntime(
         identity=ResidentLearningIdentity(
@@ -668,7 +671,13 @@ async def test_start_publishes_inventory_snapshot_and_stop_cancels_heartbeat(tmp
     await bus.flush()
 
     inventory = [e for e in events if e.event_type == EVOLUTION_SKILL_INVENTORY_EVENT]
-    assert any(e.payload["skill_name"] == "valkyrie-preexisting-skill" for e in inventory)
+    skill_event = next(
+        e for e in inventory if e.payload["skill_name"] == "valkyrie-preexisting-skill"
+    )
+    assert skill_event.payload["learning_origin"] == "peer"
+    assert skill_event.payload["learning_scope"] == "environment"
+    assert skill_event.payload["source_environment_id"] == "cluster-a"
+    assert skill_event.payload["source_valkyrie_id"] == "valkyrie:k8s-a"
     assert runtime._inventory_task is not None
 
     await runtime.stop()

@@ -31,6 +31,8 @@ def _activation_event(**payload_overrides: Any) -> dict[str, Any]:
         "skill_name": _SKILL_NAME,
         "artifact_type": "tool_skill",
         "scope": "flock",
+        "source_environment_id": "cluster-source",
+        "source_valkyrie_id": "valkyrie:source",
         "review_outcome": "approve",
         "autonomy_mode": "guarded",
         "skill_content": f"# skill: {_SKILL_NAME}\n\nInspect pod events first.\n",
@@ -68,6 +70,11 @@ def test_skill_record_canonicalizes_environment_and_carries_artifact() -> None:
         "requirements": ["kubernetes==29.0.0"],
         "manifest": {"capability": "inspect.kubernetes.pod.oomkilled"},
         "learningId": "learn-k8s-oom",
+        "learningOrigin": "peer",
+        "learningScope": "flock",
+        "learningSource": "",
+        "sourceEnvironmentId": "cluster-source",
+        "sourceValkyrieId": "valkyrie:source",
         "adoptedAt": "2026-07-03T08:00:00+00:00",
         "observedAt": "2026-07-03T08:00:00+00:00",
     }
@@ -106,6 +113,16 @@ def test_skill_record_handles_inventory_event_and_canonicalizes_env() -> None:
     assert record["manifest"] == {"capability": "inspect.kubernetes.pod.oomkilled"}
     assert record["adoptedAt"] == ""
     assert record["observedAt"] == "2026-07-03T08:00:00+00:00"
+    assert record["learningOrigin"] == "peer"
+
+
+def test_skill_record_marks_old_shared_learning_provenance_unknown() -> None:
+    record = skill_record_from_event(
+        _inventory_event(source_environment_id="", source_valkyrie_id="")
+    )
+
+    assert record is not None
+    assert record["learningOrigin"] == "unknown"
 
 
 def test_inventory_uses_durable_adoption_timestamp() -> None:

@@ -418,6 +418,12 @@ class ResidentLearningRuntime:
                     "summary_text": manifest.description,
                     "learning_id": artifact.artifact_id,
                     "adopted_at": artifact.created_at,
+                    "learning_scope": str(artifact.provenance.get("scope") or "environment"),
+                    "learning_source": f"flock-learning:{artifact.artifact_id}",
+                    "source_environment_id": str(
+                        artifact.provenance.get("source_environment_id") or ""
+                    ),
+                    "source_valkyrie_id": str(artifact.provenance.get("source_valkyrie_id") or ""),
                 }
             )
         return records
@@ -452,6 +458,10 @@ class ResidentLearningRuntime:
                     "summary_text": str(skill.get("description") or ""),
                     "learning_id": str(metadata.get("skill_id") or ""),
                     "adopted_at": str(metadata.get("created_at") or skill.get("created_at") or ""),
+                    "learning_scope": str(metadata.get("scope") or "private"),
+                    "learning_source": str(metadata.get("source") or "manual"),
+                    "source_environment_id": str(metadata.get("source_environment_id") or ""),
+                    "source_valkyrie_id": str(metadata.get("source_valkyrie_id") or ""),
                 }
             )
         return records
@@ -474,6 +484,9 @@ class ResidentLearningRuntime:
 
     async def _publish_skill_inventory_record(self, record: dict[str, Any]) -> bool:
         """Publish one inventory event; log and swallow a per-skill failure."""
+        source_valkyrie_id = str(record.get("source_valkyrie_id") or "")
+        learning_source = str(record.get("learning_source") or "")
+        learning_scope = str(record.get("learning_scope") or "")
         try:
             await self._publisher.publish(
                 SleipnirEvent(
@@ -492,6 +505,16 @@ class ResidentLearningRuntime:
                         "test_code": record.get("test_code") or "",
                         "requirements": list(record.get("requirements") or []),
                         "summary_text": record.get("summary_text") or "",
+                        "learning_scope": learning_scope,
+                        "learning_source": learning_source,
+                        "learning_origin": _learning_origin(
+                            source_valkyrie_id=source_valkyrie_id,
+                            resident_valkyrie_id=self.identity.valkyrie_id,
+                            learning_source=learning_source,
+                            learning_scope=learning_scope,
+                        ),
+                        "source_environment_id": record.get("source_environment_id") or "",
+                        "source_valkyrie_id": source_valkyrie_id,
                     },
                     summary=(
                         f"{self.identity.valkyrie_id} has installed skill {record['skill_name']}"
@@ -1585,6 +1608,8 @@ class ResidentLearningRuntime:
                 environment_id=self.identity.environment_id,
                 domain=self.identity.domain or artifact.domain,
                 source=f"flock-learning:{artifact.learning_id}",
+                source_environment_id=artifact.source_environment_id,
+                source_valkyrie_id=artifact.source_valkyrie_id,
                 action_safety_class=_safety_class_from_content(build.skill_content),
             )
         except ValueError:
@@ -1592,6 +1617,9 @@ class ResidentLearningRuntime:
                 name=build.skill_name,
                 content=build.skill_content,
                 description=build.description,
+                source=f"flock-learning:{artifact.learning_id}",
+                source_environment_id=artifact.source_environment_id,
+                source_valkyrie_id=artifact.source_valkyrie_id,
             )
             await self._skills.promote(
                 build.skill_name,
@@ -2063,6 +2091,7 @@ def review_inputs(
             "promotion_id": artifact.promotion_id,
             "source_environment_id": artifact.source_environment_id,
             "source_valkyrie_id": artifact.source_valkyrie_id,
+            "scope": _normalise_scope(artifact.scope),
             "learned_tool_manifest": dict(artifact.learned_tool_manifest),
         },
     )
@@ -2073,6 +2102,21 @@ def _build_artifact_type(artifact: ResidentLearningArtifact) -> str:
     if artifact.artifact_type == "tool_skill":
         return "ravn_skill_tool"
     return artifact.artifact_type
+
+
+def _learning_origin(
+    *,
+    source_valkyrie_id: str,
+    resident_valkyrie_id: str,
+    learning_source: str = "",
+    learning_scope: str = "",
+) -> str:
+    """Classify installed learning without inventing missing historic provenance."""
+    if source_valkyrie_id:
+        return "local" if source_valkyrie_id == resident_valkyrie_id else "peer"
+    if learning_source.startswith("flock-learning:") or learning_scope in {"flock", "shared"}:
+        return "unknown"
+    return "local"
 
 
 def _agent_tool_content(

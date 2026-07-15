@@ -52,6 +52,9 @@ async def test_create_environment_skill_is_immediately_discoverable(tmp_path: Pa
         environment_id="cluster-a",
         domain="k8s",
         action_safety_class="read_only",
+        source="flock-learning:learning-1",
+        source_environment_id="cluster-source",
+        source_valkyrie_id="valkyrie:k8s-source",
     )
 
     listed = await manager.list_skills()
@@ -61,6 +64,19 @@ async def test_create_environment_skill_is_immediately_discoverable(tmp_path: Pa
     assert runnable.name == "k8s restart probe"
     assert listed[0]["metadata"]["scope"] == "environment"
     assert listed[0]["metadata"]["environment_id"] == "cluster-a"
+    assert listed[0]["metadata"]["source_environment_id"] == "cluster-source"
+    assert listed[0]["metadata"]["source_valkyrie_id"] == "valkyrie:k8s-source"
+
+    await manager.update(
+        name="k8s restart probe",
+        source="flock-learning:learning-2",
+        source_environment_id="cluster-new-source",
+        source_valkyrie_id="valkyrie:k8s-new-source",
+    )
+    shown = await manager.show("k8s restart probe")
+    assert shown["metadata"]["source"] == "flock-learning:learning-2"
+    assert shown["metadata"]["source_environment_id"] == "cluster-new-source"
+    assert shown["metadata"]["source_valkyrie_id"] == "valkyrie:k8s-new-source"
 
 
 async def test_duplicate_active_skill_is_rejected(tmp_path: Path) -> None:
