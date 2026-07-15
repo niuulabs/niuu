@@ -1,9 +1,11 @@
 import { describe, it, expect, afterEach } from 'vitest';
+import { useState } from 'react';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryHistory, createRoute } from '@tanstack/react-router';
 import { ConfigProvider, FeatureCatalogProvider, definePlugin } from '@niuulabs/plugin-sdk';
 import { Shell } from './Shell';
+import { PluginSlot } from './ShellLayout';
 
 // Plugins that use render() (no routes) — cover the render-fallback path.
 const pluginA = definePlugin({
@@ -74,6 +76,17 @@ const pluginNoSubnav = definePlugin({
   subtitle: 'no subnav',
   render: () => <div data-testid="flat-content">flat-rendered</div>,
 });
+
+function HookFooter() {
+  const [status] = useState('connected');
+  return <span data-testid="hook-footer">{status}</span>;
+}
+
+function DetailedHookFooter() {
+  const [status] = useState('connected');
+  const [detail] = useState('ready');
+  return <span data-testid="hook-footer">{`${status} ${detail}`}</span>;
+}
 
 function wrap(
   ui: React.ReactNode,
@@ -224,6 +237,15 @@ describe('Shell', () => {
     expect(screen.getByTestId('footer-status')).toBeInTheDocument();
     expect(screen.getByTestId('tabbed-footer-chip')).toBeInTheDocument();
     expect(screen.getByTestId('tabbed-footer-chip').textContent).toContain('api');
+  });
+
+  it('isolates hooks used by plugin slot renderers', () => {
+    const ctx = { tweaks: {}, setTweak: () => undefined };
+    const view = render(<PluginSlot render={() => HookFooter()} ctx={ctx} />);
+
+    view.rerender(<PluginSlot render={() => DetailedHookFooter()} ctx={ctx} />);
+
+    expect(screen.getByTestId('hook-footer')).toHaveTextContent('connected ready');
   });
 
   it('collapses subnav when plugin has no subnav', async () => {
