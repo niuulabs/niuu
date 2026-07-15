@@ -1116,7 +1116,6 @@ export function GraphView({
     const el = svgRef.current;
     if (!el) return;
     function handleWheel(e: WheelEvent) {
-      if (!e.metaKey && !e.ctrlKey) return;
       e.preventDefault();
       setTransform((prev) => {
         const delta = e.deltaY < 0 ? 1.1 : 0.9;
@@ -1158,11 +1157,13 @@ export function GraphView({
   }
 
   function handleSvgMouseMove(e: React.MouseEvent<SVGSVGElement>) {
-    if (!panRef.current) return;
+    const pan = panRef.current;
+    if (!pan) return;
+    const { clientX, clientY } = e;
     setTransform((prev) => ({
       ...prev,
-      x: panRef.current!.tx + (e.clientX - panRef.current!.startX),
-      y: panRef.current!.ty + (e.clientY - panRef.current!.startY),
+      x: pan.tx + (clientX - pan.startX),
+      y: pan.ty + (clientY - pan.startY),
     }));
   }
 
