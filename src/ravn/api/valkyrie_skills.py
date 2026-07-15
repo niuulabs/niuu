@@ -90,6 +90,10 @@ def skill_record_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
             "shared",
         }:
             learning_origin = "unknown"
+        elif event_type == EVOLUTION_SKILL_INVENTORY_EVENT:
+            # Legacy inventory snapshots omitted both learning source and
+            # origin, so calling them local would invent provenance.
+            learning_origin = "unknown"
         else:
             learning_origin = "local"
     return {

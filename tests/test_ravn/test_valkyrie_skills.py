@@ -125,6 +125,15 @@ def test_skill_record_marks_old_shared_learning_provenance_unknown() -> None:
     assert record["learningOrigin"] == "unknown"
 
 
+def test_skill_record_does_not_invent_origin_for_legacy_inventory() -> None:
+    record = skill_record_from_event(
+        _inventory_event(scope="", source_environment_id="", source_valkyrie_id="")
+    )
+
+    assert record is not None
+    assert record["learningOrigin"] == "unknown"
+
+
 def test_inventory_uses_durable_adoption_timestamp() -> None:
     record = skill_record_from_event(_inventory_event(adopted_at="2026-06-13T09:15:00+00:00"))
 
