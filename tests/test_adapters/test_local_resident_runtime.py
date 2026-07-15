@@ -202,7 +202,8 @@ async def test_local_resident_lifecycle_uses_existing_runtime_contract(
     assert target is not None
     assert target.connect_port == 49152
 
-    assert await controller.delete(runtime) is True
+    deleted = await controller.delete(runtime)
+    assert deleted is True
     assert str(runtime.id) not in registry.ports
     assert not (tmp_path / str(runtime.id)).exists()
     await controller.close()
@@ -400,7 +401,8 @@ async def test_local_lifecycle_handles_nonrunning_and_missing_containers(
     assert suspended.observed_state is ResidentObservedState.SUSPENDED
 
     container.remove(force=True)
-    assert await controller.delete(runtime) is False
+    deleted = await controller.delete(runtime)
+    assert deleted is False
     with pytest.raises(RuntimeError, match="does not exist"):
         await controller.restart(runtime, profile)
 

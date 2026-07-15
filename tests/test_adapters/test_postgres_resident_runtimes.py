@@ -128,8 +128,10 @@ async def test_missing_get_and_delete_result() -> None:
     runtime_id = uuid4()
 
     assert await repository.get(runtime_id) is None
-    assert await repository.delete(runtime_id)
-    assert not await repository.delete(runtime_id)
+    deleted = await repository.delete(runtime_id)
+    deleted_again = await repository.delete(runtime_id)
+    assert deleted
+    assert not deleted_again
 
 
 async def test_reconciliation_list_excludes_deleted_intent() -> None:

@@ -1090,7 +1090,8 @@ class TestFluxResidentRuntimeController:
             await pod_manager.suspend(runtime)
             await pod_manager.resume(runtime)
             await pod_manager.restart(runtime, _resident_profile())
-            assert await pod_manager.delete(runtime)
+            deleted = await pod_manager.delete(runtime)
+            assert deleted
 
         release_name = f"resident-{runtime.id}"
         assert patch_release.await_args_list[0].args == (

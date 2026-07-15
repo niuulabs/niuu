@@ -943,7 +943,8 @@ async def test_hermes_rollback_and_delete_cleanup_machine_credential(
     client.deleted.clear()
     client.created = {"providers": ()}
     store.values[HERMES_CREDENTIAL_NAME] = {"api_key": "delete-me"}
-    assert await manager.delete(runtime)
+    deleted = await manager.delete(runtime)
+    assert deleted
     assert store.deletes == [
         credential_key,
         credential_key,
@@ -1325,7 +1326,8 @@ async def test_resident_delete_removes_service_sandbox_and_provider_grants(
     monkeypatch.setattr(adapter.asyncio, "sleep", AsyncMock())
     manager = adapter.OpenShellGatewayPodManager(client=client)
 
-    assert await manager.delete(runtime)
+    deleted = await manager.delete(runtime)
+    assert deleted
     assert client.deleted_services == [
         {"sandbox_name": f"resident-{runtime.id.hex[:19]}", "service": "skuld"}
     ]
