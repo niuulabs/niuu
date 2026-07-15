@@ -4,11 +4,18 @@ import type { RoomParticipant, FileEntry } from '../types';
 
 export type SelectedMention =
   | { kind: 'file'; entry: FileEntry }
-  | { kind: 'agent'; participant: RoomParticipant };
+  | { kind: 'agent'; participant: RoomParticipant; eventType?: string };
 
 export type MentionMenuItem =
   | { kind: 'file'; entry: FileEntry }
-  | { kind: 'agent'; participant: RoomParticipant };
+  | { kind: 'agent'; participant: RoomParticipant; eventType?: string };
+
+export function mentionId(mention: SelectedMention): string {
+  if (mention.kind === 'file') return mention.entry.path;
+  return mention.eventType
+    ? `${mention.participant.peerId}:${mention.eventType}`
+    : mention.participant.peerId;
+}
 
 interface UseMentionMenuReturn {
   isOpen: boolean;
@@ -41,6 +48,7 @@ export function useMentionMenu(
   chatEndpoint: string | null = null,
   participants: ReadonlyMap<string, RoomParticipant> = new Map(),
   onFetchFiles?: (path: string, apiBase: string) => Promise<FileEntry[]>,
+  eventRouting = false,
 ): UseMentionMenuReturn {
   const [isOpen, setIsOpen] = useState(false);
   const [items, setItems] = useState<MentionMenuItem[]>([]);
@@ -51,7 +59,10 @@ export function useMentionMenu(
   const buildApiBase = useCallback((): string | null => {
     if (chatEndpoint) {
       const url = new URL(chatEndpoint, 'http://localhost');
-      return url.origin + url.pathname.replace(/\/chat$/, '');
+      const protocol =
+        url.protocol === 'wss:' ? 'https:' : url.protocol === 'ws:' ? 'http:' : url.protocol;
+      const pathname = url.pathname.replace(/\/chat$/, '').replace(/\/(api\/)?session$/, '');
+      return `${protocol}//${url.host}${pathname}`;
     }
     if (sessionHost) return `http://${sessionHost}`;
     return null;
@@ -91,21 +102,26 @@ export function useMentionMenu(
       return item.entry.path;
     }
     setMentions((prev) => {
-      const already = prev.some(
-        (m) => m.kind === 'agent' && m.participant.peerId === item.participant.peerId,
-      );
-      if (already) return prev;
-      return [...prev, { kind: 'agent', participant: item.participant }];
+      const nextMention: SelectedMention = {
+        kind: 'agent',
+        participant: item.participant,
+        eventType: item.eventType,
+      };
+      if (item.eventType) {
+        return [...prev.filter((mention) => mention.kind !== 'agent'), nextMention];
+      }
+      const already = prev.some((mention) => mentionId(mention) === mentionId(nextMention));
+      return already ? prev : [...prev, nextMention];
     });
     setIsOpen(false);
-    return item.participant.persona;
+    return item.eventType ?? item.participant.displayName ?? item.participant.persona;
   }, []);
 
   const expandDirectory = useCallback(
     (item: MentionMenuItem) => {
       if (item.kind !== 'file' || item.entry.type !== 'directory') return;
       const path = item.entry.path;
-      void fetchFiles(path);
+      void fetchFiles(path.endsWith('/') ? path : `${path}/`);
     },
     [fetchFiles],
   );
@@ -124,11 +140,23 @@ export function useMentionMenu(
         return;
       }
 
-      // Build agent items
+      const queryLower = query.toLowerCase();
       const agentItems: MentionMenuItem[] = Array.from(participants.values())
-        .filter((p) => p.participantType === 'ravn')
-        .filter((p) => !query || p.persona.toLowerCase().includes(query.toLowerCase()))
-        .map((p) => ({ kind: 'agent', participant: p }));
+        .filter((participant) => participant.participantType === 'ravn')
+        .flatMap((participant): MentionMenuItem[] => {
+          if (!eventRouting) return [{ kind: 'agent', participant }];
+          return (participant.subscribesTo ?? []).map((eventType) => ({
+            kind: 'agent',
+            participant,
+            eventType,
+          }));
+        })
+        .filter((item) => {
+          if (item.kind !== 'agent' || !queryLower) return true;
+          return [item.participant.persona, item.participant.displayName, item.eventType]
+            .filter((value): value is string => Boolean(value))
+            .some((value) => value.toLowerCase().includes(queryLower));
+        });
 
       setItems(agentItems.slice(0, MAX_ITEMS));
       setIsOpen(true);
@@ -137,7 +165,7 @@ export function useMentionMenu(
       // Fetch file entries if a file API is available
       void fetchFiles(query);
     },
-    [participants, fetchFiles],
+    [eventRouting, participants, fetchFiles],
   );
 
   const handleKeyDown = useCallback(
@@ -177,12 +205,7 @@ export function useMentionMenu(
   );
 
   const removeMention = useCallback((id: string) => {
-    setMentions((prev) =>
-      prev.filter((m) => {
-        if (m.kind === 'file') return m.entry.path !== id;
-        return m.participant.peerId !== id;
-      }),
-    );
+    setMentions((prev) => prev.filter((mention) => mentionId(mention) !== id));
   }, []);
 
   const close = useCallback(() => setIsOpen(false), []);

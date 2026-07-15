@@ -29,6 +29,7 @@ import {
   formatSignedDuration,
   formatStageLabel,
   formatTelemetryTaskLabel,
+  fetchSessionMentionFiles,
   formatTimelineHeaderStamp,
   formatTimelineTick,
   formatTraceStamp,
@@ -100,6 +101,7 @@ describe('LiveSessionDetailPage helpers', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it('formats session status, counts, durations, and labels across edge cases', () => {
@@ -147,6 +149,31 @@ describe('LiveSessionDetailPage helpers', () => {
     expect(formatTimelineHeaderStamp('2026-05-23T09:31:21Z')).toBe('09:31:21Z');
     expect(formatTurnDurationTick(0)).toBe('0ms');
     expect(formatTurnDurationTick(61_000)).toBe('1m 01s');
+  });
+
+  it('fetches mention files through the session API base and filters by typed path', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        entries: [
+          { name: 'README.md', path: 'README.md', type: 'file' },
+          { name: 'src', path: 'src', type: 'directory' },
+          { name: 'package.json', path: 'package.json', type: 'file' },
+        ],
+      }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const entries = await fetchSessionMentionFiles(
+      'read',
+      'https://volundr.example.test/api/v1/forge/sessions/session-1',
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://volundr.example.test/api/v1/forge/sessions/session-1/api/files?root=workspace',
+      expect.objectContaining({ headers: expect.any(Object) }),
+    );
+    expect(entries).toEqual([{ name: 'README.md', path: 'README.md', type: 'file' }]);
   });
 
   it('derives forge labels, source keys, and file change counts', () => {

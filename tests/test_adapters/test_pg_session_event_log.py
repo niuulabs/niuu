@@ -1,8 +1,11 @@
 """Tests for the PostgresSessionEventLog adapter."""
 
+import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from uuid import uuid4
+
+import asyncpg
 
 from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
 from volundr.domain.models import SessionLogEntry
@@ -48,6 +51,83 @@ class TestAppend:
 
         assert submitted == 0
         pool.executemany.assert_not_called()
+
+
+class TestNulSanitization:
+    """PostgreSQL text/JSONB cannot store U+0000 or lone surrogates; the payload
+    AND the text columns must be sanitized (U+FFFD) so a poisoned frame never
+    wedges the whole executemany batch (the real bug)."""
+
+    NUL = chr(0)
+    SUR = chr(0xD800)
+    R = "�"
+
+    @staticmethod
+    async def _row_args(**entry_overrides) -> tuple:
+        pool = AsyncMock()
+        log = PostgresSessionEventLog(pool)
+        await log.append([_make_entry(**entry_overrides)])
+        return pool.executemany.call_args[0][1][0]  # first row's arg tuple
+
+    async def _payload(self, payload: dict) -> dict:
+        args = await self._row_args(payload=payload)
+        return json.loads(args[5])
+
+    async def test_nul_in_string_value_replaced(self):
+        decoded = await self._payload({"text": f"crash{self.NUL}dump"})
+        assert decoded == {"text": f"crash{self.R}dump"}
+
+    async def test_nul_nested_in_dict_and_list_replaced(self):
+        decoded = await self._payload(
+            {
+                "outer": {"inner": f"a{self.NUL}b"},
+                "items": [f"x{self.NUL}y", {"deep": f"p{self.NUL}q"}],
+            }
+        )
+        assert decoded["outer"]["inner"] == f"a{self.R}b"
+        assert decoded["items"] == [f"x{self.R}y", {"deep": f"p{self.R}q"}]
+
+    async def test_nul_in_dict_key_replaced(self):
+        decoded = await self._payload({f"ke{self.NUL}y": "value"})
+        assert decoded == {f"ke{self.R}y": "value"}
+
+    async def test_lone_surrogate_replaced(self):
+        decoded = await self._payload({"text": f"p{self.SUR}q"})
+        assert decoded == {"text": f"p{self.R}q"}
+
+    async def test_text_columns_kind_role_request_id_sanitized(self):
+        # The plain text columns ($3/$4/$5) also 500 on a NUL — scrub them too.
+        args = await self._row_args(
+            kind=f"assi{self.NUL}stant",
+            role=f"u{self.SUR}ser",
+            request_id=f"req{self.NUL}id",
+        )
+        assert args[2] == f"assi{self.R}stant"  # kind
+        assert args[3] == f"u{self.R}ser"  # role
+        assert args[4] == f"req{self.R}id"  # request_id
+
+    async def test_valid_unicode_preserved(self):
+        decoded = await self._payload({"text": "café — 日本語 😀"})
+        assert decoded == {"text": "café — 日本語 😀"}
+
+    async def test_no_nul_payload_unchanged_byte_for_byte(self):
+        payload = {"type": "assistant", "content": [{"type": "text", "text": "hi"}]}
+        args = await self._row_args(payload=payload)
+        assert args[5] == json.dumps(payload)
+
+    async def test_append_retries_scrubbed_when_insert_still_raises(self):
+        # Defensive layer: a still-thrown UntranslatableCharacterError must NOT
+        # 500 + drop the batch — append retries with a force-scrubbed payload.
+        pool = AsyncMock()
+        pool.executemany = AsyncMock(
+            side_effect=[asyncpg.exceptions.UntranslatableCharacterError("boom"), None]
+        )
+        log = PostgresSessionEventLog(pool)
+
+        submitted = await log.append([_make_entry(payload={"text": "ok"})])
+
+        assert submitted == 1
+        assert pool.executemany.await_count == 2  # initial + scrubbed retry
 
 
 class TestReadAfter:
@@ -114,3 +194,81 @@ class TestLatestSeq:
         log = PostgresSessionEventLog(pool)
 
         assert await log.latest_seq(uuid4()) == 0
+
+
+class TestDetectConflicts:
+    """INV-3c: a re-append of (session_id, seq) with a DISTINCT payload is a real
+    bug ON CONFLICT DO NOTHING would silently swallow. detect_conflicts surfaces it
+    on a cold path with ONE bounded SELECT; append stays untouched."""
+
+    @staticmethod
+    def _stored_row(entry: SessionLogEntry) -> dict:
+        return {
+            "session_id": entry.session_id,
+            "seq": entry.seq,
+            "kind": entry.kind,
+            "role": entry.role,
+            "request_id": entry.request_id,
+            "payload": entry.payload,
+            "ts": entry.ts,
+        }
+
+    async def test_empty_entries_short_circuits_without_query(self):
+        pool = AsyncMock()
+        log = PostgresSessionEventLog(pool)
+
+        assert await log.detect_conflicts([]) == []
+        pool.fetch.assert_not_called()
+
+    async def test_identical_reappend_is_not_a_conflict(self):
+        sid = uuid4()
+        candidate = _make_entry(session_id=sid, seq=7)
+        pool = AsyncMock()
+        pool.fetch.return_value = [self._stored_row(candidate)]
+        log = PostgresSessionEventLog(pool)
+
+        assert await log.detect_conflicts([candidate]) == []
+
+    async def test_distinct_payload_same_seq_is_detected(self):
+        sid = uuid4()
+        stored = _make_entry(session_id=sid, seq=7, payload={"type": "assistant", "x": 1})
+        candidate = _make_entry(session_id=sid, seq=7, payload={"type": "assistant", "x": 2})
+        pool = AsyncMock()
+        pool.fetch.return_value = [self._stored_row(stored)]
+        log = PostgresSessionEventLog(pool)
+
+        assert await log.detect_conflicts([candidate]) == [7]
+
+    async def test_uses_single_bounded_any_select(self):
+        sid = uuid4()
+        candidate = _make_entry(session_id=sid, seq=3)
+        pool = AsyncMock()
+        pool.fetch.return_value = []
+        log = PostgresSessionEventLog(pool)
+
+        await log.detect_conflicts([candidate])
+
+        pool.fetch.assert_called_once()
+        sql, *params = pool.fetch.call_args[0]
+        assert "seq = ANY($2::bigint[])" in sql
+        assert params[0] == sid
+        assert params[1] == [3]
+
+    async def test_distinct_kind_or_request_id_is_detected(self):
+        sid = uuid4()
+        stored = _make_entry(session_id=sid, seq=4, request_id="req-a")
+        candidate = _make_entry(session_id=sid, seq=4, request_id="req-b")
+        pool = AsyncMock()
+        pool.fetch.return_value = [self._stored_row(stored)]
+        log = PostgresSessionEventLog(pool)
+
+        assert await log.detect_conflicts([candidate]) == [4]
+
+    async def test_unstored_seq_is_not_a_conflict(self):
+        sid = uuid4()
+        candidate = _make_entry(session_id=sid, seq=9)
+        pool = AsyncMock()
+        pool.fetch.return_value = []  # nothing stored yet at that seq
+        log = PostgresSessionEventLog(pool)
+
+        assert await log.detect_conflicts([candidate]) == []

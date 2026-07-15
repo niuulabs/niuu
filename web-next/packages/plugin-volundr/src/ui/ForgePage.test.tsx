@@ -10,6 +10,8 @@ import {
   createMockSessionStore,
 } from '../adapters/mock';
 import type { ISessionStore } from '../ports/ISessionStore';
+import type { IClusterAdapter } from '../ports/IClusterAdapter';
+import type { Cluster } from '../domain/cluster';
 import type { Session } from '../domain/session';
 
 vi.mock('@tanstack/react-router', () => ({
@@ -64,7 +66,7 @@ describe('ForgePage', () => {
     await waitFor(() => expect(screen.getByText(/active pods/i)).toBeInTheDocument());
     expect(screen.getByText(/tokens today/i)).toBeInTheDocument();
     expect(screen.getByText(/cost today/i)).toBeInTheDocument();
-    expect(screen.getByText('GPUs')).toBeInTheDocument();
+    expect(screen.getByText(/sessions today/i)).toBeInTheDocument();
   });
 
   it('renders the in-flight pods panel', async () => {
@@ -89,6 +91,35 @@ describe('ForgePage', () => {
     wrap();
     await waitFor(() => expect(screen.getAllByText('Eitri').length).toBeGreaterThan(0));
     expect(screen.getAllByTestId('cluster-load-row').length).toBeGreaterThan(0);
+  });
+
+  it('renders cluster resource usage values above load meters', async () => {
+    const cluster: Cluster = {
+      id: 'cl-test',
+      realm: 'asgard',
+      name: 'Test Forge',
+      kind: 'gpu',
+      status: 'healthy',
+      region: 'test',
+      capacity: { cpu: 8, memMi: 16_384, gpu: 2 },
+      used: { cpu: 0.5, memMi: 2_048, gpu: 1 },
+      disk: { usedGi: 0, totalGi: 0, systemGi: 0, podsGi: 0, logsGi: 0 },
+      nodes: [],
+      pods: [],
+      runningSessions: 0,
+      queuedProvisions: 0,
+    };
+    const clusterAdapter: IClusterAdapter = {
+      getClusters: async () => [cluster],
+      getCluster: async () => cluster,
+    };
+
+    wrap(createMockVolundrService(), clusterAdapter);
+    await waitFor(() => expect(screen.getByText('Test Forge')).toBeInTheDocument());
+
+    expect(screen.getByTestId('cluster-meter-cpu')).toHaveTextContent('500m / 8c');
+    expect(screen.getByTestId('cluster-meter-mem')).toHaveTextContent('2Gi / 16Gi');
+    expect(screen.getByTestId('cluster-meter-gpu')).toHaveTextContent('1 / 2');
   });
 
   it('renders error strip when failed sessions exist', async () => {
@@ -191,6 +222,49 @@ describe('ForgePage', () => {
     wrap(createMockVolundrService(), createMockClusterAdapter(), overriddenStore);
     await waitFor(() => expect(screen.getByTestId('connection-type-badge')).toBeInTheDocument());
     expect(screen.getByText('IDE')).toBeInTheDocument();
+  });
+
+  it('surfaces awaiting_input sessions in a "Needs your input" panel', async () => {
+    const session: Session = {
+      id: 'sess-blocked',
+      ravnId: 'r-blocked',
+      name: 'fix-auth',
+      personaName: 'dev',
+      templateId: 'tpl-default',
+      clusterId: 'cl-eitri',
+      state: 'awaiting_input',
+      startedAt: new Date(Date.now() - 3_600_000).toISOString(),
+      lastActivityAt: new Date(Date.now() - 5_000).toISOString(),
+      preview: 'Which database should we use?',
+      resources: {
+        cpuRequest: 1,
+        cpuLimit: 2,
+        cpuUsed: 0.3,
+        memRequestMi: 512,
+        memLimitMi: 1_024,
+        memUsedMi: 200,
+        gpuCount: 0,
+      },
+      env: {},
+      events: [],
+    };
+
+    const store = createMockSessionStore();
+    const overriddenStore: ISessionStore = {
+      ...store,
+      listSessions: async () => [session],
+      subscribe: (cb) => {
+        cb([session]);
+        return () => {};
+      },
+    };
+
+    wrap(createMockVolundrService(), createMockClusterAdapter(), overriddenStore);
+    await waitFor(() => expect(screen.getByTestId('attention-strip')).toBeInTheDocument());
+    const strip = screen.getByTestId('attention-strip');
+    expect(within(strip).getByText('Needs your input')).toBeInTheDocument();
+    expect(within(strip).getByText('Which database should we use?')).toBeInTheDocument();
+    expect(within(strip).getByText('needs you')).toBeInTheDocument();
   });
 
   it('renders token and cost stats on active pod cards', async () => {

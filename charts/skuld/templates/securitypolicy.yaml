@@ -6,15 +6,15 @@
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
 metadata:
-  name: session-{{ .Values.session.id }}-security
+  name: session-{{ include "skuld.routeId" . }}-security
   labels:
     {{- include "skuld.labels" . | nindent 4 }}
-    volundr.niuu.io/session: {{ .Values.session.id | quote }}
+    volundr.niuu.io/session: {{ include "skuld.sessionId" . | quote }}
 spec:
   targetRef:
     group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: session-{{ .Values.session.id }}
+    name: session-{{ include "skuld.routeId" . }}
   cors:
     allowOrigins:
       {{- toYaml .Values.gateway.cors.allowOrigins | nindent 6 }}
@@ -40,8 +40,28 @@ spec:
               valuePrefix: "Bearer "
           params:
             - access_token
+            - token
         claimToHeaders:
           - claim: sub
             header: x-auth-user-id
+      {{- if .Values.gateway.jwt.workload.enabled }}
+      - name: workload
+        issuer: {{ .Values.gateway.jwt.workload.issuer | quote }}
+        audiences:
+          {{- toYaml .Values.gateway.jwt.workload.audiences | nindent 10 }}
+        remoteJWKS:
+          uri: {{ .Values.gateway.jwt.workload.jwksUri | quote }}
+          cacheDuration: 300s
+        extractFrom:
+          headers:
+            - name: Authorization
+              valuePrefix: "Bearer "
+          params:
+            - access_token
+            - token
+        claimToHeaders:
+          - claim: sub
+            header: x-auth-user-id
+      {{- end }}
   {{- end }}
 {{- end }}

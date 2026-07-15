@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from urllib.parse import parse_qs
 
 import httpx
 import pytest
 
-from niuu.adapters.outbound.http_auth import ClientCredentialsBearerTokenAuthAdapter
+from niuu.adapters.outbound.http_auth import (
+    ClientCredentialsBearerTokenAuthAdapter,
+    WorkloadIdentityBearerTokenAuthAdapter,
+)
 
 
 def test_client_credentials_adapter_mints_and_caches_bearer_token() -> None:
@@ -65,3 +69,90 @@ def test_client_credentials_adapter_requires_secret(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(RuntimeError, match="client secret"):
         adapter.headers()
+
+
+def test_workload_identity_adapter_requests_build_scopes(tmp_path) -> None:
+    proof_file = tmp_path / "token"
+    proof_file.write_text("proof-jwt", encoding="utf-8")
+    seen_bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_bodies.append(json.loads(request.content.decode()))
+        return httpx.Response(200, json={"token": "scoped-jwt", "expires_in": 300})
+
+    adapter = WorkloadIdentityBearerTokenAuthAdapter(
+        exchange_url="https://volundr.test/api/v1/tokens/workload/exchange",
+        token_file=str(proof_file),
+        scopes=["forge:session:create"],
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert adapter.headers() == {"Authorization": "Bearer scoped-jwt"}
+    assert seen_bodies[0]["token"] == "proof-jwt"
+    assert seen_bodies[0]["scopes"] == ["forge:session:create"]
+
+
+def test_workload_identity_adapter_omits_scopes_when_not_requested(tmp_path) -> None:
+    proof_file = tmp_path / "token"
+    proof_file.write_text("proof-jwt", encoding="utf-8")
+    seen_bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_bodies.append(json.loads(request.content.decode()))
+        return httpx.Response(200, json={"token": "plain-jwt", "expires_in": 300})
+
+    adapter = WorkloadIdentityBearerTokenAuthAdapter(
+        exchange_url="https://volundr.test/api/v1/tokens/workload/exchange",
+        token_file=str(proof_file),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert adapter.headers() == {"Authorization": "Bearer plain-jwt"}
+    assert "scopes" not in seen_bodies[0]
+
+
+def test_workload_identity_adapter_direct_kwargs_beat_env(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Config-first: direct token_file/exchange_url kwargs win over env-name fallbacks."""
+    proof_file = tmp_path / "token"
+    proof_file.write_text("proof-jwt", encoding="utf-8")
+    env_proof_file = tmp_path / "env-token"
+    env_proof_file.write_text("env-proof-jwt", encoding="utf-8")
+    monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_TOKEN_FILE", str(env_proof_file))
+    monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", "https://env-host/exchange")
+    seen: list[tuple[str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((str(request.url), json.loads(request.content.decode())))
+        return httpx.Response(200, json={"token": "direct-jwt", "expires_in": 300})
+
+    adapter = WorkloadIdentityBearerTokenAuthAdapter(
+        exchange_url="https://direct-host/exchange",
+        token_file=str(proof_file),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert adapter.headers() == {"Authorization": "Bearer direct-jwt"}
+    assert seen[0][0] == "https://direct-host/exchange"
+    assert seen[0][1]["token"] == "proof-jwt"
+
+
+def test_workload_identity_adapter_env_names_remain_fallback(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Legacy env-name kwargs still resolve when no direct values are given."""
+    proof_file = tmp_path / "token"
+    proof_file.write_text("env-proof-jwt", encoding="utf-8")
+    monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_TOKEN_FILE", str(proof_file))
+    monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", "https://env-host/exchange")
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"token": "env-jwt", "expires_in": 300})
+
+    adapter = WorkloadIdentityBearerTokenAuthAdapter(transport=httpx.MockTransport(handler))
+
+    assert adapter.headers() == {"Authorization": "Bearer env-jwt"}
+    assert seen[0] == "https://env-host/exchange"

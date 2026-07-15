@@ -40,8 +40,10 @@ event arrives, so the browser learns about them without any extra wiring.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
+from niuu.mesh import mesh_event_prefix
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirSubscriber, Subscription
 
@@ -55,6 +57,8 @@ MESH_PATTERNS: list[str] = ["ravn.mesh.*"]
 
 #: RavnEventType string fragments → room activity type.
 _RAVN_TYPE_TO_ACTIVITY: dict[str, str] = {
+    "error": "error",
+    "task_started": "busy",
     "tool_start": "tool_executing",
     "tool_result": "idle",
     "thought": "thinking",
@@ -101,6 +105,17 @@ def _build_activity_frame(ravn_type: str, ravn_event_payload: dict) -> dict | No
     """
     ravn_type_lower = ravn_type.lower()
 
+    if "task_started" in ravn_type_lower:
+        title = str(ravn_event_payload.get("title") or "task")
+        return {
+            "type": "task_started",
+            "data": title,
+            "metadata": {
+                "title": title,
+                "task_id": str(ravn_event_payload.get("task_id") or ""),
+            },
+        }
+
     if "thought" in ravn_type_lower:
         metadata = {"thinking": True} if ravn_event_payload.get("thinking") else {}
         return {
@@ -113,7 +128,14 @@ def _build_activity_frame(ravn_type: str, ravn_event_payload: dict) -> dict | No
         return {
             "type": "response",
             "data": ravn_event_payload.get("text", ""),
-            "metadata": {},
+            "metadata": dict(ravn_event_payload.get("metadata") or {}),
+        }
+
+    if "error" in ravn_type_lower:
+        return {
+            "type": "error",
+            "data": ravn_event_payload.get("message") or ravn_event_payload.get("error") or "",
+            "metadata": dict(ravn_event_payload.get("metadata") or {}),
         }
 
     if "tool_start" in ravn_type_lower:
@@ -137,6 +159,13 @@ def _build_activity_frame(ravn_type: str, ravn_event_payload: dict) -> dict | No
         }
 
     return None
+
+
+def _as_int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 class RoomMeshBridge:
@@ -164,12 +193,17 @@ class RoomMeshBridge:
         subscriber: SleipnirSubscriber,
         room_bridge: RoomBridge,
         session_id: str | None = None,
+        environment_id: str = "",
         patterns: list[str] | None = None,
+        report_usage: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._subscriber = subscriber
         self._room_bridge = room_bridge
         self._session_id = session_id
-        self._patterns = patterns if patterns is not None else list(MESH_PATTERNS)
+        self._event_prefix = mesh_event_prefix(environment_id)
+        self._patterns = patterns if patterns is not None else [f"{self._event_prefix}.*"]
+        self._report_usage = report_usage
+        self._reported_usage_ids: set[str] = set()
         self._subscription: Subscription | None = None
 
     # ------------------------------------------------------------------
@@ -231,12 +265,14 @@ class RoomMeshBridge:
         ravn_type = event.payload.get("ravn_type", "")
         ravn_event_payload = event.payload.get("ravn_event", {})
 
-        # Mesh topic derived from event_type: "ravn.mesh.<topic>"
-        parts = event.event_type.split(".", 2)
-        mesh_topic = parts[2] if len(parts) == 3 else ""
+        mesh_topic = event.event_type.removeprefix(f"{self._event_prefix}.")
 
         if "outcome" in ravn_type.lower():
             await self._translate_outcome(peer_id, mesh_topic, ravn_event_payload)
+            return
+
+        if "usage" in ravn_type.lower():
+            await self.report_usage(ravn_event_payload)
             return
 
         activity_type = self._ravn_type_to_activity(ravn_type)
@@ -315,7 +351,7 @@ class RoomMeshBridge:
         ravn_event_payload: dict,
     ) -> None:
         """Translate an OUTCOME mesh event into a ``room_outcome`` wire event."""
-        if ravn_event_payload.get("routing_only") or ravn_event_payload.get("room_bridge_skip"):
+        if ravn_event_payload.get("room_bridge_skip"):
             logger.debug(
                 "RoomMeshBridge: skipping internal outcome peer_id=%s event_type=%s",
                 peer_id,
@@ -343,6 +379,29 @@ class RoomMeshBridge:
         if not frame:
             return
         await self._room_bridge.handle_ravn_frame(peer_id, frame)
+
+    async def report_usage(self, ravn_event_payload: dict) -> None:
+        """Forward a Ravn usage event into the existing Forge usage reporter."""
+        if self._report_usage is None:
+            return
+
+        usage_id = str(ravn_event_payload.get("usage_id") or "")
+        if usage_id:
+            if usage_id in self._reported_usage_ids:
+                return
+            self._reported_usage_ids.add(usage_id)
+
+        model = str(ravn_event_payload.get("model") or "unknown")
+        usage = {
+            "inputTokens": _as_int(ravn_event_payload.get("inputTokens")),
+            "outputTokens": _as_int(ravn_event_payload.get("outputTokens")),
+            "cacheReadInputTokens": _as_int(ravn_event_payload.get("cacheReadInputTokens")),
+            "cacheCreationInputTokens": _as_int(ravn_event_payload.get("cacheCreationInputTokens")),
+        }
+        if ravn_event_payload.get("costUSD") is not None:
+            usage["costUSD"] = float(ravn_event_payload["costUSD"])
+
+        await self._report_usage({"modelUsage": {model: usage}})
 
     @staticmethod
     def _ravn_type_to_activity(ravn_type: str) -> str:

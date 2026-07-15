@@ -38,6 +38,7 @@ from ravn.config import BudgetConfig, InitiativeConfig, Settings
 from ravn.domain.budget import DailyBudgetTracker, compute_cost
 from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.exceptions import LLMError
+from ravn.domain.help_needed import build_help_needed_event
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_JUDGMENT_REJECTED,
@@ -803,6 +804,9 @@ class DriveLoop:
         self._source_id = "drive_loop"
         self._counter = 0
         self._rpc_handler: MeshRpcHandler | None = None
+        self._directed_message_interceptors: list[
+            Callable[[str, dict[str, Any] | None], Awaitable[bool]]
+        ] = []
         self._result_store: TaskResultStore = TaskResultStore()
         self._completion_events: dict[str, asyncio.Event] = {}
         self._mesh: MeshPort | None = None
@@ -829,10 +833,17 @@ class DriveLoop:
             warn_at_percent=_warn,
         )
 
+        # Session-join manager: built once here (composition root) and injected
+        # into both this loop's observer and the session_join tool's runtime
+        # context, so the tool and the drive loop share one membership set
+        # without a module global.
+        from ravn.session_join import build_session_join_manager  # noqa: PLC0415
+
+        self._session_join_manager = build_session_join_manager(settings)
+
         # Skuld channel for browser delivery (mesh cascade visualization)
-        # TODO(niu-activity-bus): Once direct Skuld streaming is stable again,
-        # split high-frequency live activity onto a dedicated activity bus/channel
-        # and leave workflow/outcome propagation on the mesh.
+        # Live activity and durable workflow outcomes intentionally share the mesh
+        # today so ordering and correlation remain consistent for all consumers.
         self._skuld_channel: SkuldChannel | None = None
         if settings.skuld.enabled:
             # peer_id is appended to the broker_url
@@ -844,6 +855,8 @@ class DriveLoop:
                 peer_id=peer_id,
                 persona=None,  # Set per-task
                 display_name=settings.skuld.display_name or "",
+                reconnect_delay=settings.skuld.reconnect_delay_seconds,
+                max_reconnect_attempts=settings.skuld.max_reconnect_attempts,
             )
 
     # ------------------------------------------------------------------
@@ -857,6 +870,17 @@ class DriveLoop:
     def register_trigger(self, trigger: TriggerPort) -> None:
         """Register a trigger source before calling ``run()``."""
         self._triggers.append(trigger)
+
+    def operator_contact_channel(self) -> ChannelPort | None:
+        """Return the daemon's existing outbound operator channel, when enabled."""
+        return self._skuld_channel
+
+    def register_directed_message_interceptor(
+        self,
+        handler: Callable[[str, dict[str, Any] | None], Awaitable[bool]],
+    ) -> None:
+        """Register a handler that may consume directed user messages before enqueue."""
+        self._directed_message_interceptors.append(handler)
 
     async def enqueue(self, task: AgentTask) -> None:
         """Add a task to the priority queue, honouring deadline and capacity."""
@@ -1008,6 +1032,8 @@ class DriveLoop:
             emits.extend(persona_config.produces.event_type_map.values())
             self._skuld_channel._emits = list(dict.fromkeys(emits))  # dedupe, preserve order
             self._skuld_channel._tools = persona_config.allowed_tools
+        if self._session_join_manager is not None and persona_config is not None:
+            self._session_join_manager.set_subscribes_to(persona_config.consumes.event_types)
 
     def set_workflow_allowed_outcomes_resolver(
         self,
@@ -1232,12 +1258,63 @@ class DriveLoop:
         parts.append(f"Human reply: {trimmed}")
         return "\n".join(parts)
 
+    async def _handle_joined_session_message(
+        self,
+        source_session_id: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Enqueue a message directed at us inside a JOINED session's room.
+
+        Perception path — tagged with its source session so the agent never
+        confuses it with the operator speaking in its own room. Replies into
+        that room go through the ``session_join`` tool's ``post`` action.
+        """
+        import time  # noqa: PLC0415
+
+        task_id = f"task_{int(time.time() * 1000):x}_{self._next_counter()}"
+        persona = self._persona_config.name if self._persona_config else None
+        context = "\n".join(
+            [
+                f"Message received inside joined session {source_session_id} "
+                "(a room you are participating in as an observer — this is "
+                "NOT your operator's chat):",
+                self._directed_message_context(content, metadata),
+                "If a reply into that room is needed, use the session_join "
+                f'tool: {{"action": "post", "session_id": "{source_session_id}", '
+                '"text": "..."}}. Keep your operator informed in your own '
+                "room only when something meaningful happened.",
+            ]
+        )
+        task = AgentTask(
+            task_id=task_id,
+            title=f"Joined-session message ({source_session_id[:8]})",
+            initiative_context=context,
+            triggered_by=f"session_join:{source_session_id}",
+            output_mode=OutputMode.AMBIENT,
+            persona=persona,
+        )
+        logger.info(
+            "drive_loop: joined-session message from %s enqueued as task %s",
+            source_session_id,
+            task_id,
+        )
+        await self.enqueue(task)
+
     async def _handle_directed_message(
         self,
         content: str,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Enqueue a directed message from the browser as an agent task."""
+        for handler in list(self._directed_message_interceptors):
+            try:
+                if await handler(content, metadata):
+                    logger.info("drive_loop: directed message consumed by interceptor")
+                    return
+            except Exception:
+                logger.exception("drive_loop: directed message interceptor failed")
+
         if await self._try_steer_active_agent(content):
             return
 
@@ -1315,7 +1392,15 @@ class DriveLoop:
         # the registration frame sent on connect carries the full identity.
         if self._skuld_channel is not None:
             self._skuld_channel.on_directed_message(self._handle_directed_message)
+            self._session_join_manager.set_status_channel(self._skuld_channel)
             await self._skuld_channel.connect()
+
+            # Session joins (secondary rooms): frames directed at us inside a
+            # JOINED session are perception, not operator turns — they arrive
+            # tagged with their source session and enqueue at normal priority.
+            # The manager was built in __init__ and is shared with the
+            # session_join tool via the tool runtime context.
+            self._session_join_manager.set_observer(self._handle_joined_session_message)
 
         coros: list[Awaitable] = [
             self._task_executor(),
@@ -1329,6 +1414,8 @@ class DriveLoop:
         except asyncio.CancelledError:
             logger.info("drive_loop: shutting down")
             self._persist_queue()
+            if self._session_join_manager is not None:
+                await self._session_join_manager.close()
             raise
 
     # ------------------------------------------------------------------
@@ -1535,7 +1622,8 @@ class DriveLoop:
             try:
                 turn_result = await agent.run_turn(prompt)  # type: ignore[attr-defined]
                 success = True
-                self._record_task_cost(task, turn_result)
+                cost_usd = self._record_task_cost(task, turn_result)
+                await self._emit_task_usage(channel, task, turn_result, cost_usd, agent)
                 response_text = (
                     capture_channel.response_text if capture_channel else turn_result.response
                 )
@@ -1545,7 +1633,10 @@ class DriveLoop:
                     response_text=response_text,
                 )
                 if repair_result is not None:
-                    self._record_task_cost(task, repair_result)
+                    repair_cost_usd = self._record_task_cost(task, repair_result)
+                    await self._emit_task_usage(
+                        channel, task, repair_result, repair_cost_usd, agent
+                    )
                     response_text = repair_result.response
                 await self._maybe_publish_budget_warning(task)
                 self._save_task_output(task, capture_channel or channel)
@@ -2200,12 +2291,12 @@ class DriveLoop:
                 "workflow_node_id": task.workflow_node_id,
                 "session_id": task.session_id,
             }
-            help_event = RavnEvent.help_needed(
+            help_event = build_help_needed_event(
                 source=self._source_id,
                 persona=self._persona_config.name,
                 reason=str(outcome_fields.get("reason") or "needs_context"),
                 summary=summary or "Agent requested human input before continuing.",
-                attempted=[str(item) for item in attempted if str(item).strip()],
+                attempted=attempted,
                 recommendation=str(
                     outcome_fields.get("recommendation")
                     or "Reply directly to this agent with the missing guidance."
@@ -2243,7 +2334,6 @@ class DriveLoop:
         alias_payload["canonical_event_type"] = canonical_event_type
         alias_payload["routing_only"] = True
         alias_payload["bubble_up"] = False
-        alias_payload["room_bridge_skip"] = True
 
         alias_event = RavnEvent(
             type=RavnEventType.OUTCOME,
@@ -2339,10 +2429,17 @@ class DriveLoop:
         if event_type == VALKYRIE_JUDGMENT_REJECTED:
             return f"Valkyrie {valkyrie_id or 'unknown'} judgment rejected"
         if event_type.startswith("valkyrie.judgment."):
-            tier = str(payload.get("tier") or payload.get("attention_tier") or "ambient")
-            action = str(payload.get("recommended_action") or "observe")
-            return (
-                f"Valkyrie {valkyrie_id or 'unknown'} judgment in {environment_id}: {tier}/{action}"
+            from sleipnir.domain.catalog import judgment_summary  # noqa: PLC0415
+
+            evidence = payload.get("evidence")
+            return judgment_summary(
+                valkyrie_id=valkyrie_id,
+                environment_id=environment_id,
+                attention_tier=str(
+                    payload.get("tier") or payload.get("attention_tier") or "ambient"
+                ),
+                recommended_action=str(payload.get("recommended_action") or ""),
+                evidence=evidence if isinstance(evidence, list) else None,
             )
         if event_type.startswith("valkyrie.action."):
             capability = str(
@@ -2432,11 +2529,11 @@ class DriveLoop:
             )
         )
 
-    def _record_task_cost(self, task: AgentTask, turn_result: object) -> None:
+    def _record_task_cost(self, task: AgentTask, turn_result: object) -> float | None:
         """Compute cost from turn_result.usage and record it on the budget tracker."""
         usage = getattr(turn_result, "usage", None)
         if usage is None:
-            return
+            return None
         input_tokens: int = getattr(usage, "input_tokens", 0)
         output_tokens: int = getattr(usage, "output_tokens", 0)
         budget_cfg = getattr(self._settings, "budget", None)
@@ -2454,6 +2551,50 @@ class DriveLoop:
             cost_usd,
             self._budget.spent_today_usd,
             self._budget.remaining_usd,
+        )
+        return cost_usd
+
+    async def _emit_task_usage(
+        self,
+        channel: ChannelPort,
+        task: AgentTask,
+        turn_result: object,
+        cost_usd: float | None,
+        agent: object,
+    ) -> None:
+        usage = getattr(turn_result, "usage", None)
+        if usage is None:
+            return
+
+        input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+        output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        cache_read_tokens = int(getattr(usage, "cache_read_tokens", 0) or 0)
+        cache_write_tokens = int(getattr(usage, "cache_write_tokens", 0) or 0)
+        thinking_tokens = int(getattr(usage, "thinking_tokens", 0) or 0)
+        if input_tokens + output_tokens + cache_read_tokens + cache_write_tokens <= 0:
+            return
+
+        model = str(getattr(agent, "_model", "") or getattr(self._settings.llm, "model", ""))
+        usage_id = (
+            f"{task.task_id}:{id(turn_result)}:{model}:{input_tokens}:{output_tokens}:"
+            f"{cache_read_tokens}:{cache_write_tokens}:{thinking_tokens}"
+        )
+        await channel.emit(
+            RavnEvent.usage(
+                source=self._source_id,
+                model=model or "unknown",
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                thinking_tokens=thinking_tokens,
+                cost_usd=cost_usd,
+                usage_id=usage_id,
+                persona=task.persona,
+                correlation_id=task.task_id,
+                session_id=task.session_id or task.task_id,
+                task_id=task.task_id,
+            )
         )
 
     async def _re_deliver_surface(self, task: AgentTask, text: str) -> None:

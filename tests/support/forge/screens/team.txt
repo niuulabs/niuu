@@ -1,0 +1,9 @@
+  Team: feature-squad
+
+  MEMBER            ROLE            PANE
+  ---------------   -------------   ----
+  architect         design         %0
+  builder           implement       %1
+  reviewer          review          %2
+
+  3 members · split panes · Tab to cycle

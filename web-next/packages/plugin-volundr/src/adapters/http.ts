@@ -102,6 +102,8 @@ type SessionPayload = {
   source: VolundrSession['source'];
   status: VolundrSession['status'];
   model: string;
+  personaName?: string;
+  persona_name?: string;
   lastActive?: number;
   last_active?: string;
   messageCount?: number;
@@ -130,6 +132,8 @@ type SessionPayload = {
   issue_tracker_url?: string | null;
   activityState?: VolundrSession['activityState'];
   activity_state?: VolundrSession['activityState'];
+  needsAttention?: boolean;
+  needs_attention?: boolean;
   ownerId?: string | null;
   owner_id?: string | null;
   tenantId?: string | null;
@@ -160,6 +164,8 @@ type StatsPayload = {
   active_sessions?: number;
   totalSessions?: number;
   total_sessions?: number;
+  sessionsToday?: number;
+  sessions_today?: number;
   tokensToday?: number;
   tokens_today?: number;
   localTokens?: number;
@@ -425,6 +431,7 @@ function buildStartSessionBody(
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     name: config.name,
+    persona_name: config.personaName,
     source: config.source,
     model: config.model,
     definition: config.definition,
@@ -487,6 +494,7 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     source: session.source,
     status: session.status,
     model: session.model,
+    personaName: session.personaName ?? session.persona_name ?? undefined,
     lastActive: toEpochMs(session.lastActive ?? session.last_active),
     messageCount: session.messageCount ?? session.message_count ?? 0,
     tokensUsed: session.tokensUsed ?? session.tokens_used ?? 0,
@@ -501,6 +509,10 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     archivedAt: toDate(session.archivedAt ?? session.archived_at),
     trackerIssue,
     activityState: session.activityState ?? session.activity_state ?? undefined,
+    needsAttention:
+      session.needsAttention ??
+      session.needs_attention ??
+      (session.activityState ?? session.activity_state) === 'awaiting_input',
     ownerId: session.ownerId ?? session.owner_id ?? undefined,
     tenantId: session.tenantId ?? session.tenant_id ?? undefined,
     instanceId: session.instanceId ?? session.instance_id ?? undefined,
@@ -542,6 +554,7 @@ function normalizeStats(stats: StatsPayload): VolundrStats {
   return {
     activeSessions: stats.activeSessions ?? stats.active_sessions ?? 0,
     totalSessions: stats.totalSessions ?? stats.total_sessions ?? 0,
+    sessionsToday: stats.sessionsToday ?? stats.sessions_today ?? 0,
     tokensToday: stats.tokensToday ?? stats.tokens_today ?? 0,
     localTokens: stats.localTokens ?? stats.local_tokens ?? 0,
     cloudTokens: stats.cloudTokens ?? stats.cloud_tokens ?? 0,
@@ -1364,6 +1377,30 @@ export function buildVolundrHttpAdapter(
               sessionCache.delete(sessionId);
               publishSessions();
             }
+            return;
+          }
+          if (eventType === 'session_activity' || eventType === 'session_needs_input') {
+            // Live activity transitions (active/idle/tool_executing/awaiting_input)
+            // ride their own event, not session_updated — apply them to the cached
+            // session so a "needs you" badge flips immediately, not on the next poll.
+            const activity = payload as {
+              session_id?: string;
+              state?: VolundrSession['activityState'];
+            };
+            const sessionId = activity.session_id;
+            if (typeof sessionId !== 'string') return;
+            const existing = sessionCache.get(sessionId);
+            if (!existing) return;
+            const state =
+              eventType === 'session_needs_input'
+                ? 'awaiting_input'
+                : (activity.state ?? existing.activityState);
+            sessionCache.set(sessionId, {
+              ...existing,
+              activityState: state,
+              needsAttention: state === 'awaiting_input',
+            });
+            publishSessions();
             return;
           }
           if (eventType === 'stats_updated') {

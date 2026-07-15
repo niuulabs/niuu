@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
@@ -19,6 +20,7 @@ from ting.api.tracker import resolve_trackers
 from ting.config import AuthConfig, ReviewConfig
 from ting.domain.models import (
     PhaseStatus,
+    Run,
     RunStatus,
     Saga,
     SagaStatus,
@@ -216,6 +218,30 @@ class TestCommitSaga:
         for run in saga_repo.runs:
             assert run.status == RunStatus.PENDING
             assert run.tracker_id == "run-created"
+
+    def test_persists_tracker_run_identifier_and_url(self, saga_repo: MockSagaRepo) -> None:
+        class MetadataTracker(MockTracker):
+            async def get_run(self, tracker_id: str) -> Run:
+                run = await super().get_run(tracker_id)
+                return replace(
+                    run,
+                    identifier="NIU-777",
+                    url="https://linear.app/niuu/issue/NIU-777/document-proof",
+                )
+
+        app = FastAPI()
+        app.include_router(create_sagas_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [MetadataTracker()]
+        app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
+        app.dependency_overrides[resolve_git] = lambda: MockGit()
+        app.state.settings = _dev_settings()
+        client = TestClient(app)
+
+        response = client.post("/api/v1/ting/sagas/commit", json=VALID_COMMIT_BODY)
+
+        assert response.status_code == 201
+        assert saga_repo.runs[0].identifier == "NIU-777"
+        assert saga_repo.runs[0].url == "https://linear.app/niuu/issue/NIU-777/document-proof"
 
     def test_creates_feature_branch(self, client: TestClient, mock_git: MockGit) -> None:
         client.post("/api/v1/ting/sagas/commit", json=VALID_COMMIT_BODY)

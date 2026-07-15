@@ -26,10 +26,6 @@ import {
 import { LaunchWizard } from './LaunchWizard';
 import { ImportExternalSessionsDialog } from './ImportExternalSessionsDialog';
 import { useSessionList } from './hooks/useSessionStore';
-import {
-  isExternalSessionsUnavailableError,
-  useExternalSessions,
-} from './hooks/useExternalSessions';
 import { groupByState } from './sessions/groupByState';
 import { LiveSessionDetailPage } from './LiveSessionDetailPage';
 import type { Session, SessionState } from '../domain/session';
@@ -52,6 +48,7 @@ interface SessionSection {
 }
 
 const POD_GROUPS: PodGroupDef[] = [
+  { label: 'NEEDS YOU', states: ['awaiting_input'] },
   { label: 'ACTIVE', states: ['running'] },
   { label: 'IDLE', states: ['idle'] },
   { label: 'BOOTING', states: ['provisioning', 'requested'] },
@@ -67,6 +64,7 @@ const POD_GROUPS: PodGroupDef[] = [
 const SESSION_DOT: Record<SessionState, DotState> = {
   running: 'running',
   idle: 'idle',
+  awaiting_input: 'attention',
   provisioning: 'processing',
   requested: 'queued',
   ready: 'healthy',
@@ -249,7 +247,10 @@ function PodEntry({
           <Check className="niuu:h-3 niuu:w-3" />
         </span>
       ) : null}
-      <StateDot state={SESSION_DOT[session.state]} pulse={session.state === 'running'} />
+      <StateDot
+        state={SESSION_DOT[session.state]}
+        pulse={session.state === 'running' || session.state === 'awaiting_input'}
+      />
       {collapsed ? null : (
         <>
           <div className="niuu:flex-1 niuu:min-w-0 niuu:flex niuu:flex-col niuu:gap-0.5">
@@ -403,8 +404,6 @@ export function SessionsPage() {
   const queryClient = useQueryClient();
 
   const sessionsQuery = useSessionList();
-  const externalSessionsQuery = useExternalSessions();
-  const importUnavailable = isExternalSessionsUnavailableError(externalSessionsQuery.error);
   const allSessions = useMemo(() => sessionsQuery.data ?? [], [sessionsQuery.data]);
   const stoppedSessionCount = useMemo(
     () => allSessions.filter((session) => session.state === 'terminated').length,
@@ -668,18 +667,16 @@ export function SessionsPage() {
                   >
                     +
                   </button>
-                  {!importUnavailable ? (
-                    <button
-                      type="button"
-                      onClick={() => setImportOpen(true)}
-                      className="niuu:flex niuu:h-7 niuu:w-7 niuu:flex-shrink-0 niuu:items-center niuu:justify-center niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:text-text-muted niuu:transition-colors niuu:hover:border-brand/40 niuu:hover:text-brand"
-                      data-testid="pod-import-button"
-                      aria-label="Import external CLI sessions"
-                      title="Import external CLI sessions"
-                    >
-                      <Download className="niuu:h-3.5 niuu:w-3.5" />
-                    </button>
-                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setImportOpen(true)}
+                    className="niuu:flex niuu:h-7 niuu:w-7 niuu:flex-shrink-0 niuu:items-center niuu:justify-center niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:text-text-muted niuu:transition-colors niuu:hover:border-brand/40 niuu:hover:text-brand"
+                    data-testid="pod-import-button"
+                    aria-label="Import external CLI sessions"
+                    title="Import external CLI sessions"
+                  >
+                    <Download className="niuu:h-3.5 niuu:w-3.5" />
+                  </button>
                   <div className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:items-center niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] niuu:focus-within:border-brand/50 niuu:focus-within:ring-1 niuu:focus-within:ring-brand/20">
                     <Search
                       className="niuu:h-4 niuu:w-4 niuu:flex-shrink-0 niuu:text-text-muted"

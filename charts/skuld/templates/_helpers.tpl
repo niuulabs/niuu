@@ -43,6 +43,55 @@ niuu.world/namespace: {{ .Release.Namespace | quote }}
 {{- end }}
 
 {{/*
+Whether this release runs as a resident ravn (guarded so partial values
+files that override `resident` with identity-only keys keep it disabled).
+*/}}
+{{- define "skuld.residentEnabled" -}}
+{{- if and .Values.resident .Values.resident.enabled -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+Resident persona (required when resident.enabled).
+*/}}
+{{- define "skuld.residentPersona" -}}
+{{- required "resident.persona is required when resident.enabled=true" .Values.resident.persona -}}
+{{- end }}
+
+{{/*
+Resident display name (defaults to the persona).
+*/}}
+{{- define "skuld.residentName" -}}
+{{- .Values.resident.name | default (include "skuld.residentPersona" .) -}}
+{{- end }}
+
+{{/*
+Route id: the /s/<routeId> path segment on the shared gateway. For residents
+it defaults to "<namespace>-<release>" so releases never clash; for ordinary
+sessions it is the session id.
+*/}}
+{{- define "skuld.routeId" -}}
+{{- if include "skuld.residentEnabled" . -}}
+{{- .Values.resident.routeId | default (printf "%s-%s" .Release.Namespace .Release.Name) -}}
+{{- else -}}
+{{- .Values.session.id -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Effective session id: session.id, falling back to the route id for residents
+(where no Volundr session row exists).
+*/}}
+{{- define "skuld.sessionId" -}}
+{{- if .Values.session.id -}}
+{{- .Values.session.id -}}
+{{- else -}}
+{{- include "skuld.routeId" . -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Common labels
 */}}
 {{- define "skuld.labels" -}}
@@ -53,7 +102,7 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
 {{ include "skuld.niuuLabels" . }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
-volundr.io/session-id: {{ .Values.session.id | quote }}
+volundr.io/session-id: {{ include "skuld.sessionId" . | quote }}
 {{- end }}
 
 {{/*
@@ -68,7 +117,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 Session workspace path
 */}}
 {{- define "skuld.workspacePath" -}}
-{{- printf "%s/%s/workspace" .Values.persistence.mountPath .Values.session.id }}
+{{- printf "%s/%s/workspace" .Values.persistence.mountPath (include "skuld.sessionId" .) }}
 {{- end }}
 
 {{/*

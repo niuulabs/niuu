@@ -1,0 +1,1 @@
+"""Standalone-resident discovery adapters."""

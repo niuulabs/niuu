@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CODEX_VERSION = "0.139.0"
+CODEX_VERSION = "0.144.1"
 
 
 def _load_json(path: str) -> dict:
@@ -42,3 +42,21 @@ def test_cli_runtime_images_install_vim() -> None:
     for dockerfile_path in dockerfile_paths:
         dockerfile = (REPO_ROOT / dockerfile_path).read_text()
         assert "    vim \\\n" in dockerfile
+
+
+def test_openshell_runtime_images_install_iproute2() -> None:
+    """OpenShell's VM driver requires an ip binary during rootfs preparation."""
+    dockerfile = (REPO_ROOT / "containers/skuld/Dockerfile").read_text()
+    assert "iproute2" in dockerfile
+
+
+def test_openshell_image_installs_locked_agent_clis() -> None:
+    """OpenShell sandboxes must not inherit stale CLIs from the base image."""
+    dockerfile = (REPO_ROOT / "containers/openshell/Dockerfile").read_text()
+
+    assert "COPY containers/skuld/npm-tools/package.json" in dockerfile
+    assert "npm ci --omit=dev" in dockerfile
+    assert "cp -a /opt/skuld-tools/node_modules/@openai /usr/lib/node_modules/@openai" in dockerfile
+    assert "/usr/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex" in dockerfile
+    for cli in ("claude", "opencode"):
+        assert f"node_modules/.bin/{cli} /usr/local/bin/{cli}" in dockerfile

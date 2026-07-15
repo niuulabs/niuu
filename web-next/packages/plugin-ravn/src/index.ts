@@ -11,7 +11,7 @@ import { RavnFooter } from './ui/RavnFooter';
 
 export const ravnPlugin = definePlugin({
   id: 'ravn',
-  rune: 'ᚱ',
+  rune: 'R',
   title: 'Ravn',
   subtitle: 'personas · ravens · sessions',
   tabs: [
@@ -67,6 +67,7 @@ export {
 export {
   buildRavnPersonaAdapter,
   buildRavnRavenAdapter,
+  buildRavnResidentControlAdapter,
   buildRavnSessionAdapter,
   buildRavnTriggerAdapter,
   buildRavnBudgetAdapter,
@@ -77,6 +78,7 @@ export {
 export type {
   IPersonaStore,
   IRavenStream,
+  IResidentControl,
   ISessionStream,
   ITriggerStore,
   IBudgetStream,
@@ -90,6 +92,11 @@ export type {
   PersonaProduces,
   PersonaConsumes,
   PersonaFanIn,
+  DeployResidentRequest,
+  CreateResidentSessionRequest,
+  ResidentLifecycleAction,
+  ResidentLogEntry,
+  ResidentLogPage,
   WardenFeatures,
   WardenDreamSummary,
   WardenRuntime,
@@ -101,7 +108,23 @@ export type {
 } from './ports';
 
 // Domain types
-export { ravnStatusSchema, ravnSchema, type RavnStatus, type Ravn } from './domain/ravn';
+export {
+  ravnStatusSchema,
+  ravnSchema,
+  residentBackendSchema,
+  residentEngineSchema,
+  residentCapabilitySchema,
+  residentConditionSchema,
+  residentEndpointSchema,
+  type RavnStatus,
+  type Ravn,
+  type ResidentBackend,
+  type ResidentEngine,
+  type ResidentCapability,
+  type ResidentCondition,
+  type ResidentEndpoint,
+  type ResidentDeploymentProfile,
+} from './domain/ravn';
 export {
   sessionStatusSchema,
   sessionSchema,

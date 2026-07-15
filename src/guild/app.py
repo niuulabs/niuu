@@ -9,17 +9,28 @@ from fastapi import FastAPI
 from starlette.types import ASGIApp
 
 from niuu.adapters.inbound.rest_instances import create_instances_router
+from niuu.adapters.inbound.rest_pats import create_workload_identity_jwks_router
+from niuu.adapters.inbound.rest_ravn import (
+    create_ravn_router,
+    create_ravn_session_proxy_router,
+)
 from niuu.adapters.inbound.rest_volundr import create_volundr_router
+from niuu.adapters.outbound.http_agent_directory import HttpAgentDirectoryClient
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_instances import PostgresInstanceRepository
 from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import InstanceKind, InstanceVisibility
+from niuu.domain.services.agent_directory import AgentDirectoryAggregationService
 from niuu.domain.services.instances import InstanceService
 from niuu.service_databases import apply_service_database_settings, database_pool
 from niuu.service_instances import seed_configured_instances
-from niuu.service_runtime import configure_logging, create_pat_validator
-from niuu.service_settings import Settings
+from niuu.service_runtime import (
+    configure_logging,
+    create_pat_validator,
+    create_workload_identity_service,
+)
+from volundr.config import Settings
 
 
 def _load_settings() -> Settings:
@@ -49,6 +60,13 @@ def create_app(
     """Create the Guild FastAPI application."""
     loaded_settings = apply_service_database_settings(settings or _load_settings(), "guild")
     configure_logging(loaded_settings.logging)
+    directory_cfg = loaded_settings.observatory.directory
+    agent_directory = AgentDirectoryAggregationService(
+        client=HttpAgentDirectoryClient(
+            timeout_seconds=directory_cfg.guild_timeout_seconds,
+        ),
+        max_concurrency=directory_cfg.guild_max_concurrency,
+    )
     app = FastAPI(
         title="Guild",
         description="Shared instance registry, discovery, and Forge runtime facade APIs.",
@@ -68,6 +86,9 @@ def create_app(
 
             app.state.instance_service = instance_service
             app.state.pat_validator = pat_validator
+            app.state.workload_identity_service = create_workload_identity_service(
+                loaded_settings.workload_identity
+            )
 
             if loaded_settings.niuu.instances:
                 await seed_configured_instances(
@@ -81,6 +102,7 @@ def create_app(
                 create_instances_router(
                     instance_service,
                     embedded_forge_app=embedded_forge_app,
+                    agent_directory=agent_directory,
                 )
             )
             app.include_router(
@@ -89,6 +111,19 @@ def create_app(
                     embedded_forge_app=embedded_forge_app,
                 )
             )
+            app.include_router(
+                create_ravn_router(
+                    instance_service,
+                    embedded_forge_app=embedded_forge_app,
+                )
+            )
+            app.include_router(
+                create_ravn_session_proxy_router(
+                    instance_service,
+                    embedded_forge_app=embedded_forge_app,
+                )
+            )
+            app.include_router(create_workload_identity_jwks_router())
 
             yield
 

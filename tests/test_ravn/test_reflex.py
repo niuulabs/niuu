@@ -9,7 +9,7 @@ import httpx
 import pytest
 import respx
 
-from ravn.config import MimirConfig, MimirInstanceConfig, MimirReflexConfig
+from ravn.config import MimirAuthConfig, MimirConfig, MimirInstanceConfig, MimirReflexConfig
 from ravn.reflex import (
     INJECTED_LOG_EVENT,
     POINTER_BLOCK_HEADER,
@@ -287,6 +287,40 @@ class TestHttpEntityFetcher:
         with pytest.raises(httpx.HTTPStatusError):
             await fetch()
 
+    @respx.mock
+    async def test_sends_auth_headers(self):
+        route = respx.get("http://mimir.test/mimir/entities/index").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        fetch = http_entity_fetcher(
+            "http://mimir.test",
+            timeout_seconds=5.0,
+            headers={"Authorization": "Bearer token-123"},
+        )
+
+        await fetch()
+
+        assert route.calls.last.request.headers["Authorization"] == "Bearer token-123"
+
+    @respx.mock
+    async def test_sends_dynamic_auth_headers(self):
+        route = respx.get("http://mimir.test/mimir/entities/index").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+
+        async def headers_provider() -> dict[str, str]:
+            return {"Authorization": "Bearer dynamic-token"}
+
+        fetch = http_entity_fetcher(
+            "http://mimir.test",
+            timeout_seconds=5.0,
+            headers_provider=headers_provider,
+        )
+
+        await fetch()
+
+        assert route.calls.last.request.headers["Authorization"] == "Bearer dynamic-token"
+
 
 class TestReflexInjector:
     @staticmethod
@@ -390,6 +424,68 @@ class TestBuildReflexInjector:
             ],
         )
         assert isinstance(build_reflex_injector(cfg), ReflexInjector)
+
+    @respx.mock
+    async def test_instance_auth_token_file_is_used_for_entity_feed(self, tmp_path):
+        token_file = tmp_path / "mimir-token"
+        token_file.write_text("token-from-file\n", encoding="utf-8")
+        route = respx.get("http://shared.mimir.test/mimir/entities/index").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        cfg = MimirConfig(
+            reflex=MimirReflexConfig(enabled=True),
+            instances=[
+                MimirInstanceConfig(
+                    name="shared",
+                    url="http://shared.mimir.test",
+                    auth=MimirAuthConfig(type="bearer", token_file=str(token_file)),
+                ),
+            ],
+        )
+
+        injector = build_reflex_injector(cfg)
+        assert injector is not None
+        await injector.pointer_block("No matches", "session-1")
+
+        assert route.calls.last.request.headers["Authorization"] == "Bearer token-from-file"
+
+    @respx.mock
+    async def test_instance_workload_auth_is_used_for_entity_feed(self, tmp_path):
+        token_file = tmp_path / "workload-token"
+        token_file.write_text("service-account-token\n", encoding="utf-8")
+        exchange = respx.post("http://volundr.test/api/v1/tokens/workload/exchange").mock(
+            return_value=httpx.Response(
+                200,
+                json={"token": "workload-jwt", "expiresAt": 4_000_000_000},
+            )
+        )
+        route = respx.get("http://shared.mimir.test/mimir/entities/index").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        cfg = MimirConfig(
+            reflex=MimirReflexConfig(enabled=True),
+            instances=[
+                MimirInstanceConfig(
+                    name="shared",
+                    url="http://shared.mimir.test",
+                    auth=MimirAuthConfig(
+                        type="workload",
+                        token_file=str(token_file),
+                        exchange_url="http://volundr.test/api/v1/tokens/workload/exchange",
+                        audiences=["mimir"],
+                    ),
+                ),
+            ],
+        )
+
+        injector = build_reflex_injector(cfg)
+        assert injector is not None
+        await injector.pointer_block("No matches", "session-1")
+
+        assert exchange.calls.last.request.content == (
+            b'{"token":"service-account-token","audiences":["mimir"]}'
+        )
+        assert route.calls.last.request.headers["Authorization"] == "Bearer workload-jwt"
 
     def test_enabled_without_any_url_logs_warning_and_returns_none(self, caplog):
         cfg = MimirConfig(reflex=MimirReflexConfig(enabled=True))

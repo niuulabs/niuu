@@ -1,0 +1,98 @@
+import { renderHook, waitFor } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  createMockRealmGovernanceService,
+  createSeedRealms,
+  createSeedToolWorkflows,
+} from '../adapters/mock';
+import { wrapWithValkyrie } from '../testing/wrapWithValkyrie';
+import {
+  useCreateTrustGrant,
+  useRealms,
+  useRealmTrustGrants,
+  useToolWorkflows,
+} from './useRealmGovernance';
+
+describe('useRealmGovernance hooks', () => {
+  it('lists realms through the injected service', async () => {
+    const { result } = renderHook(() => useRealms(), { wrapper: wrapWithValkyrie() });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual(createSeedRealms());
+  });
+
+  it('lists a realm trust grants and the Ting workflows', async () => {
+    const wrapper = wrapWithValkyrie();
+    const grants = renderHook(() => useRealmTrustGrants('valhalla'), { wrapper });
+    const workflows = renderHook(() => useToolWorkflows(), { wrapper });
+
+    await waitFor(() => expect(grants.result.current.isSuccess).toBe(true));
+    await waitFor(() => expect(workflows.result.current.isSuccess).toBe(true));
+
+    expect(grants.result.current.data?.some((grant) => grant.action_class === 'build')).toBe(true);
+    expect(workflows.result.current.data).toEqual(createSeedToolWorkflows());
+  });
+
+  it('creates a grant and refreshes the realm grant list', async () => {
+    const service = createMockRealmGovernanceService();
+    const wrapper = wrapWithValkyrie({ 'valkyrie.realms': service });
+    const grants = renderHook(() => useRealmTrustGrants('host-jozef'), { wrapper });
+    await waitFor(() => expect(grants.result.current.isSuccess).toBe(true));
+    expect(grants.result.current.data).toHaveLength(0);
+
+    const create = renderHook(() => useCreateTrustGrant('host-jozef'), { wrapper });
+    create.result.current.mutate({
+      action_class: 'build',
+      target: '*',
+      level: 2,
+      limits: { workflow: 'valkyrie-tool-forge' },
+    });
+
+    await waitFor(() => expect(create.result.current.isSuccess).toBe(true));
+    await waitFor(() => expect(grants.result.current.data).toHaveLength(1));
+  });
+
+  it('never fetches grants for an empty slug (no selection yet)', () => {
+    const service = createMockRealmGovernanceService();
+    const listSpy = vi.spyOn(service, 'listTrustGrants');
+    const wrapper = wrapWithValkyrie({ 'valkyrie.realms': service });
+
+    const grants = renderHook(() => useRealmTrustGrants(''), { wrapper });
+
+    expect(grants.result.current.fetchStatus).toBe('idle');
+    expect(listSpy).not.toHaveBeenCalled();
+  });
+
+  it('stays idle when the caller knows the realm does not exist', async () => {
+    const service = createMockRealmGovernanceService();
+    const listSpy = vi.spyOn(service, 'listTrustGrants');
+    const wrapper = wrapWithValkyrie({ 'valkyrie.realms': service });
+
+    // enabled=false — the slug is plausible but the realm list says it's absent.
+    const gated = renderHook(() => useRealmTrustGrants('ghost-realm', false), { wrapper });
+    expect(gated.result.current.fetchStatus).toBe('idle');
+    expect(listSpy).not.toHaveBeenCalled();
+
+    // The same hook with enabled=true fires as before.
+    const open = renderHook(() => useRealmTrustGrants('valhalla', true), { wrapper });
+    await waitFor(() => expect(open.result.current.isSuccess).toBe(true));
+    expect(listSpy).toHaveBeenCalledWith('valhalla');
+    expect(listSpy).not.toHaveBeenCalledWith('ghost-realm');
+  });
+
+  it('surfaces load and save failures', async () => {
+    const broken = {
+      listRealms: () => Promise.reject(new Error('realms offline')),
+      listTrustGrants: () => Promise.reject(new Error('grants offline')),
+      createTrustGrant: () => Promise.reject(new Error('grant refused')),
+      listWorkflows: () => Promise.reject(new Error('workflows offline')),
+    };
+    const wrapper = wrapWithValkyrie({ 'valkyrie.realms': broken });
+
+    const realms = renderHook(() => useRealms(), { wrapper });
+    await waitFor(() => expect(realms.result.current.isError).toBe(true));
+
+    const create = renderHook(() => useCreateTrustGrant('valhalla'), { wrapper });
+    create.result.current.mutate({ action_class: 'build', target: '*', level: 0, limits: {} });
+    await waitFor(() => expect(create.result.current.isError).toBe(true));
+  });
+});

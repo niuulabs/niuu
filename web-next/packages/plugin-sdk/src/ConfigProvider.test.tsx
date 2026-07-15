@@ -17,7 +17,7 @@ describe('ConfigProvider', () => {
 
   it('uses the value prop synchronously when provided', () => {
     render(
-      <ConfigProvider value={{ theme: 'ice', plugins: {}, services: {} }}>
+      <ConfigProvider value={{ demoMode: false, theme: 'ice', plugins: {}, services: {} }}>
         <ConfigReader />
       </ConfigProvider>,
     );
@@ -26,7 +26,7 @@ describe('ConfigProvider', () => {
 
   it('updates the provided config value on rerender without fetching', () => {
     const { rerender } = render(
-      <ConfigProvider value={{ theme: 'ice', plugins: {}, services: {} }}>
+      <ConfigProvider value={{ demoMode: false, theme: 'ice', plugins: {}, services: {} }}>
         <ConfigReader />
       </ConfigProvider>,
     );
@@ -144,7 +144,7 @@ describe('ConfigProvider', () => {
     await act(async () => {
       resolveFetch?.({
         ok: true,
-        json: async () => ({ theme: 'ice', plugins: {}, services: {} }),
+        json: async () => ({ demoMode: false, theme: 'ice', plugins: {}, services: {} }),
       });
       await Promise.resolve();
     });

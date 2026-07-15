@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -18,6 +19,7 @@ from cli.commands.platform import (
     _collect_service_definitions,
     _prompt_mode_selection,
     _resolve_enabled_services,
+    _resolve_local_pod_manager_env,
     _route_inventory_payload,
     create_platform_commands,
 )
@@ -245,7 +247,12 @@ class TestDynamicUpCallback:
 
         fake_event = MagicMock()
         fake_event.wait = AsyncMock(side_effect=asyncio.CancelledError())
-        startup = AsyncMock()
+        captured_environment: dict[str, str] = {}
+
+        async def capture_startup(*_args, **_kwargs) -> None:
+            captured_environment.update(os.environ)
+
+        startup = AsyncMock(side_effect=capture_startup)
         shutdown = AsyncMock()
 
         with (
@@ -264,28 +271,39 @@ class TestDynamicUpCallback:
                 volundr=True,
             )
 
-            assert os.environ["LOCAL_MOUNTS__ENABLED"] == "true"
-            assert os.environ["LOCAL_MOUNTS__MINI_MODE"] == "true"
-            assert os.environ["POD_MANAGER__ADAPTER"] == settings.pod_manager.adapter
-            assert os.environ["POD_MANAGER__KWARGS__WORKSPACES_DIR"] == "~/.niuu/workspaces"
-            assert os.environ["STORAGE__KWARGS__WORKSPACE_MOUNT_PATH"] == str(
+            assert captured_environment["LOCAL_MOUNTS__ENABLED"] == "true"
+            assert captured_environment["LOCAL_MOUNTS__MINI_MODE"] == "true"
+            assert captured_environment["POD_MANAGER__ADAPTER"] == settings.pod_manager.adapter
+            assert (
+                captured_environment["POD_MANAGER__KWARGS__WORKSPACES_DIR"] == "~/.niuu/workspaces"
+            )
+            assert captured_environment["STORAGE__KWARGS__WORKSPACE_MOUNT_PATH"] == str(
                 Path("~/.niuu/workspaces").expanduser()
             )
-            assert os.environ["STORAGE__KWARGS__HOME_MOUNT_PATH"] == str(
+            assert captured_environment["STORAGE__KWARGS__HOME_MOUNT_PATH"] == str(
                 Path("~/.niuu/home").expanduser()
             )
-            assert os.environ["POD_MANAGER__KWARGS__CLAUDE_BINARY"] == "claude"
-            assert os.environ["POD_MANAGER__KWARGS__MAX_CONCURRENT"] == "4"
-            assert os.environ["POD_MANAGER__KWARGS__SDK_PORT_START"] == "9100"
-            assert os.environ["GIT__VALIDATE_ON_CREATE"] == "false"
+            assert captured_environment["POD_MANAGER__KWARGS__CLAUDE_BINARY"] == "claude"
+            assert captured_environment["POD_MANAGER__KWARGS__MAX_CONCURRENT"] == "4"
+            assert captured_environment["POD_MANAGER__KWARGS__SDK_PORT_START"] == "9100"
+            assert captured_environment["GIT__VALIDATE_ON_CREATE"] == "false"
+            assert "LOCAL_MOUNTS__ENABLED" not in os.environ
 
         startup.assert_awaited_once()
         shutdown.assert_awaited_once_with(manager)
 
-    def test_up_callback_applies_workspaces_dir_override_in_mini_mode(self) -> None:
+    def test_up_callback_does_not_set_local_overrides_for_openshell_gateway(self) -> None:
         service_defs = {"volundr": _make_svc_def("volundr")}
         manager = MagicMock()
-        settings = CLISettings(mode="mini")
+        settings = CLISettings(
+            mode="openshell",
+            pod_manager=PodManagerConfig(
+                adapter="volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager",
+                gateway_endpoint="openshell.openshell.svc.cluster.local:8080",
+                sandbox_image="skuld:test",
+                service_port=9200,
+            ),
+        )
         up_fn = _build_up_callback(service_defs, manager, settings)
 
         fake_event = MagicMock()
@@ -306,13 +324,58 @@ class TestDynamicUpCallback:
                 no_web=False,
                 host_profile="full",
                 mounts="",
+                volundr=True,
+            )
+
+            assert "LOCAL_MOUNTS__ENABLED" not in os.environ
+            assert "POD_MANAGER__ADAPTER" not in os.environ
+
+        startup.assert_awaited_once()
+        shutdown.assert_awaited_once_with(manager)
+
+    def test_up_callback_applies_workspaces_dir_override_in_mini_mode(self) -> None:
+        service_defs = {"volundr": _make_svc_def("volundr")}
+        manager = MagicMock()
+        settings = CLISettings(mode="mini")
+        up_fn = _build_up_callback(service_defs, manager, settings)
+
+        fake_event = MagicMock()
+        fake_event.wait = AsyncMock(side_effect=asyncio.CancelledError())
+        captured_environment: dict[str, str] = {}
+
+        async def capture_startup(*_args, **_kwargs) -> None:
+            captured_environment.update(os.environ)
+
+        startup = AsyncMock(side_effect=capture_startup)
+        shutdown = AsyncMock()
+
+        with (
+            patch("cli.commands.platform._startup", startup),
+            patch("cli.commands.platform._shutdown", shutdown),
+            patch("cli.commands.platform.asyncio.Event", return_value=fake_event),
+            patch("cli.commands.platform.asyncio.run", side_effect=asyncio.run),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            up_fn(
+                skip_preflight=True,
+                all=False,
+                no_web=False,
+                host_profile="full",
+                mounts="",
                 workspaces_dir="/tmp/mini-workspaces",
                 volundr=True,
             )
 
-            assert os.environ["POD_MANAGER__KWARGS__WORKSPACES_DIR"] == "/tmp/mini-workspaces"
-            assert os.environ["STORAGE__KWARGS__WORKSPACE_MOUNT_PATH"] == "/tmp/mini-workspaces"
-            assert os.environ["STORAGE__KWARGS__HOME_MOUNT_PATH"] == "/tmp/home"
+            assert (
+                captured_environment["POD_MANAGER__KWARGS__WORKSPACES_DIR"]
+                == "/tmp/mini-workspaces"
+            )
+            assert (
+                captured_environment["STORAGE__KWARGS__WORKSPACE_MOUNT_PATH"]
+                == "/tmp/mini-workspaces"
+            )
+            assert captured_environment["STORAGE__KWARGS__HOME_MOUNT_PATH"] == "/tmp/home"
+            assert "POD_MANAGER__KWARGS__WORKSPACES_DIR" not in os.environ
 
         assert startup.await_count == 1
         called_settings = startup.await_args.args[1]
@@ -506,12 +569,58 @@ class TestBuildInitConfig:
         assert "direct_k8s" in config["pod_manager"]["adapter"]
         assert config["pod_manager"]["namespace"] == "volundr"
 
+    def test_openshell_config(self) -> None:
+        config = _build_init_config("openshell")
+        assert config["mode"] == "openshell"
+        assert "openshell_gateway.OpenShellGatewayPodManager" in config["pod_manager"]["adapter"]
+        assert (
+            config["pod_manager"]["gateway_endpoint"]
+            == "openshell.openshell.svc.cluster.local:8080"
+        )
+        assert config["pod_manager"]["service_port"] == 9200
+
     def test_cluster_config_uses_pinned_image_version(self) -> None:
         """skuld_image must use a pinned version, not :latest."""
         config = _build_init_config("cluster")
         skuld_image = config["pod_manager"]["skuld_image"]
         assert ":latest" not in skuld_image
         assert ":" in skuld_image  # has a version tag
+
+    def test_mini_runtime_exposes_local_resident_profiles(self) -> None:
+        settings = CLISettings(
+            mode="mini",
+            bifrost={
+                "providers": {
+                    "local-vllm": {
+                        "base_url": "https://vllm.example.test",
+                        "models": ["nvidia/nemotron-test"],
+                    }
+                }
+            },
+        )
+
+        env = _resolve_local_pod_manager_env(settings)
+        resident_config = json.loads(env["RESIDENT_RUNTIMES"])
+
+        assert resident_config["controllers"][0]["adapter"].endswith(
+            "LocalContainerResidentRuntimeController"
+        )
+        assert {profile["id"] for profile in resident_config["profiles"]} == {
+            "ravn-local",
+            "nemoclaw-local",
+            "nemohermes-local",
+        }
+        assert {profile["backend"] for profile in resident_config["profiles"]} == {"local"}
+        assert resident_config["profiles"][0]["default_model"] == "gpt-5.6-sol"
+        assert resident_config["profiles"][0]["allowed_models"] == ["gpt-5.6-sol"]
+        assert resident_config["profiles"][0]["deployment"]["values"]["session"] == {
+            "reasoningEffort": "high"
+        }
+        assert json.loads(env["BIFROST_CONFIG"])["providers"]["local-vllm"]["models"] == [
+            "nvidia/nemotron-test"
+        ]
+        assert resident_config["profiles"][1]["default_model"] == ("niuu/nvidia/nemotron-test")
+        assert "FileCredentialStore" in json.loads(env["CREDENTIAL_STORE"])["adapter"]
 
 
 class TestRouteInventoryPayload:
@@ -616,17 +725,31 @@ class TestPromptModeSelection:
             mode = _prompt_mode_selection()
         assert mode == "mini"
 
-    def test_choice_2_returns_cluster(self) -> None:
+    def test_choice_2_returns_openshell(self) -> None:
         from unittest.mock import patch
 
         with patch("cli.commands.platform.typer.prompt", return_value="2"):
             mode = _prompt_mode_selection()
-        assert mode == "cluster"
+        assert mode == "openshell"
 
     def test_choice_cluster_string_returns_cluster(self) -> None:
         from unittest.mock import patch
 
         with patch("cli.commands.platform.typer.prompt", return_value="cluster"):
+            mode = _prompt_mode_selection()
+        assert mode == "cluster"
+
+    def test_choice_openshell_string_returns_openshell(self) -> None:
+        from unittest.mock import patch
+
+        with patch("cli.commands.platform.typer.prompt", return_value="openshell"):
+            mode = _prompt_mode_selection()
+        assert mode == "openshell"
+
+    def test_choice_cluster_number_returns_cluster(self) -> None:
+        from unittest.mock import patch
+
+        with patch("cli.commands.platform.typer.prompt", return_value="3"):
             mode = _prompt_mode_selection()
         assert mode == "cluster"
 
@@ -676,6 +799,16 @@ class TestConfigModeSwitching:
         )
         assert "DirectK8sPodManager" in settings.pod_manager.adapter
         assert settings.mode == "cluster"
+
+    def test_openshell_mode_adapter(self) -> None:
+        settings = CLISettings(
+            mode="openshell",
+            pod_manager=PodManagerConfig(
+                adapter="volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager",
+            ),
+        )
+        assert "OpenShellGatewayPodManager" in settings.pod_manager.adapter
+        assert settings.mode == "openshell"
 
 
 class TestPlatformStatusClusterInfo:

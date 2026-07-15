@@ -39,6 +39,33 @@ _DEFAULT_MAX_RECONNECT_ATTEMPTS = 5
 
 
 DirectedMessageHandler = Callable[[str, dict[str, Any] | None], Awaitable[None]]
+AuthTokenProvider = Callable[[], Awaitable[str]]
+
+
+def _matches_subscription(event_type: str, subscriptions: list[str]) -> bool:
+    for pattern in subscriptions:
+        if pattern == event_type:
+            return True
+        if pattern.endswith(".*") and event_type.startswith(pattern[:-1]):
+            return True
+        if pattern.endswith("*") and event_type.startswith(pattern[:-1]):
+            return True
+    return False
+
+
+def _render_room_outcome_message(frame: dict[str, Any], event_type: str) -> str:
+    summary = str(frame.get("summary") or "").strip()
+    verdict = str(frame.get("verdict") or "").strip()
+    fields = frame.get("fields") if isinstance(frame.get("fields"), dict) else {}
+    lines = [f"Joined session outcome received: {event_type}"]
+    if summary:
+        lines.append(f"Summary: {summary}")
+    if verdict:
+        lines.append(f"Verdict: {verdict}")
+    if fields:
+        lines.append(f"Fields: {json.dumps(fields, sort_keys=True, default=str)}")
+    lines.append("This matches your subscriptions. Digest the result and update your operator.")
+    return "\n".join(lines)
 
 
 class SkuldChannel(ChannelPort):
@@ -71,6 +98,7 @@ class SkuldChannel(ChannelPort):
         tools: list[str] | None = None,
         reconnect_delay: float = _DEFAULT_RECONNECT_DELAY_SECONDS,
         max_reconnect_attempts: int = _DEFAULT_MAX_RECONNECT_ATTEMPTS,
+        auth_token_provider: AuthTokenProvider | None = None,
     ) -> None:
         self._broker_url = broker_url
         self._session_id = session_id
@@ -82,11 +110,13 @@ class SkuldChannel(ChannelPort):
         self._tools = tools or []
         self._reconnect_delay = reconnect_delay
         self._max_reconnect_attempts = max_reconnect_attempts
+        self._auth_token_provider = auth_token_provider
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._connect_lock = asyncio.Lock()
         self._buffer: list[RavnEvent] = []
         self._on_directed_message: DirectedMessageHandler | None = None
         self._recv_task: asyncio.Task | None = None
+        self._connect_gave_up = False
 
     async def emit(self, event: RavnEvent) -> None:
         """Emit *event* to the Skuld broker as an NDJSON frame."""
@@ -100,6 +130,11 @@ class SkuldChannel(ChannelPort):
     # ------------------------------------------------------------------
     # Connection management
     # ------------------------------------------------------------------
+
+    @property
+    def connected(self) -> bool:
+        """True when the WebSocket connection is currently open."""
+        return self._ws is not None and self._ws.state != WsState.CLOSED
 
     async def connect(self) -> None:
         """Establish the WebSocket connection to the Skuld broker.
@@ -151,7 +186,15 @@ class SkuldChannel(ChannelPort):
         while True:
             ws = self._ws
             if ws is None or ws.state == WsState.CLOSED:
+                # Receive-only channels (a resident's session_join memberships)
+                # never call _send, so without an active re-dial here a dropped
+                # connection would silently stop delivering directed messages
+                # forever. Re-establish it (connect re-sends the register frame).
                 await asyncio.sleep(self._reconnect_delay)
+                with suppress(Exception):
+                    await self.connect()
+                if self._connect_gave_up:
+                    return
                 continue
             try:
                 raw = await ws.recv()
@@ -163,6 +206,21 @@ class SkuldChannel(ChannelPort):
                         metadata = None
                     if content:
                         await self._on_directed_message(content, metadata)
+                elif frame.get("type") == "room_outcome" and self._on_directed_message:
+                    event_type = str(frame.get("eventType") or "").strip()
+                    if event_type and _matches_subscription(event_type, self._subscribes_to):
+                        metadata = {
+                            "room_outcome": True,
+                            "event_type": event_type,
+                            "participant_id": frame.get("participantId") or "",
+                            "fields": frame.get("fields") or {},
+                            "summary": frame.get("summary") or "",
+                            "verdict": frame.get("verdict") or "",
+                        }
+                        await self._on_directed_message(
+                            _render_room_outcome_message(frame, event_type),
+                            metadata,
+                        )
             except websockets.exceptions.ConnectionClosed:
                 logger.info("SkuldChannel: recv loop — connection closed, waiting for reconnect.")
                 await asyncio.sleep(self._reconnect_delay)
@@ -180,9 +238,17 @@ class SkuldChannel(ChannelPort):
 
     async def _do_connect(self) -> None:
         attempts = 0
+        self._connect_gave_up = False
         while attempts < self._max_reconnect_attempts:
             try:
-                self._ws = await websockets.connect(self._broker_url)
+                connect_kwargs: dict = {}
+                if self._auth_token_provider is not None:
+                    # Cross-session joins hit the broker's ownership check —
+                    # present the platform identity token on the handshake.
+                    token = await self._auth_token_provider()
+                    if token:
+                        connect_kwargs["additional_headers"] = {"Authorization": f"Bearer {token}"}
+                self._ws = await websockets.connect(self._broker_url, **connect_kwargs)
                 logger.info(
                     "SkuldChannel connected to %s (session=%s).",
                     self._broker_url,
@@ -226,6 +292,7 @@ class SkuldChannel(ChannelPort):
             self._broker_url,
             self._max_reconnect_attempts,
         )
+        self._connect_gave_up = True
 
     async def _send(self, payload: str) -> None:
         """Send *payload* over the WebSocket, reconnecting if necessary."""
@@ -296,6 +363,9 @@ class SkuldChannel(ChannelPort):
                 # Help needed event — RoomBridge translates to room_notification
                 data = payload
                 metadata = {"urgency": event.urgency}
+            case RavnEventType.USAGE:
+                data = payload
+                metadata = {}
             case _:
                 data = str(payload)
                 metadata = {}

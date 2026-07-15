@@ -54,4 +54,9 @@ describe('Meter', () => {
     render(<Meter used={50} limit={100} className="custom-class" />);
     expect(screen.getByTestId('meter')).toHaveClass('custom-class');
   });
+
+  it('steady tone never escalates to warm or hot', () => {
+    render(<Meter used={95} limit={100} tone="steady" label="confidence" />);
+    expect(screen.getByTestId('meter')).toHaveAttribute('data-level', 'cool');
+  });
 });

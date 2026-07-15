@@ -117,7 +117,7 @@ chronicle:
 launchSpecs: []
 
 migrations:
-  enabled: false
+  enabled: true
 
 livenessProbe:
   enabled: true

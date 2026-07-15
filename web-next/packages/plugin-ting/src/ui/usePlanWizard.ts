@@ -40,6 +40,8 @@ const initialState: PlanWizardState = {
   draftSaved: false,
 };
 
+const PLAN_DRAFT_POLL_MS = 5000;
+
 // ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------
@@ -47,13 +49,15 @@ const initialState: PlanWizardState = {
 type Action =
   | { type: 'SET_LOADING' }
   | { type: 'SESSION_READY'; prompt: string; repo: string; session: PlanSession }
+  | { type: 'RESUME_READY'; session: PlanSession }
+  | { type: 'SESSION_STATUS'; session: PlanSession }
   | { type: 'SUBMIT_ANSWERS'; answers: Record<string, string> }
   | { type: 'DECOMPOSE_DONE'; phases: Phase[]; structure: ExtractedStructure }
   | { type: 'DECOMPOSE_ERROR'; error: string }
   | { type: 'APPROVE_DONE'; saga: Saga }
   | { type: 'APPROVE_ERROR'; error: string }
   | { type: 'BACK' }
-  | { type: 'REPLAN' }
+  | { type: 'REPLAN'; questions?: ClarifyingQuestion[] }
   | { type: 'EDIT_PHASE'; phaseIndex: number; name: string }
   | { type: 'REMOVE_RUN'; phaseIndex: number; runIndex: number }
   | { type: 'SAVE_DRAFT' }
@@ -82,12 +86,41 @@ function reducer(state: PlanWizardState, action: Action): PlanWizardState {
       };
     }
 
+    case 'RESUME_READY': {
+      const questions = action.session.questions;
+      return {
+        ...state,
+        step: questions.length > 0 ? 'questions' : 'running',
+        prompt: action.session.prompt ?? action.session.name ?? state.prompt,
+        repo: action.session.repo ?? '',
+        session: action.session,
+        questions,
+        answers: {},
+        structure: null,
+        phases: [],
+        loading: false,
+        error: null,
+      };
+    }
+
+    case 'SESSION_STATUS': {
+      const questions =
+        action.session.questions.length > 0 ? action.session.questions : state.questions;
+      return {
+        ...state,
+        session: state.session ? { ...state.session, ...action.session } : action.session,
+        questions,
+      };
+    }
+
     case 'SUBMIT_ANSWERS': {
       const step = planTransition(state.step, 'running');
       return {
         ...state,
         step,
         answers: action.answers,
+        structure: null,
+        phases: [],
         loading: false,
         error: null,
       };
@@ -139,8 +172,19 @@ function reducer(state: PlanWizardState, action: Action): PlanWizardState {
     }
 
     case 'REPLAN': {
-      const step = planTransition(state.step, 'running');
-      return { ...state, step, structure: null, phases: [], loading: false, error: null };
+      const step = action.questions?.length
+        ? planTransition(state.step, 'questions')
+        : planTransition(state.step, 'running');
+      return {
+        ...state,
+        step,
+        questions: action.questions ?? state.questions,
+        answers: action.questions?.length ? {} : state.answers,
+        structure: action.questions?.length ? state.structure : null,
+        phases: action.questions?.length ? state.phases : [],
+        loading: false,
+        error: null,
+      };
     }
 
     case 'EDIT_PHASE': {
@@ -196,6 +240,26 @@ function buildFullSpec(prompt: string, answers: Record<string, string>): string 
   return `${prompt}\n\nAdditional context:\n${answerBlock}`;
 }
 
+function buildFeedbackMessage(answers: Record<string, string>): string {
+  const lines = Object.values(answers)
+    .map((answer) => answer.trim())
+    .filter(Boolean)
+    .map((answer) => `- ${answer}`);
+  if (lines.length === 0) return '';
+  const label = Object.keys(answers).some((id) => id === 'draft-feedback')
+    ? 'Draft feedback:'
+    : 'Planning feedback:';
+  return [label, ...lines].join('\n');
+}
+
+function defaultDraftFeedbackQuestion(): ClarifyingQuestion {
+  return {
+    id: 'draft-feedback',
+    question: 'What focused changes should the planning workflow make to this draft?',
+    hint: 'Request one bounded change. Ting will send it back through the workflow before showing a revised draft.',
+  };
+}
+
 function buildCommitRequest(state: PlanWizardState): CommitSagaRequest {
   const structure = state.structure?.structure;
   const name = structure?.name ?? 'New Saga';
@@ -230,7 +294,8 @@ function buildCommitRequest(state: PlanWizardState): CommitSagaRequest {
 
 export interface PlanWizardActions {
   submitPrompt(prompt: string, repo: string): Promise<void>;
-  submitAnswers(answers: Record<string, string>): void;
+  resumePlanSession(session: PlanSession): Promise<void>;
+  submitAnswers(answers: Record<string, string>): Promise<void>;
   approveDraft(): Promise<void>;
   editPhase(phaseIndex: number, name: string): void;
   removeRun(phaseIndex: number, runIndex: number): void;
@@ -238,7 +303,7 @@ export interface PlanWizardActions {
   clearError(): void;
   /** Re-run decomposition with the same prompt and answers. */
   replan(): void;
-  /** Persist the current draft state without creating the saga. No backend yet — dispatches SAVE_DRAFT. */
+  /** Keep the current draft state in this wizard without creating the saga. */
   saveDraft(): void;
 }
 
@@ -252,6 +317,35 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
     stateRef.current = state;
   }, [state]);
 
+  useEffect(() => {
+    const campaignSlug = state.session?.campaignSlug;
+    const getPlanSession = ting.getPlanSession;
+    if (!campaignSlug || state.step === 'approved' || !getPlanSession) return;
+
+    const refreshSlug = campaignSlug;
+    const refresh = getPlanSession;
+    let cancelled = false;
+    async function refreshPlanSession() {
+      try {
+        const session = await refresh(refreshSlug);
+        if (!cancelled && session) {
+          dispatch({ type: 'SESSION_STATUS', session });
+        }
+      } catch {
+        // Polling is advisory; the active planning flow should keep moving.
+      }
+    }
+
+    void refreshPlanSession();
+    const timer = window.setInterval(() => {
+      void refreshPlanSession();
+    }, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [state.session?.campaignSlug, state.step, ting]);
+
   // Auto-decompose when entering the running step
   useEffect(() => {
     if (state.step !== 'running') return;
@@ -259,9 +353,22 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
     let cancelled = false;
 
     async function runDecompose() {
-      const { prompt, repo, answers } = stateRef.current;
+      const { prompt, repo, answers, session } = stateRef.current;
       const fullSpec = buildFullSpec(prompt, answers);
       try {
+        if (session?.campaignSlug && ting.getPlanDraft) {
+          while (!cancelled) {
+            const draft = await ting.getPlanDraft(session.campaignSlug);
+            if (cancelled) return;
+            if (draft.found && draft.structure) {
+              dispatch({ type: 'DECOMPOSE_DONE', phases: [], structure: draft });
+              return;
+            }
+            await new Promise((resolve) => window.setTimeout(resolve, PLAN_DRAFT_POLL_MS));
+          }
+          return;
+        }
+
         const phases = await ting.decompose(fullSpec, repo);
         if (cancelled) return;
         const phasesText = JSON.stringify(phases);
@@ -286,8 +393,9 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
   async function submitPrompt(prompt: string, repo: string) {
     dispatch({ type: 'SET_LOADING' });
     try {
-      const session = await ting.spawnPlanSession(prompt, repo);
-      dispatch({ type: 'SESSION_READY', prompt, repo, session });
+      const trimmedRepo = repo.trim();
+      const session = await ting.spawnPlanSession(prompt, trimmedRepo);
+      dispatch({ type: 'SESSION_READY', prompt, repo: trimmedRepo, session });
     } catch (err) {
       dispatch({
         type: 'DECOMPOSE_ERROR',
@@ -296,13 +404,54 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
     }
   }
 
-  function submitAnswers(answers: Record<string, string>) {
+  async function resumePlanSession(session: PlanSession) {
+    dispatch({ type: 'SET_LOADING' });
+    try {
+      const refreshed =
+        session.campaignSlug && ting.getPlanSession
+          ? await ting.getPlanSession(session.campaignSlug)
+          : session;
+      dispatch({ type: 'RESUME_READY', session: refreshed ?? session });
+    } catch (err) {
+      dispatch({
+        type: 'DECOMPOSE_ERROR',
+        error: err instanceof Error ? err.message : 'Failed to resume plan session',
+      });
+    }
+  }
+
+  async function submitAnswers(answers: Record<string, string>) {
+    const campaignSlug = stateRef.current.session?.campaignSlug;
+    const feedback = buildFeedbackMessage(answers);
+    const decision = Object.keys(answers).some((id) => id === 'draft-feedback')
+      ? 'changes_requested'
+      : 'approve';
     dispatch({ type: 'SUBMIT_ANSWERS', answers });
+    if (campaignSlug && feedback && ting.sendPlanFeedback) {
+      try {
+        await ting.sendPlanFeedback(campaignSlug, feedback, decision);
+      } catch (err) {
+        dispatch({
+          type: 'DECOMPOSE_ERROR',
+          error: err instanceof Error ? err.message : 'Failed to send plan feedback',
+        });
+        return;
+      }
+    }
   }
 
   async function approveDraft() {
     dispatch({ type: 'SET_LOADING' });
     try {
+      const campaignSlug = stateRef.current.session?.campaignSlug;
+      if (campaignSlug && ting.sendPlanFeedback) {
+        try {
+          await ting.sendPlanFeedback(campaignSlug, 'Approved in Ting Plan.', 'approve');
+        } catch {
+          // Final approval already carries the user's commit intent; a closed workflow session
+          // should not block materializing the reviewed draft.
+        }
+      }
       const request = buildCommitRequest(stateRef.current);
       const saga = await ting.commitSaga(request);
       dispatch({ type: 'APPROVE_DONE', saga });
@@ -331,17 +480,28 @@ export function usePlanWizard(): { state: PlanWizardState } & PlanWizardActions 
   }
 
   function replan() {
-    dispatch({ type: 'REPLAN' });
+    const campaignSlug = stateRef.current.session?.campaignSlug;
+    const draftFeedbackQuestions = stateRef.current.questions.filter(
+      (question) => question.id === 'draft-feedback',
+    );
+    dispatch({
+      type: 'REPLAN',
+      questions: campaignSlug
+        ? draftFeedbackQuestions.length > 0
+          ? draftFeedbackQuestions
+          : [defaultDraftFeedbackQuestion()]
+        : undefined,
+    });
   }
 
   function saveDraft() {
-    // TODO: send to backend when persistence endpoint is available.
     dispatch({ type: 'SAVE_DRAFT' });
   }
 
   return {
     state,
     submitPrompt,
+    resumePlanSession,
     submitAnswers,
     approveDraft,
     editPhase,

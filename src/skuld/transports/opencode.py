@@ -465,7 +465,9 @@ class OpenCodeHttpTransport(CLITransport):
     # CLITransport interface
     # ------------------------------------------------------------------
 
-    async def send_message(self, content: str) -> None:
+    async def send_message(
+        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+    ) -> None:
         if not self._session_id:
             raise RuntimeError("No active session — call start() first")
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { ServicesProvider, useService } from './ServicesProvider';
+import { ServicesProvider, useOptionalService, useService } from './ServicesProvider';
 
 interface FakeService {
   say(): string;
@@ -9,6 +9,11 @@ interface FakeService {
 function Reader() {
   const svc = useService<FakeService>('fake');
   return <span data-testid="out">{svc.say()}</span>;
+}
+
+function OptionalReader() {
+  const svc = useOptionalService<FakeService>('fake');
+  return <span data-testid="optional-out">{svc?.say() ?? 'missing'}</span>;
 }
 
 describe('ServicesProvider', () => {
@@ -40,5 +45,14 @@ describe('ServicesProvider', () => {
       ),
     ).toThrow(/not registered/);
     console.error = error;
+  });
+
+  it('returns undefined for an optional unregistered service', () => {
+    render(
+      <ServicesProvider services={{}}>
+        <OptionalReader />
+      </ServicesProvider>,
+    );
+    expect(screen.getByTestId('optional-out').textContent).toBe('missing');
   });
 });

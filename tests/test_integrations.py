@@ -9,6 +9,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from niuu.adapters.http_integrations import (
+    HTTPIntegrationRepository,
+    UnsupportedIntegrationQueryError,
+)
 from volundr.adapters.inbound.rest_integrations import (
     create_integrations_router,
 )
@@ -904,6 +908,18 @@ class TestIntegrationTestEndpointBranches:
         assert resp.status_code == 200
         assert resp.json()["success"] is False
         assert resp.json()["error"] == "tracker exploded"
+
+
+class TestHTTPIntegrationRepositoryContract:
+    """Owner-scoped HTTP repositories fail explicitly for global queries."""
+
+    async def test_global_query_raises_typed_unsupported_error(self) -> None:
+        repository = HTTPIntegrationRepository("http://integrations.example")
+        try:
+            with pytest.raises(UnsupportedIntegrationQueryError, match="owner-scoped"):
+                await repository.list_connections_global()
+        finally:
+            await repository.close()
 
 
 # --- IntegrationConnection model tests ---

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import httpx
 import respx
 import typer
@@ -17,7 +15,7 @@ from features.plugin import FeaturesPlugin
 from identity.plugin import IdentityPlugin
 from integrations.plugin import IntegrationsPlugin
 from mimir.plugin import MimirPlugin
-from niuu.ports.plugin import APIRouteDomain, ServiceDefinition
+from niuu.ports.plugin import APIRouteDomain, ServiceDefinition, ServiceLifecycle
 from observatory.plugin import ObservatoryPlugin
 from personas.plugin import PersonasPlugin
 from ravn.plugin import RavnPlugin
@@ -52,37 +50,19 @@ class TestVolundrPlugin:
         assert svc_def is not None
         assert svc_def.default_port > 0
 
-    def test_register_service_factory_creates_service(self) -> None:
+    def test_service_is_host_mounted(self) -> None:
         plugin = VolundrPlugin()
-        svc_def = plugin.register_service()
-        assert svc_def is not None
-        svc = svc_def.factory()
-        assert svc is not None
-
-    def test_depends_on_via_service_definition(self) -> None:
-        plugin = VolundrPlugin()
-        # depends_on() delegates to register_service().depends_on
-        svc_def = plugin.register_service()
-        assert svc_def is not None
-        assert list(plugin.depends_on()) == svc_def.depends_on
-
-    def test_create_service_returns_service(self) -> None:
-        plugin = VolundrPlugin()
-        svc = plugin.create_service()
-        assert svc is not None
-
-    def test_create_service_stub_health_check(self) -> None:
-        plugin = VolundrPlugin()
-        svc = plugin.create_service()
-        asyncio.run(svc.start())
-        assert asyncio.run(svc.health_check()) is True
-        asyncio.run(svc.stop())
+        definition = plugin.register_service()
+        assert definition.lifecycle is ServiceLifecycle.HOSTED
+        assert definition.factory is None
+        assert plugin.create_service() is None
 
     def test_create_api_app_uses_volundr_main_factory(self, monkeypatch) -> None:
         plugin = VolundrPlugin()
         sentinel = object()
 
-        def fake_create_app():
+        def fake_create_app(*, public_origin: str):
+            assert public_origin == "http://localhost:8080"
             return sentinel
 
         monkeypatch.setattr("volundr.main.create_app", fake_create_app)
@@ -319,10 +299,12 @@ class TestTingPlugin:
         plugin = TingPlugin()
         assert "volundr" in plugin.depends_on()
 
-    def test_create_service_returns_service(self) -> None:
+    def test_service_is_host_mounted(self) -> None:
         plugin = TingPlugin()
-        svc = plugin.create_service()
-        assert svc is not None
+        definition = plugin.register_service()
+        assert definition.lifecycle is ServiceLifecycle.HOSTED
+        assert definition.factory is None
+        assert plugin.create_service() is None
 
     def test_api_route_domains_declared(self) -> None:
         plugin = TingPlugin()
@@ -344,6 +326,7 @@ class TestTingPlugin:
             "/api/v1/ting/flock",
             "/api/v1/ting/flock_flows",
             "/api/v1/ting/research",
+            "/api/v1/ting/specs",
         )
         assert route_domains[5].prefixes == ("/api/v1/ting/settings",)
         assert route_domains[6].prefixes == ("/api/v1/ting/telegram",)
@@ -403,12 +386,12 @@ class TestMimirPlugin:
         assert svc_def.name == "mimir"
         assert svc_def.default_enabled is True
 
-    def test_create_service_stub_health_check(self) -> None:
+    def test_service_is_host_mounted(self) -> None:
         plugin = MimirPlugin()
-        svc = plugin.create_service()
-        asyncio.run(svc.start())
-        assert asyncio.run(svc.health_check()) is True
-        asyncio.run(svc.stop())
+        definition = plugin.register_service()
+        assert definition.lifecycle is ServiceLifecycle.HOSTED
+        assert definition.factory is None
+        assert plugin.create_service() is None
 
     def test_create_api_app_uses_mimir_app_factory(self, monkeypatch) -> None:
         plugin = MimirPlugin()
@@ -455,12 +438,12 @@ class TestRavnPlugin:
         assert svc_def.name == "ravn"
         assert svc_def.default_enabled is True
 
-    def test_create_service_stub_health_check(self) -> None:
+    def test_service_is_host_mounted(self) -> None:
         plugin = RavnPlugin()
-        svc = plugin.create_service()
-        asyncio.run(svc.start())
-        assert asyncio.run(svc.health_check()) is True
-        asyncio.run(svc.stop())
+        definition = plugin.register_service()
+        assert definition.lifecycle is ServiceLifecycle.HOSTED
+        assert definition.factory is None
+        assert plugin.create_service() is None
 
     def test_create_api_app_uses_ravn_app_factory(self, monkeypatch) -> None:
         plugin = RavnPlugin()
@@ -504,9 +487,9 @@ class TestRavnPlugin:
         client = plugin.create_api_client()
         assert client is not None
 
-    def test_depends_on_is_empty(self) -> None:
+    def test_depends_on_returns_postgres(self) -> None:
         plugin = RavnPlugin()
-        assert list(plugin.depends_on()) == []
+        assert list(plugin.depends_on()) == ["postgres"]
 
     def test_registers_ravn_group(self) -> None:
         plugin = RavnPlugin()
@@ -597,12 +580,12 @@ class TestPersonasPlugin:
         assert svc_def.name == "personas"
         assert svc_def.default_enabled is True
 
-    def test_create_service_stub_health_check(self) -> None:
+    def test_service_is_host_mounted(self) -> None:
         plugin = PersonasPlugin()
-        svc = plugin.create_service()
-        asyncio.run(svc.start())
-        assert asyncio.run(svc.health_check()) is True
-        asyncio.run(svc.stop())
+        definition = plugin.register_service()
+        assert definition.lifecycle is ServiceLifecycle.HOSTED
+        assert definition.factory is None
+        assert plugin.create_service() is None
 
     def test_create_api_app_uses_personas_app_factory(self, monkeypatch) -> None:
         plugin = PersonasPlugin()
@@ -644,12 +627,12 @@ class TestBifrostPlugin:
         assert svc_def.name == "bifrost"
         assert svc_def.default_enabled is True
 
-    def test_create_service_stub_health_check(self) -> None:
+    def test_service_is_host_mounted(self) -> None:
         plugin = BifrostPlugin()
-        svc = plugin.create_service()
-        asyncio.run(svc.start())
-        assert asyncio.run(svc.health_check()) is True
-        asyncio.run(svc.stop())
+        definition = plugin.register_service()
+        assert definition.lifecycle is ServiceLifecycle.HOSTED
+        assert definition.factory is None
+        assert plugin.create_service() is None
 
     def test_create_api_app_uses_bifrost_app_factory(self, monkeypatch) -> None:
         plugin = BifrostPlugin()
@@ -700,12 +683,12 @@ class TestObservatoryPlugin:
         assert svc_def.name == "observatory"
         assert svc_def.default_enabled is True
 
-    def test_create_service_stub_health_check(self) -> None:
+    def test_service_is_host_mounted(self) -> None:
         plugin = ObservatoryPlugin()
-        svc = plugin.create_service()
-        asyncio.run(svc.start())
-        assert asyncio.run(svc.health_check()) is True
-        asyncio.run(svc.stop())
+        definition = plugin.register_service()
+        assert definition.lifecycle is ServiceLifecycle.HOSTED
+        assert definition.factory is None
+        assert plugin.create_service() is None
 
     def test_create_api_app_uses_observatory_app_factory(self, monkeypatch) -> None:
         plugin = ObservatoryPlugin()
@@ -724,21 +707,23 @@ class TestObservatoryPlugin:
         route_domains = plugin.api_route_domains()
         assert route_domains
         assert [route_domain.name for route_domain in route_domains] == [
+            "observatory-agents-api",
             "observatory-registry-api",
             "observatory-topology-api",
             "observatory-events-api",
             "observatory-api",
         ]
-        assert route_domains[0].prefixes == ("/api/v1/observatory/registry",)
-        assert route_domains[1].prefixes == (
+        assert route_domains[0].prefixes == ("/api/v1/observatory/agents",)
+        assert route_domains[1].prefixes == ("/api/v1/observatory/registry",)
+        assert route_domains[2].prefixes == (
             "/api/v1/observatory/topology/stream",
             "/api/v1/observatory/topology",
         )
-        assert route_domains[2].prefixes == (
+        assert route_domains[3].prefixes == (
             "/api/v1/observatory/events/stream",
             "/api/v1/observatory/events",
         )
-        assert route_domains[3].prefixes == ("/api/v1/observatory",)
+        assert route_domains[4].prefixes == ("/api/v1/observatory",)
 
     def test_api_client_returns_instance(self) -> None:
         plugin = ObservatoryPlugin()

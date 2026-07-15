@@ -45,6 +45,11 @@ def test_resolve_string_path(tmp_path: Path):
     assert result == Path(target).resolve()
 
 
+def test_resolve_relative_path_from_workspace(tmp_path: Path):
+    result = resolve_safe("subdir/file.txt", tmp_path)
+    assert result == (tmp_path / "subdir" / "file.txt").resolve()
+
+
 def test_resolve_nonexistent_target_is_ok(tmp_path: Path):
     """Write targets do not need to exist."""
     result = resolve_safe(tmp_path / "new_file.txt", tmp_path)

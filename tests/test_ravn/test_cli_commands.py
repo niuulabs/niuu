@@ -14,7 +14,9 @@ from typer.testing import CliRunner
 
 from ravn.adapters.personas.loader import PersonaConfig, PersonaExecutorConfig
 from ravn.cli.commands import (
+    _apply_profile,
     _build_executor,
+    _build_iteration_budget,
     _chat,
     _dedupe_preserve_order,
     _derive_capabilities,
@@ -24,6 +26,7 @@ from ravn.cli.commands import (
     _mimir_write_event_fields_from_mcp_result,
     _parse_deployment_kwargs,
     _print_usage,
+    _resolve_persona_model,
     _run_daemon,
     _run_turn,
     _split_workflow_edge_label,
@@ -48,6 +51,7 @@ from ravn.domain.models import (
     ToolResult,
     TurnResult,
 )
+from ravn.domain.profile import RavnProfile
 from ravn.ports.warden_deployer import WardenDeploymentError, WardenDeploymentResult
 from ravn.warden import WardenSpec, WardenStore
 from ravn.warden.artifacts import service_label, start_command, write_runtime_config
@@ -336,6 +340,33 @@ class TestCliTransportHelpers:
             "sandbox": "danger-full-access",
         }
 
+    def test_build_executor_merges_runtime_controls_into_persona_transport(self) -> None:
+        persona = PersonaConfig(
+            name="product-steward",
+            system_prompt_template="hi",
+            executor=PersonaExecutorConfig(
+                adapter="ravn.adapters.executors.cli.CliTransportExecutor",
+                kwargs={
+                    "transport_adapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
+                    "transport_kwargs": {"sandbox": "workspace-write"},
+                },
+            ),
+        )
+        env = {
+            "SKULD__SKIP_PERMISSIONS": "true",
+            "SKULD__APPROVAL_POLICY": "never",
+            "SKULD__SANDBOX": "danger-full-access",
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            executor = _build_executor(persona)
+
+        assert executor._transport_kwargs == {
+            "skip_permissions": True,
+            "approval_policy": "never",
+            "sandbox": "workspace-write",
+        }
+
     def test_uses_cli_transport_executor_prefers_persona_executor(self) -> None:
         persona = PersonaConfig(
             name="coder",
@@ -354,6 +385,28 @@ class TestCliTransportHelpers:
             ),
         )
         assert _uses_cli_transport_executor(non_cli) is False
+
+    def test_apply_profile_preserves_zero_iteration_budget_as_unbounded(self) -> None:
+        settings = Settings()
+        persona = PersonaConfig(name="product-steward", iteration_budget=0)
+
+        _system_prompt, max_iterations, _max_tokens = _apply_profile(
+            RavnProfile(name="default"), settings, persona_config=persona
+        )
+
+        assert max_iterations == 0
+
+    def test_build_iteration_budget_disabled_for_unbounded_agent(self) -> None:
+        settings = Settings()
+
+        assert _build_iteration_budget(settings, 0) is None
+
+    def test_resolve_persona_model_prefers_primary_alias(self) -> None:
+        settings = Settings()
+        persona = PersonaConfig(name="product-steward")
+        persona.llm.primary_alias = "gpt-5.5"
+
+        assert _resolve_persona_model(settings, persona) == "gpt-5.5"
 
 
 class TestRunCommand:
@@ -1281,6 +1334,8 @@ class TestWorkflowRuntimeForPersona:
             "platform",
             "cascade",
             "mimir",
+            "workflow",
+            "ravn",
         ]
 
     def test_wire_cron_registers_trigger_and_returns_tools(self, tmp_path: Path) -> None:

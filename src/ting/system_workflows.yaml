@@ -158,8 +158,9 @@
         label: Research Memory
         resourceType: mimir
         bindingMode: registry
-        registryEntryId: tmp-mimir
-        path: /tmp/mimir
+        registryEntryId: mimir-yggdrasil
+        url: https://mimir.yggdrasil.niuu.world/api/v1
+        authRef: integration:volundr
         role: shared
         categories: [research, memory, sources]
         position:
@@ -288,6 +289,168 @@
         access: read_write
         writePrefixes: [research/, learnings/, followups/]
         readPriority: 1
+- name: Saga Planning
+  description: Focused planning workflow that clarifies a brief, drafts a saga breakdown, and pauses for review before publishing the plan.
+  version: 1.0.0
+  graph:
+    tags: [planning, saga]
+    nodes:
+      - id: plan-request
+        kind: trigger
+        label: Start saga planning
+        source: ting plan
+        dispatchEvent: plan.requested
+        position:
+          x: 96
+          y: 320
+      - id: plan-memory
+        kind: resource
+        label: Planning Memory
+        resourceType: mimir
+        bindingMode: registry
+        registryEntryId: mimir-yggdrasil
+        url: https://mimir.yggdrasil.niuu.world/api/v1
+        authRef: integration:volundr
+        role: shared
+        categories: [planning, saga]
+        position:
+          x: 352
+          y: 560
+      - id: plan-clarify
+        kind: stage
+        label: Clarify brief
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: saga-brief-framer
+            budget: 12
+            model: gpt-5.5
+            consumesEventTypes: [plan.requested, plan.brief.changes_requested]
+        position:
+          x: 352
+          y: 320
+      - id: plan-brief-gate
+        kind: gate
+        label: Planning feedback gate
+        condition: Review the framed planning brief before drafting implementation work.
+        mode: human_approval
+        pendingBehavior: help_needed
+        approvalEvent: plan.brief.approved
+        changesRequestedEvent: plan.brief.changes_requested
+        instructions: Approve the framed brief when it captures the intent, or request focused changes before breakdown planning.
+        autoForwardAfter: 30m
+        position:
+          x: 608
+          y: 448
+      - id: plan-breakdown
+        kind: stage
+        label: Draft saga breakdown
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: saga-planner
+            budget: 18
+            model: gpt-5.5
+            consumesEventTypes: [plan.brief.approved, plan.breakdown.changes_requested]
+        position:
+          x: 864
+          y: 320
+      - id: plan-review
+        kind: stage
+        label: Review saga breakdown
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: saga-plan-reviewer
+            budget: 12
+            model: gpt-5.5
+            consumesEventTypes: [plan.breakdown.drafted]
+        position:
+          x: 1120
+          y: 224
+      - id: plan-review-gate
+        kind: gate
+        label: Draft plan review gate
+        condition: Review the draft saga plan before publishing it for approval in Ting.
+        mode: human_approval
+        pendingBehavior: help_needed
+        approvalEvent: plan.approved
+        changesRequestedEvent: plan.breakdown.changes_requested
+        instructions: Approve the draft if it is bounded and actionable, or request focused changes before Ting commit.
+        autoForwardAfter: 30m
+        position:
+          x: 1120
+          y: 448
+      - id: plan-publish
+        kind: stage
+        label: Publish planning draft
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: saga-plan-publisher
+            budget: 8
+            model: gpt-5.5
+            consumesEventTypes: [plan.approved]
+        position:
+          x: 1376
+          y: 320
+      - id: plan-complete
+        kind: end
+        label: Saga planning complete
+        joinMode: all
+        completionEvent: plan.completed
+        position:
+          x: 1632
+          y: 320
+    edges:
+      - id: edge-plan-request-to-clarify
+        source: plan-request
+        target: plan-clarify
+        label: plan.requested -> plan.requested
+      - id: edge-plan-clarify-to-brief-gate
+        source: plan-clarify
+        target: plan-brief-gate
+        label: plan.brief.framed -> plan.brief.framed
+      - id: edge-plan-brief-gate-to-breakdown
+        source: plan-brief-gate
+        target: plan-breakdown
+        label: plan.brief.approved -> plan.brief.approved
+      - id: edge-plan-brief-gate-to-clarify
+        source: plan-brief-gate
+        target: plan-clarify
+        label: plan.brief.changes_requested -> plan.brief.changes_requested
+      - id: edge-plan-breakdown-to-review
+        source: plan-breakdown
+        target: plan-review
+        label: plan.breakdown.drafted -> plan.breakdown.drafted
+      - id: edge-plan-review-to-breakdown
+        source: plan-review
+        target: plan-breakdown
+        label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+      - id: edge-plan-review-to-review-gate
+        source: plan-review
+        target: plan-review-gate
+        label: plan.breakdown.ready_for_gate -> plan.breakdown.ready_for_gate
+      - id: edge-plan-review-gate-to-breakdown
+        source: plan-review-gate
+        target: plan-breakdown
+        label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+      - id: edge-plan-review-gate-to-publish
+        source: plan-review-gate
+        target: plan-publish
+        label: plan.approved -> plan.approved
+      - id: edge-plan-publish-to-complete
+        source: plan-publish
+        target: plan-complete
+        label: plan.completed -> plan.completed
+    resourceBindings:
+      - id: binding-plan-memory
+        resourceNodeId: plan-memory
+        targetType: workflow
+        targetId: saga-planning
+        access: read_write
+        writePrefixes: [planning/, sagas/]
+        readPriority: 1
 - name: Specification Stack
   description: End-to-end specification workflow that produces a PRD, SRD, SDD, and delivery breakdown with explicit review and approval gates between each artifact.
   version: 1.0.0
@@ -306,8 +469,9 @@
         label: Specification Memory
         resourceType: mimir
         bindingMode: registry
-        registryEntryId: tmp-mimir
-        path: /tmp/mimir
+        registryEntryId: mimir-yggdrasil
+        url: https://mimir.yggdrasil.niuu.world/api/v1
+        authRef: integration:volundr
         role: shared
         categories: [specifications, product, design, planning]
         position:
@@ -622,8 +786,9 @@
         label: Delivery Memory
         resourceType: mimir
         bindingMode: registry
-        registryEntryId: tmp-mimir
-        path: /tmp/mimir
+        registryEntryId: mimir-yggdrasil
+        url: https://mimir.yggdrasil.niuu.world/api/v1
+        authRef: integration:volundr
         role: shared
         categories: [delivery, tracker, review]
         position:
@@ -740,8 +905,9 @@
         label: Delivery Memory
         resourceType: mimir
         bindingMode: registry
-        registryEntryId: tmp-mimir
-        path: /tmp/mimir
+        registryEntryId: mimir-yggdrasil
+        url: https://mimir.yggdrasil.niuu.world/api/v1
+        authRef: integration:volundr
         role: shared
         categories: [delivery, tracker, review]
         position:
@@ -822,4 +988,143 @@
         targetId: tracker-code-review-flow
         access: read_write
         writePrefixes: [deliveries/]
+        readPriority: 1
+- name: Tool & Skill Builder
+  description: Resident capability workflow that designs, implements, reviews, canaries, and publishes a missing Valkyrie/Ravn tool or skill.
+  version: 1.0.0
+  graph:
+    tags: [tool-builder, skill-builder, capability-builder]
+    nodes:
+      - id: capability-request
+        kind: trigger
+        label: Missing capability requested
+        source: valkyrie capability policy
+        dispatchEvent: capability.requested
+        position:
+          x: 96
+          y: 280
+      - id: capability-memory
+        kind: resource
+        label: Capability Memory
+        resourceType: mimir
+        bindingMode: registry
+        registryEntryId: mimir-yggdrasil
+        url: https://mimir.yggdrasil.niuu.world/api/v1
+        authRef: integration:volundr
+        role: shared
+        categories: [capability, skills, tools, valkyrie]
+        position:
+          x: 352
+          y: 520
+      - id: capability-frame
+        kind: stage
+        label: Frame missing capability
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: specification-framer
+            budget: 16
+            model: gpt-5.5
+            consumesEventTypes: [capability.requested]
+        position:
+          x: 352
+          y: 280
+      - id: capability-build
+        kind: stage
+        label: Build tool or skill
+        description: >-
+          Implement the capability and write the built artifact to a single
+          canonical file named learned_tool.json at the repo/workspace root.
+          That file MUST be a JSON object with keys: manifest (name,
+          description, input_schema, required_permission, declared_reach,
+          entry_point), tool_code (the Python implementation exposing the
+          entry point), test_code (a self-contained pytest/asserts module that
+          loads the tool and exercises the entry point), and requirements (a
+          list of pip package strings, [] for stdlib-only). Also emit that same
+          JSON object as the final message as a fallback.
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: coder
+            budget: 48
+            model: gpt-5.5
+            consumesEventTypes: [specification.ready, review.changes_requested]
+        position:
+          x: 704
+          y: 280
+      - id: capability-review
+        kind: stage
+        label: Review capability
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: reviewer
+            budget: 24
+            model: gpt-5.5
+            consumesEventTypes: [code.changed]
+          - personaId: security-auditor
+            budget: 24
+            model: gpt-5.5
+            consumesEventTypes: [code.changed]
+        position:
+          x: 1056
+          y: 280
+      - id: capability-publish
+        kind: stage
+        label: Publish capability record
+        description: >-
+          Publish the capability record and confirm the canonical
+          learned_tool.json artifact (manifest, tool_code, test_code,
+          requirements) is present at the repo/workspace root so the commissioning
+          Valkyrie can retrieve it structurally rather than by scraping the summary.
+        executionMode: sequential
+        joinMode: any
+        stageMembers:
+          - personaId: publisher
+            budget: 16
+            model: gpt-5.5
+            consumesEventTypes: [review.passed]
+        position:
+          x: 1408
+          y: 280
+      - id: capability-complete
+        kind: end
+        label: Capability ready
+        joinMode: all
+        completionEvent: capability.ready
+        position:
+          x: 1760
+          y: 280
+    edges:
+      - id: edge-capability-request-to-frame
+        source: capability-request
+        target: capability-frame
+        label: capability.requested -> capability.requested
+      - id: edge-capability-frame-to-build
+        source: capability-frame
+        target: capability-build
+        label: specification.ready -> specification.ready
+      - id: edge-capability-build-to-review
+        source: capability-build
+        target: capability-review
+        label: code.changed -> code.changed
+      - id: edge-capability-review-to-build
+        source: capability-review
+        target: capability-build
+        label: review.changes_requested -> review.changes_requested
+      - id: edge-capability-review-to-publish
+        source: capability-review
+        target: capability-publish
+        label: review.passed -> review.passed
+      - id: edge-capability-publish-to-end
+        source: capability-publish
+        target: capability-complete
+        label: capability.ready -> capability.ready
+    resourceBindings:
+      - id: binding-capability-memory
+        resourceNodeId: capability-memory
+        targetType: workflow
+        targetId: tool-skill-builder
+        access: read_write
+        writePrefixes: [capabilities/, skills/, tools/]
         readPriority: 1

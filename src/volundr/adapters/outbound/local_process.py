@@ -27,6 +27,7 @@ import signal
 import socket
 import subprocess
 import sys
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from enum import StrEnum
@@ -70,13 +71,9 @@ DEFAULT_ALLOWED_MOUNT_PREFIXES: list[str] = []
 READY_POLL_INTERVAL = 0.5
 
 
-def _public_loopback_host() -> str:
-    """Return the loopback host we publish to browser-facing clients."""
-    host = (
-        os.environ.get("NIUU_SERVER_PUBLIC_HOST")
-        or os.environ.get("NIUU_SERVER_HOST")
-        or "127.0.0.1"
-    ).strip() or "127.0.0.1"
+def _public_loopback_host(host: str) -> str:
+    """Normalize the configured host published to browser-facing clients."""
+    host = host.strip() or "127.0.0.1"
     return "localhost" if host == "127.0.0.1" else host
 
 
@@ -121,6 +118,7 @@ class ProcessInfo:
             error=data.get("error"),
             flock_dir=data.get("flock_dir", ""),
             flock_base_port=data.get("flock_base_port"),
+            managed_by=data.get("managed_by", "local_process"),
         )
 
 
@@ -373,6 +371,12 @@ def _materialize_local_mimir_config(spec: SessionSpec, flock_dir: Path) -> dict[
             localized_path = _localize_mimir_path(path, flock_dir)
             Path(localized_path).mkdir(parents=True, exist_ok=True)
             instance["path"] = localized_path
+        elif str(instance.get("url") or "").strip():
+            localized_path = flock_dir / "mimir" / "local" / str(instance["name"])
+            localized_path.mkdir(parents=True, exist_ok=True)
+            instance.pop("url", None)
+            instance.pop("auth", None)
+            instance["path"] = str(localized_path)
         localized_instances.append(instance)
 
     return {
@@ -431,6 +435,9 @@ class LocalProcessPodManager(PodManager):
         stop_timeout: int = DEFAULT_STOP_TIMEOUT,
         state_file: str = DEFAULT_STATE_FILE,
         allowed_mount_prefixes: list[str] | None = None,
+        server_public_host: str = "127.0.0.1",
+        server_host: str = "127.0.0.1",
+        server_port: int = 8080,
         **_extra: object,
     ):
         self._workspaces_dir = Path(str(workspaces_dir)).expanduser()
@@ -438,6 +445,9 @@ class LocalProcessPodManager(PodManager):
         self._max_concurrent = int(max_concurrent)
         self._stop_timeout = int(stop_timeout)
         self._state_file = Path(str(state_file)).expanduser()
+        self._server_public_host = str(server_public_host)
+        self._server_host = str(server_host)
+        self._server_port = int(server_port)
         if isinstance(allowed_mount_prefixes, str):
             allowed_mount_prefixes = [
                 prefix.strip() for prefix in allowed_mount_prefixes.split(",") if prefix.strip()
@@ -450,6 +460,10 @@ class LocalProcessPodManager(PodManager):
         self._monitors: dict[str, asyncio.Task] = {}
         self._skuld_registry: object | None = None  # Set via set_skuld_registry()
         self._persona_registry: object | None = None  # Set via set_persona_registry()
+        # Notified (best-effort) when a managed broker process exits, so the
+        # SessionService can reconcile the DB row promptly instead of waiting for
+        # the periodic sweep. Set via set_death_callback().
+        self._death_callback: Callable[[str], Awaitable[None]] | None = None
 
         self._load_state()
         for info in self._processes.values():
@@ -469,6 +483,16 @@ class LocalProcessPodManager(PodManager):
     def set_persona_registry(self, registry: object) -> None:
         """Inject the persona registry used to materialize custom flock personas."""
         self._persona_registry = registry
+
+    def set_death_callback(self, callback: Callable[[str], Awaitable[None]]) -> None:
+        """Inject an async callback notified when a managed broker process exits.
+
+        The callback receives the session id string and is expected to reconcile
+        the persisted Session row (pod-status authoritative) so the DB reflects
+        the broker's death promptly. Wiring it avoids relying solely on the
+        periodic reconcile sweep for locally-managed brokers.
+        """
+        self._death_callback = callback
 
     # ------------------------------------------------------------------
     # PodManager interface
@@ -568,8 +592,8 @@ class LocalProcessPodManager(PodManager):
             raise
 
         # Chat endpoint routes through the root server's proxy
-        server_host = _public_loopback_host()
-        server_port = os.environ.get("NIUU_SERVER_PORT", "8080")
+        server_host = _public_loopback_host(self._server_public_host)
+        server_port = self._server_port
         chat_endpoint = f"ws://{server_host}:{server_port}/s/{session_id}/session"
         code_endpoint = f"file://{workspace}"
         pod_name = f"local-{session_id[:8]}"
@@ -945,6 +969,12 @@ class LocalProcessPodManager(PodManager):
 
         env["SKULD__SESSION__ID"] = session_id
         env["SKULD__SESSION__NAME"] = session.name
+        # Session ownership — the broker enforces these on inbound WebSocket
+        # connections (skuld.config.WsAuthConfig).
+        if session.owner_id:
+            env["SKULD__SESSION__OWNER_ID"] = session.owner_id
+        if session.tenant_id:
+            env["SKULD__SESSION__TENANT_ID"] = session.tenant_id
         model = str(session.model or spec.values.get("model", "") or "").strip()
         env["SKULD__SESSION__MODEL"] = model
         env["SKULD__SESSION__WORKSPACE_DIR"] = str(workspace)
@@ -954,8 +984,8 @@ class LocalProcessPodManager(PodManager):
         env["SKULD__PERSISTENCE_MOUNT_PATH"] = str(self._workspaces_dir)
 
         # Volundr API URL so Skuld can post chronicles/timeline events back
-        server_host = os.environ.get("NIUU_SERVER_HOST", "127.0.0.1")
-        server_port = os.environ.get("NIUU_SERVER_PORT", "8080")
+        server_host = self._server_host
+        server_port = self._server_port
         env["SKULD__VOLUNDR_API_URL"] = f"http://{server_host}:{server_port}"
 
         session_vals = spec.values.get("session", {})
@@ -1266,7 +1296,10 @@ class LocalProcessPodManager(PodManager):
             platform_cfg = gateway_cfg.setdefault("platform", {})
             platform_cfg["enabled"] = True
             platform_cfg.setdefault("timeout", 30.0)
-            platform_cfg.setdefault("base_url", f"http://{_public_loopback_host()}:8080")
+            platform_cfg.setdefault(
+                "base_url",
+                f"http://{_public_loopback_host(self._server_host)}:{self._server_port}",
+            )
 
             persona_runtime_overrides: dict[str, Any] = {}
             system_prompt_extra = persona_override.get("system_prompt_extra")
@@ -1388,8 +1421,8 @@ class LocalProcessPodManager(PodManager):
         """
         import sys
 
-        # Check if we're running from a Nuitka-compiled binary
-        if getattr(sys, "frozen", False) or "__compiled__" in dir():
+        # Check if we're running from a Nuitka-compiled binary.
+        if getattr(sys, "frozen", False) or "__compiled__" in globals():
             return [sys.executable, "platform", "skuld"]
 
         # Running from source
@@ -1520,9 +1553,32 @@ class LocalProcessPodManager(PodManager):
                 if info.flock_base_port is not None:
                     self._allocated_flock_base_ports.discard(info.flock_base_port)
                 self._persist_state()
+                if self._skuld_registry is not None:
+                    unregister = getattr(self._skuld_registry, "unregister", None)
+                    if callable(unregister):
+                        unregister(session_id)
                 logger.info("Claude process exited pid=%d session=%s", pid, session_id)
+                await self._notify_death(session_id)
         except asyncio.CancelledError:
             return
+
+    async def _notify_death(self, session_id: str) -> None:
+        """Best-effort notify the session service that a broker process died.
+
+        Now that the process-state file reads STOPPED, the callback's pod-status
+        reconcile flips the DB row to match. Failures here must never tear down
+        the monitor task, so they are logged and swallowed.
+        """
+        if self._death_callback is None:
+            return
+        try:
+            await self._death_callback(session_id)
+        except Exception:
+            logger.warning(
+                "Death callback failed for session %s; periodic reconcile will catch it",
+                session_id,
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Process lifecycle

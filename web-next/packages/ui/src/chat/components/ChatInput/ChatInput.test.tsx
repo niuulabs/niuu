@@ -202,4 +202,95 @@ describe('ChatInput', () => {
     render(<ChatInput {...defaultProps} isLoading={true} stopDisabled={true} />);
     expect(screen.getByTestId('stop-btn')).toBeDisabled();
   });
+
+  it('deduplicates agent mentions and ignores non-agent participants', () => {
+    const onSendDirected = vi.fn();
+    const ada = { peerId: 'p1', persona: 'Ada', participantType: 'ravn' };
+    const participants = new Map([
+      ['p1', ada],
+      ['p2', { peerId: 'p2', persona: 'Human', participantType: 'user' }],
+    ]);
+    render(
+      <ChatInput {...defaultProps} onSendDirected={onSendDirected} participants={participants} />,
+    );
+    fireEvent.change(screen.getByTestId('chat-textarea'), {
+      target: { value: '@Ada @Ada @Human @Unknown check this' },
+    });
+    fireEvent.click(screen.getByTestId('send-btn'));
+    expect(onSendDirected).toHaveBeenCalledWith([ada], '@Ada @Ada @Human @Unknown check this', []);
+  });
+
+  it('falls back to normal send when directed delivery is unavailable', () => {
+    const onSend = vi.fn();
+    const participants = new Map([
+      ['p1', { peerId: 'p1', persona: 'Ada', participantType: 'ravn' }],
+    ]);
+    render(<ChatInput {...defaultProps} onSend={onSend} participants={participants} />);
+    fireEvent.change(screen.getByTestId('chat-textarea'), { target: { value: '@Ada hello' } });
+    fireEvent.keyDown(screen.getByTestId('chat-textarea'), { key: 'Escape' });
+    fireEvent.click(screen.getByTestId('send-btn'));
+    expect(onSend).toHaveBeenCalledWith('@Ada hello', []);
+  });
+
+  it('publishes a typed event selected from a flock participant subscription', () => {
+    const onSend = vi.fn();
+    const onSendDirected = vi.fn();
+    const onPublishEvent = vi.fn();
+    const hermes = {
+      peerId: 'hermes-1',
+      persona: 'reviewer',
+      displayName: 'Hermes reviewer',
+      participantType: 'ravn',
+      subscribesTo: ['review.requested'],
+    };
+    const participants = new Map([[hermes.peerId, hermes]]);
+    render(
+      <ChatInput
+        {...defaultProps}
+        onSend={onSend}
+        onSendDirected={onSendDirected}
+        onPublishEvent={onPublishEvent}
+        eventRouting
+        participants={participants}
+      />,
+    );
+
+    const textarea = screen.getByTestId('chat-textarea');
+    fireEvent.change(textarea, { target: { value: 'Review this' } });
+    expect(screen.getByTestId('send-btn')).toBeDisabled();
+
+    fireEvent.change(textarea, { target: { value: '@', selectionStart: 1 } });
+    fireEvent.click(screen.getByRole('option', { name: /review\.requested.*Hermes reviewer/ }));
+    expect(textarea).toHaveValue('@review.requested ');
+    fireEvent.change(textarea, { target: { value: '@review.requested Review this' } });
+    fireEvent.click(screen.getByTestId('send-btn'));
+
+    expect(onPublishEvent).toHaveBeenCalledWith(
+      { participant: hermes, eventType: 'review.requested' },
+      '@review.requested Review this',
+    );
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onSendDirected).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('attach-btn')).not.toBeInTheDocument();
+  });
+
+  it('handles attach clicks, empty file selections, and removable files', async () => {
+    const { rerender } = render(<ChatInput {...defaultProps} />);
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const click = vi.spyOn(fileInput, 'click');
+    fireEvent.click(screen.getByTestId('attach-btn'));
+    expect(click).toHaveBeenCalledOnce();
+
+    fireEvent.change(fileInput, { target: { files: null } });
+    const file = new File(['notes'], 'notes.txt', { type: 'text/plain' });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    expect(await screen.findByText('notes.txt')).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Remove notes.txt'));
+    expect(screen.queryByText('notes.txt')).not.toBeInTheDocument();
+
+    click.mockClear();
+    rerender(<ChatInput {...defaultProps} disabled={true} />);
+    fireEvent.click(screen.getByTestId('attach-btn'));
+    expect(click).not.toHaveBeenCalled();
+  });
 });

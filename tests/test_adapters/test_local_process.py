@@ -8,6 +8,7 @@ import os
 import signal
 import socket
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -15,6 +16,7 @@ from uuid import uuid4
 import pytest
 import yaml
 
+import volundr.adapters.outbound.local_process as local_process_mod
 from niuu.mesh.ipc import skuld_mesh_addresses
 from volundr.adapters.outbound.local_process import (
     DEFAULT_CLAUDE_BINARY,
@@ -498,18 +500,25 @@ class TestProcessInfo:
             workspace="/tmp/ws",
             state=ProcessState.RUNNING,
             error=None,
+            managed_by="local_process",
         )
         restored = ProcessInfo.from_dict(info.to_dict())
         assert restored.session_id == info.session_id
         assert restored.pid == info.pid
         assert restored.port == info.port
         assert restored.state == info.state
+        assert restored.managed_by == info.managed_by
+
+    def test_from_dict_preserves_non_local_owner(self) -> None:
+        info = ProcessInfo.from_dict({"session_id": "x", "managed_by": "external"})
+        assert info.managed_by == "external"
 
     def test_from_dict_defaults(self) -> None:
         info = ProcessInfo.from_dict({"session_id": "x"})
         assert info.pid is None
         assert info.port is None
         assert info.state == ProcessState.STOPPED
+        assert info.managed_by == "local_process"
 
 
 # ------------------------------------------------------------------
@@ -913,6 +922,17 @@ class TestGitClone:
 
 class TestProcessSpawning:
     """Tests for Skuld process spawning."""
+
+    def test_resolve_skuld_command_from_source(self, manager: LocalProcessPodManager) -> None:
+        assert manager._resolve_skuld_command() == [sys.executable, "-m", "skuld"]
+
+    def test_resolve_skuld_command_from_nuitka_binary(
+        self, manager: LocalProcessPodManager, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(local_process_mod, "__compiled__", object(), raising=False)
+        monkeypatch.setattr(sys, "executable", "/tmp/niuu")
+
+        assert manager._resolve_skuld_command() == ["/tmp/niuu", "platform", "skuld"]
 
     async def test_spawn_skuld_returns_pid(
         self,
@@ -1637,6 +1657,91 @@ class TestProcessSpawning:
             }
         ]
 
+    async def test_start_flock_localizes_url_backed_mimir_runtime_for_local_sessions(
+        self,
+        manager: LocalProcessPodManager,
+        tmp_workspaces: Path,
+        git_session: Session,
+    ) -> None:
+        workspace = tmp_workspaces / "session-with-remote-mimir"
+        workspace.mkdir(parents=True)
+        flock_dir = workspace / ".flock"
+        flock_dir.mkdir()
+        (flock_dir / "cluster.yaml").write_text("peers: []\n", encoding="utf-8")
+        (flock_dir / "node-research-framer.yaml").write_text(
+            "persona: research-framer\n",
+            encoding="utf-8",
+        )
+
+        spec = SessionSpec(
+            values={
+                "flock": {
+                    "personas": [{"name": "research-framer"}],
+                    "llm_config": {"model": "gpt-5.5"},
+                    "max_concurrent_tasks": 3,
+                },
+                "mimir": {
+                    "registryRefs": [
+                        {
+                            "registry_entry_id": "mimir-yggdrasil",
+                            "mount_name": "mimir-yggdrasil",
+                            "url": "https://mimir.yggdrasil.niuu.world/api/v1",
+                            "role": "shared",
+                            "auth_ref": "integration:volundr",
+                            "categories": ["research", "memory"],
+                        }
+                    ],
+                    "bindings": [
+                        {
+                            "mount_name": "mimir-yggdrasil",
+                            "access": "read_write",
+                            "write_prefixes": ["research/"],
+                        }
+                    ],
+                },
+            },
+            pod_spec=PodSpecAdditions(
+                env=({"name": "SKULD__MESH__PEER_ID", "value": "skuld-test"},),
+                extra_containers=({"name": "ravn-research-framer"},),
+            ),
+        )
+
+        with (
+            patch("subprocess.run"),
+            patch("ravn.adapters.personas.loader.FilesystemPersonaAdapter") as loader_cls,
+        ):
+            loader_cls.return_value.load.return_value = MagicMock(allowed_tools=["file", "git"])
+            await manager._start_flock(
+                git_session,
+                spec,
+                workspace,
+                FlockPortPlan(
+                    session_base_port=7484,
+                    ravn_base_port=7486,
+                    skuld_pub_port=7484,
+                    skuld_rep_port=7485,
+                    skuld_handshake_port=7584,
+                ),
+                skuld_port=9101,
+            )
+
+        node_config = yaml.safe_load(
+            (flock_dir / "node-research-framer.yaml").read_text(encoding="utf-8")
+        )
+        mimir_cfg = node_config["mimir"]
+        assert mimir_cfg["enabled"] is True
+        remote_instance = next(
+            instance for instance in mimir_cfg["instances"] if instance["name"] == "mimir-yggdrasil"
+        )
+        assert "url" not in remote_instance
+        assert "auth" not in remote_instance
+        assert remote_instance["path"] == str(flock_dir / "mimir" / "local" / "mimir-yggdrasil")
+        assert Path(remote_instance["path"]).is_dir()
+        assert mimir_cfg["write_routing"]["default"] == ["mimir-yggdrasil"]
+        assert {"prefix": "research/", "mounts": ["mimir-yggdrasil"]} in mimir_cfg["write_routing"][
+            "rules"
+        ]
+
     async def test_start_flock_enriches_cluster_peers_with_persona_metadata(
         self,
         manager: LocalProcessPodManager,
@@ -1831,8 +1936,8 @@ class TestStartStop:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Browser-facing session endpoints should use NIUU_SERVER_PUBLIC_HOST when set."""
-        monkeypatch.setenv("NIUU_SERVER_HOST", "0.0.0.0")
-        monkeypatch.setenv("NIUU_SERVER_PUBLIC_HOST", "100.66.123.128")
+        manager._server_host = "0.0.0.0"
+        manager._server_public_host = "100.66.123.128"
 
         with (
             _mock_provision(manager),
@@ -2336,6 +2441,75 @@ class TestProcessMonitor:
         # State should remain RUNNING (not updated on cancel)
         assert manager._processes[sid].state == ProcessState.RUNNING
 
+    async def test_monitor_notifies_death_callback_on_exit(
+        self,
+        manager: LocalProcessPodManager,
+    ) -> None:
+        """A broker exit propagates to the injected death callback (INV-9)."""
+        sid = "death-cb"
+        manager._processes[sid] = ProcessInfo(
+            session_id=sid,
+            pid=99999,
+            port=9100,
+            state=ProcessState.RUNNING,
+        )
+        manager._port_allocator._allocated.add(9100)
+
+        notified: list[str] = []
+
+        async def _on_death(session_id: str) -> None:
+            notified.append(session_id)
+
+        manager.set_death_callback(_on_death)
+
+        with patch("os.kill", side_effect=OSError("No such process")):
+            await manager._monitor_process(sid, 99999)
+
+        assert manager._processes[sid].state == ProcessState.STOPPED
+        assert notified == [sid]
+
+    async def test_monitor_swallows_death_callback_errors(
+        self,
+        manager: LocalProcessPodManager,
+    ) -> None:
+        """A failing death callback must not tear down the monitor."""
+        sid = "death-cb-err"
+        manager._processes[sid] = ProcessInfo(
+            session_id=sid,
+            pid=99999,
+            port=9100,
+            state=ProcessState.RUNNING,
+        )
+
+        async def _boom(_session_id: str) -> None:
+            raise RuntimeError("reconcile blew up")
+
+        manager.set_death_callback(_boom)
+
+        with patch("os.kill", side_effect=OSError("No such process")):
+            await manager._monitor_process(sid, 99999)
+
+        # Process still reaped despite the callback failure.
+        assert manager._processes[sid].state == ProcessState.STOPPED
+
+    async def test_monitor_no_callback_is_noop(
+        self,
+        manager: LocalProcessPodManager,
+    ) -> None:
+        """Without a death callback the monitor still reaps cleanly."""
+        sid = "no-cb"
+        manager._processes[sid] = ProcessInfo(
+            session_id=sid,
+            pid=99999,
+            port=9100,
+            state=ProcessState.RUNNING,
+        )
+
+        with patch("os.kill", side_effect=OSError("No such process")):
+            await manager._monitor_process(sid, 99999)
+
+        assert manager._processes[sid].state == ProcessState.STOPPED
+
 
 # ------------------------------------------------------------------
 # Constructor / config tests
@@ -2556,7 +2730,7 @@ class TestLocalFlockMeshMode:
         git_session: Session,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("NIUU_SERVER_HOST", "192.168.1.106")
+        manager._server_host = "192.168.1.106"
 
         workspace = tmp_workspaces / "session-with-platform-gateway"
         repo_workspace = workspace / "repo"

@@ -27,6 +27,11 @@ data:
       level: {{ .Values.config.logLevel | default "info" | quote }}
       format: {{ .Values.config.logFormat | default "json" | quote }}
 
+    server_host: {{ .Values.config.serverHost | default "127.0.0.1" | quote }}
+    server_public_host: {{ .Values.config.serverPublicHost | default "127.0.0.1" | quote }}
+    server_port: {{ .Values.service.targetPort | default 8080 }}
+    openshell_internal_gateway_url: {{ .Values.config.openshellInternalGatewayUrl | default "http://openshell.openshell.svc.cluster.local:8080" | quote }}
+
     cors:
       allowed_origins:
         {{- range .Values.config.cors.allowedOrigins }}
@@ -46,6 +51,19 @@ data:
       timeout_seconds: {{ .Values.provisioning.timeoutSeconds | default 300.0 }}
       initial_delay_seconds: {{ .Values.provisioning.initialDelaySeconds | default 5.0 }}
 
+    sleipnir:
+      enabled: {{ .Values.sleipnir.enabled | default false }}
+      adapter: {{ .Values.sleipnir.adapter | quote }}
+      kwargs: {{ .Values.sleipnir.kwargs | default dict | toJson }}
+      {{- if .Values.sleipnir.secretKwargs }}
+      secret_kwargs_env:
+        {{- range .Values.sleipnir.secretKwargs }}
+        {{ .kwarg }}: SLEIPNIR_SK_{{ .kwarg | upper }}
+        {{- end }}
+      {{- else }}
+      secret_kwargs_env: {}
+      {{- end }}
+
     pod_manager:
       adapter: {{ .Values.podManager.adapter | quote }}
       kwargs: {{ .Values.podManager.kwargs | toJson }}
@@ -57,6 +75,57 @@ data:
       {{- else }}
       secret_kwargs_env: {}
       {{- end }}
+
+    resident_runtimes:
+      reconciliation_interval_seconds: {{ .Values.residentRuntimeReconciliationIntervalSeconds | default 10.0 }}
+      controllers:{{ if not .Values.residentRuntimeControllers }} []{{ else }}
+        {{- range $index, $controller := .Values.residentRuntimeControllers }}
+        - adapter: {{ $controller.adapter | quote }}
+          kwargs: {{ $controller.kwargs | default dict | toJson }}
+          {{- if $controller.secretKwargs }}
+          secret_kwargs_env:
+            {{- range $controller.secretKwargs }}
+            {{ .kwarg }}: RESIDENT_CONTROLLER_{{ $index }}_SK_{{ .kwarg | upper }}
+            {{- end }}
+          {{- else }}
+          secret_kwargs_env: {}
+          {{- end }}
+        {{- end }}
+        {{- end }}
+      {{- if .Values.residentRuntimeSessionControllers }}
+      session_controllers:
+        {{- range $index, $controller := .Values.residentRuntimeSessionControllers }}
+        - adapter: {{ $controller.adapter | quote }}
+          runtime_backend: {{ $controller.runtimeBackend | quote }}
+          optional: {{ $controller.optional | default false }}
+          kwargs: {{ $controller.kwargs | default dict | toJson }}
+          {{- if $controller.secretKwargs }}
+          secret_kwargs_env:
+            {{- range $controller.secretKwargs }}
+            {{ .kwarg }}: RESIDENT_SESSION_CONTROLLER_{{ $index }}_SK_{{ .kwarg | upper }}
+            {{- end }}
+          {{- else }}
+          secret_kwargs_env: {}
+          {{- end }}
+        {{- end }}
+      {{- end }}
+      profiles:{{ if not .Values.residentRuntimeProfiles }} []{{ else }}
+        {{- range .Values.residentRuntimeProfiles }}
+        - id: {{ .id | quote }}
+          enabled: {{ .enabled | default false }}
+          display_name: {{ .displayName | quote }}
+          description: {{ .description | default "" | quote }}
+          backend: {{ .backend | quote }}
+          engine: {{ .engine | quote }}
+          capabilities: {{ .capabilities | default list | toJson }}
+          default_model: {{ .defaultModel | default "" | quote }}
+          allowed_models: {{ .allowedModels | default list | toJson }}
+          catalog_vendors: {{ .catalogVendors | default list | toJson }}
+          model_prefix: {{ .modelPrefix | default "" | quote }}
+          labels: {{ .labels | default list | toJson }}
+          deployment: {{ .deployment | default dict | toJson }}
+        {{- end }}
+        {{- end }}
 
     chronicle:
       auto_create_on_stop: {{ .Values.chronicle.autoCreateOnStop | default true }}
@@ -283,9 +352,37 @@ data:
       {{- end }}
     {{- end }}
 
+    workload_identity:
+      enabled: {{ .Values.workloadIdentity.enabled | default false }}
+      issuer: {{ .Values.workloadIdentity.issuer | default "" | quote }}
+      {{- if .Values.workloadIdentity.audiences }}
+      audiences:
+        {{- range .Values.workloadIdentity.audiences }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- else }}
+      audiences: []
+      {{- end }}
+      token_ttl_seconds: {{ .Values.workloadIdentity.tokenTtlSeconds | default 900 }}
+      key_id: {{ .Values.workloadIdentity.keyId | default "niuu-workload" | quote }}
+      signing_key_env: "NIUU_WORKLOAD_IDENTITY_SIGNING_KEY"
+      {{- if .Values.workloadIdentity.verifiers }}
+      verifiers:
+        {{- toYaml .Values.workloadIdentity.verifiers | nindent 8 }}
+      {{- else }}
+      verifiers: []
+      {{- end }}
+      {{- if .Values.workloadIdentity.mappings }}
+      mappings:
+        {{- toYaml .Values.workloadIdentity.mappings | nindent 8 }}
+      {{- else }}
+      mappings: []
+      {{- end }}
+
     bifrost:
       url: {{ .Values.bifrost.url | quote }}
       timeout_seconds: {{ .Values.bifrost.timeoutSeconds | default 10.0 }}
+      catalog_refresh_interval_seconds: {{ .Values.bifrost.catalogRefreshIntervalSeconds | default 60.0 }}
       auth:
         adapter: {{ .Values.bifrost.auth.adapter | quote }}
         kwargs: {{ .Values.bifrost.auth.kwargs | toJson }}

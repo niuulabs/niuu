@@ -304,6 +304,30 @@ async def test_approved_court_escalation_requests_the_drafted_action(tmp_path) -
     await runtime.stop()
 
 
+async def test_acknowledged_morning_brief_resolves_without_side_effects(tmp_path) -> None:
+    runtime, bus, _store, _skills = _runtime(tmp_path)
+    recorder = BusRecorder(bus)
+    await bus.subscribe(["*"], recorder)
+    await runtime.start()
+
+    item = _item(
+        kind=ReviewKind.MORNING_BRIEF.value,
+        requested_action="acknowledge",
+        evidence={"brief_markdown": "# Morning brief", "decision_count": 2},
+    )
+    item.audience = "environment"
+    item.decide(decision="approved", operator_id="human:jozef", reason="read")
+    await bus.publish(review_decided_event(item, source="ravn:odin-review"))
+    await bus.flush()
+
+    resolved = await recorder.of_type(registry.ODIN_REVIEW_RESOLVED)
+    assert len(resolved) == 1
+    assert resolved[0].payload["apply_outcome"] == "applied"
+    assert resolved[0].payload["apply_detail"] == "brief acknowledged"
+    assert await recorder.of_type(registry.VALKYRIE_ACTION_REQUESTED) == []
+    await runtime.stop()
+
+
 async def test_rejected_court_escalation_suppresses_attention(tmp_path) -> None:
     runtime, bus, _store, _skills = _runtime(tmp_path, autonomy_mode="autonomous")
     recorder = BusRecorder(bus)

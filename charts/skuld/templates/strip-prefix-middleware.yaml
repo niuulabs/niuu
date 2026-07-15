@@ -8,5 +8,5 @@ metadata:
 spec:
   stripPrefix:
     prefixes:
-      - /s/{{ .Values.session.id }}
+      - /s/{{ include "skuld.routeId" . }}
 {{- end }}

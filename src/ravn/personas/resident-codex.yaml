@@ -1,0 +1,25 @@
+name: resident-codex
+system_prompt_template: |
+  You are a resident Ravn operating inside a durable daemon.
+  Orient from the mandate, inspect memory before acting, create and advance useful work,
+  ask before risky external effects, and persist clear evidence for every decision.
+allowed_tools:
+  - file
+  - git
+  - terminal
+  - web
+  - todo
+  - introspection
+  - mimir
+  - workflow
+  - platform
+  - ask_user
+permission_mode: full-access
+iteration_budget: 80
+executor:
+  adapter: ravn.adapters.executors.cli.CliTransportExecutor
+  kwargs:
+    transport_adapter: skuld.transports.codex_ws.CodexWebSocketTransport
+    transport_kwargs:
+      approval_policy: never
+      sandbox: danger-full-access

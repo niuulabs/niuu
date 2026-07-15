@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from datetime import datetime
     from uuid import UUID
 
     from volundr.adapters.inbound.rest import SessionCreate
@@ -103,6 +104,10 @@ class ForgeService:
             tracker_issue_id=data.issue_id,
             issue_tracker_url=data.issue_url,
         )
+        workload_config = dict(data.workload_config or {})
+        persona_name = getattr(data, "persona_name", "")
+        if persona_name:
+            workload_config["persona"] = persona_name
         return await self._session_service.start_session(
             session.id,
             definition=resolved_definition,
@@ -115,7 +120,7 @@ class ForgeService:
             system_prompt=data.system_prompt,
             initial_prompt=data.initial_prompt,
             workload_type=data.workload_type,
-            workload_config=data.workload_config or None,
+            workload_config=workload_config or None,
         )
 
     def _resolve_session_definition(
@@ -139,6 +144,10 @@ class ForgeService:
 
     async def get_session(self, session_id: UUID) -> Session | None:
         return await self._session_service.reconcile_session_if_active(session_id)
+
+    async def reconcile_session(self, session_id: UUID) -> Session | None:
+        """Force a pod-status reconcile of one session (used on a dead-pod op)."""
+        return await self._session_service.mark_session_dead(session_id)
 
     async def ensure_access(
         self,
@@ -206,7 +215,18 @@ class ForgeService:
         session_id: UUID,
         activity_state: SessionActivityState,
         metadata: dict | None,
+        state_since: datetime | None = None,
     ) -> Session:
+        # FAULT A: the REST endpoint passes ``state_since=`` (the broker-stamped
+        # UTC transition time). The facade previously dropped it, so the kwarg
+        # raised TypeError on EVERY activity report — swallowed into a false 204,
+        # so activity_state never persisted and the SSE never fired. Forward it.
+        # Forward only when present so existing 3-positional callers/mocks stay
+        # exactly equivalent (the deep method defaults state_since itself).
+        if state_since is not None:
+            return await self._session_service.update_activity(
+                session_id, activity_state, metadata, state_since=state_since
+            )
         return await self._session_service.update_activity(session_id, activity_state, metadata)
 
     async def archive_session(
@@ -388,6 +408,13 @@ class ForgeService:
         if self._archive_service is None:
             raise RuntimeError("Session archive service not available")
         return await self._archive_service.get_transcript(session_id)
+
+    async def durable_latest_seq(self, session_id: UUID) -> int:
+        """Cheap durable-freshness signal (event-log MAX(seq), 0 when unavailable). Lets the read
+        path cache the durable turn count and skip the expensive rebuild while it's unchanged."""
+        if self._archive_service is None:
+            return 0
+        return await self._archive_service.latest_event_seq(session_id)
 
     async def get_transcript_download_path(self, session_id: UUID, fmt: str):
         if self._archive_service is None:

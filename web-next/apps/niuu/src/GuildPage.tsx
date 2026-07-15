@@ -18,7 +18,6 @@ import {
 import { resolveNiuuRegistryBase } from './services';
 
 type InstanceKind = 'volundr' | 'ting' | 'mimir' | 'bifrost' | 'ravn' | 'observatory' | 'generic';
-type RegistrySection = 'instances' | 'access' | 'connections';
 type WizardStep = 1 | 2 | 3;
 type AuthMethod = 'service-account' | 'personal-token' | 'oauth' | 'mtls' | 'shared-secret';
 type CredentialScope = 'none' | 'user' | 'tenant';
@@ -403,18 +402,6 @@ function pushHealthHistory(
     ...state,
     [instanceId]: [...current, snapshot].slice(-24),
   };
-}
-
-function countByAuth(instances: InstanceRecord[]): Array<{ label: string; count: number }> {
-  const counts = new Map<string, number>();
-  for (const instance of instances) {
-    const label = inferAuth(instance);
-    counts.set(label, (counts.get(label) ?? 0) + 1);
-  }
-  return Array.from(counts.entries())
-    .map(([label, count]) => ({ label, count }))
-    .sort((left, right) => right.count - left.count)
-    .slice(0, 5);
 }
 
 function HealthStrip({ history }: { history: HealthSnapshot[] }) {
@@ -1262,12 +1249,6 @@ export function GuildPage() {
   );
 
   const location = useRouterState({ select: (state) => state.location });
-  const pathname = location.pathname;
-  const section: RegistrySection = pathname.endsWith('/access')
-    ? 'access'
-    : pathname.endsWith('/connections')
-      ? 'connections'
-      : 'instances';
   const [search, setSearch] = useState('');
   const [kindFilter, setKindFilter] = useState<'all' | InstanceKind>('all');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -1475,306 +1456,112 @@ export function GuildPage() {
     );
   }
 
-  const accessGroups = {
-    personal: instances.filter((instance) => instance.visibility === 'user'),
-    tenant: instances.filter((instance) => instance.visibility === 'tenant'),
-    system: instances.filter((instance) => instance.visibility === 'system'),
-  };
-
-  const connectionGroups = countByAuth(instances);
-
   return (
     <div className="niuu:min-h-full niuu:bg-bg-primary niuu:p-6" data-testid="guild-page">
       <div className="niuu:space-y-6">
-        {section === 'instances' ? (
-          <div className="niuu:space-y-5">
-            <section className="niuu:rounded-[22px] niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4">
-              <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-3">
-                <label className="niuu:flex niuu:min-w-[260px] niuu:flex-1 niuu:items-center niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-3 niuu:py-2.5 niuu:focus-within:border-brand/40">
-                  <Search className="niuu:h-4 niuu:w-4 niuu:text-text-muted" />
-                  <input
-                    type="search"
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                    placeholder="filter by name, endpoint, tag, or auth…"
-                    className="niuu:min-w-0 niuu:flex-1 niuu:bg-transparent niuu:text-[13px] niuu:text-text-primary niuu:placeholder:text-text-muted niuu:focus:outline-none"
-                  />
-                </label>
+        <div className="niuu:space-y-5">
+          <section className="niuu:rounded-[22px] niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4">
+            <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-3">
+              <label className="niuu:flex niuu:min-w-[260px] niuu:flex-1 niuu:items-center niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-3 niuu:py-2.5 niuu:focus-within:border-brand/40">
+                <Search className="niuu:h-4 niuu:w-4 niuu:text-text-muted" />
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="filter by name, endpoint, tag, or auth…"
+                  className="niuu:min-w-0 niuu:flex-1 niuu:bg-transparent niuu:text-[13px] niuu:text-text-primary niuu:placeholder:text-text-muted niuu:focus:outline-none"
+                />
+              </label>
 
-                <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2">
-                  {[
-                    { value: 'all', label: 'all', rune: 'ᚹ' } as const,
-                    ...filterOptions.map((option) => ({
-                      value: option.kind,
-                      label: option.label,
-                      rune: option.rune,
-                    })),
-                  ].map((option) => {
-                    const active = kindFilter === option.value;
-                    const count = countsByKind[option.value as 'all' | InstanceKind];
-                    return (
-                      <button
-                        key={option.value}
-                        type="button"
-                        onClick={() => setKindFilter(option.value)}
-                        className={cn(
-                          'niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-full niuu:border niuu:px-3 niuu:py-1.5 niuu:font-mono niuu:text-[11px] niuu:transition-colors',
-                          active
-                            ? 'niuu:border-brand/35 niuu:bg-brand/12 niuu:text-brand'
-                            : 'niuu:border-border-subtle niuu:bg-bg-tertiary niuu:text-text-muted niuu:hover:text-text-primary',
-                        )}
-                      >
-                        <Rune glyph={option.rune} size={13} className="niuu:text-current" />
-                        <span>{option.label}</span>
-                        <span className="niuu:text-[10px] niuu:text-text-faint">{count}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </section>
-
-            {instancesQuery.isLoading ? <LoadingState label="Loading registry…" /> : null}
-            {instancesQuery.error ? (
-              <ErrorState
-                title="Failed to load registry"
-                message={
-                  instancesQuery.error instanceof Error
-                    ? instancesQuery.error.message
-                    : 'Failed to load visible instances.'
-                }
-              />
-            ) : null}
-
-            {!instancesQuery.isLoading && !instancesQuery.error ? (
-              <section
-                className={cn(
-                  'niuu:grid niuu:gap-5',
-                  detailOpen ? 'niuu:xl:grid-cols-[minmax(0,1.55fr)_360px]' : 'niuu:grid-cols-1',
-                )}
-              >
-                <div className="niuu:space-y-4">
-                  {filteredInstances.length === 0 ? (
-                    <div className="niuu:rounded-[22px] niuu:border niuu:border-dashed niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-8 niuu:text-sm niuu:text-text-secondary">
-                      No instances match the current filters.
-                    </div>
-                  ) : (
-                    <div className="niuu:grid niuu:gap-4 niuu:lg:grid-cols-2 niuu:2xl:grid-cols-3">
-                      {filteredInstances.map((instance) => (
-                        <InstanceCard
-                          key={instance.id}
-                          instance={instance}
-                          selected={instance.id === selectedInstance?.id}
-                          health={healthById[instance.id]}
-                          onClick={() => {
-                            setSelectedId(instance.id);
-                            if (!detailOpen) setDetailOpen(true);
-                          }}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {detailOpen && selectedInstance ? (
-                  <GuildDetailRail
-                    instance={selectedInstance}
-                    health={selectedHealth}
-                    history={selectedHistory}
-                    onTest={() => healthMutation.mutate(selectedInstance.id)}
-                    onRefresh={() => void instancesQuery.refetch()}
-                    onCollapse={() => setDetailOpen(false)}
-                    isTesting={healthMutation.isPending}
-                  />
-                ) : null}
-              </section>
-            ) : null}
-          </div>
-        ) : null}
-
-        {section === 'access' ? (
-          <section className="niuu:space-y-5">
-            <div className="niuu:grid niuu:gap-4 niuu:lg:grid-cols-3">
-              {[
-                {
-                  title: 'Personal',
-                  count: accessGroups.personal.length,
-                  body: 'User-scoped instances are only visible to the owning user.',
-                },
-                {
-                  title: 'Tenant',
-                  count: accessGroups.tenant.length,
-                  body: 'Tenant-scoped instances stay inside their tenant boundary.',
-                },
-                {
-                  title: 'System',
-                  count: accessGroups.system.length,
-                  body: 'System-scoped instances are shared and admin-managed.',
-                },
-              ].map((card) => (
-                <div
-                  key={card.title}
-                  className="niuu:rounded-[16px] niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4"
-                >
-                  <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-3">
-                    <div>
-                      <div className="niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.12em] niuu:text-text-faint">
-                        visibility
-                      </div>
-                      <h2 className="niuu:mt-2 niuu:text-[15px] niuu:font-semibold niuu:text-text-primary">
-                        {card.title}
-                      </h2>
-                    </div>
-                    <span className="niuu:rounded-full niuu:bg-bg-elevated niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:text-text-secondary">
-                      {card.count}
-                    </span>
-                  </div>
-                  <p className="niuu:mt-2 niuu:text-[12px] niuu:leading-5 niuu:text-text-secondary">
-                    {card.body}
-                  </p>
-                </div>
-              ))}
-            </div>
-
-            <div className="niuu:rounded-[18px] niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4">
-              <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-4">
-                <div>
-                  <div className="niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.12em] niuu:text-text-faint">
-                    current visibility
-                  </div>
-                  <h2 className="niuu:mt-2 niuu:text-[15px] niuu:font-semibold niuu:text-text-primary">
-                    Visible registry entries
-                  </h2>
-                  <p className="niuu:mt-1 niuu:text-[12px] niuu:leading-5 niuu:text-text-secondary">
-                    What the current identity can actually discover right now.
-                  </p>
-                </div>
-                <span className="niuu:rounded-full niuu:bg-bg-elevated niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:text-text-secondary">
-                  {instances.length}
-                </span>
-              </div>
-              <div className="niuu:mt-4 niuu:grid niuu:gap-4 niuu:md:grid-cols-2 niuu:xl:grid-cols-3">
-                {instances.map((instance) => {
-                  const badge = scopeBadge(instance);
-                  const ScopeIcon = badge.icon;
+              <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2">
+                {[
+                  { value: 'all', label: 'all', rune: 'ᚹ' } as const,
+                  ...filterOptions.map((option) => ({
+                    value: option.kind,
+                    label: option.label,
+                    rune: option.rune,
+                  })),
+                ].map((option) => {
+                  const active = kindFilter === option.value;
+                  const count = countsByKind[option.value as 'all' | InstanceKind];
                   return (
-                    <div
-                      key={`access-${instance.id}`}
-                      className="niuu:flex niuu:flex-col niuu:gap-3 niuu:rounded-[16px] niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:p-4"
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setKindFilter(option.value)}
+                      className={cn(
+                        'niuu:inline-flex niuu:items-center niuu:gap-2 niuu:rounded-full niuu:border niuu:px-3 niuu:py-1.5 niuu:font-mono niuu:text-[11px] niuu:transition-colors',
+                        active
+                          ? 'niuu:border-brand/35 niuu:bg-brand/12 niuu:text-brand'
+                          : 'niuu:border-border-subtle niuu:bg-bg-tertiary niuu:text-text-muted niuu:hover:text-text-primary',
+                      )}
                     >
-                      <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-3">
-                        <div className="niuu:min-w-0">
-                          <div className="niuu:truncate niuu:text-[14px] niuu:font-semibold niuu:text-text-primary">
-                            {instance.name}
-                          </div>
-                          <div className="niuu:mt-1 niuu:truncate niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
-                            {kindMeta(instance.kind).label} · {instance.slug}
-                          </div>
-                        </div>
-                        <span
-                          className={cn(
-                            'niuu:inline-flex niuu:items-center niuu:gap-1.5 niuu:rounded-full niuu:border niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[9px] niuu:uppercase niuu:tracking-[0.12em]',
-                            badge.tone,
-                          )}
-                        >
-                          <ScopeIcon className="niuu:h-3 niuu:w-3" />
-                          {badge.label}
-                        </span>
-                      </div>
-                      <div className="niuu:space-y-2">
-                        <div>
-                          <div className="niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.12em] niuu:text-text-faint">
-                            endpoint
-                          </div>
-                          <div className="niuu:mt-1 niuu:truncate niuu:font-mono niuu:text-[11px] niuu:text-text-secondary">
-                            {instance.baseUrl}
-                          </div>
-                        </div>
-                        <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3">
-                          <div>
-                            <div className="niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.12em] niuu:text-text-faint">
-                              boundary
-                            </div>
-                            <div className="niuu:mt-1 niuu:text-[12px] niuu:text-text-secondary">
-                              {scopeSummary(instance)}
-                            </div>
-                          </div>
-                          <div>
-                            <div className="niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.12em] niuu:text-text-faint">
-                              auth
-                            </div>
-                            <div className="niuu:mt-1 niuu:text-[12px] niuu:text-text-secondary">
-                              {inferAuth(instance)}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
+                      <Rune glyph={option.rune} size={13} className="niuu:text-current" />
+                      <span>{option.label}</span>
+                      <span className="niuu:text-[10px] niuu:text-text-faint">{count}</span>
+                    </button>
                   );
                 })}
               </div>
             </div>
           </section>
-        ) : null}
 
-        {section === 'connections' ? (
-          <section className="niuu:space-y-5">
-            <div className="niuu:grid niuu:gap-4 niuu:lg:grid-cols-3">
-              <div className="niuu:rounded-[20px] niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-5">
-                <h2 className="niuu:text-[16px] niuu:font-semibold niuu:text-text-primary">
-                  Endpoint health
-                </h2>
-                <p className="niuu:mt-2 niuu:text-[13px] niuu:leading-6 niuu:text-text-secondary">
-                  Live probes hang off the instance record so Guild can validate remote backends
-                  before Ting or Volundr targets them.
-                </p>
-              </div>
-              <div className="niuu:rounded-[20px] niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-5">
-                <h2 className="niuu:text-[16px] niuu:font-semibold niuu:text-text-primary">
-                  Credential attachment
-                </h2>
-                <p className="niuu:mt-2 niuu:text-[13px] niuu:leading-6 niuu:text-text-secondary">
-                  Registration now binds endpoints to personal or tenant credentials without moving
-                  secret values into the registry itself.
-                </p>
-              </div>
-              <div className="niuu:rounded-[20px] niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-5">
-                <h2 className="niuu:text-[16px] niuu:font-semibold niuu:text-text-primary">
-                  Future connection policy
-                </h2>
-                <p className="niuu:mt-2 niuu:text-[13px] niuu:leading-6 niuu:text-text-secondary">
-                  This is where rotation state, policy checks, and transport defaults can grow next.
-                </p>
-              </div>
-            </div>
+          {instancesQuery.isLoading ? <LoadingState label="Loading registry…" /> : null}
+          {instancesQuery.error ? (
+            <ErrorState
+              title="Failed to load registry"
+              message={
+                instancesQuery.error instanceof Error
+                  ? instancesQuery.error.message
+                  : 'Failed to load visible instances.'
+              }
+            />
+          ) : null}
 
-            <div className="niuu:rounded-[22px] niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-5">
-              <div className="niuu:flex niuu:items-center niuu:justify-between">
-                <div>
-                  <h2 className="niuu:text-[16px] niuu:font-semibold niuu:text-text-primary">
-                    Auth surface
-                  </h2>
-                  <p className="niuu:text-[13px] niuu:text-text-secondary">
-                    Top auth patterns currently used by visible instances.
-                  </p>
-                </div>
-              </div>
-              <div className="niuu:mt-4 niuu:grid niuu:gap-3 niuu:lg:grid-cols-2">
-                {connectionGroups.map((group) => (
-                  <div
-                    key={group.label}
-                    className="niuu:flex niuu:items-center niuu:justify-between niuu:rounded-xl niuu:bg-bg-elevated niuu:p-3"
-                  >
-                    <span className="niuu:text-[13px] niuu:text-text-primary">{group.label}</span>
-                    <span className="niuu:rounded-full niuu:bg-bg-secondary niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[11px] niuu:text-text-secondary">
-                      {group.count}
-                    </span>
+          {!instancesQuery.isLoading && !instancesQuery.error ? (
+            <section
+              className={cn(
+                'niuu:grid niuu:gap-5',
+                detailOpen ? 'niuu:xl:grid-cols-[minmax(0,1.55fr)_360px]' : 'niuu:grid-cols-1',
+              )}
+            >
+              <div className="niuu:space-y-4">
+                {filteredInstances.length === 0 ? (
+                  <div className="niuu:rounded-[22px] niuu:border niuu:border-dashed niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-8 niuu:text-sm niuu:text-text-secondary">
+                    No instances match the current filters.
                   </div>
-                ))}
+                ) : (
+                  <div className="niuu:grid niuu:gap-4 niuu:lg:grid-cols-2 niuu:2xl:grid-cols-3">
+                    {filteredInstances.map((instance) => (
+                      <InstanceCard
+                        key={instance.id}
+                        instance={instance}
+                        selected={instance.id === selectedInstance?.id}
+                        health={healthById[instance.id]}
+                        onClick={() => {
+                          setSelectedId(instance.id);
+                          if (!detailOpen) setDetailOpen(true);
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
-            </div>
-          </section>
-        ) : null}
+
+              {detailOpen && selectedInstance ? (
+                <GuildDetailRail
+                  instance={selectedInstance}
+                  health={selectedHealth}
+                  history={selectedHistory}
+                  onTest={() => healthMutation.mutate(selectedInstance.id)}
+                  onRefresh={() => void instancesQuery.refetch()}
+                  onCollapse={() => setDetailOpen(false)}
+                  isTesting={healthMutation.isPending}
+                />
+              ) : null}
+            </section>
+          ) : null}
+        </div>
       </div>
 
       <RegisterWizard

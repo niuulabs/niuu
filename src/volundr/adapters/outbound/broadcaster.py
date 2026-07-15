@@ -30,12 +30,25 @@ def _build_realtime_sleipnir_map() -> dict[str, str]:
         EventType.SESSION_CREATED.value: registry.VOLUNDR_SESSION_CREATED,
         EventType.SESSION_UPDATED.value: registry.VOLUNDR_SESSION_UPDATED,
         EventType.SESSION_DELETED.value: registry.VOLUNDR_SESSION_DELETED,
+        # The "needs the user" signal is forwarded to the platform bus so a
+        # notification / push fan-out can alert the owner. Routine activity
+        # (active/idle/tool_executing) is deliberately NOT forwarded — it is
+        # high-frequency SSE-only state and would flood the bus.
+        EventType.SESSION_NEEDS_INPUT.value: registry.VOLUNDR_SESSION_NEEDS_INPUT,
         EventType.STATS_UPDATED.value: registry.VOLUNDR_STATS_UPDATED,
         EventType.CHRONICLE_CREATED.value: registry.VOLUNDR_CHRONICLE_CREATED,
         EventType.CHRONICLE_UPDATED.value: registry.VOLUNDR_CHRONICLE_UPDATED,
         EventType.CHRONICLE_DELETED.value: registry.VOLUNDR_CHRONICLE_DELETED,
         EventType.CHRONICLE_EVENT.value: registry.VOLUNDR_CHRONICLE_UPDATED,
     }
+
+
+# Per-event-type urgency for forwarded Sleipnir events. Defaults to 0.5; the
+# needs-input signal is high so it outranks routine session churn for any
+# urgency-gated consumer (e.g. a notification channel's min_urgency filter).
+_SLEIPNIR_URGENCY: dict[str, float] = {
+    EventType.SESSION_NEEDS_INPUT.value: 0.9,
+}
 
 
 class InMemoryEventBroadcaster(EventBroadcaster):
@@ -145,7 +158,7 @@ class InMemoryEventBroadcaster(EventBroadcaster):
                 source=self._sleipnir_source,
                 payload=dict(event.data),
                 summary=f"{event.type.value} broadcast",
-                urgency=0.5,
+                urgency=_SLEIPNIR_URGENCY.get(event.type.value, 0.5),
                 domain="code",
                 timestamp=(
                     event.timestamp.replace(tzinfo=UTC)
@@ -238,6 +251,20 @@ class InMemoryEventBroadcaster(EventBroadcaster):
                 "workload_type": getattr(session, "workload_type", "session"),
                 "owner_id": str(session.owner_id) if session.owner_id else None,
                 "tenant_id": str(session.tenant_id) if session.tenant_id else None,
+                # Include the orthogonal activity signal so a SINGLE session_updated event carries
+                # BOTH the running/idle flag AND the metrics (tokens/last_active). Previously the
+                # running flag travelled only on session_activity events and the numbers only on
+                # session_updated, so no streamed event ever had both — a polling client had to
+                # merge two event types or render a stale half. (Structured enum, not piped into the
+                # legacy `activity` keyword field, so existing keyword-whitelist clients are
+                # unaffected; new clients read activity_state directly.)
+                "activity_state": (
+                    session.activity_state.value if session.activity_state else None
+                ),
+                "activity_metadata": session.activity_metadata,
+                # Derived "this session needs you" flag so a client can light up a
+                # badge from session_updated alone, without re-deriving the rule.
+                "needs_attention": session.needs_attention,
             },
             timestamp=datetime.now(UTC),
         )
@@ -271,10 +298,12 @@ class InMemoryEventBroadcaster(EventBroadcaster):
             data={
                 "active_sessions": stats.active_sessions,
                 "total_sessions": stats.total_sessions,
+                "sessions_today": stats.sessions_today,
                 "tokens_today": stats.tokens_today,
                 "local_tokens": stats.local_tokens,
                 "cloud_tokens": stats.cloud_tokens,
                 "cost_today": float(stats.cost_today),
+                "sparklines": stats.sparklines or {},
             },
             timestamp=datetime.now(UTC),
         )
@@ -394,7 +423,7 @@ class InMemoryEventBroadcaster(EventBroadcaster):
         )
         logger.info(
             "SSE broadcast chronicle_event: session=%s, type=%s, t=%d",
-            session_id,
+            repr(session_id),
             event.type.value,
             event.t,
         )

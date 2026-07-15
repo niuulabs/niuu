@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import respx
@@ -140,6 +141,68 @@ def test_related_adapter_without_link_graph(
 
     assert exit_code == 1
     assert "link graph" in capsys.readouterr().err
+
+
+def test_adapter_prefers_configured_mimir(monkeypatch: pytest.MonkeyPatch) -> None:
+    configured = object()
+    monkeypatch.setattr(mimir_bridge, "_configured_adapter", lambda: configured)
+
+    assert mimir_bridge._adapter() is configured
+
+
+def test_publish_files_uses_routing_when_no_mount_explicit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    workspace = tmp_path / "workspace"
+    page = workspace / "notes" / "result.md"
+    page.parent.mkdir(parents=True)
+    page.write_text("# Result\n\nReady.", encoding="utf-8")
+
+    class RecordingMimir:
+        def __init__(self) -> None:
+            self.writes: list[tuple[str, str | None]] = []
+
+        async def upsert_page(self, path: str, content: str, mimir: str | None = None, meta=None):
+            self.writes.append((path, mimir))
+
+        async def get_page(self, path: str):
+            return SimpleNamespace(content=page.read_text(encoding="utf-8"))
+
+    adapter = RecordingMimir()
+    monkeypatch.setenv("RAVN_WORKSPACE_DIR", str(workspace))
+    monkeypatch.setenv("RAVN_MIMIR_NAME", "local")
+    monkeypatch.setattr(mimir_bridge, "_adapter", lambda: adapter)
+
+    exit_code = main(["publish-files", "notes/result.md"])
+
+    assert exit_code == 0
+    assert adapter.writes == [("notes/result.md", None)]
+    assert "routed to: local" not in capsys.readouterr().out
+
+
+def test_list_uses_configured_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    class ListingMimir:
+        async def list_pages(self, category=None, prefix=None):
+            assert prefix == "research/campaigns"
+            return [
+                SimpleNamespace(path="research/campaigns/example/final.md"),
+                SimpleNamespace(path="research/campaigns/example/manifest.md"),
+            ]
+
+    monkeypatch.setattr(mimir_bridge, "_adapter", lambda: ListingMimir())
+
+    exit_code = main(["list", "research/campaigns"])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "research/campaigns/example/final.md",
+        "research/campaigns/example/manifest.md",
+    ]
 
 
 @respx.mock

@@ -41,8 +41,8 @@ def create_telegram_setup_router(
     ) -> TelegramSetupResponse:
         """Generate a signed Telegram deeplink for bot setup.
 
-        TODO: Move this under the shared integrations surface once Telegram
-        setup is represented natively by niuu-shared.
+        This remains Ting-owned because the signed token is consumed by Ting's
+        Telegram webhook. Shared integration CRUD and OAuth live in niuu-shared.
         """
         if not telegram_hmac_key:
             raise HTTPException(

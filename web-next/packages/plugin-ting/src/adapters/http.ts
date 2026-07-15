@@ -25,7 +25,10 @@ import type {
   WorkflowLaunchRequest,
   WorkflowLaunchResult,
   IResearchService,
+  ISpecsService,
   CreateResearchCampaignRequest,
+  CreateSpecCampaignRequest,
+  ReviewSpecCampaignRequest,
   UpdateResearchCampaignRequest,
   CampaignArtifact,
   CampaignArtifactDetail,
@@ -37,7 +40,6 @@ import type {
   CommitSagaRequest,
   PlanSession,
   ExtractedStructure,
-  PhaseSpec,
   RunSessionMessage,
   RunHelpRequest,
   FlockConfig,
@@ -67,6 +69,7 @@ interface RawSaga {
   feature_branch: string;
   base_branch?: string;
   status: string;
+  url?: string;
   confidence?: number;
   created_at: string;
   workflow_id?: string | null;
@@ -90,6 +93,8 @@ interface RawRun {
   id: string;
   phase_id: string;
   tracker_id: string;
+  identifier?: string;
+  url?: string;
   name: string;
   description: string;
   acceptance_criteria: string[];
@@ -295,6 +300,51 @@ interface RawCampaignStageState {
   reason?: string | null;
 }
 
+interface RawPlanSession {
+  session_id: string;
+  chat_endpoint: string | null;
+  name?: string | null;
+  prompt?: string | null;
+  repo?: string | null;
+  campaign_slug?: string | null;
+  workflow_name?: string | null;
+  status?: string | null;
+  active_stage_id?: string | null;
+  updated_at?: string | null;
+  stage_state?: RawCampaignStageState[];
+  questions?: { id: string; question: string; hint?: string; kind?: 'text' | 'workflow' }[];
+}
+
+interface RawRunSpec {
+  name: string;
+  description?: string;
+  acceptanceCriteria?: string[];
+  acceptance_criteria?: string[];
+  declaredFiles?: string[];
+  declared_files?: string[];
+  estimateHours?: number;
+  estimate_hours?: number;
+  confidence?: number;
+  size?: 'S' | 'M' | 'L';
+  persona?: string;
+  phase?: string;
+}
+
+interface RawPhaseSpec {
+  name: string;
+  runs: RawRunSpec[];
+}
+
+interface RawPlanRisk {
+  kind: string;
+  message: string;
+}
+
+interface RawExtractedStructure {
+  found: boolean;
+  structure: { name: string; phases: RawPhaseSpec[]; risks?: RawPlanRisk[] } | null;
+}
+
 interface RawCampaignArtifact {
   path: string;
   title: string;
@@ -359,6 +409,8 @@ function toRun(raw: RawRun): Run {
     id: raw.id,
     phaseId: raw.phase_id,
     trackerId: raw.tracker_id,
+    identifier: raw.identifier || raw.tracker_id,
+    url: raw.url || undefined,
     name: raw.name,
     description: raw.description,
     acceptanceCriteria: raw.acceptance_criteria,
@@ -405,6 +457,7 @@ function toSaga(raw: RawSaga): Saga {
     id: raw.id,
     trackerId: raw.tracker_id,
     trackerType: raw.tracker_type ?? 'linear',
+    url: raw.url || undefined,
     slug:
       raw.slug ??
       raw.name
@@ -683,6 +736,49 @@ function toCampaignStageState(raw: RawCampaignStageState) {
   };
 }
 
+function toPlanSession(raw: RawPlanSession): PlanSession {
+  return {
+    sessionId: raw.session_id,
+    chatEndpoint: raw.chat_endpoint,
+    name: raw.name,
+    prompt: raw.prompt,
+    repo: raw.repo,
+    campaignSlug: raw.campaign_slug,
+    workflowName: raw.workflow_name,
+    status: raw.status,
+    activeStageId: raw.active_stage_id,
+    updatedAt: raw.updated_at,
+    stageState: (raw.stage_state ?? []).map(toCampaignStageState),
+    questions: raw.questions ?? [],
+  };
+}
+
+function toExtractedStructure(raw: RawExtractedStructure): ExtractedStructure {
+  return {
+    found: raw.found,
+    structure: raw.structure
+      ? {
+          name: raw.structure.name,
+          phases: raw.structure.phases.map((phase) => ({
+            name: phase.name,
+            runs: phase.runs.map((run) => ({
+              name: run.name,
+              description: run.description ?? '',
+              acceptanceCriteria: run.acceptanceCriteria ?? run.acceptance_criteria ?? [],
+              declaredFiles: run.declaredFiles ?? run.declared_files ?? [],
+              estimateHours: run.estimateHours ?? run.estimate_hours ?? 0,
+              confidence: run.confidence ?? 0,
+              size: run.size,
+              persona: run.persona,
+              phase: run.phase,
+            })),
+          })),
+          risks: raw.structure.risks ?? [],
+        }
+      : null,
+  };
+}
+
 function toCampaignArtifact(raw: RawCampaignArtifact): CampaignArtifact {
   return {
     path: raw.path,
@@ -762,6 +858,28 @@ function toResearchCampaignPatchBody(
   };
 }
 
+function toSpecCampaignCreateBody(request: CreateSpecCampaignRequest): Record<string, unknown> {
+  return {
+    prompt: request.prompt,
+    name: request.name,
+    workflowId: request.workflowId,
+    repo: request.repo,
+    repos: request.repos,
+    branch: request.branch,
+    context: request.context,
+    connectionId: request.connectionId,
+  };
+}
+
+function toSpecReviewBody(request: ReviewSpecCampaignRequest): Record<string, unknown> {
+  return {
+    decision: request.decision,
+    notes: request.notes,
+    gateId: request.gateId,
+    nodeId: request.nodeId,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Factory functions
 // ---------------------------------------------------------------------------
@@ -785,6 +903,10 @@ export function buildTingHttpAdapter(client: ApiClient): ITingService {
       } catch {
         return null;
       }
+    },
+
+    async deleteSaga(id: string) {
+      await client.delete<void>(`/sagas/${encodeURIComponent(id)}`);
     },
 
     async getPhases(sagaId: string) {
@@ -833,24 +955,47 @@ export function buildTingHttpAdapter(client: ApiClient): ITingService {
     },
 
     async spawnPlanSession(spec: string, repo: string) {
-      const raw = await client.post<{
-        session_id: string;
-        chat_endpoint: string | null;
-        questions?: { id: string; question: string; hint?: string }[];
-      }>('/sagas/plan', { spec, repo });
-      return {
-        sessionId: raw.session_id,
-        chatEndpoint: raw.chat_endpoint,
-        questions: raw.questions ?? [],
-      } satisfies PlanSession;
+      const raw = await client.post<RawPlanSession>('/sagas/plan', { spec, repo });
+      return toPlanSession(raw);
+    },
+
+    async listPlanSessions() {
+      const raw = await client.get<RawPlanSession[]>('/sagas/plan');
+      return raw.map(toPlanSession);
+    },
+
+    async getPlanSession(campaignSlug: string) {
+      const raw = await client.get<RawPlanSession>(
+        `/sagas/plan/${encodeURIComponent(campaignSlug)}`,
+      );
+      return toPlanSession(raw);
+    },
+
+    async cancelPlanSession(campaignSlug: string) {
+      await client.delete<void>(`/sagas/plan/${encodeURIComponent(campaignSlug)}`);
+    },
+
+    async getPlanDraft(campaignSlug: string) {
+      const raw = await client.get<RawExtractedStructure>(
+        `/sagas/plan/${encodeURIComponent(campaignSlug)}/draft`,
+      );
+      return toExtractedStructure(raw);
+    },
+
+    async sendPlanFeedback(
+      campaignSlug: string,
+      content: string,
+      decision?: 'approve' | 'changes_requested',
+    ) {
+      await client.post(`/sagas/plan/${encodeURIComponent(campaignSlug)}/feedback`, {
+        content,
+        ...(decision ? { decision } : {}),
+      });
     },
 
     async extractStructure(text: string) {
-      const raw = await client.post<{
-        found: boolean;
-        structure: { name: string; phases: PhaseSpec[] } | null;
-      }>('/sagas/extract-structure', { text });
-      return raw satisfies ExtractedStructure;
+      const raw = await client.post<RawExtractedStructure>('/sagas/extract-structure', { text });
+      return toExtractedStructure(raw);
     },
 
     async assignWorkflow(sagaId: string, workflowId: string | null) {
@@ -865,6 +1010,14 @@ export function buildTingHttpAdapter(client: ApiClient): ITingService {
         instance_id: target.mode === 'instance' ? target.instanceId : null,
         target_tags: target.mode === 'tags' ? target.tags : [],
         target_match: target.mode === 'tags' ? (target.match ?? 'all') : 'all',
+      });
+      return toSaga(raw);
+    },
+
+    async assignRepos(sagaId: string, repoRefs) {
+      const raw = await client.put<RawSaga>(`/sagas/${encodeURIComponent(sagaId)}/repos`, {
+        repos: repoRefs.map((entry) => entry.repo),
+        repo_refs: repoRefs,
       });
       return toSaga(raw);
     },
@@ -1069,22 +1222,27 @@ export function buildWorkflowHttpAdapter(client: ApiClient): IWorkflowService {
 
     async saveWorkflow(workflow: Workflow) {
       const body = toWorkflowBody(workflow);
+      let existing: RawWorkflow | null;
       try {
-        const existing = await client.get<RawWorkflow>(
-          `/workflows/${encodeURIComponent(workflow.id)}`,
-        );
-        if (existing) {
+        existing = await client.get<RawWorkflow>(`/workflows/${encodeURIComponent(workflow.id)}`);
+      } catch {
+        existing = null;
+      }
+
+      if (existing) {
+        try {
           const raw = await client.put<RawWorkflow>(
             `/workflows/${encodeURIComponent(workflow.id)}`,
             body,
           );
           return toWorkflow(raw);
+        } catch (error) {
+          if (existing.scope !== 'system') throw error;
         }
-      } catch {
-        // Fall through to create when the workflow doesn't exist yet.
       }
 
-      const raw = await client.post<RawWorkflow>('/workflows', body);
+      const createBody = existing?.scope === 'system' ? { ...body, scope: 'user' } : body;
+      const raw = await client.post<RawWorkflow>('/workflows', createBody);
       return toWorkflow(raw);
     },
 
@@ -1156,6 +1314,64 @@ export function buildResearchHttpAdapter(client: ApiClient): IResearchService {
       } catch {
         return null;
       }
+    },
+  };
+}
+
+export function buildSpecsHttpAdapter(client: ApiClient): ISpecsService {
+  return {
+    async listCampaigns() {
+      const raw = await client.get<RawResearchCampaign[]>('/specs/campaigns');
+      return raw.map(toResearchCampaign);
+    },
+
+    async getCampaign(slug: string) {
+      try {
+        const raw = await client.get<RawResearchCampaignDetail>(
+          `/specs/campaigns/${encodeURIComponent(slug)}`,
+        );
+        return toResearchCampaignDetail(raw);
+      } catch {
+        return null;
+      }
+    },
+
+    async createCampaign(request: CreateSpecCampaignRequest) {
+      const raw = await client.post<RawResearchCampaign>(
+        '/specs/campaigns',
+        toSpecCampaignCreateBody(request),
+      );
+      return toResearchCampaign(raw);
+    },
+
+    async deleteCampaign(slug: string) {
+      await client.delete<void>(`/specs/campaigns/${encodeURIComponent(slug)}`);
+    },
+
+    async listArtifacts(slug: string) {
+      const raw = await client.get<RawCampaignArtifact[]>(
+        `/specs/campaigns/${encodeURIComponent(slug)}/artifacts`,
+      );
+      return raw.map(toCampaignArtifact);
+    },
+
+    async getArtifact(slug: string, path: string) {
+      try {
+        const raw = await client.get<RawCampaignArtifactDetail>(
+          `/specs/campaigns/${encodeURIComponent(slug)}/artifact?path=${encodeURIComponent(path)}`,
+        );
+        return toCampaignArtifactDetail(raw);
+      } catch {
+        return null;
+      }
+    },
+
+    async reviewCampaign(slug: string, request: ReviewSpecCampaignRequest) {
+      const raw = await client.post<RawResearchCampaign>(
+        `/specs/campaigns/${encodeURIComponent(slug)}/review`,
+        toSpecReviewBody(request),
+      );
+      return toResearchCampaign(raw);
     },
   };
 }

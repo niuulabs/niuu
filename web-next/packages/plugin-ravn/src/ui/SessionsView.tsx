@@ -1,9 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { PersonaAvatar, ErrorState, LoadingState, cn } from '@niuulabs/ui';
+import {
+  PersonaAvatar,
+  StateDot,
+  ErrorState,
+  LoadingState,
+  SessionChat,
+  cn,
+  normalizeSessionUrl,
+  useSkuldChat,
+} from '@niuulabs/ui';
+import { useService } from '@niuulabs/plugin-sdk';
+import { LiveLogsTab, TelemetryTab, type IVolundrService } from '@niuulabs/plugin-volundr';
 import type { PersonaRole } from '@niuulabs/domain';
+import { Eye, EyeOff, FileCode2, MessageSquareText, Sparkles } from 'lucide-react';
 import { useMessages, useSessions } from './hooks/useSessions';
 import { useRavens } from './hooks/useRavens';
 import { useRavnBudget } from './hooks/useBudget';
+import { ResidentLogsView } from './ResidentLogsView';
 import { usePersona } from './usePersona';
 import { loadStorage, saveStorage } from './storage';
 import type { Message } from '../domain/message';
@@ -15,6 +28,7 @@ import './SessionsView.css';
 const SESSION_STORAGE_KEY = 'ravn.session';
 
 type TranscriptFilter = 'all' | 'chat' | 'tools' | 'system';
+type SessionSurfaceTab = 'chat' | 'trace' | 'logs';
 
 type TimelineTone = 'info' | 'muted' | 'warn' | 'good';
 
@@ -42,6 +56,16 @@ const FILTER_OPTIONS: Array<{ value: TranscriptFilter; label: string }> = [
   { value: 'chat', label: 'chat only' },
   { value: 'tools', label: '+ tools' },
   { value: 'system', label: '+ system' },
+];
+
+const SESSION_SURFACE_TABS: Array<{
+  id: SessionSurfaceTab;
+  label: string;
+  icon: typeof MessageSquareText;
+}> = [
+  { id: 'chat', label: 'Chat', icon: MessageSquareText },
+  { id: 'trace', label: 'Trace', icon: Sparkles },
+  { id: 'logs', label: 'Logs', icon: FileCode2 },
 ];
 
 const DEFAULT_PERSONA_BY_ROLE: Partial<Record<PersonaRole, string>> = {
@@ -460,11 +484,36 @@ export function deriveAnchorTime(sessions: Session[]): string {
   return new Date(new Date(newest.createdAt).getTime() + 4 * 60 * 1000).toISOString();
 }
 
+export function sessionIdentityKey(session: Pick<Session, 'id' | 'ravnId' | 'instanceId'>): string {
+  return session.instanceId
+    ? `${encodeURIComponent(session.instanceId)}:${encodeURIComponent(session.ravnId)}:${session.id}`
+    : session.id;
+}
+
+function ravenIdentityKey(id: string, instanceId?: string): string {
+  return instanceId ? `${encodeURIComponent(instanceId)}:${id}` : id;
+}
+
 export function pickDefaultSession(sessions: Session[], preferredId: string | null): string | null {
   if (sessions.length === 0) return null;
-  if (preferredId && sessions.some((session) => session.id === preferredId)) return preferredId;
+  if (preferredId && sessions.some((session) => sessionIdentityKey(session) === preferredId)) {
+    return preferredId;
+  }
   const sorted = [...sessions].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-  return sorted.find((session) => session.status === 'running')?.id ?? sorted[0]!.id;
+  return sessionIdentityKey(sorted.find((session) => session.status === 'running') ?? sorted[0]!);
+}
+
+function preferredSessionId(): string | null {
+  const params = new URLSearchParams(window.location.search);
+  const fromUrl = params.get('session');
+  const instanceId = params.get('instance_id');
+  const ravnId = params.get('ravn_id');
+  if (fromUrl) {
+    return instanceId && ravnId
+      ? `${encodeURIComponent(instanceId)}:${encodeURIComponent(ravnId)}:${fromUrl}`
+      : fromUrl;
+  }
+  return loadStorage<string | null>(SESSION_STORAGE_KEY, null);
 }
 
 function SessionRailItem({
@@ -486,17 +535,17 @@ function SessionRailItem({
       aria-pressed={selected}
       aria-label={`Open session ${titleForSession(session)}`}
     >
-      <div className="rv-rs__session-avatar">
-        <PersonaAvatar
-          role={session.personaRole ?? 'build'}
-          letter={session.personaLetter ?? '?'}
-          size={24}
+      <span className="rv-rs__session-state" aria-hidden="true">
+        <StateDot
+          state={session.status === 'running' ? 'running' : 'idle'}
+          pulse={false}
+          size={8}
         />
-      </div>
+      </span>
       <div className="rv-rs__session-main">
         <div className="rv-rs__session-title">{titleForSession(session)}</div>
         <div className="rv-rs__session-meta">
-          <span>{session.personaName}</span>
+          <span>{normalizeLabel(session.model)}</span>
           <span>·</span>
           <span>{relativeAge}</span>
           <span>·</span>
@@ -507,37 +556,148 @@ function SessionRailItem({
   );
 }
 
+interface SessionRavnGroup {
+  key: string;
+  ravn: Ravn | null;
+  sessions: Session[];
+}
+
+interface SessionFlockGroup {
+  key: string;
+  label: string;
+  ravns: SessionRavnGroup[];
+}
+
+export function groupSessionsByRavn(sessions: Session[], ravens: Ravn[]): SessionRavnGroup[] {
+  const ravnById = new Map(
+    ravens.map((ravn) => [ravenIdentityKey(ravn.id, ravn.instanceId), ravn]),
+  );
+  const groups = new Map<string, SessionRavnGroup>();
+
+  for (const session of sessions) {
+    const key = ravenIdentityKey(session.ravnId, session.instanceId);
+    const group = groups.get(key) ?? {
+      key,
+      ravn: ravnById.get(key) ?? null,
+      sessions: [],
+    };
+    group.sessions.push(session);
+    groups.set(key, group);
+  }
+
+  return Array.from(groups.values())
+    .map((group) => ({
+      ...group,
+      sessions: [...group.sessions].sort((left, right) => {
+        if (left.status !== right.status) return left.status === 'running' ? -1 : 1;
+        return right.createdAt.localeCompare(left.createdAt);
+      }),
+    }))
+    .sort((left, right) => {
+      const leftActive = left.sessions.some((session) => session.status === 'running');
+      const rightActive = right.sessions.some((session) => session.status === 'running');
+      if (leftActive !== rightActive) return leftActive ? -1 : 1;
+      return right.sessions[0]!.createdAt.localeCompare(left.sessions[0]!.createdAt);
+    });
+}
+
+export function groupSessionRavnsByFlock(groups: SessionRavnGroup[]): SessionFlockGroup[] {
+  const flocks = new Map<string, SessionFlockGroup>();
+  for (const group of groups) {
+    const flockId = group.ravn?.flockId ?? group.sessions[0]?.flockId;
+    const key = flockId || `independent:${group.key}`;
+    const flock = flocks.get(key) ?? {
+      key,
+      label: flockId ? `Mesh ${flockId.slice(0, 8)}` : 'Independent',
+      ravns: [],
+    };
+    flock.ravns.push(group);
+    flocks.set(key, flock);
+  }
+  return Array.from(flocks.values()).sort((left, right) => {
+    const leftFlock = !left.key.startsWith('independent:');
+    const rightFlock = !right.key.startsWith('independent:');
+    if (leftFlock !== rightFlock) return leftFlock ? -1 : 1;
+    return left.label.localeCompare(right.label);
+  });
+}
+
+function flockCoordinatorGroup(flock: SessionFlockGroup): SessionRavnGroup {
+  const coordinator = flock.ravns.find((group) =>
+    group.sessions.some(
+      (session) => session.flockRole === 'coordinator' || group.ravn?.flockRole === 'coordinator',
+    ),
+  );
+  const group = coordinator ?? flock.ravns[0]!;
+  const session =
+    group.sessions.find(
+      (candidate) =>
+        candidate.flockRole === 'coordinator' || group.ravn?.flockRole === 'coordinator',
+    ) ?? group.sessions[0]!;
+  return { ...group, sessions: [session] };
+}
+
+function flockRailGroups(flock: SessionFlockGroup): SessionRavnGroup[] {
+  if (flock.key.startsWith('independent:')) return flock.ravns;
+  return [flockCoordinatorGroup(flock)];
+}
+
+function canonicalFlockSession(
+  session: Session | null,
+  flocks: SessionFlockGroup[],
+): Session | null {
+  if (!session?.flockId) return session;
+  const flock = flocks.find((candidate) => candidate.key === session.flockId);
+  return flock ? flockCoordinatorGroup(flock).sessions[0]! : session;
+}
+
+function sessionGroupName(group: SessionRavnGroup): string {
+  return (
+    group.ravn?.residentName ||
+    group.ravn?.personaName ||
+    group.sessions[0]?.personaName ||
+    `Ravn ${group.sessions[0]?.ravnId.slice(0, 8) ?? ''}`
+  );
+}
+
 function SessionRailGroup({
-  label,
-  count,
-  sessions,
+  group,
   selectedId,
   anchorTime,
   onSelect,
 }: {
-  label: string;
-  count: number;
-  sessions: Session[];
+  group: SessionRavnGroup;
   selectedId: string | null;
   anchorTime: string;
-  onSelect: (id: string) => void;
+  onSelect: (session: Session) => void;
 }) {
-  if (sessions.length === 0) return null;
+  const { ravn, sessions } = group;
+  const activeCount = sessions.filter((session) => session.status === 'running').length;
+  const letter = ravn?.letter ?? sessionGroupName(group).charAt(0).toUpperCase();
 
   return (
     <section className="rv-rs__group">
       <div className="rv-rs__group-head">
-        <span className="rv-rs__group-label">{label}</span>
-        <span className="rv-rs__group-count">{count}</span>
+        <PersonaAvatar role={ravn?.role ?? 'build'} letter={letter} size={24} />
+        <span className="rv-rs__group-copy">
+          <span className="rv-rs__group-label">{sessionGroupName(group)}</span>
+          <span className="rv-rs__group-meta">
+            {normalizeLabel(ravn?.instanceName ?? ravn?.location ?? 'unknown target')} ·{' '}
+            {normalizeLabel(ravn?.engine ?? ravn?.deployment ?? 'ravn')}
+          </span>
+        </span>
+        <span className="rv-rs__group-count" aria-label={`${sessions.length} sessions`}>
+          {activeCount > 0 ? `${activeCount}/${sessions.length}` : sessions.length}
+        </span>
       </div>
       <div className="rv-rs__group-body">
         {sessions.map((session) => (
           <SessionRailItem
-            key={session.id}
+            key={sessionIdentityKey(session)}
             session={session}
-            selected={selectedId === session.id}
+            selected={selectedId === sessionIdentityKey(session)}
             relativeAge={deriveRelativeAge(session.createdAt, anchorTime)}
-            onSelect={() => onSelect(session.id)}
+            onSelect={() => onSelect(session)}
           />
         ))}
       </div>
@@ -545,16 +705,55 @@ function SessionRailGroup({
   );
 }
 
+function CollapsedSessionRail({
+  sessions,
+  selectedId,
+  onSelect,
+}: {
+  sessions: Session[];
+  selectedId: string | null;
+  onSelect: (session: Session) => void;
+}) {
+  return (
+    <div className="rv-rs__rail-collapsed-body">
+      {sessions.map((session) => (
+        <button
+          key={sessionIdentityKey(session)}
+          type="button"
+          className={cn(
+            'rv-rs__rail-collapsed-item',
+            selectedId === sessionIdentityKey(session) && 'rv-rs__rail-collapsed-item--selected',
+          )}
+          onClick={() => onSelect(session)}
+          aria-label={`Open session ${titleForSession(session)}`}
+        >
+          <PersonaAvatar
+            role={session.personaRole ?? 'build'}
+            letter={session.personaLetter ?? '?'}
+            size={24}
+          />
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function SessionHeader({
   session,
   ravn,
   personaLabel,
+  showInternalMessages,
+  onToggleInternalMessages,
 }: {
   session: Session;
   ravn: Ravn | null;
   personaLabel: string;
+  showInternalMessages: boolean;
+  onToggleInternalMessages: () => void;
 }) {
   const isRunning = session.status === 'running';
+  const hasLiveChat = isRunning && Boolean(normalizeSessionUrl(session.chatEndpoint ?? null));
+  const InternalIcon = showInternalMessages ? EyeOff : Eye;
 
   return (
     <header className="rv-rs__head" data-testid="sessions-header">
@@ -583,7 +782,8 @@ function SessionHeader({
             <span>{shortSessionId(session)}</span>
             <span>·</span>
             <span>
-              raven: <strong>{ravn?.personaName ?? session.personaName}</strong>
+              raven:{' '}
+              <strong>{ravn?.residentName || ravn?.personaName || session.personaName}</strong>
             </span>
             <span>·</span>
             <span>
@@ -609,19 +809,23 @@ function SessionHeader({
           </span>
         </div>
         <div className="rv-rs__actions" data-testid="sessions-actions">
-          <button type="button" className="rv-rs__action-btn">
-            export
-          </button>
-          <button type="button" className="rv-rs__action-btn" disabled={!isRunning}>
-            pause
-          </button>
-          <button
-            type="button"
-            className="rv-rs__action-btn rv-rs__action-btn--danger"
-            disabled={!isRunning}
-          >
-            abort
-          </button>
+          {hasLiveChat && (
+            <button
+              type="button"
+              className={cn(
+                'rv-rs__action-btn',
+                showInternalMessages && 'rv-rs__action-btn--active',
+              )}
+              aria-label={
+                showInternalMessages ? 'Hide tool calls and results' : 'Show tool calls and results'
+              }
+              aria-pressed={showInternalMessages}
+              data-testid="internal-toggle"
+              onClick={onToggleInternalMessages}
+            >
+              <InternalIcon size={14} aria-hidden="true" />
+            </button>
+          )}
         </div>
       </div>
     </header>
@@ -837,6 +1041,177 @@ function Composer({ session }: { session: Session }) {
   );
 }
 
+function LiveSessionChat({
+  chatEndpoint,
+  sessionName,
+  socketHistory,
+  eventRouting,
+  showInternalMessages,
+  onInternalVisibilitySender,
+}: {
+  chatEndpoint: string;
+  sessionName: string;
+  socketHistory: boolean;
+  eventRouting: boolean;
+  showInternalMessages: boolean;
+  onInternalVisibilitySender: (sender: ((visible: boolean) => void) | null) => void;
+}) {
+  const chat = useSkuldChat(chatEndpoint, {
+    historyMode: socketHistory ? 'none' : 'session',
+  });
+
+  useEffect(() => {
+    onInternalVisibilitySender(chat.sendSetInternalVisibility);
+    return () => onInternalVisibilitySender(null);
+  }, [chat.sendSetInternalVisibility, onInternalVisibilitySender]);
+
+  return (
+    <div className="rv-rs__live-chat" data-testid="sessions-live-chat">
+      <SessionChat
+        className="rv-rs__live-chat-session"
+        showToolbar={false}
+        messages={chat.messages}
+        streamingContent={chat.streamingContent}
+        streamingParts={chat.streamingParts}
+        streamingModel={chat.streamingModel}
+        connected={chat.connected}
+        historyLoaded={chat.historyLoaded}
+        participants={chat.participants}
+        meshEvents={chat.meshEvents}
+        agentEvents={chat.agentEvents}
+        pendingPermissions={chat.pendingPermissions}
+        pendingInputRequests={chat.pendingInputRequests}
+        availableCommands={chat.availableCommands}
+        capabilities={chat.capabilities}
+        chatEndpoint={chatEndpoint}
+        sessionName={sessionName}
+        showInternalToggle={false}
+        internalVisibility={showInternalMessages}
+        eventRouting={eventRouting}
+        onSend={chat.sendMessage}
+        onSendDirected={chat.sendDirectedMessages}
+        onPublishEvent={chat.publishEvent}
+        onStop={chat.sendInterrupt}
+        onPermissionRespond={chat.respondToPermission}
+        onInputRespond={chat.respondToInput}
+        onSetInternalVisibility={chat.sendSetInternalVisibility}
+      />
+    </div>
+  );
+}
+
+function DisconnectedSessionChat({ sessionName }: { sessionName: string }) {
+  return (
+    <div className="rv-rs__live-chat" data-testid="sessions-disconnected-chat">
+      <SessionChat
+        className="rv-rs__live-chat-session"
+        messages={[]}
+        connected={false}
+        historyLoaded
+        sessionName={sessionName}
+        onSend={() => undefined}
+      />
+    </div>
+  );
+}
+
+function VolundrSessionObservability({
+  session,
+  tab,
+  traceSubjectId = session.id,
+}: {
+  session: Session;
+  tab: 'trace' | 'logs';
+  traceSubjectId?: string;
+}) {
+  const volundr = useService<IVolundrService>('volundr');
+
+  if (tab === 'trace') {
+    return (
+      <div className="rv-rs__observability-panel rv-rs__observability-panel--trace">
+        <TelemetryTab
+          sessionId={traceSubjectId}
+          session={null}
+          runLabel={titleForSession(session)}
+          volundr={volundr}
+          isRunning={session.status === 'running'}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="rv-rs__observability-panel">
+      <LiveLogsTab sessionId={session.id} volundr={volundr} />
+    </div>
+  );
+}
+
+function SessionObservabilityPanel({
+  session,
+  ravn,
+  tab,
+}: {
+  session: Session;
+  ravn: Ravn | null;
+  tab: 'trace' | 'logs';
+}) {
+  if (ravn?.managed && tab === 'logs') {
+    if (!ravn.capabilities?.includes('logs')) {
+      return (
+        <div className="rv-rs__observability-empty">Logs are not exposed by this runtime.</div>
+      );
+    }
+    return (
+      <div className="rv-rs__observability-panel">
+        <ResidentLogsView ravn={ravn} fill />
+      </div>
+    );
+  }
+
+  return (
+    <VolundrSessionObservability
+      session={session}
+      tab={tab}
+      traceSubjectId={ravn?.managed ? ravn.id : session.id}
+    />
+  );
+}
+
+function SessionSurfaceTabs({
+  activeTab,
+  onTabChange,
+  tabs = SESSION_SURFACE_TABS,
+}: {
+  activeTab: SessionSurfaceTab;
+  onTabChange: (tab: SessionSurfaceTab) => void;
+  tabs?: typeof SESSION_SURFACE_TABS;
+}) {
+  return (
+    <div className="rv-rs__surface-tabs" role="tablist" aria-label="Session view">
+      {tabs.map((tab) => {
+        const Icon = tab.icon;
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            className={cn(
+              'rv-rs__surface-tab',
+              activeTab === tab.id && 'rv-rs__surface-tab--active',
+            )}
+            onClick={() => onTabChange(tab.id)}
+          >
+            <Icon className="rv-rs__surface-tab-icon" />
+            <span>{tab.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function ContextSidebar({
   session,
   ravn,
@@ -955,57 +1330,125 @@ function ContextSidebar({
 export function SessionsView() {
   const { data: sessions, isLoading, isError, error } = useSessions();
   const { data: ravens } = useRavens();
-  const [selectedId, setSelectedId] = useState<string | null>(() =>
-    loadStorage<string | null>(SESSION_STORAGE_KEY, null),
-  );
+  const [selectedId, setSelectedId] = useState<string | null>(() => preferredSessionId());
   const [filter, setFilter] = useState<TranscriptFilter>('all');
+  const [surfaceTab, setSurfaceTab] = useState<SessionSurfaceTab>('chat');
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  const [showInternalMessages, setShowInternalMessages] = useState(false);
+  const setInternalVisibilityRef = useRef<((visible: boolean) => void) | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
 
-  const sessionList = useMemo(() => sessions ?? [], [sessions]);
+  const sessionList = useMemo(
+    () =>
+      (sessions ?? []).filter(
+        (session) => session.status === 'running' || session.status === 'idle',
+      ),
+    [sessions],
+  );
   const sortedSessions = useMemo(
     () => [...sessionList].sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
     [sessionList],
   );
-  const resolvedSelectedId = sortedSessions.length
+  const requestedSelectedId = sortedSessions.length
     ? pickDefaultSession(sortedSessions, selectedId)
     : null;
 
   useEffect(() => {
-    saveStorage(SESSION_STORAGE_KEY, resolvedSelectedId);
-  }, [resolvedSelectedId]);
-
-  useEffect(() => {
     const handleSelect = (event: Event) => {
-      const nextId = (event as CustomEvent<string>).detail;
-      saveStorage(SESSION_STORAGE_KEY, nextId);
-      setSelectedId(nextId);
+      const detail = (
+        event as CustomEvent<string | { sessionId?: string; ravnId?: string; instanceId?: string }>
+      ).detail;
+      const nextId = typeof detail === 'string' ? detail : detail?.sessionId;
+      if (!nextId) return;
+      const nextKey =
+        typeof detail === 'string' || !detail.ravnId
+          ? nextId
+          : sessionIdentityKey({
+              id: nextId,
+              ravnId: detail.ravnId,
+              instanceId: detail.instanceId,
+            });
+      saveStorage(SESSION_STORAGE_KEY, nextKey);
+      setSelectedId(nextKey);
     };
 
     window.addEventListener('ravn:session-selected', handleSelect);
     return () => window.removeEventListener('ravn:session-selected', handleSelect);
   }, []);
 
-  const selectedSession =
-    sortedSessions.find((session) => session.id === resolvedSelectedId) ??
+  const ravnById = useMemo(
+    () => new Map((ravens ?? []).map((ravn) => [ravenIdentityKey(ravn.id, ravn.instanceId), ravn])),
+    [ravens],
+  );
+
+  const sessionGroups = useMemo(
+    () => groupSessionsByRavn(sortedSessions, ravens ?? []),
+    [ravens, sortedSessions],
+  );
+  const flockGroups = useMemo(() => groupSessionRavnsByFlock(sessionGroups), [sessionGroups]);
+  const requestedSession =
+    sortedSessions.find((session) => sessionIdentityKey(session) === requestedSelectedId) ??
     sortedSessions[0] ??
     null;
+  const selectedSession = canonicalFlockSession(requestedSession, flockGroups);
+  const resolvedSelectedId = selectedSession ? sessionIdentityKey(selectedSession) : null;
+
+  useEffect(() => {
+    saveStorage(SESSION_STORAGE_KEY, resolvedSelectedId);
+  }, [resolvedSelectedId]);
+
+  const selectedRavn = selectedSession
+    ? (ravnById.get(ravenIdentityKey(selectedSession.ravnId, selectedSession.instanceId)) ?? null)
+    : null;
+  const hasLiveChat = Boolean(
+    selectedSession?.status === 'running' &&
+    normalizeSessionUrl(selectedSession.chatEndpoint ?? null),
+  );
 
   const {
     data: rawMessages,
     isLoading: messagesLoading,
     isError: messagesError,
-  } = useMessages(selectedSession?.id ?? '');
+  } = useMessages(
+    selectedSession?.id ?? '',
+    !hasLiveChat,
+    selectedSession?.instanceId,
+    selectedSession?.ravnId,
+  );
 
-  const ravnById = useMemo(() => new Map((ravens ?? []).map((ravn) => [ravn.id, ravn])), [ravens]);
-
-  const selectedRavn = selectedSession ? (ravnById.get(selectedSession.ravnId) ?? null) : null;
-  const personaKey = selectedSession ? derivePersonaKey(selectedSession) : '';
+  const personaKey = selectedSession
+    ? selectedRavn?.kind === 'resident' && !selectedRavn.personaName
+      ? ''
+      : hasLiveChat
+        ? selectedSession.personaName
+        : derivePersonaKey(selectedSession)
+    : '';
   const { data: persona } = usePersona(personaKey);
   const { data: budget } = useRavnBudget(selectedSession?.ravnId ?? '');
 
-  const personaLabel = persona?.name ?? personaKey;
+  const personaLabel =
+    persona?.name ??
+    (personaKey || selectedRavn?.personaName || selectedRavn?.residentName || 'resident');
   const personaRole = persona?.role ?? selectedSession?.personaRole ?? 'build';
   const personaLetter = persona?.letter ?? selectedSession?.personaLetter ?? '?';
+
+  const selectSession = (session: Session) => {
+    const key = sessionIdentityKey(session);
+    saveStorage(SESSION_STORAGE_KEY, key);
+    setSelectedId(key);
+    const params = new URLSearchParams(window.location.search);
+    params.set('session', session.id);
+    params.set('ravn_id', session.ravnId);
+    if (session.instanceId) params.set('instance_id', session.instanceId);
+    else params.delete('instance_id');
+    window.history.replaceState(null, '', `/ravn/sessions?${params.toString()}`);
+  };
+
+  const toggleInternalMessages = () => {
+    const next = !showInternalMessages;
+    setShowInternalMessages(next);
+    setInternalVisibilityRef.current?.(next);
+  };
 
   const entries = useMemo(() => {
     if (!selectedSession) return [];
@@ -1044,94 +1487,193 @@ export function SessionsView() {
     );
   }
 
-  const activeSessions = sortedSessions.filter((session) => session.status === 'running');
-  const closedSessions = sortedSessions.filter((session) => session.status !== 'running');
+  const railSessions = flockGroups.flatMap((flock) =>
+    flockRailGroups(flock).flatMap((group) => group.sessions),
+  );
+  const activeSessions = railSessions.filter((session) => session.status === 'running');
+  const idleSessions = railSessions.filter((session) => session.status === 'idle');
   const anchorTime = deriveAnchorTime(sortedSessions);
+
+  // A running session with a Skuld endpoint is a real live chat — the shared
+  // SessionChat becomes the transcript. Everything else keeps the read-only view.
+  const liveChatEndpoint = hasLiveChat
+    ? normalizeSessionUrl(selectedSession.chatEndpoint ?? null)
+    : null;
+  const resolvedSurfaceTab = SESSION_SURFACE_TABS.some((tab) => tab.id === surfaceTab)
+    ? surfaceTab
+    : 'chat';
 
   return (
     <div className="rv-rs" data-testid="sessions-page">
-      <aside className="rv-rs__rail" aria-label="Sessions">
-        <div className="rv-rs__rail-head">
-          <div className="rv-rs__rail-title">Sessions</div>
-          <div className="rv-rs__rail-subtitle">
-            {activeSessions.length} active · {closedSessions.length} closed
-          </div>
-        </div>
+      <aside
+        className={cn('rv-rs__rail', railCollapsed && 'rv-rs__rail--collapsed')}
+        aria-label="Sessions"
+      >
+        {railCollapsed ? (
+          <>
+            <div className="rv-rs__rail-collapsed-head">
+              <button
+                type="button"
+                onClick={() => setRailCollapsed(false)}
+                className="rv-rs__rail-toggle"
+                data-testid="sessions-sidebar-toggle"
+                aria-label="Expand sessions sidebar"
+              >
+                ›
+              </button>
+            </div>
+            <CollapsedSessionRail
+              sessions={railSessions}
+              selectedId={sessionIdentityKey(selectedSession)}
+              onSelect={selectSession}
+            />
+          </>
+        ) : (
+          <>
+            <div className="rv-rs__rail-head">
+              <div className="rv-rs__rail-head-row">
+                <div>
+                  <div className="rv-rs__rail-title">Sessions</div>
+                  <div className="rv-rs__rail-subtitle">
+                    {activeSessions.length} active · {idleSessions.length} idle
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setRailCollapsed(true)}
+                  className="rv-rs__rail-toggle"
+                  data-testid="sessions-sidebar-toggle"
+                  aria-label="Collapse sessions sidebar"
+                >
+                  ‹
+                </button>
+              </div>
+            </div>
 
-        <div className="rv-rs__rail-body">
-          <SessionRailGroup
-            label="active"
-            count={activeSessions.length}
-            sessions={activeSessions}
-            selectedId={selectedSession.id}
-            anchorTime={anchorTime}
-            onSelect={(id) => {
-              saveStorage(SESSION_STORAGE_KEY, id);
-              setSelectedId(id);
-            }}
-          />
-          <SessionRailGroup
-            label="closed"
-            count={closedSessions.length}
-            sessions={closedSessions}
-            selectedId={selectedSession.id}
-            anchorTime={anchorTime}
-            onSelect={(id) => {
-              saveStorage(SESSION_STORAGE_KEY, id);
-              setSelectedId(id);
-            }}
-          />
-        </div>
+            <div className="rv-rs__rail-body">
+              {flockGroups.map((flock) => (
+                <section key={flock.key} className="rv-rs__flock">
+                  <div className="rv-rs__flock-head">
+                    <span>{flock.label}</span>
+                    <span>
+                      {flockRailGroups(flock).reduce(
+                        (count, group) => count + group.sessions.length,
+                        0,
+                      )}
+                    </span>
+                  </div>
+                  {flockRailGroups(flock).map((group) => (
+                    <SessionRailGroup
+                      key={group.key}
+                      group={group}
+                      selectedId={sessionIdentityKey(selectedSession)}
+                      anchorTime={anchorTime}
+                      onSelect={selectSession}
+                    />
+                  ))}
+                </section>
+              ))}
+            </div>
+          </>
+        )}
       </aside>
 
       <main className="rv-rs__main">
-        <SessionHeader session={selectedSession} ravn={selectedRavn} personaLabel={personaLabel} />
-        <div className="rv-rs__body">
-          <section className="rv-rs__chat">
-            <TranscriptToolbar filter={filter} onFilterChange={setFilter} />
-            <div
-              className="rv-rs__scroll"
-              ref={transcriptRef}
-              role="log"
-              aria-label="Session transcript"
-            >
-              {messagesLoading ? (
-                <div className="rv-rs__empty">loading transcript…</div>
-              ) : messagesError ? (
-                <div className="rv-rs__empty rv-rs__empty--error">failed to load transcript</div>
+        <SessionHeader
+          session={selectedSession}
+          ravn={selectedRavn}
+          personaLabel={personaLabel}
+          showInternalMessages={showInternalMessages}
+          onToggleInternalMessages={toggleInternalMessages}
+        />
+        <SessionSurfaceTabs activeTab={resolvedSurfaceTab} onTabChange={setSurfaceTab} />
+        {resolvedSurfaceTab === 'chat' ? (
+          <div className={cn('rv-rs__body', liveChatEndpoint && 'rv-rs__body--chat-only')}>
+            <section className="rv-rs__chat">
+              {liveChatEndpoint ? (
+                <LiveSessionChat
+                  key={liveChatEndpoint}
+                  chatEndpoint={liveChatEndpoint}
+                  sessionName={
+                    selectedRavn?.residentName ||
+                    selectedRavn?.personaName ||
+                    selectedSession.personaName
+                  }
+                  socketHistory={selectedRavn?.kind === 'resident'}
+                  eventRouting={Boolean(selectedSession.flockId)}
+                  showInternalMessages={showInternalMessages}
+                  onInternalVisibilitySender={(sender) => {
+                    setInternalVisibilityRef.current = sender;
+                  }}
+                />
+              ) : selectedRavn?.kind === 'resident' &&
+                ['pending', 'deploying'].includes(selectedRavn.observedState ?? '') ? (
+                <DisconnectedSessionChat
+                  sessionName={
+                    selectedRavn.residentName ||
+                    selectedRavn.personaName ||
+                    selectedSession.personaName
+                  }
+                />
               ) : (
                 <>
-                  {filteredEntries.map((entry) => (
-                    <TranscriptMessage
-                      key={entry.id}
-                      entry={entry}
-                      personaLabel={personaLabel}
-                      personaLetter={personaLetter}
-                      personaRole={personaRole}
-                    />
-                  ))}
-                  {selectedSession.status === 'running' && (
-                    <ActiveCursor
-                      personaLabel={personaLabel}
-                      personaLetter={personaLetter}
-                      personaRole={personaRole}
-                    />
-                  )}
+                  <TranscriptToolbar filter={filter} onFilterChange={setFilter} />
+                  <div
+                    className="rv-rs__scroll"
+                    ref={transcriptRef}
+                    role="log"
+                    aria-label="Session transcript"
+                  >
+                    {messagesLoading ? (
+                      <div className="rv-rs__empty">loading transcript…</div>
+                    ) : messagesError ? (
+                      <div className="rv-rs__empty rv-rs__empty--error">
+                        failed to load transcript
+                      </div>
+                    ) : (
+                      <>
+                        {filteredEntries.map((entry) => (
+                          <TranscriptMessage
+                            key={entry.id}
+                            entry={entry}
+                            personaLabel={personaLabel}
+                            personaLetter={personaLetter}
+                            personaRole={personaRole}
+                          />
+                        ))}
+                        {selectedSession.status === 'running' && (
+                          <ActiveCursor
+                            personaLabel={personaLabel}
+                            personaLetter={personaLetter}
+                            personaRole={personaRole}
+                          />
+                        )}
+                      </>
+                    )}
+                  </div>
+                  {!selectedRavn?.managed && <Composer session={selectedSession} />}
                 </>
               )}
-            </div>
-            <Composer session={selectedSession} />
-          </section>
+            </section>
 
-          <ContextSidebar
+            {!liveChatEndpoint && (
+              <ContextSidebar
+                session={selectedSession}
+                ravn={selectedRavn}
+                budget={budget}
+                persona={persona}
+                entries={entries}
+                personaLabel={personaLabel}
+              />
+            )}
+          </div>
+        ) : resolvedSurfaceTab === 'trace' || resolvedSurfaceTab === 'logs' ? (
+          <SessionObservabilityPanel
             session={selectedSession}
             ravn={selectedRavn}
-            budget={budget}
-            persona={persona}
-            entries={entries}
-            personaLabel={personaLabel}
+            tab={resolvedSurfaceTab}
           />
-        </div>
+        ) : null}
       </main>
     </div>
   );

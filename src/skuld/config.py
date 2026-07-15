@@ -18,13 +18,15 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
     YamlConfigSettingsSource,
 )
+
+from ravn.config import MeshNatsConfig
 
 
 # Config file search paths (in order of priority).
@@ -85,12 +87,16 @@ class MeshConfig(BaseModel):
 
     enabled: bool = Field(default=False)
     peer_id: str = Field(default="")
+    realm_id: str = Field(default="")
     capabilities: list[str] = Field(default_factory=lambda: list(_DEFAULT_MESH_CAPABILITIES))
     tools: list[str] = Field(default_factory=lambda: list(_DEFAULT_MESH_TOOLS))
     persona: str = Field(default="coder")
     transport: str = Field(default="nng")
     nng: NngConfig = Field(default_factory=NngConfig)
     adapters: list[dict[str, Any]] = Field(default_factory=list)
+    discovery_adapters: list[dict[str, Any]] = Field(default_factory=list)
+    nats: MeshNatsConfig = Field(default_factory=MeshNatsConfig)
+    redis_url_env: str = Field(default="REDIS_URL")
     rpc_timeout_s: float = Field(default=10.0)
     default_work_timeout_s: float = Field(default=120.0)
     default_response_urgency: float = Field(default=0.3)
@@ -146,6 +152,16 @@ class RoomConfig(BaseModel):
     max_participants: int = Field(default=8)
     participant_colors: list[str] = Field(default_factory=lambda: list(_DEFAULT_PARTICIPANT_COLORS))
     activity_detail_max_length: int = Field(default=200)
+    default_target_peer_id: str = Field(
+        default="",
+        description=(
+            "Room participant that untargeted browser messages route to as "
+            "directed messages. Set by Volundr for resident sessions (one "
+            "long-lived ravn behind the room) so any chat client works "
+            "without knowing the peer id. Empty keeps the classic behavior "
+            "(CLI transport, or an error in room-only workflow sessions)."
+        ),
+    )
     presence_sweep_interval_s: float = Field(
         default=30.0,
         description=(
@@ -166,6 +182,21 @@ class TelegramConfig(BaseModel):
     enabled: bool = Field(default=False)
     bot_token: str = Field(default="")
     chat_id: str = Field(default="")
+    credential_name: str = Field(
+        default="",
+        description=(
+            "Optional credential-store entry containing bot_token and chat_id. "
+            "Direct bot_token/chat_id values win when set."
+        ),
+    )
+    credential_owner_type: str = Field(default="user")
+    credential_owner_id: str = Field(default="dev-user")
+    credential_store_adapter: str = Field(
+        default="volundr.adapters.outbound.file_credential_store.FileCredentialStore"
+    )
+    credential_store_kwargs: dict[str, Any] = Field(
+        default_factory=lambda: {"base_dir": "~/.niuu/credentials"}
+    )
     notify_only: bool = Field(default=False)
     topic_mode: str = Field(default="topic_per_session")
     message_thread_id: int | None = Field(default=None)
@@ -194,7 +225,29 @@ class SkuldSessionConfig(BaseModel):
 
     id: str = Field(default="unknown")
     name: str = Field(default="unknown")
+    owner_id: str = Field(
+        default="",
+        description=(
+            "User ID (IDP sub) that owns this session. Set by Volundr at "
+            "spawn time; when non-empty, inbound WebSocket connections must "
+            "present a matching identity (see WsAuthConfig)."
+        ),
+    )
+    tenant_id: str = Field(
+        default="",
+        description=(
+            "Tenant the session belongs to. Set by Volundr at spawn time; "
+            "cross-tenant WebSocket connections are rejected when both sides "
+            "declare a tenant."
+        ),
+    )
     model: str = Field(default="claude-opus-4-8")
+    reasoning_effort: str = Field(
+        default="",
+        description=(
+            "Reasoning effort to launch the CLI at. Empty uses the transport default of 'high'."
+        ),
+    )
     workspace_dir: str | None = Field(default=None)
     system_prompt: str = Field(default="")
     initial_prompt: str = Field(default="")
@@ -207,6 +260,219 @@ class SkuldSessionConfig(BaseModel):
             "Volundr for sessions imported from an external harness."
         ),
     )
+
+
+class ResidentRelayConfig(BaseModel):
+    """Platform event relay for resident sessions.
+
+    When the broker hosts a resident (``room.default_target_peer_id`` set),
+    Sleipnir events matching *event_patterns* are checked against the
+    resident's register-frame ``subscribes_to`` declaration. Each match is
+    delivered as a directed message (the resident takes a turn and reports
+    into the room) plus a ``room_notification`` so the operator sees the
+    wake-up even when detached.
+    """
+
+    enabled: bool = Field(default=True)
+    event_patterns: list[str] = Field(
+        default_factory=lambda: [
+            "research.*",
+            "spec.*",
+            "plan.*",
+            "delivery.*",
+            "ravn.task.*",
+        ],
+        description=(
+            "Sleipnir event-type patterns the relay subscribes to. Events "
+            "are still filtered by the resident's subscribes_to declaration "
+            "before delivery — patterns just bound the subscription. These "
+            "are initiative-scoped workflow events; platform-wide firehoses "
+            "(volundr.session.*, volundr.chronicle.*) are intentionally "
+            "excluded because they carry no resident/initiative provenance "
+            "and would wake every resident on every user's activity."
+        ),
+    )
+    payload_preview_chars: int = Field(
+        default=2000,
+        gt=0,
+        description=(
+            "Max characters of the event payload embedded in the resident's "
+            "wake-up message; longer payloads are truncated. Raise it for "
+            "workflows whose events carry large artifact manifests."
+        ),
+    )
+
+
+class WsAuthConfig(BaseModel):
+    """Ownership enforcement for inbound WebSocket connections.
+
+    The broker does not validate token signatures — that is Envoy's / the API
+    gateway's job (see ``.claude/rules/architecture.md``: delegate to standard
+    OIDC flows). What the broker enforces is AUTHORIZATION: the connecting
+    identity must own this session. Identity is resolved the same way
+    Volundr's ``extract_principal`` does — Envoy ``x-auth-*`` headers first,
+    developer query parameters second, decoded bearer claims last — and the
+    verdict mirrors ``SimpleRoleAuthorizationAdapter``: tenant scoping, admin
+    bypass, then owner match. Sessions with no ``session.owner_id`` (legacy
+    and unauthenticated dev sessions) are not restricted.
+    """
+
+    enforce_ownership: bool = Field(
+        default=True,
+        description=(
+            "Reject WebSocket connections whose identity does not match the "
+            "session owner. Only applies when session.owner_id is set."
+        ),
+    )
+    admin_roles: list[str] = Field(
+        default_factory=lambda: ["volundr:admin"],
+        description="Roles that may attach to any session within the tenant.",
+    )
+    allow_loopback: bool = Field(
+        default=True,
+        description=(
+            "Accept unauthenticated connections from loopback addresses. "
+            "In-pod peers (the CLI attaching via --sdk-url, flock ravn "
+            "daemons) share the pod trust boundary and carry no user token."
+        ),
+    )
+
+
+class ActivityHeartbeatConfig(BaseModel):
+    """Periodic re-report of the current activity state to Volundr.
+
+    Skuld reports activity purely on CLI frame transitions, so a long turn (a
+    slow tool, an extended thinking pass) or a session blocked on the user goes
+    silent: the UI cannot tell "still progressing" from "frozen", and Volundr's
+    liveness reaper (``session_liveness.stale_after_seconds``, default 600) can
+    falsely mark a genuinely-busy or input-blocked session as stopped. The
+    heartbeat re-reports the current state on an interval while the agent is busy
+    (active/tool_executing) or awaiting input, advancing ``last_active``.
+    """
+
+    enabled: bool = Field(default=True)
+    interval_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description=(
+            "How often to re-report a busy/awaiting state. Keep comfortably "
+            "below Volundr's session liveness stale_after_seconds (default 600)."
+        ),
+    )
+
+
+class DeliveryConfig(BaseModel):
+    """Durable inbound-message delivery (SRD FR-5 / INV-7).
+
+    An inbound user message is accepted by the broker as ``pending`` and only
+    becomes authoritatively ``active`` once the transport consumes it. A transient
+    transport failure (a wedged input channel, a transport still warming up) is
+    retried with bounded backoff; on terminal failure the user turn flips to a
+    VISIBLE ``failed`` state (never left silently ``pending``). These knobs keep
+    every count/delay out of the business logic (no magic numbers).
+    """
+
+    max_attempts: int = Field(
+        default=4,
+        ge=1,
+        description=(
+            "Total number of transport-delivery attempts for one inbound message "
+            "(the first try plus retries). 1 disables retry."
+        ),
+    )
+    attempt_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description=(
+            "Per-attempt timeout for a single transport send/redirect. A wedged "
+            "send-lock that never returns is bounded by this and retried."
+        ),
+    )
+    initial_backoff_seconds: float = Field(
+        default=0.5,
+        ge=0,
+        description="Delay before the first retry after a transient failure.",
+    )
+    backoff_multiplier: float = Field(
+        default=2.0,
+        ge=1,
+        description="Multiplier applied to the backoff delay after each failed attempt.",
+    )
+    max_backoff_seconds: float = Field(
+        default=5.0,
+        ge=0,
+        description="Upper bound on a single inter-attempt backoff delay.",
+    )
+
+
+class WorkloadIdentityConfig(BaseModel):
+    """Workload identity token exchange for Volundr API authentication.
+
+    Resident/flock brokers exchange a projected service-account token for a
+    short-lived platform JWT. The config file is canonical; the legacy bare
+    ``NIUU_WORKLOAD_IDENTITY_*`` environment variables still override for
+    already-deployed charts (see ``LegacyWorkloadIdentityEnvSource``).
+    """
+
+    token_file: str = Field(
+        default="/var/run/secrets/niuu-workload/token",
+        description=(
+            "Projected workload identity token file. Token exchange is "
+            "skipped when the file does not exist (dev/local sessions)."
+        ),
+    )
+    exchange_url: str = Field(
+        default="",
+        description=(
+            "Workload token exchange endpoint. Empty derives "
+            "volundr_api_url + /api/v1/tokens/workload/exchange."
+        ),
+    )
+    audiences: list[str] = Field(
+        default_factory=lambda: ["volundr-api", "forge", "ting", "mimir", "guild"],
+        description="Target service audiences requested from the token exchange.",
+    )
+
+    @field_validator("audiences", mode="before")
+    @classmethod
+    def _coerce_comma_separated(cls, value: Any) -> Any:
+        """Accept a comma-separated string (legacy env var format) as a list."""
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        return value
+
+
+# Legacy bare env vars (pre config-first rule) that deployed charts still set.
+# Mapped into the workload_identity section by LegacyWorkloadIdentityEnvSource;
+# the config file is canonical, these are a compatibility override.
+_LEGACY_WORKLOAD_IDENTITY_ENV = {
+    "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE": "token_file",
+    "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL": "exchange_url",
+    "NIUU_WORKLOAD_IDENTITY_AUDIENCES": "audiences",
+}
+
+
+class LegacyWorkloadIdentityEnvSource(PydanticBaseSettingsSource):
+    """Settings source mapping bare NIUU_WORKLOAD_IDENTITY_* env vars.
+
+    The SKULD__ env prefix means pydantic-settings cannot alias un-prefixed
+    env names on nested fields, so this source feeds the legacy names into
+    ``workload_identity.*`` explicitly. It ranks below SKULD__* env vars and
+    above the YAML file (an env override of the canonical config).
+    """
+
+    def get_field_value(self, field: Any, field_name: str) -> tuple[Any, str, bool]:
+        return None, "", False
+
+    def __call__(self) -> dict[str, Any]:
+        section: dict[str, Any] = {}
+        for env_name, key in _LEGACY_WORKLOAD_IDENTITY_ENV.items():
+            raw = os.environ.get(env_name, "").strip()
+            if raw:
+                section[key] = raw
+        if not section:
+            return {}
+        return {"workload_identity": section}
 
 
 class ArchiveStoreConfig(BaseModel):
@@ -274,13 +540,29 @@ class SkuldSettings(BaseSettings):
     )
 
     session: SkuldSessionConfig = Field(default_factory=SkuldSessionConfig)
-    cli_type: str = Field(default="claude")  # "claude" | "codex"
+    cli_type: str = Field(default="claude")  # "claude" | "codex" | "grok"
     transport: str = Field(default="sdk")  # claude only: "sdk" | "subprocess"
     transport_adapter: str = Field(default=_DEFAULT_TRANSPORT_ADAPTER)
-    skip_permissions: bool = Field(default=False)
+    skip_permissions: bool = Field(
+        default=True,
+        description="Run agent transports without interactive tool approval prompts.",
+    )
     approval_policy: str = Field(default="")
     sandbox: str = Field(default="")
-    agent_teams: bool = Field(default=False)
+    cli_binary: str = Field(
+        default="claude",
+        description="CLI executable for subprocess transports.",
+    )
+    remote_control_permission_mode: str = Field(
+        default="",
+        description=(
+            "Claude Remote Control permission-mode override; empty follows skip_permissions."
+        ),
+    )
+    # Default ON: Claude tmux sessions launch with agent teams (--teammate-mode
+    # tmux) so a session can spin up a team of agents. Only the tmux transport
+    # consumes this; other transports ignore it. Override with SKULD__AGENT_TEAMS=0.
+    agent_teams: bool = Field(default=True)
     ask_user_question_enabled: bool = Field(
         default=False,
         description=(
@@ -290,9 +572,33 @@ class SkuldSettings(BaseSettings):
             "classic bypassPermissions behavior."
         ),
     )
+    activity_heartbeat: ActivityHeartbeatConfig = Field(default_factory=ActivityHeartbeatConfig)
+    delivery: DeliveryConfig = Field(default_factory=DeliveryConfig)
+    ws_auth: WsAuthConfig = Field(default_factory=WsAuthConfig)
+    resident_relay: ResidentRelayConfig = Field(default_factory=ResidentRelayConfig)
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8081)
     volundr_api_url: str = Field(default="")
+    usage_report_path: str = Field(
+        default="",
+        description=(
+            "Absolute Volundr API path for token usage reports. Empty uses the "
+            "Forge session usage endpoint."
+        ),
+    )
+    external_api_token: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "external_api_token",
+            "SKULD__EXTERNAL_API_TOKEN",
+            "VOLUNDR_EXTERNAL_API_TOKEN",
+        ),
+        description=(
+            "Explicit service token used for outbound Volundr API calls. "
+            "VOLUNDR_EXTERNAL_API_TOKEN remains a supported legacy alias."
+        ),
+    )
+    workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
     service_user_id: str = Field(default="skuld-broker")
     service_tenant_id: str = Field(default="default")
     persistence_mount_path: str = Field(default="/volundr/sessions")
@@ -314,7 +620,25 @@ class SkuldSettings(BaseSettings):
     event_log_batch_size: int = Field(default=100)
     event_log_flush_interval_ms: int = Field(default=500)
     event_log_max_buffer: int = Field(default=50_000)
+    # Unified internal-visibility default for a freshly-connected live channel
+    # (SRD FR-7 / INV-10). The read paths thread the SAME configured default
+    # (``ReplayConfig.default_show_internal`` in volundr); a live ``WebSocketChannel``
+    # must read its default from ONE configured source too, not a hardcoded literal,
+    # so all three paths (live channel, replay tail, cold-read) move together.
+    # Default ``False`` (internal tool_use/tool_result HIDDEN), matching ReplayConfig.
+    default_show_internal: bool = Field(default=False)
     max_upload_size_bytes: int = Field(default=104_857_600)  # 100 MB
+    max_presented_file_bytes: int = Field(
+        default=52_428_800,
+        gt=0,
+        validation_alias=AliasChoices(
+            "max_presented_file_bytes",
+            "SKULD__MAX_PRESENTED_FILE_BYTES",
+            "MAX_PRESENTED_FILE_BYTES",
+        ),
+        description="Maximum size of a file staged by the present-file endpoint.",
+    )
+    acp_prompt_timeout_s: float = Field(default=300.0)  # ACP (Grok Build) prompt turn timeout
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     reflex: ReflexConfig = Field(default_factory=ReflexConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
@@ -344,6 +668,10 @@ class SkuldSettings(BaseSettings):
 
         if self.cli_type == "opencode":
             self.transport_adapter = "skuld.transports.opencode.OpenCodeHttpTransport"
+            return self
+
+        if self.cli_type == "grok":
+            self.transport_adapter = "skuld.transports.grok.GrokACPTransport"
             return self
 
         if self.transport == "subprocess":
@@ -379,12 +707,14 @@ class SkuldSettings(BaseSettings):
         Order (first wins):
         1. init_settings - explicit constructor arguments
         2. env_settings - SKULD__* environment variables
-        3. yaml - YAML config file
-        4. file_secret_settings - /run/secrets files
+        3. legacy workload-identity env vars (NIUU_WORKLOAD_IDENTITY_*)
+        4. yaml - YAML config file
+        5. file_secret_settings - /run/secrets files
         """
         return (
             init_settings,
             env_settings,
+            LegacyWorkloadIdentityEnvSource(settings_cls),
             YamlConfigSettingsSource(settings_cls),
             file_secret_settings,
         )

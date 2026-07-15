@@ -8,18 +8,26 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
+from niuu.adapters.inbound.auth import extract_principal
+from niuu.domain.agent_directory import (
+    AgentDirectoryEntry,
+    AgentDirectoryFilters,
+    AgentDirectoryPage,
+)
+from niuu.domain.models import Principal
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.service_databases import apply_service_database_settings, database_pool
-from niuu.service_settings import Settings
 from niuu.settings_schema import (
     SettingsFieldSchema,
     SettingsProviderSchema,
     SettingsSectionSchema,
 )
 from niuu.utils import import_class, resolve_secret_kwargs
+from observatory.a2a_cards import HttpAgentCardResolver
+from observatory.agent_directory import AgentDirectoryService
 from observatory.discovery import ObservatoryDiscoveryService
 from observatory.entity_discovery import build_discovery_adapter
 from observatory.registry import (
@@ -29,6 +37,7 @@ from observatory.registry import (
     RegistryNotFoundError,
     RegistryValidationError,
 )
+from volundr.config import Settings
 
 KEEPALIVE_INTERVAL = 15.0
 FORWARDED_AUTH_HEADERS = (
@@ -55,6 +64,10 @@ def _repository(request: Request) -> ObservatoryRegistryRepository:
 
 def _discovery(request: Request) -> ObservatoryDiscoveryService:
     return request.app.state.discovery_service
+
+
+def _agent_directory(request: Request) -> AgentDirectoryService:
+    return request.app.state.agent_directory_service
 
 
 def _create_http_auth_adapter(config) -> HttpAuthPort:
@@ -119,6 +132,55 @@ def create_router() -> APIRouter:
             "status": "healthy",
             "guildUrl": request.app.state.guild_url,
         }
+
+    @router.get(
+        "/agents",
+        response_model=AgentDirectoryPage,
+        summary="List principal-visible addressable A2A agents",
+    )
+    async def list_agents(
+        request: Request,
+        skill: list[str] | None = Query(default=None),
+        tag: list[str] | None = Query(default=None),
+        kind: list[str] | None = Query(default=None),
+        observed_status: list[str] | None = Query(default=None, alias="status"),
+        environment_id: list[str] | None = Query(default=None, alias="environmentId"),
+        cluster: list[str] | None = Query(default=None),
+        instance: list[str] | None = Query(default=None),
+        principal: Principal = Depends(extract_principal),
+    ) -> AgentDirectoryPage:
+        return await _agent_directory(request).list_agents(
+            principal,
+            headers=_forward_headers(request),
+            filters=AgentDirectoryFilters.from_values(
+                skills=skill,
+                tags=tag,
+                kinds=kind,
+                statuses=observed_status,
+                environment_ids=environment_id,
+                cluster_ids=cluster,
+                instance_ids=instance,
+            ),
+        )
+
+    @router.get(
+        "/agents/{agent_id}",
+        response_model=AgentDirectoryEntry,
+        summary="Get one principal-visible addressable A2A agent",
+    )
+    async def get_agent(
+        request: Request,
+        agent_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> AgentDirectoryEntry:
+        entry = await _agent_directory(request).get_agent(
+            agent_id,
+            principal,
+            headers=_forward_headers(request),
+        )
+        if entry is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+        return entry
 
     @router.get("/registry", summary="Get the observatory type registry")
     async def registry(request: Request) -> dict[str, object]:
@@ -273,6 +335,7 @@ def create_app(
     *,
     registry_repository: ObservatoryRegistryRepository | None = None,
     discovery_service: ObservatoryDiscoveryService | None = None,
+    agent_directory_service: AgentDirectoryService | None = None,
 ) -> FastAPI:
     """Create the Observatory ASGI app."""
     loaded_settings = apply_service_database_settings(settings or Settings(), "observatory")
@@ -285,6 +348,21 @@ def create_app(
             timeout_seconds=guild_cfg.timeout_seconds,
             discovery_adapter=build_discovery_adapter(loaded_settings.observatory.discovery),
         )
+    directory = agent_directory_service
+    if directory is None:
+        directory_cfg = loaded_settings.observatory.directory
+        directory = AgentDirectoryService(
+            discovery=discovery,
+            card_resolver=HttpAgentCardResolver(
+                timeout_seconds=directory_cfg.card_timeout_seconds,
+                default_cache_ttl_seconds=directory_cfg.card_cache_ttl_seconds,
+                signature_algorithms=directory_cfg.signature_algorithms,
+                authenticated_card_origins=directory_cfg.authenticated_card_origins,
+            ),
+            instance_id=directory_cfg.instance_id,
+            cluster_id=directory_cfg.cluster_id,
+            max_concurrency=directory_cfg.local_max_concurrency,
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -292,6 +370,7 @@ def create_app(
             app.state.registry_repository = registry_repository
             await app.state.registry_repository.ensure_seeded()
             app.state.discovery_service = discovery
+            app.state.agent_directory_service = directory
             yield
             return
 
@@ -300,12 +379,14 @@ def create_app(
             await repo.ensure_seeded()
             app.state.registry_repository = repo
             app.state.discovery_service = discovery
+            app.state.agent_directory_service = directory
             yield
 
     app = FastAPI(title="Observatory API", lifespan=lifespan)
     app.state.settings = loaded_settings
     app.state.registry_repository = registry_repository or InMemoryObservatoryRegistryRepository()
     app.state.discovery_service = discovery
+    app.state.agent_directory_service = directory
     app.state.guild_url = getattr(discovery, "guild_url", getattr(discovery, "base_url", ""))
     app.state.guild_auth_adapter = loaded_settings.observatory.guild.auth.adapter
 

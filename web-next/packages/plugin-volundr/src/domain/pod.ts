@@ -24,10 +24,7 @@ export interface ConfigMapMountSource {
 }
 
 export type MountSource =
-  | GitMountSource
-  | PvcMountSource
-  | SecretMountSource
-  | ConfigMapMountSource;
+  GitMountSource | PvcMountSource | SecretMountSource | ConfigMapMountSource;
 
 export interface Mount {
   name: string;

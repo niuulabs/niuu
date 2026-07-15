@@ -55,6 +55,18 @@ describe('ravnSchema', () => {
     expect(() => ravnSchema.parse({ ...validRavn, personaName: '' })).toThrow();
   });
 
+  it('allows a managed resident to use its resident name without a persona', () => {
+    expect(
+      ravnSchema.parse({
+        ...validRavn,
+        personaName: '',
+        residentName: 'Sol',
+        kind: 'resident',
+        managed: true,
+      }).residentName,
+    ).toBe('Sol');
+  });
+
   it('rejects empty model', () => {
     expect(() => ravnSchema.parse({ ...validRavn, model: '' })).toThrow();
   });
@@ -71,5 +83,45 @@ describe('ravnSchema', () => {
 
   it('rejects a malformed createdAt', () => {
     expect(() => ravnSchema.parse({ ...validRavn, createdAt: 'not-a-date' })).toThrow();
+  });
+
+  // ── Resident fields ────────────────────────────────────────────────────────
+
+  it('accepts a resident ravn with all resident fields', () => {
+    const result = ravnSchema.parse({
+      ...validRavn,
+      residentName: 'huginn',
+      peerId: 'peer-huginn-01',
+      kind: 'resident',
+      chatEndpoint: 'wss://skuld.example/s/abc/session',
+      sessionId: '0f8e7d6c-5b4a-4392-8170-6e5d4c3b2a19',
+    });
+    expect(result.residentName).toBe('huginn');
+    expect(result.peerId).toBe('peer-huginn-01');
+    expect(result.kind).toBe('resident');
+    expect(result.chatEndpoint).toBe('wss://skuld.example/s/abc/session');
+    expect(result.sessionId).toBe('0f8e7d6c-5b4a-4392-8170-6e5d4c3b2a19');
+  });
+
+  it('accepts a record without any resident fields', () => {
+    const result = ravnSchema.parse(validRavn);
+    expect(result.residentName).toBeUndefined();
+    expect(result.peerId).toBeUndefined();
+    expect(result.kind).toBeUndefined();
+    expect(result.chatEndpoint).toBeUndefined();
+    expect(result.sessionId).toBeUndefined();
+  });
+
+  it('accepts a null chatEndpoint', () => {
+    const result = ravnSchema.parse({ ...validRavn, kind: 'resident', chatEndpoint: null });
+    expect(result.chatEndpoint).toBeNull();
+  });
+
+  it('accepts kind "persona"', () => {
+    expect(ravnSchema.parse({ ...validRavn, kind: 'persona' }).kind).toBe('persona');
+  });
+
+  it('rejects an unknown kind', () => {
+    expect(() => ravnSchema.parse({ ...validRavn, kind: 'ghost' })).toThrow();
   });
 });

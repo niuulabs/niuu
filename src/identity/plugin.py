@@ -4,20 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from niuu.ports.plugin import APIRouteDomain, Service, ServiceDefinition, ServicePlugin
-
-
-class _IdentityStub(Service):
-    """Stub service while identity remains co-hosted in the niuu API."""
-
-    async def start(self) -> None:
-        pass
-
-    async def stop(self) -> None:
-        pass
-
-    async def health_check(self) -> bool:
-        return True
+from niuu.ports.plugin import APIRouteDomain, ServiceDefinition, ServicePlugin
 
 
 class IdentityPlugin(ServicePlugin):
@@ -32,17 +19,13 @@ class IdentityPlugin(ServicePlugin):
         return "Identity, tenancy, and token routes"
 
     def register_service(self) -> ServiceDefinition:
-        return ServiceDefinition(
+        return ServiceDefinition.hosted(
             name="identity",
             description="Identity, tenancy, and token service",
-            factory=_IdentityStub,
             default_enabled=True,
             depends_on=["postgres"],
             default_port=8083,
         )
-
-    def create_service(self) -> Service:
-        return self.register_service().factory()
 
     def create_api_app(self) -> Any:
         from identity.app import create_app

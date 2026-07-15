@@ -12,27 +12,10 @@ import typer
 
 from niuu.cli_api_client import CLIAPIClient
 from niuu.cli_output import print_json, print_success, print_table
-from niuu.ports.plugin import APIRouteDomain, Service, ServiceDefinition, ServicePlugin, TUIPageSpec
+from niuu.ports.plugin import APIRouteDomain, ServiceDefinition, ServicePlugin, TUIPageSpec
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-
-class _TingService(Service):
-    """Ting lifecycle managed by the Volundr unified server.
-
-    Ting is mounted into the Volundr FastAPI app on the same port,
-    so this service only tracks that Volundr has started.
-    """
-
-    async def start(self) -> None:
-        pass
-
-    async def stop(self) -> None:
-        pass
-
-    async def health_check(self) -> bool:
-        return True
 
 
 class TingPlugin(ServicePlugin):
@@ -47,21 +30,17 @@ class TingPlugin(ServicePlugin):
         return "Autonomous saga coordinator — reviews, dispatch, runs"
 
     def register_service(self) -> ServiceDefinition:
-        return ServiceDefinition(
+        return ServiceDefinition.hosted(
             name="ting",
             description="Autonomous saga coordinator",
-            factory=_TingService,
             default_enabled=True,
             depends_on=["postgres", "volundr"],
         )
 
-    def create_service(self) -> Service:
-        return self.register_service().factory()
-
-    def create_api_app(self) -> Any:
+    def create_api_app(self, public_origin: str | None = None) -> Any:
         from ting.main import create_app
 
-        return create_app()
+        return create_app(public_origin=public_origin)
 
     def api_route_domains(self) -> tuple[APIRouteDomain, ...]:
         return (
@@ -103,6 +82,7 @@ class TingPlugin(ServicePlugin):
                     "/api/v1/ting/flock",
                     "/api/v1/ting/flock_flows",
                     "/api/v1/ting/research",
+                    "/api/v1/ting/specs",
                 ),
                 description="Flock configuration and flow library routes.",
             ),

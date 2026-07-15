@@ -1,0 +1,202 @@
+"""Mimir/local resident state adapters."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from pathlib import Path
+
+from ravn.adapters.resident_pages import collect_pages
+from ravn.domain.resident_continuation import (
+    ResidentBudgetSnapshot,
+    ResidentMemoryEntry,
+    ResidentPolicyDecisionRecord,
+    ResidentPolicyObservation,
+    ResidentTurnRecord,
+)
+from ravn.domain.resident_state import ResidentStatePort
+from ravn.ports.mimir import MimirPort
+from ravn.resident_continuation import (
+    _OPERATOR_ANSWER_PATH,
+    _OPERATOR_NEEDED_PATH,
+    LocalResidentMemory,
+    _compact_line,
+    _first_heading_or_line,
+    _operator_answer_is_consumed,
+    _operator_marker_is_pending,
+    _parse_policy_observation,
+    _render_answered_operator_needed,
+    _render_budget_snapshot,
+    _render_consumed_operator_answer,
+    _render_operator_answer,
+    _render_operator_needed,
+    _render_policy_decision,
+    _render_policy_observation,
+    _render_turn_record,
+    _slug,
+    _timestamp_slug,
+)
+
+
+class MimirResidentState(ResidentStatePort):
+    """One Mimir-backed resident state adapter."""
+
+    def __init__(
+        self,
+        mimir: MimirPort,
+        *,
+        continuation_prefix: str = "resident/continuation",
+    ) -> None:
+        self._mimir = mimir
+        self._prefix = continuation_prefix.strip("/").strip() or "resident/continuation"
+
+    async def available(self) -> bool:
+        return True
+
+    async def recall(self, mandate: str, *, limit: int = 5) -> list[ResidentMemoryEntry]:
+        query = _compact_line(mandate) or "resident continuation"
+        pages = await self._mimir.search(query)
+        entries: list[ResidentMemoryEntry] = []
+        for page in pages:
+            path = getattr(page.meta, "path", "")
+            if not path.startswith(self._prefix):
+                continue
+            summary = getattr(page.meta, "summary", "") or _first_heading_or_line(page.content)
+            entries.append(ResidentMemoryEntry(path=path, summary=summary, content=page.content))
+            if len(entries) >= limit:
+                break
+        return entries
+
+    async def write_turn(self, record: ResidentTurnRecord) -> str:
+        stamp = record.created_at.strftime("%Y%m%dT%H%M%SZ")
+        path = f"{self._prefix}/turns/{stamp}-{record.turn_index}.md"
+        await self._mimir.upsert_page(path, _render_turn_record(record))
+        return path
+
+    async def write_budget(self, snapshot: ResidentBudgetSnapshot) -> str:
+        path = f"{self._prefix}/budget/latest.md"
+        await self._mimir.upsert_page(
+            path,
+            _render_budget_snapshot(snapshot, updated_at=datetime.now(UTC)),
+        )
+        return path
+
+    async def write_policy_observation(self, observation: ResidentPolicyObservation) -> str:
+        slug = _slug(observation.subject) or "policy-observation"
+        path = f"{self._prefix}/policy/{slug}.md"
+        await self._mimir.upsert_page(path, _render_policy_observation(observation))
+        return path
+
+    async def list_policy_observations(self) -> list[ResidentPolicyObservation]:
+        return await collect_pages(self._mimir, f"{self._prefix}/policy", _parse_policy_observation)
+
+    async def write_policy_decision(self, decision: ResidentPolicyDecisionRecord) -> str:
+        stamp = decision.created_at.strftime("%Y%m%dT%H%M%SZ")
+        slug = _slug(decision.action_title) or "policy-decision"
+        path = f"{self._prefix}/policy-decisions/{stamp}-{decision.turn_index}-{slug}.md"
+        await self._mimir.upsert_page(path, _render_policy_decision(decision))
+        return path
+
+    async def write_operator_needed(
+        self,
+        *,
+        question: str,
+        reason: str,
+        turn: ResidentTurnRecord,
+    ) -> str:
+        path = f"{self._prefix}/{_OPERATOR_NEEDED_PATH}"
+        await self._mimir.upsert_page(
+            path,
+            _render_operator_needed(
+                question=question,
+                reason=reason,
+                turn=turn,
+                status="pending",
+            ),
+        )
+        return path
+
+    async def read_operator_needed(self) -> ResidentMemoryEntry | None:
+        path = f"{self._prefix}/{_OPERATOR_NEEDED_PATH}"
+        try:
+            content = await self._mimir.read_page(path)
+        except FileNotFoundError:
+            return None
+        if not _operator_marker_is_pending(content):
+            return None
+        return ResidentMemoryEntry(
+            path=path,
+            summary=_first_heading_or_line(content),
+            content=content,
+        )
+
+    async def write_operator_answer(self, answer: str) -> str:
+        now = datetime.now(UTC)
+        answer_path = f"{self._prefix}/{_OPERATOR_ANSWER_PATH}"
+        await self._mimir.upsert_page(answer_path, _render_operator_answer(answer, answered_at=now))
+        history_path = f"{self._prefix}/operator-answers/{_timestamp_slug(now)}.md"
+        await self._mimir.upsert_page(
+            history_path, _render_operator_answer(answer, answered_at=now)
+        )
+        marker_path = f"{self._prefix}/{_OPERATOR_NEEDED_PATH}"
+        try:
+            prior = await self._mimir.read_page(marker_path)
+        except FileNotFoundError:
+            prior = ""
+        await self._mimir.upsert_page(
+            marker_path,
+            _render_answered_operator_needed(prior, answer_path=answer_path, answered_at=now),
+        )
+        return answer_path
+
+    async def read_operator_answer(self) -> ResidentMemoryEntry | None:
+        path = f"{self._prefix}/{_OPERATOR_ANSWER_PATH}"
+        try:
+            content = await self._mimir.read_page(path)
+        except FileNotFoundError:
+            return None
+        if _operator_answer_is_consumed(content):
+            return None
+        return ResidentMemoryEntry(
+            path=path,
+            summary=_first_heading_or_line(content),
+            content=content,
+        )
+
+    async def consume_operator_answer(self, answer: ResidentMemoryEntry) -> str:
+        path = answer.path or f"{self._prefix}/{_OPERATOR_ANSWER_PATH}"
+        try:
+            prior = await self._mimir.read_page(path)
+        except FileNotFoundError:
+            prior = answer.content
+        await self._mimir.upsert_page(
+            path,
+            _render_consumed_operator_answer(prior, consumed_at=datetime.now(UTC)),
+        )
+        return path
+
+    async def list_refs(self, prefix: str = "") -> list[str]:
+        pages = await self._mimir.list_pages(prefix=prefix or self._prefix)
+        return sorted(str(getattr(page, "path", "")) for page in pages if getattr(page, "path", ""))
+
+
+class LocalResidentState(LocalResidentMemory, ResidentStatePort):
+    """Filesystem-backed resident state adapter for local development/tests."""
+
+    def __init__(
+        self,
+        root: Path,
+        *,
+        continuation_prefix: str = "resident/continuation",
+    ) -> None:
+        LocalResidentMemory.__init__(self, root, prefix=continuation_prefix)
+
+    async def available(self) -> bool:
+        return True
+
+    async def list_refs(self, prefix: str = "") -> list[str]:
+        base = self._root / (Path(prefix) if prefix else self._prefix)
+        if not base.exists():
+            return []
+        return sorted(
+            str(path.relative_to(self._root)) for path in base.rglob("*.md") if path.is_file()
+        )

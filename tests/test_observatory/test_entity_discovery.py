@@ -14,6 +14,7 @@ from observatory.entity_discovery import (
     FluxHelmReleaseSessionDiscoveryAdapter,
     HttpObservatoryDiscoveryAdapter,
     KubernetesDiscoveryAdapter,
+    RavnValkyrieDiscoveryAdapter,
     StaticRelationshipDiscoveryAdapter,
     VolundrSessionsDiscoveryAdapter,
     WardenSpecDiscoveryAdapter,
@@ -94,6 +95,53 @@ async def test_kubernetes_discovery_projects_labels_to_topology(tmp_path, monkey
 
 
 @pytest.mark.asyncio
+async def test_kubernetes_discovery_projects_valkyrie_type(tmp_path, monkeypatch) -> None:
+    service_account = tmp_path / "sa"
+    service_account.mkdir()
+    (service_account / "token").write_text("token", encoding="utf-8")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["labelSelector"] == "niuu.world/cluster=ymir"
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "metadata": {
+                            "name": "valkyrie-ymir-k8s",
+                            "namespace": "nats",
+                            "uid": "uid-valkyrie",
+                            "labels": {
+                                "niuu.world/cluster": "ymir",
+                                "niuu.world/entity-id": "valkyrie-ymir-k8s",
+                                "observatory.niuu.world/type": "valkyrie",
+                                "app.kubernetes.io/name": "valkyrie",
+                                "app.kubernetes.io/component": "resident-agent",
+                            },
+                        },
+                        "status": {"replicas": 1, "readyReplicas": 1, "availableReplicas": 1},
+                    }
+                ]
+            },
+        )
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        label_selector="niuu.world/cluster=ymir",
+        include_kinds=["deployments"],
+        service_account_root=str(service_account),
+        transport=httpx.MockTransport(handler),
+    )
+
+    snapshot = topology_from_discovery(await adapter.discover())
+    valkyrie = next(node for node in snapshot["nodes"] if node["typeId"] == "valkyrie")
+
+    assert valkyrie["id"] == "runtime:ymir:nats:valkyrie:valkyrie-ymir-k8s"
+    assert valkyrie["status"] == "healthy"
+
+
+@pytest.mark.asyncio
 async def test_kubernetes_discovery_collapses_resources_to_logical_entities(
     tmp_path, monkeypatch
 ) -> None:
@@ -157,9 +205,7 @@ async def test_kubernetes_discovery_collapses_resources_to_logical_entities(
 
 
 @pytest.mark.asyncio
-async def test_kubernetes_discovery_projects_declared_relationships(
-    tmp_path, monkeypatch
-) -> None:
+async def test_kubernetes_discovery_projects_declared_relationships(tmp_path, monkeypatch) -> None:
     service_account = tmp_path / "sa"
     service_account.mkdir()
     (service_account / "token").write_text("token", encoding="utf-8")
@@ -235,9 +281,7 @@ async def test_kubernetes_discovery_projects_declared_relationships(
 
 
 @pytest.mark.asyncio
-async def test_kubernetes_discovery_supports_generic_tagged_objects(
-    tmp_path, monkeypatch
-) -> None:
+async def test_kubernetes_discovery_supports_generic_tagged_objects(tmp_path, monkeypatch) -> None:
     service_account = tmp_path / "sa"
     service_account.mkdir()
     (service_account / "token").write_text("token", encoding="utf-8")
@@ -337,8 +381,7 @@ async def test_warden_spec_discovery_emits_semantic_relationships(tmp_path) -> N
 
     snapshot = topology_from_discovery(result)
     edges = {
-        (edge["sourceId"], edge["targetId"], edge["relationType"])
-        for edge in snapshot["edges"]
+        (edge["sourceId"], edge["targetId"], edge["relationType"]) for edge in snapshot["edges"]
     }
 
     assert (
@@ -426,6 +469,49 @@ async def test_http_observatory_adapter_merges_remote_snapshot() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ravn_valkyrie_adapter_projects_cross_cluster_dashboard() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/ravn/valkyrie/dashboard"
+        return httpx.Response(
+            200,
+            json={
+                "environments": [{"id": "env-k8s-eitri", "health": "watch"}],
+                "valkyries": [
+                    {
+                        "id": "valkyrie-eitri-k8s",
+                        "name": "Bryn",
+                        "environmentId": "env-k8s-eitri",
+                        "status": "online",
+                        "persona": "k8s-valkyrie",
+                        "specialty": "workshop operator",
+                        "autonomyMode": "guarded",
+                        "wakefulness": "watching",
+                        "flockId": "flock-k8s",
+                        "confidence": 0.82,
+                    }
+                ],
+            },
+        )
+
+    adapter = RavnValkyrieDiscoveryAdapter(
+        base_url="https://ravn.example",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    assert len(result.entities) == 1
+    valkyrie = result.entities[0]
+    assert valkyrie.id == "runtime:eitri:nats:valkyrie:valkyrie-eitri-k8s"
+    assert valkyrie.kind == "valkyrie"
+    assert valkyrie.name == "Bryn"
+    assert valkyrie.cluster == "eitri"
+    assert valkyrie.status == "healthy"
+    assert valkyrie.metadata["ravnEnvironmentId"] == "env-k8s-eitri"
+    assert valkyrie.metadata["environmentHealth"] == "watch"
+
+
+@pytest.mark.asyncio
 async def test_static_relationship_adapter_resolves_cross_cluster_refs() -> None:
     result = await CompositeDiscoveryAdapter(
         [
@@ -468,8 +554,7 @@ async def test_static_relationship_adapter_resolves_cross_cluster_refs() -> None
     assert snapshot["edges"] == [
         {
             "id": (
-                "edge:observes:service-observatory-ymir-volundr:"
-                "service-observatory-noatun-volundr"
+                "edge:observes:service-observatory-ymir-volundr:service-observatory-noatun-volundr"
             ),
             "sourceId": "runtime:ymir:volundr:service:observatory",
             "targetId": "runtime:noatun:volundr:service:observatory",
@@ -501,6 +586,10 @@ async def test_volundr_sessions_adapter_projects_running_sessions() -> None:
                     "model": "codex",
                     "tokens_used": 2048,
                     "chat_endpoint": "wss://sessions.example/session",
+                    "a2aCardUrl": "https://sessions.example/.well-known/agent-card.json",
+                    "a2aEndpointUrl": "https://sessions.example/a2a",
+                    "environmentId": "environment-a",
+                    "a2aVisibility": "tenant",
                 }
             ],
         )
@@ -537,6 +626,14 @@ async def test_volundr_sessions_adapter_projects_running_sessions() -> None:
     assert session["parentId"] == "namespace-noatun-skuld"
     assert session["status"] == "healthy"
     assert session["tokens"] == 2048
+    assert session["endpoints"] == {
+        "chat": "wss://sessions.example/session",
+        "a2a": "https://sessions.example/a2a",
+        "a2aCard": "https://sessions.example/.well-known/agent-card.json",
+    }
+    assert session["environmentId"] == "environment-a"
+    assert session["visibility"] == "tenant"
+    assert session["agentKind"] == "workflow-session"
     assert snapshot["edges"] == [
         {
             "id": (
@@ -578,6 +675,12 @@ async def test_flux_helmrelease_session_adapter_projects_ready_dev_sessions(
                         "id": session_id,
                         "name": f"session-{session_id[:4]}",
                         "model": "gpt-5.5",
+                        "a2aCardUrl": "https://agent.example/card.json",
+                        "a2aEndpointUrl": "https://agent.example/a2a",
+                        "environmentId": "production",
+                        "a2aVisibility": "tenant",
+                        "ownerId": "owner-1",
+                        "tenantId": "tenant-1",
                     },
                 }
             },
@@ -637,6 +740,15 @@ async def test_flux_helmrelease_session_adapter_projects_ready_dev_sessions(
     assert [node["label"] for node in session_nodes] == ["session-0025"]
     assert session_nodes[0]["parentId"] == "namespace-noatun-skuld"
     assert session_nodes[0]["model"] == "gpt-5.5"
+    entity = next(item for item in result.entities if item.kind == "skuld")
+    assert entity.endpoints == {
+        "a2a": "https://agent.example/a2a",
+        "a2aCard": "https://agent.example/card.json",
+    }
+    assert entity.metadata["environmentId"] == "production"
+    assert entity.metadata["visibility"] == "tenant"
+    assert entity.metadata["ownerId"] == "owner-1"
+    assert entity.metadata["tenantId"] == "tenant-1"
     assert len(snapshot["edges"]) == 1
     assert snapshot["edges"][0]["relationType"] == "manages"
 

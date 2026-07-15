@@ -1,6 +1,6 @@
 """Nuitka build configuration for the Niuu single-binary distribution.
 
-Compiles all Python packages (cli, niuu, volundr, ting, skuld) plus
+Compiles all Python packages used by the CLI and plugin entry points plus
 bundled web UI assets, migration SQL files, and PostgreSQL binaries
 into a single portable ``--onefile`` binary.
 
@@ -32,12 +32,18 @@ INCLUDE_PACKAGES = [
     "cli",
     "credentials",
     "features",
+    "guild",
     "identity",
     "integrations",
+    "mimir",
     "niuu",
+    "observatory",
+    "personas",
+    "ravn",
     "tracker",
     "volundr",
     "ting",
+    "bifrost",
     "skuld",
     # FastAPI / uvicorn ecosystem (dynamically imported)
     "uvicorn",
@@ -64,13 +70,16 @@ INCLUDE_PACKAGE_DATA = [
 # Data directories mapped into the binary
 DATA_DIR_MAPPINGS = [
     # Web UI assets → cli/web/dist inside the binary
-    (REPO_ROOT / "src" / "cli" / "web" / "dist", "cli/web/dist"),
-    # Volundr migrations
-    (REPO_ROOT / "src" / "cli" / "migrations" / "volundr", "cli/migrations/volundr"),
-    # Ting migrations
-    (REPO_ROOT / "src" / "cli" / "migrations" / "ting", "cli/migrations/ting"),
+    (REPO_ROOT / "web-next" / "apps" / "niuu" / "dist", "cli/web/dist"),
     # PostgreSQL binaries built from source
     (REPO_ROOT / "build" / "pginstall", "niuu/pginstall"),
+]
+
+# Data file globs mapped into the binary. Use file globs for migrations so
+# Ting's subdirectory is not recursively copied into Volundr's migration path.
+DATA_FILE_MAPPINGS = [
+    (REPO_ROOT / "migrations" / "*.sql", "cli/migrations/volundr/"),
+    (REPO_ROOT / "migrations" / "ting" / "*.sql", "cli/migrations/ting/"),
 ]
 
 # Imports to exclude from the binary
@@ -140,6 +149,10 @@ def build_command(
     for src_dir, dest in DATA_DIR_MAPPINGS:
         if src_dir.is_dir() and any(src_dir.iterdir()):
             cmd.append(f"--include-data-dir={src_dir}={dest}")
+
+    for src_glob, dest in DATA_FILE_MAPPINGS:
+        if src_glob.parent.is_dir() and any(src_glob.parent.glob(src_glob.name)):
+            cmd.append(f"--include-data-files={src_glob}={dest}")
 
     nofollow = ",".join(NOFOLLOW_IMPORTS)
     cmd.append(f"--nofollow-import-to={nofollow}")

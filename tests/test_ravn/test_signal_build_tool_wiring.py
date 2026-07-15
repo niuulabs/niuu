@@ -3,10 +3,27 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
+import pytest
+
+import ravn.cli.commands as commands_mod
+from ravn.adapters.realm.client import BuildGrant
 from ravn.adapters.tools.build_tool import attach_build_tool
-from ravn.cli.commands import _attach_signal_build_tool, _build_tool_build_backend
+from ravn.cli.commands import (
+    _attach_signal_build_tool,
+    _build_tool_build_backend,
+    _resolve_realm_build_config,
+)
 from ravn.config import Settings
+
+
+@pytest.fixture(autouse=True)
+def _fresh_realm_client_cache():
+    """RealmClients are cached per auth config; tests must not share them."""
+    commands_mod._REALM_CLIENT_CACHE.clear()
+    yield
+    commands_mod._REALM_CLIENT_CACHE.clear()
 
 
 class _FakeAgent:
@@ -41,6 +58,48 @@ def test_attach_signal_build_tool_registers_build_tool_for_signals(tmp_path) -> 
     assert any(getattr(tool, "name", "") == "build_tool" for tool, _ in agent.registered)
 
 
+def _registered_build_tool(agent: _FakeAgent) -> Any:
+    return next(tool for tool, _ in agent.registered if getattr(tool, "name", "") == "build_tool")
+
+
+def test_attach_signal_build_tool_defaults_preserve_previous_policy_constants(tmp_path) -> None:
+    # P5a: a config-less Settings() must wire the exact old constants —
+    # 3 repair attempts and 0.74 flock confidence.
+    agent = _FakeAgent()
+    _attach_signal_build_tool(
+        agent,
+        tmp_path,
+        triggered_by="signal:signal.host.event",
+        settings=Settings(),
+        publisher=None,
+    )
+
+    tool = _registered_build_tool(agent)
+    assert tool._max_repair_attempts == 3
+    assert tool._flock_confidence == 0.74
+
+
+def test_attach_signal_build_tool_threads_configured_policy_values(tmp_path) -> None:
+    agent = _FakeAgent()
+    settings = Settings(
+        resident_evolution={
+            "build_repair_attempts": 7,
+            "self_registered_tool_confidence": 0.9,
+        }
+    )
+    _attach_signal_build_tool(
+        agent,
+        tmp_path,
+        triggered_by="signal:signal.host.event",
+        settings=settings,
+        publisher=None,
+    )
+
+    tool = _registered_build_tool(agent)
+    assert tool._max_repair_attempts == 7
+    assert tool._flock_confidence == 0.9
+
+
 def test_build_tool_build_backend_is_inline_by_default_and_dynamic_when_configured() -> None:
     # Empty adapter -> inline authoring (None backend).
     assert _build_tool_build_backend(Settings()) is None
@@ -48,12 +107,143 @@ def test_build_tool_build_backend_is_inline_by_default_and_dynamic_when_configur
     configured = Settings(
         resident_evolution={
             "tool_build_adapter": "ravn.adapters.tool_build.ForgeSessionToolBuildBackend",
-            "tool_build_kwargs": {"base_url": "http://forge", "pat_env": "UNSET_PAT"},
+            "tool_build_kwargs": {"base_url": "http://forge"},
         }
     )
     backend = _build_tool_build_backend(configured)
     assert backend is not None
     assert backend.name == "forge_session"
+
+
+def test_build_tool_build_backend_injects_configured_workflow_selector() -> None:
+    configured = Settings(
+        resident_evolution={
+            "tool_build_adapter": "ravn.adapters.tool_build.TingWorkflowToolBuildBackend",
+            "tool_build_kwargs": {"base_url": "http://ting"},
+            "tool_builder_workflow": {"tags": ["tool-builder"]},
+        }
+    )
+
+    backend = _build_tool_build_backend(configured)
+
+    assert backend is not None
+    assert backend.name == "ting_workflow"
+    assert backend._workflow_selector.tags == ["tool-builder"]
+
+
+def test_build_tool_build_backend_applies_realm_selector_override() -> None:
+    configured = Settings(
+        resident_evolution={
+            "tool_build_adapter": "ravn.adapters.tool_build.TingWorkflowToolBuildBackend",
+            "tool_build_kwargs": {"base_url": "http://ting"},
+            "tool_builder_workflow": {"tags": ["static-only"]},
+        }
+    )
+
+    # A realm-resolved selector overrides the static tool_builder_workflow.
+    backend = _build_tool_build_backend(configured, workflow_selector={"names": ["tool-builder"]})
+
+    assert backend is not None
+    assert backend._workflow_selector.names == ["tool-builder"]
+    assert backend._workflow_selector.tags == []
+
+
+# ---------------------------------------------------------------------------
+# _resolve_realm_build_config — realm grant resolution + fallbacks
+# ---------------------------------------------------------------------------
+
+
+def _realm_settings(**overrides: Any) -> Settings:
+    base = {
+        "tool_build_adapter": "ravn.adapters.tool_build.TingWorkflowToolBuildBackend",
+        "tool_build_kwargs": {"base_url": "http://volundr"},
+    }
+    base.update(overrides)
+    return Settings(resident_evolution=base)
+
+
+def test_resolve_realm_build_config_falls_back_when_no_realm_slug() -> None:
+    settings = _realm_settings(autonomy_mode="guarded")
+
+    resolved = _resolve_realm_build_config(settings)
+
+    assert resolved.autonomy_mode == "guarded"
+    assert resolved.workflow_selector is None
+
+
+def test_resolve_realm_build_config_uses_grant_when_present() -> None:
+    settings = _realm_settings(realm_slug="payments", autonomy_mode="guarded")
+    grant = BuildGrant(level=5, limits={"workflow": "tool-builder"}, target="t")
+
+    async def _resolve(_slug: str) -> BuildGrant:
+        return grant
+
+    with patch("ravn.adapters.realm.RealmClient") as fake_cls:
+        fake_cls.return_value.resolve_build_grant = _resolve
+        resolved = _resolve_realm_build_config(settings)
+
+    # level 5 -> yolo; workflow "tool-builder" -> names selector.
+    assert resolved.autonomy_mode == "yolo"
+    assert resolved.workflow_selector == {"names": ["tool-builder"]}
+
+
+def test_resolve_realm_build_config_uses_configured_trust_table() -> None:
+    # P5a: the trust-level -> autonomy-mode table comes from config. Level 5
+    # is yolo under the default table but only autonomous under this one.
+    settings = _realm_settings(
+        realm_slug="payments",
+        autonomy_mode="guarded",
+        trust_level_autonomy_table={"autonomous": 4, "yolo": 6},
+    )
+    grant = BuildGrant(level=5, limits={}, target="t")
+
+    async def _resolve(_slug: str) -> BuildGrant:
+        return grant
+
+    with patch("ravn.adapters.realm.RealmClient") as fake_cls:
+        fake_cls.return_value.resolve_build_grant = _resolve
+        resolved = _resolve_realm_build_config(settings)
+
+    assert resolved.autonomy_mode == "autonomous"
+
+
+def test_resolve_realm_build_config_falls_back_when_no_grant() -> None:
+    settings = _realm_settings(realm_slug="payments", autonomy_mode="autonomous")
+
+    async def _resolve(_slug: str) -> None:
+        return None
+
+    with patch("ravn.adapters.realm.RealmClient") as fake_cls:
+        fake_cls.return_value.resolve_build_grant = _resolve
+        resolved = _resolve_realm_build_config(settings)
+
+    assert resolved.autonomy_mode == "autonomous"
+    assert resolved.workflow_selector is None
+
+
+def test_resolve_realm_build_config_falls_back_on_realm_outage() -> None:
+    settings = _realm_settings(realm_slug="payments", autonomy_mode="guarded")
+
+    async def _boom(_slug: str) -> BuildGrant:
+        raise RuntimeError("realm unreachable")
+
+    with patch("ravn.adapters.realm.RealmClient") as fake_cls:
+        fake_cls.return_value.resolve_build_grant = _boom
+        resolved = _resolve_realm_build_config(settings)
+
+    # A realm outage must not brick the resident: degrade to static config.
+    assert resolved.autonomy_mode == "guarded"
+    assert resolved.workflow_selector is None
+
+
+def test_resolve_realm_build_config_falls_back_without_base_url() -> None:
+    settings = Settings(resident_evolution={"realm_slug": "payments", "autonomy_mode": "guarded"})
+
+    resolved = _resolve_realm_build_config(settings)
+
+    # No realm_api_base_url and no tool_build base_url -> static config.
+    assert resolved.autonomy_mode == "guarded"
+    assert resolved.workflow_selector is None
 
 
 def test_investigation_prompt_handles_missing_and_failing_providers(tmp_path) -> None:

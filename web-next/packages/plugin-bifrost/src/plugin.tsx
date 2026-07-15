@@ -4,7 +4,7 @@ import { BifrostPage } from './ui/BifrostPage';
 
 export const bifrostPlugin = definePlugin({
   id: 'bifrost',
-  rune: 'ᛒ',
+  rune: 'B',
   title: 'Bifröst',
   subtitle: 'llm control plane',
   tabs: [

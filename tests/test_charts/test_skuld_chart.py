@@ -56,6 +56,20 @@ class TestValuesDefaults:
         """Test broker cliType defaults to claude."""
         assert values_yaml["broker"]["cliType"] == "claude"
 
+    def test_behavior_settings_have_documented_defaults(self, values_yaml):
+        """Runtime behavior is discoverable through canonical chart values."""
+        broker = values_yaml["broker"]
+        assert broker["cliBinary"] == "claude"
+        assert broker["remoteControlPermissionMode"] == ""
+        assert broker["maxPresentedFileBytes"] == 52_428_800
+
+    def test_external_api_token_uses_secret_reference(self, values_yaml):
+        """Outbound service credentials are references, never inline values."""
+        assert values_yaml["volundr"]["externalApiTokenSecret"] == {
+            "name": "",
+            "key": "token",
+        }
+
     def test_env_secrets_default_has_anthropic_key(self, values_yaml):
         """Test envSecrets defaults to a list with ANTHROPIC_API_KEY."""
         env_secrets = values_yaml["envSecrets"]
@@ -161,6 +175,17 @@ class TestConfigMapTemplate:
         assert "service_user_id" in configmap_yaml
         assert "service_tenant_id" in configmap_yaml
 
+    def test_configmap_renders_typed_behavior_settings(self, configmap_yaml):
+        """Typed behavior settings are rendered from their canonical values."""
+        expected = {
+            "cli_binary": ".Values.broker.cliBinary",
+            "remote_control_permission_mode": ".Values.broker.remoteControlPermissionMode",
+            "max_presented_file_bytes": ".Values.broker.maxPresentedFileBytes",
+        }
+        for field, value in expected.items():
+            assert field in configmap_yaml
+            assert value in configmap_yaml
+
 
 class TestDeploymentTemplate:
     """Tests for deployment.yaml template structure."""
@@ -215,6 +240,13 @@ class TestDeploymentTemplate:
     def test_deployment_uses_env_vars_range_loop(self, deployment_yaml):
         """Test deployment injects plain env vars via generic range loop."""
         assert "range .Values.envVars" in deployment_yaml
+
+    def test_external_api_token_is_loaded_from_secret(self, deployment_yaml):
+        """The control-plane token is never rendered into a ConfigMap or plain env value."""
+        assert "SKULD__EXTERNAL_API_TOKEN" in deployment_yaml
+        assert ".Values.volundr.externalApiTokenSecret.name" in deployment_yaml
+        assert ".Values.volundr.externalApiTokenSecret.key" in deployment_yaml
+        assert "secretKeyRef" in deployment_yaml
 
     def test_deployment_renders_flock_pod_additions(self, tmp_path):
         """Render proof for Flux-provided flock sidecars and config writers."""
@@ -382,6 +414,338 @@ class TestHelpersTemplate:
     def test_has_labels_helper(self, helpers_tpl):
         """Test helpers has labels function."""
         assert 'define "skuld.labels"' in helpers_tpl
+
+
+class TestResidentWorkloadIdentityConfigFirst:
+    """Workload identity is rendered into config files, not env vars."""
+
+    RESIDENT_VALUES = {
+        "resident": {
+            "enabled": True,
+            "name": "Muninn",
+            "persona": "product-steward",
+            "routeId": "muninn",
+            "skuld": {
+                "reconnectDelaySeconds": 1,
+                "maxReconnectAttempts": 120,
+                "sessionReadyTimeoutSeconds": 900,
+            },
+            "platform": {
+                "enabled": True,
+                "baseUrl": "http://niuu-volundr.volundr.svc.cluster.local:80",
+                "workflowAliases": {
+                    "research": {
+                        "name": "Research Campaign",
+                        "defaults": {"gate_auto_forward_after": ""},
+                    }
+                },
+            },
+            "mimir": {
+                "sourceTrigger": {"enabled": False, "pollIntervalSeconds": 300},
+                "stalenessTrigger": {"enabled": False, "scheduleHours": 24},
+            },
+        },
+        "mimir": {
+            "instances": [
+                {
+                    "name": "shared",
+                    "role": "shared",
+                    "url": "http://niuu-mimir-shared.volundr.svc.cluster.local",
+                }
+            ]
+        },
+        "session": {"model": "gpt-5.6-sol", "reasoningEffort": "high"},
+        "volundr": {"apiUrl": "https://volundr.example"},
+    }
+
+    @pytest.fixture
+    def rendered(self, tmp_path) -> str:
+        return _render_skuld_chart(tmp_path, dict(self.RESIDENT_VALUES))
+
+    def _configmaps(self, rendered: str) -> dict[str, dict]:
+        return {
+            doc["metadata"]["name"]: doc
+            for doc in yaml.safe_load_all(rendered)
+            if isinstance(doc, dict) and doc.get("kind") == "ConfigMap"
+        }
+
+    def test_broker_config_carries_workload_identity_section(self, rendered):
+        configmaps = self._configmaps(rendered)
+        broker_cfg = next(
+            yaml.safe_load(cm["data"]["config.yaml"])
+            for cm in configmaps.values()
+            if "config.yaml" in cm.get("data", {})
+            and "transport_adapter" in cm["data"]["config.yaml"]
+        )
+        workload = broker_cfg["workload_identity"]
+        assert workload["token_file"] == "/var/run/secrets/niuu-workload/token"
+        assert workload["exchange_url"] == (
+            "https://volundr.example/api/v1/tokens/workload/exchange"
+        )
+        assert broker_cfg["session"]["model"] == "gpt-5.6-sol"
+        assert broker_cfg["session"]["reasoning_effort"] == "high"
+
+    def test_resident_broker_reports_usage_to_resident_runtime(self, rendered):
+        configmaps = self._configmaps(rendered)
+        broker_cfg = next(
+            yaml.safe_load(cm["data"]["config.yaml"])
+            for cm in configmaps.values()
+            if "config.yaml" in cm.get("data", {})
+            and "transport_adapter" in cm["data"]["config.yaml"]
+        )
+        assert broker_cfg["volundr_api_url"] == "https://volundr.example"
+        assert broker_cfg["usage_report_path"] == ("/api/v1/forge/resident-runtimes/muninn/usage")
+
+    def test_resident_replica_count_supports_real_suspend_and_resume(self, tmp_path):
+        suspended = dict(self.RESIDENT_VALUES)
+        suspended["replicaCount"] = 0
+        rendered = _render_skuld_chart(tmp_path, suspended)
+
+        assert _deployment_from_rendered(rendered)["spec"]["replicas"] == 0
+
+    def test_resident_restart_never_overlaps_agent_replicas(self, rendered):
+        assert _deployment_from_rendered(rendered)["spec"]["strategy"] == {"type": "Recreate"}
+
+    def test_resident_name_annotation_can_be_supplied_by_control_plane(self, tmp_path):
+        values = dict(self.RESIDENT_VALUES)
+        values["podAnnotations"] = {
+            "niuu.world/resident-name": "managed-resident",
+            "niuu.world/resident-id": "resident-id",
+        }
+
+        rendered = _render_skuld_chart(tmp_path, values)
+        annotations = _deployment_from_rendered(rendered)["spec"]["template"]["metadata"][
+            "annotations"
+        ]
+
+        assert annotations["niuu.world/resident-name"] == "managed-resident"
+        assert annotations["niuu.world/resident-id"] == "resident-id"
+
+    def test_gateway_extracts_browser_websocket_token(self, tmp_path):
+        values = dict(self.RESIDENT_VALUES)
+        values["gateway"] = {
+            "enabled": True,
+            "jwt": {
+                "enabled": True,
+                "issuer": "https://keycloak.example/realms/volundr",
+                "audiences": ["volundr-api"],
+                "jwksUri": "https://keycloak.example/certs",
+                "workload": {
+                    "enabled": True,
+                    "issuer": "https://volundr.example/workload",
+                    "audiences": ["volundr-api"],
+                    "jwksUri": "https://volundr.example/workload/jwks",
+                },
+            },
+        }
+        rendered = _render_skuld_chart(tmp_path, values)
+        policy = next(
+            doc
+            for doc in yaml.safe_load_all(rendered)
+            if isinstance(doc, dict) and doc.get("kind") == "SecurityPolicy"
+        )
+
+        for provider in policy["spec"]["jwt"]["providers"]:
+            assert provider["extractFrom"]["params"] == ["access_token", "token"]
+
+    def test_pod_has_no_workload_identity_env_vars(self, rendered):
+        deployment = _deployment_from_rendered(rendered)
+        for container in deployment["spec"]["template"]["spec"]["containers"]:
+            env_names = {entry["name"] for entry in container.get("env", [])}
+            offending = {n for n in env_names if n.startswith("NIUU_WORKLOAD_IDENTITY")}
+            assert not offending, f"{container['name']} still injects {offending}"
+
+    def test_resident_broker_has_no_volundr_api_env_var(self, rendered):
+        deployment = _deployment_from_rendered(rendered)
+        broker = next(
+            c for c in deployment["spec"]["template"]["spec"]["containers"] if c["name"] == "skuld"
+        )
+        env_names = {entry["name"] for entry in broker.get("env", [])}
+        assert "SKULD__VOLUNDR_API_URL" not in env_names
+
+    def test_ravn_container_receives_only_resident_env_secrets(self, tmp_path):
+        values = dict(self.RESIDENT_VALUES)
+        values["envSecrets"] = [
+            {
+                "envVar": "BROKER_ONLY",
+                "secretName": "broker-secret",
+                "secretKey": "value",
+            }
+        ]
+        values["resident"] = {
+            **values["resident"],
+            "envSecrets": [
+                {
+                    "envVar": "RAVN_NATS_PASSWORD",
+                    "secretName": "flock-nats",
+                    "secretKey": "password",
+                }
+            ],
+        }
+
+        rendered = _render_skuld_chart(tmp_path, values)
+        deployment = _deployment_from_rendered(rendered)
+        ravn = next(
+            container
+            for container in deployment["spec"]["template"]["spec"]["containers"]
+            if container["name"] == "ravn"
+        )
+        env = {entry["name"]: entry for entry in ravn["env"]}
+
+        assert "BROKER_ONLY" not in env
+        assert env["RAVN_NATS_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
+            "name": "flock-nats",
+            "key": "password",
+        }
+
+    def test_ravn_config_carries_platform_workload_fields(self, rendered):
+        configmaps = self._configmaps(rendered)
+        ravn_cm = next(cm for name, cm in configmaps.items() if name.endswith("-ravn-config"))
+        ravn_cfg = yaml.safe_load(ravn_cm["data"]["config.yaml"])
+        platform = ravn_cfg["gateway"]["platform"]
+        assert platform["enabled"] is True
+        assert platform["workload_token_file"] == "/var/run/secrets/niuu-workload/token"
+        assert platform["workload_exchange_url"] == (
+            "https://volundr.example/api/v1/tokens/workload/exchange"
+        )
+        assert platform["workflow_aliases"]["research"]["name"] == "Research Campaign"
+        assert platform["workflow_aliases"]["research"]["defaults"]["gate_auto_forward_after"] == ""
+        skuld = ravn_cfg["skuld"]
+        assert skuld["reconnect_delay_seconds"] == 1
+        assert skuld["max_reconnect_attempts"] == 120
+        assert skuld["session_ready_timeout_seconds"] == 900
+        mimir = ravn_cfg["mimir"]
+        assert mimir["source_trigger"]["enabled"] is False
+        assert mimir["source_trigger"]["poll_interval_seconds"] == 300
+        assert mimir["staleness_trigger"]["enabled"] is False
+        assert mimir["staleness_trigger"]["schedule_hours"] == 24
+
+    def test_ravn_config_can_override_platform_workload_exchange_url(self, tmp_path):
+        values = dict(self.RESIDENT_VALUES)
+        values["resident"] = {
+            **values["resident"],
+            "platform": {
+                **values["resident"]["platform"],
+                "workloadExchangeUrl": "https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange",
+            },
+        }
+        rendered = _render_skuld_chart(tmp_path, values)
+        configmaps = self._configmaps(rendered)
+        ravn_cm = next(cm for name, cm in configmaps.items() if name.endswith("-ravn-config"))
+        ravn_cfg = yaml.safe_load(ravn_cm["data"]["config.yaml"])
+
+        assert (
+            ravn_cfg["gateway"]["platform"]["workload_exchange_url"]
+            == "https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange"
+        )
+
+    def test_resident_wakefulness_is_rendered(self, tmp_path):
+        values = dict(self.RESIDENT_VALUES)
+        values["resident"] = {
+            **values["resident"],
+            "wakefulness": {"enabled": True, "silence_threshold_seconds": 900},
+        }
+        rendered = _render_skuld_chart(tmp_path, values)
+        configmaps = self._configmaps(rendered)
+        ravn_cm = next(cm for name, cm in configmaps.items() if name.endswith("-ravn-config"))
+        ravn_cfg = yaml.safe_load(ravn_cm["data"]["config.yaml"])
+
+        assert ravn_cfg["wakefulness"] == {
+            "enabled": True,
+            "silence_threshold_seconds": 900,
+        }
+
+    def test_default_render_has_no_workload_identity_config(self, tmp_path):
+        rendered = _render_skuld_chart(tmp_path, {})
+        assert "workload_identity" not in rendered
+        assert "NIUU_WORKLOAD_IDENTITY" not in rendered
+
+
+class TestVolundrReportingConfig:
+    """Volundr reporting stays enabled for normal workflow sessions."""
+
+    def _broker_config(self, rendered: str) -> dict:
+        for doc in yaml.safe_load_all(rendered):
+            if (
+                isinstance(doc, dict)
+                and doc.get("kind") == "ConfigMap"
+                and "config.yaml" in doc.get("data", {})
+                and "transport_adapter" in doc["data"]["config.yaml"]
+            ):
+                return yaml.safe_load(doc["data"]["config.yaml"])
+        pytest.fail("Skuld broker config was not rendered")
+        raise AssertionError("Skuld broker config was not rendered")
+
+    def test_non_resident_sessions_keep_volundr_reporting(self, tmp_path):
+        rendered = _render_skuld_chart(
+            tmp_path,
+            {
+                "session": {"id": "11111111-1111-4111-8111-111111111111"},
+                "volundr": {"apiUrl": "https://volundr.example"},
+            },
+        )
+
+        broker_cfg = self._broker_config(rendered)
+        deployment = _deployment_from_rendered(rendered)
+        broker = next(
+            c for c in deployment["spec"]["template"]["spec"]["containers"] if c["name"] == "skuld"
+        )
+        volundr_env = next(
+            entry for entry in broker.get("env", []) if entry["name"] == "SKULD__VOLUNDR_API_URL"
+        )
+
+        assert broker_cfg["volundr_api_url"] == "https://volundr.example"
+        assert volundr_env["value"] == "https://volundr.example"
+
+
+class TestBehaviorSettingsRendering:
+    """Typed behavior values render to config while credentials stay in Secrets."""
+
+    def test_config_and_external_token_secret_render(self, tmp_path):
+        rendered = _render_skuld_chart(
+            tmp_path,
+            {
+                "broker": {
+                    "cliBinary": "claude-custom",
+                    "remoteControlPermissionMode": "acceptEdits",
+                    "maxPresentedFileBytes": 4096,
+                },
+                "volundr": {
+                    "externalApiTokenSecret": {
+                        "name": "skuld-control-plane",
+                        "key": "service-token",
+                    }
+                },
+            },
+        )
+        configmaps = [
+            doc
+            for doc in yaml.safe_load_all(rendered)
+            if isinstance(doc, dict) and doc.get("kind") == "ConfigMap"
+        ]
+        broker_cfg = next(
+            yaml.safe_load(doc["data"]["config.yaml"])
+            for doc in configmaps
+            if "transport_adapter" in doc.get("data", {}).get("config.yaml", "")
+        )
+        assert broker_cfg["cli_binary"] == "claude-custom"
+        assert broker_cfg["remote_control_permission_mode"] == "acceptEdits"
+        assert broker_cfg["max_presented_file_bytes"] == 4096
+        assert "external_api_token" not in broker_cfg
+
+        deployment = _deployment_from_rendered(rendered)
+        broker = next(
+            container
+            for container in deployment["spec"]["template"]["spec"]["containers"]
+            if container["name"] == "skuld"
+        )
+        token_env = next(
+            entry for entry in broker["env"] if entry["name"] == "SKULD__EXTERNAL_API_TOKEN"
+        )
+        assert token_env["valueFrom"]["secretKeyRef"] == {
+            "name": "skuld-control-plane",
+            "key": "service-token",
+        }
 
 
 def _render_skuld_chart(tmp_path: Path, values: dict) -> str:

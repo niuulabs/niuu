@@ -56,6 +56,50 @@ class TestDeepMerge:
             ]
         }
 
+    def test_openshell_credential_mappings_merge_by_credential_name(self):
+        base = {
+            "openshell": {
+                "credentialMappings": [
+                    {
+                        "credentialName": "codex-home",
+                        "fileMappings": {"/sandbox/home/.codex/auth.json": "auth.json"},
+                    }
+                ]
+            }
+        }
+        override = {
+            "openshell": {
+                "credentialMappings": [
+                    {
+                        "credentialName": "codex-home",
+                        "fileMappings": {"/sandbox/home/.codex/config.toml": "config.toml"},
+                    },
+                    {
+                        "credentialName": "openai",
+                        "envMappings": {"OPENAI_API_KEY": "api_key"},
+                    },
+                ]
+            }
+        }
+
+        _deep_merge(base, override)
+
+        assert base["openshell"]["credentialMappings"] == [
+            {
+                "credentialName": "codex-home",
+                "envMappings": {},
+                "fileMappings": {
+                    "/sandbox/home/.codex/auth.json": "auth.json",
+                    "/sandbox/home/.codex/config.toml": "config.toml",
+                },
+            },
+            {
+                "credentialName": "openai",
+                "envMappings": {"OPENAI_API_KEY": "api_key"},
+                "fileMappings": {},
+            },
+        ]
+
 
 class TestMergePodSpecs:
     def test_merge_empty(self):

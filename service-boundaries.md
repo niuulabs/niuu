@@ -9,7 +9,7 @@ As of May 8, 2026:
 
 - the legacy public `/api/v1/volundr/*` surface is gone
 - `web/` is gone and `web-next` is the only browser UI
-- `niuu` is the composition root and shared host
+- `cli.shared_host` is the composition root; `niuu` owns shared contracts and runtime support
 - Forge remains the public face of Volundr
 - shared platform domains are extracted as their own top-level packages and
   plugins
@@ -28,14 +28,17 @@ We do not yet require separate processes or separate images for each domain.
 
 ### `niuu`
 
-`niuu` is the host and composition root.
+`niuu` is the dependency-neutral shared kernel.
 
 It owns:
 
-- plugin discovery and host profiles
-- shared service startup/runtime helpers
-- shared route inventory and mounting
-- co-hosting multiple FastAPI apps in one local/dev control plane
+- shared domain contracts, ports, and configuration models
+- service startup and runtime helpers that do not depend on feature packages
+- cross-domain utilities with no Volundr or Ting dependency
+
+### `cli.shared_host`
+
+`cli.shared_host` is the local/dev composition root. It discovers plugins, owns the shared route inventory, and mounts domain FastAPI apps into the co-hosted control plane
 
 Shared code that multiple domains need should move here rather than back into
 `volundr`.

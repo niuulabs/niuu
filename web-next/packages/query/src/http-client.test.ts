@@ -4,6 +4,7 @@ import {
   setTokenProvider,
   getAccessToken,
   getAuthHeaders,
+  getWebSocketAuth,
   withAuthQuery,
   ApiClientError,
 } from './http-client';
@@ -73,6 +74,9 @@ describe('setTokenProvider / getAccessToken', () => {
     expect(withAuthQuery('ws://127.0.0.1:8080/s/abc/session')).toBe(
       'ws://127.0.0.1:8080/s/abc/session?devUserId=guild-user-b&devTenantId=tenant-b&devRoles=volundr%3Adeveloper',
     );
+    expect(getWebSocketAuth('ws://127.0.0.1:8080/s/abc/session')).toEqual({
+      url: 'ws://127.0.0.1:8080/s/abc/session?devUserId=guild-user-b&devTenantId=tenant-b&devRoles=volundr%3Adeveloper',
+    });
   });
 
   it('remembers local dev identity across navigation without the query string', () => {
@@ -178,13 +182,16 @@ describe('setTokenProvider / getAccessToken', () => {
     vi.stubGlobal('window', originalWindow);
   });
 
-  it('adds access tokens to websocket urls when a token provider is registered', async () => {
+  it('adds Envoy query tokens to websocket urls for browser auth', async () => {
     const fresh = await importFreshHttpClient();
     fresh.setTokenProvider(() => 'token-xyz');
 
     expect(fresh.withAuthQuery('ws://127.0.0.1:8080/s/abc/session')).toBe(
       'ws://127.0.0.1:8080/s/abc/session?access_token=token-xyz',
     );
+    expect(fresh.getWebSocketAuth('ws://127.0.0.1:8080/s/abc/session')).toEqual({
+      url: 'ws://127.0.0.1:8080/s/abc/session?token=token-xyz',
+    });
   });
 
   it('allows local dev identity overrides on private LAN hosts', async () => {

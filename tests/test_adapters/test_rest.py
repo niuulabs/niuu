@@ -1,11 +1,13 @@
 """Tests for the REST adapter."""
 
 import asyncio
+import json
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import httpx
+import jwt
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -30,6 +32,17 @@ from volundr.adapters.inbound.rest import (
 from volundr.config import LocalMountsConfig
 from volundr.domain.models import GitProviderType, GitSource, RepoInfo, Session, SessionStatus
 from volundr.domain.services import RepoService, SessionService, StatsService
+
+_SIGNING_KEY = "test-only-signing-key-32-bytes-long!"
+
+
+def _build_token(scopes: list[str]) -> str:
+    """Mint a Valkyrie build token JWT (signature ignored downstream)."""
+    return jwt.encode(
+        {"sub": "user-1", "token_use": "valkyrie_build", "scopes": scopes},
+        _SIGNING_KEY,
+        algorithm="HS256",
+    )
 
 
 @pytest.fixture
@@ -191,6 +204,20 @@ class TestSessionResponse:
 
         assert response.chat_endpoint == "ws://localhost:8080/s/example/session"
 
+    def test_from_session_routes_openshell_chat_through_niuu_proxy(self):
+        session = Session(
+            id=uuid4(),
+            name="OpenShell",
+            model="gpt-5.6-sol",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            chat_endpoint=("ws://forge-example--skuld.openshell.localhost:8080/session"),
+        )
+
+        response = SessionResponse.from_session(session)
+
+        assert response.chat_endpoint == f"/s/{session.id}/session"
+
 
 class TestListSessions:
     """Tests for GET /api/v1/forge/sessions."""
@@ -289,6 +316,49 @@ class TestCreateSession:
             },
         )
         assert response.status_code == 422
+
+    def test_create_session_scoped_build_token_missing_scope_is_403(self, client: TestClient):
+        """A Valkyrie build token lacking forge:session:create is 403'd."""
+        token = _build_token(["ting:workflow:launch"])
+        response = client.post(
+            "/api/v1/forge/sessions",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "name": "my-session",
+                "model": "claude-sonnet-4",
+                "source": {"type": "git", "repo": "https://github.com/org/repo", "branch": "main"},
+            },
+        )
+        assert response.status_code == 403
+        assert "forge:session:create" in response.json()["detail"]
+
+    def test_create_session_scoped_build_token_with_scope_admitted(self, client: TestClient):
+        """A build token carrying forge:session:create proceeds normally."""
+        token = _build_token(["forge:session:create"])
+        response = client.post(
+            "/api/v1/forge/sessions",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "name": "scoped-session",
+                "model": "claude-sonnet-4",
+                "source": {"type": "git", "repo": "https://github.com/org/repo", "branch": "main"},
+            },
+        )
+        assert response.status_code == 201
+
+    def test_create_session_normal_token_unaffected(self, client: TestClient):
+        """A plain (non-build) bearer token has no scope constraint."""
+        token = jwt.encode({"type": "pat", "sub": "user-1"}, _SIGNING_KEY, algorithm="HS256")
+        response = client.post(
+            "/api/v1/forge/sessions",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "name": "human-session",
+                "model": "claude-sonnet-4",
+                "source": {"type": "git", "repo": "https://github.com/org/repo", "branch": "main"},
+            },
+        )
+        assert response.status_code == 201
 
 
 class TestGetSession:
@@ -641,11 +711,307 @@ class TestSessionMessages:
                 json={"content": "hello from rest"},
             )
 
-        assert response.status_code == 200
+        # INV-7: no delivery ACK arrives within the grace (recv times out), so the
+        # broker has ACCEPTED the message but not yet confirmed it reached the agent.
+        # The contract reports 202 "pending" (NOT a 200 "sent") — its retry drives it.
+        assert response.status_code == 202
+        body = response.json()
+        assert body["status"] == "pending"
+        assert body["delivery"] == "pending"
         assert fake_connect.calls == [
             ("ws://localhost:8080/s/message-session/session", {"open_timeout": 10})
         ]
-        assert fake_connect.ws.sent == ['{"type": "user", "content": "hello from rest"}']
+        # BUG-3: the outbound user frame now carries a request_id correlating with the
+        # broker's delivery ACK. The endpoint echoes the same request_id in its body,
+        # so assert the frame is exactly {type, content, request_id} with that exact id.
+        req_id = body["request_id"]
+        assert len(fake_connect.ws.sent) == 1
+        assert json.loads(fake_connect.ws.sent[0]) == {
+            "type": "user",
+            "content": "hello from rest",
+            "request_id": req_id,
+        }
+
+    def test_send_message_dead_pod_self_heals_on_read_and_404s(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+        pod_manager: MockPodManager,
+    ) -> None:
+        """INV-9: a dead pod (pod_manager reports STOPPED) is reconciled on the
+        read that resolves the proxy target, so the send returns a deterministic
+        404 (no active endpoint) and never a false 'sent'."""
+        session = Session(
+            id=uuid4(),
+            name="dead-message-session",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            chat_endpoint="ws://localhost:8080/s/dead-message-session/session",
+        )
+        asyncio.run(repository.create(session))
+
+        async def _stopped(_session):
+            return SessionStatus.STOPPED
+
+        pod_manager.status = _stopped  # type: ignore[method-assign]
+
+        with patch(
+            "volundr.adapters.inbound.rest.extract_principal",
+            new=AsyncMock(
+                return_value=Principal(
+                    user_id="dev-user",
+                    email="dev@example.com",
+                    tenant_id="default",
+                    roles=[],
+                )
+            ),
+        ):
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/messages",
+                json={"content": "anybody home?"},
+            )
+
+        assert response.status_code == 404
+        assert "sent" not in str(response.json()).lower()
+        # The row self-healed off the dead endpoint.
+        reconciled = asyncio.run(repository.get(session.id))
+        assert reconciled.status == SessionStatus.STOPPED
+        assert reconciled.chat_endpoint is None
+        assert (reconciled.error or "").startswith("liveness:")
+
+    def test_send_message_unreachable_broker_reconciles_and_returns_409(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+        pod_manager: MockPodManager,
+    ) -> None:
+        """INV-9: when the row still looks live (status lags) but the broker WS
+        connect fails, the send reconciles and returns a deterministic 409 —
+        never a false 'sent'."""
+
+        def _refused(url: str, **kwargs: object):
+            raise OSError("connection refused")
+
+        session = Session(
+            id=uuid4(),
+            name="lagging-message-session",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            chat_endpoint="ws://localhost:8080/s/lagging-message-session/session",
+        )
+        asyncio.run(repository.create(session))
+
+        # Pod manager still reports RUNNING (status lags reality), so the proxy
+        # target resolves and we actually attempt — and fail — the WS connect.
+        with (
+            patch("websockets.asyncio.client.connect", new=_refused),
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(
+                    return_value=Principal(
+                        user_id="dev-user",
+                        email="dev@example.com",
+                        tenant_id="default",
+                        roles=[],
+                    )
+                ),
+            ),
+        ):
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/messages",
+                json={"content": "anybody home?"},
+            )
+
+        assert response.status_code == 409
+        assert "not delivered" in str(response.json()).lower()
+
+    @staticmethod
+    def _ack_connect(ack_frame: dict | None):
+        """Build a fake websockets.connect whose socket replays one broker ACK frame.
+
+        Used by the INV-7 delivery-contract tests: the broker emits a correlated
+        user_delivered / user_delivery_failed frame; the REST bridge must map it to the
+        right status. The ack_frame's request_id is filled in from the sent user frame so
+        it correlates exactly the way the live broker would.
+        """
+
+        class _FakeWebSocket:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+                self._delivered = False
+
+            async def send(self, payload: str) -> None:
+                self.sent.append(payload)
+
+            async def recv(self) -> str:
+                if ack_frame is None or self._delivered:
+                    raise TimeoutError
+                self._delivered = True
+                req_id = json.loads(self.sent[0])["request_id"]
+                return json.dumps({**ack_frame, "request_id": req_id})
+
+        class _FakeConnect:
+            def __init__(self) -> None:
+                self.ws = _FakeWebSocket()
+
+            def __call__(self, url: str, **kwargs: object):
+                ws = self.ws
+
+                class _Ctx:
+                    async def __aenter__(self) -> _FakeWebSocket:
+                        return ws
+
+                    async def __aexit__(self, exc_type, exc, tb) -> bool:
+                        return False
+
+                return _Ctx()
+
+        return _FakeConnect()
+
+    def _post_message(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+        fake_connect,
+        content: str = "hello",
+    ):
+        session = Session(
+            id=uuid4(),
+            name="ack-session",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            chat_endpoint="ws://localhost:8080/s/ack-session/session",
+        )
+        asyncio.run(repository.create(session))
+        with (
+            patch("websockets.asyncio.client.connect", new=fake_connect),
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(
+                    return_value=Principal(
+                        user_id="dev-user",
+                        email="dev@example.com",
+                        tenant_id="default",
+                        roles=[],
+                    )
+                ),
+            ),
+        ):
+            return client.post(
+                f"/api/v1/forge/sessions/{session.id}/messages",
+                json={"content": content},
+            )
+
+    def test_send_message_delivered_ack_returns_200_delivered(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+    ) -> None:
+        """INV-7: a correlated user_delivered ACK is the ONLY success contract — 200
+        status=delivered, delivery=delivered."""
+        fake_connect = self._ack_connect(
+            {"type": "user_delivered", "status": "delivered", "id": "m1"}
+        )
+        response = self._post_message(client, repository, fake_connect)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "delivered"
+        assert body["delivery"] == "delivered"
+
+    def test_send_message_failed_ack_does_not_report_success(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+    ) -> None:
+        """INV-7: a terminal user_delivery_failed ACK surfaces as a 502 error — the REST
+        bridge MUST NOT return a plain success for an undelivered message."""
+        fake_connect = self._ack_connect(
+            {"type": "user_delivery_failed", "status": "failed", "id": "m1", "error": "wedged"}
+        )
+        response = self._post_message(client, repository, fake_connect)
+
+        assert response.status_code == 502
+        assert "sent" not in str(response.json()).lower()
+        assert "wedged" in str(response.json()).lower()
+
+    def test_send_message_no_ack_reports_pending_not_sent(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+    ) -> None:
+        """INV-7: no ACK within the grace -> 202 pending (the broker's retry drives it),
+        never a 200 'sent' for an undelivered message."""
+        fake_connect = self._ack_connect(None)
+        response = self._post_message(client, repository, fake_connect)
+
+        assert response.status_code == 202
+        body = response.json()
+        assert body["status"] == "pending"
+        assert body["delivery"] == "pending"
+        assert "sent" not in str(body).lower()
+        # INV-7 (unconfirmed != delivered): an unACKed message is NEVER reported delivered.
+        assert body["status"] != "delivered"
+        assert body["delivery"] != "delivered"
+
+    # SRD §11.4 — "message not received" before/after regression. The historical bug was
+    # that POST /messages reported success ("sent"/200/delivered) for a message the agent
+    # never received. This pins the inverse contract as a guard: the ONLY way to read a
+    # delivered/200 response is a real correlated ``user_delivered`` ACK. Every non-delivery
+    # outcome — no ACK within the grace, OR a terminal ``user_delivery_failed`` — MUST report
+    # a status in {pending, failed}, NEVER 200 and NEVER delivery=="delivered"/"sent".
+    @pytest.mark.parametrize(
+        ("ack_frame", "expected_status_code", "expected_status"),
+        [
+            # No ACK arrives within the grace window: still in flight, reported pending.
+            (None, 202, "pending"),
+            # Terminal transport rejection after bounded retry: reported as a failure (502).
+            (
+                {"type": "user_delivery_failed", "status": "failed", "id": "m1", "error": "wedged"},
+                502,
+                "failed",
+            ),
+        ],
+        ids=["no_ack_within_grace", "failed_ack"],
+    )
+    def test_non_delivered_message_never_reported_as_success(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+        ack_frame: dict | None,
+        expected_status_code: int,
+        expected_status: str,
+    ) -> None:
+        """SRD §11.4: a non-delivered message MUST NOT be reported as a successful send.
+
+        Parametrized over the two "message not received" shapes — (no ack within grace) and
+        (failed ack). For both, the response must be in {pending, failed}, must NOT be 200, and
+        must NEVER carry delivery=="delivered" or the word "sent". The success contract (200 /
+        delivery=="delivered") is reserved exclusively for a real ``user_delivered`` ACK, which
+        these cases do not produce."""
+        fake_connect = self._ack_connect(ack_frame)
+        response = self._post_message(client, repository, fake_connect)
+
+        assert response.status_code == expected_status_code
+        assert response.status_code != 200, (
+            "§11.4: a non-delivered message must never return a 200 success"
+        )
+        body = response.json()
+        body_text = str(body).lower()
+        assert "sent" not in body_text, "§11.4: must never claim the message was 'sent'"
+
+        if expected_status == "pending":
+            assert body["status"] == "pending"
+            assert body["status"] in {"pending", "failed"}
+            assert body.get("delivery") != "delivered"
+            return
+
+        # Failure path: 502 error body must signal failure, never a delivered/sent success.
+        assert "delivered" not in body_text or "not" in body_text
+        assert "wedged" in body_text
 
 
 class TestSessionLogAggregationProxy:
@@ -906,6 +1272,86 @@ class TestWorkflowGateProxy:
         )
 
     @pytest.mark.asyncio
+    async def test_get_workflow_gates_unreachable_pod_reconciles_and_409s(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        """INV-9: an unreachable pod on the gate read path reconciles the row and
+        returns a deterministic 409 instead of a misleading 502."""
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            f"file:///tmp/{session.id}",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+
+        request = httpx.Request("GET", f"http://localhost:8080/s/{session.id}/api/workflow/gates")
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.side_effect = httpx.ConnectError("refused", request=request)
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.get(f"/api/v1/forge/sessions/{session.id}/workflow/gates")
+
+        assert response.status_code == 409
+        assert "no longer reachable" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_resolve_workflow_gate_unreachable_pod_reconciles_and_409s(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        """INV-9: an unreachable pod on the gate resolve path reconciles the row
+        and returns a deterministic 409 — never a misleading bad-gateway."""
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            f"file:///tmp/{session.id}",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+
+        request = httpx.Request(
+            "POST", f"http://localhost:8080/s/{session.id}/api/workflow/gates/g1/resolve"
+        )
+
+        with (
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(
+                    return_value=Principal(
+                        user_id="dev-user",
+                        email="dev@example.com",
+                        tenant_id="default",
+                        roles=[],
+                    )
+                ),
+            ),
+            patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.side_effect = httpx.ConnectError("refused", request=request)
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/workflow/gates/g1/resolve",
+                json={"decision": "approved", "notes": "", "source": "human"},
+            )
+
+        assert response.status_code == 409
+        assert "not resolved" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
     async def test_resolve_workflow_gate_quotes_gate_id(
         self,
         client: TestClient,
@@ -1023,17 +1469,33 @@ class TestStatsResponse:
         stats = StatsResponse(
             active_sessions=3,
             total_sessions=10,
+            sessions_today=2,
             tokens_today=50000,
             local_tokens=20000,
             cloud_tokens=30000,
             cost_today=1.50,
+            sparklines={"sessionsToday": [1.0, 2.0]},
         )
         assert stats.active_sessions == 3
         assert stats.total_sessions == 10
+        assert stats.sessions_today == 2
         assert stats.tokens_today == 50000
         assert stats.local_tokens == 20000
         assert stats.cloud_tokens == 30000
         assert stats.cost_today == 1.50
+        assert stats.sparklines == {"sessionsToday": [1.0, 2.0]}
+
+    def test_stats_response_defaults_to_zero_values(self):
+        """StatsResponse can represent an empty stats payload."""
+        stats = StatsResponse()
+        assert stats.active_sessions == 0
+        assert stats.total_sessions == 0
+        assert stats.sessions_today == 0
+        assert stats.tokens_today == 0
+        assert stats.local_tokens == 0
+        assert stats.cloud_tokens == 0
+        assert stats.cost_today == 0.0
+        assert stats.sparklines == {}
 
 
 class TestGetStats:
@@ -1046,10 +1508,12 @@ class TestGetStats:
         data = response.json()
         assert data["active_sessions"] == 3
         assert data["total_sessions"] == 10
+        assert data["sessions_today"] == 0
         assert data["tokens_today"] == 50000
         assert data["local_tokens"] == 20000
         assert data["cloud_tokens"] == 30000
         assert data["cost_today"] == 1.50
+        assert data["sparklines"] == {}
 
     def test_get_stats_has_all_fields(self, client: TestClient):
         """Stats response contains all expected fields."""
@@ -1058,10 +1522,12 @@ class TestGetStats:
         data = response.json()
         assert "active_sessions" in data
         assert "total_sessions" in data
+        assert "sessions_today" in data
         assert "tokens_today" in data
         assert "local_tokens" in data
         assert "cloud_tokens" in data
         assert "cost_today" in data
+        assert "sparklines" in data
 
     def test_get_stats_without_service(self, service: SessionService):
         """Returns 503 when stats service is not available."""

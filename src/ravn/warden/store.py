@@ -13,7 +13,7 @@ from pathlib import Path
 import yaml
 
 from ravn.ports.warden_deployer import WardenDeploymentPort
-from ravn.warden.artifacts import runtime_config_path, service_label
+from ravn.warden.artifacts import confined_path, runtime_config_path, service_label
 from ravn.warden.models import WardenSpec
 from ravn.warden.observability import latest_warden_dream
 
@@ -215,7 +215,7 @@ class WardenStore:
         return candidate
 
     def warden_dir(self, warden_id: str) -> Path:
-        return self._root / warden_id
+        return confined_path(self._root, warden_id)
 
     def spec_path(self, warden_id: str) -> Path:
         return self.warden_dir(warden_id) / "warden.yaml"

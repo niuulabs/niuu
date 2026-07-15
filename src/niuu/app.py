@@ -2,107 +2,42 @@
 
 from __future__ import annotations
 
-import asyncio
 import inspect
-import json
 import logging
-import os
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import uvicorn
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI, Request
 from fastapi.openapi.utils import get_openapi
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from niuu.config import CorsConfig
+from niuu.config import CorsConfig, NiuuSettings
 from niuu.cors import apply_cors_middleware
 from niuu.ports.plugin import APIRouteDomain, Service
-from niuu.service_databases import (
-    bootstrap_database,
-    bootstrap_sql_for_service,
-    database_name_for_service,
-    local_service_database_names,
-    service_database_env_var,
+from niuu.service_databases import bootstrap_sql_for_service as bootstrap_sql_for_service
+from niuu.session_proxy import (  # noqa: F401
+    SkuldPortRegistry,
+    _bearer_token_from_ws,
+    _configured_cors_origins,
+    _install_skuld_registry,
+    _proxy_forward_headers,
+    _proxy_ws,
+    _proxy_ws_identity,
+    _sanitize_log,
+    _session_http_connect_url,
+    _session_target_url,
+    get_skuld_registry,
+    register_session_proxy_routes,
 )
 
 if TYPE_CHECKING:
     from cli.registry import PluginRegistry
-    from niuu.ports.embedded_database import EmbeddedDatabasePort
 
 logger = logging.getLogger(__name__)
-
-
-def _configured_cors_origins() -> list[str]:
-    """Return explicitly configured CORS origins for the unified niuu host."""
-
-    raw = os.environ.get("NIUU_CORS_ORIGINS", "").strip()
-    if not raw:
-        return []
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
-
-
-def _sanitize_log(value: object) -> str:
-    """Sanitize a value for safe log output (prevent log injection)."""
-    return str(value).replace("\n", "\\n").replace("\r", "\\r")
-
-
-class SkuldPortRegistry:
-    """Maps session IDs to their Skuld subprocess ports."""
-
-    def __init__(self, state_file: Path | None = None) -> None:
-        self._ports: dict[str, int] = {}
-        self._state_file = (
-            state_file
-            or Path(
-                os.environ.get("NIUU_FORGE_STATE_FILE", "~/.niuu/forge-state.json")
-            ).expanduser()
-        )
-
-    def register(self, session_id: str, port: int) -> None:
-        self._ports[session_id] = port
-
-    def unregister(self, session_id: str) -> None:
-        self._ports.pop(session_id, None)
-
-    def get_port(self, session_id: str) -> int | None:
-        port = self._ports.get(session_id)
-        if port is not None:
-            return port
-        recovered_port = self._recover_port(session_id)
-        if recovered_port is not None:
-            self._ports[session_id] = recovered_port
-        return recovered_port
-
-    def _recover_port(self, session_id: str) -> int | None:
-        if not self._state_file.exists():
-            return None
-        try:
-            payload = json.loads(self._state_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return None
-        if not isinstance(payload, dict):
-            return None
-        info = payload.get(session_id)
-        if not isinstance(info, dict):
-            return None
-        if info.get("state") not in {"running", "starting"}:
-            return None
-        port = info.get("port")
-        return port if isinstance(port, int) else None
-
-
-_skuld_registry: SkuldPortRegistry | None = None
-
-
-def get_skuld_registry() -> SkuldPortRegistry | None:
-    """Return the active SkuldPortRegistry, if any."""
-    return _skuld_registry
 
 
 def _local_service_host(host: str) -> str:
@@ -116,6 +51,16 @@ def _local_service_host(host: str) -> str:
 def _plugin_api_base_url(host: str, port: int) -> str:
     """Return the intra-stack base URL used by host-mounted plugin apps."""
     return f"http://{_local_service_host(host)}:{port}"
+
+
+def _plugin_public_origin(public_host: str | None, host: str, port: int) -> str:
+    """Return the browser-facing origin passed to hosted plugin apps."""
+    normalized = str(public_host or host).strip() or "127.0.0.1"
+    if normalized.startswith(("http://", "https://")):
+        return normalized.rstrip("/")
+    if normalized in {"0.0.0.0", "::", "[::]", "127.0.0.1"}:
+        normalized = "localhost"
+    return f"http://{normalized}:{port}"
 
 
 def _create_plugin_api_app(plugin: Service, *, base_url: str) -> Any:
@@ -170,10 +115,12 @@ _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
     "niuu-repos-api": "niuu",
     "niuu-shared-api": "niuu",
     "observatory-api": "observatory",
+    "observatory-agents-api": "observatory",
     "observatory-events-api": "observatory",
     "observatory-registry-api": "observatory",
     "observatory-topology-api": "observatory",
     "persona-api": "personas",
+    "ravn-aggregate-api": "guild",
     "ravn-api": "ravn",
     "ravn-budget-api": "ravn",
     "ravn-odin-api": "ravn",
@@ -213,6 +160,8 @@ HOST_PROFILES: dict[str, frozenset[str]] = {
 _STATIC_ROUTE_PREFIXES: dict[str, tuple[str, ...]] = {
     "skuld-proxy": (
         "/s/{session_id}/session",
+        "/s/{ravn_id}/sessions/{session_id}/session",
+        "/s/{session_id}/ws/ravn/{peer_id}",
         "/s/{session_id}/api/{path:path}",
         "/s/{session_id}/health",
     ),
@@ -313,6 +262,27 @@ class _PrefixDispatchMiddleware:
         await self._app(scope, receive, send)
 
 
+class _ResidentSessionDispatchMiddleware:
+    """Route registry-owned resident chat sockets through Guild."""
+
+    def __init__(self, app: ASGIApp, *, guild_app: ASGIApp) -> None:
+        self._app = app
+        self._guild_app = guild_app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "websocket":
+            parts = scope.get("path", "").split("/")
+            if (
+                len(parts) == 6
+                and parts[1] == "s"
+                and parts[3] == "sessions"
+                and parts[5] == "session"
+            ):
+                await self._guild_app(scope, receive, send)
+                return
+        await self._app(scope, receive, send)
+
+
 def _declared_plugin_route_domains(
     registry: PluginRegistry,
 ) -> dict[str, list[tuple[str, APIRouteDomain]]]:
@@ -359,7 +329,7 @@ def collect_route_inventory(
     active_mounts = resolve_enabled_mounts(
         host_profile,
         enabled_mounts,
-        no_web=os.environ.get("NIUU_NO_WEB") == "true",
+        no_web=NiuuSettings().host.no_web,
     )
     declared_domains = _declared_plugin_route_domains(registry)
 
@@ -501,16 +471,18 @@ def build_root_app(
     registry: PluginRegistry,
     host: str,
     port: int,
+    public_host: str | None = None,
     host_profile: str = DEFAULT_HOST_PROFILE,
     enabled_mounts: set[str] | None = None,
     skuld_registry: SkuldPortRegistry | None = None,
 ) -> FastAPI:
     """Build the root FastAPI app that hosts selected route domains."""
+    plugin_public_origin = _plugin_public_origin(public_host, host, port)
     plugin_api_base_url = _plugin_api_base_url(host, port)
     active_mounts = resolve_enabled_mounts(
         host_profile,
         enabled_mounts,
-        no_web=os.environ.get("NIUU_NO_WEB") == "true",
+        no_web=NiuuSettings().host.no_web,
     )
     route_inventory = collect_route_inventory(
         registry=registry,
@@ -531,6 +503,7 @@ def build_root_app(
         for plugin_name, route_domain in entries:
             plugin_prefixes.setdefault(plugin_name, []).extend(route_domain.prefixes)
 
+    skuld_reg = skuld_registry or SkuldPortRegistry()
     sub_apps: list[tuple[str, FastAPI]] = []
     shared_api_apps: dict[str, FastAPI] = {}
     embedded_forge_app: ASGIApp | None = None
@@ -550,8 +523,10 @@ def build_root_app(
             else:
                 sub_app = _create_plugin_api_app_with_context(
                     plugin,
+                    public_origin=plugin_public_origin,
                     base_url=plugin_api_base_url,
                     embedded_forge_app=embedded_forge_app,
+                    skuld_registry=skuld_reg,
                 )
                 if shared_key and sub_app is not None:
                     shared_api_apps[shared_key] = sub_app
@@ -634,175 +609,18 @@ def build_root_app(
     if prefix_apps:
         root.add_middleware(_PrefixDispatchMiddleware, prefix_apps=prefix_apps)
 
+    guild_app = next((sub_app for name, sub_app in sub_apps if name == "guild"), None)
+    if guild_app is not None and "skuld-proxy" in active_mounts:
+        root.add_middleware(_ResidentSessionDispatchMiddleware, guild_app=guild_app)
+
     _install_merged_openapi(
         root=root,
         sub_apps=sub_apps,
         plugin_prefixes=plugin_prefixes,
     )
 
-    skuld_reg = skuld_registry or SkuldPortRegistry()
-
     if "skuld-proxy" in active_mounts:
-
-        @root.websocket("/s/{session_id}/session")
-        async def skuld_ws_proxy(
-            websocket: WebSocket,  # noqa: F811
-            session_id: str,
-        ) -> None:
-            """Proxy browser WebSocket to the Skuld subprocess."""
-            port = skuld_reg.get_port(session_id)
-            if port is None:
-                await websocket.close(code=4004, reason="Session not found")
-                return
-
-            await websocket.accept()
-            import websockets.asyncio.client as ws_client
-
-            try:
-                async with ws_client.connect(
-                    f"ws://127.0.0.1:{port}/session",
-                    # The broker replays the FULL conversation history as one
-                    # frame on connect; long sessions exceed the websockets
-                    # client's 1 MiB default, which killed the broker leg with
-                    # 1009 ("message too big") and trapped browsers in an
-                    # infinite reconnect loop. 64 MiB headroom.
-                    max_size=2**26,
-                    additional_headers={
-                        **{
-                            k.decode(): v.decode()
-                            for k, v in websocket.headers.raw
-                            if k.decode().lower()
-                            in (
-                                "authorization",
-                                "cookie",
-                                "x-auth-user-id",
-                                "x-auth-email",
-                                "x-auth-tenant",
-                                "x-auth-roles",
-                            )
-                        },
-                        **{
-                            header: value
-                            for query_key, header in (
-                                ("devUserId", "x-auth-user-id"),
-                                ("devEmail", "x-auth-email"),
-                                ("devTenantId", "x-auth-tenant"),
-                                ("devRoles", "x-auth-roles"),
-                            )
-                            if (value := websocket.query_params.get(query_key))
-                        },
-                    },
-                ) as skuld_ws:
-
-                    async def browser_to_skuld() -> None:
-                        with suppress(Exception):
-                            async for msg in websocket.iter_text():
-                                await skuld_ws.send(msg)
-
-                    async def skuld_to_browser() -> None:
-                        with suppress(Exception):
-                            async for msg in skuld_ws:
-                                await websocket.send_text(str(msg))
-
-                    done, pending = await asyncio.wait(
-                        [
-                            asyncio.create_task(browser_to_skuld()),
-                            asyncio.create_task(skuld_to_browser()),
-                        ],
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    for task in pending:
-                        task.cancel()
-                    for task in done:
-                        task.result()
-            except Exception:
-                logger.debug("Skuld WS proxy ended for session %s", _sanitize_log(session_id))
-            finally:
-                with suppress(Exception):
-                    await websocket.close()
-
-        @root.api_route(
-            "/s/{session_id}/api/{path:path}",
-            methods=["GET", "POST", "PUT", "DELETE"],
-            include_in_schema=False,
-        )
-        async def skuld_http_proxy(request: Request, session_id: str, path: str) -> Response:
-            """Proxy HTTP requests to the Skuld subprocess."""
-            port = skuld_reg.get_port(session_id)
-            if port is None:
-                return JSONResponse({"detail": "Session not found"}, status_code=404)
-
-            import re
-            from urllib.parse import quote
-
-            import httpx
-
-            # Skuld workflow gate ids use ":" as an internal delimiter, so the
-            # session proxy needs to accept it in path segments while still
-            # rejecting slashes and traversal tokens.
-            allowed_segment = re.compile(r"^[A-Za-z0-9._~:-]+$")
-            raw_segments = path.split("/")
-            normalized_segments: list[str] = []
-            for seg in raw_segments:
-                if seg in ("", ".", ".."):
-                    return JSONResponse({"detail": "Invalid path"}, status_code=400)
-                if "\\" in seg or not allowed_segment.fullmatch(seg):
-                    return JSONResponse({"detail": "Invalid path"}, status_code=400)
-                normalized_segments.append(seg)
-
-            sanitized_path = "/".join(quote(seg, safe="") for seg in normalized_segments)
-            url = f"http://127.0.0.1:{port}/api/{sanitized_path}"
-            params = dict(request.query_params)
-            headers = {
-                k: v
-                for k, v in request.headers.items()
-                if k.lower() not in ("host", "content-length", "transfer-encoding")
-            }
-            body = await request.body()
-
-            try:
-                async with httpx.AsyncClient(timeout=30) as client:
-                    resp = await client.request(
-                        method=request.method,
-                        url=url,
-                        params=params,
-                        headers=headers,
-                        content=body if body else None,
-                    )
-                return Response(
-                    content=resp.content,
-                    status_code=resp.status_code,
-                    headers=dict(resp.headers),
-                )
-            except httpx.ConnectError:
-                return JSONResponse(
-                    {"detail": "Skuld broker not ready"},
-                    status_code=502,
-                )
-
-        @root.get("/s/{session_id}/health", include_in_schema=False)
-        async def skuld_health_proxy(request: Request, session_id: str) -> Response:
-            """Proxy health check to the Skuld subprocess."""
-            del request
-            port = skuld_reg.get_port(session_id)
-            if port is None:
-                return JSONResponse({"detail": "Session not found"}, status_code=404)
-
-            import httpx
-
-            try:
-                async with httpx.AsyncClient(timeout=5) as client:
-                    resp = await client.get(f"http://127.0.0.1:{port}/health")
-                return Response(
-                    content=resp.content,
-                    status_code=resp.status_code,
-                    headers=dict(resp.headers),
-                )
-            except httpx.ConnectError:
-                return JSONResponse(
-                    {"detail": "Skuld broker not ready"},
-                    status_code=502,
-                )
+        register_session_proxy_routes(root, skuld_reg)
 
     live_config_template: str | None = None
 
@@ -887,163 +705,4 @@ def build_root_app(
     return root
 
 
-class RootServer(Service):
-    """Single in-process uvicorn server that hosts selected route domains."""
-
-    def __init__(
-        self,
-        registry: PluginRegistry,
-        host: str = "127.0.0.1",
-        port: int = 8080,
-        *,
-        public_host: str | None = None,
-        host_profile: str = DEFAULT_HOST_PROFILE,
-        enabled_mounts: set[str] | None = None,
-    ) -> None:
-        self._registry = registry
-        self._host = host
-        self._public_host = (public_host or host).strip() or host
-        self._port = port
-        self._host_profile = host_profile
-        self._enabled_mounts = enabled_mounts
-        self._server: uvicorn.Server | None = None
-        self._task: asyncio.Task[None] | None = None
-        self._embedded_db: EmbeddedDatabasePort | None = None
-        global _skuld_registry  # noqa: PLW0603
-        self.skuld_registry = SkuldPortRegistry()
-        _skuld_registry = self.skuld_registry
-
-    async def _start_embedded_db(self) -> None:
-        """Start embedded PostgreSQL and set env vars for sub-apps."""
-        database_mode = os.environ.get("NIUU_DATABASE_MODE", "").strip().lower()
-        if database_mode == "external":
-            logger.info("Skipping embedded PostgreSQL because NIUU_DATABASE_MODE=external")
-            return
-        if os.environ.get("DATABASE__HOST", "").strip():
-            logger.info("Skipping embedded PostgreSQL because DATABASE__HOST is already set")
-            return
-
-        from niuu.adapters.embedded_postgres import EmbeddedPostgresDatabase
-
-        data_dir = os.environ.get("NIUU_PGDATA_DIR") or str(Path.home() / ".niuu" / "pgdata")
-        db = EmbeddedPostgresDatabase()
-        info = await db.start(data_dir)
-        await db.ensure_databases(local_service_database_names())
-        self._embedded_db = db
-
-        os.environ["DATABASE__HOST"] = info.host
-        os.environ["DATABASE__PORT"] = str(info.port)
-        os.environ["DATABASE__USER"] = info.user
-        os.environ["DATABASE__PASSWORD"] = ""
-        os.environ["DATABASE__NAME"] = database_name_for_service("volundr")
-        for service_name in ("volundr", "niuu-shared", "guild", "observatory"):
-            os.environ[service_database_env_var(service_name)] = database_name_for_service(
-                service_name
-            )
-
-        logger.info(
-            "Embedded PostgreSQL ready at %s:%s/%s",
-            info.host,
-            info.port,
-            database_name_for_service("volundr"),
-        )
-
-    def _build_app(self) -> FastAPI:
-        """Compose the root FastAPI app from the selected route domains."""
-        return build_root_app(
-            registry=self._registry,
-            host=self._host,
-            port=self._port,
-            host_profile=self._host_profile,
-            enabled_mounts=self._enabled_mounts,
-            skuld_registry=self.skuld_registry,
-        )
-
-    async def start(self) -> None:
-        await self._start_embedded_db()
-        await self._run_migrations()
-
-        os.environ["NIUU_SERVER_HOST"] = self._host
-        os.environ["NIUU_SERVER_PUBLIC_HOST"] = self._public_host
-        os.environ["NIUU_SERVER_PORT"] = str(self._port)
-        os.environ["VOLUNDR__URL"] = f"http://{_local_service_host(self._host)}:{self._port}"
-
-        app = self._build_app()
-        config = uvicorn.Config(
-            app,
-            host=self._host,
-            port=self._port,
-            log_level="warning",
-            access_log=False,
-        )
-        self._server = uvicorn.Server(config)
-        self._task = asyncio.create_task(self._server.serve())
-
-    async def _run_migrations(self) -> None:
-        """Run database migrations for all services."""
-        if self._embedded_db is None:
-            return
-        try:
-            import asyncpg
-
-            from cli.resources import migration_dir, ordered_migration_files
-
-            info = self._embedded_db._connection_info
-            volundr_conn = await asyncpg.connect(
-                host=info.host,
-                port=info.port,
-                user=info.user,
-                database=database_name_for_service("volundr"),
-            )
-            try:
-                for variant in ("volundr", "ting"):
-                    try:
-                        mig_dir = migration_dir(variant)
-                    except FileNotFoundError:
-                        logger.debug("No migrations found for %s", variant)
-                        continue
-                    sql_files = ordered_migration_files(mig_dir)
-                    applied = 0
-                    for sql_file in sql_files:
-                        sql = sql_file.read_text()
-                        try:
-                            await volundr_conn.execute(sql)
-                            applied += 1
-                        except Exception:
-                            logger.debug("Migration %s skipped: %s", sql_file.name, exc_info=True)
-                    logger.info("Applied %d/%d %s migrations", applied, len(sql_files), variant)
-            finally:
-                await volundr_conn.close()
-
-            for service_name in ("niuu-shared", "guild", "observatory"):
-                bootstrap_sql = bootstrap_sql_for_service(service_name)
-                if not bootstrap_sql:
-                    continue
-                await bootstrap_database(
-                    host=info.host,
-                    port=info.port,
-                    user=info.user,
-                    password="",
-                    database=database_name_for_service(service_name),
-                    statements=bootstrap_sql,
-                )
-                logger.info(
-                    "Bootstrapped local %s database %s",
-                    service_name,
-                    database_name_for_service(service_name),
-                )
-        except Exception:
-            logger.exception("Failed to run migrations")
-
-    async def stop(self) -> None:
-        if self._server:
-            self._server.should_exit = True
-        if self._task:
-            await self._task
-            self._task = None
-        if self._embedded_db:
-            await self._embedded_db.stop()
-            self._embedded_db = None
-
-    async def health_check(self) -> bool:
-        return self._server is not None and self._server.started
+from niuu.root_server import RootServer  # noqa: E402,F401

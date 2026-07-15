@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from niuu.mesh import mesh_event_prefix
 from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
 from ravn.config import MeshConfig
 from ravn.domain.events import RavnEvent, RavnEventType
@@ -174,6 +175,38 @@ class TestSleipnirMeshAdapterUnit:
         sleipnir_event = transport.published[0]
         assert sleipnir_event.event_type == "ravn.mesh.activity.flock_coder"
         assert sleipnir_event.payload["ravn_source"] == "flock-coder"
+
+    @pytest.mark.asyncio
+    async def test_environment_scopes_pubsub_to_one_flock(
+        self, transport: _FakeSleipnirTransport
+    ) -> None:
+        flock_a = SleipnirMeshAdapter(
+            publisher=transport,
+            subscriber=transport,
+            own_peer_id="peer-a",
+            environment_id="flock-a",
+        )
+        flock_b = SleipnirMeshAdapter(
+            publisher=transport,
+            subscriber=transport,
+            own_peer_id="peer-b",
+            environment_id="flock-b",
+        )
+        handler_a = AsyncMock()
+        handler_b = AsyncMock()
+        await flock_a.subscribe("review.completed", handler_a)
+        await flock_b.subscribe("review.completed", handler_b)
+
+        await flock_a.publish(_make_event(), "review.completed")
+
+        handler_a.assert_awaited_once()
+        handler_b.assert_not_awaited()
+        published = transport.published[0]
+        assert published.event_type == "ravn.mesh.realm_flock_a.review.completed"
+        assert published.payload["ravn_environment_id"] == "flock-a"
+
+    def test_environment_prefix_sanitizes_for_transport(self) -> None:
+        assert mesh_event_prefix(" Flock/A:B ") == "ravn.mesh.realm_flock_a_b"
 
     @pytest.mark.asyncio
     async def test_publish_failure_logs_environment_context(self, caplog) -> None:
@@ -414,6 +447,42 @@ class TestRpcRoundtrip:
         assert result == {"echo": "hello from B"}
 
         await peer_b.stop()
+
+    @pytest.mark.asyncio
+    async def test_rpc_is_scoped_to_one_flock(self) -> None:
+        transport = _FakeSleipnirTransport()
+        requester = SleipnirMeshAdapter(
+            publisher=transport,
+            subscriber=transport,
+            own_peer_id="peer-a",
+            environment_id="flock-a",
+        )
+        target_a = SleipnirMeshAdapter(
+            publisher=transport,
+            subscriber=transport,
+            own_peer_id="peer-b",
+            environment_id="flock-a",
+        )
+        target_b = SleipnirMeshAdapter(
+            publisher=transport,
+            subscriber=transport,
+            own_peer_id="peer-b",
+            environment_id="flock-b",
+        )
+        handler_a = AsyncMock(return_value={"flock": "a"})
+        handler_b = AsyncMock(return_value={"flock": "b"})
+        target_a.set_rpc_handler(handler_a)
+        target_b.set_rpc_handler(handler_b)
+        await target_a.start()
+        await target_b.start()
+
+        result = await requester.send("peer-b", {"msg": "hello"}, timeout_s=1.0)
+
+        assert result == {"flock": "a"}
+        handler_a.assert_awaited_once_with({"msg": "hello"})
+        handler_b.assert_not_awaited()
+        await target_a.stop()
+        await target_b.stop()
 
 
 # ---------------------------------------------------------------------------

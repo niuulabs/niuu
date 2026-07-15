@@ -95,6 +95,30 @@ class TestSessionServiceBroadcaster:
         assert broadcaster.session_updated_events[2].status == SessionStatus.RUNNING
 
     @pytest.mark.asyncio
+    async def test_start_session_persists_and_reuses_definition(self, service, repository):
+        """Restart parity: the session definition is persisted on first start and
+        reused on later restarts, so the session keeps its transport (e.g. Grok ACP)
+        instead of falling back to the platform default."""
+        session = await service.create_session(
+            name="Grok",
+            model="grok-build",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+
+        # First start with an explicit definition persists it on the session.
+        await service.start_session(session.id, definition="skuldGrok")
+        await asyncio.sleep(0.5)  # let background provisioning settle
+        stored = await repository.get(session.id)
+        assert stored.session_definition == "skuldGrok"
+
+        # Stop, then restart WITHOUT a definition — the stored one must be reused.
+        await service.stop_session(session.id)
+        await service.start_session(session.id)
+        await asyncio.sleep(0.1)
+        restored = await repository.get(session.id)
+        assert restored.session_definition == "skuldGrok"
+
+    @pytest.mark.asyncio
     async def test_stop_session_publishes_events(self, service, broadcaster):
         """Stopping a session publishes session_updated events."""
         session = await service.create_session(
@@ -288,6 +312,31 @@ class TestSessionProvisioningState:
         assert result.chat_endpoint is not None
 
     @pytest.mark.asyncio
+    async def test_start_session_uses_pod_manager_initial_chat_endpoint(
+        self, repository, pod_manager, broadcaster
+    ):
+        """Flux/Gateway sessions return their public route immediately."""
+        service = SessionService(
+            repository=repository,
+            pod_manager=pod_manager,
+            broadcaster=broadcaster,
+            provisioning_initial_delay=0,
+            provisioning_timeout=1.0,
+        )
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        pod_manager.initial_chat_endpoint = (  # type: ignore[method-assign]
+            lambda s: f"wss://sessions.example.com/s/{s.id}/session"
+        )
+
+        result = await service.start_session(session.id)
+
+        assert result.chat_endpoint == f"wss://sessions.example.com/s/{session.id}/session"
+
+    @pytest.mark.asyncio
     async def test_start_session_clears_stale_error(self, service, repository):
         """Restart is an explicit "bring it back" — a stale failure verdict
         (e.g. the liveness reaper's "broker presumed dead") must not survive
@@ -323,8 +372,10 @@ class TestSessionProvisioningState:
         assert updated.status == SessionStatus.RUNNING
 
     @pytest.mark.asyncio
-    async def test_poll_readiness_transitions_to_failed_on_timeout(self, repository, broadcaster):
-        """Background poller transitions PROVISIONING -> FAILED on timeout."""
+    async def test_poll_readiness_transitions_to_failed_on_backend_failure(
+        self, repository, broadcaster
+    ):
+        """Background poller transitions PROVISIONING -> FAILED on backend failure."""
         from tests.conftest import MockPodManager
 
         pod_manager = MockPodManager(wait_for_ready_result=SessionStatus.FAILED)
@@ -349,7 +400,35 @@ class TestSessionProvisioningState:
 
         updated = await repository.get(session.id)
         assert updated.status == SessionStatus.FAILED
-        assert "Provisioning timed out" in updated.error
+        assert "infrastructure reported failure" in updated.error
+
+    @pytest.mark.asyncio
+    async def test_poll_readiness_keeps_progressing_session_provisioning(
+        self, repository, broadcaster
+    ):
+        """A bounded wait ending while the runtime progresses is not a failure."""
+        from tests.conftest import MockPodManager
+
+        pod_manager = MockPodManager(wait_for_ready_result=SessionStatus.STARTING)
+        service = SessionService(
+            repository=repository,
+            pod_manager=pod_manager,
+            broadcaster=broadcaster,
+            provisioning_initial_delay=0,
+            provisioning_timeout=0.1,
+        )
+        session = await service.create_session(
+            name="Test",
+            model="claude-sonnet-4-20250514",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+
+        await service.start_session(session.id)
+        await asyncio.sleep(0.2)
+
+        updated = await repository.get(session.id)
+        assert updated.status == SessionStatus.PROVISIONING
+        assert updated.error is None
 
     @pytest.mark.asyncio
     async def test_can_stop_provisioning_session(self, service, repository):
@@ -479,6 +558,46 @@ class TestSessionProvisioningState:
 
 class TestFluxWaitForReady:
     """Tests for Flux adapter wait_for_ready with mocked watch."""
+
+    @pytest.mark.asyncio
+    async def test_flux_status_missing_release_is_starting_while_session_starts(self):
+        """A just-created STARTING session may be polled before its HelmRelease exists."""
+        from unittest.mock import AsyncMock, Mock, patch
+
+        from volundr.adapters.outbound.flux import FluxPodManager
+
+        flux = FluxPodManager(namespace="test")
+        session = Session(
+            name="Test",
+            model="test",
+            source=GitSource(repo="test", branch="main"),
+            status=SessionStatus.STARTING,
+        )
+        api = Mock()
+        api.get_namespaced_custom_object = AsyncMock(side_effect=Exception("404 NotFound"))
+
+        with patch.object(flux, "_get_api", AsyncMock(return_value=api)):
+            assert await flux.status(session) == SessionStatus.STARTING
+
+    @pytest.mark.asyncio
+    async def test_flux_status_missing_release_is_stopped_after_running(self):
+        """Missing HelmRelease remains authoritative death for an already live row."""
+        from unittest.mock import AsyncMock, Mock, patch
+
+        from volundr.adapters.outbound.flux import FluxPodManager
+
+        flux = FluxPodManager(namespace="test")
+        session = Session(
+            name="Test",
+            model="test",
+            source=GitSource(repo="test", branch="main"),
+            status=SessionStatus.RUNNING,
+        )
+        api = Mock()
+        api.get_namespaced_custom_object = AsyncMock(side_effect=Exception("404 NotFound"))
+
+        with patch.object(flux, "_get_api", AsyncMock(return_value=api)):
+            assert await flux.status(session) == SessionStatus.STOPPED
 
     @pytest.mark.asyncio
     async def test_flux_wait_for_ready_returns_running(self):

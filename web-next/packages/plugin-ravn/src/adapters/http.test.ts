@@ -5,6 +5,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   buildRavnPersonaAdapter,
   buildRavnRavenAdapter,
+  buildRavnResidentControlAdapter,
   buildRavnSessionAdapter,
   buildRavnTriggerAdapter,
   buildRavnBudgetAdapter,
@@ -340,6 +341,8 @@ const rawRavn = {
   model: 'balanced',
   created_at: '2026-04-01T12:00:00Z',
   updated_at: '2026-04-02T09:30:00Z',
+  location: 'midgard',
+  deployment: 'standalone',
 };
 
 describe('buildRavnRavenAdapter', () => {
@@ -356,6 +359,8 @@ describe('buildRavnRavenAdapter', () => {
         model: 'balanced',
         createdAt: rawRavn.created_at,
         updatedAt: rawRavn.updated_at,
+        location: 'midgard',
+        deployment: 'standalone',
       },
     ]);
   });
@@ -366,6 +371,292 @@ describe('buildRavnRavenAdapter', () => {
     const result = await buildRavnRavenAdapter(client).getRaven(rawRavn.id);
     expect(client.get).toHaveBeenCalledWith(`/ravens/${rawRavn.id}`);
     expect(result.personaName).toBe('coder');
+  });
+
+  it('maps resident wire fields to camelCase', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      ...rawRavn,
+      resident_name: 'huginn',
+      peer_id: 'peer-huginn-01',
+      kind: 'resident',
+      chat_endpoint: 'wss://skuld.example/s/abc/session',
+      session_id: '33333333-3333-4333-8333-333333333333',
+    });
+    const result = await buildRavnRavenAdapter(client).getRaven(rawRavn.id);
+    expect(result.residentName).toBe('huginn');
+    expect(result.peerId).toBe('peer-huginn-01');
+    expect(result.kind).toBe('resident');
+    expect(result.chatEndpoint).toBe('wss://skuld.example/s/abc/session');
+    expect(result.sessionId).toBe('33333333-3333-4333-8333-333333333333');
+  });
+
+  it('normalizes the complete managed resident contract from mixed backend records', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      ...rawRavn,
+      backend: 'openshell',
+      engine: 'hermes',
+      profile_id: 'nemohermes-openshell',
+      desired_state: 'running',
+      observed_state: 'active',
+      backend_ref: 'sandbox/hermes-1',
+      capabilities: ['chat', 'logs', 'metrics'],
+      conditions: [
+        {
+          type: 'Ready',
+          status: 'true',
+          reason: null,
+          message: null,
+          last_transition_at: '2026-04-02T09:31:00Z',
+        },
+        {
+          type: 'ChatReady',
+          status: 'unknown',
+          lastTransitionAt: '2026-04-02T09:32:00Z',
+        },
+        { type: 'Configured', status: 'true' },
+      ],
+      endpoints: [{ kind: 'metrics', protocol: 'http', url: 'https://metrics.example/resident' }],
+      managed: true,
+      instance_id: 'target-1',
+      instance_name: 'Compute target',
+      instance_slug: 'compute',
+      message_count: 7,
+      tokens_used: 42,
+      cost: '0.25',
+    });
+
+    const result = await buildRavnRavenAdapter(client).getRaven(rawRavn.id);
+
+    expect(result).toMatchObject({
+      backend: 'openshell',
+      engine: 'hermes',
+      profileId: 'nemohermes-openshell',
+      desiredState: 'running',
+      observedState: 'active',
+      backendRef: 'sandbox/hermes-1',
+      capabilities: ['chat', 'logs', 'metrics'],
+      managed: true,
+      instanceId: 'target-1',
+      instanceName: 'Compute target',
+      instanceSlug: 'compute',
+      messageCount: 7,
+      tokenCount: 42,
+      costUsd: 0.25,
+    });
+    expect(result.conditions).toEqual([
+      {
+        type: 'Ready',
+        status: 'true',
+        reason: '',
+        message: '',
+        lastTransitionAt: '2026-04-02T09:31:00Z',
+      },
+      {
+        type: 'ChatReady',
+        status: 'unknown',
+        reason: '',
+        message: '',
+        lastTransitionAt: '2026-04-02T09:32:00Z',
+      },
+      {
+        type: 'Configured',
+        status: 'true',
+        reason: '',
+        message: '',
+        lastTransitionAt: '',
+      },
+    ]);
+    expect(result.endpoints).toEqual([
+      { kind: 'metrics', protocol: 'http', url: 'https://metrics.example/resident' },
+    ]);
+  });
+
+  it('maps a null chat_endpoint through unchanged', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({ ...rawRavn, kind: 'resident', chat_endpoint: null });
+    const result = await buildRavnRavenAdapter(client).getRaven(rawRavn.id);
+    expect(result.chatEndpoint).toBeNull();
+  });
+
+  it('leaves resident fields undefined when absent from the wire record', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(rawRavn);
+    const result = await buildRavnRavenAdapter(client).getRaven(rawRavn.id);
+    expect(result.residentName).toBeUndefined();
+    expect(result.peerId).toBeUndefined();
+    expect(result.kind).toBeUndefined();
+    expect(result.chatEndpoint).toBeUndefined();
+    expect(result.sessionId).toBeUndefined();
+  });
+});
+
+describe('buildRavnResidentControlAdapter', () => {
+  it('maps target-compatible deployment profiles', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      {
+        id: 'nemohermes-openshell',
+        displayName: 'NemoHermes',
+        description: 'NVIDIA Hermes resident',
+        backend: 'openshell',
+        engine: 'hermes',
+        capabilities: ['chat', 'session.create'],
+        defaultModel: 'qwen3.5',
+        allowedModels: ['qwen3.5'],
+        labels: ['nvidia'],
+        instance_id: 'target-1',
+        instance_name: 'Compute target',
+        instance_slug: 'compute',
+      },
+    ]);
+
+    const profiles = await buildRavnResidentControlAdapter(client).listProfiles();
+
+    expect(client.get).toHaveBeenCalledWith('/deployment-profiles');
+    expect(profiles[0]).toMatchObject({
+      id: 'nemohermes-openshell',
+      instanceId: 'target-1',
+      engine: 'hermes',
+      allowedModels: ['qwen3.5'],
+    });
+  });
+
+  it('deploys with opaque target context and maps the returned resident', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      ...rawRavn,
+      managed: true,
+      instance_id: 'target-1',
+      backend: 'openshell',
+      engine: 'hermes',
+      profile_id: 'nemohermes-openshell',
+      desired_state: 'running',
+      observed_state: 'deploying',
+      flock_id: '11111111-1111-4111-8111-111111111111',
+      flock_member_id: '22222222-2222-4222-8222-222222222222',
+      flock_role: 'specialist',
+      flock_peer_id: 'hermes-22222222',
+      capabilities: ['chat', 'session.create'],
+      conditions: [],
+      endpoints: [],
+    });
+    const control = buildRavnResidentControlAdapter(client);
+
+    const ravn = await control.deploy({
+      name: 'Sol',
+      profileId: 'nemohermes-openshell',
+      instanceId: 'target-1',
+      personaName: 'product-steward',
+      model: 'qwen3.5',
+      flockId: '11111111-1111-4111-8111-111111111111',
+      flockMemberId: '22222222-2222-4222-8222-222222222222',
+      flockRole: 'specialist',
+      flockPeerId: 'hermes-22222222',
+    });
+
+    expect(client.post).toHaveBeenCalledWith('/ravens', {
+      name: 'Sol',
+      profile_id: 'nemohermes-openshell',
+      instance_id: 'target-1',
+      persona_name: 'product-steward',
+      model: 'qwen3.5',
+      flock_id: '11111111-1111-4111-8111-111111111111',
+      flock_member_id: '22222222-2222-4222-8222-222222222222',
+      flock_role: 'specialist',
+      flock_peer_id: 'hermes-22222222',
+    });
+    expect(ravn).toMatchObject({
+      managed: true,
+      instanceId: 'target-1',
+      observedState: 'deploying',
+      flockId: '11111111-1111-4111-8111-111111111111',
+      flockPeerId: 'hermes-22222222',
+    });
+  });
+
+  it('routes lifecycle and native session commands through the owner', async () => {
+    const client = makeClient();
+    const control = buildRavnResidentControlAdapter(client);
+    const ravn = {
+      ...rawRavn,
+      personaName: rawRavn.persona_name,
+      createdAt: rawRavn.created_at,
+      status: 'active' as const,
+      instanceId: 'target/one',
+    };
+    client.post.mockResolvedValueOnce({ ...rawRavn }).mockResolvedValueOnce({
+      id: '22222222-2222-4222-8222-222222222222',
+      ravn_id: rawRavn.id,
+      persona_name: 'coder',
+      status: 'running',
+      model: 'qwen3.5',
+      created_at: rawRavn.created_at,
+    });
+
+    await control.applyLifecycle(ravn, 'restart');
+    await control.createSession(ravn, { title: 'Second thread', model: 'qwen3.5' });
+    await control.deleteSession(ravn, 'session/two');
+
+    expect(client.post).toHaveBeenNthCalledWith(
+      1,
+      `/ravens/${rawRavn.id}/restart?instance_id=target%2Fone`,
+      {},
+    );
+    expect(client.post).toHaveBeenNthCalledWith(
+      2,
+      `/ravens/${rawRavn.id}/sessions?instance_id=target%2Fone`,
+      { title: 'Second thread', model: 'qwen3.5' },
+    );
+    expect(client.delete).toHaveBeenCalledWith(
+      `/ravens/${rawRavn.id}/sessions/session%2Ftwo?instance_id=target%2Fone`,
+    );
+  });
+
+  it('normalizes partial backend logs without inventing values', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      entries: [
+        { timestamp_ms: 12, level: 'info', source: 'engine', message: 'ready' },
+        { timestampMs: 13, target: 'api', fields: { port: 8000 } },
+        {},
+      ],
+      bufferTotal: 3,
+    });
+    const ravn = {
+      ...rawRavn,
+      personaName: rawRavn.persona_name,
+      createdAt: rawRavn.created_at,
+      status: 'active' as const,
+      instanceId: 'target-1',
+    };
+
+    const result = await buildRavnResidentControlAdapter(client).getLogs(ravn);
+
+    expect(client.get).toHaveBeenCalledWith(`/ravens/${rawRavn.id}/logs?instance_id=target-1`);
+    expect(result).toEqual({
+      entries: [
+        {
+          timestampMs: 12,
+          level: 'info',
+          source: 'engine',
+          target: '',
+          message: 'ready',
+          fields: {},
+        },
+        {
+          timestampMs: 13,
+          level: '',
+          source: '',
+          target: 'api',
+          message: '',
+          fields: { port: 8000 },
+        },
+        { timestampMs: 0, level: '', source: '', target: '', message: '', fields: {} },
+      ],
+      bufferTotal: 3,
+    });
   });
 });
 
@@ -407,6 +698,48 @@ describe('buildRavnSessionAdapter', () => {
     expect(client.get).toHaveBeenCalledWith(`/sessions/${rawSession.id}`);
   });
 
+  it('scopes a session lookup by target and owning resident', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(rawSession);
+
+    await buildRavnSessionAdapter(client).getSession(rawSession.id, 'target/one', 'resident/one');
+
+    expect(client.get).toHaveBeenCalledWith(
+      `/sessions/${rawSession.id}?instance_id=target%2Fone&ravn_id=resident%2Fone`,
+    );
+  });
+
+  it('scopes message lookup by target and owning resident', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([]);
+
+    await buildRavnSessionAdapter(client).getMessages(rawSession.id, 'target/one', 'resident/one');
+
+    expect(client.get).toHaveBeenCalledWith(
+      `/sessions/${rawSession.id}/messages?instance_id=target%2Fone&ravn_id=resident%2Fone`,
+    );
+  });
+
+  it('maps resident usage and title fields', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      ...rawSession,
+      title: 'resident coder',
+      message_count: 3,
+      tokens_used: 54729,
+      cost: '0.094503',
+    });
+
+    const result = await buildRavnSessionAdapter(client).getSession(rawSession.id);
+
+    expect(result).toMatchObject({
+      title: 'resident coder',
+      messageCount: 3,
+      tokenCount: 54729,
+      costUsd: 0.094503,
+    });
+  });
+
   it('fetches messages for a session', async () => {
     const client = makeClient();
     client.get.mockResolvedValue([rawMsg]);
@@ -414,6 +747,66 @@ describe('buildRavnSessionAdapter', () => {
     expect(client.get).toHaveBeenCalledWith(`/sessions/${rawSession.id}/messages`);
     expect(result[0]!.sessionId).toBe(rawSession.id);
     expect(result[0]!.kind).toBe('asst');
+  });
+
+  it('maps chat_endpoint to chatEndpoint when present', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      ...rawSession,
+      chat_endpoint: 'wss://skuld.example/s/abc/session',
+    });
+    const result = await buildRavnSessionAdapter(client).getSession(rawSession.id);
+    expect(result.chatEndpoint).toBe('wss://skuld.example/s/abc/session');
+  });
+
+  it('carries opaque owning instance context into resident chat URLs', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      ...rawSession,
+      chat_endpoint: '/s/resident/sessions/thread/session',
+      instance_id: 'target/one',
+    });
+    const result = await buildRavnSessionAdapter(client).getSession(rawSession.id);
+    expect(result.chatEndpoint).toBe(
+      '/s/resident/sessions/thread/session?instance_id=target%2Fone',
+    );
+    expect(result.instanceId).toBe('target/one');
+  });
+
+  it('preserves existing query parameters and does not duplicate instance context', async () => {
+    const client = makeClient();
+    const adapter = buildRavnSessionAdapter(client);
+    client.get
+      .mockResolvedValueOnce({
+        ...rawSession,
+        chat_endpoint: '/s/resident/session?mode=chat',
+        instance_id: 'target one',
+      })
+      .mockResolvedValueOnce({
+        ...rawSession,
+        chat_endpoint: '/s/resident/session?instance_id=target-one',
+        instance_id: 'target-one',
+      });
+
+    const withQuery = await adapter.getSession(rawSession.id);
+    const alreadyScoped = await adapter.getSession(rawSession.id);
+
+    expect(withQuery.chatEndpoint).toBe('/s/resident/session?mode=chat&instance_id=target%20one');
+    expect(alreadyScoped.chatEndpoint).toBe('/s/resident/session?instance_id=target-one');
+  });
+
+  it('maps a null chat_endpoint through unchanged', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({ ...rawSession, chat_endpoint: null });
+    const result = await buildRavnSessionAdapter(client).getSession(rawSession.id);
+    expect(result.chatEndpoint).toBeNull();
+  });
+
+  it('leaves chatEndpoint undefined when absent from the wire record', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(rawSession);
+    const result = await buildRavnSessionAdapter(client).getSession(rawSession.id);
+    expect(result.chatEndpoint).toBeUndefined();
   });
 });
 
@@ -848,5 +1241,115 @@ describe('buildRavnWardenAdapter', () => {
       source: 'stderr',
       message: 'warden is installed but idle',
     });
+  });
+
+  it('maps sparse and alternate warden response branches', async () => {
+    const client = makeClient();
+    const sparse = {
+      ...rawWarden,
+      model: '',
+      deployment_kwargs: undefined,
+      mimir: {
+        ...rawWarden.mimir,
+        write_mount: '',
+        read_mount_names: undefined,
+        write_mount_names: undefined,
+      },
+      schedules: undefined,
+      console: undefined,
+      runtime: undefined,
+      supervisor: undefined,
+      operator: {
+        rune: 'R',
+        bio: 'Reviews changes',
+        expertise: ['review'],
+        tools: ['git'],
+        role: 'review',
+      },
+    };
+    const withDream = {
+      ...rawWarden,
+      mimir: { ...rawWarden.mimir, write_mount_names: undefined },
+      runtime: {
+        ...rawWarden.runtime,
+        last_dream: {
+          id: 'dream-1',
+          timestamp: '2026-04-20T12:00:00Z',
+          ravn: 'ravn-fjolnir',
+          mounts: ['local'],
+          pages_updated: 2,
+          entities_created: 1,
+          lint_fixes: 3,
+          duration_ms: 4000,
+        },
+      },
+      supervisor: {
+        ...rawWarden.supervisor,
+        observation: { ...rawWarden.supervisor.observation, fields: undefined },
+      },
+    };
+    client.get.mockResolvedValue([sparse, withDream]);
+
+    const [mappedSparse, mappedDream] = await buildRavnWardenAdapter(client).listWardens();
+    expect(mappedSparse).toMatchObject({
+      model: 'claude-sonnet-4-6',
+      deploymentKwargs: {},
+      readMountNames: ['local', 'shared'],
+      writeMountNames: [],
+      runtime: undefined,
+      supervisor: undefined,
+      operator: { role: 'review' },
+    });
+    expect(mappedSparse?.schedules.dreamCyclePollIntervalSeconds).toBe(60);
+    expect(mappedSparse?.console.port).toBe(8400);
+    expect(mappedDream?.writeMountNames).toEqual(['local']);
+    expect(mappedDream?.runtime?.lastDream).toMatchObject({ id: 'dream-1', durationMs: 4000 });
+    expect(mappedDream?.supervisor?.observation?.fields).toBeUndefined();
+  });
+
+  it('uses empty request defaults for a minimal warden create', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue(rawWarden);
+    await buildRavnWardenAdapter(client).createWarden({ name: 'Minimal' });
+    expect(client.post).toHaveBeenCalledWith(
+      '/wardens',
+      expect.objectContaining({
+        deployment_kwargs: {},
+        mount_names: [],
+        write_mount: '',
+        read_mount_names: [],
+        write_mount_names: [],
+        category_scope: [],
+        features: undefined,
+        schedules: undefined,
+        console: undefined,
+      }),
+    );
+  });
+
+  it('drops malformed SSE frames when no client base path is configured', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn(async () => mockSseResponse(['data: not-json\n\n']));
+    const listener = vi.fn();
+    const client = { ...makeClient(), basePath: undefined };
+
+    const unsubscribe = buildRavnWardenAdapter(client).subscribeWarden(rawWarden.id, listener);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    unsubscribe();
+    global.fetch = originalFetch;
+
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('builds optional log and activity query strings', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([]);
+    const adapter = buildRavnWardenAdapter(client);
+    await adapter.getWardenLogs(rawWarden.id);
+    await adapter.getWardenLogs(rawWarden.id, { limit: 10 });
+    await adapter.getWardenActivity(rawWarden.id);
+    expect(client.get).toHaveBeenNthCalledWith(1, `/wardens/${rawWarden.id}/logs`);
+    expect(client.get).toHaveBeenNthCalledWith(2, `/wardens/${rawWarden.id}/logs?limit=10`);
+    expect(client.get).toHaveBeenNthCalledWith(3, `/wardens/${rawWarden.id}/activity`);
   });
 });

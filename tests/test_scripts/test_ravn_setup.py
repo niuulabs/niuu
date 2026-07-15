@@ -46,7 +46,8 @@ def test_environment_nats_profile_generates_config(tmp_path: Path) -> None:
     assert "PrinterPiSignalAdapter" in config
     assert "kwargs:" in config
     assert "adapter: nats" in config
-    assert "servers_env: NATS_URL" in config
+    assert "servers:" in config
+    assert "nats://localhost:4222" in config
     assert "stream_name: ravn_environment" in config
     assert "subject_prefix: ravn.environment" in config
 
@@ -73,6 +74,6 @@ def test_environment_nats_profile_generates_config(tmp_path: Path) -> None:
     assert settings.environment.signal_sources[2].kwargs == {"moonraker_url_env": "MOONRAKER_URL"}
     assert settings.environment.signal_subjects == []
     assert settings.mesh.adapter == "nats"
-    assert settings.mesh.nats.servers_env == "NATS_URL"
+    assert settings.mesh.nats.servers == ["nats://localhost:4222"]
     assert settings.mesh.nats.stream_name == "ravn_environment"
     assert settings.mesh.nats.subject_prefix == "ravn.environment"

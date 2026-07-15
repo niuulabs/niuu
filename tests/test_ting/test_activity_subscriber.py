@@ -12,7 +12,15 @@ import pytest
 
 from ting.adapters.memory_event_bus import InMemoryEventBus
 from ting.config import WatcherConfig
-from ting.domain.models import DispatcherState, PRStatus, Run, RunStatus, SessionMessage
+from ting.domain.models import (
+    DispatcherState,
+    PRStatus,
+    Run,
+    RunStatus,
+    SessionMessage,
+    WorkflowCampaign,
+    WorkflowCampaignStatus,
+)
 from ting.domain.services.activity_subscriber import (
     CompletionEvaluation,
     SessionActivitySubscriber,
@@ -23,6 +31,7 @@ from ting.domain.services.activity_subscriber import (
 )
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.volundr import ActivityEvent, SpawnRequest, VolundrPort, VolundrSession
+from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 
 # ---------------------------------------------------------------------------
 # Stubs
@@ -203,6 +212,50 @@ class StubDispatcherRepo(DispatcherRepository):
         return []
 
 
+class StubWorkflowCampaignRepo(WorkflowCampaignRepository):
+    def __init__(self, campaigns: list[WorkflowCampaign] | None = None) -> None:
+        self.campaigns = {campaign.id: campaign for campaign in campaigns or []}
+
+    async def list_campaigns(self, *, owner_id: str) -> list[WorkflowCampaign]:
+        return [campaign for campaign in self.campaigns.values() if campaign.owner_id == owner_id]
+
+    async def list_active_campaigns(self) -> list[WorkflowCampaign]:
+        return [
+            campaign
+            for campaign in self.campaigns.values()
+            if campaign.status
+            in {
+                WorkflowCampaignStatus.PENDING,
+                WorkflowCampaignStatus.RUNNING,
+                WorkflowCampaignStatus.BLOCKED,
+            }
+        ]
+
+    async def get_campaign(self, campaign_id: UUID) -> WorkflowCampaign | None:
+        return self.campaigns.get(campaign_id)
+
+    async def get_campaign_by_slug(
+        self,
+        slug: str,
+        *,
+        owner_id: str | None = None,
+    ) -> WorkflowCampaign | None:
+        for campaign in self.campaigns.values():
+            if campaign.slug != slug:
+                continue
+            if owner_id is not None and campaign.owner_id != owner_id:
+                continue
+            return campaign
+        return None
+
+    async def save_campaign(self, campaign: WorkflowCampaign) -> WorkflowCampaign:
+        self.campaigns[campaign.id] = campaign
+        return campaign
+
+    async def delete_campaign(self, campaign_id: UUID) -> bool:
+        return self.campaigns.pop(campaign_id, None) is not None
+
+
 class StubVolundrFactory:
     """Stub factory that always returns the same adapter for any owner."""
 
@@ -262,6 +315,27 @@ def _make_volundr_session(
     )
 
 
+def _make_workflow_campaign(session_id: str = SESSION_ID) -> WorkflowCampaign:
+    return WorkflowCampaign(
+        id=uuid4(),
+        slug="plan-test",
+        name="Plan test",
+        owner_id=OWNER_ID,
+        workflow_id=uuid4(),
+        workflow_version="1.0.0",
+        workflow_name="Saga Planning",
+        workflow_snapshot={},
+        session_id=session_id,
+        session_name="Plan test",
+        status=WorkflowCampaignStatus.RUNNING,
+        active_stage_id="plan-clarify",
+        stage_state=[],
+        metadata={},
+        created_at=NOW,
+        updated_at=NOW,
+    )
+
+
 def _make_subscriber(
     volundr: StubVolundr | None = None,
     dispatcher_repo: StubDispatcherRepo | None = None,
@@ -270,6 +344,7 @@ def _make_subscriber(
     tracker: MockTracker | None = None,
     run: Run | None = None,
     review_engine: object | None = None,
+    workflow_campaign_repo: WorkflowCampaignRepository | None = None,
 ) -> tuple[SessionActivitySubscriber, StubVolundr, MockTracker, InMemoryEventBus]:
     v = volundr or StubVolundr()
     if SESSION_ID not in v.sessions:
@@ -290,6 +365,7 @@ def _make_subscriber(
         event_bus=e,
         config=c,
         review_engine=review_engine,  # type: ignore[arg-type]
+        workflow_campaign_repo=workflow_campaign_repo,
     )
     return sub, v, t, e
 
@@ -478,6 +554,56 @@ class TestActivityEventHandling:
         assert bus_event.event == "run.feedback_requested"
         assert bus_event.data["tracker_id"] == TRACKER_ISSUE_ID
         assert bus_event.data["summary"] == "Need operator approval before publication"
+
+    @pytest.mark.asyncio
+    async def test_help_needed_with_full_payload_session_updates_workflow_campaign(self) -> None:
+        full_session_id = "a23145f7-afcb-4184-b683-a6b0a1d2efc5"
+        campaign_repo = StubWorkflowCampaignRepo([_make_workflow_campaign(full_session_id)])
+        tracker = MockTracker(runs_by_session={})
+        sub, _volundr, _tracker, event_bus = _make_subscriber(
+            tracker=tracker,
+            workflow_campaign_repo=campaign_repo,
+        )
+
+        event = ActivityEvent(
+            session_id="a23145f7",
+            state="idle",
+            metadata={
+                "help_needed": {
+                    "session_id": full_session_id,
+                    "summary": "Plan is ready for human review.",
+                    "reason": "needs_human_approval",
+                    "recommendation": "Approve or request focused changes.",
+                    "persona": "workflow-gate",
+                    "context": {
+                        "gate_id": "plan-review-gate:event_plan_breakdown_a23145f7:1",
+                        "gate_node_id": "plan-review-gate",
+                        "gate_status": "pending",
+                        "instructions": "Approve the draft if it is bounded.",
+                    },
+                },
+            },
+            owner_id=OWNER_ID,
+        )
+
+        q = event_bus.subscribe()
+        await sub._on_activity_event(event, _volundr, OWNER_ID)
+
+        campaign = next(iter(campaign_repo.campaigns.values()))
+        assert campaign.active_stage_id == "plan-review-gate"
+        assert campaign.metadata["pending_workflow_gates"] == [
+            {
+                "id": "plan-review-gate:event_plan_breakdown_a23145f7:1",
+                "node_id": "plan-review-gate",
+                "status": "pending",
+                "summary": "Plan is ready for human review.",
+                "instructions": "Approve the draft if it is bounded.",
+                "reason": "needs_human_approval",
+            }
+        ]
+        bus_event = await asyncio.wait_for(q.get(), timeout=1.0)
+        assert bus_event.event == "workflow.campaign.feedback_requested"
+        assert bus_event.data["session_id"] == full_session_id
 
     @pytest.mark.asyncio
     async def test_idle_event_keeps_waiting_when_review_engine_missing(self) -> None:

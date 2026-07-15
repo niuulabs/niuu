@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
-
-from guild.plugin import GuildPlugin, _GuildStub
+from guild.plugin import GuildPlugin
 from niuu.cli_api_client import CLIAPIClient
+from niuu.ports.plugin import ServiceLifecycle
 
 
 def test_guild_plugin_metadata() -> None:
@@ -24,9 +23,12 @@ def test_guild_plugin_register_service() -> None:
     assert definition.default_port == 8084
 
 
-def test_guild_plugin_create_service() -> None:
+def test_guild_plugin_is_host_mounted() -> None:
     plugin = GuildPlugin()
-    assert isinstance(plugin.create_service(), _GuildStub)
+    definition = plugin.register_service()
+    assert definition.lifecycle is ServiceLifecycle.HOSTED
+    assert definition.factory is None
+    assert plugin.create_service() is None
 
 
 def test_guild_plugin_create_api_app() -> None:
@@ -44,6 +46,7 @@ def test_guild_plugin_route_domains_are_stable_without_configured_workers() -> N
         "guild-instances-api",
         "forge-api",
         "session-api",
+        "ravn-aggregate-api",
     ]
     assert route_domains[0].prefixes == (
         "/api/v1/niuu/instances",
@@ -54,6 +57,10 @@ def test_guild_plugin_route_domains_are_stable_without_configured_workers() -> N
     assert route_domains[2].prefixes == (
         "/api/v1/forge/sessions",
         "/api/v1/forge/chronicles",
+    )
+    assert route_domains[3].prefixes == (
+        "/api/v1/ravn/ravens",
+        "/api/v1/ravn/sessions",
     )
 
 
@@ -79,6 +86,7 @@ niuu:
         "guild-instances-api",
         "forge-api",
         "session-api",
+        "ravn-aggregate-api",
     ]
     assert route_domains[1].prefixes == ("/api/v1/forge",)
     assert route_domains[2].prefixes == (
@@ -95,13 +103,3 @@ def test_guild_plugin_create_api_client() -> None:
     assert isinstance(client, CLIAPIClient)
     assert client._base_url == "http://localhost:8080"
     assert client._service_name == "Guild"
-
-
-@pytest.mark.asyncio
-async def test_guild_stub_lifecycle_and_health_check() -> None:
-    stub = _GuildStub()
-
-    await stub.start()
-    await stub.stop()
-
-    assert await stub.health_check() is True

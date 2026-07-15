@@ -128,6 +128,42 @@ class TestSpawnSession:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_rewrites_loopback_chat_endpoint_to_adapter_origin(self):
+        adapter = VolundrHTTPAdapter(
+            base_url="https://volundr.valhalla.asgard.niuu.world",
+            timeout=5.0,
+            name="Valhalla",
+        )
+        respx.post("https://volundr.valhalla.asgard.niuu.world/api/v1/forge/sessions").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": "ses-1",
+                    "name": "my-session",
+                    "status": "creating",
+                    "chat_endpoint": "ws://localhost:8080/s/ses-1/session",
+                },
+            )
+        )
+
+        session = await adapter.spawn_session(
+            SpawnRequest(
+                name="my-session",
+                repo="org/repo",
+                branch="main",
+                model="gpt-5.5",
+                tracker_issue_id="",
+                tracker_issue_url="",
+                system_prompt="",
+                initial_prompt="go",
+                base_branch="main",
+            )
+        )
+
+        assert session.chat_endpoint == "wss://volundr.valhalla.asgard.niuu.world/s/ses-1/session"
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_sends_correct_payload(self, adapter: VolundrHTTPAdapter):
         route = respx.post(SESSIONS_URL).mock(
             return_value=httpx.Response(
@@ -293,6 +329,26 @@ class TestGetSession:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_get_session_rewrites_loopback_chat_endpoint(self, adapter: VolundrHTTPAdapter):
+        respx.get(f"{SESSIONS_URL}/ses-1").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": "ses-1",
+                    "name": "my-session",
+                    "status": "running",
+                    "chat_endpoint": "ws://127.0.0.1:8080/s/ses-1/session",
+                },
+            )
+        )
+
+        session = await adapter.get_session("ses-1")
+
+        assert session is not None
+        assert session.chat_endpoint == "ws://volundr.test:8000/s/ses-1/session"
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_not_found(self, adapter: VolundrHTTPAdapter):
         respx.get(f"{SESSIONS_URL}/nonexistent").mock(return_value=httpx.Response(404))
 
@@ -358,6 +414,7 @@ class TestListSessions:
         assert len(sessions) == 2
         assert sessions[0].id == "ses-1"
         assert sessions[0].tracker_issue_id == "A-1"
+        assert sessions[0].chat_endpoint is None
         assert sessions[1].id == "ses-2"
         assert sessions[1].tracker_issue_id is None
 
@@ -724,20 +781,22 @@ class TestConversation:
     @pytest.mark.asyncio
     @respx.mock
     async def test_get_conversation(self, adapter: VolundrHTTPAdapter):
-        respx.get(f"{SESSIONS_URL}/ses-1/conversation").mock(
+        route = respx.get(f"{SESSIONS_URL}/ses-1/conversation").mock(
             return_value=httpx.Response(200, json={"turns": [{"role": "user", "content": "hi"}]})
         )
 
-        conversation = await adapter.get_conversation("ses-1")
+        conversation = await adapter.get_conversation("ses-1", auth_token="tok-123")
 
         assert conversation["turns"][0]["content"] == "hi"
+        assert route.calls.last.request.headers["Authorization"] == "Bearer tok-123"
 
     @pytest.mark.asyncio
     async def test_get_last_assistant_message_prefers_recent_json_assessment(
         self, adapter: VolundrHTTPAdapter, monkeypatch
     ):
-        async def fake_conversation(session_id: str):
+        async def fake_conversation(session_id: str, **kwargs):
             assert session_id == "ses-1"
+            assert kwargs["auth_token"] == "tok-123"
             return {
                 "turns": [
                     {"role": "assistant", "content": "plain response"},
@@ -748,7 +807,7 @@ class TestConversation:
 
         monkeypatch.setattr(adapter, "get_conversation", fake_conversation)
 
-        content = await adapter.get_last_assistant_message("ses-1")
+        content = await adapter.get_last_assistant_message("ses-1", auth_token="tok-123")
 
         assert '"confidence": 0.92' in content
 
@@ -756,7 +815,7 @@ class TestConversation:
     async def test_get_last_assistant_message_falls_back_to_latest_assistant(
         self, adapter: VolundrHTTPAdapter, monkeypatch
     ):
-        async def fake_conversation(session_id: str):
+        async def fake_conversation(session_id: str, **kwargs):
             return {
                 "turns": [
                     {"role": "user", "content": "hi"},
@@ -774,13 +833,56 @@ class TestConversation:
     async def test_get_last_assistant_message_raises_when_missing(
         self, adapter: VolundrHTTPAdapter, monkeypatch
     ):
-        async def fake_conversation(session_id: str):
+        async def fake_conversation(session_id: str, **kwargs):
             return {"turns": [{"role": "user", "content": "hi"}]}
 
         monkeypatch.setattr(adapter, "get_conversation", fake_conversation)
 
         with pytest.raises(ValueError):
             await adapter.get_last_assistant_message("ses-3")
+
+
+class TestWorkflowGates:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_get_workflow_gates_returns_gate_list(self, adapter: VolundrHTTPAdapter):
+        respx.get(f"{SESSIONS_URL}/ses-1/workflow/gates").mock(
+            return_value=httpx.Response(
+                200,
+                json={"gates": [{"id": "gate-1", "node_id": "plan-brief-gate"}]},
+            )
+        )
+
+        gates = await adapter.get_workflow_gates("ses-1")
+
+        assert gates == [{"id": "gate-1", "node_id": "plan-brief-gate"}]
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_resolve_workflow_gate_encodes_id_and_sends_intent(
+        self, adapter: VolundrHTTPAdapter
+    ):
+        route = respx.post(
+            f"{SESSIONS_URL}/ses-1/workflow/gates/plan%20brief%3Fstep%3D1/resolve"
+        ).mock(return_value=httpx.Response(200, json={"status": "resolved"}))
+
+        result = await adapter.resolve_workflow_gate(
+            "ses-1",
+            "plan brief?step=1",
+            "APPROVE",
+            notes="Looks bounded.",
+            source="ting.plan",
+            auth_token="tok-123",
+        )
+
+        assert result == {"status": "resolved"}
+        assert route.calls.last.request.headers["Authorization"] == "Bearer tok-123"
+        assert route.calls.last.request.headers["x-niuu-workflow-gate-intent"] == "resolve"
+        assert json.loads(route.calls.last.request.content) == {
+            "decision": "APPROVE",
+            "notes": "Looks bounded.",
+            "source": "ting.plan",
+        }
 
 
 class _FakeLineIterator:

@@ -301,6 +301,25 @@ class TestWorkRequestHandling:
     """Test work_request RPC handling."""
 
     @pytest.mark.asyncio
+    async def test_request_work_preserves_room_correlation(self, adapter, mock_mesh):
+        mock_mesh.send = AsyncMock(return_value={"status": "complete", "output": "done"})
+
+        result = await adapter.request_work("reviewer", "Review this", request_id="room-msg-1")
+
+        assert result == {"status": "complete", "output": "done"}
+        mock_mesh.send.assert_awaited_once_with(
+            "reviewer",
+            {
+                "type": "work_request",
+                "prompt": "Review this",
+                "request_id": "room-msg-1",
+                "session_id": "test-session-42",
+                "root_correlation_id": "test-session-42",
+            },
+            timeout_s=120.0,
+        )
+
+    @pytest.mark.asyncio
     async def test_work_request_sends_prompt_to_cli(self, adapter, mock_transport):
         await adapter.start()
 

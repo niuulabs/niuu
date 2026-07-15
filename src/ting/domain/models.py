@@ -365,9 +365,16 @@ class PhaseSpec:
 
 
 @dataclass(frozen=True)
+class PlanRisk:
+    kind: str
+    message: str
+
+
+@dataclass(frozen=True)
 class SagaStructure:
     name: str
     phases: list[PhaseSpec]
+    risks: list[PlanRisk] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

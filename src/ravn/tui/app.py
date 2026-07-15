@@ -615,11 +615,7 @@ class RavnTUI(TextualApp[None]):
         d.register("disconnect", self._cmd_disconnect)
         d.register("view", self._cmd_view)
         d.register("layout", self._cmd_layout)
-        d.register("spawn", self._cmd_spawn)
         d.register("broadcast", self._cmd_broadcast)
-        d.register("pipe", self._cmd_pipe)
-        d.register("yank", self._cmd_yank)
-        d.register("filter", self._cmd_filter)
         d.register("ingest", self._cmd_ingest)
         d.register("checkpoint", self._cmd_checkpoint)
         d.register("resume", self._cmd_resume)
@@ -680,12 +676,17 @@ class RavnTUI(TextualApp[None]):
                 with suppress(Exception):
                     self.query_one(TabBar).set_active(name)
                 self.notify(f"Layout loaded: {name}")
+            case "delete":
+                if not name:
+                    self.notify("Usage: layout delete <name>", severity="error")
+                    return
+                if not self.layout_mgr.delete(name):
+                    self.notify(f"Layout not found: {name}", severity="error")
+                    return
+                self.notify(f"Layout deleted: {name}")
             case "list":
                 names = ", ".join(self.layout_mgr.list())
                 self.notify(f"Layouts: {names}")
-
-    async def _cmd_spawn(self, count: str = "1", persona: str = "") -> None:
-        self.notify("Spawn not yet wired to cascade API")
 
     async def _cmd_broadcast(self, *args: str) -> None:
         message = " ".join(args)
@@ -732,15 +733,6 @@ class RavnTUI(TextualApp[None]):
             self.notify("\n".join(self._notif_log[-5:]))
         else:
             self.notify("No notifications")
-
-    async def _cmd_pipe(self, filename: str = "") -> None:
-        self.notify(f"Pipe to {filename} not yet implemented")
-
-    async def _cmd_yank(self) -> None:
-        self.notify("Yank not yet implemented")
-
-    async def _cmd_filter(self, event_type: str = "all") -> None:
-        self.notify(f"Filter: {event_type}")
 
     async def _cmd_ingest(self, path: str = "") -> None:
         import os

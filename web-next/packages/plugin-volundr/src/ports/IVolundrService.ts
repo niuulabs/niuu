@@ -75,12 +75,7 @@ export interface VolundrConversationHistory {
 }
 
 export type PermissionAutoApprovalReason =
-  | 'allowed'
-  | 'disabled'
-  | 'no_command'
-  | 'denylist'
-  | 'no_allowlist_match'
-  | 'endpoint_error';
+  'allowed' | 'disabled' | 'no_command' | 'denylist' | 'no_allowlist_match' | 'endpoint_error';
 
 export interface PermissionAutoApprovalRequest {
   requestId: string;
@@ -144,6 +139,7 @@ export interface IVolundrService {
   // Session lifecycle
   startSession(config: {
     name: string;
+    personaName?: string;
     source: SessionSource;
     model: string;
     launchSpec?: string;

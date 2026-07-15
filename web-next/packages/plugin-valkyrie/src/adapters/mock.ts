@@ -1,24 +1,44 @@
-import type {
-  ActionRecord,
-  CourtDecision,
-  EnvironmentSignal,
-  EnvironmentSummary,
-  FlockSummary,
-  HuddleSummary,
-  JudgmentRecord,
-  LearningRecord,
-  OperationalState,
-  ReviewItem,
-  ReviewSummary,
-  ValkyrieDashboard,
-  ValkyrieResident,
+import {
+  LEARNING_FEEDBACK_VERDICTS,
+  type ActionRecord,
+  type CourtDecision,
+  type DecisionDetail,
+  type DecisionRecord,
+  type EnvironmentSignal,
+  type EnvironmentSummary,
+  type FlockSummary,
+  type HuddleMessage,
+  type HuddleSummary,
+  type JudgmentRecord,
+  type LearnedSkillRecord,
+  type LearnedSkillSummary,
+  type LearningRecord,
+  type OperationalState,
+  type RealmSummary,
+  type RealmTrustGrant,
+  type ReviewItem,
+  type ReviewSummary,
+  type SignalHistoryEntry,
+  type SkillUsageStat,
+  type TingWorkflowSummary,
+  type ValkyrieDashboard,
+  type ValkyrieResident,
 } from '../domain';
 import type {
   AutonomyUpdateRequest,
+  DecisionListFilters,
+  HuddleJoinInput,
+  HuddleMessageInput,
   IOdinReviewService,
+  IRealmGovernanceService,
   IValkyrieService,
+  IValkyrieSkillsService,
+  LearningFeedbackInput,
+  LearningRevisionInput,
   ReviewDecisionRequest,
   ReviewListFilters,
+  SignalHistoryFilters,
+  TrustGrantCreate,
 } from '../ports';
 
 const UPDATED_AT = '2026-06-03T14:10:00Z';
@@ -30,7 +50,7 @@ const environments: EnvironmentSummary[] = [
     kind: 'kubernetes',
     health: 'watch',
     flockId: 'flock-k8s',
-    topologyNodeIds: ['realm-asgard', 'cluster-valhalla', 'valkyrie-valhalla-sigrun'],
+    topologyNodeIds: ['realm-valhalla', 'cluster-valhalla', 'valkyrie-valhalla-sigrun'],
     signalCount: 24,
     unresolvedSignalCount: 3,
     wakefulCount: 2,
@@ -73,6 +93,10 @@ const valkyries: ValkyrieResident[] = [
     flockId: 'flock-k8s',
     persona: 'cluster-guardian',
     specialty: 'k8s event triage',
+    charter:
+      'Keep the Valhalla cluster healthy and boring: catch drift before users do, ' +
+      'and only interrupt Jozef for decisions that genuinely need him.',
+    signalTaskSeverities: ['warning', 'critical'],
     wakefulness: 'wakeful',
     autonomyMode: 'autonomous',
     status: 'busy',
@@ -384,6 +408,7 @@ const learnings: LearningRecord[] = [
     sourceSignalIds: ['sig-k8s-oom-1', 'sig-k8s-oom-2', 'sig-k8s-oom-3'],
     sourceEvidence: { replayed: 3, predicted: 3 },
     dreamRationale: 'Repeated OOMKilled events preceded queue-depth drift.',
+    repetition: 3,
     odinReview: {
       outcome: 'approved',
       approved: true,
@@ -436,6 +461,12 @@ const learnings: LearningRecord[] = [
     redaction: 'none',
     promotedTool: 'printer_resin_pause',
     createdAt: '2026-06-01T22:00:00Z',
+    feedback: {
+      verdict: 'useful',
+      reason: 'Saved two prints in the first week.',
+      operatorId: 'human:operator',
+      recordedAt: '2026-06-02T08:00:00Z',
+    },
   },
   {
     id: 'learn-k8s-eviction-rollback',
@@ -710,6 +741,83 @@ export function createSeedValkyrieDashboard(): ValkyrieDashboard {
           correlationId: 'task-k8s-2',
           details: { reason: 'queue_full' },
         },
+        // --- Investigation story: signal → judgment → court decision → action.
+        {
+          id: 'evt-imagepull-signal',
+          eventType: 'signal.kubernetes.event',
+          kind: 'signal',
+          environmentId: 'env-k8s-valhalla',
+          source: 'adapter:kubernetes-events',
+          summary: 'Pod ravn-worker-77 stuck in ImagePullBackOff after registry token rollover',
+          urgency: 0.6,
+          observedAt: '2026-06-03T14:05:00Z',
+          correlationId: 'corr-imagepull',
+          causationId: '',
+          tier: '',
+        },
+        {
+          id: 'evt-imagepull-judgment',
+          eventType: 'valkyrie.judgment.proposed',
+          kind: 'judgment',
+          environmentId: 'env-k8s-valhalla',
+          valkyrieId: 'valkyrie-valhalla-sigrun',
+          valkyrieName: 'Sigrun',
+          source: 'ravn:valkyrie:valhalla',
+          summary:
+            'Registry token rollover broke image pulls for ravn-worker — checked with ' +
+            'registry_token_refresh_check, refreshing the pull secret needs operator sign-off.',
+          urgency: 0.7,
+          observedAt: '2026-06-03T14:08:20Z',
+          correlationId: 'corr-imagepull',
+          causationId: 'evt-imagepull-signal',
+          tier: 'present',
+          details: { skill_name: 'registry_token_refresh_check' },
+        },
+        {
+          id: 'evt-imagepull-court',
+          eventType: 'odin.court.decided',
+          kind: 'event',
+          environmentId: 'env-k8s-valhalla',
+          source: 'odin-court',
+          summary: 'ODIN approved refresh_pull_secret_and_restart with operator authority',
+          urgency: 0.5,
+          observedAt: '2026-06-03T14:09:00Z',
+          correlationId: 'corr-imagepull',
+          causationId: 'evt-imagepull-judgment',
+          tier: 'present',
+        },
+        {
+          id: 'evt-imagepull-action',
+          eventType: 'valkyrie.action.completed',
+          kind: 'action',
+          environmentId: 'env-k8s-valhalla',
+          valkyrieId: 'valkyrie-valhalla-sigrun',
+          valkyrieName: 'Sigrun',
+          source: 'ravn:valkyrie:valhalla',
+          summary: 'Refreshed the registry pull secret and restarted the ravn-worker rollout',
+          urgency: 0.5,
+          observedAt: '2026-06-03T14:09:40Z',
+          correlationId: 'corr-imagepull',
+          causationId: 'evt-imagepull-court',
+          tier: 'present',
+          details: { action_capability: 'refresh_pull_secret_and_restart' },
+        },
+        // --- Idle triage story: one ambient judgment, collapsed to a line.
+        {
+          id: 'evt-idle-judgment',
+          eventType: 'valkyrie.judgment.proposed',
+          kind: 'judgment',
+          environmentId: 'env-k8s-ymir',
+          valkyrieId: 'valkyrie-ymir-k8s',
+          valkyrieName: 'Runa',
+          source: 'ravn:valkyrie:ymir',
+          summary: 'Triaged 6 routine signals — nothing needed',
+          urgency: 0.1,
+          observedAt: '2026-06-03T14:07:00Z',
+          correlationId: 'corr-idle-ymir',
+          causationId: '',
+          tier: 'ambient',
+        },
       ],
       recentLearning: [
         {
@@ -766,19 +874,392 @@ export function createSeedValkyrieDashboard(): ValkyrieDashboard {
   };
 }
 
+export function createSeedDecisions(): DecisionRecord[] {
+  return [
+    {
+      decisionId: 'decision-imagepull-1',
+      environmentId: 'env-k8s-valhalla',
+      valkyrieId: 'valkyrie-valhalla-sigrun',
+      operationalState: 'investigating',
+      tier: 'present',
+      wakefulness: 'wakeful',
+      confidence: 0.82,
+      rationale:
+        'ImagePullBackOff started right after the registry token refresh; the rollout ' +
+        'needs a refreshed pull secret before pods can converge.',
+      recommendedAction: 'refresh_pull_secret_and_restart',
+      actionAuthority: 'human_review_required',
+      actionCapability: 'k8s.rollout.restart',
+      signalRefs: ['sig-hist-imagepull'],
+      evidence: [{ event_id: 'sig-hist-imagepull', severity: 'warning' }],
+      correlationId: 'corr-imagepull',
+      summary: 'Registry token rollover broke image pulls for ravn-worker',
+      outcome: '',
+      reviewItemId: 'review:court_escalation:seed03',
+      decidedAt: '2026-06-03T14:08:20Z',
+    },
+    {
+      decisionId: 'decision-oom-1',
+      environmentId: 'env-k8s-valhalla',
+      valkyrieId: 'valkyrie-valhalla-runa',
+      operationalState: 'using_adopted_learning',
+      tier: 'ambient',
+      confidence: 0.86,
+      rationale: 'Installed learning skill k8s_memory_pressure_probe matches this OOM pattern.',
+      recommendedAction: 'inspect_with_adopted_learning',
+      actionAuthority: 'autonomous',
+      signalRefs: ['sig-hist-oom'],
+      evidence: [
+        {
+          skill_name: 'k8s_memory_pressure_probe',
+          capability_name: 'inspect.kubernetes.pod.oomkilled',
+        },
+      ],
+      correlationId: 'corr-oom',
+      summary: 'OOMKilled pattern handled with learned probe',
+      outcome: 'executed',
+      outcomeDetail: 'Probe confirmed memory pressure; capacity note filed.',
+      outcomeAt: '2026-06-03T14:03:10Z',
+      decidedAt: '2026-06-03T14:02:20Z',
+    },
+    // The same PersistentVolume re-judged every few minutes: three ambient
+    // judgments sharing one correlationId. The console must collapse them
+    // into a single ×3 row and must NOT claim they await the operator —
+    // `watch` is not a real action, so the inbox gate never fires.
+    ...[
+      { decisionId: 'decision-pv-3', decidedAt: '2026-06-03T13:58:00Z' },
+      { decisionId: 'decision-pv-2', decidedAt: '2026-06-03T13:54:00Z' },
+      { decisionId: 'decision-pv-1', decidedAt: '2026-06-03T13:50:00Z' },
+    ].map(({ decisionId, decidedAt }) => ({
+      decisionId,
+      environmentId: 'env-k8s-valhalla',
+      valkyrieId: 'valkyrie-valhalla-sigrun',
+      operationalState: 'watching',
+      tier: 'ambient',
+      confidence: 0.71,
+      rationale:
+        'The claim is Bound and the backing disk reports healthy; re-checking on the ' +
+        'ambient cadence until the capacity alert clears.',
+      recommendedAction: 'watch',
+      actionAuthority: 'human_review_required',
+      signalRefs: [],
+      evidence: [{ subject: 'pv/media-primary' }],
+      correlationId: 'corr-pv-media',
+      summary:
+        'Valkyrie valkyrie-valhalla-sigrun in env-k8s-valhalla judged PersistentVolume ' +
+        'media-primary healthy; capacity holding at 78%',
+      outcome: '',
+      decidedAt,
+    })),
+    {
+      decisionId: 'decision-triage-1',
+      environmentId: 'env-k8s-valhalla',
+      valkyrieId: 'valkyrie-valhalla-sigrun',
+      operationalState: 'watching',
+      tier: 'ambient',
+      confidence: 0.66,
+      rationale:
+        '37 routine signals this window — probe flaps and image GC events. No source ' +
+        'shows a rising trend; nothing actionable.',
+      recommendedAction: 'none',
+      actionAuthority: 'autonomous',
+      signalRefs: ['sig-hist-imagepull', 'sig-hist-oom'],
+      evidence: [],
+      correlationId: 'idle-triage:env-k8s-valhalla',
+      summary: 'Idle triage: 37 routine signals',
+      outcome: '',
+      decidedAt: '2026-06-03T13:45:00Z',
+    },
+  ];
+}
+
+export function createSeedSignalHistory(): SignalHistoryEntry[] {
+  return [
+    {
+      signalId: 'sig-hist-imagepull',
+      environmentId: 'env-k8s-valhalla',
+      eventType: 'signal.kubernetes.event',
+      source: 'adapter:k8s-events',
+      subject: 'pod/ravn-worker-77',
+      summary: 'ImagePullBackOff after registry token refresh',
+      severity: 'warning',
+      correlationId: 'corr-imagepull',
+      receivedAt: '2026-06-03T14:08:00Z',
+    },
+    {
+      signalId: 'sig-hist-oom',
+      environmentId: 'env-k8s-valhalla',
+      eventType: 'signal.kubernetes.event',
+      source: 'adapter:k8s-events',
+      subject: 'deployment/sleipnir-api',
+      summary: 'OOMKilled pattern matches learned memory pressure case',
+      severity: 'critical',
+      correlationId: 'corr-oom',
+      receivedAt: '2026-06-03T14:02:00Z',
+    },
+    {
+      signalId: 'sig-hist-email',
+      environmentId: 'env-host-jozef',
+      eventType: 'signal.email.message',
+      source: 'adapter:gmail',
+      subject: 'Important contract review',
+      summary: 'External sender asks for review before Friday',
+      severity: 'notice',
+      receivedAt: '2026-06-03T13:55:00Z',
+    },
+  ];
+}
+
+export function createSeedSkillStats(): SkillUsageStat[] {
+  return [
+    {
+      skillName: 'k8s_memory_pressure_probe',
+      capability: 'inspect.kubernetes.pod.oomkilled',
+      environmentId: 'env-k8s-valhalla',
+      uses: 7,
+      successes: 6,
+      failures: 1,
+      lastUsedAt: '2026-06-03T14:02:20Z',
+      lastOutcome: 'using_adopted_learning',
+      rolledBackAt: '',
+    },
+    {
+      skillName: 'node_cordon_drain',
+      capability: 'k8s.node.cordon',
+      environmentId: 'env-k8s-valhalla',
+      uses: 3,
+      successes: 0,
+      failures: 3,
+      lastUsedAt: '2026-06-02T04:15:00Z',
+      lastOutcome: 'adopted_learning_regressed',
+      rolledBackAt: '2026-06-02T04:15:00Z',
+    },
+  ];
+}
+
 export function createMockValkyrieService(seed = createSeedValkyrieDashboard()): IValkyrieService {
   const dashboard: ValkyrieDashboard = seed;
+  const decisions = createSeedDecisions();
+  const signalHistory = createSeedSignalHistory();
+  const skillStats = createSeedSkillStats();
+
+  const requireHuddle = (huddleId: string): HuddleSummary => {
+    const huddle = dashboard.huddles.find((entry) => entry.id === huddleId);
+    if (!huddle) throw new Error(`Huddle ${huddleId} not found`);
+    return huddle;
+  };
+  const replaceHuddle = (next: HuddleSummary) => {
+    dashboard.huddles = dashboard.huddles.map((entry) => (entry.id === next.id ? next : entry));
+  };
+  const requireLearning = (learningId: string): LearningRecord => {
+    const learning = dashboard.learnings.find((entry) => entry.id === learningId);
+    if (!learning) throw new Error(`Learning ${learningId} not found`);
+    return learning;
+  };
+  const replaceLearning = (next: LearningRecord) => {
+    dashboard.learnings = dashboard.learnings.map((entry) => (entry.id === next.id ? next : entry));
+  };
 
   return {
+    // A fresh top-level object per fetch so react-query sees mutations made
+    // by the write methods below (same reference would short-circuit updates).
     async getDashboard() {
-      return dashboard;
+      return { ...dashboard };
     },
     async updateAutonomy(request: AutonomyUpdateRequest) {
       void request.reason;
       dashboard.valkyries = dashboard.valkyries.map((entry) =>
         entry.id === request.valkyrieId ? { ...entry, autonomyMode: request.mode } : entry,
       );
-      return dashboard;
+      return { ...dashboard };
+    },
+    async joinHuddle(request: HuddleJoinInput) {
+      const huddle = requireHuddle(request.huddleId);
+      const participantId = request.participantId.trim();
+      const next: HuddleSummary = {
+        ...huddle,
+        joined: true,
+        joinedParticipantId: participantId,
+        joinedDisplayName: request.displayName?.trim() || participantId,
+        joinedAction: request.action ?? 'observe',
+        participantIds: huddle.participantIds.includes(participantId)
+          ? huddle.participantIds
+          : [...huddle.participantIds, participantId],
+        lastActivityAt: new Date().toISOString(),
+      };
+      replaceHuddle(next);
+      return next;
+    },
+    async leaveHuddle(huddleId: string) {
+      const huddle = requireHuddle(huddleId);
+      const participantId = huddle.joinedParticipantId ?? '';
+      const next: HuddleSummary = {
+        ...huddle,
+        joined: false,
+        joinedParticipantId: undefined,
+        joinedDisplayName: undefined,
+        joinedAction: undefined,
+        participantIds: huddle.participantIds.filter((entry) => entry !== participantId),
+        lastActivityAt: new Date().toISOString(),
+      };
+      replaceHuddle(next);
+      return next;
+    },
+    async sendHuddleMessage(request: HuddleMessageInput) {
+      const huddle = requireHuddle(request.huddleId);
+      // Mirror the backend contract exactly: messages need a joined author.
+      if (!huddle.joined || !huddle.joinedParticipantId) {
+        throw new Error('Join huddle before sending messages');
+      }
+      const message: HuddleMessage = {
+        id: `message-${huddle.messages.length + 1}`,
+        huddleId: huddle.id,
+        authorId: request.authorId,
+        authorName: huddle.joinedDisplayName || request.authorId,
+        body: request.body,
+        createdAt: new Date().toISOString(),
+        directedTo: request.directedTo,
+      };
+      replaceHuddle({
+        ...huddle,
+        joined: true,
+        messages: [...huddle.messages, message],
+        lastActivityAt: message.createdAt,
+      });
+      return message;
+    },
+    async listDecisions(filters: DecisionListFilters = {}) {
+      let rows = decisions.filter(
+        (row) =>
+          (!filters.environmentId || row.environmentId === filters.environmentId) &&
+          (!filters.valkyrieId || row.valkyrieId === filters.valkyrieId) &&
+          (!filters.operationalState || row.operationalState === filters.operationalState),
+      );
+      rows = [...rows].sort((a, b) => b.decidedAt.localeCompare(a.decidedAt));
+      const offset = filters.offset ?? 0;
+      const limit = filters.limit ?? 50;
+      return { items: rows.slice(offset, offset + limit), total: rows.length, limit, offset };
+    },
+    async getDecision(decisionId: string): Promise<DecisionDetail | null> {
+      const decision = decisions.find((row) => row.decisionId === decisionId);
+      if (!decision) return null;
+      return {
+        decision,
+        lineage: {
+          signals: signalHistory.filter((signal) => decision.signalRefs.includes(signal.signalId)),
+          actions: decision.outcome
+            ? [
+                {
+                  actionId: `act-${decision.decisionId}`,
+                  eventId: `evt-act-${decision.decisionId}`,
+                  eventType: 'valkyrie.action.executed',
+                  status: decision.outcome,
+                  environmentId: decision.environmentId,
+                  valkyrieId: decision.valkyrieId,
+                  capability: decision.actionCapability ?? decision.recommendedAction,
+                  actionAuthority: decision.actionAuthority,
+                  outcome: decision.outcomeDetail ?? decision.outcome,
+                  rationale: decision.rationale,
+                  dryRun: false,
+                  correlationId: decision.correlationId,
+                  summary: decision.summary,
+                  observedAt: decision.outcomeAt ?? decision.decidedAt,
+                },
+              ]
+            : [],
+          review: null,
+        },
+      };
+    },
+    async listSignalHistory(filters: SignalHistoryFilters = {}) {
+      let rows = signalHistory.filter(
+        (row) =>
+          (!filters.environmentId || row.environmentId === filters.environmentId) &&
+          (!filters.severity || row.severity === filters.severity),
+      );
+      rows = [...rows].sort((a, b) => b.receivedAt.localeCompare(a.receivedAt));
+      const offset = filters.offset ?? 0;
+      const limit = filters.limit ?? 50;
+      return { items: rows.slice(offset, offset + limit), total: rows.length, limit, offset };
+    },
+    async getSkillStats(environmentId?: string) {
+      return skillStats.filter((row) => !environmentId || row.environmentId === environmentId);
+    },
+    async getLearning(learningId: string) {
+      const learning = dashboard.learnings.find((entry) => entry.id === learningId);
+      return learning ? { ...learning } : null;
+    },
+    async sendLearningFeedback(request: LearningFeedbackInput) {
+      const learning = requireLearning(request.learningId);
+      // Mirror the backend contract exactly, including its 422 detail strings.
+      if (!LEARNING_FEEDBACK_VERDICTS.some((entry) => entry.verdict === request.verdict)) {
+        throw new Error('Unsupported feedback verdict');
+      }
+      if (request.verdict === 'wrong_tier' && !request.targetScope) {
+        throw new Error('targetScope is required for wrong_tier feedback');
+      }
+      const next: LearningRecord = {
+        ...learning,
+        feedback: {
+          verdict: request.verdict,
+          reason: request.reason ?? '',
+          operatorId: request.operatorId,
+          recordedAt: new Date().toISOString(),
+        },
+        ...(request.verdict === 'wrong_tier' && request.targetScope
+          ? { targetScope: request.targetScope }
+          : {}),
+      };
+      replaceLearning(next);
+      return { ...next };
+    },
+    async reviseLearning(request: LearningRevisionInput) {
+      const learning = requireLearning(request.learningId);
+      const now = new Date().toISOString();
+      const revisedContent = {
+        title: request.title ?? learning.title,
+        summary: request.summary ?? learning.summary,
+        artifactContent: request.content ?? learning.artifactContent,
+      };
+      const revisionEvent = {
+        eventType: 'learning.revised',
+        summary: request.reason,
+        observedAt: now,
+        operatorId: request.operatorId,
+        reason: request.reason,
+      };
+      const installed = learning.status === 'adopted' || learning.status === 'canary';
+      if (!installed) {
+        // Candidates are editable in place — same record, updated content.
+        const next: LearningRecord = {
+          ...learning,
+          ...revisedContent,
+          history: [...(learning.history ?? []), { ...revisionEvent, status: learning.status }],
+        };
+        replaceLearning(next);
+        return { learning: { ...next }, supersededId: '' };
+      }
+      // Installed learnings are immutable: the revision becomes a NEW
+      // superseding candidate while the original stays installed until the
+      // candidate passes review.
+      const revision =
+        dashboard.learnings.filter((entry) => entry.supersedes === learning.id).length + 1;
+      const successor: LearningRecord = {
+        ...learning,
+        ...revisedContent,
+        id: `${learning.id}:rev${revision}`,
+        status: 'candidate',
+        supersedes: learning.id,
+        active: false,
+        createdAt: now,
+        repetition: 1,
+        feedback: null,
+        odinReview: undefined,
+        commandDelivery: undefined,
+        history: [{ ...revisionEvent, status: 'candidate' }],
+      };
+      dashboard.learnings = [successor, ...dashboard.learnings];
+      return { learning: { ...successor }, supersededId: learning.id };
     },
   };
 }
@@ -1006,6 +1487,24 @@ export function createMockOdinReviewService(
       if (filters.environmentId) {
         rows = rows.filter((item) => item.environmentId === filters.environmentId);
       }
+      if (filters.riskClass) rows = rows.filter((item) => item.riskClass === filters.riskClass);
+      if (filters.query) {
+        const needle = filters.query.toLocaleLowerCase();
+        rows = rows.filter((item) =>
+          [
+            item.title,
+            item.summary,
+            item.environmentId,
+            item.valkyrieId,
+            item.kind,
+            item.requestedAction,
+          ]
+            .join(' ')
+            .toLocaleLowerCase()
+            .includes(needle),
+        );
+      }
+      if (filters.offset) rows = rows.slice(Math.max(filters.offset, 0));
       if (filters.limit !== undefined) rows = rows.slice(0, Math.max(filters.limit, 0));
       return rows;
     },
@@ -1038,24 +1537,274 @@ export function createMockOdinReviewService(
       items.set(item.itemId, decided);
       return decided;
     },
-    async getSummary(): Promise<ReviewSummary> {
-      const rows = [...items.values()];
+    async getSummary(filters = {}): Promise<ReviewSummary> {
+      const rows = await this.listReviews({ ...filters, status: 'pending' });
       const countsByStatus: Record<string, number> = {};
       const pendingByKind: Record<string, number> = {};
       const pendingByRisk: Record<string, number> = {};
-      for (const item of rows) {
+      const pendingByEnvironment: Record<string, number> = {};
+      for (const item of items.values()) {
         countsByStatus[item.status] = (countsByStatus[item.status] ?? 0) + 1;
-        if (item.status === 'pending') {
-          pendingByKind[item.kind] = (pendingByKind[item.kind] ?? 0) + 1;
-          pendingByRisk[item.riskClass] = (pendingByRisk[item.riskClass] ?? 0) + 1;
-        }
+      }
+      for (const item of rows) {
+        pendingByKind[item.kind] = (pendingByKind[item.kind] ?? 0) + 1;
+        pendingByRisk[item.riskClass] = (pendingByRisk[item.riskClass] ?? 0) + 1;
+        pendingByEnvironment[item.environmentId] =
+          (pendingByEnvironment[item.environmentId] ?? 0) + 1;
       }
       return {
-        pendingTotal: rows.filter((item) => item.status === 'pending').length,
+        pendingTotal: rows.length,
         pendingByKind,
         pendingByRisk,
+        pendingByEnvironment,
         countsByStatus,
       };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Realm governance mocks — realms, trust grants, and Ting builder workflows
+// ---------------------------------------------------------------------------
+
+// A realm's slug IS the environment's raw id (see realmSlugForEnvironment):
+// env-k8s-valhalla ↔ realm `valhalla`, env-host-jozef ↔ realm `host-jozef`.
+export function createSeedRealms(): RealmSummary[] {
+  return [
+    {
+      id: 'realm-valhalla',
+      slug: 'valhalla',
+      name: 'Valhalla',
+      sleipnir_domain: 'valhalla.niuu',
+      owner_id: 'human:operator',
+      instance_id: 'instance-valhalla',
+      autonomy_profile: 'balanced',
+      created_at: '2026-05-01T09:00:00Z',
+      updated_at: '2026-06-03T12:00:00Z',
+    },
+    {
+      id: 'realm-host-jozef',
+      slug: 'host-jozef',
+      name: 'Jozef host',
+      sleipnir_domain: null,
+      owner_id: null,
+      instance_id: null,
+      autonomy_profile: 'guarded',
+      created_at: '2026-05-10T09:00:00Z',
+      updated_at: '2026-06-01T08:00:00Z',
+    },
+    {
+      id: 'realm-printer-forge',
+      slug: 'printer-forge',
+      name: 'Printer forge',
+      sleipnir_domain: null,
+      owner_id: null,
+      instance_id: null,
+      autonomy_profile: 'guarded',
+      created_at: '2026-05-12T09:00:00Z',
+      updated_at: '2026-06-01T08:00:00Z',
+    },
+  ];
+}
+
+export function createSeedTrustGrants(): Record<string, RealmTrustGrant[]> {
+  return {
+    valhalla: [
+      {
+        id: 'grant-valhalla-build',
+        realm_id: 'realm-valhalla',
+        action_class: 'build',
+        target: '*',
+        level: 2,
+        limits: { workflow: 'valkyrie-tool-forge' },
+        granted_by: 'human:operator',
+        granted_at: '2026-06-02T10:00:00Z',
+      },
+      {
+        id: 'grant-valhalla-deploy',
+        realm_id: 'realm-valhalla',
+        action_class: 'deploy',
+        target: '*',
+        level: 1,
+        limits: {},
+        granted_by: 'human:operator',
+        granted_at: '2026-06-02T10:05:00Z',
+      },
+    ],
+    'host-jozef': [],
+    'printer-forge': [],
+  };
+}
+
+export function createSeedToolWorkflows(): TingWorkflowSummary[] {
+  return [
+    {
+      id: 'wf-tool-forge',
+      name: 'valkyrie-tool-forge',
+      description: 'Guarded tool build with canary and review gates.',
+      version: '1.2.0',
+      tags: ['tool-builder', 'valkyrie'],
+    },
+    {
+      id: 'wf-tool-forge-fast',
+      name: 'valkyrie-tool-forge-fast',
+      description: 'Single-pass tool build for trusted realms.',
+      version: '0.4.0',
+      tags: ['tool-builder'],
+    },
+    {
+      id: 'wf-release-train',
+      name: 'release-train',
+      description: 'Weekly release pipeline — not a tool builder.',
+      version: '3.0.0',
+      tags: ['release'],
+    },
+  ];
+}
+
+export interface RealmGovernanceSeed {
+  realms?: RealmSummary[];
+  grants?: Record<string, RealmTrustGrant[]>;
+  workflows?: TingWorkflowSummary[];
+}
+
+export function createMockRealmGovernanceService(
+  seed: RealmGovernanceSeed = {},
+): IRealmGovernanceService {
+  const realms = (seed.realms ?? createSeedRealms()).map((realm) => ({ ...realm }));
+  const grants = new Map<string, RealmTrustGrant[]>(
+    Object.entries(seed.grants ?? createSeedTrustGrants()).map(([slug, entries]) => [
+      slug,
+      entries.map((entry) => ({ ...entry })),
+    ]),
+  );
+  const workflows = (seed.workflows ?? createSeedToolWorkflows()).map((workflow) => ({
+    ...workflow,
+  }));
+
+  function requireRealm(slug: string): RealmSummary {
+    const realm = realms.find((entry) => entry.slug === slug);
+    if (!realm) throw new Error(`Realm not found: ${slug}`);
+    return realm;
+  }
+
+  return {
+    async listRealms() {
+      return realms.map((realm) => ({ ...realm }));
+    },
+    async listTrustGrants(slug: string) {
+      requireRealm(slug);
+      return (grants.get(slug) ?? []).map((grant) => ({ ...grant }));
+    },
+    async createTrustGrant(slug: string, request: TrustGrantCreate) {
+      const realm = requireRealm(slug);
+      const grant: RealmTrustGrant = {
+        id: `grant-${slug}-${(grants.get(slug) ?? []).length + 1}`,
+        realm_id: realm.id,
+        action_class: request.action_class,
+        target: request.target,
+        level: request.level,
+        limits: { ...request.limits },
+        granted_by: request.granted_by ?? null,
+        granted_at: new Date().toISOString(),
+      };
+      grants.set(slug, [...(grants.get(slug) ?? []), grant]);
+      return { ...grant };
+    },
+    async listWorkflows() {
+      return workflows.map((workflow) => ({ ...workflow }));
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Learned skills — the artifacts behind "handled with a learned skill"
+// judgments, matching GET /skills and GET /skills/{name}
+// ---------------------------------------------------------------------------
+
+const SEED_TEST_CODE = `def test_matches_oomkilled_pod():
+    signal = {
+        "event_type": "signal.kubernetes.event",
+        "payload": {"reason": "OOMKilled", "kind": "Pod", "namespace": "payments", "name": "api-1"},
+    }
+    result = run(signal)
+    assert result["matches"] is True
+    assert result["observed"]["namespace"] == "payments"
+
+
+def test_ignores_other_events():
+    assert run({"event_type": "signal.email.message", "payload": {}})["matches"] is False
+`;
+
+export function createSeedLearnedSkills(): LearnedSkillRecord[] {
+  return [
+    {
+      skillName: 'k8s_memory_pressure_probe',
+      environmentId: 'env-k8s-valhalla',
+      valkyrieId: 'valkyrie-valhalla-runa',
+      description:
+        'Read-only probe that inspects OOMKilled pods and correlates them with memory limits.',
+      learningId: 'learning-oom-probe',
+      adoptedAt: '2026-06-01T09:00:00Z',
+      observedAt: '2026-07-15T10:00:00Z',
+      hasCode: true,
+      content: SEED_SKILL_CONTENT,
+      toolCode: SEED_TOOL_CODE,
+      testCode: SEED_TEST_CODE,
+      requirements: ['kubernetes>=29.0.0'],
+      manifest: { capability: 'inspect.kubernetes.pod.oomkilled', safety_class: 'read_only' },
+    },
+    {
+      skillName: 'registry_token_refresh_check',
+      environmentId: 'env-k8s-valhalla',
+      valkyrieId: 'valkyrie-valhalla-sigrun',
+      description: 'Checks image pull-secret freshness after a registry token rollover.',
+      learningId: 'learning-registry-check',
+      adoptedAt: '2026-05-28T16:30:00Z',
+      observedAt: '2026-07-15T10:00:00Z',
+      hasCode: false,
+      content:
+        '# skill: registry-token-refresh-check\n\n## Overview\nVerify image pull secrets ' +
+        'still authenticate after a registry token rollover before pods retry.',
+      toolCode: '',
+      testCode: '',
+      requirements: [],
+      manifest: {},
+    },
+  ];
+}
+
+function toLearnedSkillSummary(record: LearnedSkillRecord): LearnedSkillSummary {
+  return {
+    skillName: record.skillName,
+    environmentId: record.environmentId,
+    valkyrieId: record.valkyrieId,
+    description: record.description,
+    learningId: record.learningId,
+    adoptedAt: record.adoptedAt,
+    observedAt: record.observedAt,
+    hasCode: record.hasCode,
+  };
+}
+
+export function createMockValkyrieSkillsService(
+  seed: LearnedSkillRecord[] = createSeedLearnedSkills(),
+): IValkyrieSkillsService {
+  const skills = seed.map((record) => ({ ...record }));
+
+  return {
+    async listSkills(environmentId: string) {
+      return skills
+        .filter((record) => !environmentId || record.environmentId === environmentId)
+        .sort((a, b) => b.adoptedAt.localeCompare(a.adoptedAt))
+        .map(toLearnedSkillSummary);
+    },
+    async getSkill(environmentId: string, name: string) {
+      const found = skills.find(
+        (record) =>
+          record.skillName === name && (!environmentId || record.environmentId === environmentId),
+      );
+      return found ? { ...found } : null;
     },
   };
 }

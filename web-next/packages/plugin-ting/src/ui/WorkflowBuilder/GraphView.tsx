@@ -1157,11 +1157,13 @@ export function GraphView({
   }
 
   function handleSvgMouseMove(e: React.MouseEvent<SVGSVGElement>) {
-    if (!panRef.current) return;
+    const pan = panRef.current;
+    if (!pan) return;
+    const { clientX, clientY } = e;
     setTransform((prev) => ({
       ...prev,
-      x: panRef.current!.tx + (e.clientX - panRef.current!.startX),
-      y: panRef.current!.ty + (e.clientY - panRef.current!.startY),
+      x: pan.tx + (clientX - pan.startX),
+      y: pan.ty + (clientY - pan.startY),
     }));
   }
 

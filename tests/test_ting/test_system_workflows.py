@@ -43,9 +43,11 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     assert names == {
         "Ting Run Flow + Security + Memory Curation",
         "Research Campaign",
+        "Saga Planning",
         "Specification Stack",
         "Tracker Delivery Flow",
         "Code & Review Flow",
+        "Tool & Skill Builder",
     }
 
     run_flow = next(
@@ -80,7 +82,54 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         if node.get("kind") == "resource"
     }
     assert research_resources["Research Memory"]["bindingMode"] == "registry"
-    assert research_resources["Research Memory"]["path"] == "/tmp/mimir"
+    assert research_resources["Research Memory"]["url"] == (
+        "https://mimir.yggdrasil.niuu.world/api/v1"
+    )
+    assert research_resources["Research Memory"]["authRef"] == "integration:volundr"
+
+    planning_flow = next(workflow for workflow in workflows if workflow.name == "Saga Planning")
+    assert {"planning", "saga"}.issubset(set(planning_flow.graph["tags"]))
+    planning_stage_labels = [
+        node["label"] for node in planning_flow.graph["nodes"] if node.get("kind") == "stage"
+    ]
+    assert planning_stage_labels == [
+        "Clarify brief",
+        "Draft saga breakdown",
+        "Review saga breakdown",
+        "Publish planning draft",
+    ]
+    planning_gate_labels = [
+        node["label"] for node in planning_flow.graph["nodes"] if node.get("kind") == "gate"
+    ]
+    assert planning_gate_labels == ["Planning feedback gate", "Draft plan review gate"]
+    planning_stage_personas = {
+        node["label"]: [member["personaId"] for member in node.get("stageMembers", [])]
+        for node in planning_flow.graph["nodes"]
+        if node.get("kind") == "stage"
+    }
+    assert planning_stage_personas["Clarify brief"] == ["saga-brief-framer"]
+    assert planning_stage_personas["Draft saga breakdown"] == ["saga-planner"]
+    assert planning_stage_personas["Review saga breakdown"] == ["saga-plan-reviewer"]
+    assert planning_stage_personas["Publish planning draft"] == ["saga-plan-publisher"]
+    planning_edge_labels = {edge.get("label") for edge in planning_flow.graph["edges"]}
+    assert None not in planning_edge_labels
+    assert "plan.brief.framed -> plan.brief.framed" in planning_edge_labels
+    assert "plan.brief.approved -> plan.brief.approved" in planning_edge_labels
+    assert "plan.breakdown.drafted -> plan.breakdown.drafted" in planning_edge_labels
+    assert "plan.breakdown.ready_for_gate -> plan.breakdown.ready_for_gate" in (
+        planning_edge_labels
+    )
+    assert "plan.approved -> plan.approved" in planning_edge_labels
+    planning_resources = {
+        node["label"]: node
+        for node in planning_flow.graph["nodes"]
+        if node.get("kind") == "resource"
+    }
+    assert planning_resources["Planning Memory"]["bindingMode"] == "registry"
+    assert planning_resources["Planning Memory"]["url"] == (
+        "https://mimir.yggdrasil.niuu.world/api/v1"
+    )
+    assert planning_resources["Planning Memory"]["authRef"] == "integration:volundr"
 
     specification_flow = next(
         workflow for workflow in workflows if workflow.name == "Specification Stack"
@@ -138,7 +187,10 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         for node in specification_flow.graph["nodes"]
         if node.get("kind") == "resource"
     }
-    assert specification_resources["Specification Memory"]["path"] == "/tmp/mimir"
+    assert specification_resources["Specification Memory"]["url"] == (
+        "https://mimir.yggdrasil.niuu.world/api/v1"
+    )
+    assert specification_resources["Specification Memory"]["authRef"] == "integration:volundr"
 
     delivery_flow = next(
         workflow for workflow in workflows if workflow.name == "Tracker Delivery Flow"
@@ -169,7 +221,10 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         for node in delivery_flow.graph["nodes"]
         if node.get("kind") == "resource"
     }
-    assert delivery_resources["Delivery Memory"]["path"] == "/tmp/mimir"
+    assert delivery_resources["Delivery Memory"]["url"] == (
+        "https://mimir.yggdrasil.niuu.world/api/v1"
+    )
+    assert delivery_resources["Delivery Memory"]["authRef"] == "integration:volundr"
 
     code_review_flow = next(
         workflow for workflow in workflows if workflow.name == "Code & Review Flow"
@@ -209,7 +264,44 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         for node in code_review_flow.graph["nodes"]
         if node.get("kind") == "resource"
     }
-    assert code_review_resources["Delivery Memory"]["path"] == "/tmp/mimir"
+    assert code_review_resources["Delivery Memory"]["url"] == (
+        "https://mimir.yggdrasil.niuu.world/api/v1"
+    )
+    assert code_review_resources["Delivery Memory"]["authRef"] == "integration:volundr"
+
+    builder_flow = next(
+        workflow for workflow in workflows if workflow.name == "Tool & Skill Builder"
+    )
+    assert {"tool-builder", "skill-builder", "capability-builder"}.issubset(
+        set(builder_flow.graph["tags"])
+    )
+    builder_stage_labels = [
+        node["label"] for node in builder_flow.graph["nodes"] if node.get("kind") == "stage"
+    ]
+    assert builder_stage_labels == [
+        "Frame missing capability",
+        "Build tool or skill",
+        "Review capability",
+        "Publish capability record",
+    ]
+    builder_stage_personas = {
+        node["label"]: [member["personaId"] for member in node.get("stageMembers", [])]
+        for node in builder_flow.graph["nodes"]
+        if node.get("kind") == "stage"
+    }
+    assert builder_stage_personas["Frame missing capability"] == ["specification-framer"]
+    assert builder_stage_personas["Build tool or skill"] == ["coder"]
+    assert builder_stage_personas["Review capability"] == ["reviewer", "security-auditor"]
+    builder_resources = {
+        node["label"]: node
+        for node in builder_flow.graph["nodes"]
+        if node.get("kind") == "resource"
+    }
+    assert builder_resources["Capability Memory"]["bindingMode"] == "registry"
+    assert builder_resources["Capability Memory"]["url"] == (
+        "https://mimir.yggdrasil.niuu.world/api/v1"
+    )
+    assert builder_resources["Capability Memory"]["authRef"] == "integration:volundr"
 
 
 @pytest.mark.asyncio
@@ -245,12 +337,14 @@ async def test_seed_system_workflows_prunes_obsolete_and_duplicate_entries() -> 
     assert names == {
         "Ting Run Flow + Security + Memory Curation",
         "Research Campaign",
+        "Saga Planning",
         "Specification Stack",
         "Tracker Delivery Flow",
         "Code & Review Flow",
+        "Tool & Skill Builder",
     }
 
     current_catalog = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
     assert {workflow.name for workflow in current_catalog} == names
-    assert len(current_catalog) == 5
+    assert len(current_catalog) == 7
     assert all(workflow.id in {seed.id for seed in seeds} for workflow in current_catalog)

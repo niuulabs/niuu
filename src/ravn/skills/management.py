@@ -31,6 +31,8 @@ class SkillLifecycle:
     pinned: bool = False
     version: int = 1
     source: str = "manual"
+    source_environment_id: str = ""
+    source_valkyrie_id: str = ""
     action_safety_class: str = "read_only"
     created_at: str = ""
     updated_at: str = ""
@@ -66,6 +68,8 @@ class SkillManagementRegistry:
         environment_id: str = "",
         domain: str = "",
         source: str = "manual",
+        source_environment_id: str = "",
+        source_valkyrie_id: str = "",
         action_safety_class: str = "read_only",
     ) -> Skill:
         self._validate_name_content(name, content)
@@ -93,6 +97,8 @@ class SkillManagementRegistry:
             environment_id=environment_id,
             domain=domain,
             source=source,
+            source_environment_id=source_environment_id,
+            source_valkyrie_id=source_valkyrie_id,
             action_safety_class=action_safety_class,
             created_at=skill.created_at.isoformat(),
             updated_at=skill.created_at.isoformat(),
@@ -106,6 +112,9 @@ class SkillManagementRegistry:
         name: str,
         content: str | None = None,
         description: str | None = None,
+        source: str | None = None,
+        source_environment_id: str | None = None,
+        source_valkyrie_id: str | None = None,
     ) -> Skill:
         skill = await self._require_skill(name, include_archived=True)
         updated = Skill(
@@ -128,6 +137,12 @@ class SkillManagementRegistry:
         meta.version += 1
         meta.status = "active"
         meta.archived_at = ""
+        if source is not None:
+            meta.source = source
+        if source_environment_id is not None:
+            meta.source_environment_id = source_environment_id
+        if source_valkyrie_id is not None:
+            meta.source_valkyrie_id = source_valkyrie_id
         meta.updated_at = datetime.now(UTC).isoformat()
         self._save()
         return updated

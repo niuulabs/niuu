@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate } from '@tanstack/react-router';
-import { LoadingState, Sparkline, StateDot } from '@niuulabs/ui';
+import { LifecycleBadge, LoadingState, Sparkline, StateDot } from '@niuulabs/ui';
 import { CliBadge, ConnectionTypeBadge, MiniBar } from './atoms';
 import { useVolundrStats } from './useVolundrSessions';
 import { useVolundrClusters } from './hooks/useVolundrClusters';
@@ -14,18 +14,25 @@ import type { Session, SessionState } from '../domain/session';
 import type { VolundrLaunchSpec } from '../models/volundr.model';
 import './ForgePage.css';
 
-const INFLIGHT_STATES: SessionState[] = ['provisioning', 'requested', 'running', 'idle'];
+const INFLIGHT_STATES: SessionState[] = [
+  'provisioning',
+  'requested',
+  'running',
+  'idle',
+  'awaiting_input',
+];
 
 const SESSION_PRIORITY: Record<SessionState, number> = {
-  provisioning: 0,
-  requested: 1,
-  running: 2,
-  idle: 3,
-  ready: 4,
-  failed: 5,
-  terminating: 6,
-  terminated: 7,
-  archived: 8,
+  awaiting_input: 0,
+  provisioning: 1,
+  requested: 2,
+  running: 3,
+  idle: 4,
+  ready: 5,
+  failed: 6,
+  terminating: 7,
+  terminated: 8,
+  archived: 9,
 };
 
 const KIND_LABEL: Record<ClusterKind, string> = {
@@ -108,6 +115,83 @@ function displayCluster(session: Session, clusterMap: Map<string, ForgeClusterVi
   return clusterMap.get(normalizeKey(session.clusterId))?.displayName ?? session.clusterId;
 }
 
+function clampPct(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function meterFillPct(value: number) {
+  const pct = clampPct(value);
+  if (pct === 0) return 0;
+  return Math.max(2, pct * 100);
+}
+
+function meterToneClass(value: number) {
+  const pct = clampPct(value);
+  if (pct > 0.85) return 'vol-forge__meter-fill--critical';
+  if (pct > 0.6) return 'vol-forge__meter-fill--warn';
+  return 'vol-forge__meter-fill--ok';
+}
+
+function conciseNumber(value: number, digits = 1) {
+  if (!Number.isFinite(value)) return '0';
+  const fixed = value.toFixed(digits);
+  return fixed.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+}
+
+function cpuLabel(value: number) {
+  if (value === 0) return '0';
+  if (Math.abs(value) < 1) return `${Math.round(value * 1000)}m`;
+  return `${conciseNumber(value)}c`;
+}
+
+function memLabel(mi: number) {
+  if (mi === 0) return '0';
+  if (Math.abs(mi) < 1024) return `${Math.round(mi)}Mi`;
+  return `${conciseNumber(mi / 1024)}Gi`;
+}
+
+function gpuLabel(value: number) {
+  return String(Math.round(value));
+}
+
+function ClusterMeter({
+  label,
+  value,
+  used,
+  total,
+}: {
+  label: string;
+  value: number;
+  used: string;
+  total: string;
+}) {
+  const pct = clampPct(value);
+  return (
+    <div className="vol-forge__meter" data-testid={`cluster-meter-${label}`}>
+      <div className="vol-forge__meter-label">
+        <span>{label}</span>
+        <strong>
+          {used} / {total}
+        </strong>
+      </div>
+      <div
+        className="vol-forge__meter-track"
+        role="progressbar"
+        aria-valuenow={Math.round(pct * 100)}
+        aria-valuemax={100}
+        aria-valuetext={`${used} / ${total}`}
+        aria-label={`${label} utilization`}
+      >
+        <div
+          className={`vol-forge__meter-fill ${meterToneClass(pct)}`}
+          style={{ width: `${meterFillPct(pct)}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function sessionPrimaryLabel(session: Session) {
   return (
     session.title?.trim() ||
@@ -133,6 +217,7 @@ function sessionSecondaryParts(session: Session, clusterLabel: string) {
 
 function sessionDotState(session: Session) {
   if (session.state === 'failed') return 'failed';
+  if (session.state === 'awaiting_input') return 'attention';
   if (session.state === 'idle') return 'idle';
   if (session.state === 'running') return 'running';
   return 'processing';
@@ -173,27 +258,6 @@ function MetricTile({
       <div className="vol-forge__metric-value">{value}</div>
       <div className="vol-forge__metric-sub">{subline}</div>
       {children ? <div className="vol-forge__metric-viz">{children}</div> : null}
-    </div>
-  );
-}
-
-function GpuStrip({ clusters }: { clusters: ForgeClusterView[] }) {
-  const cells = clusters.flatMap((cluster) =>
-    Array.from({ length: cluster.capacity.gpu }, (_, index) => ({
-      id: `${cluster.id}-${index}`,
-      used: index < cluster.used.gpu,
-      kind: cluster.displayKind,
-    })),
-  );
-
-  return (
-    <div className="vol-forge__gpu-strip" data-testid="gpu-heatmap">
-      {cells.map((cell) => (
-        <span
-          key={cell.id}
-          className={`vol-forge__gpu-cell${cell.used ? ' is-used' : ''} ${cell.kind === 'gpu' ? 'is-gpu' : ''}`}
-        />
-      ))}
     </div>
   );
 }
@@ -320,16 +384,24 @@ function ForgeLoadRow({ cluster }: { cluster: ForgeClusterView }) {
       </div>
 
       <div className="vol-forge__cluster-meters">
-        <MiniBar value={cluster.cpuPct} label="cpu" />
-        <MiniBar value={cluster.memPct} label="mem" />
-        {cluster.capacity.gpu > 0 ? (
-          <MiniBar value={cluster.gpuPct} label="gpu" />
-        ) : (
-          <div className="vol-forge__meter-empty">
-            <span>gpu</span>
-            <div className="vol-forge__meter-empty-track" />
-          </div>
-        )}
+        <ClusterMeter
+          label="cpu"
+          value={cluster.cpuPct}
+          used={cpuLabel(cluster.used.cpu)}
+          total={cpuLabel(cluster.capacity.cpu)}
+        />
+        <ClusterMeter
+          label="mem"
+          value={cluster.memPct}
+          used={memLabel(cluster.used.memMi)}
+          total={memLabel(cluster.capacity.memMi)}
+        />
+        <ClusterMeter
+          label="gpu"
+          value={cluster.gpuPct}
+          used={gpuLabel(cluster.used.gpu)}
+          total={gpuLabel(cluster.capacity.gpu)}
+        />
       </div>
     </div>
   );
@@ -422,6 +494,10 @@ export function ForgePage() {
     () => dashboardSessions.filter((session) => session.state === 'failed'),
     [dashboardSessions],
   );
+  const attentionSessions = useMemo(
+    () => dashboardSessions.filter((session) => session.state === 'awaiting_input'),
+    [dashboardSessions],
+  );
 
   const forgeClusters = useMemo(() => {
     const sessionsByCluster = new Map<string, number>();
@@ -485,10 +561,9 @@ export function ForgePage() {
     [dashboardSessions],
   );
 
-  const totalGpuUsed = forgeClusters.reduce((sum, cluster) => sum + cluster.used.gpu, 0);
-  const totalGpuCap = forgeClusters.reduce((sum, cluster) => sum + cluster.capacity.gpu, 0);
   const tokenSparkline = stats.data?.sparklines?.tokensToday ?? [];
   const activePodSparkline = stats.data?.sparklines?.activePods ?? [];
+  const sessionsTodaySparkline = stats.data?.sparklines?.sessionsToday ?? [];
   const tokenRate = tokenSparkline.length > 0 ? Math.round(average(tokenSparkline, 5) / 100) : 0;
   const projectedCost = stats.data ? Math.round(stats.data.costToday * 1.07) : 0;
 
@@ -532,12 +607,14 @@ export function ForgePage() {
             subline={`$${projectedCost} projected 24h`}
           />
           <MetricTile
-            label="GPUs"
-            value={`${totalGpuUsed}/${totalGpuCap}`}
-            subline={`across ${forgeClusters.length} clusters`}
+            label="SESSIONS TODAY"
+            value={stats.data ? stats.data.sessionsToday : '—'}
+            subline={`${stats.data ? stats.data.totalSessions : '—'} total · last 30d`}
             accent="neutral"
           >
-            <GpuStrip clusters={forgeClusters} />
+            {sessionsTodaySparkline.length > 0 ? (
+              <Sparkline values={sessionsTodaySparkline} width={180} height={46} fill />
+            ) : null}
           </MetricTile>
         </section>
 
@@ -646,6 +723,38 @@ export function ForgePage() {
               ))}
             </ol>
           </section>
+
+          {attentionSessions.length > 0 ? (
+            <section
+              className="vol-forge__panel vol-forge__panel--attention"
+              data-testid="attention-strip"
+            >
+              <header className="vol-forge__panel-head">
+                <div className="vol-forge__panel-title vol-forge__panel-title--attention">
+                  <h2>Needs your input</h2>
+                  <span>{attentionSessions.length}</span>
+                </div>
+              </header>
+
+              <div className="vol-forge__error-list">
+                {attentionSessions.map((session) => (
+                  <div key={session.id} className="vol-forge__error-row">
+                    <StateDot state="attention" pulse />
+                    <div className="vol-forge__error-body">
+                      <div className="vol-forge__error-title">
+                        <span>{session.name ?? session.id}</span>
+                        <span>{session.personaName}</span>
+                      </div>
+                      <div className="vol-forge__error-message">
+                        {session.preview ?? 'waiting for your response'}
+                      </div>
+                    </div>
+                    <LifecycleBadge state="awaiting_input" />
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
 
           {erroredSessions.length > 0 ? (
             <section

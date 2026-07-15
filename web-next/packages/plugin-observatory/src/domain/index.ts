@@ -12,6 +12,19 @@
 // Import the domain bases we extend locally.
 import type { EntityType as BaseEntityType, TypeRegistry } from '@niuulabs/domain';
 
+export type {
+  AgentKind,
+  AgentInterface,
+  AgentProvenance,
+  AgentDirectoryEntry,
+  AgentDirectoryWarning,
+  AgentDirectorySourceHealth,
+  AgentDirectorySourceStatus,
+  AgentDirectoryPage,
+  AgentDirectoryFilters,
+} from './agentDirectory';
+export { findAgentTopologyNode } from './agentDirectory';
+
 // Re-export shared primitives so consumers can import from a single package.
 export type { EntityShape, EntityCategory, TypeRegistry } from '@niuulabs/domain';
 
@@ -102,13 +115,7 @@ export type NodeStatus = 'healthy' | 'degraded' | 'failed' | 'idle' | 'observing
 
 /** Activity state of an agent/entity. */
 export type NodeActivity =
-  | 'idle'
-  | 'thinking'
-  | 'tooling'
-  | 'waiting'
-  | 'delegating'
-  | 'writing'
-  | 'reading';
+  'idle' | 'thinking' | 'tooling' | 'waiting' | 'delegating' | 'writing' | 'reading';
 
 /**
  * An instance of an EntityType in the live topology graph.

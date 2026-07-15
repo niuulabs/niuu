@@ -7,9 +7,35 @@ adapter pattern in config YAML.
 
 import copy
 import logging
+from datetime import UTC, datetime
+from typing import Any
 
-from volundr.domain.models import Session, SessionSpec, SessionStatus, _deep_merge
-from volundr.domain.ports import PodManager, PodStartResult
+from volundr.adapters.outbound.resident_container_spec import (
+    resident_flock_labels,
+    resident_flock_profile_configured,
+    resident_mesh_pod_metadata,
+)
+from volundr.domain.models import (
+    ResidentBackend,
+    ResidentCondition,
+    ResidentConditionStatus,
+    ResidentDeploymentProfile,
+    ResidentDesiredState,
+    ResidentEndpoint,
+    ResidentEngine,
+    ResidentObservedState,
+    ResidentRuntime,
+    Session,
+    SessionSpec,
+    SessionStatus,
+    _deep_merge,
+)
+from volundr.domain.ports import (
+    PodManager,
+    PodStartResult,
+    ResidentRuntimeController,
+    ResidentRuntimeObservation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +45,7 @@ HELMRELEASE_VERSION = "v2"
 HELMRELEASE_PLURAL = "helmreleases"
 
 
-class FluxPodManager(PodManager):
+class FluxPodManager(PodManager, ResidentRuntimeController):
     """Flux-native implementation of PodManager.
 
     Creates / deletes HelmRelease CRs via the Kubernetes API.
@@ -90,12 +116,25 @@ class FluxPodManager(PodManager):
             return f"wss://{self._gateway_domain}/s/{session_id}/session"
         return f"{self._chat_scheme}://{self._session_host(session_name)}{self._chat_path}"
 
+    def initial_chat_endpoint(self, session: Session) -> str | None:
+        return self._chat_endpoint(session.name, str(session.id))
+
     def _code_endpoint(self, session_name: str, session_id: str = "") -> str:
         if self._gateway_domain:
             return f"https://{self._gateway_domain}/s/{session_id}/"
         return f"{self._code_scheme}://{self._session_host(session_name)}{self._code_path}"
 
-    def _build_helmrelease(self, name: str, values: dict) -> dict:
+    def initial_code_endpoint(self, session: Session) -> str | None:
+        return self._code_endpoint(session.name, str(session.id))
+
+    def _build_helmrelease(
+        self,
+        name: str,
+        values: dict,
+        *,
+        labels: dict[str, str] | None = None,
+        annotations: dict[str, str] | None = None,
+    ) -> dict:
         """Build a HelmRelease CR manifest."""
         source_ref: dict = {
             "kind": self._source_ref_kind,
@@ -104,16 +143,21 @@ class FluxPodManager(PodManager):
         if self._source_ref_namespace:
             source_ref["namespace"] = self._source_ref_namespace
 
+        metadata: dict[str, Any] = {
+            "name": name,
+            "namespace": self._namespace,
+            "labels": {
+                "app.kubernetes.io/managed-by": "volundr",
+                **(labels or {}),
+            },
+        }
+        if annotations:
+            metadata["annotations"] = annotations
+
         return {
             "apiVersion": f"{HELMRELEASE_GROUP}/{HELMRELEASE_VERSION}",
             "kind": "HelmRelease",
-            "metadata": {
-                "name": name,
-                "namespace": self._namespace,
-                "labels": {
-                    "app.kubernetes.io/managed-by": "volundr",
-                },
-            },
+            "metadata": metadata,
             "spec": {
                 "interval": self._interval,
                 "timeout": self._timeout,
@@ -128,13 +172,94 @@ class FluxPodManager(PodManager):
             },
         }
 
+    async def _apply_helmrelease(
+        self,
+        name: str,
+        values: dict,
+        *,
+        labels: dict[str, str] | None = None,
+        annotations: dict[str, str] | None = None,
+    ) -> None:
+        api = await self._get_api()
+        manifest = self._build_helmrelease(
+            name,
+            values,
+            labels=labels,
+            annotations=annotations,
+        )
+        try:
+            await api.create_namespaced_custom_object(
+                group=HELMRELEASE_GROUP,
+                version=HELMRELEASE_VERSION,
+                namespace=self._namespace,
+                plural=HELMRELEASE_PLURAL,
+                body=manifest,
+            )
+        except Exception as exc:
+            if "409" not in str(exc) and "AlreadyExists" not in str(exc):
+                raise
+            logger.info("HelmRelease %s already exists, patching", name)
+            await api.patch_namespaced_custom_object(
+                group=HELMRELEASE_GROUP,
+                version=HELMRELEASE_VERSION,
+                namespace=self._namespace,
+                plural=HELMRELEASE_PLURAL,
+                name=name,
+                body=manifest,
+                _content_type="application/merge-patch+json",
+            )
+
+    async def _get_helmrelease(self, name: str) -> dict[str, Any] | None:
+        api = await self._get_api()
+        try:
+            return await api.get_namespaced_custom_object(
+                group=HELMRELEASE_GROUP,
+                version=HELMRELEASE_VERSION,
+                namespace=self._namespace,
+                plural=HELMRELEASE_PLURAL,
+                name=name,
+            )
+        except Exception as exc:
+            if "404" in str(exc) or "NotFound" in str(exc):
+                return None
+            raise
+
+    async def _patch_helmrelease(self, name: str, body: dict[str, Any]) -> None:
+        api = await self._get_api()
+        await api.patch_namespaced_custom_object(
+            group=HELMRELEASE_GROUP,
+            version=HELMRELEASE_VERSION,
+            namespace=self._namespace,
+            plural=HELMRELEASE_PLURAL,
+            name=name,
+            body=body,
+            _content_type="application/merge-patch+json",
+        )
+
+    async def _delete_helmrelease(self, name: str) -> bool:
+        api = await self._get_api()
+        try:
+            await api.delete_namespaced_custom_object(
+                group=HELMRELEASE_GROUP,
+                version=HELMRELEASE_VERSION,
+                namespace=self._namespace,
+                plural=HELMRELEASE_PLURAL,
+                name=name,
+            )
+            logger.info("Deleted HelmRelease %s", name)
+            return True
+        except Exception as exc:
+            if "404" in str(exc) or "NotFound" in str(exc):
+                logger.debug("HelmRelease %s is already absent", name)
+                return False
+            raise
+
     async def start(
         self,
         session: Session,
         spec: SessionSpec,
     ) -> PodStartResult:
         """Create a HelmRelease CR for the session."""
-        api = await self._get_api()
         release_name = self._release_name(session)
 
         # Merge session defaults with spec values from contributors
@@ -185,30 +310,9 @@ class FluxPodManager(PodManager):
             if spec.pod_spec.annotations:
                 values["podAnnotations"] = dict(spec.pod_spec.annotations)
 
-        manifest = self._build_helmrelease(release_name, values)
+        _inject_workload_exchange_env(values)
 
-        try:
-            await api.create_namespaced_custom_object(
-                group=HELMRELEASE_GROUP,
-                version=HELMRELEASE_VERSION,
-                namespace=self._namespace,
-                plural=HELMRELEASE_PLURAL,
-                body=manifest,
-            )
-        except Exception as exc:
-            err_str = str(exc)
-            if "409" in err_str or "AlreadyExists" in err_str:
-                logger.info("HelmRelease %s already exists, patching", release_name)
-                await api.patch_namespaced_custom_object(
-                    group=HELMRELEASE_GROUP,
-                    version=HELMRELEASE_VERSION,
-                    namespace=self._namespace,
-                    plural=HELMRELEASE_PLURAL,
-                    name=release_name,
-                    body=manifest,
-                )
-            else:
-                raise
+        await self._apply_helmrelease(release_name, values)
 
         logger.info(
             "Created HelmRelease %s in namespace %s",
@@ -224,45 +328,17 @@ class FluxPodManager(PodManager):
 
     async def stop(self, session: Session) -> bool:
         """Delete the HelmRelease CR for the session."""
-        api = await self._get_api()
         release_name = self._release_name(session)
-
-        try:
-            await api.delete_namespaced_custom_object(
-                group=HELMRELEASE_GROUP,
-                version=HELMRELEASE_VERSION,
-                namespace=self._namespace,
-                plural=HELMRELEASE_PLURAL,
-                name=release_name,
-            )
-            logger.info("Deleted HelmRelease %s", release_name)
-            return True
-        except Exception as exc:
-            if "404" in str(exc) or "NotFound" in str(exc):
-                logger.debug(
-                    "HelmRelease %s not found, treating as already stopped",
-                    release_name,
-                )
-                return False
-            raise
+        return await self._delete_helmrelease(release_name)
 
     async def status(self, session: Session) -> SessionStatus:
         """Read HelmRelease status conditions and map to SessionStatus."""
-        api = await self._get_api()
         release_name = self._release_name(session)
-
-        try:
-            obj = await api.get_namespaced_custom_object(
-                group=HELMRELEASE_GROUP,
-                version=HELMRELEASE_VERSION,
-                namespace=self._namespace,
-                plural=HELMRELEASE_PLURAL,
-                name=release_name,
-            )
-        except Exception as exc:
-            if "404" in str(exc) or "NotFound" in str(exc):
-                return SessionStatus.STOPPED
-            raise
+        obj = await self._get_helmrelease(release_name)
+        if obj is None:
+            if session.status == SessionStatus.STARTING:
+                return SessionStatus.STARTING
+            return SessionStatus.STOPPED
 
         return self._map_status(obj)
 
@@ -331,10 +407,404 @@ class FluxPodManager(PodManager):
         finally:
             w.stop()
 
-        return SessionStatus.FAILED
+        return await self.status(session)
 
     async def close(self) -> None:
         """Close the Kubernetes API client."""
         if self._api_client is not None:
             await self._api_client.close()
             self._api_client = None
+
+    @property
+    def backend(self) -> ResidentBackend:
+        return ResidentBackend.HELMRELEASE
+
+    def supports(self, profile: ResidentDeploymentProfile) -> bool:
+        if (
+            profile.backend is not ResidentBackend.HELMRELEASE
+            or profile.engine is not ResidentEngine.RAVN
+        ):
+            return False
+        values = profile.deployment.get("values") or {}
+        return isinstance(values, dict) and resident_flock_profile_configured(profile, values)
+
+    @staticmethod
+    def _resident_release_name(runtime: ResidentRuntime) -> str:
+        return f"resident-{runtime.id}"
+
+    def _backend_ref(self, runtime: ResidentRuntime) -> dict[str, Any]:
+        release_name = self._resident_release_name(runtime)
+        return {
+            "apiVersion": f"{HELMRELEASE_GROUP}/{HELMRELEASE_VERSION}",
+            "kind": "HelmRelease",
+            "namespace": self._namespace,
+            "name": release_name,
+            "workloadSelector": f"app.kubernetes.io/instance={release_name}",
+        }
+
+    def _endpoints(self, runtime: ResidentRuntime) -> list[ResidentEndpoint]:
+        return [
+            ResidentEndpoint(
+                kind="chat",
+                protocol="skuld-v1",
+                url=self._chat_endpoint(str(runtime.id), str(runtime.id)),
+            )
+        ]
+
+    def _resident_values(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> dict[str, Any]:
+        configured_values = profile.deployment.get("values") or {}
+        if not isinstance(configured_values, dict):
+            raise ValueError(f"Resident profile {profile.id} deployment.values must be an object")
+        values = copy.deepcopy(configured_values)
+        configured_resident = values.get("resident")
+        configured_persona = ""
+        if isinstance(configured_resident, dict):
+            configured_persona = str(configured_resident.get("persona") or "")
+        persona = runtime.persona_name or configured_persona
+        if not persona:
+            raise ValueError(f"Resident profile {profile.id} requires a persona")
+
+        resident_values: dict[str, Any] = {
+            "enabled": True,
+            "name": runtime.name,
+            "persona": persona,
+            "routeId": str(runtime.id),
+        }
+        if runtime.model:
+            resident_values["llm"] = {"model": runtime.model}
+        if runtime.flock_id is not None:
+            resident_values["flock"] = {
+                "id": str(runtime.flock_id),
+                "memberId": str(runtime.flock_member_id or ""),
+                "role": runtime.flock_role,
+                "peerId": runtime.flock_peer_id,
+            }
+
+        flock_labels = resident_flock_labels(runtime, prefix="niuu.world")
+        mesh_labels, mesh_annotations = resident_mesh_pod_metadata(runtime)
+
+        runtime_values: dict[str, Any] = {
+            "replicaCount": (0 if runtime.desired_state is ResidentDesiredState.SUSPENDED else 1),
+            "session": {
+                "id": str(runtime.id),
+                "name": runtime.name,
+                "ownerId": runtime.owner_id,
+            },
+            "resident": resident_values,
+            "podLabels": {
+                "niuu.world/managed": "true",
+                "niuu.world/resident-id": str(runtime.id),
+                "niuu.world/backend": runtime.backend.value,
+                "niuu.world/engine": runtime.engine.value,
+                **flock_labels,
+                **mesh_labels,
+            },
+            "podAnnotations": {
+                "niuu.world/resident-id": str(runtime.id),
+                "niuu.world/resident-name": runtime.name,
+                "niuu.world/owner-id": runtime.owner_id,
+                "niuu.world/tenant-id": runtime.tenant_id,
+                "niuu.world/visibility": "user",
+                "niuu.world/profile-id": runtime.profile_id,
+                **flock_labels,
+                **mesh_annotations,
+            },
+        }
+        if runtime.model:
+            runtime_values["session"]["model"] = runtime.model
+        _deep_merge(values, runtime_values)
+        _inject_workload_exchange_env(values)
+        return values
+
+    async def deploy(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        release_name = self._resident_release_name(runtime)
+        await self._apply_helmrelease(
+            release_name,
+            self._resident_values(runtime, profile),
+            labels={
+                "niuu.world/kind": "resident",
+                "niuu.world/resident-id": str(runtime.id),
+                "niuu.world/backend": runtime.backend.value,
+                **resident_flock_labels(runtime, prefix="niuu.world"),
+            },
+            annotations={
+                "niuu.world/owner-id": runtime.owner_id,
+                "niuu.world/tenant-id": runtime.tenant_id,
+                "niuu.world/profile-id": runtime.profile_id,
+                **resident_flock_labels(runtime, prefix="niuu.world"),
+            },
+        )
+        return ResidentRuntimeObservation(
+            observed_state=ResidentObservedState.DEPLOYING,
+            backend_ref=self._backend_ref(runtime),
+            endpoints=self._endpoints(runtime),
+            conditions=[
+                ResidentCondition(
+                    type="BackendReady",
+                    status=ResidentConditionStatus.UNKNOWN,
+                    reason="ReconciliationPending",
+                    message="Flux is reconciling the resident HelmRelease",
+                )
+            ],
+        )
+
+    async def reconcile(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        release_name = self._resident_release_name(runtime)
+        helmrelease = await self._get_helmrelease(release_name)
+        if helmrelease is None:
+            return await self.deploy(runtime, profile)
+
+        desired_replicas = 0 if runtime.desired_state is ResidentDesiredState.SUSPENDED else 1
+        values = (helmrelease.get("spec") or {}).get("values") or {}
+        if values.get("replicaCount", 1) != desired_replicas:
+            await self._set_replica_count(runtime, desired_replicas)
+
+        deployment = await self._get_resident_deployment(release_name)
+        return self._resident_observation(runtime, helmrelease, deployment)
+
+    def _resident_observation(
+        self,
+        runtime: ResidentRuntime,
+        helmrelease: dict[str, Any],
+        deployment: dict[str, Any] | None,
+    ) -> ResidentRuntimeObservation:
+        backend_ref = self._backend_ref(runtime)
+        deployment_name = self._deployment_name(deployment)
+        if deployment_name:
+            backend_ref["deploymentName"] = deployment_name
+        return ResidentRuntimeObservation(
+            observed_state=self._observed_state(runtime, helmrelease, deployment),
+            backend_ref=backend_ref,
+            endpoints=self._endpoints(runtime),
+            conditions=self._normalized_conditions(helmrelease, deployment),
+        )
+
+    async def restart(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        restarted_at = datetime.now(UTC).isoformat()
+        await self._patch_helmrelease(
+            self._resident_release_name(runtime),
+            {
+                "spec": {
+                    "values": {
+                        "podAnnotations": {"niuu.world/restarted-at": restarted_at},
+                    }
+                }
+            },
+        )
+        return await self._observe_after_lifecycle(runtime)
+
+    async def suspend(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
+        await self._set_replica_count(runtime, 0)
+        return await self._observe_after_lifecycle(runtime)
+
+    async def resume(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
+        await self._set_replica_count(runtime, 1)
+        return await self._observe_after_lifecycle(runtime)
+
+    async def delete(self, runtime: ResidentRuntime) -> bool:
+        return await self._delete_helmrelease(self._resident_release_name(runtime))
+
+    async def _set_replica_count(self, runtime: ResidentRuntime, replicas: int) -> None:
+        await self._patch_helmrelease(
+            self._resident_release_name(runtime),
+            {"spec": {"values": {"replicaCount": replicas}}},
+        )
+
+    async def _observe_after_lifecycle(
+        self,
+        runtime: ResidentRuntime,
+    ) -> ResidentRuntimeObservation:
+        """Observe immediately after an explicit patch without needing profile data."""
+        release_name = self._resident_release_name(runtime)
+        helmrelease = await self._get_helmrelease(release_name)
+        if helmrelease is None:
+            return ResidentRuntimeObservation(
+                observed_state=ResidentObservedState.FAILED,
+                backend_ref=self._backend_ref(runtime),
+                endpoints=self._endpoints(runtime),
+                conditions=[
+                    ResidentCondition(
+                        type="BackendReady",
+                        status=ResidentConditionStatus.FALSE,
+                        reason="HelmReleaseNotFound",
+                        message=f"HelmRelease {self._namespace}/{release_name} does not exist",
+                    )
+                ],
+            )
+        deployment = await self._get_resident_deployment(release_name)
+        return self._resident_observation(runtime, helmrelease, deployment)
+
+    async def _get_resident_deployment(self, release_name: str) -> dict[str, Any] | None:
+        await self._get_api()
+        from kubernetes_asyncio import client
+
+        apps = client.AppsV1Api(self._api_client)
+        result = await apps.list_namespaced_deployment(
+            namespace=self._namespace,
+            label_selector=f"app.kubernetes.io/instance={release_name}",
+        )
+        items = (
+            result.get("items", []) if isinstance(result, dict) else getattr(result, "items", [])
+        )
+        if not items:
+            return None
+        deployment = items[0]
+        if isinstance(deployment, dict):
+            return deployment
+        if hasattr(deployment, "to_dict"):
+            return deployment.to_dict()
+        return self._api_client.sanitize_for_serialization(deployment)
+
+    @staticmethod
+    def _deployment_name(deployment: dict[str, Any] | None) -> str:
+        if not deployment:
+            return ""
+        metadata = deployment.get("metadata") or {}
+        return str(metadata.get("name") or "")
+
+    @classmethod
+    def _observed_state(
+        cls,
+        runtime: ResidentRuntime,
+        helmrelease: dict[str, Any],
+        deployment: dict[str, Any] | None,
+    ) -> ResidentObservedState:
+        values = (helmrelease.get("spec") or {}).get("values") or {}
+        replicas = values.get("replicaCount", 1)
+        if runtime.desired_state is ResidentDesiredState.SUSPENDED:
+            if replicas != 0:
+                return ResidentObservedState.DEPLOYING
+            if deployment is None:
+                return ResidentObservedState.DEPLOYING
+            deployment_spec = deployment.get("spec") or {}
+            desired_replicas = int(deployment_spec.get("replicas") or 0)
+            if desired_replicas == 0 and cls._available_replicas(deployment) == 0:
+                return ResidentObservedState.SUSPENDED
+            return ResidentObservedState.DEPLOYING
+
+        ready = cls._ready_condition(helmrelease)
+        if (
+            ready
+            and ready.get("status") == "False"
+            and ready.get("reason")
+            in {
+                "InstallFailed",
+                "UpgradeFailed",
+                "ReconciliationFailed",
+            }
+        ):
+            return ResidentObservedState.FAILED
+        if not ready or ready.get("status") != "True" or deployment is None:
+            return ResidentObservedState.DEPLOYING
+
+        for condition in (deployment.get("status") or {}).get("conditions") or []:
+            if condition.get("status") != "False":
+                continue
+            if condition.get("reason") in {"ProgressDeadlineExceeded", "ReplicaFailure"}:
+                return ResidentObservedState.FAILED
+
+        if cls._available_replicas(deployment) > 0:
+            return ResidentObservedState.ACTIVE
+        return ResidentObservedState.DEPLOYING
+
+    @staticmethod
+    def _available_replicas(deployment: dict[str, Any]) -> int:
+        status = deployment.get("status") or {}
+        return int(status.get("available_replicas") or status.get("availableReplicas") or 0)
+
+    @staticmethod
+    def _ready_condition(helmrelease: dict[str, Any]) -> dict[str, Any] | None:
+        for condition in (helmrelease.get("status") or {}).get("conditions") or []:
+            if condition.get("type") == "Ready":
+                return condition
+        return None
+
+    @classmethod
+    def _normalized_conditions(
+        cls,
+        helmrelease: dict[str, Any],
+        deployment: dict[str, Any] | None,
+    ) -> list[ResidentCondition]:
+        normalized = [
+            cls._normalize_condition("HelmRelease", condition)
+            for condition in (helmrelease.get("status") or {}).get("conditions") or []
+        ]
+        if deployment is not None:
+            normalized.extend(
+                cls._normalize_condition("Deployment", condition)
+                for condition in (deployment.get("status") or {}).get("conditions") or []
+            )
+        return normalized
+
+    @staticmethod
+    def _normalize_condition(source: str, condition: dict[str, Any]) -> ResidentCondition:
+        raw_status = str(condition.get("status") or "Unknown").lower()
+        status = ResidentConditionStatus.UNKNOWN
+        if raw_status == "true":
+            status = ResidentConditionStatus.TRUE
+        if raw_status == "false":
+            status = ResidentConditionStatus.FALSE
+        transition = condition.get("lastTransitionTime") or condition.get("last_transition_time")
+        if isinstance(transition, str):
+            transition = datetime.fromisoformat(transition.replace("Z", "+00:00"))
+        if not isinstance(transition, datetime):
+            transition = datetime.now(UTC)
+        return ResidentCondition(
+            type=f"{source}{condition.get('type') or 'Condition'}",
+            status=status,
+            reason=str(condition.get("reason") or ""),
+            message=str(condition.get("message") or ""),
+            last_transition_at=transition,
+        )
+
+
+def _inject_workload_exchange_env(values: dict) -> None:
+    """Propagate workload token exchange URL into all session containers."""
+    volundr_cfg = values.get("volundr")
+    if not isinstance(volundr_cfg, dict):
+        return
+    api_url = str(volundr_cfg.get("apiUrl") or "").rstrip("/")
+    if not api_url:
+        return
+    exchange_url = f"{api_url}/api/v1/tokens/workload/exchange"
+    env_entry = {
+        "name": "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL",
+        "value": exchange_url,
+    }
+
+    env_vars = list(values.get("envVars") or [])
+    if not _has_env(env_vars, env_entry["name"]):
+        env_vars.append(env_entry)
+        values["envVars"] = env_vars
+
+    extra_containers = values.get("extraContainers")
+    if not isinstance(extra_containers, list):
+        return
+    for container in extra_containers:
+        if not isinstance(container, dict):
+            continue
+        container_env = list(container.get("env") or [])
+        if _has_env(container_env, env_entry["name"]):
+            continue
+        container_env.append(dict(env_entry))
+        container["env"] = container_env
+
+
+def _has_env(env: list, name: str) -> bool:
+    return any(isinstance(entry, dict) and entry.get("name") == name for entry in env)

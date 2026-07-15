@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -26,7 +26,11 @@ from pydantic_settings import (
 
 from bifrost.config import BifrostConfig
 from niuu.config import CorsConfig, HttpAuthAdapterConfig, InstanceRegistryConfig
-from volundr.config import SessionDefinitionConfig, _default_session_definitions
+from niuu.config_models import (
+    SessionDefinitionConfig,
+    WorkloadIdentityConfig,
+    default_session_definitions,
+)
 
 
 # Config file search paths (in order of priority).
@@ -1023,6 +1027,10 @@ class NotificationConfig(BaseModel):
     """Notification service configuration."""
 
     enabled: bool = Field(default=True)
+    public_origin: str = Field(
+        default="http://localhost:8080",
+        description="Browser-facing Niuu origin used to build notification links.",
+    )
     confidence_threshold: float = Field(
         default=0.3,
         description="Notify when run confidence drops below this value.",
@@ -1066,7 +1074,7 @@ class Settings(BaseSettings):
     volundr: VolundrConfig = Field(default_factory=VolundrConfig)
     bifrost: BifrostConfig = Field(default_factory=BifrostConfig)
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
-        default_factory=_default_session_definitions
+        default_factory=default_session_definitions
     )
     git: GitConfig = Field(default_factory=GitConfig)
     niuu: InstanceRegistryConfig = Field(default_factory=InstanceRegistryConfig)
@@ -1079,6 +1087,7 @@ class Settings(BaseSettings):
     shared_integrations: SharedIntegrationsConfig = Field(default_factory=SharedIntegrationsConfig)
     guild_registry: GuildRegistryConfig = Field(default_factory=GuildRegistryConfig)
     pat: PATConfig = Field(default_factory=PATConfig)
+    workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     cerbos: CerbosConfig = Field(default_factory=CerbosConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
@@ -1092,6 +1101,31 @@ class Settings(BaseSettings):
     event_triggers: EventTriggerConfig = Field(default_factory=EventTriggerConfig)
     ravn_outcome: RavnOutcomeConfig = Field(default_factory=RavnOutcomeConfig)
     flock_flows: FlockFlowsConfig = Field(default_factory=FlockFlowsConfig)
+    server_host: str = Field(
+        default="0.0.0.0",
+        validation_alias=AliasChoices("server_host", "HOST"),
+    )
+    server_port: int = Field(
+        default=8081,
+        ge=1,
+        le=65535,
+        validation_alias=AliasChoices("server_port", "PORT"),
+    )
+    server_workers: int = Field(
+        default=4,
+        ge=1,
+        validation_alias=AliasChoices("server_workers", "WORKERS"),
+    )
+    local_platform_host: str = Field(
+        default="127.0.0.1",
+        validation_alias=AliasChoices("local_platform_host", "NIUU_SERVER_HOST"),
+    )
+    local_platform_port: int = Field(
+        default=8080,
+        ge=1,
+        le=65535,
+        validation_alias=AliasChoices("local_platform_port", "NIUU_SERVER_PORT"),
+    )
 
     @classmethod
     def settings_customise_sources(

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, createEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent, createEvent } from '@testing-library/react';
 import {
   GraphView,
   buildIssueLevelMap,
@@ -414,6 +414,21 @@ describe('GraphView', () => {
 
     fireEvent.mouseUp(svg);
     expect(svg).toHaveStyle({ cursor: 'default' });
+  });
+
+  it('finishes a batched canvas pan without reading cleared drag state', () => {
+    render(<GraphView {...defaultProps()} />);
+    const svg = screen.getByTestId('graph-canvas');
+    const graphLayer = svg.querySelector('g');
+
+    expect(() => {
+      act(() => {
+        svg.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 10, clientY: 20 }));
+        svg.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 30, clientY: 55 }));
+        svg.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      });
+    }).not.toThrow();
+    expect(graphLayer).toHaveAttribute('transform', 'translate(20,35) scale(1)');
   });
 
   it('cancels connect mode when the canvas is clicked', () => {

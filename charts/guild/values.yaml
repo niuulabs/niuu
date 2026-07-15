@@ -131,9 +131,33 @@ envoy:
     keycloakTls: false
     extraClaimHeaders: []
     bypassPrefixes:
+      - /api/v1/tokens/workload/jwks
       - /health
+    workload:
+      enabled: false
+      issuer: ""
+      audiences: []
+      jwksUri: ""
+      jwksTimeout: "5s"
+      jwksCacheDurationSeconds: 300
+      tenantClaim: "tenant_id"
+      rolesClaim: "resource_access.volundr-api.roles"
+      extraClaimHeaders: []
   extraHttpFilters: []
   extraClusters: []
+
+workloadIdentity:
+  enabled: false
+  issuer: ""
+  audiences:
+    - volundr-api
+  tokenTtlSeconds: 900
+  keyId: niuu-workload
+  signingKey:
+    existingSecret: ""
+    key: private-key.pem
+  verifiers: []
+  mappings: []
 
 # -- Init containers
 initContainers: []
@@ -181,6 +205,24 @@ autoscaling:
 
 podDisruptionBudget:
   enabled: false
+
+# -- Guild-to-Observatory Agent Directory fan-out and validation settings.
+directory:
+  instanceId: ""
+  cardTimeoutSeconds: 4.0
+  cardCacheTtlSeconds: 300.0
+  localMaxConcurrency: 8
+  guildTimeoutSeconds: 5.0
+  guildMaxConcurrency: 8
+  signatureAlgorithms:
+    - ES256
+    - ES384
+    - RS256
+    - RS384
+    - PS256
+    - EdDSA
+  # -- Card origins explicitly trusted to receive forwarded caller authentication.
+  authenticatedCardOrigins: []
 
 nodeSelector: {}
 tolerations: []

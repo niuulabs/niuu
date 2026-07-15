@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -32,6 +31,7 @@ from volundr.domain.models import (
     TenantRole,
 )
 from volundr.domain.ports import (
+    AttentionNotifier,
     AuthorizationPort,
     ChronicleRepository,
     CommunicationRouteRepository,
@@ -45,6 +45,7 @@ from volundr.domain.ports import (
     SessionContribution,
     SessionContributor,
     SessionRepository,
+    SessionSpanRepository,
     StoragePort,
 )
 
@@ -57,16 +58,6 @@ logger = logging.getLogger(__name__)
 def _sanitize_log(value: object) -> str:
     """Sanitize a value for safe log output (prevent log injection)."""
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
-
-
-def _public_loopback_host() -> str:
-    """Return the loopback host we publish to browser-facing clients."""
-    host = (
-        os.environ.get("NIUU_SERVER_PUBLIC_HOST")
-        or os.environ.get("NIUU_SERVER_HOST")
-        or "127.0.0.1"
-    ).strip() or "127.0.0.1"
-    return "localhost" if host == "127.0.0.1" else host
 
 
 class SessionNotFoundError(Exception):
@@ -128,6 +119,10 @@ class SessionService:
         sleipnir_publisher: object | None = None,
         communication_route_repository: CommunicationRouteRepository | None = None,
         session_communication_port: SessionCommunicationPort | None = None,
+        attention_notifier: AttentionNotifier | None = None,
+        runtime_backend: str = "kubernetes",
+        public_origin: str = "http://localhost:8080",
+        span_repository: SessionSpanRepository | None = None,
     ):
         self._repository = repository
         self._pod_manager = pod_manager
@@ -141,12 +136,23 @@ class SessionService:
         self._provisioning_initial_delay = provisioning_initial_delay
         self._provisioning_tasks: dict[UUID, asyncio.Task] = {}
         self._activity_stop_tasks: set[asyncio.Task[None]] = set()
+        self._attention_notify_tasks: set[asyncio.Task[None]] = set()
+        self._attention_notifier = attention_notifier
         self._integration_repo = integration_repo
         self._storage = storage
         self._chronicle_repository = chronicle_repository
         self._sleipnir_publisher = sleipnir_publisher
         self._communication_route_repository = communication_route_repository
         self._session_communication_port = session_communication_port
+        self._span_repository = span_repository
+        self._runtime_backend = runtime_backend
+        normalized_public_origin = public_origin.rstrip("/")
+        if normalized_public_origin.startswith("https://"):
+            self._public_ws_origin = "wss://" + normalized_public_origin.removeprefix("https://")
+        elif normalized_public_origin.startswith("http://"):
+            self._public_ws_origin = "ws://" + normalized_public_origin.removeprefix("http://")
+        else:
+            self._public_ws_origin = normalized_public_origin
 
     async def create_session(
         self,
@@ -345,8 +351,14 @@ class SessionService:
         session_id: UUID,
         state: SessionActivityState,
         metadata: dict,
+        state_since: datetime | None = None,
     ) -> Session:
         """Update a session's activity state and broadcast an SSE event.
+
+        ``state_since`` is the broker-stamped UTC timestamp of when the session
+        entered ``state`` (None for older brokers that don't report it). It is
+        persisted and re-broadcast so clients can render an accurate elapsed
+        time without re-deriving it from event arrival.
 
         Raises SessionNotFoundError if the session doesn't exist.
         """
@@ -361,7 +373,16 @@ class SessionService:
         if cli_session_id and cli_session_id != session.cli_session_id:
             session.cli_session_id = cli_session_id
 
+        # Capture the prior attention context BEFORE we overwrite it, so we can
+        # tell a fresh "needs the user" transition from a repeated report.
+        previous_state = session.activity_state
+        previous_request_id = (session.activity_metadata or {}).get("request_id")
+
         session.activity_state = state
+        # The broker stamps state_since only on a real change; fall back to "now"
+        # when an older broker omits it so the field is never null for a live
+        # session that just transitioned.
+        session.activity_state_since = state_since or datetime.now(UTC)
         session.activity_metadata = metadata
         # Treat each activity report as a liveness heartbeat so the reconciler can
         # tell a live-but-idle session from one whose broker has died.
@@ -373,6 +394,10 @@ class SessionService:
             session.error = None
         updated = await self._repository.update(session)
 
+        is_new_attention = self._is_new_attention_request(
+            state, previous_state, metadata, previous_request_id
+        )
+
         if self._broadcaster is not None:
             await self._broadcaster.publish(
                 RealtimeEvent(
@@ -380,17 +405,90 @@ class SessionService:
                     data={
                         "session_id": str(session_id),
                         "state": state.value,
+                        "activity_state_since": (
+                            updated.activity_state_since.isoformat()
+                            if updated.activity_state_since
+                            else None
+                        ),
                         "metadata": metadata,
                         "owner_id": session.owner_id or "",
                     },
                     timestamp=updated.updated_at,
                 )
             )
+            # A fresh "needs the user" transition (or a new pending request while
+            # already awaiting) fires a dedicated, high-urgency event. Unlike the
+            # routine activity event above, this one is forwarded to the platform
+            # bus so a notification / push fan-out can alert the owner.
+            if is_new_attention:
+                await self._broadcaster.publish(
+                    RealtimeEvent(
+                        type=EventType.SESSION_NEEDS_INPUT,
+                        data={
+                            "session_id": str(session_id),
+                            "session_name": updated.name,
+                            "owner_id": session.owner_id or "",
+                            "tenant_id": session.tenant_id or "",
+                            "kind": metadata.get("kind", "question"),
+                            "prompt": metadata.get("prompt", "") or "",
+                            "request_id": metadata.get("request_id", "") or "",
+                        },
+                        timestamp=updated.updated_at,
+                    )
+                )
+
+        # Fan a push out to the owner's devices off the activity hot-path (a slow
+        # APNs/webhook call must not delay Skuld's activity report response).
+        if is_new_attention and self._attention_notifier is not None:
+            self._schedule_attention_notify(updated, metadata)
+
         if self._should_auto_stop_after_activity(updated, state, metadata):
             self._schedule_activity_stop(updated.id)
         return updated
 
-    async def reconcile_liveness(self, stale_after_seconds: int) -> int:
+    def _schedule_attention_notify(self, session: Session, metadata: dict) -> None:
+        """Dispatch a needs-input push in the background, tracking the task."""
+        task = asyncio.create_task(
+            self._attention_notifier.notify_needs_input(
+                session,
+                kind=metadata.get("kind", "question"),
+                prompt=metadata.get("prompt", "") or "",
+                request_id=metadata.get("request_id", "") or "",
+            ),
+            name=f"attention-notify-{session.id}",
+        )
+        self._attention_notify_tasks.add(task)
+        task.add_done_callback(self._attention_notify_tasks.discard)
+
+    @staticmethod
+    def _is_new_attention_request(
+        state: SessionActivityState,
+        previous_state: SessionActivityState | None,
+        metadata: dict,
+        previous_request_id: str | None,
+    ) -> bool:
+        """True when a report represents a NEW request for the user's attention.
+
+        Fires on the transition into ``awaiting_input``, and again if a new
+        pending request (different ``request_id``) arrives while the session is
+        still awaiting — so a second question is not swallowed. Re-reports of the
+        same pending request, and Skuld's periodic heartbeats, do not re-fire,
+        avoiding notification spam.
+        """
+        if state is not SessionActivityState.AWAITING_INPUT:
+            return False
+        if metadata.get("heartbeat"):
+            return False
+        if previous_state is not SessionActivityState.AWAITING_INPUT:
+            return True
+        return metadata.get("request_id") != previous_request_id
+
+    async def reconcile_liveness(
+        self,
+        stale_after_seconds: int,
+        *,
+        exempt_workload_types: list[str] | None = None,
+    ) -> int:
         """Mark running sessions with no recent activity heartbeat as stopped.
 
         A session whose broker has died otherwise sits in ``running`` forever
@@ -398,12 +496,19 @@ class SessionService:
         and see nothing. Reconciling clears the endpoint and flips the status to
         ``stopped`` (resumable) so the list reflects reality.
 
+        Workload types in *exempt_workload_types* (long-lived workloads that
+        idle by design) are never heartbeat-reaped; the pod-status reconcile
+        loop remains their authoritative death check.
+
         Returns the number of sessions reconciled.
         """
+        exempt = set(exempt_workload_types or [])
         threshold = datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
         stale = await self._repository.list_stale_running(threshold)
         reconciled = 0
         for session in stale:
+            if session.workload_type in exempt:
+                continue
             stopped = session.model_copy(
                 update={
                     "status": SessionStatus.STOPPED,
@@ -555,9 +660,9 @@ class SessionService:
         failures are logged but do not prevent session deletion, since the
         primary goal is to clean up the session record.
 
-        Optional *cleanup_targets* lists additional resources to permanently
-        remove (e.g. workspace PVC, chronicles).  An empty/None list preserves
-        the current default behaviour (archive workspace, keep chronicles).
+        Session-scoped workspace storage is always removed. Optional
+        *cleanup_targets* lists additional resources to permanently remove
+        (e.g. chronicles).
         """
         session = await self._repository.get(session_id)
         if session is None:
@@ -565,21 +670,20 @@ class SessionService:
 
         await self._check_access(session, principal, "delete")
 
-        targets = set(cleanup_targets or [])
+        targets = {CleanupTarget.WORKSPACE_STORAGE, *(cleanup_targets or [])}
 
         # Cancel provisioning task if active
         self._cancel_provisioning_task(session_id)
 
-        if self._should_stop_infrastructure_on_delete(session.status):
-            try:
-                await self._pod_manager.stop(session)
-            except Exception as e:
-                logger.warning(
-                    "Failed to stop infrastructure for session %s during deletion: %s. "
-                    "Proceeding with session deletion.",
-                    _sanitize_log(session_id),
-                    _sanitize_log(e),
-                )
+        try:
+            await self._pod_manager.stop(session)
+        except Exception as e:
+            logger.warning(
+                "Failed to stop infrastructure for session %s during deletion: %s. "
+                "Proceeding with session deletion.",
+                _sanitize_log(session_id),
+                _sanitize_log(e),
+            )
 
         # Run contributor cleanup in reverse order
         await self._run_cleanup(session, principal)
@@ -588,23 +692,14 @@ class SessionService:
 
         # Run optional resource cleanup after session record is gone
         if deleted:
+            if self._span_repository is not None:
+                await self._span_repository.delete_by_session(session_id)
             await self._run_targeted_cleanup(session_id, targets)
 
         if deleted and self._broadcaster is not None:
             await self._broadcaster.publish_session_deleted(session_id)
 
         return deleted
-
-    @staticmethod
-    def _should_stop_infrastructure_on_delete(status: SessionStatus) -> bool:
-        """Return True when a session may have runtime infrastructure to remove."""
-        return status in {
-            SessionStatus.STARTING,
-            SessionStatus.PROVISIONING,
-            SessionStatus.RUNNING,
-            SessionStatus.STOPPING,
-            SessionStatus.FAILED,
-        }
 
     async def _run_targeted_cleanup(
         self,
@@ -695,14 +790,33 @@ class SessionService:
         if not session.can_start():
             raise SessionStateError(session_id, "start", session.status)
 
-        # Set chat_endpoint eagerly — URL is deterministic from session ID
-        host = _public_loopback_host()
-        port = os.environ.get("NIUU_SERVER_PORT", "8080")
-        chat_endpoint = f"ws://{host}:{port}/s/{session_id}/session"
+        # Restart parity: persist the definition the first time it is supplied and
+        # reuse the stored one on later restarts, so a session keeps its transport
+        # (e.g. Grok ACP) instead of falling back to the platform default.
+        definition = definition or session.session_definition
+
+        # Restart parity for workload identity: the REST start endpoint calls us
+        # with the DEFAULT workload_type ("session") and no config, so a naive
+        # copy would demote a special workload (e.g. a ravn flock) to a plain
+        # CLI session on every restart — vanishing from the fleet. Fall back to
+        # the stored values whenever the caller did not explicitly override
+        # them, and thread them through provisioning so the contributor
+        # pipeline re-applies the workload spec.
+        if workload_type == "session" and session.workload_type != "session":
+            workload_type = session.workload_type
+        if not workload_config and session.workload_config:
+            workload_config = dict(session.workload_config)
+
+        # Set chat_endpoint eagerly — Flux/Gateway sessions know their public
+        # route before the pod is ready; local mode falls back to the root proxy.
+        chat_endpoint = self._pod_manager.initial_chat_endpoint(session)
+        if not chat_endpoint:
+            chat_endpoint = f"{self._public_ws_origin}/s/{session_id}/session"
 
         starting = session.model_copy(
             update={
                 "status": SessionStatus.STARTING,
+                "session_definition": definition,
                 "chat_endpoint": chat_endpoint,
                 "code_endpoint": None,
                 # A restart is an explicit "bring it back": stale failure
@@ -712,6 +826,9 @@ class SessionService:
                 "error": None,
                 "updated_at": datetime.now(UTC),
                 "workload_type": workload_type,
+                # Persist the workload config so workload identity (e.g. a
+                # flock's personas) survives restarts.
+                "workload_config": workload_config or {},
             }
         )
         await self._repository.update(starting)
@@ -836,6 +953,7 @@ class SessionService:
             principal=principal,
             definition=definition,
             launch_spec=launch_spec,
+            runtime_backend=self._runtime_backend,
             terminal_restricted=terminal_restricted,
             credential_names=tuple(credential_names or ()),
             integration_ids=tuple(c.id for c in resolved_connections),
@@ -924,40 +1042,37 @@ class SessionService:
         *,
         skip_initial_delay: bool = False,
     ) -> None:
-        """Wait for backend readiness, then transition to RUNNING or FAILED."""
+        """Wait for backend readiness and persist a terminal runtime verdict."""
         if not skip_initial_delay:
             await asyncio.sleep(self._provisioning_initial_delay)
 
-        error_detail = ""
         try:
             result_status = await self._pod_manager.wait_for_ready(
                 session, self._provisioning_timeout
             )
         except asyncio.CancelledError:
             return
-        except Exception as exc:
-            result_status = SessionStatus.FAILED
-            error_detail = str(exc)
+        except Exception:
             logger.exception("Readiness check failed for session %s", session.id)
+            return
 
         # Re-fetch to check it's still PROVISIONING (could have been stopped/deleted)
         current = await self._repository.get(session.id)
         if current is None or current.status != SessionStatus.PROVISIONING:
             return
 
-        if result_status == SessionStatus.RUNNING:
-            running = current.with_status(SessionStatus.RUNNING)
-            await self._repository.update(running)
-            if self._broadcaster is not None:
-                await self._broadcaster.publish_session_updated(running)
-            await self._register_communication_routes(running)
-            await self._emit_session_started(running)
+        if result_status in {SessionStatus.STARTING, SessionStatus.PROVISIONING}:
+            logger.info(
+                "Session %s is still reconciling after readiness wait",
+                session.id,
+            )
             return
 
-        if error_detail:
-            msg = f"Provisioning failed: {error_detail}"
-        else:
-            msg = "Provisioning timed out: infrastructure did not become ready"
+        if result_status != SessionStatus.FAILED:
+            await self._persist_reconciled_session(current, result_status)
+            return
+
+        msg = "Provisioning failed: infrastructure reported failure"
         failed = current.with_status(SessionStatus.FAILED).with_error(msg)
         await self._repository.update(failed)
         if self._broadcaster is not None:
@@ -1219,20 +1334,117 @@ class SessionService:
                 lambda t, sid=session.id: self._provisioning_tasks.pop(sid, None)
             )
 
-    async def reconcile_active_sessions(self) -> None:
-        """Reconcile stored STARTING/RUNNING sessions against the pod manager.
+    def _reconciled_session(self, session: Session, actual_status: SessionStatus) -> Session:
+        """Return the corrected session row for a pod-status divergence.
 
-        Local-process sessions can outlive the in-memory Skuld registry after a restart.
-        If the pod manager reports that a supposedly active session is actually stopped
-        or failed, update the persisted session record so browser clients stop trying to
-        attach to dead chat endpoints.
+        Dead runtimes clear endpoints and stamp a queryable ``liveness:`` error.
+        Recovered runtimes clear stale errors and restore deterministic endpoints.
         """
-        active_sessions = [
-            *await self._repository.list(status=SessionStatus.STARTING),
-            *await self._repository.list(status=SessionStatus.RUNNING),
+        if actual_status == SessionStatus.STOPPED:
+            return (
+                session.with_status(SessionStatus.STOPPED)
+                .with_cleared_endpoints()
+                .with_error("liveness: pod is no longer running — endpoint cleared")
+            )
+        if actual_status == SessionStatus.FAILED:
+            return (
+                session.with_status(SessionStatus.FAILED)
+                .with_cleared_endpoints()
+                .with_error("liveness: session runtime is no longer available")
+            )
+
+        target_status = actual_status
+        if session.status == SessionStatus.FAILED and actual_status == SessionStatus.STARTING:
+            target_status = SessionStatus.PROVISIONING
+        updated = session.with_status(target_status)
+        return updated.model_copy(
+            update={
+                "chat_endpoint": session.chat_endpoint
+                or self._pod_manager.initial_chat_endpoint(session),
+                "code_endpoint": session.code_endpoint
+                or self._pod_manager.initial_code_endpoint(session),
+                "error": None,
+            }
+        )
+
+    async def _persist_reconciled_session(
+        self,
+        session: Session,
+        actual_status: SessionStatus,
+    ) -> Session:
+        updated = self._reconciled_session(session, actual_status)
+        final = await self._repository.update(updated)
+        if self._broadcaster is not None:
+            await self._broadcaster.publish_session_updated(final)
+        if session.status != SessionStatus.RUNNING and final.status == SessionStatus.RUNNING:
+            await self._register_communication_routes(final)
+            await self._emit_session_started(final)
+        return final
+
+    async def reconcile_active_sessions(self) -> int:
+        """Reconcile stored session rows against the pod manager.
+
+        Active rows follow runtime state. In Kubernetes mode, failed rows may
+        recover from a Ready HelmRelease and terminal rows shed orphaned runtime
+        resources. Intentional terminal states are never resurrected.
+
+        Because the verdict comes from ``pod_manager.status()`` and not a
+        heartbeat clock, an idle-but-alive session is never false-reaped — this is
+        the mechanism the disabled-by-default last_active reaper could not provide.
+
+        Returns the number of sessions reconciled.
+        """
+        statuses = [
+            SessionStatus.STARTING,
+            SessionStatus.PROVISIONING,
+            SessionStatus.RUNNING,
         ]
-        for session in active_sessions:
+        if self._runtime_backend == "kubernetes":
+            statuses.extend(
+                [
+                    SessionStatus.FAILED,
+                    SessionStatus.STOPPING,
+                    SessionStatus.STOPPED,
+                    SessionStatus.ARCHIVED,
+                ]
+            )
+        sessions = [
+            session for status in statuses for session in await self._repository.list(status=status)
+        ]
+        reconciled = 0
+        for session in sessions:
             actual_status = await self._pod_manager.status(session)
+
+            if session.status in {
+                SessionStatus.STOPPING,
+                SessionStatus.STOPPED,
+                SessionStatus.ARCHIVED,
+            }:
+                if actual_status == SessionStatus.STOPPED:
+                    if session.status != SessionStatus.STOPPING:
+                        continue
+                    stopped = (
+                        session.with_status(SessionStatus.STOPPED)
+                        .with_cleared_endpoints()
+                        .model_copy(update={"error": None})
+                    )
+                    final = await self._repository.update(stopped)
+                    if self._broadcaster is not None:
+                        await self._broadcaster.publish_session_updated(final)
+                    reconciled += 1
+                    continue
+                if await self._pod_manager.stop(session):
+                    reconciled += 1
+                continue
+
+            if session.status == SessionStatus.FAILED and actual_status in {
+                SessionStatus.FAILED,
+                SessionStatus.STOPPED,
+            }:
+                if actual_status == SessionStatus.FAILED and await self._pod_manager.stop(session):
+                    reconciled += 1
+                continue
+
             if actual_status == session.status:
                 continue
 
@@ -1242,28 +1454,25 @@ class SessionService:
                 session.status.value,
                 actual_status.value,
             )
-
-            if actual_status == SessionStatus.STOPPED:
-                updated = session.with_status(SessionStatus.STOPPED).with_cleared_endpoints()
-            elif actual_status == SessionStatus.FAILED:
-                updated = (
-                    session.with_status(SessionStatus.FAILED)
-                    .with_cleared_endpoints()
-                    .with_error("Session runtime is no longer available")
-                )
-            else:
-                updated = session.with_status(actual_status)
-
-            final = await self._repository.update(updated)
-            if self._broadcaster is not None:
-                await self._broadcaster.publish_session_updated(final)
+            final = await self._persist_reconciled_session(session, actual_status)
+            reconciled += 1
+            if actual_status == SessionStatus.FAILED and self._runtime_backend == "kubernetes":
+                await self._pod_manager.stop(final)
+        return reconciled
 
     async def reconcile_session_if_active(self, session_id: UUID) -> Session | None:
-        """Reconcile one active session against the pod manager and return it."""
+        """Reconcile one active or recoverable failed row and return it."""
         session = await self._repository.get(session_id)
         if session is None:
             return None
-        if session.status not in {SessionStatus.STARTING, SessionStatus.RUNNING}:
+        reconcilable_statuses = {
+            SessionStatus.STARTING,
+            SessionStatus.PROVISIONING,
+            SessionStatus.RUNNING,
+        }
+        if self._runtime_backend == "kubernetes":
+            reconcilable_statuses.add(SessionStatus.FAILED)
+        if session.status not in reconcilable_statuses:
             return session
 
         actual_status = await self._pod_manager.status(session)
@@ -1276,21 +1485,24 @@ class SessionService:
             session.status.value,
             actual_status.value,
         )
-        if actual_status == SessionStatus.STOPPED:
-            updated = session.with_status(SessionStatus.STOPPED).with_cleared_endpoints()
-        elif actual_status == SessionStatus.FAILED:
-            updated = (
-                session.with_status(SessionStatus.FAILED)
-                .with_cleared_endpoints()
-                .with_error("Session runtime is no longer available")
-            )
-        else:
-            updated = session.with_status(actual_status)
+        if session.status == SessionStatus.FAILED and actual_status in {
+            SessionStatus.FAILED,
+            SessionStatus.STOPPED,
+        }:
+            return session
 
-        final = await self._repository.update(updated)
-        if self._broadcaster is not None:
-            await self._broadcaster.publish_session_updated(final)
-        return final
+        return await self._persist_reconciled_session(session, actual_status)
+
+    async def mark_session_dead(self, session_id: UUID) -> Session | None:
+        """Force a single session to be reconciled against the pod manager NOW.
+
+        Invoked from out-of-band death signals (a local broker process exiting, a
+        WS proxy that can't reach the pod) so the row reflects reality promptly
+        instead of waiting for the next periodic sweep. Pod-status authoritative:
+        if the pod manager still reports the session live, the row is left
+        untouched (no false reap).
+        """
+        return await self.reconcile_session_if_active(session_id)
 
 
 def _communication_route_id(

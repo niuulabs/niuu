@@ -127,13 +127,19 @@ class OdinReviewService:
         status: str | None = None,
         kind: str | None = None,
         environment_id: str | None = None,
+        risk_class: str | None = None,
+        query: str | None = None,
         limit: int | None = None,
+        offset: int = 0,
     ) -> list[ReviewItem]:
         return await self._store.list_items(
             status=status,
             kind=kind,
             environment_id=environment_id,
+            risk_class=risk_class,
+            query=query,
             limit=limit,
+            offset=offset,
         )
 
     async def counts(self) -> dict[str, int]:

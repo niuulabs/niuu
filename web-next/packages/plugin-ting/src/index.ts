@@ -1,6 +1,5 @@
 import { createRoute, redirect } from '@tanstack/react-router';
 import { definePlugin } from '@niuulabs/plugin-sdk';
-import { SERVICE_RUNES } from '@niuulabs/ui';
 import { TingPage } from './ui/TingPage';
 import { WorkflowBuilderPage } from './ui/WorkflowBuilderPage';
 import { SagasPage } from './ui/SagasPage';
@@ -12,6 +11,9 @@ import { TingSubnav } from './ui/TingSubnav';
 import { ResearchCenterPage } from './ui/ResearchCenterPage';
 import { ResearchNewPage } from './ui/ResearchNewPage';
 import { ResearchCampaignPage } from './ui/ResearchCampaignPage';
+import { SpecsCenterPage } from './ui/SpecsCenterPage';
+import { SpecsNewPage } from './ui/SpecsNewPage';
+import { SpecsCampaignPage } from './ui/SpecsCampaignPage';
 
 const LEGACY_SETTINGS_SECTION_TARGETS: Record<string, string> = {
   general: '/settings/ting/general',
@@ -28,7 +30,7 @@ function resolveLegacySettingsTarget(sectionId?: string): string {
 
 export const tingPlugin = definePlugin({
   id: 'ting',
-  rune: SERVICE_RUNES.ting,
+  rune: 'T',
   title: 'Ting',
   subtitle: 'sagas · runs · dispatch',
   tabs: [
@@ -37,6 +39,7 @@ export const tingPlugin = definePlugin({
     { id: 'dispatch', label: 'Dispatch', rune: '⇥', path: '/ting/dispatch' },
     { id: 'plan', label: 'Plan', rune: '◇', path: '/ting/plan' },
     { id: 'research', label: 'Research', rune: '⌁', path: '/ting/research' },
+    { id: 'specs', label: 'Specs', rune: '▤', path: '/ting/specs' },
     { id: 'workflows', label: 'Workflows', rune: '⚙', path: '/ting/workflows' },
   ],
   routes: (rootRoute) => [
@@ -64,6 +67,21 @@ export const tingPlugin = definePlugin({
       getParentRoute: () => rootRoute,
       path: '/ting/research/$slug',
       component: ResearchCampaignPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/specs',
+      component: SpecsCenterPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/specs/new',
+      component: SpecsNewPage,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/ting/specs/$slug',
+      component: SpecsCampaignPage,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -123,6 +141,7 @@ export {
   createMockTrackerService,
   createMockWorkflowService,
   createMockResearchService,
+  createMockSpecsService,
   createMockDispatchBus,
   createMockTingSettingsService,
   createMockAuditLogService,
@@ -136,6 +155,7 @@ export {
   buildTrackerHttpAdapter,
   buildWorkflowHttpAdapter,
   buildResearchHttpAdapter,
+  buildSpecsHttpAdapter,
   buildDispatchBusHttpAdapter,
   buildTingSettingsHttpAdapter,
   buildTingAuditLogHttpAdapter,
@@ -149,7 +169,10 @@ export type {
   ITrackerBrowserService,
   IWorkflowService,
   IResearchService,
+  ISpecsService,
   CreateResearchCampaignRequest,
+  CreateSpecCampaignRequest,
+  ReviewSpecCampaignRequest,
   UpdateResearchCampaignRequest,
   IDispatchBus,
   DispatchResult,
@@ -184,6 +207,8 @@ export type {
   RepoInfo,
   ResearchCampaign,
   ResearchCampaignDetail,
+  SpecCampaign,
+  SpecCampaignDetail,
   CampaignArtifact,
   CampaignArtifactDetail,
   CampaignStageState,

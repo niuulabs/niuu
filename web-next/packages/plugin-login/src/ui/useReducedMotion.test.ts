@@ -1,3 +1,5 @@
+import { createElement } from 'react';
+import { renderToString } from 'react-dom/server';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { useReducedMotion } from './useReducedMotion';
@@ -52,5 +54,15 @@ describe('useReducedMotion', () => {
     const { unmount } = renderHook(() => useReducedMotion());
     unmount();
     expect(mq.removeEventListener).toHaveBeenCalledOnce();
+  });
+
+  it('defaults to false during server rendering', () => {
+    function Probe() {
+      expect(useReducedMotion()).toBe(false);
+      return null;
+    }
+
+    vi.stubGlobal('window', undefined);
+    expect(renderToString(createElement(Probe))).toBe('');
   });
 });

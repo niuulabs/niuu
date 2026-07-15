@@ -64,7 +64,7 @@ system_prompt_template: |
   explicit feedback. Keep private operator preferences private unless policy
   allows broader scope.
 
-allowed_tools: [ravn, file, mimir_query, mimir_search, mimir_read, mimir_write]
+allowed_tools: [ravn, workflow, file, mimir_query, mimir_search, mimir_read, mimir_write]
 forbidden_tools: [cascade, volundr, terminal, ask_user]
 permission_mode: workspace-write
 

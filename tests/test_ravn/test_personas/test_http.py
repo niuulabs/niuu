@@ -349,79 +349,57 @@ class TestListNames:
 
 class TestAuth:
     @respx.mock
-    def test_bearer_header_sent_when_env_var_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("RAVN_VOLUNDR_TOKEN", "my-secret-pat")
+    def test_workload_bearer_header_sent(self, tmp_path) -> None:
+        token_file = tmp_path / "token"
+        token_file.write_text("projected-proof", encoding="utf-8")
+        respx.post(f"{_BASE}/api/v1/tokens/workload/exchange").mock(
+            return_value=httpx.Response(200, json={"token": "workload-jwt"})
+        )
         route = respx.get(f"{_BASE}/api/v1/personas/coder").mock(
             return_value=httpx.Response(200, json=_DETAIL_CODER)
         )
-        _adapter(token_env="RAVN_VOLUNDR_TOKEN").load("coder")
+        _adapter(workload_token_file=str(token_file)).load("coder")
 
         assert route.calls.last is not None
         auth = route.calls.last.request.headers.get("authorization", "")
-        assert auth == "Bearer my-secret-pat"
+        assert auth == "Bearer workload-jwt"
 
     @respx.mock
     def test_no_auth_header_when_env_var_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("RAVN_VOLUNDR_TOKEN", raising=False)
+        monkeypatch.delenv("NIUU_WORKLOAD_IDENTITY_TOKEN_FILE", raising=False)
         route = respx.get(f"{_BASE}/api/v1/personas/coder").mock(
             return_value=httpx.Response(200, json=_DETAIL_CODER)
         )
-        _adapter(token_env="RAVN_VOLUNDR_TOKEN").load("coder")
+        _adapter(workload_token_file="/tmp/definitely-missing-niuu-workload-token").load("coder")
 
         assert route.calls.last is not None
         assert "authorization" not in route.calls.last.request.headers
 
     @respx.mock
-    def test_custom_token_env_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("CUSTOM_TOKEN_VAR", "custom-token-value")
+    def test_external_token_env_name_is_explicit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("EXTERNAL_PERSONA_TOKEN", "custom-token-value")
         route = respx.get(f"{_BASE}/api/v1/personas/coder").mock(
             return_value=httpx.Response(200, json=_DETAIL_CODER)
         )
-        _adapter(token_env="CUSTOM_TOKEN_VAR").load("coder")
+        _adapter(external_token_env="EXTERNAL_PERSONA_TOKEN").load("coder")
 
         assert route.calls.last is not None
         auth = route.calls.last.request.headers.get("authorization", "")
         assert auth == "Bearer custom-token-value"
 
     @respx.mock
-    def test_bearer_header_sent_for_list_names(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("RAVN_VOLUNDR_TOKEN", "list-token")
+    def test_external_bearer_header_sent_for_list_names(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EXTERNAL_PERSONA_TOKEN", "list-token")
         route = respx.get(f"{_BASE}/api/v1/personas").mock(
             return_value=httpx.Response(200, json=_SUMMARIES)
         )
-        _adapter(token_env="RAVN_VOLUNDR_TOKEN").list_names()
+        _adapter(external_token_env="EXTERNAL_PERSONA_TOKEN").list_names()
 
         assert route.calls.last is not None
         auth = route.calls.last.request.headers.get("authorization", "")
         assert auth == "Bearer list-token"
-
-
-# ---------------------------------------------------------------------------
-# Write operations — NotImplementedError
-# ---------------------------------------------------------------------------
-
-
-class TestReadOnly:
-    def test_save_raises_not_implemented(self) -> None:
-        adapter = _adapter()
-        config = PersonaConfig(name="x")
-        with pytest.raises(NotImplementedError, match="read-only"):
-            adapter.save(config)
-
-    def test_delete_raises_not_implemented(self) -> None:
-        adapter = _adapter()
-        with pytest.raises(NotImplementedError, match="read-only"):
-            adapter.delete("x")
-
-    def test_save_error_message_mentions_rest_api(self) -> None:
-        adapter = _adapter()
-        with pytest.raises(NotImplementedError, match="volundr REST API"):
-            adapter.save(PersonaConfig(name="x"))
-
-    def test_delete_error_message_mentions_rest_api(self) -> None:
-        adapter = _adapter()
-        with pytest.raises(NotImplementedError, match="volundr REST API"):
-            adapter.delete("x")
 
 
 # ---------------------------------------------------------------------------
@@ -435,3 +413,5 @@ class TestPortCompliance:
 
         adapter = _adapter()
         assert isinstance(adapter, PersonaPort)
+        assert not hasattr(adapter, "save")
+        assert not hasattr(adapter, "delete")

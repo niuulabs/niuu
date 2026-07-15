@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+import os
+from collections.abc import AsyncGenerator, Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -39,6 +41,46 @@ from volundr.domain.ports import (
     TimelineRepository,
     TokenTracker,
 )
+
+# Ambient configuration a developer box leaks into the test process. A machine
+# running a live Forge/Skuld session exports ``SKULD__*`` / ``VOLUNDR*`` /
+# ``NIUU_*`` / ``DATABASE__*`` env vars (transport adapter, session id,
+# ``skip_permissions``, volundr URL, db host, ...) AND leaves a populated
+# ``./config.yaml`` in the repo root. Pydantic ``BaseSettings`` ingests both:
+# the env vars via ``env_nested_delimiter`` and the file via
+# ``YamlConfigSettingsSource(yaml_file=["./config.yaml", ...])``. A test that
+# constructs ``VolundrSettings()`` / ``SkuldSettings()`` then silently picks up
+# the ambient *production* config and diverges from CI, where neither the env
+# vars nor the file exist. (Concretely: the leaked ``./config.yaml`` overrides
+# the built-in ``skuldClaude`` session definition's transport adapter from
+# ``skuld.transports.sdk.SDKTransport`` to ``...PersistentSubprocessTransport``,
+# breaking the warden artifact transport-selection assertions.)
+#
+# This autouse fixture makes every suite hermetic: it strips the ambient env
+# vars and repoints config discovery at a non-existent path so the on-disk
+# ``./config.yaml`` is ignored, matching CI. A test that needs a specific value
+# sets it explicitly via ``monkeypatch.setenv`` / ``NIUU_CONFIG`` (applied after
+# this fixture, restored before it), so per-test configuration keeps working.
+_AMBIENT_PREFIXES = ("SKULD__", "VOLUNDR__", "VOLUNDR_", "NIUU_", "DATABASE__")
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_settings_env(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    saved = {k: v for k, v in os.environ.items() if k.startswith(_AMBIENT_PREFIXES)}
+    for key in saved:
+        del os.environ[key]
+    # Point config discovery at a path that does not exist so an ambient
+    # ./config.yaml or /etc/volundr/config.yaml in the run environment is not
+    # read. _config_paths() honours NIUU_CONFIG ahead of the default locations.
+    missing_config = tmp_path_factory.mktemp("hermetic") / "no-such-config.yaml"
+    os.environ["NIUU_CONFIG"] = str(missing_config)
+    assert not Path(missing_config).exists()
+    try:
+        yield
+    finally:
+        os.environ.pop("NIUU_CONFIG", None)
+        for key, value in saved.items():
+            os.environ[key] = value
 
 
 class InMemorySessionRepository(SessionRepository):
@@ -282,6 +324,8 @@ class InMemoryStatsRepository(StatsRepository):
         local_tokens: int = 0,
         cloud_tokens: int = 0,
         cost_today: Decimal = Decimal("0"),
+        sessions_today: int = 0,
+        sparklines: dict[str, list[float]] | None = None,
     ):
         self._stats = Stats(
             active_sessions=active_sessions,
@@ -290,6 +334,8 @@ class InMemoryStatsRepository(StatsRepository):
             local_tokens=local_tokens,
             cloud_tokens=cloud_tokens,
             cost_today=cost_today,
+            sessions_today=sessions_today,
+            sparklines=sparklines,
         )
 
     async def get_stats(self) -> Stats:
@@ -303,6 +349,8 @@ class InMemoryStatsRepository(StatsRepository):
         local_tokens: int | None = None,
         cloud_tokens: int | None = None,
         cost_today: Decimal | None = None,
+        sessions_today: int | None = None,
+        sparklines: dict[str, list[float]] | None = None,
     ) -> None:
         """Update stats for testing different scenarios."""
         current = self._stats
@@ -317,6 +365,10 @@ class InMemoryStatsRepository(StatsRepository):
             local_tokens=local_tokens if local_tokens is not None else current.local_tokens,
             cloud_tokens=cloud_tokens if cloud_tokens is not None else current.cloud_tokens,
             cost_today=cost_today if cost_today is not None else current.cost_today,
+            sessions_today=(
+                sessions_today if sessions_today is not None else current.sessions_today
+            ),
+            sparklines=sparklines if sparklines is not None else current.sparklines,
         )
 
 

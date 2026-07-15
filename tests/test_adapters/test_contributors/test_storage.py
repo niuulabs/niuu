@@ -30,6 +30,17 @@ class TestStorageContributor:
         result = await c.contribute(session, SessionContext())
         assert result.values == {}
 
+    async def test_openshell_backend_skips_k8s_storage(self, session):
+        storage = AsyncMock()
+        c = StorageContributor(storage=storage)
+        result = await c.contribute(session, SessionContext(runtime_backend="openshell"))
+
+        assert result.values == {}
+        assert result.pod_spec is None
+        storage.get_workspace_by_session.assert_not_called()
+        storage.create_session_workspace.assert_not_called()
+        storage.provision_user_storage.assert_not_called()
+
     async def test_provisions_pvc(self, session):
         storage = AsyncMock()
         storage.create_session_workspace.return_value = PVCRef(name="ws-pvc")

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 
 from niuu.adapters.inbound.rest_instances import create_instances_router
+from niuu.domain.agent_directory import AgentDirectoryEntry, AgentDirectoryPage
 from niuu.domain.models import (
     InstanceKind,
     InstanceVisibility,
@@ -124,17 +125,76 @@ class StubInstanceService:
         return self.single_instance
 
 
+def _agent_entry() -> AgentDirectoryEntry:
+    return AgentDirectoryEntry(
+        id="agent-aggregate-1",
+        canonicalId="source:observatory-a:session-a",
+        sourceAgentId="session-a",
+        sourceInstanceId="observatory-a",
+        clusterId="noatun",
+        environmentId="environment-a",
+        topologyNodeId="runtime:noatun:skuld:skuld:session-a",
+        name="Builder",
+        description="Builds software",
+        kind="workflow-session",
+        cardUrl="https://agents.example.test/.well-known/agent-card.json",
+        cardVersion="1.0.0",
+        cardHash="card-hash",
+        skillIds=["code"],
+        tags=["engineering"],
+        observedStatus="healthy",
+        ownerId="user-a",
+        tenantId="tenant-a",
+        visibility="user",
+    )
+
+
+class StubAgentDirectoryAggregation:
+    def __init__(self) -> None:
+        self.entry = _agent_entry()
+        self.list_calls: list[dict[str, Any]] = []
+        self.get_calls: list[dict[str, Any]] = []
+
+    async def list_agents(self, instances, principal, *, headers, filters):
+        self.list_calls.append(
+            {
+                "instances": instances,
+                "principal": principal,
+                "headers": headers,
+                "filters": filters,
+            }
+        )
+        return AgentDirectoryPage(items=[self.entry], revision="aggregate-revision")
+
+    async def get_agent(self, agent_id, instances, principal, *, headers):
+        self.get_calls.append(
+            {
+                "agent_id": agent_id,
+                "instances": instances,
+                "principal": principal,
+                "headers": headers,
+            }
+        )
+        return self.entry if agent_id == self.entry.id else None
+
+
 def _client(
     service: StubInstanceService,
     *,
     catalog: list[Any] | None = None,
+    agent_directory: StubAgentDirectoryAggregation | None = None,
 ) -> TestClient:
     app = FastAPI()
     if catalog is not None:
         app.state.settings = SimpleNamespace(
             niuu=SimpleNamespace(catalog=catalog),
         )
-    app.include_router(create_instances_router(service))  # type: ignore[arg-type]
+    app.include_router(
+        create_instances_router(  # type: ignore[arg-type]
+            service,
+            agent_directory=agent_directory,  # type: ignore[arg-type]
+        )
+    )
     return TestClient(app)
 
 
@@ -166,6 +226,58 @@ def test_list_instances_serializes_aliases_and_forwards_filters() -> None:
     assert response.json()[0]["isDefault"] is True
     assert service.list_calls[-1]["kind"] == InstanceKind.TING
     assert service.list_calls[-1]["enabled_only"] is True
+
+
+def test_aggregate_agent_directory_uses_visible_observatories_and_forwards_filters() -> None:
+    service = StubInstanceService()
+    service.visible_instances = [
+        _instance("observatory-a", kind=InstanceKind.OBSERVATORY),
+    ]
+    directory = StubAgentDirectoryAggregation()
+    client = _client(service, agent_directory=directory)
+
+    response = client.get(
+        "/api/v1/niuu/observatory/agents"
+        "?skill=code&tag=engineering&kind=workflow-session&status=healthy"
+        "&environmentId=environment-a&cluster=noatun&instance=observatory-a",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["topologyNodeId"].endswith("session-a")
+    assert service.list_calls[-1]["kind"] == InstanceKind.OBSERVATORY
+    assert service.list_calls[-1]["enabled_only"] is True
+    call = directory.list_calls[-1]
+    assert call["principal"].user_id == "user-a"
+    assert call["headers"]["authorization"] == "Bearer test-token"
+    assert call["filters"].skills == ("code",)
+    assert call["filters"].tags == ("engineering",)
+    assert call["filters"].kinds == ("workflow-session",)
+    assert call["filters"].statuses == ("healthy",)
+    assert call["filters"].environment_ids == ("environment-a",)
+    assert call["filters"].cluster_ids == ("noatun",)
+    assert call["filters"].instance_ids == ("observatory-a",)
+
+
+def test_aggregate_agent_detail_returns_generic_404() -> None:
+    service = StubInstanceService()
+    service.visible_instances = [_instance("observatory-a", kind=InstanceKind.OBSERVATORY)]
+    directory = StubAgentDirectoryAggregation()
+    client = _client(service, agent_directory=directory)
+
+    found = client.get(
+        "/api/v1/niuu/observatory/agents/agent-aggregate-1",
+        headers=_headers(),
+    )
+    missing = client.get(
+        "/api/v1/niuu/observatory/agents/inaccessible",
+        headers=_headers(),
+    )
+
+    assert found.status_code == 200
+    assert found.json()["sourceInstanceId"] == "observatory-a"
+    assert missing.status_code == 404
+    assert missing.json() == {"detail": "Agent not found"}
 
 
 def test_get_instance_catalog_reads_catalog_from_settings() -> None:
@@ -505,10 +617,7 @@ def test_observatory_snapshot_includes_wardens_from_registered_ravn() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert any(node["id"] == "warden:mimir-shared-warden" for node in payload["nodes"])
-    assert any(
-        edge["id"] == "edge:warden:mimir-shared-warden:mimir"
-        for edge in payload["edges"]
-    )
+    assert any(edge["id"] == "edge:warden:mimir-shared-warden:mimir" for edge in payload["edges"])
 
 
 @respx.mock
@@ -554,9 +663,7 @@ def test_observatory_snapshot_uses_deployment_cluster_labels() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert any(
-        node["id"] == "cluster-ymir"
-        and node["label"] == "ymir"
-        and node["namespace"] == "volundr"
+        node["id"] == "cluster-ymir" and node["label"] == "ymir" and node["namespace"] == "volundr"
         for node in payload["nodes"]
     )
     assert any(

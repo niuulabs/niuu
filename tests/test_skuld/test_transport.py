@@ -50,7 +50,7 @@ class TestTransportCapabilities:
         assert caps.terminal_panes is False
 
     def test_subprocess_transport_capabilities(self, tmp_path):
-        """SubprocessTransport has session_resume=True, rest False."""
+        """SubprocessTransport has session_resume + slash command discovery."""
         transport = SubprocessTransport(str(tmp_path))
         caps = transport.capabilities
         assert caps.session_resume is True
@@ -64,8 +64,8 @@ class TestTransportCapabilities:
         assert caps.rewind_files is False
         assert caps.mcp_set_servers is False
         assert caps.permission_requests is False
-        assert caps.slash_commands is False
-        assert caps.skills is False
+        assert caps.slash_commands is True
+        assert caps.skills is True
         assert caps.terminal_output is False
         assert caps.terminal_input is False
         assert caps.terminal_keys is False
@@ -1610,6 +1610,7 @@ class TestCodexSubprocessTransport:
             assert "--model" in call_args
             assert "o4-mini" in call_args
             assert "--sandbox" not in call_args
+            assert "--dangerously-bypass-approvals-and-sandbox" in call_args
             assert "--json" in call_args
             assert "--quiet" not in call_args
             assert "refactor the auth module" in call_args
@@ -1648,6 +1649,35 @@ class TestCodexSubprocessTransport:
             call_args = mock_exec.call_args[0]
             assert "-c" in call_args
             assert any(arg == 'mcp_servers.mimir-local.command="python3"' for arg in call_args)
+
+    @pytest.mark.asyncio
+    async def test_send_message_honors_explicit_permission_policy(self, tmp_path):
+        transport = CodexSubprocessTransport(
+            str(tmp_path),
+            skip_permissions=False,
+            approval_policy="on-request",
+            sandbox="workspace-write",
+        )
+        mock_process = MagicMock(
+            stdout=AsyncMock(read=AsyncMock(return_value=b"")),
+            stderr=None,
+            returncode=0,
+            wait=AsyncMock(return_value=0),
+        )
+        transport.on_event(AsyncMock())
+
+        with patch(
+            "skuld.transports.codex.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=mock_process,
+        ) as mock_exec:
+            await transport.send_message("inspect")
+
+        call_args = mock_exec.call_args[0]
+        assert "--dangerously-bypass-approvals-and-sandbox" not in call_args
+        assert "--sandbox" in call_args
+        assert call_args[call_args.index("--sandbox") + 1] == "workspace-write"
+        assert "approval_policy='on-request'" in call_args
 
     @pytest.mark.asyncio
     async def test_send_message_emits_text_delta_for_json_events(self, transport):

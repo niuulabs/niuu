@@ -36,25 +36,41 @@ __all__ = ["_HEADER_QUOTA_WARNING", "_HEADER_QUOTA_REMAINING"]
 
 def _extract_usage_from_sse_line(line: str, usage: TokenUsage) -> None:
     """Parse one SSE data line and update *usage* in-place."""
-    if not line.startswith("data: "):
-        return
-    try:
-        payload = json.loads(line[6:])
-    except (json.JSONDecodeError, ValueError):
-        return
+    for raw_line in line.splitlines():
+        if not raw_line.startswith("data: "):
+            continue
+        try:
+            payload = json.loads(raw_line[6:])
+        except (json.JSONDecodeError, ValueError):
+            continue
 
-    event_type = payload.get("type", "")
+        event_type = payload.get("type", "")
 
-    if event_type == "message_start":
-        msg_usage = payload.get("message", {}).get("usage", {})
-        usage.input_tokens += msg_usage.get("input_tokens", 0)
-        usage.cache_creation_input_tokens += msg_usage.get("cache_creation_input_tokens", 0)
-        usage.cache_read_input_tokens += msg_usage.get("cache_read_input_tokens", 0)
-        usage.reasoning_tokens += msg_usage.get("reasoning_tokens", 0)
-    elif event_type == "message_delta":
-        delta_usage = payload.get("usage", {})
-        usage.output_tokens += delta_usage.get("output_tokens", 0)
-        usage.reasoning_tokens += delta_usage.get("reasoning_tokens", 0)
+        if event_type == "message_start":
+            msg_usage = payload.get("message", {}).get("usage", {})
+            usage.input_tokens += msg_usage.get("input_tokens", 0)
+            usage.cache_creation_input_tokens += msg_usage.get("cache_creation_input_tokens", 0)
+            usage.cache_read_input_tokens += msg_usage.get("cache_read_input_tokens", 0)
+            usage.reasoning_tokens += msg_usage.get("reasoning_tokens", 0)
+        elif event_type == "message_delta":
+            delta_usage = payload.get("usage", {})
+            usage.input_tokens += delta_usage.get("input_tokens", 0)
+            usage.output_tokens += delta_usage.get("output_tokens", 0)
+            usage.reasoning_tokens += delta_usage.get("reasoning_tokens", 0)
+
+
+def _stream_chunk_is_terminal(chunk: str) -> bool:
+    for line in chunk.splitlines():
+        if line == "event: message_stop" or line == "data: [DONE]":
+            return True
+        if not line.startswith("data: "):
+            continue
+        try:
+            if json.loads(line[6:]).get("type") == "message_stop":
+                return True
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return False
 
 
 def _log_request(log: RequestLog) -> None:
@@ -156,63 +172,72 @@ async def _stream_with_tracking(
 ) -> AsyncIterator[str]:
     """Yield SSE lines from *source* while tracking token usage."""
     usage = TokenUsage()
+    recorded = False
 
-    async for line in source:
-        _extract_usage_from_sse_line(line, usage)
-        yield line
-
-    latency_ms = (time.monotonic() - start) * 1000
-    _log_request(
-        RequestLog(
-            timestamp=datetime.now(UTC),
-            model=model,
-            usage=usage,
-            latency_ms=latency_ms,
-            stream=True,
+    async def record_usage() -> None:
+        nonlocal recorded
+        if recorded:
+            return
+        recorded = True
+        latency_ms = (time.monotonic() - start) * 1000
+        _log_request(
+            RequestLog(
+                timestamp=datetime.now(UTC),
+                model=model,
+                usage=usage,
+                latency_ms=latency_ms,
+                stream=True,
+            )
         )
-    )
 
-    cost = calculate_cost(model, usage, pricing_overrides)
-    _metrics.record_request(
-        provider=provider,
-        model=model,
-        status="200",
-        duration_seconds=latency_ms / 1000.0,
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        cache_read_tokens=usage.cache_read_input_tokens,
-        cache_write_tokens=usage.cache_creation_input_tokens,
-        cost_usd=cost,
-    )
-    await store.record(
-        UsageRecord(
-            request_id=request_id,
-            agent_id=identity.agent_id,
-            tenant_id=identity.tenant_id,
-            session_id=identity.session_id,
-            saga_id=identity.saga_id,
-            model=model,
+        cost = calculate_cost(model, usage, pricing_overrides)
+        _metrics.record_request(
             provider=provider,
+            model=model,
+            status="200",
+            duration_seconds=latency_ms / 1000.0,
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             cache_read_tokens=usage.cache_read_input_tokens,
             cache_write_tokens=usage.cache_creation_input_tokens,
-            reasoning_tokens=usage.reasoning_tokens,
             cost_usd=cost,
-            latency_ms=latency_ms,
-            streaming=True,
-            timestamp=datetime.now(UTC),
         )
-    )
+        await store.record(
+            UsageRecord(
+                request_id=request_id,
+                agent_id=identity.agent_id,
+                tenant_id=identity.tenant_id,
+                session_id=identity.session_id,
+                saga_id=identity.saga_id,
+                model=model,
+                provider=provider,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cache_read_input_tokens,
+                cache_write_tokens=usage.cache_creation_input_tokens,
+                reasoning_tokens=usage.reasoning_tokens,
+                cost_usd=cost,
+                latency_ms=latency_ms,
+                streaming=True,
+                timestamp=datetime.now(UTC),
+            )
+        )
 
-    await emit_cost_events(
-        emitter=emitter,
-        store=store,
-        identity=identity,
-        cost=cost,
-        tokens_used=usage.input_tokens + usage.output_tokens,
-        model=model,
-        agent_budget_limit=agent_budget_limit,
-        budget_warning_threshold_pct=budget_warning_threshold_pct,
-        sleipnir_publisher=sleipnir_publisher,
-    )
+        await emit_cost_events(
+            emitter=emitter,
+            store=store,
+            identity=identity,
+            cost=cost,
+            tokens_used=usage.input_tokens + usage.output_tokens,
+            model=model,
+            agent_budget_limit=agent_budget_limit,
+            budget_warning_threshold_pct=budget_warning_threshold_pct,
+            sleipnir_publisher=sleipnir_publisher,
+        )
+
+    async for line in source:
+        _extract_usage_from_sse_line(line, usage)
+        if _stream_chunk_is_terminal(line):
+            await record_usage()
+        yield line
+    await record_usage()

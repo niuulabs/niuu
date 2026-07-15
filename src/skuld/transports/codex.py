@@ -109,12 +109,18 @@ class CodexSubprocessTransport(CLITransport):
         workspace_dir: str,
         model: str = "o4-mini",
         mcp_servers: list[dict] | None = None,
+        skip_permissions: bool = True,
+        approval_policy: str = "",
+        sandbox: str = "",
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
         self._model = model
         self._mcp_overrides = build_codex_mcp_overrides(mcp_servers or [])
         self._mcp_servers = list(mcp_servers or [])
+        self._skip_permissions = skip_permissions
+        self._approval_policy = approval_policy
+        self._sandbox = sandbox
         self._process: asyncio.subprocess.Process | None = None
         self._last_result: dict | None = None
         self._pending_text: list[str] = []
@@ -140,12 +146,12 @@ class CodexSubprocessTransport(CLITransport):
         await _stop_process(self._process)
         self._process = None
 
-    async def send_message(self, content: str) -> None:
+    async def send_message(
+        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+    ) -> None:
         self._last_result = None
         self._pending_text = []
         codex_cli = resolve_codex_cli()
-        sandbox_mode = os.environ.get("SKULD_CODEX_SANDBOX", "").strip()
-
         cmd = [
             codex_cli,
             "exec",
@@ -153,8 +159,13 @@ class CodexSubprocessTransport(CLITransport):
             self._model,
             "--json",
         ]
-        if sandbox_mode:
-            cmd.extend(["--sandbox", sandbox_mode])
+        if self._skip_permissions:
+            cmd.append("--dangerously-bypass-approvals-and-sandbox")
+        else:
+            if self._approval_policy:
+                cmd.extend(["-c", f"approval_policy={self._approval_policy!r}"])
+            if self._sandbox:
+                cmd.extend(["--sandbox", self._sandbox])
         for key, value in self._mcp_overrides:
             cmd.extend(["-c", f"{key}={value}"])
         cmd.append(content)

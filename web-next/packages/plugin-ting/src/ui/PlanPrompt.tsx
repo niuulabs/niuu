@@ -1,9 +1,11 @@
 import { useState } from 'react';
+import { RepoSelect, type RepoRecord } from '@niuulabs/ui';
 
 interface PlanPromptProps {
   onSubmit(prompt: string, repo: string): void;
   loading: boolean;
   error: string | null;
+  repos?: RepoRecord[];
 }
 
 const HINT_CHIPS = [
@@ -24,7 +26,7 @@ const HINT_CHIPS = [
 /**
  * Step 1 of the Plan wizard — capture the human‐language goal and target repo.
  */
-export function PlanPrompt({ onSubmit, loading, error }: PlanPromptProps) {
+export function PlanPrompt({ onSubmit, loading, error, repos = [] }: PlanPromptProps) {
   const [prompt, setPrompt] = useState('');
   const [repo, setRepo] = useState('');
 
@@ -95,16 +97,29 @@ export function PlanPrompt({ onSubmit, loading, error }: PlanPromptProps) {
           htmlFor="plan-repo"
           className="niuu:text-sm niuu:font-medium niuu:text-text-secondary"
         >
-          Target repository
+          Target repository <span className="niuu:text-text-tertiary">(optional)</span>
         </label>
-        <input
-          id="plan-repo"
-          type="text"
-          value={repo}
-          onChange={(e) => setRepo(e.target.value)}
-          placeholder="e.g. niuulabs/volundr"
-          className="ting-plan-input"
-        />
+        {repos.length > 0 ? (
+          <RepoSelect
+            id="plan-repo"
+            repos={repos}
+            value={repo}
+            onChange={setRepo}
+            placeholder="No repository selected"
+            valueMode="cloneUrl"
+            testId="plan-repo-select"
+            className="ting-plan-input"
+          />
+        ) : (
+          <input
+            id="plan-repo"
+            type="text"
+            value={repo}
+            onChange={(e) => setRepo(e.target.value)}
+            placeholder="Optional: niuulabs/volundr"
+            className="ting-plan-input"
+          />
+        )}
       </div>
 
       {error && (

@@ -3,7 +3,8 @@
 # 2. Builds all container images with "dev" + "dev-<sha>" tags
 # 3. Determines next version from conventional commits and creates a v*-dev.N prerelease tag
 # 4. Packages Helm charts with the dev version
-# 5. Builds CLI binaries (uploaded as artifacts, no GitHub Release)
+#
+# CLI/ravn binaries are release-only (release.yaml) — too slow for dev.
 #
 # The dev prerelease tags (v*-dev.N) are skipped by release.yaml so they
 # never create a production GitHub Release.
@@ -54,11 +55,11 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
@@ -92,11 +93,11 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
@@ -134,11 +135,11 @@ jobs:
           --health-retries 5
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Playwright temporarily disabled
         run: echo "Skipping Playwright until visual baselines are stabilized."
@@ -169,7 +170,7 @@ jobs:
       packages: write
     uses: ./.github/workflows/reusable-container-build.yaml
     with:
-      containers: '["agent","skuld","devrunner","volundr-web","niuu-web","niuu"]'
+      containers: '["agent","skuld","openshell","devrunner","volundr-web","niuu-web","niuu"]'
       platforms: '["amd64","arm64"]'
       tag-prefix: ${{ github.sha }}
       manifest-tags: "dev dev-${{ github.sha }}"
@@ -193,7 +194,7 @@ jobs:
       security-events: write
     uses: ./.github/workflows/reusable-container-scan.yaml
     with:
-      containers: '["agent","skuld","devrunner","volundr-web","niuu-web","niuu"]'
+      containers: '["agent","skuld","openshell","devrunner","volundr-web","niuu-web","niuu"]'
       tag: dev
 
   # ---------------------------------------------------------------------------
@@ -215,7 +216,7 @@ jobs:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
@@ -295,10 +296,10 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v3.14.0
 
@@ -326,7 +327,7 @@ jobs:
           helm package charts/niuu -d .helm-packages/
 
       - name: Log in to Container Registry
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -347,223 +348,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # Shared CLI assets — build once, reuse in packaging jobs
   # ---------------------------------------------------------------------------
-  build-cli-web-assets:
-    name: Build CLI Web Assets
-    needs: [tag]
-    if: needs.tag.outputs.should_release == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
-        with:
-          version: 9
-
-      - name: Set up Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: web-next/pnpm-lock.yaml
-
-      - name: Build web assets for embedded CLI
-        env:
-          NODE_OPTIONS: "--max-old-space-size=4096"
-        run: |
-          cd web-next
-          pnpm install --frozen-lockfile
-          pnpm build
-          cd ..
-          rm -rf src/cli/web/dist
-          mkdir -p src/cli/web
-          cp -r web-next/apps/niuu/dist src/cli/web/dist
-
-      - name: Upload CLI web assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: cli-web-dist
-          path: src/cli/web/dist
-          retention-days: 7
-
-  build-cli-pginstall:
-    name: "Build Embedded PostgreSQL (${{ matrix.os }}/${{ matrix.arch }})"
-    needs: [tag]
-    if: needs.tag.outputs.should_release == 'true'
-    runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: darwin
-            arch: arm64
-            runner: macos-15
-          - os: linux
-            arch: amd64
-            runner: ubuntu-latest
-          - os: linux
-            arch: arm64
-            runner: ubuntu-24.04-arm
-    steps:
-      - name: Harden runner
-        if: runner.os == 'Linux'
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-
-      - name: Restore PostgreSQL bundle cache
-        id: pg-cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v4
-        with:
-          path: build/pginstall
-          key: pginstall-${{ matrix.os }}-${{ matrix.arch }}-${{ hashFiles('src/niuu/pg_versions.py', 'scripts/build_postgres.sh') }}
-
-      - name: Load PostgreSQL versions
-        id: pg-versions
-        shell: bash
-        run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          namespace = {}
-          exec(open("src/niuu/pg_versions.py", encoding="utf-8").read(), namespace)
-          print(f"postgres_version={namespace['POSTGRES_VERSION']}")
-          print(f"pgvector_version={namespace['PGVECTOR_VERSION']}")
-          PY
-
-      - name: Build embedded PostgreSQL bundle
-        if: steps.pg-cache.outputs.cache-hit != 'true'
-        env:
-          POSTGRES_VERSION: ${{ steps.pg-versions.outputs.postgres_version }}
-          PGVECTOR_VERSION: ${{ steps.pg-versions.outputs.pgvector_version }}
-          INSTALL_PREFIX: build/pginstall
-        run: scripts/build_postgres.sh
-
-      - name: Upload embedded PostgreSQL bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: pginstall-${{ matrix.os }}-${{ matrix.arch }}
-          path: build/pginstall
-          retention-days: 7
-
+  # CLI / ravn binaries (Nuitka + embedded PostgreSQL) are NOT built on dev —
+  # they dominated dev wall-clock (~40 min of matrix builds) and nothing on the
+  # dev branch consumes the artifacts. Release builds them (release.yaml).
   # ---------------------------------------------------------------------------
-  # CLI binaries (Python/Nuitka) — build only, no GitHub Release
-  # ---------------------------------------------------------------------------
-  build-cli:
-    name: "Build CLI (${{ matrix.os }}/${{ matrix.arch }})"
-    needs: [tag, build-cli-web-assets, build-cli-pginstall]
-    if: needs.tag.outputs.should_release == 'true'
-    runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: darwin
-            arch: arm64
-            runner: macos-15
-          - os: linux
-            arch: amd64
-            runner: ubuntu-latest
-          - os: linux
-            arch: arm64
-            runner: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-
-      - name: Install Linux ARM64 Nuitka toolchain
-        if: matrix.os == 'linux' && matrix.arch == 'arm64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang lld
-          {
-            echo "CC=clang"
-            echo "CXX=clang++"
-            echo "LDFLAGS=-fuse-ld=lld"
-          } >> "$GITHUB_ENV"
-
-      - name: Download CLI web assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: cli-web-dist
-          path: src/cli/web
-
-      - name: Download embedded PostgreSQL bundle
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: pginstall-${{ matrix.os }}-${{ matrix.arch }}
-          path: build
-
-      - name: Set up Python + uv
-        uses: ./.github/actions/setup-python-env
-        with:
-          extras: "--python 3.12 --extra cli --extra dev"
-
-      - name: Build
-        run: make copy-migrations build-cli
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: niuu-dev-${{ matrix.os }}-${{ matrix.arch }}
-          path: dist/niuu-${{ matrix.os }}-${{ matrix.arch }}
-          retention-days: 14
-
-  build-ravn:
-    name: "Build Ravn (${{ matrix.os }}/${{ matrix.arch }})"
-    needs: [tag]
-    if: needs.tag.outputs.should_release == 'true'
-    runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: darwin
-            arch: arm64
-            runner: macos-15
-          - os: linux
-            arch: amd64
-            runner: ubuntu-latest
-          - os: linux
-            arch: arm64
-            runner: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-
-      - name: Install Linux ARM64 Nuitka toolchain
-        if: matrix.os == 'linux' && matrix.arch == 'arm64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang lld
-          {
-            echo "CC=clang"
-            echo "CXX=clang++"
-            echo "LDFLAGS=-fuse-ld=lld"
-          } >> "$GITHUB_ENV"
-
-      - name: Set up Python + uv
-        uses: ./.github/actions/setup-python-env
-        with:
-          extras: "--python 3.12 --extra cli --extra dev"
-
-      - name: Build
-        run: make build-ravn
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: ravn-dev-${{ matrix.os }}-${{ matrix.arch }}
-          path: dist/ravn-${{ matrix.os }}-${{ matrix.arch }}
-          retention-days: 14

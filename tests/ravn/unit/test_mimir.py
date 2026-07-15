@@ -218,12 +218,9 @@ def test_extract_source_ids_only_counts_footer_comment() -> None:
         "No source footer follows."
     )
     assert MarkdownMimirAdapter._extract_source_ids(content) == []
-    assert (
-        MarkdownMimirAdapter._extract_source_ids(
-            "# Synthesised Page\n\nUseful summary.\n\n<!-- sources: src_footer -->\n"
-        )
-        == ["src_footer"]
-    )
+    assert MarkdownMimirAdapter._extract_source_ids(
+        "# Synthesised Page\n\nUseful summary.\n\n<!-- sources: src_footer -->\n"
+    ) == ["src_footer"]
 
 
 @pytest.mark.asyncio
@@ -817,6 +814,26 @@ async def test_mimir_publish_files_tool_rejects_missing_workspace_file(tmp_path:
     result = await tool.execute({"paths": ["research/campaigns/demo/final.md"]})
     assert result.is_error
     assert "Workspace file not found" in result.content
+
+
+@pytest.mark.asyncio
+async def test_mimir_publish_files_tool_reports_failed_publish_verification(
+    tmp_path: Path,
+) -> None:
+    adapter = MagicMock()
+    adapter.upsert_page = AsyncMock(return_value=None)
+    adapter.get_page = AsyncMock(side_effect=FileNotFoundError("missing after write"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    notes_dir = workspace / "notes"
+    notes_dir.mkdir()
+    (notes_dir / "demo.md").write_text("# Demo\n\nBody.", encoding="utf-8")
+
+    tool = MimirPublishFilesTool(adapter, workspace)
+    result = await tool.execute({"paths": ["notes/demo.md"]})
+
+    assert result.is_error
+    assert "Failed to publish notes/demo.md" in result.content
 
 
 @pytest.mark.asyncio

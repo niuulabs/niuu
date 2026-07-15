@@ -248,6 +248,41 @@ describe('useMentionMenu — selectItem', () => {
     });
     expect(result.current.mentions).toHaveLength(0);
   });
+
+  it('routes event mentions through advertised participant subscriptions', () => {
+    const hermes: RoomParticipant = {
+      peerId: 'hermes-1',
+      persona: 'reviewer',
+      displayName: 'Hermes reviewer',
+      participantType: 'ravn',
+      subscribesTo: ['code.changed', 'review.requested'],
+    };
+    const eventParticipants = new Map([[hermes.peerId, hermes]]);
+    const { result } = renderHook(() =>
+      useMentionMenu(null, null, null, eventParticipants, undefined, true),
+    );
+
+    act(() => result.current.handleChange('@', 1));
+
+    expect(result.current.items).toEqual([
+      { kind: 'agent', participant: hermes, eventType: 'code.changed' },
+      { kind: 'agent', participant: hermes, eventType: 'review.requested' },
+    ]);
+
+    let selectedLabel = '';
+    act(() => {
+      selectedLabel = result.current.selectItem(result.current.items[0]!);
+    });
+    expect(selectedLabel).toBe('code.changed');
+    expect(result.current.mentions).toEqual([
+      { kind: 'agent', participant: hermes, eventType: 'code.changed' },
+    ]);
+
+    act(() => result.current.selectItem(result.current.items[1]!));
+    expect(result.current.mentions).toEqual([
+      { kind: 'agent', participant: hermes, eventType: 'review.requested' },
+    ]);
+  });
 });
 
 describe('useMentionMenu — close', () => {
@@ -290,7 +325,7 @@ describe('useMentionMenu — expandDirectory', () => {
     await act(async () => {
       result.current.expandDirectory(dirItem);
     });
-    expect(onFetchFiles).toHaveBeenCalledWith('/src', 'http://host:8080');
+    expect(onFetchFiles).toHaveBeenCalledWith('/src/', 'http://host:8080');
   });
 });
 
@@ -307,6 +342,23 @@ describe('useMentionMenu — file fetching', () => {
     expect(onFetchFiles).toHaveBeenCalled();
   });
 
+  it('keeps matching agent mentions when file results are added', async () => {
+    const onFetchFiles = vi.fn().mockResolvedValue([fileEntry]);
+    const { result } = renderHook(() =>
+      useMentionMenu('sid', 'host:8080', null, participants, onFetchFiles),
+    );
+
+    await act(async () => {
+      result.current.handleChange('@a', 2);
+      await Promise.resolve();
+    });
+
+    expect(result.current.items).toEqual([
+      { kind: 'agent', participant: p1 },
+      { kind: 'file', entry: fileEntry },
+    ]);
+  });
+
   it('fetches files using chatEndpoint when provided', async () => {
     const onFetchFiles = vi.fn().mockResolvedValue([fileEntry]);
     const { result } = renderHook(() =>
@@ -317,6 +369,27 @@ describe('useMentionMenu — file fetching', () => {
       await Promise.resolve();
     });
     expect(onFetchFiles).toHaveBeenCalledWith('', 'http://myhost/api');
+  });
+
+  it('fetches files using an http base derived from websocket session endpoints', async () => {
+    const onFetchFiles = vi.fn().mockResolvedValue([fileEntry]);
+    const { result } = renderHook(() =>
+      useMentionMenu(
+        'sid',
+        null,
+        'wss://volundr.example.test/api/v1/forge/sessions/session-1/api/session',
+        participants,
+        onFetchFiles,
+      ),
+    );
+    await act(async () => {
+      result.current.handleChange('@foo', 4);
+      await Promise.resolve();
+    });
+    expect(onFetchFiles).toHaveBeenCalledWith(
+      'foo',
+      'https://volundr.example.test/api/v1/forge/sessions/session-1',
+    );
   });
 
   it('gracefully handles fetch error', async () => {

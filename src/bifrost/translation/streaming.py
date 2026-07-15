@@ -36,6 +36,7 @@ async def openai_stream_to_anthropic(
     emitted_start = False
     emitted_block_start = False
     block_index = 0
+    input_tokens = 0
     output_tokens = 0  # Updated from upstream usage if available.
     stop_reason = "end_turn"
     tool_call_accumulator: dict[str, dict] = {}  # index → partial tool call
@@ -72,6 +73,11 @@ async def openai_stream_to_anthropic(
                 },
             )
             yield _sse_event("ping", {"type": "ping"})
+
+        usage = chunk.get("usage")
+        if usage and isinstance(usage, dict):
+            input_tokens = usage.get("prompt_tokens", input_tokens)
+            output_tokens = usage.get("completion_tokens", output_tokens)
 
         choices = chunk.get("choices", [])
         if not choices:
@@ -121,11 +127,6 @@ async def openai_stream_to_anthropic(
                 acc["name"] = fn["name"]
             if fn.get("arguments"):
                 acc["arguments"] += fn["arguments"]
-
-        # Extract usage from the upstream chunk if available.
-        usage = chunk.get("usage")
-        if usage and isinstance(usage, dict):
-            output_tokens = usage.get("completion_tokens", output_tokens)
 
         if finish_reason:
             stop_reason = FINISH_REASON_MAP.get(finish_reason, "end_turn")
@@ -204,7 +205,10 @@ async def openai_stream_to_anthropic(
         {
             "type": "message_delta",
             "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-            "usage": {"output_tokens": output_tokens},
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            },
         },
     )
     yield _sse_event("message_stop", {"type": "message_stop"})

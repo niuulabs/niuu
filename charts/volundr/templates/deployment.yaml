@@ -97,6 +97,13 @@ spec:
                   name: {{ .Values.pat.issuerSecretName }}
                   key: {{ .Values.pat.issuerSecretKey | default "client-secret" }}
             {{- end }}
+            {{- if and .Values.workloadIdentity .Values.workloadIdentity.signingKey.existingSecret }}
+            - name: NIUU_WORKLOAD_IDENTITY_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.workloadIdentity.signingKey.existingSecret }}
+                  key: {{ .Values.workloadIdentity.signingKey.key | default "private-key.pem" }}
+            {{- end }}
             # Pod manager token (if configured)
             {{- if .Values.podManager.existingSecret }}
             - name: POD_MANAGER_TOKEN
@@ -148,6 +155,15 @@ spec:
                   name: {{ .secretName }}
                   key: {{ .secretKey }}
             {{- end }}
+            {{- range $index, $controller := .Values.residentRuntimeControllers }}
+            {{- range $controller.secretKwargs }}
+            - name: RESIDENT_CONTROLLER_{{ $index }}_SK_{{ .kwarg | upper }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
+            {{- end }}
             {{- range .Values.storageAdapter.secretKwargs }}
             - name: STORAGE_ADAPTER_SK_{{ .kwarg | upper }}
               valueFrom:
@@ -192,6 +208,13 @@ spec:
             {{- end }}
             {{- range .Values.gateway.secretKwargs }}
             - name: GATEWAY_SK_{{ .kwarg | upper }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
+            {{- range .Values.sleipnir.secretKwargs }}
+            - name: SLEIPNIR_SK_{{ .kwarg | upper }}
               valueFrom:
                 secretKeyRef:
                   name: {{ .secretName }}

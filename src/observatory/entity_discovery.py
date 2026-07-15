@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import socket
@@ -14,6 +15,7 @@ from urllib.parse import quote
 
 import httpx
 
+from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class, resolve_secret_kwargs
 from observatory.contracts import ObservatoryEdge, ObservatoryEvent, ObservatorySnapshot
 
@@ -31,6 +33,7 @@ _KNOWN_TYPE_IDS = {
     "service",
     "skuld",
     "ting",
+    "valkyrie",
     "vaettir",
     "volundr",
     "warden",
@@ -49,6 +52,8 @@ _COMPONENT_TYPES = {
     "saga-coordinator": "ting",
     "shared-services": "service",
     "ting": "ting",
+    "resident-agent": "valkyrie",
+    "valkyrie": "valkyrie",
     "volundr": "volundr",
     "warden": "warden",
     "web": "volundr",
@@ -106,9 +111,7 @@ def _clean_map(value: Mapping[str, Any] | None) -> dict[str, str]:
     if not isinstance(value, Mapping):
         return {}
     return {
-        str(key): str(item)
-        for key, item in value.items()
-        if str(key).strip() and str(item).strip()
+        str(key): str(item) for key, item in value.items() if str(key).strip() and str(item).strip()
     }
 
 
@@ -178,6 +181,19 @@ def _status_from_session(status: str) -> str:
         return "failed"
     if normalized in {"stopped", "archived"}:
         return "idle"
+    return "unknown"
+
+
+def _status_from_valkyrie(status: str) -> str:
+    normalized = status.strip().lower()
+    if normalized in {"online", "healthy", "watching", "wakeful"}:
+        return "healthy"
+    if normalized in {"watch", "degraded", "observing"}:
+        return "observing"
+    if normalized in {"sleeping", "dreaming", "idle"}:
+        return "idle"
+    if normalized in {"offline", "failed"}:
+        return "failed"
     return "unknown"
 
 
@@ -382,9 +398,7 @@ class WardenSpecDiscoveryAdapter:
                     namespace=namespace,
                     status=(
                         "healthy"
-                        if str(
-                            getattr(getattr(warden, "runtime", None), "state", "")
-                        ).lower()
+                        if str(getattr(getattr(warden, "runtime", None), "state", "")).lower()
                         == "active"
                         else "unknown"
                     ),
@@ -421,9 +435,11 @@ class WardenSpecDiscoveryAdapter:
                 str(item)
                 for item in (
                     getattr(mimir_binding, "write_mount_names", None)
-                    or ([getattr(mimir_binding, "write_mount", "")]
+                    or (
+                        [getattr(mimir_binding, "write_mount", "")]
                         if getattr(mimir_binding, "write_mount", "")
-                        else [])
+                        else []
+                    )
                 )
                 if str(item).strip()
             ]
@@ -463,9 +479,7 @@ class StaticRelationshipDiscoveryAdapter:
                 continue
             source = str(item.get("sourceId") or item.get("source") or "").strip()
             target = str(item.get("targetId") or item.get("target") or "").strip()
-            relation_type = str(
-                item.get("relationType") or item.get("relation_type") or ""
-            ).strip()
+            relation_type = str(item.get("relationType") or item.get("relation_type") or "").strip()
             if not source or not target or not relation_type:
                 continue
             edge = _edge(
@@ -548,14 +562,15 @@ class VolundrSessionsDiscoveryAdapter:
             cluster = self._cluster or str(session.get("cluster") or "")
             namespace = self._namespace or "skuld"
             entity_id = (
-                f"runtime:{_slug(cluster or 'local')}:"
-                f"{_slug(namespace)}:skuld:{_slug(session_id)}"
+                f"runtime:{_slug(cluster or 'local')}:{_slug(namespace)}:skuld:{_slug(session_id)}"
             )
             endpoints = {
                 key: str(value)
                 for key, value in {
                     "chat": session.get("chat_endpoint"),
                     "code": session.get("code_endpoint"),
+                    "a2a": session.get("a2aEndpointUrl") or session.get("a2a_endpoint_url"),
+                    "a2aCard": session.get("a2aCardUrl") or session.get("a2a_card_url"),
                 }.items()
                 if value
             }
@@ -581,6 +596,13 @@ class VolundrSessionsDiscoveryAdapter:
                         "createdAt": str(session.get("created_at") or ""),
                         "lastActive": str(session.get("last_active") or ""),
                         "workloadType": str(session.get("workload_type") or "session"),
+                        "agentKind": "workflow-session",
+                        "visibility": str(
+                            session.get("a2aVisibility") or session.get("a2a_visibility") or "user"
+                        ),
+                        "environmentId": str(
+                            session.get("environmentId") or session.get("environment_id") or ""
+                        ),
                     },
                 )
             )
@@ -671,9 +693,7 @@ class FluxHelmReleaseSessionDiscoveryAdapter:
                 continue
             metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
             values = (
-                item.get("spec", {}).get("values", {})
-                if isinstance(item.get("spec"), dict)
-                else {}
+                item.get("spec", {}).get("values", {}) if isinstance(item.get("spec"), dict) else {}
             )
             session_values = (
                 values.get("session", {}) if isinstance(values.get("session"), dict) else {}
@@ -689,6 +709,14 @@ class FluxHelmReleaseSessionDiscoveryAdapter:
                 f"runtime:{_slug(self._cluster or 'local')}:"
                 f"{_slug(self._namespace)}:skuld:{_slug(session_id)}"
             )
+            endpoints = {
+                key: str(value)
+                for key, value in {
+                    "a2a": session_values.get("a2aEndpointUrl"),
+                    "a2aCard": session_values.get("a2aCardUrl"),
+                }.items()
+                if value
+            }
             entities.append(
                 DiscoveredEntity(
                     id=entity_id,
@@ -700,10 +728,15 @@ class FluxHelmReleaseSessionDiscoveryAdapter:
                     source_adapter=self.__class__.__name__,
                     source_kind="flux-helmrelease",
                     source_uid=str(metadata.get("uid") or ""),
+                    endpoints=endpoints,
                     metadata={
                         "sessionId": session_id,
                         "model": str(session_values.get("model") or ""),
                         "imageTag": str(image_values.get("tag") or ""),
+                        "ownerId": str(session_values.get("ownerId") or ""),
+                        "tenantId": str(session_values.get("tenantId") or ""),
+                        "visibility": str(session_values.get("a2aVisibility") or "user"),
+                        "environmentId": str(session_values.get("environmentId") or ""),
                         "resources": [
                             {
                                 "kind": "helmrelease",
@@ -730,10 +763,7 @@ class FluxHelmReleaseSessionDiscoveryAdapter:
 
     def _path(self) -> str:
         namespace = quote(self._namespace, safe="")
-        return (
-            "/apis/helm.toolkit.fluxcd.io/v2/"
-            f"namespaces/{namespace}/helmreleases"
-        )
+        return f"/apis/helm.toolkit.fluxcd.io/v2/namespaces/{namespace}/helmreleases"
 
     def _include_helmrelease(self, item: dict[str, Any]) -> bool:
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
@@ -743,9 +773,7 @@ class FluxHelmReleaseSessionDiscoveryAdapter:
         if not _condition_status(item, "Ready"):
             return False
         values = (
-            item.get("spec", {}).get("values", {})
-            if isinstance(item.get("spec"), dict)
-            else {}
+            item.get("spec", {}).get("values", {}) if isinstance(item.get("spec"), dict) else {}
         )
         image = values.get("image", {}) if isinstance(values.get("image"), dict) else {}
         image_tag = str(image.get("tag") or "")
@@ -804,6 +832,90 @@ class HttpObservatoryDiscoveryAdapter:
         if self._base_url.endswith("/api/v1/observatory"):
             return f"{self._base_url}/topology/snapshot"
         return f"{self._base_url}/api/v1/observatory/topology/snapshot"
+
+
+class RavnValkyrieDiscoveryAdapter:
+    """Discover cross-cluster Valkyries from Ravn's live dashboard projection."""
+
+    def __init__(
+        self,
+        base_url: str,
+        namespace: str = "nats",
+        timeout_seconds: float = 5.0,
+        auth_adapter: str = "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter",
+        auth_kwargs: dict[str, Any] | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._namespace = namespace
+        self._timeout_seconds = timeout_seconds
+        self._auth: HttpAuthPort = import_class(auth_adapter)(**(auth_kwargs or {}))
+        self._transport = transport
+
+    async def discover(self) -> DiscoveryResult:
+        try:
+            headers = await asyncio.to_thread(self._auth.headers)
+            async with httpx.AsyncClient(
+                timeout=self._timeout_seconds,
+                follow_redirects=True,
+                transport=self._transport,
+            ) as client:
+                response = await client.get(
+                    f"{self._base_url}/api/v1/ravn/valkyrie/dashboard",
+                    headers=headers,
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except Exception as exc:
+            return DiscoveryResult(
+                events=[_adapter_warning("ravn-valkyrie", f"{self._base_url}: {exc}")]
+            )
+
+        if not isinstance(payload, dict):
+            return DiscoveryResult()
+
+        environments = {
+            str(item.get("id") or ""): item
+            for item in payload.get("environments", [])
+            if isinstance(item, dict) and str(item.get("id") or "")
+        }
+        entities: list[DiscoveredEntity] = []
+        for item in payload.get("valkyries", []):
+            if not isinstance(item, dict):
+                continue
+            valkyrie_id = str(item.get("id") or "").strip()
+            environment_id = str(item.get("environmentId") or "").strip()
+            if not valkyrie_id or not environment_id:
+                continue
+            environment = environments.get(environment_id, {})
+            topology_cluster = environment_id.removeprefix("env-k8s-") or environment_id
+            entities.append(
+                DiscoveredEntity(
+                    id=(
+                        f"runtime:{_slug(topology_cluster)}:{_slug(self._namespace)}:"
+                        f"valkyrie:{_slug(valkyrie_id)}"
+                    ),
+                    kind="valkyrie",
+                    name=str(item.get("name") or valkyrie_id),
+                    cluster=topology_cluster,
+                    namespace=self._namespace,
+                    status=_status_from_valkyrie(str(item.get("status") or "")),
+                    source_adapter=self.__class__.__name__,
+                    source_kind="ravn:valkyrie-dashboard",
+                    source_uid=valkyrie_id,
+                    metadata={
+                        "ravnEnvironmentId": environment_id,
+                        "environmentHealth": str(environment.get("health") or ""),
+                        "persona": str(item.get("persona") or ""),
+                        "specialty": str(item.get("specialty") or ""),
+                        "autonomy": str(item.get("autonomyMode") or ""),
+                        "wakefulness": str(item.get("wakefulness") or ""),
+                        "flockId": str(item.get("flockId") or ""),
+                        "confidence": item.get("confidence"),
+                    },
+                )
+            )
+        return DiscoveryResult(entities=entities)
 
 
 class KubernetesDiscoveryAdapter:
@@ -936,9 +1048,7 @@ class KubernetesDiscoveryAdapter:
             return None
         cluster_label = labels.get("niuu.world/cluster") or ""
         cluster = (
-            self._cluster
-            if cluster_label.lower() in {"", "unknown"}
-            else cluster_label
+            self._cluster if cluster_label.lower() in {"", "unknown"} else cluster_label
         ) or "unknown"
         component = (
             labels.get("niuu.world/kind")
@@ -967,8 +1077,7 @@ class KubernetesDiscoveryAdapter:
             logical_name = name
         display_name = display_name or logical_name
         entity_id = (
-            f"runtime:{_slug(cluster)}:{_slug(namespace)}:"
-            f"{_slug(type_id)}:{_slug(logical_name)}"
+            f"runtime:{_slug(cluster)}:{_slug(namespace)}:{_slug(type_id)}:{_slug(logical_name)}"
         )
         return DiscoveredEntity(
             id=entity_id,
@@ -1359,9 +1468,7 @@ def _ingress_relationship_edges(
         spec.get("defaultBackend") if isinstance(spec.get("defaultBackend"), dict) else {}
     )
     service = (
-        default_backend.get("service")
-        if isinstance(default_backend.get("service"), dict)
-        else {}
+        default_backend.get("service") if isinstance(default_backend.get("service"), dict) else {}
     )
     if service.get("name"):
         targets.append(str(service["name"]))
@@ -1442,9 +1549,7 @@ def _endpoints_for_k8s(
     if resource_kind == "ingress":
         rules = spec.get("rules") if isinstance(spec.get("rules"), list) else []
         hosts = [
-            str(rule.get("host"))
-            for rule in rules
-            if isinstance(rule, dict) and rule.get("host")
+            str(rule.get("host")) for rule in rules if isinstance(rule, dict) and rule.get("host")
         ]
         if hosts:
             endpoints["public"] = f"https://{hosts[0]}"

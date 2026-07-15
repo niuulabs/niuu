@@ -1,0 +1,59 @@
+"""Canonical resident state boundary."""
+
+from __future__ import annotations
+
+from typing import Protocol
+
+from ravn.domain.resident_continuation import (
+    ResidentBudgetSnapshot,
+    ResidentMemoryEntry,
+    ResidentPolicyDecisionRecord,
+    ResidentPolicyObservation,
+    ResidentTurnRecord,
+)
+
+
+class ResidentStatePort(Protocol):
+    """Durable resident state boundary used by resident memory consumers.
+
+    This is intentionally storage-neutral; concrete stores belong behind
+    adapters, never in the port name or contract.
+    """
+
+    async def available(self) -> bool:
+        """Whether this adapter's backing store is usable in the current environment.
+
+        Lets a selector prefer an adapter (e.g. GBrain) and fall back to another
+        when its backend is absent, without the caller branching on adapter type.
+        """
+        ...
+
+    async def recall(self, mandate: str, *, limit: int = 5) -> list[ResidentMemoryEntry]: ...
+
+    async def write_turn(self, record: ResidentTurnRecord) -> str: ...
+
+    async def write_budget(self, snapshot: ResidentBudgetSnapshot) -> str: ...
+
+    async def write_policy_observation(self, observation: ResidentPolicyObservation) -> str: ...
+
+    async def list_policy_observations(self) -> list[ResidentPolicyObservation]: ...
+
+    async def write_policy_decision(self, decision: ResidentPolicyDecisionRecord) -> str: ...
+
+    async def write_operator_needed(
+        self,
+        *,
+        question: str,
+        reason: str,
+        turn: ResidentTurnRecord,
+    ) -> str: ...
+
+    async def read_operator_needed(self) -> ResidentMemoryEntry | None: ...
+
+    async def write_operator_answer(self, answer: str) -> str: ...
+
+    async def read_operator_answer(self) -> ResidentMemoryEntry | None: ...
+
+    async def consume_operator_answer(self, answer: ResidentMemoryEntry) -> str: ...
+
+    async def list_refs(self, prefix: str = "") -> list[str]: ...

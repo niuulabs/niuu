@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from niuu.ports.plugin import ServiceDefinition
-from personas.plugin import PersonasPlugin, _PersonasStub
+from niuu.ports.plugin import ServiceDefinition, ServiceLifecycle
+from personas.plugin import PersonasPlugin
 
 
 def test_plugin_name() -> None:
@@ -25,9 +25,12 @@ def test_register_service_returns_definition() -> None:
     assert defn.name == "personas"
 
 
-async def test_stub_health_check_returns_true() -> None:
-    svc = _PersonasStub()
-    assert await svc.health_check() is True
+def test_service_is_host_mounted() -> None:
+    plugin = PersonasPlugin()
+    definition = plugin.register_service()
+    assert definition.lifecycle is ServiceLifecycle.HOSTED
+    assert definition.factory is None
+    assert plugin.create_service() is None
 
 
 def test_create_api_app_returns_fastapi(monkeypatch) -> None:

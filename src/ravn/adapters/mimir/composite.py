@@ -56,6 +56,10 @@ from ravn.domain.mimir import MimirMount, WriteRouting
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_log(value: object) -> str:
+    return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
 class CompositeMimirAdapter(MimirPort):
     """Fan-out across multiple MimirPort instances with configurable routing.
 
@@ -108,7 +112,11 @@ class CompositeMimirAdapter(MimirPort):
                 paths = await mount.port.ingest(source)
                 all_paths.extend(paths)
             except Exception as exc:
-                logger.warning("composite mimir: ingest failed on %r: %s", mount.name, exc)
+                logger.warning(
+                    "composite mimir: ingest failed on %s: %s",
+                    _sanitize_log(mount.name),
+                    _sanitize_log(exc),
+                )
         return list(dict.fromkeys(all_paths))
 
     async def ingest_to(self, source: MimirSource, mount_name: str) -> list[str]:
@@ -135,7 +143,11 @@ class CompositeMimirAdapter(MimirPort):
                         seen_paths.add(page.meta.path)
                         merged_sources.append(page)
             except Exception as exc:
-                logger.warning("composite mimir: query failed on %r: %s", mount.name, exc)
+                logger.warning(
+                    "composite mimir: query failed on %s: %s",
+                    _sanitize_log(mount.name),
+                    _sanitize_log(exc),
+                )
 
         return MimirQueryResult(question=question, answer="", sources=merged_sources)
 
@@ -152,7 +164,11 @@ class CompositeMimirAdapter(MimirPort):
                         seen_paths.add(page.meta.path)
                         results.append(page)
             except Exception as exc:
-                logger.warning("composite mimir: search failed on %r: %s", mount.name, exc)
+                logger.warning(
+                    "composite mimir: search failed on %s: %s",
+                    _sanitize_log(mount.name),
+                    _sanitize_log(exc),
+                )
 
         return results
 
@@ -164,7 +180,11 @@ class CompositeMimirAdapter(MimirPort):
             except FileNotFoundError:
                 continue
             except Exception as exc:
-                logger.warning("composite mimir: get_page failed on %r: %s", mount.name, exc)
+                logger.warning(
+                    "composite mimir: get_page failed on %s: %s",
+                    _sanitize_log(mount.name),
+                    _sanitize_log(exc),
+                )
         raise FileNotFoundError(f"Mímir page not found in any mount: {path}")
 
     async def read_page(self, path: str) -> str:
@@ -175,7 +195,11 @@ class CompositeMimirAdapter(MimirPort):
             except FileNotFoundError:
                 continue
             except Exception as exc:
-                logger.warning("composite mimir: read_page failed on %r: %s", mount.name, exc)
+                logger.warning(
+                    "composite mimir: read_page failed on %s: %s",
+                    _sanitize_log(mount.name),
+                    _sanitize_log(exc),
+                )
         raise FileNotFoundError(f"Mímir page not found in any mount: {path}")
 
     async def list_pages(
@@ -195,7 +219,11 @@ class CompositeMimirAdapter(MimirPort):
                         seen_paths.add(meta.path)
                         results.append(meta)
             except Exception as exc:
-                logger.warning("composite mimir: list_pages failed on %r: %s", mount.name, exc)
+                logger.warning(
+                    "composite mimir: list_pages failed on %s: %s",
+                    _sanitize_log(mount.name),
+                    _sanitize_log(exc),
+                )
 
         return results
 
@@ -207,7 +235,11 @@ class CompositeMimirAdapter(MimirPort):
                 if source is not None:
                     return source
             except Exception as exc:
-                logger.debug("composite mimir: read_source failed on %r: %s", mount.name, exc)
+                logger.debug(
+                    "composite mimir: read_source failed on %s: %s",
+                    _sanitize_log(mount.name),
+                    _sanitize_log(exc),
+                )
         return None
 
     async def read_source_from_mount(
@@ -223,9 +255,9 @@ class CompositeMimirAdapter(MimirPort):
             return await mount.port.read_source(source_id)
         except Exception as exc:
             logger.debug(
-                "composite mimir: read_source_from_mount failed on %r: %s",
-                mount_name,
-                exc,
+                "composite mimir: read_source_from_mount failed on %s: %s",
+                _sanitize_log(mount_name),
+                _sanitize_log(exc),
             )
             return None
 
@@ -247,7 +279,11 @@ class CompositeMimirAdapter(MimirPort):
                         meta.mount_name = mount.name
                         results.append(meta)
             except Exception as exc:
-                logger.debug("composite mimir: list_sources failed on %r: %s", mount.name, exc)
+                logger.debug(
+                    "composite mimir: list_sources failed on %s: %s",
+                    _sanitize_log(mount.name),
+                    _sanitize_log(exc),
+                )
 
         return results
 
@@ -262,7 +298,11 @@ class CompositeMimirAdapter(MimirPort):
                 all_issues.extend(report.issues)
                 pages_checked += report.pages_checked
             except Exception as exc:
-                logger.warning("composite mimir: lint failed on %r: %s", mount.name, exc)
+                logger.warning(
+                    "composite mimir: lint failed on %s: %s",
+                    _sanitize_log(mount.name),
+                    _sanitize_log(exc),
+                )
 
         return MimirLintReport(issues=all_issues, pages_checked=pages_checked)
 
@@ -285,7 +325,11 @@ class CompositeMimirAdapter(MimirPort):
                         if len(results) >= limit:
                             return results
             except Exception as exc:
-                logger.warning("composite mimir: list_threads failed on %r: %s", mount.name, exc)
+                logger.warning(
+                    "composite mimir: list_threads failed on %s: %s",
+                    _sanitize_log(mount.name),
+                    _sanitize_log(exc),
+                )
 
         return results
 
@@ -307,9 +351,9 @@ class CompositeMimirAdapter(MimirPort):
                         results.append(page)
             except Exception as exc:
                 logger.warning(
-                    "composite mimir: get_thread_queue failed on %r: %s",
-                    mount.name,
-                    exc,
+                    "composite mimir: get_thread_queue failed on %s: %s",
+                    _sanitize_log(mount.name),
+                    _sanitize_log(exc),
                 )
 
         results.sort(key=lambda p: p.meta.thread_weight or 0.0, reverse=True)
@@ -322,15 +366,19 @@ class CompositeMimirAdapter(MimirPort):
             mount = self._mount_map.get(name)
             if mount is None:
                 logger.warning(
-                    "composite mimir: write routing named unknown mount %r for path %r",
-                    name,
-                    path,
+                    "composite mimir: write routing named unknown mount %s for path %s",
+                    _sanitize_log(name),
+                    _sanitize_log(path),
                 )
                 continue
             try:
                 await mount.port.update_thread_state(path, state)
             except Exception as exc:
-                logger.warning("composite mimir: update_thread_state failed on %r: %s", name, exc)
+                logger.warning(
+                    "composite mimir: update_thread_state failed on %s: %s",
+                    _sanitize_log(name),
+                    _sanitize_log(exc),
+                )
 
     async def assign_thread_owner(self, path: str, owner_id: str | None) -> None:
         """Claim thread ownership on routed mounts.
@@ -342,9 +390,9 @@ class CompositeMimirAdapter(MimirPort):
             mount = self._mount_map.get(name)
             if mount is None:
                 logger.warning(
-                    "composite mimir: write routing named unknown mount %r for path %r",
-                    name,
-                    path,
+                    "composite mimir: write routing named unknown mount %s for path %s",
+                    _sanitize_log(name),
+                    _sanitize_log(path),
                 )
                 continue
             try:
@@ -352,7 +400,11 @@ class CompositeMimirAdapter(MimirPort):
             except ThreadOwnershipError:
                 raise
             except Exception as exc:
-                logger.warning("composite mimir: assign_thread_owner failed on %r: %s", name, exc)
+                logger.warning(
+                    "composite mimir: assign_thread_owner failed on %s: %s",
+                    _sanitize_log(name),
+                    _sanitize_log(exc),
+                )
 
     async def update_thread_weight(
         self,
@@ -366,15 +418,19 @@ class CompositeMimirAdapter(MimirPort):
             mount = self._mount_map.get(name)
             if mount is None:
                 logger.warning(
-                    "composite mimir: write routing named unknown mount %r for path %r",
-                    name,
-                    path,
+                    "composite mimir: write routing named unknown mount %s for path %s",
+                    _sanitize_log(name),
+                    _sanitize_log(path),
                 )
                 continue
             try:
                 await mount.port.update_thread_weight(path, weight, signals)
             except Exception as exc:
-                logger.warning("composite mimir: update_thread_weight failed on %r: %s", name, exc)
+                logger.warning(
+                    "composite mimir: update_thread_weight failed on %s: %s",
+                    _sanitize_log(name),
+                    _sanitize_log(exc),
+                )
 
     # ------------------------------------------------------------------
     # MimirPort — write operations (routed)
@@ -399,13 +455,21 @@ class CompositeMimirAdapter(MimirPort):
             mount = self._mount_map.get(name)
             if mount is None:
                 logger.warning(
-                    "composite mimir: write routing named unknown mount %r for path %r",
-                    name,
-                    path,
+                    "composite mimir: write routing named unknown mount %s for path %s",
+                    _sanitize_log(name),
+                    _sanitize_log(path),
                 )
                 continue
             try:
                 await mount.port.upsert_page(path, content, meta=meta)
-                logger.debug("composite mimir: wrote %r to mount %r", path, name)
+                logger.debug(
+                    "composite mimir: wrote %s to mount %s",
+                    _sanitize_log(path),
+                    _sanitize_log(name),
+                )
             except Exception as exc:
-                logger.warning("composite mimir: upsert_page failed on %r: %s", name, exc)
+                logger.warning(
+                    "composite mimir: upsert_page failed on %s: %s",
+                    _sanitize_log(name),
+                    _sanitize_log(exc),
+                )

@@ -339,6 +339,78 @@ async def test_session_archive_service_uses_durable_event_log_when_workspace_mis
 
 
 @pytest.mark.asyncio
+async def test_session_archive_service_rebuilds_tmux_crash_transcript(
+    session_repository,
+    archive_store,
+):
+    """BUG-2 load-bearing: a tmux session that crashed mid-turn (no conversation.turn for
+    its open work) rebuilds a non-empty transcript from the durable raw frames."""
+    session = Session(name="tmux-crash", model="claude-opus-4-8", status=SessionStatus.STOPPED)
+    await session_repository.create(session)
+
+    class MissingStorage:
+        def resolve_session_workspace_path(self, _session_id: str) -> str | None:
+            return None
+
+        async def get_workspace_by_session(self, _session_id: str):
+            return None
+
+    session_service = SessionService(
+        repository=session_repository,
+        pod_manager=MockPodManager(),
+        validate_repos=False,
+    )
+    now = datetime.now(UTC)
+    event_log = InMemorySessionEventLog(
+        [
+            # seed human turn, double-logged (conversation.turn + raw user, same uuid)
+            SessionLogEntry(
+                session_id=session.id,
+                seq=1,
+                kind="conversation.turn",
+                payload={"turn": {"id": "u1", "role": "user", "content": "build it", "uuid": "U1"}},
+                ts=now,
+            ),
+            SessionLogEntry(
+                session_id=session.id,
+                seq=2,
+                kind="user",
+                payload={"uuid": "U1", "message": {"content": "build it"}},
+                ts=now,
+            ),
+            # crash mid-turn: streamed deltas, NO result, then a blocking question
+            SessionLogEntry(
+                session_id=session.id,
+                seq=3,
+                kind="content_block_delta",
+                payload={"delta": {"text": "working on it"}},
+                ts=now,
+            ),
+            SessionLogEntry(
+                session_id=session.id,
+                seq=4,
+                kind="ask_user_question",
+                payload={"request_id": "q1", "questions": []},
+                ts=now,
+            ),
+        ]
+    )
+    archive_service = SessionArchiveService(
+        session_service,
+        MissingStorage(),
+        archive_store,
+        event_log_repository=event_log,
+    )
+
+    transcript = await archive_service.get_transcript(session.id)
+
+    assert [t["role"] for t in transcript["turns"]] == ["user", "assistant"]  # seed deduped to ONE
+    asst = transcript["turns"][1]
+    assert asst["metadata"]["status"] == "interrupted"
+    assert "working on it" in asst["content"]
+
+
+@pytest.mark.asyncio
 async def test_session_archive_service_manifest_download_and_error_paths(
     storage,
     session_repository,
@@ -548,3 +620,36 @@ async def test_session_archive_service_reads_config_archive_without_workspace_lo
     assert logs["lines"][0]["message"] == "archived replay"
     assert manifest["session_id"] == str(session.id)
     assert download_path.name == "transcript.json"
+
+
+@pytest.mark.asyncio
+async def test_download_rejects_archive_store_artifact_outside_root(
+    tmp_path,
+    storage,
+    session_repository,
+    session_service,
+):
+    session = Session(
+        name="escaping-artifact",
+        model="claude-sonnet-4",
+        status=SessionStatus.STOPPED,
+    )
+    await session_repository.create(session)
+    await storage.create_session_workspace(str(session.id), user_id="u1", tenant_id="t1")
+    workspace_path = storage.resolve_session_workspace_path(str(session.id))
+    assert workspace_path is not None
+    outside = tmp_path / "outside.md"
+    outside.write_text("sensitive", encoding="utf-8")
+
+    class EscapingArchiveStore(FileSystemArchiveStore):
+        def transcript_markdown_path(self, **_kwargs):
+            return outside
+
+    archive_service = SessionArchiveService(
+        session_service,
+        storage,
+        EscapingArchiveStore(),
+    )
+
+    with pytest.raises(ValueError, match="escapes configured root"):
+        await archive_service.get_transcript_download_path(session.id, "md")

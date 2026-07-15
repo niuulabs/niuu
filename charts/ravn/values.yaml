@@ -27,16 +27,50 @@ serviceAccount:
   annotations: {}
   name: ""
 
+rbac:
+  # Kubernetes discovery permissions for standalone-resident discovery
+  # (resident_discovery Settings section). Disabled by default.
+  discovery:
+    enabled: false
+    # Grant cluster-wide read access (ClusterRole/ClusterRoleBinding) instead
+    # of a single namespace.
+    clusterWide: false
+    # Namespace the Role/RoleBinding are created in; defaults to the release
+    # namespace. Ignored when clusterWide is true.
+    namespace: ""
+
 service:
   type: ClusterIP
   port: 80
   targetPort: 8084
   annotations: {}
 
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /api/v1/ravn/metrics
+
 config:
   host: "0.0.0.0"
   port: 8084
   logLevel: "info"
+  # Ravn Settings (src/ravn/config.py schema) rendered to /etc/ravn/config.yaml
+  # and loaded via RAVN_CONFIG. Canonical YAML settings are preferred;
+  # documented legacy environment aliases remain supported. Example:
+  #   settings:
+  #     gateway:
+  #       platform:
+  #         base_url: "http://niuu-volundr.volundr.svc.cluster.local:80"
+  #     valkyrie:
+  #       telemetry:
+  #         nats_url: "nats://sleipnir:4222"
+  #         retry_seconds: 30
+  #       command:
+  #         subject_prefix: "ravn.environment"
+  #       room:
+  #         url: "http://skuld:8081"
+  settings: {}
 
 persistence:
   enabled: false
@@ -82,6 +116,19 @@ envoy:
     extraClaimHeaders: []
     bypassPrefixes:
       - /health
+    workload:
+      enabled: false
+      issuer: ""
+      audiences: []
+      jwksUri: ""
+      jwksHost: ""
+      jwksPort: 443
+      jwksTls: true
+      jwksTimeout: "5s"
+      jwksCacheDurationSeconds: 300
+      tenantClaim: "tenant_id"
+      rolesClaim: "resource_access.volundr-api.roles"
+      extraClaimHeaders: []
   extraHttpFilters: []
   extraClusters: []
 

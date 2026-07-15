@@ -1,6 +1,7 @@
 import { render, type RenderResult } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import {
   createMockVolundrService,
   createMockClusterAdapter,
@@ -48,6 +49,7 @@ export function renderWithVolundr(
       <ServicesProvider
         services={{
           'niuu.repos': repoCatalog,
+          bifrost: createMockBifrostService(),
           volundr: service,
           'volundr.clusters': clusterAdapter,
           'volundr.sessions': sessionStore,

@@ -11,14 +11,73 @@ from volundr.adapters.outbound.flux import (
     HELMRELEASE_PLURAL,
     HELMRELEASE_VERSION,
     FluxPodManager,
+    _inject_workload_exchange_env,
 )
 from volundr.domain.models import (
     GitSource,
     PodSpecAdditions,
+    ResidentBackend,
+    ResidentCapability,
+    ResidentDeploymentProfile,
+    ResidentDesiredState,
+    ResidentEngine,
+    ResidentObservedState,
+    ResidentRuntime,
     Session,
     SessionSpec,
     SessionStatus,
 )
+from volundr.domain.ports import ResidentRuntimeObservation
+
+
+def _resident_runtime(**overrides) -> ResidentRuntime:
+    values = {
+        "owner_id": "user-a",
+        "tenant_id": "tenant-a",
+        "name": "Muninn",
+        "persona_name": "product-steward",
+        "model": "gpt-5.6",
+        "backend": ResidentBackend.HELMRELEASE,
+        "engine": ResidentEngine.RAVN,
+        "profile_id": "ravn-helm",
+        "capabilities": [
+            ResidentCapability.CHAT,
+            ResidentCapability.RUNTIME_RESTART,
+            ResidentCapability.RUNTIME_SUSPEND,
+        ],
+    }
+    values.update(overrides)
+    return ResidentRuntime(**values)
+
+
+def _resident_profile() -> ResidentDeploymentProfile:
+    return ResidentDeploymentProfile(
+        id="ravn-helm",
+        display_name="Resident Ravn",
+        backend=ResidentBackend.HELMRELEASE,
+        engine=ResidentEngine.RAVN,
+        capabilities=[
+            ResidentCapability.CHAT,
+            ResidentCapability.RUNTIME_RESTART,
+            ResidentCapability.RUNTIME_SUSPEND,
+        ],
+        deployment={
+            "values": {
+                "persistence": {
+                    "enabled": True,
+                    "emptyDir": False,
+                    "existingClaim": "resident-workspaces",
+                },
+                "resident": {
+                    "platform": {
+                        "enabled": True,
+                        "baseUrl": "https://niuu.example.test",
+                    },
+                    "llm": {"provider": "openai"},
+                },
+            }
+        },
+    )
 
 
 @pytest.fixture
@@ -526,6 +585,7 @@ class TestFluxPodManagerStartErrorHandling:
         patch_kwargs = mock_api.patch_namespaced_custom_object.call_args[1]
         assert patch_kwargs["name"] == f"skuld-{sample_session.id}"
         assert patch_kwargs["namespace"] == "test-ns"
+        assert patch_kwargs["_content_type"] == "application/merge-patch+json"
         assert result.pod_name == f"skuld-{sample_session.id}"
 
     async def test_start_patches_on_already_exists(
@@ -736,10 +796,10 @@ class TestFluxPodManagerWaitForReadyErrors:
 
         mock_watch.stop.assert_called_once()
 
-    async def test_wait_returns_failed_on_timeout(
+    async def test_wait_returns_current_status_on_timeout(
         self, pod_manager: FluxPodManager, sample_session: Session, mock_api
     ):
-        """When the watch stream ends without a terminal status, returns FAILED."""
+        """A watch timeout does not override a still-progressing HelmRelease."""
         mock_api.get_namespaced_custom_object.return_value = {
             "status": {"conditions": []},
         }
@@ -766,7 +826,7 @@ class TestFluxPodManagerWaitForReadyErrors:
         ):
             result = await pod_manager.wait_for_ready(sample_session, timeout=5)
 
-        assert result == SessionStatus.FAILED
+        assert result == SessionStatus.STARTING
 
     async def test_wait_skips_non_dict_events(
         self, pod_manager: FluxPodManager, sample_session: Session, mock_api
@@ -880,3 +940,236 @@ class TestFluxPodManagerGetApi:
 
         assert pod_manager._api_client is existing_client
         assert result is mock_custom_api
+
+
+class TestFluxResidentRuntimeController:
+    def test_supports_only_ravn_helmrelease_profiles(self, pod_manager: FluxPodManager) -> None:
+        profile = _resident_profile()
+
+        assert pod_manager.supports(profile)
+        assert not pod_manager.supports(
+            profile.model_copy(update={"engine": ResidentEngine.HERMES})
+        )
+
+    async def test_deploy_uses_existing_skuld_chart_and_runtime_metadata(
+        self,
+        pod_manager: FluxPodManager,
+        mock_api,
+    ) -> None:
+        runtime = _resident_runtime()
+        with patch.object(pod_manager, "_get_api", return_value=mock_api):
+            observation = await pod_manager.deploy(runtime, _resident_profile())
+
+        body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
+        values = body["spec"]["values"]
+        assert body["metadata"]["name"] == f"resident-{runtime.id}"
+        assert body["spec"]["chart"]["spec"]["chart"] == "skuld"
+        assert values["resident"]["enabled"] is True
+        assert values["resident"]["persona"] == "product-steward"
+        assert values["resident"]["llm"] == {"provider": "openai", "model": "gpt-5.6"}
+        assert values["session"]["ownerId"] == "user-a"
+        assert values["session"]["model"] == "gpt-5.6"
+        assert values["persistence"]["existingClaim"] == "resident-workspaces"
+        assert values["podAnnotations"]["niuu.world/tenant-id"] == "tenant-a"
+        assert observation.observed_state is ResidentObservedState.DEPLOYING
+        assert observation.backend_ref["kind"] == "HelmRelease"
+        assert observation.endpoints[0].protocol == "skuld-v1"
+
+    async def test_reconcile_combines_flux_and_workload_state(
+        self,
+        pod_manager: FluxPodManager,
+    ) -> None:
+        runtime = _resident_runtime()
+        helmrelease = {
+            "spec": {"values": {"replicaCount": 1}},
+            "status": {
+                "conditions": [
+                    {
+                        "type": "Ready",
+                        "status": "True",
+                        "reason": "ReconciliationSucceeded",
+                        "message": "Release reconciliation succeeded",
+                    }
+                ]
+            },
+        }
+        deployment = {
+            "metadata": {"name": "resident-muninn"},
+            "status": {
+                "available_replicas": 1,
+                "conditions": [
+                    {
+                        "type": "Available",
+                        "status": "True",
+                        "reason": "MinimumReplicasAvailable",
+                    }
+                ],
+            },
+        }
+        with (
+            patch.object(pod_manager, "_get_helmrelease", AsyncMock(return_value=helmrelease)),
+            patch.object(
+                pod_manager,
+                "_get_resident_deployment",
+                AsyncMock(return_value=deployment),
+            ),
+        ):
+            observation = await pod_manager.reconcile(runtime, _resident_profile())
+
+        assert observation.observed_state is ResidentObservedState.ACTIVE
+        assert observation.backend_ref["deploymentName"] == "resident-muninn"
+        assert {condition.type for condition in observation.conditions} == {
+            "HelmReleaseReady",
+            "DeploymentAvailable",
+        }
+
+    async def test_reconcile_recreates_a_missing_owned_release(
+        self,
+        pod_manager: FluxPodManager,
+    ) -> None:
+        runtime = _resident_runtime()
+        pending = ResidentRuntimeObservation(observed_state=ResidentObservedState.DEPLOYING)
+        with (
+            patch.object(pod_manager, "_get_helmrelease", AsyncMock(return_value=None)),
+            patch.object(
+                pod_manager,
+                "deploy",
+                AsyncMock(return_value=pending),
+            ) as deploy,
+        ):
+            observation = await pod_manager.reconcile(runtime, _resident_profile())
+
+        assert observation is pending
+        deploy.assert_awaited_once_with(runtime, _resident_profile())
+
+    async def test_reconcile_repairs_replica_drift(
+        self,
+        pod_manager: FluxPodManager,
+    ) -> None:
+        runtime = _resident_runtime(desired_state=ResidentDesiredState.SUSPENDED)
+        helmrelease = {"spec": {"values": {"replicaCount": 1}}, "status": {}}
+        with (
+            patch.object(
+                pod_manager,
+                "_get_helmrelease",
+                AsyncMock(return_value=helmrelease),
+            ),
+            patch.object(
+                pod_manager,
+                "_get_resident_deployment",
+                AsyncMock(return_value=None),
+            ),
+            patch.object(pod_manager, "_set_replica_count", AsyncMock()) as set_replicas,
+        ):
+            observation = await pod_manager.reconcile(runtime, _resident_profile())
+
+        set_replicas.assert_awaited_once_with(runtime, 0)
+        assert observation.observed_state is ResidentObservedState.DEPLOYING
+
+    async def test_suspend_resume_restart_and_delete_patch_owned_release(
+        self,
+        pod_manager: FluxPodManager,
+    ) -> None:
+        runtime = _resident_runtime(desired_state=ResidentDesiredState.SUSPENDED)
+        observation = ResidentRuntimeObservation(
+            observed_state=ResidentObservedState.SUSPENDED,
+        )
+        with (
+            patch.object(pod_manager, "_patch_helmrelease", AsyncMock()) as patch_release,
+            patch.object(
+                pod_manager,
+                "_observe_after_lifecycle",
+                AsyncMock(return_value=observation),
+            ),
+            patch.object(
+                pod_manager,
+                "_delete_helmrelease",
+                AsyncMock(return_value=True),
+            ) as delete_release,
+        ):
+            await pod_manager.suspend(runtime)
+            await pod_manager.resume(runtime)
+            await pod_manager.restart(runtime, _resident_profile())
+            deleted = await pod_manager.delete(runtime)
+            assert deleted
+
+        release_name = f"resident-{runtime.id}"
+        assert patch_release.await_args_list[0].args == (
+            release_name,
+            {"spec": {"values": {"replicaCount": 0}}},
+        )
+        assert patch_release.await_args_list[1].args == (
+            release_name,
+            {"spec": {"values": {"replicaCount": 1}}},
+        )
+        restart_body = patch_release.await_args_list[2].args[1]
+        assert "niuu.world/restarted-at" in restart_body["spec"]["values"]["podAnnotations"]
+        delete_release.assert_awaited_once_with(release_name)
+
+    async def test_lifecycle_patch_uses_merge_patch_content_type(
+        self,
+        pod_manager: FluxPodManager,
+        mock_api,
+    ) -> None:
+        with patch.object(pod_manager, "_get_api", return_value=mock_api):
+            await pod_manager._patch_helmrelease(
+                "resident-id",
+                {"spec": {"values": {"replicaCount": 0}}},
+            )
+
+        kwargs = mock_api.patch_namespaced_custom_object.call_args.kwargs
+        assert kwargs["body"] == {"spec": {"values": {"replicaCount": 0}}}
+        assert kwargs["_content_type"] == "application/merge-patch+json"
+
+    def test_suspend_observation_waits_for_workload_to_scale_down(
+        self,
+        pod_manager: FluxPodManager,
+    ) -> None:
+        runtime = _resident_runtime(desired_state=ResidentDesiredState.SUSPENDED)
+        helmrelease = {"spec": {"values": {"replicaCount": 0}}, "status": {}}
+
+        still_running = {
+            "spec": {"replicas": 0},
+            "status": {"available_replicas": 1},
+        }
+        scaled_down = {
+            "spec": {"replicas": 0},
+            "status": {"available_replicas": 0},
+        }
+
+        assert (
+            pod_manager._observed_state(runtime, helmrelease, still_running)
+            is ResidentObservedState.DEPLOYING
+        )
+        assert (
+            pod_manager._observed_state(runtime, helmrelease, scaled_down)
+            is ResidentObservedState.SUSPENDED
+        )
+
+
+def test_inject_workload_exchange_env_updates_builtin_and_extra_containers():
+    values = {
+        "volundr": {"apiUrl": "https://niuu.noatun.asgard.niuu.world/"},
+        "envVars": [{"name": "EXISTING", "value": "1"}],
+        "extraContainers": [
+            {"name": "ravn", "env": [{"name": "RAVN_PERSONA", "value": "framer"}]},
+            {
+                "name": "custom",
+                "env": [
+                    {
+                        "name": "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL",
+                        "value": "https://override/exchange",
+                    }
+                ],
+            },
+        ],
+    }
+
+    _inject_workload_exchange_env(values)
+
+    expected = "https://niuu.noatun.asgard.niuu.world/api/v1/tokens/workload/exchange"
+    assert {"name": "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", "value": expected} in values["envVars"]
+    assert {"name": "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", "value": expected} in values[
+        "extraContainers"
+    ][0]["env"]
+    assert values["extraContainers"][1]["env"][0]["value"] == "https://override/exchange"

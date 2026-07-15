@@ -21,6 +21,11 @@ data:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                     stat_prefix: ingress_http
                     codec_type: AUTO
+                    # Browser session WebSockets (/s/{id}/session) terminate at
+                    # this sidecar; without this Envoy rejects every Upgrade
+                    # request with 403 before JWT auth or routing runs.
+                    upgrade_configs:
+                      - upgrade_type: websocket
                     stream_idle_timeout: 0s
                     access_log:
                       - name: envoy.access_loggers.stdout
@@ -89,6 +94,43 @@ data:
                                 - header_name: {{ .headerName | quote }}
                                   claim_name: {{ .claimName | quote }}
                                 {{- end }}
+                            {{- if .Values.envoy.jwt.workload.enabled }}
+                            workload:
+                              issuer: {{ .Values.envoy.jwt.workload.issuer | quote }}
+                              {{- if .Values.envoy.jwt.workload.audiences }}
+                              audiences:
+                                {{- range .Values.envoy.jwt.workload.audiences }}
+                                - {{ . | quote }}
+                                {{- end }}
+                              {{- end }}
+                              from_headers:
+                                - name: Authorization
+                                  value_prefix: "Bearer "
+                              from_params:
+                                - token
+                              remote_jwks:
+                                http_uri:
+                                  uri: {{ .Values.envoy.jwt.workload.jwksUri | default (printf "http://127.0.0.1:%v/api/v1/tokens/workload/jwks" (.Values.service.targetPort | default 8080)) | quote }}
+                                  cluster: local_service
+                                  timeout: {{ .Values.envoy.jwt.workload.jwksTimeout | default "5s" }}
+                                cache_duration:
+                                  seconds: {{ .Values.envoy.jwt.workload.jwksCacheDurationSeconds | default 300 }}
+                              forward: true
+                              payload_in_metadata: jwt_payload
+                              claim_to_headers:
+                                - header_name: {{ .Values.envoy.headerNames.userId }}
+                                  claim_name: sub
+                                - header_name: {{ .Values.envoy.headerNames.email }}
+                                  claim_name: email
+                                - header_name: {{ .Values.envoy.headerNames.tenant }}
+                                  claim_name: {{ .Values.envoy.jwt.workload.tenantClaim | default "tenant_id" }}
+                                - header_name: {{ .Values.envoy.headerNames.roles }}
+                                  claim_name: {{ .Values.envoy.jwt.workload.rolesClaim | default "resource_access.volundr.roles" }}
+                                {{- range .Values.envoy.jwt.workload.extraClaimHeaders }}
+                                - header_name: {{ .headerName | quote }}
+                                  claim_name: {{ .claimName | quote }}
+                                {{- end }}
+                            {{- end }}
                           rules:
                             - match:
                                 prefix: "/"
@@ -102,7 +144,14 @@ data:
                             - match:
                                 prefix: "/"
                               requires:
+                                {{- if .Values.envoy.jwt.workload.enabled }}
+                                requires_any:
+                                  requirements:
+                                    - provider_name: keycloak
+                                    - provider_name: workload
+                                {{- else }}
                                 provider_name: keycloak
+                                {{- end }}
                       {{- end }}
                       {{- with .Values.envoy.extraHttpFilters }}
                       {{- toYaml . | nindent 22 }}

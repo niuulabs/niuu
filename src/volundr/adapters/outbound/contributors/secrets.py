@@ -21,6 +21,36 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_MIMIR_SECRET_VOLUME_PATH = "/run/secrets/mimir"
+_OPENSHELL_VALUES_KEY = "openshell"
+_OPENSHELL_CREDENTIAL_MAPPINGS_KEY = "credentialMappings"
+
+
+def _secret_file_name(value: str) -> str:
+    normalized = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in value)
+    normalized = normalized.strip(".-_")
+    return normalized or "credential"
+
+
+def _integration_auth_ref(slug: str) -> str:
+    return f"integration:{slug}"
+
+
+def _mapping_payload(mapping: CredentialMapping) -> dict[str, object]:
+    return {
+        "credentialName": mapping.credential_name,
+        "envMappings": dict(mapping.env_mappings),
+        "fileMappings": dict(mapping.file_mappings),
+    }
+
+
+def _openshell_credential_values(mappings: list[CredentialMapping]) -> dict[str, object]:
+    return {
+        _OPENSHELL_VALUES_KEY: {
+            _OPENSHELL_CREDENTIAL_MAPPINGS_KEY: [_mapping_payload(mapping) for mapping in mappings],
+        },
+    }
+
 
 class SecretInjectionContributor(SessionContributor):
     """Returns PodSpecAdditions for secret injection (agent injector, hostPath, etc.).
@@ -69,6 +99,11 @@ class SecretInjectionContributor(SessionContributor):
                     if defn.mcp_server:
                         env_mappings.update(defn.mcp_server.env_from_credentials)
                     file_mappings.update(defn.file_mounts)
+                    auth_ref = _integration_auth_ref(conn.slug)
+                    if auth_ref in self._mimir_auth_refs(context):
+                        file_mappings[
+                            f"{_MIMIR_SECRET_VOLUME_PATH}/{_secret_file_name(auth_ref)}/token"
+                        ] = "token"
 
             mappings.append(
                 CredentialMapping(
@@ -81,9 +116,27 @@ class SecretInjectionContributor(SessionContributor):
         # Direct credential names — mapping comes from SecretMountStrategy
         for cred_name in context.credential_names:
             mapping = await self._resolve_credential_mapping(owner_id, cred_name)
+            if cred_name in self._mimir_auth_refs(context):
+                mapping.file_mappings[
+                    f"{_MIMIR_SECRET_VOLUME_PATH}/{_secret_file_name(cred_name)}/token"
+                ] = "token"
             mappings.append(mapping)
 
         return mappings
+
+    def _mimir_auth_refs(self, context: SessionContext) -> set[str]:
+        mimir = context.workload_config.get("mimir")
+        if not isinstance(mimir, dict):
+            return set()
+
+        refs: set[str] = set()
+        for raw_ref in list(mimir.get("registry_refs") or []):
+            if not isinstance(raw_ref, dict):
+                continue
+            auth_ref = str(raw_ref.get("auth_ref") or raw_ref.get("authRef") or "").strip()
+            if auth_ref:
+                refs.add(auth_ref)
+        return refs
 
     async def _resolve_credential_mapping(
         self,
@@ -153,12 +206,19 @@ class SecretInjectionContributor(SessionContributor):
         session: Session,
         context: SessionContext,
     ) -> SessionContribution:
-        if not self._secret_injection or not session.owner_id:
+        if not session.owner_id:
             return SessionContribution()
 
         mappings = await self._build_mappings(context, session.owner_id)
         if not mappings:
             return SessionContribution()
+
+        values = _openshell_credential_values(mappings)
+        if context.runtime_backend == "openshell":
+            return SessionContribution(values=values)
+
+        if not self._secret_injection:
+            return SessionContribution(values=values)
 
         # Ensure injection config exists (ConfigMap, SPC, etc.)
         try:
@@ -174,7 +234,7 @@ class SecretInjectionContributor(SessionContributor):
                 session.owner_id,
                 exc_info=True,
             )
-            return SessionContribution()
+            return SessionContribution(values=values)
 
         # Get pod spec additions (annotations, volumes, mounts)
         pod_spec = await self._secret_injection.pod_spec_additions(
@@ -182,7 +242,7 @@ class SecretInjectionContributor(SessionContributor):
             str(session.id),
         )
 
-        return SessionContribution(pod_spec=pod_spec)
+        return SessionContribution(values=values, pod_spec=pod_spec)
 
     async def cleanup(
         self,

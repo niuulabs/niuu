@@ -1,6 +1,7 @@
 """Tests for domain services."""
 
 import asyncio
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -254,6 +255,15 @@ class TestSessionServiceDelete:
         assert result is True
         assert await repository.get(created.id) is None
 
+    async def test_delete_existing_removes_trace_spans(self, repository: Repo, pod_manager: Pods):
+        spans = AsyncMock()
+        service = SessionService(repository, pod_manager, span_repository=spans)
+        created = await service.create_session(name="test", model="claude-3-opus")
+
+        assert await service.delete_session(created.id)
+
+        spans.delete_by_session.assert_awaited_once_with(created.id)
+
     async def test_delete_nonexistent(self, repository: Repo, pod_manager: Pods):
         """Deleting a nonexistent session returns False."""
         service = SessionService(repository, pod_manager)
@@ -283,9 +293,7 @@ class TestSessionServiceDelete:
         assert result is True
         assert len(pod_manager.stop_calls) == 1
 
-    async def test_delete_failed_stops_infrastructure(
-        self, repository: Repo, pod_manager: Pods
-    ):
+    async def test_delete_failed_stops_infrastructure(self, repository: Repo, pod_manager: Pods):
         """Deleting a failed session still asks the pod manager to clean up."""
         service = SessionService(repository, pod_manager)
         created = await service.create_session(
@@ -338,10 +346,10 @@ class TestSessionServiceDelete:
             SessionStatus.STOPPING,
         ]
 
-    async def test_delete_created_does_not_stop_infrastructure(
+    async def test_delete_created_still_stops_infrastructure(
         self, repository: Repo, pod_manager: Pods
     ):
-        """Deleting a never-started session does not call the pod manager."""
+        """Deleting any session asks the pod manager to remove stale runtime resources."""
         service = SessionService(repository, pod_manager)
         created = await service.create_session(
             name="test",
@@ -355,7 +363,8 @@ class TestSessionServiceDelete:
         result = await service.delete_session(created.id)
 
         assert result is True
-        assert pod_manager.stop_calls == []
+        assert len(pod_manager.stop_calls) == 1
+        assert pod_manager.stop_calls[0].id == created.id
 
     async def test_delete_running_succeeds_when_pod_stop_fails(
         self, repository: Repo, failing_pod_manager: Pods
@@ -435,10 +444,10 @@ class TestSessionServiceDelete:
 class TestSessionServiceDeleteCleanup:
     """Tests for SessionService.delete_session with cleanup_targets."""
 
-    async def test_delete_without_cleanup_preserves_workspace(
+    async def test_delete_without_cleanup_removes_session_workspace(
         self, repository: Repo, pod_manager: Pods
     ):
-        """Default delete (no cleanup targets) does not delete workspace PVC."""
+        """Default delete removes the session workspace PVC."""
         storage = InMemoryStorageAdapter()
         service = SessionService(repository, pod_manager, storage=storage)
         created = await service.create_session(
@@ -451,9 +460,8 @@ class TestSessionServiceDeleteCleanup:
         result = await service.delete_session(created.id)
 
         assert result is True
-        # Workspace PVC still exists (archived by contributor, not deleted)
         ws = await storage.get_workspace_by_session(str(created.id))
-        assert ws is not None
+        assert ws is None
 
     async def test_delete_with_workspace_cleanup(self, repository: Repo, pod_manager: Pods):
         """Deleting with WORKSPACE_STORAGE target removes the PVC."""
@@ -606,14 +614,39 @@ class TestSessionServiceStart:
         assert result.chat_endpoint.startswith("ws://localhost:")
         assert "session" in result.chat_endpoint
 
+    async def test_restart_preserves_workload_identity(self, repository: Repo, pod_manager: Pods):
+        """Restart must not demote a special workload to a plain CLI session.
+
+        The REST start endpoint calls start_session with the default
+        workload_type ('session') and no config; the stored workload identity
+        must survive so the contributor pipeline re-applies the same spec.
+        """
+        service = SessionService(repository, pod_manager)
+        created = await service.create_session(name="muninn", model="claude-opus-4-8")
+        # Simulate a committed flock session in the store.
+        flock = created.model_copy(
+            update={
+                "workload_type": "ravn_flock",
+                "workload_config": {"personas": ["product-steward"]},
+                "status": SessionStatus.STOPPED,
+            }
+        )
+        await repository.update(flock)
+
+        result = await service.start_session(flock.id)
+
+        assert result.workload_type == "ravn_flock"
+        assert result.workload_config["personas"] == ["product-steward"]
+
     async def test_start_session_prefers_public_host_for_browser_endpoints(
         self,
         repository: Repo,
         pod_manager: Pods,
-        monkeypatch,
     ):
         """Browser-facing session URLs should prefer the configured public host."""
-        service = SessionService(repository, pod_manager)
+        service = SessionService(
+            repository, pod_manager, public_origin="http://100.66.123.128:8080"
+        )
         created = await service.create_session(
             name="test",
             model="claude-3-opus",
@@ -622,9 +655,6 @@ class TestSessionServiceStart:
                 branch="main",
             ),
         )
-
-        monkeypatch.setenv("NIUU_SERVER_HOST", "0.0.0.0")
-        monkeypatch.setenv("NIUU_SERVER_PUBLIC_HOST", "100.66.123.128")
 
         result = await service.start_session(created.id)
 

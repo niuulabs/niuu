@@ -26,13 +26,9 @@ VIEW_TYPES = [
 COMMAND_NAMES = [
     "connect",
     "disconnect",
-    "spawn",
     "broadcast",
-    "pipe",
-    "yank",
     "layout",
     "view",
-    "filter",
     "ingest",
     "checkpoint",
     "resume",
@@ -95,11 +91,6 @@ def complete_command(partial: str) -> list[str]:
     if name == "layout" and len(parts) <= 2:
         prefix = parts[1] if len(parts) > 1 else ""
         return [s for s in _LAYOUT_SUBCOMMANDS if s.startswith(prefix)]
-
-    if name == "filter" and len(parts) <= 2:
-        prefix = parts[1] if len(parts) > 1 else ""
-        event_types = ["thought", "tool", "response", "task", "heartbeat", "all"]
-        return [t for t in event_types if t.startswith(prefix)]
 
     return []
 

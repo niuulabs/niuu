@@ -22,10 +22,35 @@ vi.mock('@tanstack/react-router', () => ({
 
 function wrap(services: Record<string, unknown>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const defaults = {
+    'niuu.repos': {
+      getRepos: async () => [
+        {
+          provider: 'github',
+          org: 'niuulabs',
+          name: 'volundr',
+          cloneUrl: 'https://github.com/niuulabs/volundr.git',
+          url: 'https://github.com/niuulabs/volundr',
+          defaultBranch: 'main',
+          branches: ['main', 'dev'],
+        },
+        {
+          provider: 'github',
+          org: 'niuulabs',
+          name: 'infrastructure',
+          cloneUrl: 'https://github.com/niuulabs/infrastructure.git',
+          url: 'https://github.com/niuulabs/infrastructure',
+          defaultBranch: 'main',
+          branches: ['main'],
+        },
+      ],
+    },
+    ...services,
+  };
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={client}>
-        <ServicesProvider services={services}>{children}</ServicesProvider>
+        <ServicesProvider services={defaults}>{children}</ServicesProvider>
       </QueryClientProvider>
     );
   };
@@ -131,7 +156,8 @@ describe('SagaDetailPage', () => {
     render(<SagaDetailPage sagaId={SAGA_ID} />, {
       wrapper: wrap({ ting: createMockTingService(), 'ting.dispatch': mockDispatchBus }),
     });
-    await waitFor(() => expect(screen.getByText('NIU-500 · Auth Rewrite')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('NIU-500')).toBeInTheDocument());
+    expect(screen.getByText('Auth Rewrite')).toBeInTheDocument();
     expect(screen.getByText('feat/auth-rewrite → main')).toBeInTheDocument();
   });
 
@@ -146,6 +172,44 @@ describe('SagaDetailPage', () => {
     await waitFor(() => expect(screen.getByText('Phase 1 · Plan')).toBeInTheDocument());
     expect(screen.getByText('NIU-501')).toBeInTheDocument();
     expect(screen.getByText('Implement OIDC flow')).toBeInTheDocument();
+  });
+
+  it('links tracker-backed saga and run labels without showing internal UUIDs', async () => {
+    const sagaTrackerId = '4dfa3eab-c00f-46e8-bdc3-c17f8a184f39';
+    const runTrackerId = '09436690-32d6-4a44-90e0-a88ca5477281';
+    const svc = {
+      getSaga: async () =>
+        makeSaga({
+          trackerId: sagaTrackerId,
+          url: 'https://linear.app/niuu/project/ui-proof',
+        }),
+      getPhases: async () => [
+        makePhase([
+          makeRun({
+            trackerId: runTrackerId,
+            identifier: 'NIU-777',
+            url: 'https://linear.app/niuu/issue/NIU-777/document-proof',
+          }),
+        ]),
+      ],
+    };
+
+    render(<SagaDetailPage sagaId={SAGA_ID} />, {
+      wrapper: wrap({ ting: svc, 'ting.dispatch': mockDispatchBus }),
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: 'Open in Tracker' })).toHaveAttribute(
+        'href',
+        'https://linear.app/niuu/project/ui-proof',
+      ),
+    );
+    expect(screen.getByRole('link', { name: 'NIU-777' })).toHaveAttribute(
+      'href',
+      'https://linear.app/niuu/issue/NIU-777/document-proof',
+    );
+    expect(screen.queryByText(sagaTrackerId)).not.toBeInTheDocument();
+    expect(screen.queryByText(runTrackerId)).not.toBeInTheDocument();
   });
 
   it('renders workflow, stage progress, and confidence cards', async () => {
@@ -187,7 +251,8 @@ describe('SagaDetailPage', () => {
     render(<SagaDetailPage sagaId={SAGA_ID} />, {
       wrapper: wrap({ ting: createMockTingService(), 'ting.dispatch': mockDispatchBus }),
     });
-    await waitFor(() => expect(screen.getByText('NIU-500 · Auth Rewrite')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('NIU-500')).toBeInTheDocument());
+    expect(screen.getByText('Auth Rewrite')).toBeInTheDocument();
     screen.getByRole('button', { name: /Sagas/i }).click();
     expect(mockNavigate).toHaveBeenCalledWith({ to: '/ting/sagas' });
   });
@@ -224,40 +289,122 @@ describe('SagaDetailPage', () => {
     );
   });
 
-  it('shows pending feedback requests and sends a directed reply', async () => {
+  it('edits saga repositories with the shared repo dropdown', async () => {
     const user = userEvent.setup();
-    const listRunMessages = vi.fn(
-      async (): Promise<RunSessionMessage[]> => [
-        {
-          id: 'msg-help-1',
-          sessionId: 'session-council-1',
-          content: '{"summary":"Need your call","reason":"needs_feedback"}',
-          sender: 'help_needed',
-          createdAt: '2026-05-11T12:00:00Z',
-          kind: 'help_request',
-          helpRequest: {
-            summary: 'Need your call on the final recommendation.',
-            reason: 'needs_feedback',
-            attempted: ['Compared the top two options'],
-            recommendation: 'Pick the rollout order.',
-            context: { slug: 'research/council-human-v1' },
-            targetPeerId: 'flock-council-chair',
-            persona: 'council-chair',
-          },
-        },
-      ],
-    );
-    const sendRunMessage = vi.fn(
-      async (): Promise<RunSessionMessage> => ({
-        id: 'msg-user-1',
-        sessionId: 'session-council-1',
-        content: 'Please prefer the staged rollout option.',
-        sender: 'user',
-        createdAt: '2026-05-11T12:05:00Z',
-        kind: 'message',
-        helpRequest: null,
+    const assignRepos = vi.fn(async () =>
+      makeSaga({
+        repos: ['niuulabs/volundr', 'niuulabs/infrastructure'],
+        repoRefs: [
+          { repo: 'niuulabs/volundr', branch: 'dev' },
+          { repo: 'niuulabs/infrastructure', branch: 'main' },
+        ],
+        baseBranch: 'dev',
       }),
     );
+    const svc = {
+      getSaga: async () =>
+        makeSaga({
+          repoRefs: [{ repo: 'niuulabs/volundr', branch: 'dev' }],
+          baseBranch: 'dev',
+        }),
+      getPhases: async () => [makePhase([makeRun()])],
+      assignRepos,
+    };
+
+    render(<SagaDetailPage sagaId={SAGA_ID} />, {
+      wrapper: wrap({ ting: svc, 'ting.dispatch': mockDispatchBus }),
+    });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit repos' })).toBeVisible());
+    await user.click(screen.getByRole('button', { name: 'Edit repos' }));
+    await user.selectOptions(screen.getByTestId('saga-repo-select'), 'niuulabs/infrastructure');
+    await user.click(screen.getByRole('button', { name: 'Save repos' }));
+
+    await waitFor(() =>
+      expect(assignRepos).toHaveBeenCalledWith(SAGA_ID, [
+        { repo: 'niuulabs/volundr', branch: 'dev' },
+        { repo: 'niuulabs/infrastructure', branch: 'main' },
+      ]),
+    );
+  });
+
+  it('edits saga repositories when the repo catalog is empty', async () => {
+    const user = userEvent.setup();
+    const assignRepos = vi.fn(async () =>
+      makeSaga({
+        repos: ['custom/device-operator', 'custom/protocol-tests'],
+        repoRefs: [
+          { repo: 'custom/device-operator', branch: 'main' },
+          { repo: 'custom/protocol-tests', branch: 'release' },
+        ],
+      }),
+    );
+    const svc = {
+      getSaga: async () =>
+        makeSaga({
+          repos: ['custom/device-operator'],
+          repoRefs: undefined,
+          baseBranch: '',
+        }),
+      getPhases: async () => [makePhase([makeRun()])],
+      assignRepos,
+    };
+
+    render(<SagaDetailPage sagaId={SAGA_ID} />, {
+      wrapper: wrap({
+        ting: svc,
+        'ting.dispatch': mockDispatchBus,
+        'niuu.repos': { getRepos: async () => [] },
+      }),
+    });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit repos' })).toBeVisible());
+    await user.click(screen.getByRole('button', { name: 'Edit repos' }));
+    await user.clear(screen.getByLabelText('Branch for custom/device-operator'));
+    await user.type(screen.getByLabelText('Repository'), 'custom/protocol-tests');
+    await user.click(screen.getByRole('button', { name: 'Add' }));
+    await user.clear(screen.getByLabelText('Branch for custom/protocol-tests'));
+    await user.type(screen.getByLabelText('Branch for custom/protocol-tests'), 'release');
+    await user.click(screen.getByRole('button', { name: 'Save repos' }));
+
+    await waitFor(() =>
+      expect(assignRepos).toHaveBeenCalledWith(SAGA_ID, [
+        { repo: 'custom/device-operator', branch: 'main' },
+        { repo: 'custom/protocol-tests', branch: 'release' },
+      ]),
+    );
+  });
+
+  it('shows pending feedback requests and sends a directed reply', async () => {
+    const user = userEvent.setup();
+    const listRunMessages = vi.fn(async (): Promise<RunSessionMessage[]> => [
+      {
+        id: 'msg-help-1',
+        sessionId: 'session-council-1',
+        content: '{"summary":"Need your call","reason":"needs_feedback"}',
+        sender: 'help_needed',
+        createdAt: '2026-05-11T12:00:00Z',
+        kind: 'help_request',
+        helpRequest: {
+          summary: 'Need your call on the final recommendation.',
+          reason: 'needs_feedback',
+          attempted: ['Compared the top two options'],
+          recommendation: 'Pick the rollout order.',
+          context: { slug: 'research/council-human-v1' },
+          targetPeerId: 'flock-council-chair',
+          persona: 'council-chair',
+        },
+      },
+    ]);
+    const sendRunMessage = vi.fn(async (): Promise<RunSessionMessage> => ({
+      id: 'msg-user-1',
+      sessionId: 'session-council-1',
+      content: 'Please prefer the staged rollout option.',
+      sender: 'user',
+      createdAt: '2026-05-11T12:05:00Z',
+      kind: 'message',
+      helpRequest: null,
+    }));
 
     const svc = {
       getSaga: async () => makeSaga(),
@@ -305,6 +452,7 @@ describe('SagaDetailRoute', () => {
     render(<SagaDetailRoute />, {
       wrapper: wrap({ ting: createMockTingService(), 'ting.dispatch': mockDispatchBus }),
     });
-    await waitFor(() => expect(screen.getByText('NIU-500 · Auth Rewrite')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('NIU-500')).toBeInTheDocument());
+    expect(screen.getByText('Auth Rewrite')).toBeInTheDocument();
   });
 });

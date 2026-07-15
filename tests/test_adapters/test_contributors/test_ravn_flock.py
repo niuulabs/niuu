@@ -213,6 +213,33 @@ class TestWorkloadTypeRouting:
 
 
 class TestContributorOutput:
+    async def test_openshell_backend_emits_in_sandbox_process_plan(self, session, flock_template):
+        provider = MagicMock()
+        provider.get.return_value = flock_template
+        contributor = RavnFlockContributor(launch_spec_provider=provider)
+
+        result = await contributor.contribute(
+            session,
+            SessionContext(launch_spec="ravn-flock", runtime_backend="openshell"),
+        )
+
+        processes = result.values["openshell"]["processes"]
+        assert [process["name"] for process in processes] == [
+            "ravn-coordinator",
+            "ravn-reviewer",
+        ]
+        assert processes[0]["command"][:4] == [
+            "/opt/niuu/bin/python",
+            "-m",
+            "ravn",
+            "daemon",
+        ]
+        assert processes[0]["env"]["HOME"] == "/sandbox/workspace"
+        assert "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE" not in processes[0]["env"]
+        config_path = "/sandbox/.volundr/flock/coordinator.yaml"
+        assert config_path in processes[0]["files"]
+        assert yaml.safe_load(processes[0]["files"][config_path])["persona"] == "coordinator"
+
     async def test_two_ravn_containers_produced(self, session, flock_template):
         provider = MagicMock()
         provider.get.return_value = flock_template
@@ -583,9 +610,7 @@ class TestMountedConfig:
             assert env["HOME"] == "/workspace"
             assert env["RAVN_STATE_DIR"] == "/workspace/.ravn"
 
-    async def test_ravn_config_uses_workspace_mount_root(
-        self, session, flock_template
-    ):
+    async def test_ravn_config_uses_workspace_mount_root(self, session, flock_template):
         """Ravn sidecars must run tools and Codex transports from the writable workspace."""
         provider = MagicMock()
         provider.get.return_value = flock_template
@@ -805,6 +830,7 @@ class TestConfigGeneration:
                             "registry_entry_id": "shared-team-mimir",
                             "mount_name": "shared-team-mimir",
                             "categories": ["entity", "decision"],
+                            "auth_ref": "integration:volundr",
                         }
                     ],
                     "ephemeral_locals": [
@@ -835,12 +861,25 @@ class TestConfigGeneration:
         result = await c.contribute(session, SessionContext(launch_spec="registry-flock"))
 
         cfg = _extract_mounted_config(result.pod_spec, "coordinator")
-        assert "shared-team-mimir" in cfg
-        assert "https://mimir.niuu.internal/api/v1" in cfg
+        parsed = yaml.safe_load(cfg)
+        shared = parsed["mimir"]["instances"][0]
+        assert shared["name"] == "shared-team-mimir"
+        assert shared["url"] == "https://mimir.niuu.internal/api/v1"
+        assert shared["auth"] == {
+            "type": "workload",
+            "token_file": "/var/run/secrets/niuu-workload/token",
+            "audiences": ["mimir"],
+        }
         assert "scratchpad" in cfg
         assert "/mimir/local/scratchpad" in cfg
         assert "project/" in cfg
         assert "draft/" in cfg
+        ravn_container = result.pod_spec.extra_containers[0]
+        assert {
+            "name": "niuu-workload-identity",
+            "mountPath": "/var/run/secrets/niuu-workload",
+            "readOnly": True,
+        } in ravn_container["volumeMounts"]
         volume_names = [v["name"] for v in result.pod_spec.volumes]
         assert "mimir-local" in volume_names
         mount_paths = {m["mountPath"] for m in result.pod_spec.extra_containers[0]["volumeMounts"]}
@@ -1473,27 +1512,22 @@ class TestPersonaSourceHttp:
             session,
             "http",
             persona_source_http_base_url="http://volundr:8080",
-            persona_source_token_secret_name="volundr-ravn-token",
         )
         volume_names = {v["name"] for v in pod_spec.volumes}
         assert "ravn-personas" not in volume_names
 
-    async def test_token_env_injected_from_secret(self, session) -> None:
+    async def test_workload_identity_env_used_for_http_personas(self, session) -> None:
         _, pod_spec = await _contribute_with_mode(
             session,
             "http",
             persona_source_http_base_url="http://volundr:8080",
-            persona_source_token_secret_name="volundr-ravn-token",
         )
         for container in pod_spec.extra_containers:
-            token_envs = [e for e in container["env"] if e["name"] == "RAVN_VOLUNDR_TOKEN"]
-            assert len(token_envs) == 1
-            ref = token_envs[0]["valueFrom"]["secretKeyRef"]
-            assert ref["name"] == "volundr-ravn-token"
-            assert ref["key"] == "token"
+            env = {e["name"]: e for e in container["env"]}
+            assert "RAVN_VOLUNDR_TOKEN" not in env
+            assert env["NIUU_WORKLOAD_IDENTITY_TOKEN_FILE"]["value"].endswith("/token")
 
-    async def test_no_token_env_without_secret_name(self, session) -> None:
-        """When no token secret name is given, no env var is injected."""
+    async def test_no_legacy_token_env_injected(self, session) -> None:
         _, pod_spec = await _contribute_with_mode(
             session,
             "http",
@@ -1509,7 +1543,6 @@ class TestPersonaSourceHttp:
             session,
             "http",
             persona_source_http_base_url=base_url,
-            persona_source_token_secret_name="volundr-ravn-token",
         )
         config_yaml = _extract_mounted_config(pod_spec, "coordinator")
         assert "HttpPersonaAdapter" in config_yaml
@@ -1811,6 +1844,7 @@ class TestMimirHelpers:
                     {
                         "mount_name": "registry-a",
                         "path": "/mnt/registry-a",
+                        "url": "https://registry-a.example",
                         "role": "shared",
                         "categories": ["directive"],
                     },
@@ -1866,6 +1900,9 @@ class TestMimirHelpers:
         assert {"prefix": "drafts/", "mounts": ["scratch"]} in routing["rules"]
         assert {"prefix": "reviews/", "mounts": ["registry-b"]} in routing["rules"]
         assert routing["default"] == ["scratch"]
+        registry_a = next(instance for instance in instances if instance["name"] == "registry-a")
+        assert registry_a["url"] == "https://registry-a.example"
+        assert "path" not in registry_a
 
     def test_resolve_mimir_runtime_adds_default_hosted_instance_when_no_registry_refs(self):
         instances, routing = _resolve_mimir_runtime({"hosted_url": "https://hosted.example"})

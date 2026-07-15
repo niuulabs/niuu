@@ -46,9 +46,7 @@ class LocalHostWardenDiscoveryAdapter:
                 },
                 "runtime": warden.runtime.model_copy(
                     update={
-                        "state": warden.runtime.state
-                        if warden.supervisor.installed
-                        else "offline",
+                        "state": warden.runtime.state if warden.supervisor.installed else "offline",
                     }
                 )
                 if isinstance(warden.runtime, WardenRuntime)

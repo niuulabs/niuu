@@ -14,47 +14,24 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Request, Response
+import httpx
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 from starlette import status as http_status
 
+from niuu.adapters.inbound.auth import extract_principal
+from niuu.domain.models import Principal
 from niuu.settings_schema import (
     SettingsFieldSchema,
     SettingsProviderSchema,
     SettingsSectionSchema,
 )
-from ravn.api.runtime_data import (
-    create_trigger as create_runtime_trigger,
-)
-from ravn.api.runtime_data import (
-    delete_trigger as delete_runtime_trigger,
-)
-from ravn.api.runtime_data import (
-    get_budget as get_runtime_budget,
-)
-from ravn.api.runtime_data import (
-    get_fleet_budget as get_runtime_fleet_budget,
-)
-from ravn.api.runtime_data import (
-    get_raven as get_runtime_raven,
-)
-from ravn.api.runtime_data import (
-    get_session as get_runtime_session,
-)
-from ravn.api.runtime_data import (
-    list_messages as list_runtime_messages,
-)
-from ravn.api.runtime_data import (
-    list_ravens as list_runtime_ravens,
-)
-from ravn.api.runtime_data import (
-    list_sessions as list_runtime_sessions,
-)
-from ravn.api.runtime_data import (
-    list_triggers as list_runtime_triggers,
-)
+from ravn.adapters.platform_runtime import HttpPlatformRuntimeAdapter
+from ravn.api.residents import ResidentDirectory, forward_auth
 from ravn.api.valkyries import (
     ValkyrieDashboardProjection,
     build_nats_review_command_publisher_from_env,
@@ -63,8 +40,11 @@ from ravn.api.valkyries import (
 )
 from ravn.api.warden_stream import WardenStreamBroker
 from ravn.config import Settings
+from ravn.ports.platform_runtime import PlatformRuntimePort
+from ravn.ports.resident_discovery import ResidentDiscoveryPort
 from ravn.ports.warden_deployer import WardenDeploymentError
 from ravn.ports.warden_discovery import WardenDiscoveryPort
+from ravn.resident_discovery import build_resident_discovery
 from ravn.warden import (
     WardenConsoleConfig,
     WardenFeatures,
@@ -85,12 +65,39 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_CAPABILITY_UNAVAILABLE = "This Ravn host has no configured persistence adapter for this capability"
+
 
 class TriggerCreateRequest(BaseModel):
     kind: str
     persona_name: str
     spec: str
     enabled: bool = True
+
+
+class ResidentCreateRequest(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    name: str = Field(min_length=1, max_length=255)
+    profile_id: str = Field(min_length=1, max_length=100)
+    persona_name: str = Field(default="", max_length=255)
+    model: str = Field(default="", max_length=255)
+    flock_id: UUID | None = None
+    flock_member_id: UUID | None = None
+    flock_role: str = Field(default="", max_length=100)
+    flock_peer_id: str = Field(default="", max_length=255)
+
+
+def _raise_platform_error(exc: httpx.HTTPStatusError) -> None:
+    try:
+        payload = exc.response.json()
+    except ValueError:
+        payload = {}
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    raise HTTPException(
+        status_code=exc.response.status_code,
+        detail=detail or str(exc),
+    ) from exc
 
 
 class WardenCreateRequest(BaseModel):
@@ -134,6 +141,8 @@ def create_app(
     warden_store: WardenStore | None = None,
     settings: Settings | None = None,
     warden_discovery: WardenDiscoveryPort | None = None,
+    resident_discovery: ResidentDiscoveryPort | None = None,
+    platform_runtime: PlatformRuntimePort | None = None,
 ) -> FastAPI:
     """Create and return the Ravn FastAPI sub-application.
 
@@ -146,9 +155,20 @@ def create_app(
             filesystem-backed location when omitted.
     """
     app = FastAPI(title="Ravn API", docs_url=None, redoc_url=None)
+    loaded_settings = settings or Settings()
+    # gateway.platform.base_url is the canonical "where is the platform API"
+    # setting (config file, or RAVN_GATEWAY__PLATFORM__BASE_URL env override).
+    if resident_discovery is None:
+        standalone_discovery = build_resident_discovery(loaded_settings.resident_discovery)
+    else:
+        standalone_discovery = resident_discovery
+    platform = platform_runtime or HttpPlatformRuntimeAdapter(
+        base_url=loaded_settings.gateway.platform.base_url,
+        timeout_seconds=loaded_settings.gateway.platform.timeout,
+    )
+    resident_directory = ResidentDirectory(platform=platform, discovery=standalone_discovery)
     store = warden_store or build_warden_store()
     if warden_discovery is None:
-        loaded_settings = settings or Settings()
         discovery = build_warden_discovery(loaded_settings.warden_discovery, store=store)
     else:
         discovery = warden_discovery
@@ -195,6 +215,23 @@ def create_app(
             for offset, line in enumerate(lines[start:])
         ]
 
+    def read_confined_log_entries(
+        warden_dir: Path,
+        configured_path: str,
+        *,
+        default_name: str,
+        source: str,
+        limit: int,
+    ) -> list[WardenLogEntry]:
+        root = warden_dir.expanduser().resolve()
+        candidate = Path(configured_path).expanduser() if configured_path else root / default_name
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        candidate = candidate.resolve()
+        if not candidate.is_relative_to(root):
+            return []
+        return read_log_entries(candidate, source=source, limit=limit)
+
     def merge_log_entries(*groups: list[WardenLogEntry], limit: int) -> list[WardenLogEntry]:
         merged = [entry for group in groups for entry in group]
         merged.sort(key=lambda entry: (_entry_sort_timestamp(entry.timestamp), entry.id))
@@ -240,16 +277,59 @@ def create_app(
             return datetime.min.replace(tzinfo=UTC)
 
     @app.get("/api/v1/ravn/status")
-    async def status_endpoint() -> dict:
-        """Return basic Ravn platform status."""
-        return {"service": "ravn", "session_count": 0, "healthy": True}
+    async def status_endpoint(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> dict:
+        """Return status derived from live session and resident discovery."""
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            ravens = await resident_directory.list_ravens(
+                principal,
+                auth_headers,
+                auth_params,
+            )
+            sessions = await resident_directory.list_sessions(
+                principal,
+                auth_headers,
+                auth_params,
+            )
+        except Exception as exc:
+            logger.warning("status: runtime discovery unavailable", exc_info=True)
+            raise HTTPException(
+                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Ravn runtime discovery is unavailable",
+            ) from exc
+        return {
+            "service": "ravn",
+            "session_count": len(sessions),
+            "fleet_member_count": len(ravens),
+            "healthy": True,
+        }
 
     @app.get("/api/v1/ravn/settings", response_model=SettingsProviderSchema)
-    async def settings_endpoint() -> SettingsProviderSchema:
-        sessions = list_runtime_sessions()
-        ravens = list_runtime_ravens()
-        triggers = list_runtime_triggers()
-        fleet_budget = get_runtime_fleet_budget()
+    async def settings_endpoint(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> SettingsProviderSchema:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            ravens = await resident_directory.list_ravens(
+                principal,
+                auth_headers,
+                auth_params,
+            )
+            sessions = await resident_directory.list_sessions(
+                principal,
+                auth_headers,
+                auth_params,
+            )
+        except Exception as exc:
+            logger.warning("settings: runtime discovery unavailable", exc_info=True)
+            raise HTTPException(
+                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Ravn runtime discovery is unavailable",
+            ) from exc
         return SettingsProviderSchema(
             title="Ravn",
             subtitle="runtime and agent settings",
@@ -286,17 +366,19 @@ def create_app(
                             read_only=True,
                         ),
                         SettingsFieldSchema(
-                            key="trigger_count",
-                            label="Trigger Count",
-                            type="number",
-                            value=len(triggers),
+                            key="trigger_store_available",
+                            label="Trigger Store",
+                            type="boolean",
+                            value=False,
+                            description=_CAPABILITY_UNAVAILABLE,
                             read_only=True,
                         ),
                         SettingsFieldSchema(
-                            key="fleet_budget_usd",
-                            label="Fleet Budget (USD)",
-                            type="number",
-                            value=float(fleet_budget.get("remaining_usd", 0.0)),
+                            key="budget_store_available",
+                            label="Budget Store",
+                            type="boolean",
+                            value=False,
+                            description=_CAPABILITY_UNAVAILABLE,
                             read_only=True,
                         ),
                     ],
@@ -305,14 +387,177 @@ def create_app(
         )
 
     @app.get("/api/v1/ravn/sessions")
-    async def list_sessions_endpoint() -> list:
-        """List active agent sessions (stub — populated by gateway in production)."""
-        return list_runtime_sessions()
+    async def list_sessions_endpoint(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict]:
+        """List the caller's live ravn sessions (flock rooms + residents)."""
+        auth_headers, auth_params = forward_auth(request)
+        return await resident_directory.list_sessions(principal, auth_headers, auth_params)
 
     @app.get("/api/v1/ravn/ravens")
-    async def list_ravens_endpoint() -> list[dict]:
-        """List the currently known ravn runtime instances."""
-        return list_runtime_ravens()
+    async def list_ravens_endpoint(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict]:
+        """List durable residents and visible compatibility deployments."""
+        auth_headers, auth_params = forward_auth(request)
+        return await resident_directory.list_ravens(principal, auth_headers, auth_params)
+
+    @app.post("/api/v1/ravn/ravens", status_code=http_status.HTTP_201_CREATED)
+    async def create_raven_endpoint(
+        body: ResidentCreateRequest,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> dict:
+        """Deploy one resident through this target's configured backend."""
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            return await resident_directory.create_raven(
+                body.model_dump(mode="json"),
+                auth_headers,
+                auth_params,
+            )
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+
+    async def control_raven_endpoint(
+        ravn_id: str,
+        action: str,
+        request: Request,
+    ) -> dict:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            return await resident_directory.control_raven(
+                ravn_id,
+                action,
+                auth_headers,
+                auth_params,
+            )
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+
+    @app.post("/api/v1/ravn/ravens/{ravn_id}/restart")
+    async def restart_raven_endpoint(
+        ravn_id: str,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> dict:
+        return await control_raven_endpoint(ravn_id, "restart", request)
+
+    @app.get("/api/v1/ravn/ravens/{ravn_id}/logs")
+    async def raven_logs_endpoint(
+        ravn_id: str,
+        request: Request,
+        lines: int = Query(default=200, ge=1, le=5000),
+        source: list[str] = Query(default_factory=list),
+        min_level: str = Query(default="", max_length=32),
+        _: Principal = Depends(extract_principal),
+    ) -> dict:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            return await resident_directory.get_raven_logs(
+                ravn_id,
+                lines=lines,
+                sources=tuple(source),
+                min_level=min_level,
+                auth_headers=auth_headers,
+                auth_params=auth_params,
+            )
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+
+    @app.post("/api/v1/ravn/ravens/{ravn_id}/suspend")
+    async def suspend_raven_endpoint(
+        ravn_id: str,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> dict:
+        return await control_raven_endpoint(ravn_id, "suspend", request)
+
+    @app.post("/api/v1/ravn/ravens/{ravn_id}/resume")
+    async def resume_raven_endpoint(
+        ravn_id: str,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> dict:
+        return await control_raven_endpoint(ravn_id, "resume", request)
+
+    @app.delete(
+        "/api/v1/ravn/ravens/{ravn_id}",
+        status_code=http_status.HTTP_204_NO_CONTENT,
+    )
+    async def delete_raven_endpoint(
+        ravn_id: str,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> Response:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            await resident_directory.delete_raven(ravn_id, auth_headers, auth_params)
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+        return Response(status_code=http_status.HTTP_204_NO_CONTENT)
+
+    @app.get("/api/v1/ravn/ravens/{ravn_id}/sessions")
+    async def list_resident_sessions_endpoint(
+        ravn_id: str,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> list[dict]:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            return await resident_directory.list_resident_sessions(
+                ravn_id, auth_headers, auth_params
+            )
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+
+    @app.post(
+        "/api/v1/ravn/ravens/{ravn_id}/sessions",
+        status_code=http_status.HTTP_201_CREATED,
+    )
+    async def create_resident_session_endpoint(
+        ravn_id: str,
+        body: dict,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> dict:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            return await resident_directory.create_resident_session(
+                ravn_id, body, auth_headers, auth_params
+            )
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+
+    @app.delete(
+        "/api/v1/ravn/ravens/{ravn_id}/sessions/{session_id}",
+        status_code=http_status.HTTP_204_NO_CONTENT,
+    )
+    async def delete_resident_session_endpoint(
+        ravn_id: str,
+        session_id: str,
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> Response:
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            await resident_directory.delete_resident_session(
+                ravn_id, session_id, auth_headers, auth_params
+            )
+        except httpx.HTTPStatusError as exc:
+            _raise_platform_error(exc)
+        return Response(status_code=http_status.HTTP_204_NO_CONTENT)
+
+    @app.get("/api/v1/ravn/deployment-profiles")
+    async def list_resident_profiles_endpoint(
+        request: Request,
+        _: Principal = Depends(extract_principal),
+    ) -> list[dict]:
+        """List resident profiles enabled on this target."""
+        auth_headers, auth_params = forward_auth(request)
+        return await resident_directory.list_profiles(auth_headers, auth_params)
 
     @app.get("/api/v1/ravn/wardens", response_model=list[WardenSpec])
     async def list_wardens_endpoint() -> list[WardenSpec]:
@@ -375,15 +620,18 @@ def create_app(
 
         normalized_stream = stream.strip().lower()
         limit = max(1, min(limit, 1000))
-        default_stdout = store.warden_dir(warden_id) / "warden.log"
-        default_stderr = store.warden_dir(warden_id) / "warden.error.log"
-        stdout_entries = read_log_entries(
-            Path(warden.supervisor.stdout_log or default_stdout),
+        warden_dir = store.warden_dir(warden_id)
+        stdout_entries = read_confined_log_entries(
+            warden_dir,
+            warden.supervisor.stdout_log,
+            default_name="warden.log",
             source="stdout",
             limit=limit,
         )
-        stderr_entries = read_log_entries(
-            Path(warden.supervisor.stderr_log or default_stderr),
+        stderr_entries = read_confined_log_entries(
+            warden_dir,
+            warden.supervisor.stderr_log,
+            default_name="warden.error.log",
             source="stderr",
             limit=limit,
         )
@@ -414,15 +662,18 @@ def create_app(
                 detail="Warden not found",
             )
         limit = max(1, min(limit, 1000))
-        default_stdout = store.warden_dir(warden_id) / "warden.log"
-        stdout_entries = read_log_entries(
-            Path(warden.supervisor.stdout_log or default_stdout),
+        warden_dir = store.warden_dir(warden_id)
+        stdout_entries = read_confined_log_entries(
+            warden_dir,
+            warden.supervisor.stdout_log,
+            default_name="warden.log",
             source="stdout",
             limit=limit,
         )
-        default_stderr = store.warden_dir(warden_id) / "warden.error.log"
-        stderr_entries = read_log_entries(
-            Path(warden.supervisor.stderr_log or default_stderr),
+        stderr_entries = read_confined_log_entries(
+            warden_dir,
+            warden.supervisor.stderr_log,
+            default_name="warden.error.log",
             source="stderr",
             limit=limit,
         )
@@ -565,17 +816,39 @@ def create_app(
         return uninstalled
 
     @app.get("/api/v1/ravn/ravens/{ravn_id}")
-    async def get_raven_endpoint(ravn_id: str) -> dict:
-        """Return one ravn runtime instance."""
-        ravn = get_runtime_raven(ravn_id)
+    async def get_raven_endpoint(
+        ravn_id: str,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> dict:
+        """Return one caller-visible resident ravn by its id."""
+        auth_headers, auth_params = forward_auth(request)
+        ravn = await resident_directory.get_raven(
+            ravn_id,
+            principal,
+            auth_headers,
+            auth_params,
+        )
         if ravn is None:
             raise HTTPException(status_code=http_status.HTTP_404_NOT_FOUND, detail="Ravn not found")
         return ravn
 
     @app.get("/api/v1/ravn/sessions/{session_id}")
-    async def get_session_endpoint(session_id: str) -> dict:
-        """Return one ravn session."""
-        session_data = get_runtime_session(session_id)
+    async def get_session_endpoint(
+        session_id: str,
+        request: Request,
+        ravn_id: str | None = None,
+        principal: Principal = Depends(extract_principal),
+    ) -> dict:
+        """Return one live ravn session."""
+        auth_headers, auth_params = forward_auth(request)
+        session_data = await resident_directory.get_session(
+            session_id,
+            principal,
+            auth_headers,
+            auth_params,
+            ravn_id=ravn_id,
+        )
         if session_data is None:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
@@ -584,60 +857,102 @@ def create_app(
         return session_data
 
     @app.get("/api/v1/ravn/sessions/{session_id}/messages")
-    async def list_session_messages(session_id: str) -> list[dict]:
-        """Return transcript messages for one ravn session."""
-        if get_runtime_session(session_id) is None:
+    async def list_session_messages(
+        session_id: str,
+        request: Request,
+        ravn_id: str | None = None,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict]:
+        """Return transcript messages for one ravn session.
+
+        The live transcript is delivered over the session's Skuld chat
+        WebSocket (the shared chat replays history on connect), so this REST
+        endpoint returns an empty list for a live session rather than seed
+        data — the UI opens the chat for history.
+        """
+        auth_headers, auth_params = forward_auth(request)
+        session_data = await resident_directory.get_session(
+            session_id,
+            principal,
+            auth_headers,
+            auth_params,
+            ravn_id=ravn_id,
+        )
+        if session_data is None:
             raise HTTPException(
                 status_code=http_status.HTTP_404_NOT_FOUND,
                 detail="Session not found",
             )
-        return list_runtime_messages(session_id)
+        return []
 
     @app.post("/api/v1/ravn/sessions/{session_id}/stop")
-    async def stop_session(session_id: str) -> dict:
-        """Stop an active agent session."""
-        return {"session_id": session_id, "status": "stopped"}
+    async def stop_session(session_id: str, request: Request) -> dict:
+        """Stop a Forge-backed Ravn session through its owning service."""
+        auth_headers, auth_params = forward_auth(request)
+        try:
+            stopped = await resident_directory.stop_session(
+                session_id,
+                auth_headers,
+                auth_params,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code >= 500:
+                detail = "Forge session lifecycle is unavailable"
+            else:
+                try:
+                    detail = exc.response.json().get("detail", "Forge rejected session stop")
+                except ValueError:
+                    detail = "Forge rejected session stop"
+            raise HTTPException(
+                status_code=exc.response.status_code,
+                detail=detail,
+            ) from exc
+        except Exception as exc:
+            logger.warning("stop session: Forge lifecycle unavailable", exc_info=True)
+            raise HTTPException(
+                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Forge session lifecycle is unavailable",
+            ) from exc
+        if stopped is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Forge-backed Ravn session not found",
+            )
+        return stopped
+
+    def raise_capability_unavailable(capability: str) -> None:
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Ravn {capability} persistence is unavailable",
+        )
 
     @app.get("/api/v1/ravn/triggers")
     async def triggers() -> list[dict]:
-        """List trigger definitions."""
-        return list_runtime_triggers()
+        """Report that no durable trigger store is configured."""
+        raise_capability_unavailable("trigger")
 
     @app.post("/api/v1/ravn/triggers", status_code=http_status.HTTP_201_CREATED)
     async def create_trigger_endpoint(body: TriggerCreateRequest) -> dict:
-        """Create one trigger definition."""
-        return create_runtime_trigger(
-            kind=body.kind,
-            persona_name=body.persona_name,
-            spec=body.spec,
-            enabled=body.enabled,
-        )
+        """Report that no durable trigger store is configured."""
+        del body
+        raise_capability_unavailable("trigger")
 
     @app.delete("/api/v1/ravn/triggers/{trigger_id}", status_code=http_status.HTTP_204_NO_CONTENT)
     async def delete_trigger_endpoint(trigger_id: str) -> Response:
-        """Delete a trigger definition."""
-        if not delete_runtime_trigger(trigger_id):
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Trigger not found",
-            )
-        return Response(status_code=http_status.HTTP_204_NO_CONTENT)
+        """Report that no durable trigger store is configured."""
+        del trigger_id
+        raise_capability_unavailable("trigger")
 
     @app.get("/api/v1/ravn/budget/fleet")
     async def fleet_budget() -> dict:
-        """Return aggregate budget state for the fleet."""
-        return get_runtime_fleet_budget()
+        """Report that no durable budget store is configured."""
+        raise_capability_unavailable("budget")
 
     @app.get("/api/v1/ravn/budget/{ravn_id}")
     async def budget(ravn_id: str) -> dict:
-        """Return budget state for one ravn."""
-        budget_state = get_runtime_budget(ravn_id)
-        if budget_state is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Budget not found",
-            )
-        return budget_state
+        """Report that no durable budget store is configured."""
+        del ravn_id
+        raise_capability_unavailable("budget")
 
     if persona_loader is not None:
         from ravn.api.personas import create_personas_router
@@ -646,29 +961,48 @@ def create_app(
 
     import contextlib  # noqa: PLC0415
 
+    from ravn.adapters.valkyrie_history import (  # noqa: PLC0415
+        build_valkyrie_history_store_from_env,
+    )
     from ravn.api.odin_reviews import (  # noqa: PLC0415
-        build_review_queue_store_from_env,
-        build_review_ttls_from_env,
+        build_review_queue_store,
         create_odin_review_router,
-        review_sweep_interval_from_env,
+    )
+    from ravn.api.valkyrie_history_service import ValkyrieHistoryService  # noqa: PLC0415
+    from ravn.api.valkyrie_metrics import create_valkyrie_metrics_router  # noqa: PLC0415
+    from ravn.api.valkyrie_skills import (  # noqa: PLC0415
+        ValkyrieSkillMirror,
+        create_valkyrie_skills_router,
     )
     from ravn.api.valkyries import build_skuld_room_client_from_env  # noqa: PLC0415
     from ravn.odin.review_service import OdinReviewService  # noqa: PLC0415
 
     valkyrie_projection = ValkyrieDashboardProjection()
-    valkyrie_learning_commands = build_nats_review_command_publisher_from_env()
-    review_ttls, review_default_ttl = build_review_ttls_from_env()
-    odin_review_service = OdinReviewService(
-        build_review_queue_store_from_env(),
-        publisher=valkyrie_learning_commands,
-        ttl_seconds_by_kind=review_ttls,
-        default_ttl_seconds=review_default_ttl,
+    valkyrie_learning_commands = build_nats_review_command_publisher_from_env(
+        loaded_settings.valkyrie.command,
+        loaded_settings.valkyrie.telemetry,
     )
+    review_config = loaded_settings.valkyrie.odin_reviews
+    odin_review_service = OdinReviewService(
+        build_review_queue_store(review_config),
+        publisher=valkyrie_learning_commands,
+        ttl_seconds_by_kind=review_config.ttl_seconds_by_kind(),
+        default_ttl_seconds=review_config.default_ttl_seconds,
+    )
+    valkyrie_history = ValkyrieHistoryService(
+        build_valkyrie_history_store_from_env(),
+        review_service=odin_review_service,
+    )
+    valkyrie_skills = ValkyrieSkillMirror()
     valkyrie_telemetry = build_nats_telemetry_subscription_from_env(
         valkyrie_projection,
         review_ingest=odin_review_service.ingest_event,
+        history_ingest=valkyrie_history.ingest_event,
+        skills_ingest=valkyrie_skills.ingest_event,
+        config=loaded_settings.valkyrie.telemetry,
     )
-    review_sweep_interval = review_sweep_interval_from_env()
+    review_sweep_interval = review_config.sweep_interval_seconds
+    brief_interval = loaded_settings.valkyrie.brief_interval_seconds
 
     async def _run_review_sweep() -> None:
         while True:
@@ -680,11 +1014,32 @@ def create_app(
             except Exception:
                 logger.exception("odin review: expiry sweep failed")
 
+    async def _run_valkyrie_brief() -> None:
+        from datetime import timedelta  # noqa: PLC0415
+
+        while True:
+            await asyncio.sleep(brief_interval)
+            try:
+                filed = await valkyrie_history.file_morning_briefs(
+                    window=timedelta(seconds=brief_interval),
+                )
+                if filed:
+                    logger.info("valkyrie brief: filed %d environment brief(s)", filed)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("valkyrie brief: filing failed")
+
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
         review_sweep_task = asyncio.create_task(
             _run_review_sweep(),
             name="odin_review_sweep",
+        )
+        valkyrie_brief_task = (
+            asyncio.create_task(_run_valkyrie_brief(), name="valkyrie_brief")
+            if brief_interval > 0
+            else None
         )
         if valkyrie_telemetry is not None:
             try:
@@ -701,9 +1056,14 @@ def create_app(
             review_sweep_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 _ = await review_sweep_task
+            if valkyrie_brief_task is not None:
+                valkyrie_brief_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    _ = await valkyrie_brief_task
             if valkyrie_telemetry is not None:
                 await valkyrie_telemetry.stop()
             await valkyrie_learning_commands.stop()
+            await resident_directory.aclose()
 
     app.router.lifespan_context = lifespan
 
@@ -711,13 +1071,17 @@ def create_app(
         create_valkyrie_router(
             valkyrie_projection,
             review_command_publisher=valkyrie_learning_commands,
+            room_client=build_skuld_room_client_from_env(loaded_settings.valkyrie.room),
             review_service=odin_review_service,
+            history_service=valkyrie_history,
         )
     )
+    app.include_router(create_valkyrie_skills_router(valkyrie_skills))
+    app.include_router(create_valkyrie_metrics_router(valkyrie_skills, valkyrie_history))
     app.include_router(
         create_odin_review_router(
             odin_review_service,
-            room_client=build_skuld_room_client_from_env(),
+            room_client=build_skuld_room_client_from_env(loaded_settings.valkyrie.room),
         )
     )
 

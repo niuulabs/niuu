@@ -129,7 +129,7 @@ async def test_static_catalog_uses_configured_bifrost_catalog() -> None:
 @pytest.mark.asyncio
 async def test_static_catalog_without_explicit_config_uses_builtin_catalog() -> None:
     catalog = StaticBifrostModelCatalog()
-    model = await catalog.get_model("claude-sonnet-4-6")
+    model = await catalog.get_model("claude-sonnet-5")
     assert model is not None
     assert model.vendor == "anthropic"
 

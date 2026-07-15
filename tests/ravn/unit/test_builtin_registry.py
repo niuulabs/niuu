@@ -48,7 +48,15 @@ class TestRegistryStructure:
             assert val.groups, f"{key!r} has no groups"
 
     def test_known_groups_only(self) -> None:
-        valid_groups = {"core", "extended", "skill", "platform", "ravn", "kubernetes"}
+        valid_groups = {
+            "core",
+            "extended",
+            "skill",
+            "platform",
+            "ravn",
+            "kubernetes",
+            "workflow",
+        }
         for key, val in BUILTIN_TOOLS.items():
             unknown = val.groups - valid_groups
             assert not unknown, f"{key!r} has unknown groups: {unknown}"
@@ -99,8 +107,21 @@ class TestRegistryStructure:
             "volundr_git",
             "ting_saga",
             "ting_workflow",
+            "ting_research",
             "tracker_issue",
         }.issubset(platform_keys)
+
+    def test_workflow_tools_present(self) -> None:
+        workflow_keys = {k for k, v in BUILTIN_TOOLS.items() if "workflow" in v.groups}
+        assert {
+            "workflow_list",
+            "workflow_describe",
+            "workflow_launch",
+            "workflow_status",
+            "workflow_events",
+            "workflow_artifacts",
+            "workflow_artifact_read",
+        }.issubset(workflow_keys)
 
     def test_terminal_docker_entry_exists(self) -> None:
         assert "terminal_docker" in BUILTIN_TOOLS
@@ -177,6 +198,7 @@ class TestConditions:
             "volundr_git",
             "ting_saga",
             "ting_workflow",
+            "ting_research",
             "tracker_issue",
         ):
             cond = BUILTIN_TOOLS[key].condition
@@ -204,15 +226,14 @@ class TestKwargsFn:
             result = td.kwargs_fn(settings, ctx)
             assert isinstance(result, dict), f"{key!r}: kwargs_fn did not return a dict"
 
-    def test_web_search_kwargs_uses_mock_by_default(
+    def test_web_search_kwargs_uses_real_provider_by_default(
         self, settings: Settings, tmp_path: Path
     ) -> None:
         ctx = _make_runtime_ctx(tmp_path)
         kwargs = BUILTIN_TOOLS["web_search"].kwargs_fn(settings, ctx)
         assert "provider" in kwargs
         assert "num_results" in kwargs
-        # Default is mock provider, so provider should be None
-        assert kwargs["provider"] is None
+        assert type(kwargs["provider"]).__name__ == "DuckDuckGoLiteSearchProvider"
 
     def test_ravn_state_kwargs_tool_names_empty(self, settings: Settings, tmp_path: Path) -> None:
         ctx = _make_runtime_ctx(tmp_path)
@@ -234,6 +255,23 @@ class TestKwargsFn:
         for key in ("ravn_memory_search", "session_search"):
             kwargs = BUILTIN_TOOLS[key].kwargs_fn(settings, ctx)
             assert kwargs["memory"] is mock_memory
+
+    def test_ting_workflow_kwargs_include_aliases(self, settings: Settings, tmp_path: Path) -> None:
+        from ravn.config import PlatformWorkflowAliasConfig
+
+        settings.gateway.platform.workflow_aliases = {
+            "research": PlatformWorkflowAliasConfig(
+                workflow_id="wf-research",
+                defaults={"gate_auto_forward_after": ""},
+            )
+        }
+        ctx = _make_runtime_ctx(tmp_path)
+        for key in ("ting_workflow", "ting_research", "ting_plan", "ting_spec"):
+            kwargs = BUILTIN_TOOLS[key].kwargs_fn(settings, ctx)
+            assert kwargs["workflow_aliases"]["research"]["workflow_id"] == "wf-research"
+            assert (
+                kwargs["workflow_aliases"]["research"]["defaults"]["gate_auto_forward_after"] == ""
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -279,29 +317,28 @@ class TestBuildSkillPort:
 
 
 # ---------------------------------------------------------------------------
-# _build_web_search_kwargs with non-mock provider
+# _build_web_search_kwargs provider construction
 # ---------------------------------------------------------------------------
 
 
 class TestBuildWebSearchKwargs:
-    def test_mock_provider_returns_none(self, tmp_path: Path) -> None:
+    def test_default_provider_is_real(self, tmp_path: Path) -> None:
         from ravn.adapters.tools.builtin_registry import _build_web_search_kwargs
 
         s = Settings()
         ctx = _make_runtime_ctx(tmp_path)
         result = _build_web_search_kwargs(s, ctx)
-        assert result["provider"] is None
+        assert type(result["provider"]).__name__ == "DuckDuckGoLiteSearchProvider"
 
-    def test_nonexistent_provider_falls_back_to_none(self, tmp_path: Path) -> None:
+    def test_nonexistent_provider_fails_loudly(self, tmp_path: Path) -> None:
         from ravn.adapters.tools.builtin_registry import _build_web_search_kwargs
         from ravn.config import ToolAdapterConfig
 
         s = Settings()
         s.tools.web.search.provider = ToolAdapterConfig(adapter="nonexistent.module.Provider")
         ctx = _make_runtime_ctx(tmp_path)
-        result = _build_web_search_kwargs(s, ctx)
-        # On failure, provider falls back to None (mock)
-        assert result["provider"] is None
+        with pytest.raises(ModuleNotFoundError):
+            _build_web_search_kwargs(s, ctx)
 
     def test_num_results_passed_through(self, tmp_path: Path) -> None:
         from ravn.adapters.tools.builtin_registry import _build_web_search_kwargs
@@ -327,3 +364,17 @@ class TestBuildWebSearchKwargs:
         result = _build_web_search_kwargs(s, ctx)
         # AskUserTool is not a real web search provider, but it gets instantiated
         assert result["provider"] is not None
+
+
+class TestTingWorkflowKwargs:
+    def test_includes_session_join_manager_when_available(self, tmp_path: Path) -> None:
+        from ravn.adapters.tools.builtin_registry import _ting_workflow_kwargs
+
+        manager = object()
+        s = Settings()
+        ctx = _make_runtime_ctx(tmp_path)
+        ctx["session_join_manager"] = manager
+
+        result = _ting_workflow_kwargs(s, ctx)
+
+        assert result["session_join_manager"] is manager

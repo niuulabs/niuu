@@ -4,8 +4,6 @@ Design principles:
 - Uses the Matrix CS API ``/_matrix/client/v3/sync`` with a 30-second
   long-poll timeout; no external library required (httpx only).
 - Supports sovereign self-hosted homeservers — no dependency on matrix.org.
-- E2E encryption flag is surfaced in config but not yet implemented;
-  a warning is logged if ``e2e: true`` is set.
 - chat_id: full Matrix room ID (e.g. ``"!abc:matrix.niuu.world"``).
 - Ignores its own messages (compares ``sender`` with the configured user_id).
 """
@@ -74,11 +72,6 @@ class MatrixGateway(GatewayHttpMixin, GatewayChannelPort):
                 self._config.access_token_env,
             )
             return
-        if self._config.e2e:
-            logger.warning(
-                "Matrix E2E encryption requested but not yet implemented; "
-                "messages will be sent and received in plaintext."
-            )
         self._stop_event.clear()
         self._task = asyncio.create_task(self._run(), name="matrix-gateway")
 

@@ -10,7 +10,6 @@ import pytest
 from cli.services.preflight import (
     PreflightConfig,
     PreflightResult,
-    check_api_key,
     check_claude_binary,
     check_cluster_connectivity,
     check_database,
@@ -54,31 +53,6 @@ class TestCheckClaudeBinary:
             result = check_claude_binary(config)
         assert result.passed is False
         assert "/opt/claude-custom" in result.message
-
-
-class TestCheckApiKey:
-    def test_key_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-validkey12345")
-        result = check_api_key(PreflightConfig())
-        assert result.passed is True
-
-    def test_key_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        result = check_api_key(PreflightConfig())
-        assert result.passed is False
-        assert "not set" in result.message
-
-    def test_key_too_short(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "short")
-        result = check_api_key(PreflightConfig())
-        assert result.passed is False
-        assert "invalid" in result.message
-
-    def test_custom_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("CUSTOM_KEY", "sk-ant-api03-validkey12345")
-        config = PreflightConfig(api_key_env="CUSTOM_KEY")
-        result = check_api_key(config)
-        assert result.passed is True
 
 
 class TestCheckPortAvailable:
@@ -223,8 +197,7 @@ class TestCheckDiskSpace:
 
 
 class TestRunPreflightChecks:
-    def test_all_checks_run(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-validkey12345")
+    def test_all_checks_run(self, tmp_path: Path) -> None:
         config = PreflightConfig(
             workspaces_dir=str(tmp_path),
             ports=[8080],
@@ -237,7 +210,9 @@ class TestRunPreflightChecks:
             mock_instance.connect_ex.return_value = 1
             results = run_preflight_checks(config)
 
-        # Should have: claude, api_key, 1 port, workspace, database, git, disk
+        names = [r.name for r in results]
+        assert "API key" not in names
+        # Should have: claude, 1 port, workspace, database, git, disk
         assert len(results) >= 7
 
     def test_has_failures_with_failing_check(self) -> None:
@@ -274,11 +249,8 @@ class TestRunPreflightChecks:
         assert "test2" in output
         assert "test3" in output
 
-    def test_cluster_mode_runs_cluster_checks(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_cluster_mode_runs_cluster_checks(self, tmp_path: Path) -> None:
         """In cluster mode, cluster-specific checks run instead of mini checks."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-validkey12345")
         kubeconfig = tmp_path / "kubeconfig"
         kubeconfig.write_text("apiVersion: v1\n")
         config = PreflightConfig(
@@ -303,15 +275,13 @@ class TestRunPreflightChecks:
         assert "kubectl" in names
         assert "kubeconfig" in names
         assert "namespace" in names
+        assert "API key" not in names
         # Should NOT include mini-specific checks
         assert "claude binary" not in names
         assert "workspace dir" not in names
 
-    def test_mini_mode_runs_mini_checks(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_mini_mode_runs_mini_checks(self, tmp_path: Path) -> None:
         """In mini mode, mini-specific checks run (default behavior)."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-validkey12345")
         config = PreflightConfig(
             mode="mini",
             workspaces_dir=str(tmp_path),
@@ -328,6 +298,7 @@ class TestRunPreflightChecks:
         names = [r.name for r in results]
         assert "claude binary" in names
         assert "workspace dir" in names
+        assert "API key" not in names
         # Should NOT include cluster-specific checks
         assert "kubectl" not in names
         assert "kubeconfig" not in names

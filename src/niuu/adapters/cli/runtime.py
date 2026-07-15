@@ -102,23 +102,46 @@ class CliTurnRunner:
         self._pending_responses[request_id] = result_future
 
         collected_text: list[str] = []
+        current_text_block: list[str] | None = []
         original_callback = self._transport.event_callback
 
+        def flush_current_text_block() -> None:
+            nonlocal current_text_block
+            if current_text_block is None:
+                return
+            text = "".join(current_text_block)
+            if text:
+                collected_text.append(text)
+            current_text_block = None
+
         async def capture_event(data: dict) -> None:
+            nonlocal current_text_block
             event_type = data.get("type", "")
 
             if event_type == "assistant":
+                flush_current_text_block()
                 self._capture_assistant_text(data, collected_text)
+            elif event_type == "content_block_start":
+                block = data.get("content_block", {})
+                if isinstance(block, dict) and block.get("type") == "text":
+                    flush_current_text_block()
+                    current_text_block = []
             elif event_type == "content_block_delta":
-                self._capture_delta_text(data, collected_text)
+                self._capture_delta_text(
+                    data,
+                    current_text_block if current_text_block is not None else collected_text,
+                )
+            elif event_type == "content_block_stop":
+                flush_current_text_block()
 
             if event_type == "result":
+                flush_current_text_block()
                 result_text = data.get("result", "")
                 if isinstance(result_text, str) and result_text:
                     collected_text.clear()
                     collected_text.append(result_text)
                 if not result_future.done():
-                    result_future.set_result("\n".join(collected_text) if collected_text else "")
+                    result_future.set_result("\n\n".join(collected_text) if collected_text else "")
 
             if original_callback is None:
                 return

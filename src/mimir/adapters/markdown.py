@@ -76,6 +76,11 @@ from niuu.ports.search import SearchPort
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_log(value: object) -> str:
+    return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
 # Maximum characters per search chunk (~500 tokens).
 _CHUNK_MAX_CHARS = 2000
 _SEARCH_RESULT_LIMIT = 20
@@ -678,7 +683,7 @@ class MarkdownMimirAdapter(MimirPort):
         else:
             self._update_index_entry(path, content)
 
-        logger.info("mimir: upserted page %s (new=%s)", path, is_new)
+        logger.info("mimir: upserted page %s (new=%s)", _sanitize_log(path), is_new)
 
         # NIU-582: emit mimir.page.written to Sleipnir catalog (best-effort)
         if self._sleipnir_publisher is not None and _catalog_page_written is not None:

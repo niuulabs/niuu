@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 from fastapi.testclient import TestClient
 
 import guild.app as guild_app
-from niuu.service_settings import Settings
+from volundr.config import Settings
 
 
 class _DummyPATValidator:
@@ -57,12 +57,14 @@ def test_create_app_mounts_only_guild_routes(monkeypatch) -> None:
         response = client.get("/health")
         assert response.status_code == 200
 
-        paths = {route.path for route in app.routes}
+        paths = set(client.get("/openapi.json").json()["paths"])
         assert "/api/v1/niuu/instances" in paths
         assert "/api/v1/niuu/instances/catalog" in paths
         assert "/api/v1/niuu/targets/volundr" in paths
         assert "/api/v1/niuu/observatory/snapshot" in paths
         assert "/api/v1/forge/sessions" in paths
+        assert "/api/v1/ravn/ravens" in paths
+        assert "/api/v1/ravn/sessions" in paths
         assert "/api/v1/tokens" not in paths
         assert "/api/v1/features" not in paths
         assert "/api/v1/identity/auth/config" not in paths

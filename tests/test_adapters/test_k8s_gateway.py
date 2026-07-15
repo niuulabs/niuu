@@ -52,6 +52,9 @@ class TestK8sGatewayAdapter:
             issuer_url="https://idp.example.com",
             audience="volundr",
             jwks_uri="https://idp.example.com/.well-known/jwks",
+            workload_issuer_url="https://yggdrasil.niuu.world/api/v1/tokens/workload",
+            workload_audience="volundr-api",
+            workload_jwks_uri="https://yggdrasil.niuu.world/api/v1/tokens/workload/jwks",
         )
         config = adapter.get_gateway_config()
         assert config["gateway_name"] == "sessions-gw"
@@ -60,6 +63,14 @@ class TestK8sGatewayAdapter:
         assert config["issuer_url"] == "https://idp.example.com"
         assert config["audience"] == "volundr"
         assert config["jwks_uri"] == "https://idp.example.com/.well-known/jwks"
+        assert (
+            config["workload_issuer_url"] == "https://yggdrasil.niuu.world/api/v1/tokens/workload"
+        )
+        assert config["workload_audience"] == "volundr-api"
+        assert (
+            config["workload_jwks_uri"]
+            == "https://yggdrasil.niuu.world/api/v1/tokens/workload/jwks"
+        )
 
     def test_optional_fields_omitted_when_empty(self):
         adapter = K8sGatewayAdapter(
@@ -67,12 +78,18 @@ class TestK8sGatewayAdapter:
             issuer_url="",
             audience="",
             jwks_uri="",
+            workload_issuer_url="",
+            workload_audience="",
+            workload_jwks_uri="",
         )
         config = adapter.get_gateway_config()
         assert "gateway_domain" not in config
         assert "issuer_url" not in config
         assert "audience" not in config
         assert "jwks_uri" not in config
+        assert "workload_issuer_url" not in config
+        assert "workload_audience" not in config
+        assert "workload_jwks_uri" not in config
 
     def test_ignores_extra_kwargs(self):
         adapter = K8sGatewayAdapter(some_future_param="value")

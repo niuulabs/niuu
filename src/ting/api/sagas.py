@@ -6,13 +6,21 @@ milestones, issues) is fetched live from the tracker at read time.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime
 from inspect import isawaitable
+from typing import Any
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+from niuu.domain.outcome import parse_outcome_block
 
 try:
     from sleipnir.domain.catalog import ting_saga_created as _catalog_saga_created
@@ -22,28 +30,54 @@ from pydantic import BaseModel, Field
 
 from niuu.domain.models import Principal
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
+from ting.api.dispatch import resolve_volundr_factory
+from ting.api.research import resolve_workflow_campaign_repo
 from ting.api.tracker import resolve_trackers
+from ting.api.workflows import WorkflowLaunchBody, launch_workflow_execution, resolve_workflow_repo
 from ting.config import ReviewConfig
 from ting.domain.models import (
+    CampaignStageState,
     Phase,
     PhaseStatus,
     Run,
     RunStatus,
     Saga,
     SagaStatus,
+    SagaStructure,
     TrackerIssue,
     TrackerProject,
+    WorkflowCampaign,
+    WorkflowCampaignStatus,
+    WorkflowDefinition,
     WorkflowScope,
 )
+from ting.domain.utils import _session_name, _slugify
 from ting.domain.workflow_snapshot import build_workflow_snapshot, workflow_name_from_snapshot
 from ting.ports.git import GitPort
 from ting.ports.llm import LLMPort
 from ting.ports.saga_repository import SagaRepository
 from ting.ports.tracker import TrackerPort
-from ting.ports.volundr import SpawnRequest, VolundrPort
+from ting.ports.volundr import VolundrFactory, VolundrPort
+from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
 
 logger = logging.getLogger(__name__)
+
+_PLANNING_WORKFLOW_NAME = "Saga Planning"
+_PLAN_BRIEF_GATE_NODE_ID = "plan-brief-gate"
+_PLAN_REVIEW_GATE_NODE_ID = "plan-review-gate"
+_PLAN_GATE_NODE_IDS = (_PLAN_BRIEF_GATE_NODE_ID, _PLAN_REVIEW_GATE_NODE_ID)
+_PLAN_GATE_DECISION_APPROVE = "APPROVE"
+_PLAN_GATE_DECISION_CHANGES_REQUESTED = "CHANGES_REQUESTED"
+_PLAN_GATE_POLL_SECONDS = 2.0
+_PLAN_GATE_POLL_ATTEMPTS = 6
+_PLAN_FEEDBACK_POLL_SECONDS = 2.0
+_PLAN_FEEDBACK_POLL_ATTEMPTS = 20
+_PLAN_FEEDBACK_METADATA_KEY = "planning_feedback_notes"
+_PLAN_FEEDBACK_DECISION_METADATA_KEY = "planning_feedback_decision"
+_PLAN_BRIEF_GATE_RESOLVED_METADATA_KEY = "planning_brief_gate_resolved"
+_PLAN_PENDING_GATES_METADATA_KEY = "pending_workflow_gates"
+_TRANSIENT_PLAN_DRAFT_STATUS_CODES = {404, 409, 425, 502, 503, 504}
 
 
 def _sanitize_log(value: object) -> str:
@@ -55,6 +89,204 @@ def _can_use_workflow(workflow, principal: Principal) -> bool:  # noqa: ANN001
     if workflow.scope == WorkflowScope.SYSTEM:
         return True
     return workflow.owner_id == principal.user_id
+
+
+def _pending_gate(gates: list[dict], node_id: str) -> dict | None:
+    for gate in gates:
+        if gate.get("node_id") != node_id and gate.get("nodeId") != node_id:
+            continue
+        status_value = str(gate.get("status", "")).lower()
+        if status_value not in {"", "pending", "open", "waiting"}:
+            continue
+        if gate.get("id") or gate.get("gate_id") or gate.get("gateId"):
+            return gate
+    return None
+
+
+def _pending_gate_id(gates: list[dict], node_id: str) -> str | None:
+    gate = _pending_gate(gates, node_id)
+    if gate is None:
+        return None
+    gate_id = gate.get("id") or gate.get("gate_id") or gate.get("gateId")
+    if gate_id:
+        return str(gate_id)
+    return None
+
+
+def _pending_plan_gate_node_id(gates: list[dict]) -> str | None:
+    for node_id in _PLAN_GATE_NODE_IDS:
+        if _pending_gate(gates, node_id) is not None:
+            return node_id
+    return None
+
+
+def _is_transient_plan_http_error(exc: httpx.HTTPStatusError) -> bool:
+    return exc.response.status_code in _TRANSIENT_PLAN_DRAFT_STATUS_CODES
+
+
+async def _resolve_pending_plan_gate(
+    *,
+    adapter: VolundrPort,
+    campaign: WorkflowCampaign,
+    node_id: str | None = None,
+    node_ids: Sequence[str] | None = None,
+    decision: str,
+    notes: str,
+    auth_token: str | None,
+    principal: Principal,
+    attempts: int = _PLAN_GATE_POLL_ATTEMPTS,
+) -> bool:
+    """Resolve a workflow gate if it is already waiting for Ting's next step."""
+    candidate_node_ids = tuple(node_ids or ([node_id] if node_id else []))
+    for attempt in range(max(1, attempts)):
+        try:
+            gates = await adapter.get_workflow_gates(
+                campaign.session_id,
+                auth_token=auth_token,
+                principal=principal,
+            )
+        except httpx.HTTPStatusError as exc:
+            if not _is_transient_plan_http_error(exc) or attempt >= attempts - 1:
+                raise
+            await asyncio.sleep(_PLAN_GATE_POLL_SECONDS)
+            continue
+        for candidate_node_id in candidate_node_ids:
+            gate_id = _pending_gate_id(gates, candidate_node_id)
+            if gate_id is not None:
+                await adapter.resolve_workflow_gate(
+                    campaign.session_id,
+                    gate_id,
+                    decision,
+                    notes=notes,
+                    source="ting.plan",
+                    auth_token=auth_token,
+                    principal=principal,
+                )
+                return True
+        if attempt < attempts - 1:
+            await asyncio.sleep(_PLAN_GATE_POLL_SECONDS)
+    return False
+
+
+async def _approve_pending_plan_gate(
+    *,
+    adapter: VolundrPort,
+    campaign: WorkflowCampaign,
+    node_id: str | None = None,
+    node_ids: Sequence[str] | None = None,
+    notes: str,
+    auth_token: str | None,
+    principal: Principal,
+    attempts: int = _PLAN_GATE_POLL_ATTEMPTS,
+) -> bool:
+    """Approve a workflow gate if it is already waiting for Ting's next step."""
+    return await _resolve_pending_plan_gate(
+        adapter=adapter,
+        campaign=campaign,
+        node_id=node_id,
+        node_ids=node_ids,
+        decision=_PLAN_GATE_DECISION_APPROVE,
+        notes=notes,
+        auth_token=auth_token,
+        principal=principal,
+        attempts=attempts,
+    )
+
+
+async def _send_plan_message_with_retry(
+    *,
+    adapter: VolundrPort,
+    session_id: str,
+    content: str,
+    auth_token: str | None,
+    principal: Principal,
+    attempts: int = _PLAN_FEEDBACK_POLL_ATTEMPTS,
+) -> None:
+    for attempt in range(max(1, attempts)):
+        try:
+            await adapter.send_message(
+                session_id,
+                content,
+                auth_token=auth_token,
+                principal=principal,
+            )
+            return
+        except httpx.HTTPStatusError as exc:
+            if not _is_transient_plan_http_error(exc) or attempt >= attempts - 1:
+                raise
+            await asyncio.sleep(_PLAN_FEEDBACK_POLL_SECONDS)
+
+
+async def _record_plan_feedback(
+    *,
+    campaign_repo: WorkflowCampaignRepository,
+    campaign: WorkflowCampaign,
+    notes: str,
+    decision: str,
+) -> WorkflowCampaign:
+    metadata = dict(campaign.metadata)
+    metadata[_PLAN_FEEDBACK_METADATA_KEY] = notes
+    metadata[_PLAN_FEEDBACK_DECISION_METADATA_KEY] = decision
+    metadata.pop(_PLAN_BRIEF_GATE_RESOLVED_METADATA_KEY, None)
+    if decision == "changes_requested":
+        metadata.pop(_PLAN_PENDING_GATES_METADATA_KEY, None)
+    return await campaign_repo.save_campaign(
+        replace(campaign, metadata=metadata, updated_at=datetime.now(UTC))
+    )
+
+
+async def _mark_plan_brief_gate_resolved(
+    *,
+    campaign_repo: WorkflowCampaignRepository,
+    campaign: WorkflowCampaign,
+) -> WorkflowCampaign:
+    metadata = dict(campaign.metadata)
+    metadata[_PLAN_BRIEF_GATE_RESOLVED_METADATA_KEY] = True
+    metadata.pop(_PLAN_PENDING_GATES_METADATA_KEY, None)
+    return await campaign_repo.save_campaign(
+        replace(campaign, metadata=metadata, updated_at=datetime.now(UTC))
+    )
+
+
+async def _retry_recorded_plan_gate_resolution(
+    *,
+    adapter: VolundrPort,
+    campaign_repo: WorkflowCampaignRepository,
+    campaign: WorkflowCampaign,
+    auth_token: str | None,
+    principal: Principal,
+) -> WorkflowCampaign:
+    if campaign.metadata.get(_PLAN_BRIEF_GATE_RESOLVED_METADATA_KEY) is True:
+        return campaign
+    notes = campaign.metadata.get(_PLAN_FEEDBACK_METADATA_KEY)
+    decision = campaign.metadata.get(_PLAN_FEEDBACK_DECISION_METADATA_KEY)
+    if decision not in {None, "approve", "approved"}:
+        return campaign
+    if not isinstance(notes, str) or not notes.strip():
+        return campaign
+    try:
+        resolved = await _approve_pending_plan_gate(
+            adapter=adapter,
+            campaign=campaign,
+            node_id=_PLAN_BRIEF_GATE_NODE_ID,
+            notes=notes,
+            auth_token=auth_token,
+            principal=principal,
+            attempts=1,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to retry planning workflow gate resolution for campaign %s",
+            _sanitize_log(campaign.id),
+            exc_info=True,
+        )
+        return campaign
+    if not resolved:
+        return campaign
+    return await _mark_plan_brief_gate_resolved(
+        campaign_repo=campaign_repo,
+        campaign=campaign,
+    )
 
 
 async def _resolve_instance_name(
@@ -125,6 +357,279 @@ async def _resolve_selected_workflow(
     if workflow is None:
         return None, None, None
     return workflow.id, workflow.version, build_workflow_snapshot(workflow)
+
+
+async def _resolve_planning_workflow(
+    repo: WorkflowRepository,
+    principal: Principal,
+    workflow_id: UUID | None = None,
+) -> WorkflowDefinition:
+    if workflow_id is not None:
+        workflow = await repo.get_workflow(workflow_id)
+        if workflow is None or not _can_use_workflow(workflow, principal):
+            raise HTTPException(status_code=404, detail=f"Workflow not found: {workflow_id}")
+        return workflow
+
+    workflows = await repo.list_workflows(
+        owner_id=principal.user_id,
+        scope=WorkflowScope.SYSTEM,
+    )
+    workflow = next(
+        (candidate for candidate in workflows if candidate.name == _PLANNING_WORKFLOW_NAME),
+        None,
+    )
+    if workflow is None:
+        raise HTTPException(status_code=404, detail=f"{_PLANNING_WORKFLOW_NAME} workflow not found")
+    return workflow
+
+
+def _plan_name(spec: str) -> str:
+    compact = " ".join(spec.strip().split())
+    if not compact:
+        return "Saga Planning"
+    return compact[:80]
+
+
+async def _reserve_plan_slug(repo: WorkflowCampaignRepository, base_slug: str) -> str:
+    slug = base_slug or "plan"
+    suffix = 2
+    while await repo.get_campaign_by_slug(slug) is not None:
+        slug = f"{base_slug}-{suffix}"
+        suffix += 1
+    return slug
+
+
+def _workflow_stages(snapshot: dict[str, Any]) -> list[dict[str, str]]:
+    graph = snapshot.get("graph") if isinstance(snapshot, dict) else None
+    nodes = graph.get("nodes") if isinstance(graph, dict) else []
+    stages: list[dict[str, str]] = []
+    for node in nodes or []:
+        if not isinstance(node, dict) or node.get("kind") != "stage":
+            continue
+        stages.append(
+            {
+                "id": str(node.get("id") or ""),
+                "label": str(node.get("label") or node.get("id") or "Stage"),
+            }
+        )
+    return stages
+
+
+def _initial_plan_stage_state(
+    snapshot: dict[str, Any],
+    now: datetime,
+) -> list[CampaignStageState]:
+    result: list[CampaignStageState] = []
+    for index, stage in enumerate(_workflow_stages(snapshot)):
+        result.append(
+            CampaignStageState(
+                stage_id=stage["id"],
+                label=stage["label"],
+                status="active" if index == 0 else "pending",
+                started_at=now if index == 0 else None,
+            )
+        )
+    return result
+
+
+def _campaign_status_from_session(
+    session_status: str,
+    *,
+    fallback: WorkflowCampaignStatus = WorkflowCampaignStatus.RUNNING,
+) -> WorkflowCampaignStatus:
+    normalized = session_status.strip().lower()
+    if normalized in {"creating", "starting", "queued"}:
+        return WorkflowCampaignStatus.PENDING
+    if normalized in {"running", "active", "busy"}:
+        return WorkflowCampaignStatus.RUNNING
+    if normalized in {"blocked", "waiting", "paused"}:
+        return WorkflowCampaignStatus.BLOCKED
+    if normalized in {"stopped", "completed", "complete", "succeeded", "success"}:
+        return WorkflowCampaignStatus.COMPLETED
+    if normalized in {"failed", "error", "cancelled", "canceled"}:
+        return WorkflowCampaignStatus.FAILED
+    return fallback
+
+
+def _to_plan_stage_response(stage: CampaignStageState) -> PlanStageStateResponse:
+    return PlanStageStateResponse(
+        stage_id=stage.stage_id,
+        label=stage.label,
+        status=stage.status,
+        started_at=stage.started_at,
+        completed_at=stage.completed_at,
+        reason=stage.reason,
+    )
+
+
+def _gate_hint(gate: dict | None, fallback: str) -> str:
+    if gate:
+        for key in ("summary", "instructions", "condition", "description"):
+            value = gate.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return fallback
+
+
+def _stored_plan_gates(campaign: WorkflowCampaign) -> list[dict]:
+    raw = campaign.metadata.get(_PLAN_PENDING_GATES_METADATA_KEY)
+    if not isinstance(raw, list):
+        return []
+    return [dict(item) for item in raw if isinstance(item, dict)]
+
+
+def _plan_questions_for_campaign(
+    campaign: WorkflowCampaign,
+    gates: list[dict] | None = None,
+) -> list[PlanQuestionResponse]:
+    gates = gates or []
+    review_gate = _pending_gate(gates, _PLAN_REVIEW_GATE_NODE_ID)
+    if review_gate is not None:
+        return [
+            PlanQuestionResponse(
+                id="draft-feedback",
+                question=(
+                    "The workflow is waiting on draft plan review. What focused changes should "
+                    "it make before Ting shows the final draft?"
+                ),
+                hint=_gate_hint(
+                    review_gate,
+                    "Type a focused change request, or type approved if the draft is ready.",
+                ),
+            )
+        ]
+
+    brief_gate = _pending_gate(gates, _PLAN_BRIEF_GATE_NODE_ID)
+    active_stage = _pending_plan_gate_node_id(gates) or campaign.active_stage_id or ""
+    if active_stage in {"plan-clarify", "plan-brief-gate"}:
+        return [
+            PlanQuestionResponse(
+                id="planning-feedback",
+                question=(
+                    "What constraints, scope boundaries, or acceptance expectations should this "
+                    "planning workflow account for?"
+                ),
+                hint=_gate_hint(
+                    brief_gate,
+                    (
+                        "Keep this focused; the answer is sent to the active workflow run before "
+                        "drafting."
+                    ),
+                ),
+            )
+        ]
+    if active_stage in {"plan-review", "plan-review-gate"}:
+        return [
+            PlanQuestionResponse(
+                id="draft-feedback",
+                question="What should change before this draft is approved?",
+                hint=(
+                    "Request focused changes; nothing is committed until you approve the final "
+                    "draft."
+                ),
+            )
+        ]
+    return []
+
+
+def _to_saga_structure_response(structure: SagaStructure) -> SagaStructureResponse:
+    return SagaStructureResponse(
+        name=structure.name,
+        phases=[
+            PhaseSpecResponse(
+                name=phase.name,
+                runs=[
+                    RunSpecResponse(
+                        name=run.name,
+                        description=run.description,
+                        acceptance_criteria=run.acceptance_criteria,
+                        declared_files=run.declared_files,
+                        estimate_hours=run.estimate_hours,
+                        confidence=run.confidence,
+                    )
+                    for run in phase.runs
+                ],
+            )
+            for phase in structure.phases
+        ],
+        risks=[PlanRiskResponse(kind=risk.kind, message=risk.message) for risk in structure.risks],
+    )
+
+
+def _extract_plan_structure(text: str) -> SagaStructure | None:
+    from ting.domain.validation import parse_and_validate, try_extract_structure
+
+    outcome = parse_outcome_block(text)
+    if outcome is not None:
+        raw_structure = outcome.fields.get("structure")
+        if isinstance(raw_structure, str):
+            with suppress(Exception):
+                return parse_and_validate(raw_structure)
+        if isinstance(raw_structure, dict):
+            with suppress(Exception):
+                return parse_and_validate(json.dumps(raw_structure))
+    return try_extract_structure(text)
+
+
+async def _read_plan_draft(
+    adapter: VolundrPort,
+    session_id: str,
+    *,
+    auth_token: str | None,
+    principal: Principal,
+) -> SagaStructure | None:
+    conversation = await adapter.get_conversation(
+        session_id,
+        auth_token=auth_token,
+        principal=principal,
+    )
+    turns = conversation.get("turns", []) if isinstance(conversation, dict) else []
+    for turn in reversed(turns):
+        if not isinstance(turn, dict) or turn.get("role") != "assistant":
+            continue
+        content = turn.get("content", "")
+        if not isinstance(content, str):
+            continue
+        structure = _extract_plan_structure(content)
+        if structure is not None:
+            return structure
+
+    text = await adapter.get_last_assistant_message(
+        session_id,
+        auth_token=auth_token,
+        principal=principal,
+    )
+    return _extract_plan_structure(text)
+
+
+def _to_plan_session_response(
+    campaign: WorkflowCampaign,
+    chat_endpoint: str | None,
+    gates: list[dict] | None = None,
+) -> PlanSessionResponse:
+    active_gate_node_id = _pending_plan_gate_node_id(gates or [])
+    return PlanSessionResponse(
+        session_id=campaign.session_id,
+        chat_endpoint=chat_endpoint,
+        name=campaign.name,
+        prompt=str(campaign.metadata.get("spec") or ""),
+        repo=str(campaign.metadata.get("repo") or ""),
+        campaign_slug=campaign.slug,
+        workflow_name=campaign.workflow_name,
+        status=campaign.status.value,
+        active_stage_id=active_gate_node_id or campaign.active_stage_id,
+        updated_at=campaign.updated_at,
+        stage_state=[_to_plan_stage_response(stage) for stage in campaign.stage_state],
+        questions=_plan_questions_for_campaign(campaign, gates),
+    )
+
+
+async def _resolve_plan_volundr_adapter(
+    *,
+    volundr_factory: VolundrFactory,
+    principal: Principal,
+):
+    return await volundr_factory.primary_for_principal(principal)
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +743,17 @@ class SagaTargetAssignmentRequest(BaseModel):
     target_match: str = "all"
 
 
+class SagaRepoRefRequest(BaseModel):
+    repo: str
+    branch: str = "main"
+
+
+class SagaReposAssignmentRequest(BaseModel):
+    repos: list[str] = Field(default_factory=list)
+    repo_refs: list[SagaRepoRefRequest] = Field(default_factory=list)
+    base_branch: str = "main"
+
+
 class RunSpecResponse(BaseModel):
     name: str
     description: str
@@ -252,9 +768,15 @@ class PhaseSpecResponse(BaseModel):
     runs: list[RunSpecResponse]
 
 
+class PlanRiskResponse(BaseModel):
+    kind: str
+    message: str
+
+
 class SagaStructureResponse(BaseModel):
     name: str
     phases: list[PhaseSpecResponse]
+    risks: list[PlanRiskResponse] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -279,9 +801,37 @@ class PlanRequest(BaseModel):
     """Request to spawn an interactive planning session."""
 
     spec: str = Field(min_length=1)
-    repo: str = Field(min_length=1)
+    workflow_id: UUID | None = Field(default=None, alias="workflowId")
+    repo: str = ""
     base_branch: str = Field(default="main", description="Base branch for the planning session")
     model: str = Field(default="")
+    connection_id: str | None = Field(default=None, alias="connectionId")
+
+    model_config = {"populate_by_name": True}
+
+
+class PlanFeedbackRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=20_000)
+    decision: str = Field(
+        default="approve",
+        description="Gate decision: approve or changes_requested.",
+    )
+
+
+class PlanStageStateResponse(BaseModel):
+    stage_id: str
+    label: str
+    status: str
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    reason: str | None = None
+
+
+class PlanQuestionResponse(BaseModel):
+    id: str
+    question: str
+    hint: str | None = None
+    kind: str = "text"
 
 
 class PlanSessionResponse(BaseModel):
@@ -289,6 +839,16 @@ class PlanSessionResponse(BaseModel):
 
     session_id: str
     chat_endpoint: str | None = None
+    name: str | None = None
+    prompt: str | None = None
+    repo: str | None = None
+    campaign_slug: str | None = None
+    workflow_name: str | None = None
+    status: str | None = None
+    active_stage_id: str | None = None
+    updated_at: datetime | None = None
+    stage_state: list[PlanStageStateResponse] = Field(default_factory=list)
+    questions: list[PlanQuestionResponse] = Field(default_factory=list)
 
 
 class ExtractStructureRequest(BaseModel):
@@ -538,6 +1098,35 @@ def create_sagas_router() -> APIRouter:
             )
         return items
 
+    @router.get("/plan", response_model=list[PlanSessionResponse])
+    async def list_plan_sessions(
+        principal: Principal = Depends(extract_principal),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+    ) -> list[PlanSessionResponse]:
+        campaigns = await campaign_repo.list_campaigns(owner_id=principal.user_id)
+        active_statuses = {
+            WorkflowCampaignStatus.PENDING,
+            WorkflowCampaignStatus.RUNNING,
+            WorkflowCampaignStatus.BLOCKED,
+        }
+        plan_campaigns = [
+            campaign
+            for campaign in campaigns
+            if campaign.status in active_statuses
+            and (
+                campaign.metadata.get("surface") == "ting.plan"
+                or campaign.workflow_name == _PLANNING_WORKFLOW_NAME
+            )
+        ]
+        return [
+            _to_plan_session_response(
+                campaign,
+                chat_endpoint=None,
+                gates=_stored_plan_gates(campaign),
+            )
+            for campaign in plan_campaigns
+        ]
+
     @router.get("/{saga_id}", response_model=SagaDetailResponse)
     async def get_saga(
         saga_id: str,
@@ -673,26 +1262,7 @@ def create_sagas_router() -> APIRouter:
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"LLM decomposition failed: {exc}",
             )
-        return SagaStructureResponse(
-            name=structure.name,
-            phases=[
-                PhaseSpecResponse(
-                    name=phase.name,
-                    runs=[
-                        RunSpecResponse(
-                            name=run.name,
-                            description=run.description,
-                            acceptance_criteria=run.acceptance_criteria,
-                            declared_files=run.declared_files,
-                            estimate_hours=run.estimate_hours,
-                            confidence=run.confidence,
-                        )
-                        for run in phase.runs
-                    ],
-                )
-                for phase in structure.phases
-            ],
-        )
+        return _to_saga_structure_response(structure)
 
     @router.get("/plan/config")
     async def get_plan_config(request: Request) -> dict:
@@ -700,62 +1270,330 @@ def create_sagas_router() -> APIRouter:
         settings = request.app.state.settings
         return {"finalize_prompt": settings.planner.finalize_prompt}
 
+    @router.get("/plan/{slug}", response_model=PlanSessionResponse)
+    async def get_plan_session(
+        slug: str,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+        volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
+    ) -> PlanSessionResponse:
+        campaign = await campaign_repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="Plan run not found")
+        gates: list[dict] = []
+        try:
+            adapter = await _resolve_plan_volundr_adapter(
+                volundr_factory=volundr_factory,
+                principal=principal,
+            )
+            if adapter is not None:
+                gates = await adapter.get_workflow_gates(
+                    campaign.session_id,
+                    auth_token=extract_bearer_token(request),
+                    principal=principal,
+                )
+        except Exception:
+            logger.warning(
+                "Failed to load planning workflow gates for campaign %s",
+                _sanitize_log(campaign.id),
+                exc_info=True,
+            )
+        if not gates:
+            gates = _stored_plan_gates(campaign)
+        return _to_plan_session_response(campaign, chat_endpoint=None, gates=gates)
+
+    @router.delete("/plan/{slug}", status_code=204)
+    async def cancel_plan_session(
+        slug: str,
+        principal: Principal = Depends(extract_principal),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+    ) -> None:
+        campaign = await campaign_repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="Plan run not found")
+
+        now = datetime.now(UTC)
+        await campaign_repo.save_campaign(
+            replace(
+                campaign,
+                status=WorkflowCampaignStatus.FAILED,
+                active_stage_id=None,
+                metadata={**campaign.metadata, "cancelled_by": "ting.plan"},
+                updated_at=now,
+                completed_at=campaign.completed_at or now,
+            )
+        )
+
+    @router.get("/plan/{slug}/draft", response_model=ExtractStructureResponse)
+    async def get_plan_draft(
+        slug: str,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+        volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
+    ) -> ExtractStructureResponse:
+        campaign = await campaign_repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="Plan run not found")
+
+        adapter = await _resolve_plan_volundr_adapter(
+            volundr_factory=volundr_factory,
+            principal=principal,
+        )
+        if adapter is None:
+            raise HTTPException(status_code=503, detail="No Volundr connection is available")
+
+        auth_token = extract_bearer_token(request)
+        campaign = await _retry_recorded_plan_gate_resolution(
+            adapter=adapter,
+            campaign_repo=campaign_repo,
+            campaign=campaign,
+            auth_token=auth_token,
+            principal=principal,
+        )
+        gates: list[dict] = []
+        try:
+            gates = await adapter.get_workflow_gates(
+                campaign.session_id,
+                auth_token=auth_token,
+                principal=principal,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to load planning workflow gates before draft read for campaign %s",
+                _sanitize_log(campaign.id),
+                exc_info=True,
+            )
+        visible_gates = gates or _stored_plan_gates(campaign)
+        if (
+            campaign.metadata.get(_PLAN_FEEDBACK_DECISION_METADATA_KEY) == "changes_requested"
+            and _pending_gate(visible_gates, _PLAN_REVIEW_GATE_NODE_ID) is None
+        ):
+            return ExtractStructureResponse(found=False)
+        try:
+            result = await _read_plan_draft(
+                adapter,
+                campaign.session_id,
+                auth_token=auth_token,
+                principal=principal,
+            )
+        except ValueError:
+            return ExtractStructureResponse(found=False)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in _TRANSIENT_PLAN_DRAFT_STATUS_CODES:
+                logger.info(
+                    "Planning draft not ready for campaign %s: session API returned %s",
+                    _sanitize_log(campaign.id),
+                    exc.response.status_code,
+                )
+                return ExtractStructureResponse(found=False)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to load plan draft: {exc}",
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to load plan draft: {exc}",
+            ) from exc
+
+        if result is None:
+            return ExtractStructureResponse(found=False)
+        return ExtractStructureResponse(found=True, structure=_to_saga_structure_response(result))
+
+    @router.post("/plan/{slug}/feedback")
+    async def send_plan_feedback(
+        slug: str,
+        body: PlanFeedbackRequest,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+        volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
+    ) -> dict[str, str]:
+        campaign = await campaign_repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="Plan run not found")
+
+        adapter = await _resolve_plan_volundr_adapter(
+            volundr_factory=volundr_factory,
+            principal=principal,
+        )
+        if adapter is None:
+            raise HTTPException(status_code=503, detail="No Volundr connection is available")
+
+        auth_token = extract_bearer_token(request)
+        try:
+            normalized_decision = body.decision.strip().lower().replace("-", "_")
+            final_approval = (
+                normalized_decision in {"approve", "approved"}
+                and body.content.strip() == "Approved in Ting Plan."
+            )
+            await _send_plan_message_with_retry(
+                adapter=adapter,
+                session_id=campaign.session_id,
+                content=body.content,
+                auth_token=auth_token,
+                principal=principal,
+            )
+            message_sent = True
+        except httpx.HTTPStatusError as exc:
+            if not final_approval or not _is_transient_plan_http_error(exc):
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Failed to send plan feedback: {exc}",
+                ) from exc
+            logger.info(
+                "Skipping stale final plan approval feedback for campaign %s: session returned %s",
+                _sanitize_log(campaign.id),
+                exc.response.status_code,
+            )
+            message_sent = False
+        try:
+            if normalized_decision in {"changes_requested", "change_requested"}:
+                normalized_decision = "changes_requested"
+                gate_decision = _PLAN_GATE_DECISION_CHANGES_REQUESTED
+                target_node_ids = (_PLAN_REVIEW_GATE_NODE_ID, _PLAN_BRIEF_GATE_NODE_ID)
+            elif normalized_decision in {"approve", "approved"}:
+                normalized_decision = "approve"
+                gate_decision = _PLAN_GATE_DECISION_APPROVE
+                target_node_ids = _PLAN_GATE_NODE_IDS
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="decision must be approve or changes_requested",
+                )
+            campaign = await _record_plan_feedback(
+                campaign_repo=campaign_repo,
+                campaign=campaign,
+                notes=body.content,
+                decision=normalized_decision,
+            )
+            if final_approval and not message_sent:
+                return {"status": "sent", "session_id": campaign.session_id}
+            gate_resolved = await _resolve_pending_plan_gate(
+                adapter=adapter,
+                campaign=campaign,
+                node_ids=target_node_ids,
+                decision=gate_decision,
+                notes=body.content,
+                auth_token=auth_token,
+                principal=principal,
+            )
+            if gate_resolved and gate_decision == _PLAN_GATE_DECISION_APPROVE:
+                campaign = await _mark_plan_brief_gate_resolved(
+                    campaign_repo=campaign_repo,
+                    campaign=campaign,
+                )
+                logger.info(
+                    "Resolved planning workflow gate %s for campaign %s",
+                    _sanitize_log(_PLAN_BRIEF_GATE_NODE_ID),
+                    _sanitize_log(campaign.id),
+                )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to send plan feedback: {exc}",
+            ) from exc
+        return {"status": "sent", "session_id": campaign.session_id}
+
     @router.post("/plan", response_model=PlanSessionResponse, status_code=201)
     async def spawn_plan_session(
         body: PlanRequest,
         request: Request,
         principal: Principal = Depends(extract_principal),
-        volundr: VolundrPort = Depends(resolve_volundr),
+        workflow_repo: WorkflowRepository = Depends(resolve_workflow_repo),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+        volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
     ) -> PlanSessionResponse:
-        """Spawn an interactive planning session via Volundr.
-
-        Creates a lightweight skuld-planner session that the user chats with
-        to iteratively decompose a specification into a saga structure.
-        """
+        """Spawn a workflow-backed planning session via Volundr."""
         settings = request.app.state.settings
         model = body.model or settings.dispatch.default_model
+        repo = body.repo.strip()
 
-        # Query Volundr for the user's integration IDs (includes PAT)
         auth_token = extract_bearer_token(request)
-        integration_ids: list[str] = []
-        try:
-            integration_ids = await volundr.list_integration_ids(auth_token=auth_token)
-        except Exception:
-            logger.warning("Failed to fetch Volundr integrations for user %s", principal.user_id)
 
         planner_template = settings.planner.planner_system_prompt
         if planner_template:
             planner_prompt = planner_template.format(
-                repo=body.repo,
+                repo=repo or "No repository selected",
                 base_branch=body.base_branch,
                 spec=body.spec,
             )
         else:
             planner_prompt = (
                 f"Help decompose this specification into phases and runs.\n\n"
-                f"Repository: {body.repo}\n"
+                f"Repository: {repo or 'No repository selected'}\n"
                 f"Base branch: {body.base_branch}\n"
                 f"Specification:\n{body.spec}"
             )
 
         try:
-            session = await volundr.spawn_session(
-                SpawnRequest(
-                    name=f"plan-{principal.user_id[:8]}",
-                    repo=body.repo,
-                    branch=body.base_branch,
-                    base_branch=body.base_branch,
-                    model=model,
-                    tracker_issue_id="",
-                    tracker_issue_url="",
-                    system_prompt=settings.dispatch.default_system_prompt,
-                    initial_prompt=planner_prompt,
-                    workload_type="planner",
-                    profile="planner",
-                    integration_ids=integration_ids,
-                ),
-                auth_token=auth_token,
+            workflow = await _resolve_planning_workflow(
+                workflow_repo,
+                principal,
+                body.workflow_id,
             )
+            plan_name = _plan_name(body.spec)
+            provenance = {
+                "surface": "ting.plan",
+                "repo": repo,
+                "base_branch": body.base_branch,
+            }
+            metadata = {
+                "surface": "ting.plan",
+                "spec": body.spec,
+                "repo": repo,
+                "base_branch": body.base_branch,
+            }
+            if body.connection_id:
+                provenance["connection_id"] = body.connection_id
+                metadata["connection_id"] = body.connection_id
+            execution = await launch_workflow_execution(
+                request=request,
+                workflow=workflow,
+                launch=WorkflowLaunchBody(
+                    prompt=planner_prompt,
+                    sessionName=_session_name(f"plan-{_slugify(plan_name)}"),
+                    repo=repo,
+                    branch=body.base_branch,
+                    model=model,
+                    connectionId=body.connection_id,
+                    provenance=provenance,
+                ),
+                volundr_factory=volundr_factory,
+                principal=principal,
+                bearer_token=auth_token,
+            )
+            slug = await _reserve_plan_slug(campaign_repo, execution.slug)
+            now = datetime.now(UTC)
+            stage_state = _initial_plan_stage_state(execution.workflow_snapshot, now)
+            campaign_status = _campaign_status_from_session(execution.session.status)
+            campaign = WorkflowCampaign(
+                id=uuid4(),
+                slug=slug,
+                name=plan_name,
+                owner_id=principal.user_id,
+                workflow_id=workflow.id,
+                workflow_version=workflow.version,
+                workflow_name=workflow.name,
+                workflow_snapshot=execution.workflow_snapshot,
+                session_id=execution.session.id,
+                session_name=execution.session.name,
+                status=campaign_status,
+                active_stage_id=stage_state[0].stage_id if stage_state else None,
+                stage_state=stage_state,
+                metadata={**metadata, "cluster_name": execution.session.cluster_name},
+                created_at=now,
+                updated_at=now,
+                last_activity_at=now,
+                completed_at=now if campaign_status == WorkflowCampaignStatus.COMPLETED else None,
+            )
+            saved = await campaign_repo.save_campaign(campaign)
+        except HTTPException:
+            raise
         except Exception as exc:
             logger.error("Failed to spawn planning session: %s", exc)
             raise HTTPException(
@@ -763,10 +1601,7 @@ def create_sagas_router() -> APIRouter:
                 detail=f"Failed to spawn planning session: {exc}",
             )
 
-        return PlanSessionResponse(
-            session_id=session.id,
-            chat_endpoint=session.chat_endpoint,
-        )
+        return _to_plan_session_response(saved, execution.session.chat_endpoint)
 
     @router.post("/extract-structure", response_model=ExtractStructureResponse)
     async def extract_structure(
@@ -784,29 +1619,7 @@ def create_sagas_router() -> APIRouter:
         if result is None:
             return ExtractStructureResponse(found=False)
 
-        return ExtractStructureResponse(
-            found=True,
-            structure=SagaStructureResponse(
-                name=result.name,
-                phases=[
-                    PhaseSpecResponse(
-                        name=phase.name,
-                        runs=[
-                            RunSpecResponse(
-                                name=run.name,
-                                description=run.description,
-                                acceptance_criteria=run.acceptance_criteria,
-                                declared_files=run.declared_files,
-                                estimate_hours=run.estimate_hours,
-                                confidence=run.confidence,
-                            )
-                            for run in phase.runs
-                        ],
-                    )
-                    for phase in result.phases
-                ],
-            ),
-        )
+        return ExtractStructureResponse(found=True, structure=_to_saga_structure_response(result))
 
     @router.patch("/{saga_id}", response_model=SagaListItem)
     async def update_saga(
@@ -935,6 +1748,87 @@ def create_sagas_router() -> APIRouter:
             instance_name=instance_name,
             target_tags=updated.target_tags,
             target_match=updated.target_match,
+        )
+
+    @router.put("/{saga_id}/repos", response_model=SagaListItem)
+    async def assign_repos(
+        saga_id: str,
+        body: SagaReposAssignmentRequest,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+        repo: SagaRepository = Depends(resolve_saga_repo),
+        adapters: list[TrackerPort] = Depends(resolve_trackers),
+    ) -> SagaListItem:
+        try:
+            parsed_id = UUID(saga_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Saga not found: {saga_id}",
+            )
+
+        saga = await repo.get_saga(parsed_id, owner_id=principal.user_id)
+        if saga is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Saga not found: {saga_id}",
+            )
+
+        default_branch = body.base_branch.strip() or saga.base_branch or "main"
+        raw_refs = (
+            [(entry.repo, entry.branch) for entry in body.repo_refs]
+            if body.repo_refs
+            else [(repo_name, default_branch) for repo_name in body.repos]
+        )
+        repo_branches: dict[str, str] = {}
+        for repo_name, branch_name in raw_refs:
+            repo_ref = repo_name.strip()
+            if not repo_ref or repo_ref in repo_branches:
+                continue
+            repo_branches[repo_ref] = branch_name.strip() or default_branch
+        if not repo_branches:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="At least one repository is required",
+            )
+
+        updated_saga = replace(
+            saga,
+            repos=list(repo_branches),
+            repo_branches=repo_branches,
+            base_branch=next(iter(repo_branches.values())),
+        )
+        await repo.save_saga(updated_saga)
+
+        project = await _find_project(updated_saga.tracker_id, adapters)
+        phase_summary = await _build_phase_summary(repo, updated_saga.id)
+        instance_name = await _resolve_instance_name(request, principal, updated_saga.instance_id)
+        return SagaListItem(
+            id=str(updated_saga.id),
+            tracker_id=updated_saga.tracker_id,
+            tracker_type=updated_saga.tracker_type,
+            slug=updated_saga.slug,
+            name=project.name if project else updated_saga.name,
+            repos=updated_saga.repos,
+            repo_branches=updated_saga.repo_branches,
+            repo_refs=_repo_refs(updated_saga),
+            feature_branch=updated_saga.feature_branch,
+            status=updated_saga.status.value.lower(),
+            progress=_display_progress(updated_saga, project, phase_summary),
+            milestone_count=project.milestone_count if project else 0,
+            issue_count=project.issue_count if project else 0,
+            url=project.url if project else "",
+            base_branch=updated_saga.base_branch,
+            confidence=updated_saga.confidence,
+            created_at=updated_saga.created_at.isoformat(),
+            phase_summary=phase_summary,
+            workflow_id=str(updated_saga.workflow_id) if updated_saga.workflow_id else None,
+            workflow=workflow_name_from_snapshot(updated_saga.workflow_snapshot),
+            workflow_version=updated_saga.workflow_version,
+            instance_id=updated_saga.instance_id,
+            instance_name=instance_name,
+            target_tags=updated_saga.target_tags,
+            target_match=updated_saga.target_match,
         )
 
     @router.put("/{saga_id}/target", response_model=SagaListItem)
@@ -1205,7 +2099,24 @@ def create_sagas_router() -> APIRouter:
                         status_code=status.HTTP_502_BAD_GATEWAY,
                         detail=f"Failed to create run '{run_spec.name}' in tracker: {exc}",
                     )
-                run = replace(run, tracker_id=tracker_run_id)
+                identifier = ""
+                url = ""
+                try:
+                    tracker_run = await tracker.get_run(tracker_run_id)
+                    identifier = tracker_run.identifier
+                    url = tracker_run.url
+                except Exception:
+                    logger.debug(
+                        "Tracker run metadata unavailable for %s",
+                        _sanitize_log(tracker_run_id),
+                        exc_info=True,
+                    )
+                run = replace(
+                    run,
+                    tracker_id=tracker_run_id,
+                    identifier=identifier,
+                    url=url,
+                )
                 runs.append(run)
 
                 run_responses.append(

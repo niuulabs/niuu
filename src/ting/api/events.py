@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 async def resolve_event_bus() -> EventBusPort:  # pragma: no cover
-    """Dependency stub — always overridden by the app lifespan in main.py."""
+    """Fail explicitly when the composition root has not installed an event bus."""
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="Event bus not configured",

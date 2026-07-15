@@ -13,7 +13,7 @@ import typer
 
 from niuu.cli_api_client import CLIAPIClient
 from niuu.cli_output import print_json, print_success, print_table
-from niuu.ports.plugin import APIRouteDomain, Service, ServiceDefinition, ServicePlugin, TUIPageSpec
+from niuu.ports.plugin import APIRouteDomain, ServiceDefinition, ServicePlugin, TUIPageSpec
 from volundr.tui.admin import AdminPage
 from volundr.tui.chat import ChatPage
 from volundr.tui.chronicles import ChroniclesPage
@@ -21,19 +21,6 @@ from volundr.tui.diffs import DiffsPage
 from volundr.tui.sessions import SessionsPage
 from volundr.tui.settings import SettingsPage
 from volundr.tui.terminal import TerminalPage
-
-
-class _VolundrStub(Service):
-    """Stub — actual server is managed by the CLI root server."""
-
-    async def start(self) -> None:
-        pass
-
-    async def stop(self) -> None:
-        pass
-
-    async def health_check(self) -> bool:
-        return True
 
 
 class VolundrPlugin(ServicePlugin):
@@ -48,22 +35,25 @@ class VolundrPlugin(ServicePlugin):
         return "AI-native development platform — sessions, chronicles, workspaces"
 
     def register_service(self) -> ServiceDefinition:
-        return ServiceDefinition(
+        return ServiceDefinition.hosted(
             name="volundr",
             description="AI-native development platform",
-            factory=_VolundrStub,
             default_enabled=True,
             depends_on=["postgres"],
             default_port=8080,
         )
 
-    def create_service(self) -> Service:
-        return self.register_service().factory()
-
-    def create_api_app(self) -> Any:
+    def create_api_app(
+        self,
+        public_origin: str = "http://localhost:8080",
+        *,
+        skuld_registry: Any | None = None,
+    ) -> Any:
         from volundr.main import create_app
 
-        return create_app()
+        if skuld_registry is None:
+            return create_app(public_origin=public_origin)
+        return create_app(public_origin=public_origin, skuld_registry=skuld_registry)
 
     def api_route_domains(self) -> tuple[APIRouteDomain, ...]:
         return (

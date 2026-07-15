@@ -16,7 +16,6 @@ from pathlib import Path
 
 import httpx
 
-from mimir.adapters.markdown import MarkdownMimirAdapter
 from ravn.adapters.tools.mimir_tools import (
     MimirIngestTool,
     MimirPublishFilesTool,
@@ -42,12 +41,21 @@ def _mimir_root() -> Path:
     return Path(raw).expanduser().resolve()
 
 
-def _default_mimir_name() -> str | None:
-    raw = os.environ.get("RAVN_MIMIR_NAME", "").strip()
-    return raw or None
+def _configured_adapter():
+    if not os.environ.get("RAVN_CONFIG", "").strip():
+        return None
+    from ravn.cli.commands import _build_mimir
+    from ravn.config import Settings
+
+    return _build_mimir(Settings())
 
 
-def _adapter() -> MarkdownMimirAdapter:
+def _adapter():
+    configured = _configured_adapter()
+    if configured is not None:
+        return configured
+    from mimir.adapters.markdown import MarkdownMimirAdapter
+
     return MarkdownMimirAdapter(root=_mimir_root())
 
 
@@ -107,7 +115,7 @@ async def _run_ingest(args: argparse.Namespace) -> int:
             "title": title,
             "source_type": args.source_type,
             "origin_url": origin_url,
-            "mimir": args.mimir or _default_mimir_name(),
+            "mimir": args.mimir or None,
         }
     )
     return _print_result(result)
@@ -127,9 +135,7 @@ async def _run_read(args: argparse.Namespace) -> int:
 
 async def _run_read_source(args: argparse.Namespace) -> int:
     tool = MimirReadSourceTool(_adapter())
-    result = await tool.execute(
-        {"source_id": args.source_id, "mimir": args.mimir or _default_mimir_name()}
-    )
+    result = await tool.execute({"source_id": args.source_id, "mimir": args.mimir or None})
     return _print_result(result)
 
 
@@ -149,7 +155,7 @@ async def _run_write(args: argparse.Namespace) -> int:
         {
             "path": args.path,
             "content": content,
-            "mimir": args.mimir or _default_mimir_name(),
+            "mimir": args.mimir or None,
         }
     )
     return _print_result(result)
@@ -157,9 +163,7 @@ async def _run_write(args: argparse.Namespace) -> int:
 
 async def _run_publish_files(args: argparse.Namespace) -> int:
     tool = MimirPublishFilesTool(_adapter(), workspace=_workspace())
-    result = await tool.execute(
-        {"paths": list(args.paths), "mimir": args.mimir or _default_mimir_name()}
-    )
+    result = await tool.execute({"paths": list(args.paths), "mimir": args.mimir or None})
     return _print_result(result)
 
 
@@ -183,18 +187,14 @@ def _run_related(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_list(args: argparse.Namespace) -> int:
-    root = _mimir_root() / "wiki"
-    if not root.exists():
-        print("wiki root not found", file=sys.stderr)
-        return 1
+async def _run_list(args: argparse.Namespace) -> int:
     prefix = (args.prefix or "").strip().strip("/")
-    base = root / prefix if prefix else root
-    if not base.exists():
+    pages = await _adapter().list_pages(prefix=prefix or None)
+    if not pages:
         print(f"no entries for prefix: {prefix}", file=sys.stderr)
         return 1
-    for path in sorted(base.rglob("*.md")):
-        print(path.relative_to(root).as_posix())
+    for page in pages:
+        print(page.path)
     return 0
 
 
@@ -261,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
     if command == "related":
         return _run_related(args)
     if command == "list":
-        return _run_list(args)
+        return asyncio.run(_run_list(args))
     raise SystemExit(f"unknown command: {command}")
 
 

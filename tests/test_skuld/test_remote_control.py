@@ -1,28 +1,27 @@
 """Tests for the Remote Control transports.
 
-The Claude transport launches ``claude remote-control``, scrapes the pairing
-URL from the ANSI TUI, and emits a structured ``remote_control`` event; the
-Codex variant fails fast until the standalone install exists.
+The transport launches ``claude remote-control``, scrapes the pairing URL from
+the ANSI TUI, and emits a structured ``remote_control`` event.
 """
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from skuld.transports.remote_control import (
     _ANSI_RE,
     _URL_RE,
-    CodexRemoteControlTransport,
     RemoteControlTransport,
 )
 
 
 class TestCommandConstruction:
-    def test_name_carries_session_token(self, monkeypatch):
-        monkeypatch.setenv("SKULD__SESSION__NAME", "my-session")
-        transport = RemoteControlTransport("/tmp", session_id="abcdef12-3456-7890")
+    def test_name_carries_session_token(self):
+        transport = RemoteControlTransport(
+            "/tmp", session_id="abcdef12-3456-7890", session_name="my-session"
+        )
 
         cmd = transport._build_command()
 
@@ -33,19 +32,23 @@ class TestCommandConstruction:
         assert "--spawn" in cmd
         assert "same-dir" in cmd
 
-    def test_permission_mode_follows_skip_permissions(self, monkeypatch):
-        monkeypatch.delenv("SKULD__REMOTE_CONTROL_PERMISSION_MODE", raising=False)
+    def test_permission_mode_follows_skip_permissions(self):
         bypass = RemoteControlTransport("/tmp", skip_permissions=True)._build_command()
         default = RemoteControlTransport("/tmp", skip_permissions=False)._build_command()
 
         assert bypass[bypass.index("--permission-mode") + 1] == "bypassPermissions"
         assert default[default.index("--permission-mode") + 1] == "default"
 
-    def test_permission_mode_env_override(self, monkeypatch):
-        monkeypatch.setenv("SKULD__REMOTE_CONTROL_PERMISSION_MODE", "acceptEdits")
-        cmd = RemoteControlTransport("/tmp", skip_permissions=True)._build_command()
+    def test_permission_mode_override(self):
+        cmd = RemoteControlTransport(
+            "/tmp", skip_permissions=True, remote_control_permission_mode="acceptEdits"
+        )._build_command()
 
         assert cmd[cmd.index("--permission-mode") + 1] == "acceptEdits"
+
+    def test_cli_binary_override(self):
+        cmd = RemoteControlTransport("/tmp", cli_binary="claude-custom")._build_command()
+        assert cmd[0] == "claude-custom"
 
     def test_capabilities_disable_send_message(self):
         caps = RemoteControlTransport("/tmp").capabilities
@@ -157,20 +160,6 @@ class TestSweepKill:
         assert seen == [101]
 
 
-class TestCodexStub:
-    @pytest.mark.asyncio
-    async def test_send_message_is_rejected(self):
-        transport = CodexRemoteControlTransport("/tmp")
-        transport._emit = AsyncMock()
-
-        await transport.start()
-        assert transport.is_alive is False
-
-    def test_capabilities_disable_send_message(self):
-        caps = CodexRemoteControlTransport("/tmp").capabilities
-        assert caps.send_message is False
-
-
 class TestProcessIteration:
     def test_ps_fallback_parses_pid_and_command(self):
         fake_ps = "  101 claude remote-control --name volundr-tok\n  bad line\n 103 claude daemon\n"
@@ -243,33 +232,3 @@ class TestStopAndResurface:
 
         resurfaced = [e for e in events if e.get("type") == "remote_control"]
         assert resurfaced and resurfaced[0]["url"].endswith("env_abc")
-
-
-class TestCodexNotice:
-    @pytest.mark.asyncio
-    async def test_notice_when_standalone_missing(self):
-        transport = CodexRemoteControlTransport("/tmp")
-        events: list[dict] = []
-
-        async def collect(event: dict) -> None:
-            events.append(event)
-
-        transport.on_event(collect)
-        with patch("os.path.exists", return_value=False):
-            await transport._notice()
-
-        assert events, "a notice event must be emitted"
-
-    @pytest.mark.asyncio
-    async def test_notice_when_standalone_present(self):
-        transport = CodexRemoteControlTransport("/tmp")
-        events: list[dict] = []
-
-        async def collect(event: dict) -> None:
-            events.append(event)
-
-        transport.on_event(collect)
-        with patch("os.path.exists", return_value=True):
-            await transport._notice()
-
-        assert events

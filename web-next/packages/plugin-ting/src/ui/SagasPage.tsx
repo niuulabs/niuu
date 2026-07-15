@@ -21,6 +21,7 @@ import type { SagaStatus } from '../domain/saga';
 import type {
   DispatchCluster,
   IDispatchBus,
+  ITingService,
   ITrackerBrowserService,
   TrackerProject,
 } from '../ports';
@@ -79,6 +80,10 @@ function downloadJson(filename: string, data: string): void {
   setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
 
+function isUuidLike(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
 type RepoCatalogService = {
   getRepos(): Promise<RepoRecord[]>;
   getBranches(repoUrl: string): Promise<string[]>;
@@ -127,9 +132,11 @@ function SagaRailItem({
             {statusLabel(saga.status)}
           </span>
         </span>
-        <span className="niuu:mt-1 niuu:truncate niuu:text-[11px] niuu:font-mono niuu:text-text-muted">
-          {saga.trackerId}
-        </span>
+        {saga.trackerId && !isUuidLike(saga.trackerId) ? (
+          <span className="niuu:mt-1 niuu:truncate niuu:text-[11px] niuu:font-mono niuu:text-text-muted">
+            {saga.trackerId}
+          </span>
+        ) : null}
         <span className="niuu:mt-2 niuu:grid niuu:grid-cols-[minmax(0,1fr)_auto] niuu:gap-x-3 niuu:gap-y-1 niuu:text-[10px] niuu:font-mono niuu:uppercase niuu:tracking-[0.06em] niuu:text-text-muted">
           <span className="niuu:truncate">{saga.repos[0] ?? 'niuulabs/volundr'}</span>
           <span>{`${saga.phaseSummary.completed}/${saga.phaseSummary.total} runs`}</span>
@@ -187,6 +194,7 @@ function SagasPageContent() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const params = useParams({ strict: false }) as { sagaId?: string };
+  const ting = useService<ITingService>('ting');
   const tracker = useService<ITrackerBrowserService>('ting.tracker');
   const dispatchBus = useService<IDispatchBus>('ting.dispatch');
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
@@ -206,6 +214,7 @@ function SagasPageContent() {
   const [targetTagsDraft, setTargetTagsDraft] = useState('');
   const [targetMatch, setTargetMatch] = useState<'all' | 'any'>('all');
   const [isImporting, setIsImporting] = useState(false);
+  const [isDeletingSaga, setIsDeletingSaga] = useState(false);
   const selectedRepos = useMemo(
     () => selectedRepoRefs.map((entry) => entry.repo),
     [selectedRepoRefs],
@@ -388,6 +397,27 @@ function SagasPageContent() {
     }
   }
 
+  async function handleDeleteSelectedSaga() {
+    if (!selectedSaga || !ting.deleteSaga) return;
+    if (!window.confirm(`Delete the Ting import for "${selectedSaga.name}"?`)) return;
+
+    setIsDeletingSaga(true);
+    try {
+      await ting.deleteSaga(selectedSaga.id);
+      await queryClient.invalidateQueries({ queryKey: ['ting', 'sagas'] });
+      setSelectedSagaIdState(null);
+      toast({ title: `Deleted ${selectedSaga.name}`, tone: 'success' });
+      void navigate({ to: '/ting/sagas' });
+    } catch (deleteError) {
+      toast({
+        title: deleteError instanceof Error ? deleteError.message : 'Failed to delete saga',
+        tone: 'critical',
+      });
+    } finally {
+      setIsDeletingSaga(false);
+    }
+  }
+
   return (
     <div className="niuu:flex niuu:h-full niuu:overflow-hidden niuu:bg-bg-primary">
       <aside className="niuu:flex niuu:w-[294px] niuu:shrink-0 niuu:flex-col niuu:border-r niuu:border-border-subtle niuu:bg-[#151a20]">
@@ -479,6 +509,17 @@ function SagasPageContent() {
             >
               Export
             </button>
+            {selectedSaga && ting.deleteSaga ? (
+              <button
+                type="button"
+                className="niuu:rounded-lg niuu:border niuu:border-critical/50 niuu:bg-bg-secondary niuu:px-4 niuu:py-2.5 niuu:text-[14px] niuu:font-medium niuu:text-critical"
+                onClick={() => void handleDeleteSelectedSaga()}
+                disabled={isDeletingSaga}
+                aria-label="Delete selected saga import"
+              >
+                {isDeletingSaga ? 'Deleting…' : 'Delete import'}
+              </button>
+            ) : null}
             <button
               type="button"
               className="niuu:rounded-lg niuu:border niuu:border-brand/50 niuu:bg-brand niuu:px-4 niuu:py-2.5 niuu:text-[14px] niuu:font-medium niuu:text-bg-primary"

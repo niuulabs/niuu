@@ -1,4 +1,17 @@
-import type { Registry, Topology, ObservatoryEvent } from '../domain';
+import type {
+  AgentDirectoryEntry,
+  AgentDirectoryFilters,
+  AgentDirectoryPage,
+  Registry,
+  Topology,
+  ObservatoryEvent,
+} from '../domain';
+
+/** Principal-scoped searchable view of A2A-addressable topology entities. */
+export interface IAgentDirectory {
+  listAgents(filters?: AgentDirectoryFilters): Promise<AgentDirectoryPage>;
+  getAgent(agentId: string): Promise<AgentDirectoryEntry>;
+}
 
 /**
  * Provides read access to the versioned entity-type registry.

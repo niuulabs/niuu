@@ -1,4 +1,4 @@
-FROM python:3.11-slim-bookworm@sha256:e2d3af735aff6eeee600b1933bedd99da6645fedf572cc12ef4cc1331f2ceebe AS builder
+FROM python:3.14-slim-trixie@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1 AS builder
 
 ARG TARGETARCH
 
@@ -24,12 +24,10 @@ WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
 COPY src/ /app/src/
-RUN uv sync --frozen --no-dev --no-editable --extra k8s --extra nats \
-    && mkdir -p /dist-root/data/mimir /dist-root/usr/local/bin \
-    && ln -s /usr/bin/python3 /dist-root/usr/local/bin/python3 \
-    && ln -s /usr/bin/python3 /dist-root/usr/local/bin/python
+RUN uv sync --frozen --no-dev --no-editable --extra k8s --extra nats --extra openshell \
+    && mkdir -p /dist-root/data/mimir
 
-FROM gcr.io/distroless/python3-debian12:nonroot@sha256:7d1042ce588ab97019fe95c24ffca7bc5a82ccdac572511d5e09bda4435c89c5
+FROM python:3.14-slim-trixie@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
 
 
 LABEL org.opencontainers.image.title="niuu"
@@ -39,15 +37,15 @@ LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.source="https://github.com/niuulabs/volundr"
 
 ENV VIRTUAL_ENV=/opt/venv
-ENV PYTHONPATH=/opt/venv/lib/python3.11/site-packages
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 COPY --from=builder --chown=65532:65532 /opt/venv /opt/venv
 COPY --from=builder --chown=65532:65532 /dist-root/data /data
-COPY --from=builder /dist-root/usr/local/bin /usr/local/bin
+
+USER 65532:65532
 
 WORKDIR /app
 
 EXPOSE 8082
 
-ENTRYPOINT ["/usr/bin/python3", "-m", "uvicorn", "niuu.main:app", "--host", "0.0.0.0", "--port", "8082"]
+ENTRYPOINT ["/opt/venv/bin/python", "-m", "uvicorn", "cli.shared_host:app", "--host", "0.0.0.0", "--port", "8082"]

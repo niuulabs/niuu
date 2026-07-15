@@ -9,10 +9,12 @@ import {
   createMockWardenStore,
   buildRavnPersonaAdapter,
   buildRavnRavenAdapter,
+  buildRavnResidentControlAdapter,
   buildRavnSessionAdapter,
   buildRavnTriggerAdapter,
   buildRavnBudgetAdapter,
   buildRavnWardenAdapter,
+  type IResidentControl,
 } from '@niuulabs/plugin-ravn';
 import {
   createMockTingService,
@@ -21,6 +23,7 @@ import {
   createMockTrackerService,
   createMockWorkflowService,
   createMockResearchService,
+  createMockSpecsService,
   createMockDispatchBus,
   createMockTingSettingsService,
   createMockAuditLogService,
@@ -30,6 +33,7 @@ import {
   buildTrackerHttpAdapter,
   buildWorkflowHttpAdapter,
   buildResearchHttpAdapter,
+  buildSpecsHttpAdapter,
   buildDispatchBusHttpAdapter,
   buildTingSettingsHttpAdapter,
   buildTingAuditLogHttpAdapter,
@@ -42,6 +46,8 @@ import {
   buildObservatoryRegistryHttpAdapter,
   buildObservatoryTopologySseStream,
   buildObservatoryEventsSseStream,
+  buildObservatoryAgentDirectoryHttpAdapter,
+  type IAgentDirectory,
 } from '@niuulabs/plugin-observatory';
 import {
   createMockVolundrService,
@@ -64,9 +70,13 @@ import {
 } from '@niuulabs/plugin-volundr';
 import {
   buildOdinReviewHttpAdapter,
+  buildRealmGovernanceHttpAdapter,
   buildValkyrieHttpAdapter,
+  buildValkyrieSkillsHttpAdapter,
   createMockOdinReviewService,
+  createMockRealmGovernanceService,
   createMockValkyrieService,
+  createMockValkyrieSkillsService,
 } from '@niuulabs/plugin-valkyrie';
 import { createApiClient } from '@niuulabs/query';
 import {
@@ -81,17 +91,81 @@ import type { NiuuConfig, ServiceConfig, ServicesMap } from '@niuulabs/plugin-sd
 import { buildRepoCatalogHttpAdapter, createMockRepoCatalogService } from './repoCatalog';
 
 export interface ServiceBackendStatus {
-  mode: 'live' | 'mock';
-  transport: 'http' | 'ws' | 'mock';
+  mode: 'live' | 'demo' | 'unavailable';
+  transport: 'http' | 'ws' | 'mock' | 'none';
   target: string | null;
   source: string;
   note?: string;
 }
 
+export class UnsupportedSessionStoreOperationError extends Error {
+  readonly operation: 'create' | 'update';
+
+  constructor(operation: 'create' | 'update') {
+    super(
+      `The app session-store adapter does not support session ${operation}. Use the Forge lifecycle service instead.`,
+    );
+    this.name = 'UnsupportedSessionStoreOperationError';
+    this.operation = operation;
+  }
+}
+
+export interface UnavailableServiceStatus {
+  available: false;
+  serviceName: string;
+  reason: string;
+}
+
+export class ServiceUnavailableError extends Error {
+  readonly serviceName: string;
+
+  constructor(serviceName: string, reason = 'No live backend is configured.') {
+    super(`Service "${serviceName}" is unavailable: ${reason}`);
+    this.name = 'ServiceUnavailableError';
+    this.serviceName = serviceName;
+  }
+}
+
+export const UNAVAILABLE_SERVICE = Symbol('niuu.unavailable-service');
+
+export function isUnavailableService(
+  service: unknown,
+): service is { [UNAVAILABLE_SERVICE]: UnavailableServiceStatus } {
+  return Boolean(
+    service &&
+    typeof service === 'object' &&
+    UNAVAILABLE_SERVICE in service &&
+    (service as { [UNAVAILABLE_SERVICE]?: UnavailableServiceStatus })[UNAVAILABLE_SERVICE]
+      ?.available === false,
+  );
+}
+
+function unavailableService<T>(serviceName: string): T {
+  const reason = 'No live backend is configured. Enable demoMode for synthetic data.';
+  const status: UnavailableServiceStatus = { available: false, serviceName, reason };
+  return new Proxy(
+    { [UNAVAILABLE_SERVICE]: status } as unknown as T & Record<PropertyKey, unknown>,
+    {
+      get(target, property, receiver) {
+        if (property === 'then') return undefined;
+        if (property in target) return Reflect.get(target, property, receiver);
+        return () => {
+          throw new ServiceUnavailableError(serviceName, reason);
+        };
+      },
+    },
+  );
+}
+
+function demoService<T>(config: Partial<NiuuConfig>, serviceName: string, factory: () => T): T {
+  if (config.demoMode) return factory();
+  return unavailableService<T>(serviceName);
+}
+
 /**
  * A service config is "live" (i.e. should use a real transport) when its mode
  * is `http` or `ws` and a URL is present. Any other combination — missing
- * mode, `mock`, or missing URL — falls back to the mock adapter.
+ * mode or a missing URL is unavailable unless the runtime explicitly enables demo mode.
  */
 function hasHttpBackend(
   svc: ServiceConfig | undefined,
@@ -157,10 +231,10 @@ function resolveDirectServiceStatus(
     }
   }
   return {
-    mode: 'mock',
-    transport: 'mock',
+    mode: 'unavailable',
+    transport: 'none',
     target: null,
-    source: 'mock',
+    source: 'configuration',
   };
 }
 
@@ -230,10 +304,10 @@ function resolveRepoCatalogStatus(config: Pick<NiuuConfig, 'services'>): Service
   const base = resolveRepoCatalogBase(config);
   if (!base) {
     return {
-      mode: 'mock',
-      transport: 'mock',
+      mode: 'unavailable',
+      transport: 'none',
       target: null,
-      source: 'mock',
+      source: 'configuration',
     };
   }
 
@@ -321,10 +395,10 @@ function resolveFilesystemStatus(config: Pick<NiuuConfig, 'services'>): ServiceB
   }
 
   return {
-    mode: 'mock',
-    transport: 'mock',
+    mode: 'unavailable',
+    transport: 'none',
     target: null,
-    source: 'mock',
+    source: 'configuration',
     note: 'No live filesystem API is wired yet.',
   };
 }
@@ -338,7 +412,8 @@ function resolveTingServiceBase(
     | 'ting.dispatch'
     | 'ting.settings'
     | 'ting.workflows'
-    | 'ting.research',
+    | 'ting.research'
+    | 'ting.specs',
 ): string | null {
   const explicitBase = resolveDirectServiceBase(config, serviceKey);
   if (!explicitBase) return resolveDirectServiceBase(config, 'ting');
@@ -356,6 +431,8 @@ function resolveTingServiceBase(
       return explicitBase.replace(/\/workflows\/?$/, '');
     case 'ting.research':
       return explicitBase.replace(/\/research\/?$/, '');
+    case 'ting.specs':
+      return explicitBase.replace(/\/specs\/?$/, '');
     default:
       return explicitBase;
   }
@@ -363,37 +440,81 @@ function resolveTingServiceBase(
 
 function resolveObservatoryServiceBase(
   config: Pick<NiuuConfig, 'services'>,
-  serviceKey: 'observatory.registry' | 'observatory.topology' | 'observatory.events',
+  serviceKey:
+    'observatory.registry' | 'observatory.topology' | 'observatory.events' | 'observatory.agents',
 ): string | null {
   const explicitBase = resolveDirectServiceBase(config, serviceKey);
   if (explicitBase) {
     if (serviceKey === 'observatory.registry') {
       return explicitBase.replace(/\/registry\/?$/, '');
     }
+    if (serviceKey === 'observatory.agents') {
+      return explicitBase.replace(/\/agents\/?$/, '');
+    }
     return explicitBase;
+  }
+
+  if (serviceKey === 'observatory.agents') {
+    const aggregateBase = resolveNiuuRegistryBase(config);
+    if (aggregateBase) return `${aggregateBase}/observatory`;
   }
 
   const groupedBase = resolveDirectServiceBase(config, 'observatory');
   if (!groupedBase) return null;
 
-  if (serviceKey === 'observatory.registry') return groupedBase;
+  if (serviceKey === 'observatory.registry' || serviceKey === 'observatory.agents') {
+    return groupedBase;
+  }
   if (serviceKey === 'observatory.topology') return `${groupedBase}/topology`;
   return `${groupedBase}/events`;
 }
 
 function resolveValkyrieServiceBase(
   config: Pick<NiuuConfig, 'services'>,
-  serviceKey: 'valkyrie' | 'valkyrie.reviews',
+  serviceKey: 'valkyrie' | 'valkyrie.reviews' | 'valkyrie.skills',
 ): string | null {
   const explicitBase = resolveDirectServiceBase(config, serviceKey);
   if (explicitBase) return explicitBase;
 
   const groupedBase = resolveDirectServiceBase(config, 'valkyrie');
   if (!groupedBase) return null;
-  // The review queue lives beside the dashboard API under /ravn/odin.
+  // The review queue lives beside the dashboard API under /ravn/odin;
+  // learned skills ride the dashboard base (`<valkyrieBase>/skills`).
   return serviceKey === 'valkyrie.reviews'
     ? groupedBase.replace(/\/valkyrie\/?$/, '/odin')
     : groupedBase;
+}
+
+/**
+ * Realm governance spans two backends: realms on the shared niuu host
+ * (`<sharedApiBase>/realms`) and workflows on Ting (`<tingBase>/workflows`).
+ * Live only when both are reachable.
+ */
+function resolveRealmGovernanceBases(
+  config: Pick<NiuuConfig, 'services'>,
+): { realmsBase: string; workflowsBase: string } | null {
+  const realmsBase = resolveSharedApiBase(config);
+  const workflowsBase = resolveTingServiceBase(config, 'ting.workflows');
+  if (!realmsBase || !workflowsBase) return null;
+  return { realmsBase, workflowsBase };
+}
+
+function resolveRealmGovernanceStatus(config: Pick<NiuuConfig, 'services'>): ServiceBackendStatus {
+  const bases = resolveRealmGovernanceBases(config);
+  if (!bases) {
+    return {
+      mode: 'unavailable',
+      transport: 'none',
+      target: null,
+      source: 'configuration',
+    };
+  }
+  return {
+    mode: 'live',
+    transport: 'http',
+    target: bases.realmsBase,
+    source: 'shared-api',
+  };
 }
 
 export function resolveSettingsServiceBase(
@@ -521,13 +642,13 @@ export function buildSharedFeatureCatalogService(
   config: Pick<NiuuConfig, 'services'>,
 ): IFeatureCatalogService {
   const featuresBase = resolveCanonicalServiceBase(config, 'features');
-  if (!featuresBase) return createMockFeatureCatalogService();
+  if (!featuresBase) return demoService(config, 'features', createMockFeatureCatalogService);
   return buildFeatureCatalogAdapter(createApiClient(featuresBase));
 }
 
 export function buildSharedIdentityService(config: Pick<NiuuConfig, 'services'>): IIdentityService {
   const identityBase = resolveCanonicalServiceBase(config, 'identity');
-  if (!identityBase) return createMockIdentityService();
+  if (!identityBase) return demoService(config, 'identity', createMockIdentityService);
   return buildIdentityAdapter(createApiClient(identityBase));
 }
 
@@ -553,20 +674,36 @@ function resolveCanonicalServiceStatus(
 
 function resolveObservatoryServiceStatus(
   config: Pick<NiuuConfig, 'services'>,
-  serviceKey: 'observatory.registry' | 'observatory.topology' | 'observatory.events',
+  serviceKey:
+    'observatory.registry' | 'observatory.topology' | 'observatory.events' | 'observatory.agents',
 ): ServiceBackendStatus {
   const explicit = resolveDirectServiceStatus(config, 'http', serviceKey);
   if (explicit.mode === 'live') {
     if (serviceKey === 'observatory.registry' && explicit.target) {
       return { ...explicit, target: explicit.target.replace(/\/registry\/?$/, '') };
     }
+    if (serviceKey === 'observatory.agents' && explicit.target) {
+      return { ...explicit, target: explicit.target.replace(/\/agents\/?$/, '') };
+    }
     return explicit;
+  }
+
+  if (serviceKey === 'observatory.agents') {
+    const aggregateBase = resolveNiuuRegistryBase(config);
+    if (aggregateBase) {
+      return {
+        mode: 'live',
+        transport: 'http',
+        target: `${aggregateBase}/observatory`,
+        source: 'niuu',
+      };
+    }
   }
 
   const grouped = resolveDirectServiceStatus(config, 'http', 'observatory');
   if (grouped.mode !== 'live' || !grouped.target) return grouped;
 
-  if (serviceKey === 'observatory.registry') {
+  if (serviceKey === 'observatory.registry' || serviceKey === 'observatory.agents') {
     return { ...grouped, source: 'observatory' };
   }
   if (serviceKey === 'observatory.topology') {
@@ -576,12 +713,12 @@ function resolveObservatoryServiceStatus(
 }
 
 export function buildServiceBackendStatus(
-  config: Pick<NiuuConfig, 'services'>,
+  config: Pick<NiuuConfig, 'services' | 'demoMode'>,
 ): Record<string, ServiceBackendStatus> {
   const forgePtyStatus = resolveDirectServiceStatus(config, 'ws', 'forge.pty');
   const derivedForgeBase = resolveForgeServiceBase(config);
 
-  return {
+  const resolved: Record<string, ServiceBackendStatus> = {
     identity: resolveCanonicalServiceStatus(config, 'identity'),
     features: resolveCanonicalServiceStatus(config, 'features'),
     tracker: resolveCanonicalServiceStatus(config, 'tracker'),
@@ -590,14 +727,18 @@ export function buildServiceBackendStatus(
     'observatory.registry': resolveObservatoryServiceStatus(config, 'observatory.registry'),
     'observatory.topology': resolveObservatoryServiceStatus(config, 'observatory.topology'),
     'observatory.events': resolveObservatoryServiceStatus(config, 'observatory.events'),
+    'observatory.agents': resolveObservatoryServiceStatus(config, 'observatory.agents'),
     'ravn.personas': resolveRavnServiceStatus(config, 'ravn.personas'),
     'ravn.ravens': resolveRavnServiceStatus(config, 'ravn.ravens'),
+    'ravn.residents': resolveRavnServiceStatus(config, 'ravn.ravens'),
     'ravn.sessions': resolveRavnServiceStatus(config, 'ravn.sessions'),
     'ravn.triggers': resolveRavnServiceStatus(config, 'ravn.triggers'),
     'ravn.budget': resolveRavnServiceStatus(config, 'ravn.budget'),
     'ravn.wardens': resolveRavnServiceStatus(config, 'ravn.wardens'),
     valkyrie: resolveDirectServiceStatus(config, 'http', 'valkyrie'),
     'valkyrie.reviews': resolveDirectServiceStatus(config, 'http', 'valkyrie.reviews', 'valkyrie'),
+    'valkyrie.skills': resolveDirectServiceStatus(config, 'http', 'valkyrie.skills', 'valkyrie'),
+    'valkyrie.realms': resolveRealmGovernanceStatus(config),
     'niuu.repos': resolveRepoCatalogStatus(config),
     forge: resolveDirectServiceStatus(config, 'http', 'forge'),
     'forge.pty':
@@ -611,7 +752,6 @@ export function buildServiceBackendStatus(
               source: 'forge',
             }
           : forgePtyStatus,
-    'forge.metrics': resolveDirectServiceStatus(config, 'http', 'forge.metrics'),
     ting: resolveDirectServiceStatus(config, 'http', 'ting'),
     'ting.dispatcher': resolveDirectServiceStatus(config, 'http', 'ting.dispatcher', 'ting'),
     'ting.sessions': resolveDirectServiceStatus(config, 'http', 'ting.sessions', 'ting'),
@@ -621,8 +761,25 @@ export function buildServiceBackendStatus(
     'ting.audit': resolveCanonicalServiceStatus(config, 'audit'),
     'ting.workflows': resolveDirectServiceStatus(config, 'http', 'ting.workflows', 'ting'),
     'ting.research': resolveDirectServiceStatus(config, 'http', 'ting.research', 'ting'),
+    'ting.specs': resolveDirectServiceStatus(config, 'http', 'ting.specs', 'ting'),
     filesystem: resolveFilesystemStatus(config),
   };
+  if (!config.demoMode) return resolved;
+
+  return Object.fromEntries(
+    Object.entries(resolved).map(([serviceName, status]) => [
+      serviceName,
+      status.mode === 'unavailable'
+        ? {
+            ...status,
+            mode: 'demo',
+            transport: 'mock',
+            source: 'demo',
+            note: status.note ?? 'Explicit demo adapter; no live backend is connected.',
+          }
+        : status,
+    ]),
+  );
 }
 
 const EMPTY_SESSION_RESOURCES: Session['resources'] = {
@@ -648,6 +805,8 @@ function toSessionState(session: VolundrSession): Session['state'] {
     case 'provisioning':
       return 'provisioning';
     case 'running':
+      if (session.needsAttention || session.activityState === 'awaiting_input')
+        return 'awaiting_input';
       return session.activityState === 'idle' ? 'idle' : 'running';
     case 'stopping':
       return 'terminating';
@@ -751,7 +910,7 @@ function buildSplitVolundrService(
     getActiveSessions: () => forge.getActiveSessions(),
     getStats: () => forge.getStats(),
     getRepos: () => forge.getRepos(),
-    getTargets: () => forge.getTargets(),
+    getTargets: () => Promise.resolve(forge.getTargets?.() ?? []),
     subscribe: (callback) => forge.subscribe(callback),
     subscribeStats: (callback) => forge.subscribeStats(callback),
     getAvailableMcpServers: () => forge.getAvailableMcpServers(),
@@ -823,14 +982,10 @@ function buildVolundrSessionStore(volundr: IVolundrService): ISessionStore {
       return applySessionFilters(await listAllVolundrSessions(volundr), filters);
     },
     async createSession() {
-      throw new Error(
-        'Session creation is not yet supported through the app session-store adapter.',
-      );
+      throw new UnsupportedSessionStoreOperationError('create');
     },
     async updateSession() {
-      throw new Error(
-        'Session updates are not yet supported through the app session-store adapter.',
-      );
+      throw new UnsupportedSessionStoreOperationError('update');
     },
     async deleteSession(id: string) {
       await volundr.deleteSession(id);
@@ -901,14 +1056,39 @@ function parseIntegerResource(value: unknown, fallback: number): number {
 }
 
 type ClusterResourceRecord = {
+  instances?: Array<{
+    id: string;
+    name: string;
+    slug: string;
+    isDefault?: boolean;
+    is_default?: boolean;
+    tags?: string[];
+  }>;
   resourceTypes?: Array<{ name?: string; resourceKey?: string }>;
   nodes?: Array<{
     name: string;
+    instanceId?: string;
+    instance_id?: string;
+    instanceName?: string;
+    instance_name?: string;
+    instanceSlug?: string;
+    instance_slug?: string;
     labels?: Record<string, string>;
     allocatable?: Record<string, string>;
     allocated?: Record<string, string>;
     available?: Record<string, string>;
   }>;
+};
+
+type VolundrTargetRecord = Awaited<ReturnType<IVolundrService['getTargets']>>[number];
+type ClusterNodeRecord = NonNullable<ClusterResourceRecord['nodes']>[number] & {
+  id: string;
+  status: Cluster['nodes'][number]['status'];
+  role: string;
+  allocatable: Record<string, string>;
+  allocated: Record<string, string>;
+  available: Record<string, string>;
+  labels: Record<string, string>;
 };
 
 function toPodStatus(session: VolundrSession): Cluster['pods'][number]['status'] {
@@ -927,18 +1107,156 @@ function toPodStatus(session: VolundrSession): Cluster['pods'][number]['status']
   }
 }
 
+function clusterKey(value: unknown): string {
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function targetFromResourceInstance(
+  instance: NonNullable<ClusterResourceRecord['instances']>[number],
+): VolundrTargetRecord {
+  return {
+    id: instance.id,
+    slug: instance.slug,
+    name: instance.name,
+    baseUrl: '',
+    enabled: true,
+    isDefault: instance.isDefault ?? instance.is_default ?? false,
+    visibility: 'system',
+    tags: instance.tags ?? [],
+  };
+}
+
+function sessionBelongsToTarget(session: VolundrSession, target: VolundrTargetRecord): boolean {
+  if (session.instanceId && session.instanceId === target.id) return true;
+  const sessionName = clusterKey(session.instanceName);
+  if (!sessionName) return false;
+  return sessionName === clusterKey(target.name) || sessionName === clusterKey(target.slug);
+}
+
+function nodeBelongsToTarget(node: ClusterNodeRecord, target: VolundrTargetRecord): boolean {
+  const ids = [
+    node.instanceId,
+    node.instance_id,
+    node.instanceName,
+    node.instance_name,
+    node.instanceSlug,
+    node.instance_slug,
+  ].map(clusterKey);
+  return (
+    ids.includes(clusterKey(target.id)) ||
+    ids.includes(clusterKey(target.name)) ||
+    ids.includes(clusterKey(target.slug))
+  );
+}
+
+function parseRealmFromTarget(target: VolundrTargetRecord): string {
+  try {
+    const host = new URL(target.baseUrl).hostname;
+    const parts = host.split('.');
+    const slugIndex = parts.findIndex((part) => clusterKey(part) === clusterKey(target.slug));
+    if (slugIndex >= 0 && parts[slugIndex + 1]) return parts[slugIndex + 1]!;
+  } catch {
+    // Keep the display stable when baseUrl is absent or not absolute.
+  }
+  return target.tags.find((tag) => !['cpu', 'gpu'].includes(clusterKey(tag))) ?? target.slug;
+}
+
+function capacityFromNodes(nodes: ClusterNodeRecord[]): Cluster['capacity'] {
+  return nodes.reduce(
+    (acc, node) => ({
+      cpu: acc.cpu + parseCpuCores(node.allocatable.cpu, 0),
+      memMi: acc.memMi + parseMemoryToMi(node.allocatable.memory, 0),
+      gpu: acc.gpu + parseIntegerResource(node.allocatable['nvidia.com/gpu'], 0),
+    }),
+    { cpu: 0, memMi: 0, gpu: 0 },
+  );
+}
+
+function usedFromNodes(nodes: ClusterNodeRecord[]): Cluster['used'] {
+  return nodes.reduce(
+    (acc, node) => ({
+      cpu: acc.cpu + parseCpuCores(node.allocated.cpu, 0),
+      memMi: acc.memMi + parseMemoryToMi(node.allocated.memory, 0),
+      gpu: acc.gpu + parseIntegerResource(node.allocated['nvidia.com/gpu'], 0),
+    }),
+    { cpu: 0, memMi: 0, gpu: 0 },
+  );
+}
+
+function buildClusterFromParts(
+  target: VolundrTargetRecord,
+  nodes: ClusterNodeRecord[],
+  sessions: VolundrSession[],
+): Cluster {
+  const capacity = capacityFromNodes(nodes);
+  const used = usedFromNodes(nodes);
+  const sampleLabels = nodes[0]?.labels ?? {};
+  const region =
+    sampleLabels['topology.kubernetes.io/region'] ??
+    sampleLabels['failure-domain.beta.kubernetes.io/region'] ??
+    target.slug;
+  const isGpu = capacity.gpu > 0 || target.tags.some((tag) => clusterKey(tag) === 'gpu');
+
+  return {
+    id: target.id,
+    realm: parseRealmFromTarget(target),
+    name: target.name,
+    kind: isGpu ? 'gpu' : 'primary',
+    status: nodes.length > 0 || sessions.length > 0 ? 'healthy' : 'warning',
+    region,
+    capacity,
+    used,
+    disk: {
+      usedGi: 0,
+      totalGi: 0,
+      systemGi: 0,
+      podsGi: 0,
+      logsGi: 0,
+    },
+    nodes: nodes.map((node) => ({
+      id: node.id,
+      status: node.status,
+      role: node.role,
+    })),
+    pods: sessions.map((session) => ({
+      name: session.podName ?? session.name,
+      status: toPodStatus(session),
+      startedAt: toIsoFromEpochMs(session.lastActive) ?? new Date(0).toISOString(),
+      cpuUsed: 0,
+      cpuLimit: 0,
+      memUsedMi: 0,
+      memLimitMi: 0,
+      restarts: 0,
+    })),
+    runningSessions: sessions.filter((session) => session.status === 'running').length,
+    queuedProvisions: sessions.filter(
+      (session) =>
+        session.status === 'created' ||
+        session.status === 'starting' ||
+        session.status === 'provisioning',
+    ).length,
+  };
+}
+
 function buildVolundrClusterAdapter(volundr: IVolundrService): IClusterAdapter {
   return {
     async getClusters() {
-      const [resources, sessions] = await Promise.all([
+      const [resources, sessions, rawTargets] = await Promise.all([
         volundr
           .getClusterResources()
           .catch(() => ({ resourceTypes: [], nodes: [] }) as ClusterResourceRecord),
         volundr.getSessions().catch(() => [] as VolundrSession[]),
+        Promise.resolve(volundr.getTargets?.() ?? []).catch(() => [] as VolundrTargetRecord[]),
       ]);
 
       const nodes = (resources.nodes ?? []).map((node, index) => ({
         id: node.name || `node-${index + 1}`,
+        name: node.name || `node-${index + 1}`,
         status: 'ready' as const,
         role:
           node.labels?.['node-role.kubernetes.io/control-plane'] != null ||
@@ -949,73 +1267,74 @@ function buildVolundrClusterAdapter(volundr: IVolundrService): IClusterAdapter {
         allocated: node.allocated ?? {},
         available: node.available ?? {},
         labels: node.labels ?? {},
+        instanceId: node.instanceId,
+        instance_id: node.instance_id,
+        instanceName: node.instanceName,
+        instance_name: node.instance_name,
+        instanceSlug: node.instanceSlug,
+        instance_slug: node.instance_slug,
       }));
+      const targets =
+        rawTargets.length > 0
+          ? rawTargets
+          : (resources.instances ?? []).map(targetFromResourceInstance);
+
+      if (targets.length > 0) {
+        const claimedSessionIds = new Set<string>();
+        const clusters = targets.map((target) => {
+          const targetSessions = sessions.filter((session) => {
+            const belongs = sessionBelongsToTarget(session, target);
+            if (belongs) claimedSessionIds.add(session.id);
+            return belongs;
+          });
+          return buildClusterFromParts(
+            target,
+            nodes.filter((node) => nodeBelongsToTarget(node, target)),
+            targetSessions,
+          );
+        });
+
+        const unclaimedSessions = sessions.filter((session) => !claimedSessionIds.has(session.id));
+        if (unclaimedSessions.length > 0) {
+          clusters.push(
+            buildClusterFromParts(
+              {
+                id: 'shared',
+                slug: 'shared',
+                name: 'Shared Forge',
+                baseUrl: '',
+                enabled: true,
+                isDefault: false,
+                visibility: 'system',
+                tags: [],
+              },
+              nodes.filter((node) => !targets.some((target) => nodeBelongsToTarget(node, target))),
+              unclaimedSessions,
+            ),
+          );
+        }
+
+        return clusters;
+      }
 
       if (nodes.length === 0 && sessions.length === 0) return [];
 
-      const capacity = nodes.reduce(
-        (acc, node) => ({
-          cpu: acc.cpu + parseCpuCores(node.allocatable.cpu, 0),
-          memMi: acc.memMi + parseMemoryToMi(node.allocatable.memory, 0),
-          gpu: acc.gpu + parseIntegerResource(node.allocatable['nvidia.com/gpu'], 0),
-        }),
-        { cpu: 0, memMi: 0, gpu: 0 },
-      );
-      const used = nodes.reduce(
-        (acc, node) => ({
-          cpu: acc.cpu + parseCpuCores(node.allocated.cpu, 0),
-          memMi: acc.memMi + parseMemoryToMi(node.allocated.memory, 0),
-          gpu: acc.gpu + parseIntegerResource(node.allocated['nvidia.com/gpu'], 0),
-        }),
-        { cpu: 0, memMi: 0, gpu: 0 },
-      );
-
-      const sampleLabels = nodes[0]?.labels ?? {};
-      const region =
-        sampleLabels['topology.kubernetes.io/region'] ??
-        sampleLabels['failure-domain.beta.kubernetes.io/region'] ??
-        'shared';
-      const cluster: Cluster = {
-        id: 'shared',
-        realm: 'shared',
-        name: capacity.gpu > 0 ? 'Shared GPU Forge' : 'Shared Forge',
-        kind: capacity.gpu > 0 ? 'gpu' : 'primary',
-        status: nodes.length > 0 ? 'healthy' : 'warning',
-        region,
-        capacity,
-        used,
-        disk: {
-          usedGi: 0,
-          totalGi: 0,
-          systemGi: 0,
-          podsGi: 0,
-          logsGi: 0,
-        },
-        nodes: nodes.map((node) => ({
-          id: node.id,
-          status: node.status,
-          role: node.role,
-        })),
-        pods: sessions.map((session) => ({
-          name: session.podName ?? session.name,
-          status: toPodStatus(session),
-          startedAt: toIsoFromEpochMs(session.lastActive) ?? new Date(0).toISOString(),
-          cpuUsed: 0,
-          cpuLimit: 0,
-          memUsedMi: 0,
-          memLimitMi: 0,
-          restarts: 0,
-        })),
-        runningSessions: sessions.filter((session) => session.status === 'running').length,
-        queuedProvisions: sessions.filter(
-          (session) =>
-            session.status === 'created' ||
-            session.status === 'starting' ||
-            session.status === 'provisioning',
-        ).length,
-      };
-
-      return [cluster];
+      return [
+        buildClusterFromParts(
+          {
+            id: 'shared',
+            slug: 'shared',
+            name: capacityFromNodes(nodes).gpu > 0 ? 'Shared GPU Forge' : 'Shared Forge',
+            baseUrl: '',
+            enabled: true,
+            isDefault: false,
+            visibility: 'system',
+            tags: [],
+          },
+          nodes,
+          sessions,
+        ),
+      ];
     },
     async getCluster(id: string) {
       const clusters = await this.getClusters();
@@ -1036,31 +1355,34 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const ravnWardenBase = resolveRavnServiceBase(config, 'ravn.wardens');
   const ravnPersonas = ravnPersonaBase
     ? buildRavnPersonaAdapter(createApiClient(ravnPersonaBase))
-    : createMockPersonaStore();
+    : demoService(config, 'ravn.personas', createMockPersonaStore);
   const ravnRavens = ravnRavenBase
     ? buildRavnRavenAdapter(createApiClient(ravnRavenBase))
-    : createMockRavenStream();
+    : demoService(config, 'ravn.ravens', createMockRavenStream);
+  const ravnResidents: IResidentControl = ravnRavenBase
+    ? buildRavnResidentControlAdapter(createApiClient(ravnRavenBase))
+    : unavailableService<IResidentControl>('ravn.residents');
   const ravnSessions = ravnSessionBase
     ? buildRavnSessionAdapter(createApiClient(ravnSessionBase))
-    : createMockSessionStream();
+    : demoService(config, 'ravn.sessions', createMockSessionStream);
   const ravnTriggers = ravnTriggerBase
     ? buildRavnTriggerAdapter(createApiClient(ravnTriggerBase))
-    : createMockTriggerStore();
+    : demoService(config, 'ravn.triggers', createMockTriggerStore);
   const ravnBudget = ravnBudgetBase
     ? buildRavnBudgetAdapter(createApiClient(ravnBudgetBase))
-    : createMockBudgetStream();
+    : demoService(config, 'ravn.budget', createMockBudgetStream);
   const ravnWardens = ravnWardenBase
     ? buildRavnWardenAdapter(createApiClient(ravnWardenBase))
-    : createMockWardenStore();
+    : demoService(config, 'ravn.wardens', createMockWardenStore);
 
   // ── Mímir ──
   const mimir = hasHttpBackend(mimirSvc)
     ? buildMimirHttpAdapter(createApiClient(mimirSvc.baseUrl))
-    : createMimirMockAdapter();
+    : demoService(config, 'mimir', createMimirMockAdapter);
   const bifrostBase = resolveBifrostServiceBase(config);
   const bifrost: IBifrostService = bifrostBase
     ? buildBifrostHttpAdapter(createApiClient(bifrostBase))
-    : createMockBifrostService();
+    : demoService(config, 'bifrost', createMockBifrostService);
 
   // ── Völundr catalog + Forge runtime ──
   const forgeBase = resolveForgeServiceBase(config);
@@ -1069,21 +1391,23 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     ? buildVolundrHttpAdapter(createApiClient(forgeBase), undefined, {
         niuuBasePath: resolveNiuuRegistryBase(config),
       })
-    : createMockVolundrService();
+    : demoService(config, 'forge', createMockVolundrService);
   const catalogVolundr = volundrBase
     ? buildVolundrHttpAdapter(createApiClient(volundrBase), undefined, {
         niuuBasePath: resolveNiuuRegistryBase(config),
       })
-    : createMockVolundrService();
+    : demoService(config, 'volundr', createMockVolundrService);
   const volundr = buildSplitVolundrService(catalogVolundr, forgeVolundr);
   const repoCatalogBase = resolveRepoCatalogBase(config);
   const repoCatalogService = repoCatalogBase
     ? buildRepoCatalogHttpAdapter(createApiClient(repoCatalogBase))
-    : createMockRepoCatalogService();
-  const sessionStore = forgeBase ? buildVolundrSessionStore(volundr) : createMockSessionStore();
+    : demoService(config, 'niuu.repos', createMockRepoCatalogService);
+  const sessionStore = forgeBase
+    ? buildVolundrSessionStore(volundr)
+    : demoService(config, 'volundr.sessions', createMockSessionStore);
   const clusterAdapter = forgeBase
     ? buildVolundrClusterAdapter(volundr)
-    : createMockClusterAdapter();
+    : demoService(config, 'volundr.clusters', createMockClusterAdapter);
   // ── Völundr streams: keyed as separate services so they can be flipped
   //    independently (e.g. mock PTY with live metrics during bring-up). ──
   const forgePtyWsUrl = resolveForgeStreamWsUrl(config);
@@ -1091,36 +1415,51 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const filesystemBase = resolveFilesystemBase(config);
   const ptyStream = forgePtyWsUrl
     ? buildVolundrPtyWsAdapter({ urlTemplate: forgePtyWsUrl })
-    : createMockPtyStream();
+    : demoService(config, 'forge.pty', createMockPtyStream);
   const metricsStream = forgeMetricsBase
     ? buildVolundrMetricsSseAdapter({ urlTemplate: forgeMetricsBase })
-    : createMockMetricsStream();
+    : demoService(config, 'forge.metrics', createMockMetricsStream);
   const filesystem = filesystemBase
     ? buildVolundrFileSystemHttpAdapter({ baseUrl: filesystemBase })
-    : createMockFileSystemPort();
+    : demoService(config, 'filesystem', createMockFileSystemPort);
 
   // ── Observatory ──
   const observatoryRegistryBase = resolveObservatoryServiceBase(config, 'observatory.registry');
   const observatoryTopologyBase = resolveObservatoryServiceBase(config, 'observatory.topology');
   const observatoryEventsBase = resolveObservatoryServiceBase(config, 'observatory.events');
+  const observatoryAgentsBase = resolveObservatoryServiceBase(config, 'observatory.agents');
   const observatoryRegistry = observatoryRegistryBase
     ? buildObservatoryRegistryHttpAdapter(createApiClient(observatoryRegistryBase))
-    : createMockRegistryRepository();
+    : demoService(config, 'observatory.registry', createMockRegistryRepository);
   const observatoryTopology = observatoryTopologyBase
     ? buildObservatoryTopologySseStream(observatoryTopologyBase)
-    : createMockTopologyStream();
+    : demoService(config, 'observatory.topology', createMockTopologyStream);
   const observatoryEvents = observatoryEventsBase
     ? buildObservatoryEventsSseStream(observatoryEventsBase)
-    : createMockEventStream();
+    : demoService(config, 'observatory.events', createMockEventStream);
+  const observatoryAgents = observatoryAgentsBase
+    ? buildObservatoryAgentDirectoryHttpAdapter(createApiClient(observatoryAgentsBase))
+    : unavailableService<IAgentDirectory>('observatory.agents');
   // ── Valkyrie ──
   const valkyrieBase = resolveValkyrieServiceBase(config, 'valkyrie');
   const valkyrieReviewsBase = resolveValkyrieServiceBase(config, 'valkyrie.reviews');
   const valkyrie = valkyrieBase
     ? buildValkyrieHttpAdapter(createApiClient(valkyrieBase))
-    : createMockValkyrieService();
+    : demoService(config, 'valkyrie', createMockValkyrieService);
   const valkyrieReviews = valkyrieReviewsBase
     ? buildOdinReviewHttpAdapter(createApiClient(valkyrieReviewsBase))
-    : createMockOdinReviewService();
+    : demoService(config, 'valkyrie.reviews', createMockOdinReviewService);
+  const valkyrieSkillsBase = resolveValkyrieServiceBase(config, 'valkyrie.skills');
+  const valkyrieSkills = valkyrieSkillsBase
+    ? buildValkyrieSkillsHttpAdapter(createApiClient(valkyrieSkillsBase))
+    : demoService(config, 'valkyrie.skills', createMockValkyrieSkillsService);
+  const realmGovernanceBases = resolveRealmGovernanceBases(config);
+  const valkyrieRealms = realmGovernanceBases
+    ? buildRealmGovernanceHttpAdapter(
+        createApiClient(realmGovernanceBases.realmsBase),
+        createApiClient(realmGovernanceBases.workflowsBase),
+      )
+    : demoService(config, 'valkyrie.realms', createMockRealmGovernanceService);
   const featureCatalogService = buildSharedFeatureCatalogService(config);
   const identityService = buildSharedIdentityService(config);
 
@@ -1143,31 +1482,38 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const workflowClient = workflowBase ? createApiClient(workflowBase) : null;
   const researchBase = resolveTingServiceBase(config, 'ting.research');
   const researchClient = researchBase ? createApiClient(researchBase) : null;
-  const tingService = tingClient ? buildTingHttpAdapter(tingClient) : createMockTingService();
+  const specsBase = resolveTingServiceBase(config, 'ting.specs');
+  const specsClient = specsBase ? createApiClient(specsBase) : null;
+  const tingService = tingClient
+    ? buildTingHttpAdapter(tingClient)
+    : demoService(config, 'ting', createMockTingService);
   const dispatcherService = dispatcherClient
     ? buildDispatcherHttpAdapter(dispatcherClient)
-    : createMockDispatcherService();
+    : demoService(config, 'ting.dispatcher', createMockDispatcherService);
   const tingSessionService = tingSessionsClient
     ? buildTingSessionHttpAdapter(tingSessionsClient)
-    : createMockTingSessionService();
+    : demoService(config, 'ting.sessions', createMockTingSessionService);
   const trackerService = trackerClient
     ? buildTrackerHttpAdapter(trackerClient)
-    : createMockTrackerService();
+    : demoService(config, 'ting.tracker', createMockTrackerService);
   const workflowService = workflowClient
     ? buildWorkflowHttpAdapter(workflowClient)
-    : createMockWorkflowService();
+    : demoService(config, 'ting.workflows', createMockWorkflowService);
   const researchService = researchClient
     ? buildResearchHttpAdapter(researchClient)
-    : createMockResearchService();
+    : demoService(config, 'ting.research', createMockResearchService);
+  const specsService = specsClient
+    ? buildSpecsHttpAdapter(specsClient)
+    : demoService(config, 'ting.specs', createMockSpecsService);
   const dispatchBus = dispatchClient
     ? buildDispatchBusHttpAdapter(dispatchClient)
-    : createMockDispatchBus();
+    : demoService(config, 'ting.dispatch', createMockDispatchBus);
   const tingSettingsService = tingSettingsClient
     ? buildTingSettingsHttpAdapter(tingSettingsClient)
-    : createMockTingSettingsService();
+    : demoService(config, 'ting.settings', createMockTingSettingsService);
   const tingAuditLogService = auditClient
     ? buildTingAuditLogHttpAdapter(auditClient)
-    : createMockAuditLogService();
+    : demoService(config, 'ting.audit', createMockAuditLogService);
 
   return {
     ting: tingService,
@@ -1176,11 +1522,13 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'ting.tracker': trackerService,
     'ting.workflows': workflowService,
     'ting.research': researchService,
+    'ting.specs': specsService,
     'ting.dispatch': dispatchBus,
     'ting.settings': tingSettingsService,
     'ting.audit': tingAuditLogService,
     'ravn.personas': ravnPersonas,
     'ravn.ravens': ravnRavens,
+    'ravn.residents': ravnResidents,
     'ravn.sessions': ravnSessions,
     'ravn.triggers': ravnTriggers,
     'ravn.budget': ravnBudget,
@@ -1203,7 +1551,10 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'observatory.registry': observatoryRegistry,
     'observatory.topology': observatoryTopology,
     'observatory.events': observatoryEvents,
+    'observatory.agents': observatoryAgents,
     valkyrie,
     'valkyrie.reviews': valkyrieReviews,
+    'valkyrie.skills': valkyrieSkills,
+    'valkyrie.realms': valkyrieRealms,
   };
 }

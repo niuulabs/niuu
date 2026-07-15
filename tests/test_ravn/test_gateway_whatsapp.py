@@ -54,14 +54,13 @@ def _make_http_client(post_json: dict | None = None) -> AsyncMock:
 
 
 # ---------------------------------------------------------------------------
-# local_bridge mode raises NotImplementedError
+# Configuration validation
 # ---------------------------------------------------------------------------
 
 
-def test_local_bridge_mode_raises():
-    cfg = _make_config(mode="local_bridge")
-    with pytest.raises(NotImplementedError, match="local_bridge"):
-        WhatsAppGateway(cfg, _make_gateway_mock())
+def test_local_bridge_mode_is_rejected_by_typed_config():
+    with pytest.raises(ValueError, match="mode"):
+        _make_config(mode="local_bridge")
 
 
 # ---------------------------------------------------------------------------

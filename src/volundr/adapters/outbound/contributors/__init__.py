@@ -16,6 +16,7 @@ from volundr.adapters.outbound.contributors.session_def import (
 )
 from volundr.adapters.outbound.contributors.storage import StorageContributor
 from volundr.adapters.outbound.contributors.workload_config import WorkloadConfigContributor
+from volundr.adapters.outbound.contributors.workload_identity import WorkloadIdentityContributor
 
 __all__ = [
     "CoreSessionContributor",
@@ -28,6 +29,7 @@ __all__ = [
     "SecretInjectionContributor",
     "SessionDefinitionContributor",
     "StorageContributor",
+    "WorkloadIdentityContributor",
     "WorkloadConfigContributor",
     "SecretsContributor",
 ]

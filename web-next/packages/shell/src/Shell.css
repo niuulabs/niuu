@@ -50,8 +50,11 @@
   align-items: center;
   justify-content: center;
   font-family: var(--font-mono);
-  font-size: 18px;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: uppercase;
   color: var(--color-text-muted);
   background: transparent;
   border: none;
@@ -126,12 +129,15 @@
   font-size: var(--text-base);
   font-weight: 600;
   margin: 0;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 .niuu-shell__rune-mark {
   font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: 18px;
+  font-weight: 800;
+  font-size: 15px;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: uppercase;
   color: var(--color-brand);
   text-shadow: 0 0 10px color-mix(in srgb, var(--color-brand) 45%, transparent);
 }

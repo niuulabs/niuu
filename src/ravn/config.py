@@ -31,11 +31,13 @@ import os
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
+    EnvSettingsSource,
+    NoDecode,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
     YamlConfigSettingsSource,
@@ -219,7 +221,7 @@ class WebSearchConfig(BaseModel):
 
     provider: ToolAdapterConfig = Field(
         default_factory=lambda: ToolAdapterConfig(
-            adapter="ravn.adapters.tools.web_search.MockWebSearchProvider"
+            adapter="ravn.adapters.tools.web_search.DuckDuckGoLiteSearchProvider"
         ),
         description="Web search provider adapter configuration.",
     )
@@ -270,12 +272,24 @@ class ToolGroupConfig(BaseModel):
     """Named tool group configuration — controls which tool groups are active."""
 
     include_groups: list[str] = Field(
-        default=["core", "extended", "skill", "platform", "cascade", "mimir"],
+        default=[
+            "core",
+            "extended",
+            "skill",
+            "platform",
+            "cascade",
+            "mimir",
+            "workflow",
+            "ravn",
+        ],
         description=(
-            "Tool groups to include. Built-in groups: core, extended, skill, platform, mimir. "
+            "Tool groups to include. Built-in groups: core, extended, skill, platform, "
+            "mimir, workflow, ravn. "
             "The 'cascade' group signals that cascade tools (wired via build_cascade_tools) "
             "should be appended when the profile is selected by the coordinator. "
-            "The 'mimir' group enables the six mimir_* knowledge-base tools."
+            "The 'mimir' group enables mimir_* knowledge-base tools. "
+            "The 'workflow' group enables workflow_* tools backed by capability_sources. "
+            "The 'ravn' group enables persona, skill, and capability catalog tools."
         ),
     )
     include_mcp: bool = Field(
@@ -697,7 +711,10 @@ class AgentConfig(BaseModel):
 
     model: str = Field(default="claude-sonnet-4-6")
     max_tokens: int = Field(default=8192)
-    max_iterations: int = Field(default=20, description="Max tool-call iterations per turn.")
+    max_iterations: int = Field(
+        default=20,
+        description="Max tool-call iterations per turn. Set 0 for no cap.",
+    )
     system_prompt: str = Field(
         default=(
             "You are Ravn, a helpful AI assistant. "
@@ -926,6 +943,50 @@ class SkuldChannelConfig(BaseModel):
         description="Human-friendly name shown in the mesh UI (e.g. 'Kvasir'). "
         "Falls back to the persona name when empty.",
     )
+    reconnect_delay_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        description="Delay between reconnect attempts to the Skuld broker.",
+    )
+    max_reconnect_attempts: int = Field(
+        default=5,
+        ge=1,
+        description="Reconnect attempts before giving up. Also used for the "
+        "cross-session joins the session_join tool opens.",
+    )
+    session_ready_timeout_seconds: float = Field(
+        default=600.0,
+        gt=0,
+        description=(
+            "Maximum time to wait for a launched Volundr session to reach "
+            "running before opening a cross-session join."
+        ),
+    )
+
+
+class PlatformWorkflowAliasConfig(BaseModel):
+    """Named workflow launch target for resident platform tools."""
+
+    workflow_id: str = Field(
+        default="",
+        description="Concrete Ting workflow id. Preferred when known.",
+    )
+    name: str = Field(
+        default="",
+        description="Exact workflow name to resolve when workflow_id is not configured.",
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Tags that must be present on the resolved workflow.",
+    )
+    scope: str = Field(
+        default="all",
+        description="Workflow scope to query while resolving by name or tags.",
+    )
+    defaults: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Default launch fields merged before explicit tool input.",
+    )
 
 
 class PlatformToolsConfig(BaseModel):
@@ -939,8 +1000,33 @@ class PlatformToolsConfig(BaseModel):
     timeout: float = Field(default=30.0)
     pat_token: str = Field(
         default="",
-        description="Personal Access Token for platform API authentication. "
-        "Falls back to RAVN_GATEWAY__PLATFORM__PAT_TOKEN env var.",
+        description=(
+            "Explicit external bearer token for platform API authentication. "
+            "In-cluster Ravn/Valkyrie callers should leave this empty and use "
+            "projected workload identity."
+        ),
+    )
+    workload_token_file: str = Field(
+        default="/var/run/secrets/kubernetes.io/serviceaccount/token",
+        description="Projected workload identity token file used when pat_token is not set.",
+    )
+    workload_exchange_url: str = Field(
+        default="",
+        description=(
+            "Optional workload token exchange URL. Defaults to "
+            "base_url /api/v1/tokens/workload/exchange."
+        ),
+    )
+    workload_audiences: list[str] = Field(
+        default_factory=lambda: ["volundr-api", "forge", "ting", "mimir", "guild"],
+        description="Target service audiences requested from workload token exchange.",
+    )
+    workflow_aliases: dict[str, PlatformWorkflowAliasConfig] = Field(
+        default_factory=dict,
+        description=(
+            "Resident-local aliases for Ting workflow launches. "
+            "Example: research -> workflow id/name plus launch defaults."
+        ),
     )
 
 
@@ -1028,9 +1114,9 @@ class MatrixChannelConfig(BaseModel):
         default="MATRIX_ACCESS_TOKEN",
         description="Environment variable name containing the Matrix access token.",
     )
-    e2e: bool = Field(
+    e2e: Literal[False] = Field(
         default=False,
-        description="Enable end-to-end encryption (requires libolm; not yet implemented).",
+        description="Reserved for Matrix encryption support; true is rejected.",
     )
     sync_timeout_ms: int = Field(
         default=30000,
@@ -1050,9 +1136,9 @@ class WhatsAppChannelConfig(BaseModel):
     """WhatsApp gateway configuration (Meta Cloud API)."""
 
     enabled: bool = Field(default=False)
-    mode: str = Field(
+    mode: Literal["business_api"] = Field(
         default="business_api",
-        description="Adapter mode: 'business_api' (Meta Cloud) or 'local_bridge' (stub).",
+        description="Adapter mode. Only the Meta Cloud business API is supported.",
     )
     api_key_env: str = Field(
         default="WA_API_KEY",
@@ -1306,13 +1392,32 @@ class MimirSearchConfig(BaseModel):
 class MimirAuthConfig(BaseModel):
     """Auth configuration for a remote Mímir instance."""
 
-    type: Literal["bearer", "spiffe"] = Field(
+    type: Literal["bearer", "workload", "spiffe"] = Field(
         default="bearer",
-        description="Auth mechanism: 'bearer' (dev) or 'spiffe' (production mTLS).",
+        description=(
+            "Auth mechanism: 'bearer' (dev), 'workload' (projected JWT exchange), "
+            "or 'spiffe' (production mTLS)."
+        ),
     )
     token: str | None = Field(
         default=None,
         description="Bearer token value (when type=bearer).",
+    )
+    token_file: str | None = Field(
+        default=None,
+        description="File containing a bearer token (when type=bearer).",
+    )
+    token_env: str | None = Field(
+        default=None,
+        description="Environment variable containing a bearer token (when type=bearer).",
+    )
+    exchange_url: str | None = Field(
+        default=None,
+        description="Workload token exchange URL (when type=workload).",
+    )
+    audiences: list[str] = Field(
+        default_factory=lambda: ["mimir"],
+        description="Target audiences requested from workload token exchange.",
     )
     trust_domain: str | None = Field(
         default=None,
@@ -1633,13 +1738,40 @@ class MeshNatsCoreSubscriptionConfig(BaseModel):
     )
 
 
-class MeshNatsConfig(BaseModel):
+class MeshNatsConfig(BaseSettings):
     """NATS JetStream mesh settings for environment-resident Valkyries."""
 
-    servers_env: str = Field(
-        default="NATS_URL",
-        description="Env var containing one or more comma-separated NATS server URLs.",
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore", case_sensitive=True)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        del cls, settings_cls, dotenv_settings
+        return env_settings, init_settings, file_secret_settings
+
+    servers: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["nats://localhost:4222"],
+        validation_alias=AliasChoices(
+            "servers",
+            "NATS_URL",
+        ),
+        description="One or more NATS server URLs.",
     )
+
+    @field_validator("servers", mode="before")
+    @classmethod
+    def _parse_servers(cls, value: object) -> object:
+        del cls
+        if not isinstance(value, str):
+            return value
+        return [entry.strip() for entry in value.split(",") if entry.strip()]
+
     stream_name: str = Field(
         default="ravn_environment",
         description="JetStream stream used for Ravn environment/flock events.",
@@ -1699,6 +1831,10 @@ class MeshNatsConfig(BaseModel):
         default="",
         description="Optional CA bundle path for TLS-secured NATS servers.",
     )
+    tls_ca_pem: str = Field(
+        default="",
+        description="Optional inline CA bundle for TLS-secured NATS servers.",
+    )
     tls_cert_file: str = Field(
         default="",
         description="Optional client TLS certificate path.",
@@ -1714,6 +1850,10 @@ class MeshNatsConfig(BaseModel):
     tls_handshake_first: bool = Field(
         default=False,
         description="Use TLS-first handshakes for NATS servers that require it.",
+    )
+    tls_legacy_ca: bool = Field(
+        default=False,
+        description="Allow private CAs without modern X.509 key-usage extensions.",
     )
     tls_insecure_skip_verify: bool = Field(
         default=False,
@@ -1838,6 +1978,10 @@ class DiscoveryConfig(BaseModel):
         default=False,
         description="Enable flock peer discovery.",
     )
+    realm_id: str = Field(
+        default="",
+        description="Explicit discovery realm identity; empty uses the persisted realm key.",
+    )
     adapters: list[dict[str, Any]] = Field(
         default_factory=list,
         description=(
@@ -1915,6 +2059,10 @@ class MeshConfig(BaseModel):
     nng: NngMeshConfig = Field(default_factory=NngMeshConfig)
     sleipnir: MeshSleipnirConfig = Field(default_factory=MeshSleipnirConfig)
     nats: MeshNatsConfig = Field(default_factory=MeshNatsConfig)
+    redis_url_env: str = Field(
+        default="REDIS_URL",
+        description="Environment variable containing the credential-bearing Redis URL.",
+    )
 
 
 class BuriConfig(BaseModel):
@@ -1986,7 +2134,6 @@ class BrowserConfig(BaseModel):
         description=(
             "Browser backend: 'local' (headless Chromium via Playwright) "
             "or 'browserbase' (cloud execution with stealth / CAPTCHA support). "
-            "Browserbase is activated automatically when BROWSERBASE_API_KEY is set."
         ),
     )
     headless: bool = Field(
@@ -2437,6 +2584,52 @@ class ResidentWakefulnessConfig(BaseModel):
     )
 
 
+class WorkflowSelectorConfig(BaseModel):
+    """Select workflows from an existing workflow catalog."""
+
+    names: list[str] = Field(
+        default_factory=list,
+        description="Workflow names or ids allowed by this selector.",
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Workflow tags allowed by this selector.",
+    )
+    require_all_tags: bool = Field(
+        default=False,
+        description="Require every configured tag instead of any matching tag.",
+    )
+
+
+class TrustLevelAutonomyTable(BaseModel):
+    """Thresholds mapping a realm build-grant trust level to an autonomy mode.
+
+    A grant ``level >= yolo`` resolves to ``yolo``, ``level >= autonomous`` to
+    ``autonomous``, anything below to ``guarded``. Defaults mirror the rungs
+    that used to live as constants in ``ravn.adapters.realm.client``.
+    """
+
+    autonomous: int = Field(
+        default=2,
+        description="Lowest trust level that resolves to the 'autonomous' mode.",
+    )
+    yolo: int = Field(
+        default=4,
+        description="Lowest trust level that resolves to the 'yolo' mode.",
+    )
+
+    @model_validator(mode="after")
+    def _yolo_at_least_autonomous(self) -> TrustLevelAutonomyTable:
+        if self.yolo < self.autonomous:
+            msg = (
+                "trust_level_autonomy_table.yolo "
+                f"({self.yolo}) must be >= trust_level_autonomy_table.autonomous "
+                f"({self.autonomous})"
+            )
+            raise ValueError(msg)
+        return self
+
+
 class ResidentEvolutionConfig(BaseModel):
     """Resident Valkyrie self-evolution: builder, reviewer, rollback, autonomy.
 
@@ -2475,6 +2668,27 @@ class ResidentEvolutionConfig(BaseModel):
             "auto-rolled-back (archived, regression published to the flock)."
         ),
     )
+    feedback_confidence_bump: float = Field(
+        default=0.05,
+        description=(
+            "How much one useful/good_action operator feedback verdict raises "
+            "the stored learning's confidence (clamped at 1.0). Feedback "
+            "arrives on the same odin.review.decided command channel as every "
+            "other operator learning decision."
+        ),
+    )
+    skill_inventory_interval_seconds: float = Field(
+        default=300.0,
+        description=(
+            "How often the resident republishes its full learned-skill "
+            "inventory as valkyrie.evolution.skill_inventory events. The "
+            "dashboard's skill mirror runs with zero telemetry replay, so this "
+            "heartbeat (plus a snapshot at startup and after every adoption / "
+            "rollback) is what keeps the mirror populated with the skills a "
+            "resident actively uses. 0 disables the heartbeat (startup and "
+            "opportunistic snapshots still fire)."
+        ),
+    )
     learned_tool_execution_backend: Literal["local", "forge", "devrunner"] = Field(
         default="local",
         description=(
@@ -2499,8 +2713,155 @@ class ResidentEvolutionConfig(BaseModel):
         default_factory=dict,
         description=(
             "Constructor kwargs for the tool build adapter (base_url, "
-            "workflow_id, pat_env, model, poll intervals, ...)."
+            "workflow_id, external_token_env, workload token settings, model, "
+            "poll intervals, ...)."
         ),
+    )
+    tool_builder_workflow: WorkflowSelectorConfig = Field(
+        default_factory=WorkflowSelectorConfig,
+        description=(
+            "Optional selector for the tool-builder workflow. When configured "
+            "with a Ting workflow build backend, the backend discovers the "
+            "matching workflow from the catalog instead of requiring a "
+            "hardcoded workflow_id."
+        ),
+    )
+    realm_slug: str = Field(
+        default="",
+        description=(
+            "This Valkyrie's realm slug. When set, the resident resolves its "
+            "tool-build workflow and autonomy from the realm's 'build' trust "
+            "grant (via the niuu realm governance API on the Volundr host). "
+            "Empty keeps today's static tool_builder_workflow / autonomy_mode "
+            "behavior."
+        ),
+    )
+    realm_api_base_url: str = Field(
+        default="",
+        description=(
+            "Base URL of the realm governance API (the Volundr host that also "
+            "serves Forge sessions). Empty derives it from "
+            "tool_build_kwargs['base_url']."
+        ),
+    )
+    realm_api_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Auth passthrough for realm API calls (external_token_env, "
+            "workload_token_file, workload_exchange_url, workload_audiences — "
+            "the same keys client_from_workload_identity accepts). Empty reuses "
+            "the tool_build_kwargs auth settings."
+        ),
+    )
+    build_repair_attempts: int = Field(
+        default=3,
+        description=(
+            "Maximum verify/repair attempts for a commissioned or inline-built "
+            "tool before the build aborts without installing."
+        ),
+    )
+    self_registered_tool_confidence: float = Field(
+        default=0.74,
+        description=(
+            "Confidence a self-built tool travels to the flock with — used for "
+            "both the flock learning proposal and the resident artifact."
+        ),
+    )
+    trust_level_autonomy_table: TrustLevelAutonomyTable = Field(
+        default_factory=TrustLevelAutonomyTable,
+        description=(
+            "Thresholds mapping a realm build-grant trust level to an autonomy "
+            "mode: level >= yolo -> yolo, >= autonomous -> autonomous, else "
+            "guarded."
+        ),
+    )
+    review_attention_tiers: list[str] = Field(
+        default_factory=lambda: ["present", "urgent"],
+        description=(
+            "Judgment attention tiers that mean 'a human should look at this'. "
+            "Judgments pitched below these tiers stay telemetry and never "
+            "reach the operator inbox."
+        ),
+    )
+    observational_actions: list[str] = Field(
+        default_factory=lambda: ["", "none", "n/a", "watch", "observe"],
+        description=(
+            "Recommended actions that describe observation, not an action to "
+            "approve — judgments recommending only these never reach the "
+            "operator inbox."
+        ),
+    )
+
+
+class ResidentInboxConfig(BaseModel):
+    """Resident inbox intake and triage configuration."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Persist and triage resident inbox signals when resident autonomy is enabled.",
+    )
+    environment_signals_enabled: bool = Field(
+        default=True,
+        description="Record configured Environment signals into resident/inbox/signals.",
+    )
+    directed_messages_enabled: bool = Field(
+        default=True,
+        description=(
+            "Record generic Skuld directed messages as resident inbox signals without "
+            "consuming normal steering or task enqueue behavior."
+        ),
+    )
+    max_signals_per_wake: int = Field(
+        default=5,
+        description="Maximum new resident inbox signals triaged in one wake pass.",
+    )
+    create_objectives: bool = Field(
+        default=True,
+        description="Allow inbox triage to create resident objectives for actionable signals.",
+    )
+    attach_to_existing_objectives: bool = Field(
+        default=True,
+        description="Allow inbox triage to attach signals to matching resident objectives.",
+    )
+    min_attach_score: int = Field(
+        default=2,
+        description="Minimum keyword overlap required before attaching to an existing objective.",
+    )
+
+
+class ResidentStateConfig(BaseModel):
+    """Resident memory/state adapter selection.
+
+    ``adapter`` is the preferred store (GBrain by default); ``fallback_adapter``
+    is used only when the preferred adapter reports it is not available (e.g.
+    GBrain's CLI/endpoint is absent). Selection is done by
+    ``ravn.adapters.resident_state.select_resident_state`` — no caller branches
+    on adapter type.
+    """
+
+    adapter: str = Field(
+        default="ravn.adapters.resident_state.gbrain.GBrainResidentStateAdapter",
+        description="Fully-qualified preferred ResidentStatePort adapter class.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs passed to the preferred resident state adapter.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps adapter kwarg names to env var names for secret injection.",
+    )
+    fallback_adapter: str = Field(
+        default="ravn.adapters.resident_state.mimir.LocalResidentState",
+        description="Adapter used when the preferred adapter is unavailable.",
+    )
+    fallback_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs passed to the fallback resident state adapter.",
+    )
+    fallback_secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps fallback adapter kwarg names to env var names for secret injection.",
     )
 
 
@@ -2818,6 +3179,18 @@ class WorkflowRuntimeConfig(BaseModel):
     graph: dict[str, Any] = Field(default_factory=dict)
 
 
+class CapabilitySourceConfig(BaseModel):
+    """Dynamic adapter entry for remote workflow capability discovery."""
+
+    adapter: str = Field(
+        default="",
+        description="Fully-qualified WorkflowCapabilityPort implementation.",
+    )
+    enabled: bool = True
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+
 class SignalSourceConfig(BaseModel):
     """Adapter-backed signal source for a resident Valkyrie Environment."""
 
@@ -2898,6 +3271,14 @@ class EnvironmentConfig(BaseModel):
             "Optional lightweight resident guidance injected into autonomous Valkyrie tasks."
         ),
     )
+    charter: str = Field(
+        default="",
+        description=(
+            "The human seed for this resident: a few sentences describing what the "
+            "Valkyrie stewards and what 'better' means for its environment. Injected "
+            "into every autonomous task and surfaced on the dashboard."
+        ),
+    )
     flocks: list[str] = Field(
         default_factory=list,
         description="Existing flock names this Valkyrie participates in.",
@@ -2905,6 +3286,12 @@ class EnvironmentConfig(BaseModel):
     signal_sources: list[SignalSourceConfig] = Field(
         default_factory=list,
         description="Adapter-backed signal feeds this Valkyrie should watch.",
+    )
+    capability_sources: list[CapabilitySourceConfig] = Field(
+        default_factory=list,
+        description=(
+            "Dynamic adapters that discover remote workflow capabilities from existing catalogs."
+        ),
     )
     signal_poll_interval_seconds: float = Field(
         default=10.0,
@@ -2917,6 +3304,17 @@ class EnvironmentConfig(BaseModel):
     signal_task_severities: list[str] = Field(
         default_factory=lambda: ["warning", "critical"],
         description="Signal severities that should enqueue autonomous Valkyrie tasks.",
+    )
+    idle_triage_interval_seconds: float = Field(
+        default=900.0,
+        description=(
+            "Seconds between idle triage judgments over signals that did not match "
+            "signal_task_severities. 0 disables idle triage."
+        ),
+    )
+    idle_triage_max_signals: int = Field(
+        default=200,
+        description="Maximum below-threshold signals summarized in one idle triage task.",
     )
     signal_subjects: list[str] = Field(
         default_factory=list,
@@ -2984,10 +3382,556 @@ class WardenDiscoveryConfig(BaseModel):
         if not isinstance(raw_adapters, list):
             msg = "warden_discovery.adapters_json must be a JSON list"
             raise ValueError(msg)
+        self.adapters = [WardenDiscoveryAdapterConfig.model_validate(item) for item in raw_adapters]
+        return self
+
+
+class ResidentDiscoveryAdapterConfig(BaseModel):
+    """Dynamic adapter entry for standalone-resident discovery."""
+
+    adapter: str = Field(
+        default=("ravn.adapters.resident_discovery.kubernetes.KubernetesResidentDiscoveryAdapter"),
+        description="Fully-qualified class path for the resident discovery adapter.",
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+    model_config = {"extra": "allow"}
+
+    def adapter_kwargs(self) -> dict[str, Any]:
+        """Return constructor kwargs from explicit kwargs plus extra fields."""
+        extras = self.__pydantic_extra__ or {}
+        return {**self.kwargs, **extras}
+
+
+class ResidentDiscoveryConfig(BaseModel):
+    """Read-only standalone-resident discovery configuration.
+
+    No adapters are configured by default: discovering residents from a
+    cluster is an explicit deployment decision (in-cluster RBAC, or a local
+    kubeconfig that may point at a live cluster).
+    """
+
+    enabled: bool = True
+    adapters: list[ResidentDiscoveryAdapterConfig] = Field(default_factory=list)
+    adapters_json: str = Field(
+        default="",
+        description="JSON list of adapter objects for env-driven deployments.",
+    )
+
+    @model_validator(mode="after")
+    def _parse_adapters_json(self) -> ResidentDiscoveryConfig:
+        if not self.adapters_json.strip():
+            return self
+        raw_adapters = json.loads(self.adapters_json)
+        if not isinstance(raw_adapters, list):
+            msg = "resident_discovery.adapters_json must be a JSON list"
+            raise ValueError(msg)
         self.adapters = [
-            WardenDiscoveryAdapterConfig.model_validate(item) for item in raw_adapters
+            ResidentDiscoveryAdapterConfig.model_validate(item) for item in raw_adapters
         ]
         return self
+
+
+class _LegacyAliasSettings(BaseSettings):
+    """Settings base where legacy environment aliases override config input."""
+
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        del cls, settings_cls, dotenv_settings
+        return env_settings, init_settings, file_secret_settings
+
+
+class RuntimeExecutorConfig(_LegacyAliasSettings):
+    """Typed CLI transport overrides injected into a resident runtime."""
+
+    transport_adapter: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "transport_adapter",
+            "SKULD__TRANSPORT_ADAPTER",
+        ),
+    )
+    skip_permissions: bool | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "skip_permissions",
+            "SKULD__SKIP_PERMISSIONS",
+        ),
+    )
+    approval_policy: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "approval_policy",
+            "SKULD__APPROVAL_POLICY",
+        ),
+    )
+    sandbox: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "sandbox",
+            "SKULD__SANDBOX",
+        ),
+    )
+
+
+class _ValkyrieTelemetryEnvSource(EnvSettingsSource):
+    """Ignore generic NATS_URL while preserving explicit telemetry aliases."""
+
+    def __init__(self, settings_cls: type[BaseSettings]) -> None:
+        super().__init__(settings_cls)
+        self.env_vars.pop("nats_url", None)
+
+
+class ValkyrieTelemetryConfig(_LegacyAliasSettings):
+    """Typed transport settings for Valkyrie dashboard telemetry."""
+
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        del cls, env_settings, dotenv_settings
+        return (
+            _ValkyrieTelemetryEnvSource(settings_cls),
+            init_settings,
+            file_secret_settings,
+        )
+
+    nats_url: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "nats_url",
+            "RAVN_VALKYRIE_TELEMETRY_NATS_URL",
+        ),
+    )
+    nats_streams: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "nats_streams",
+            "RAVN_VALKYRIE_TELEMETRY_NATS_STREAMS",
+        ),
+    )
+    nats_stream: str = Field(
+        default="ravn_environment",
+        validation_alias=AliasChoices(
+            "nats_stream",
+            "RAVN_VALKYRIE_TELEMETRY_NATS_STREAM",
+        ),
+    )
+    subject_prefix: str = Field(
+        default="ravn.environment",
+        validation_alias=AliasChoices(
+            "subject_prefix",
+            "RAVN_VALKYRIE_TELEMETRY_SUBJECT_PREFIX",
+        ),
+    )
+    nats_user: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "nats_user",
+            "RAVN_VALKYRIE_TELEMETRY_NATS_USER",
+        ),
+    )
+    nats_password_env: str = Field(default="RAVN_VALKYRIE_TELEMETRY_NATS_PASSWORD")
+    nats_token_env: str = Field(default="RAVN_VALKYRIE_TELEMETRY_NATS_TOKEN")
+    nkeys_seed_env: str = Field(default="RAVN_VALKYRIE_TELEMETRY_NKEYS_SEED")
+    nkeys_seed_file: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "nkeys_seed_file",
+            "RAVN_VALKYRIE_TELEMETRY_NKEYS_SEED_FILE",
+        ),
+    )
+    consumer_group: str = Field(
+        default="ravn-valkyrie-dashboard",
+        validation_alias=AliasChoices(
+            "consumer_group",
+            "RAVN_VALKYRIE_TELEMETRY_CONSUMER_GROUP",
+        ),
+    )
+    replay_seconds: int = Field(
+        default=0,
+        ge=0,
+        validation_alias=AliasChoices(
+            "replay_seconds",
+            "RAVN_VALKYRIE_TELEMETRY_REPLAY_SECONDS",
+        ),
+    )
+    retry_seconds: int = Field(
+        default=30,
+        gt=0,
+        validation_alias=AliasChoices(
+            "retry_seconds",
+            "RAVN_VALKYRIE_TELEMETRY_RETRY_SECONDS",
+        ),
+    )
+    startup_delay_seconds: float = Field(
+        default=5.0,
+        ge=0,
+        validation_alias=AliasChoices(
+            "startup_delay_seconds",
+            "RAVN_VALKYRIE_TELEMETRY_STARTUP_DELAY_SECONDS",
+        ),
+    )
+    start_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        validation_alias=AliasChoices(
+            "start_timeout_seconds",
+            "RAVN_VALKYRIE_TELEMETRY_START_TIMEOUT_SECONDS",
+        ),
+    )
+    connect_timeout_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        validation_alias=AliasChoices(
+            "connect_timeout_seconds",
+            "RAVN_VALKYRIE_TELEMETRY_NATS_CONNECT_TIMEOUT_SECONDS",
+        ),
+    )
+    nats_jetstream_domain: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "nats_jetstream_domain",
+            "RAVN_VALKYRIE_TELEMETRY_NATS_JETSTREAM_DOMAIN",
+        ),
+    )
+    nats_max_reconnect_attempts: int = Field(
+        default=0,
+        ge=0,
+        validation_alias=AliasChoices(
+            "nats_max_reconnect_attempts",
+            "RAVN_VALKYRIE_TELEMETRY_NATS_MAX_RECONNECT_ATTEMPTS",
+        ),
+    )
+    tls_ca_file: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "tls_ca_file",
+            "RAVN_VALKYRIE_TELEMETRY_TLS_CA_FILE",
+        ),
+    )
+    tls_cert_file: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "tls_cert_file",
+            "RAVN_VALKYRIE_TELEMETRY_TLS_CERT_FILE",
+        ),
+    )
+    tls_key_file: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "tls_key_file",
+            "RAVN_VALKYRIE_TELEMETRY_TLS_KEY_FILE",
+        ),
+    )
+    tls_hostname: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "tls_hostname",
+            "RAVN_VALKYRIE_TELEMETRY_TLS_HOSTNAME",
+        ),
+    )
+    tls_handshake_first: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "tls_handshake_first",
+            "RAVN_VALKYRIE_TELEMETRY_TLS_HANDSHAKE_FIRST",
+        ),
+    )
+    tls_insecure_skip_verify: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "tls_insecure_skip_verify",
+            "RAVN_VALKYRIE_TELEMETRY_TLS_INSECURE_SKIP_VERIFY",
+        ),
+    )
+
+
+class ValkyrieCommandConfig(_LegacyAliasSettings):
+    """Typed transport settings for Valkyrie review commands."""
+
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+
+    nats_url: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "nats_url",
+            "RAVN_VALKYRIE_COMMAND_NATS_URL",
+        ),
+    )
+    nats_streams: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "nats_streams",
+            "RAVN_VALKYRIE_COMMAND_NATS_STREAMS",
+        ),
+    )
+    nats_stream: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "nats_stream",
+            "RAVN_VALKYRIE_COMMAND_NATS_STREAM",
+        ),
+    )
+    subject_prefix: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "subject_prefix",
+            "RAVN_VALKYRIE_COMMAND_SUBJECT_PREFIX",
+        ),
+    )
+    nats_user: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "nats_user",
+            "RAVN_VALKYRIE_COMMAND_NATS_USER",
+        ),
+    )
+    nats_password_env: str = Field(default="RAVN_VALKYRIE_COMMAND_NATS_PASSWORD")
+    nats_token_env: str = Field(default="RAVN_VALKYRIE_COMMAND_NATS_TOKEN")
+    nkeys_seed_env: str = Field(default="RAVN_VALKYRIE_COMMAND_NKEYS_SEED")
+    nkeys_seed_file: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "nkeys_seed_file",
+            "RAVN_VALKYRIE_COMMAND_NKEYS_SEED_FILE",
+        ),
+    )
+    nats_jetstream_domain: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "nats_jetstream_domain",
+            "RAVN_VALKYRIE_COMMAND_NATS_JETSTREAM_DOMAIN",
+        ),
+    )
+    ensure_stream: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "ensure_stream",
+            "RAVN_VALKYRIE_COMMAND_NATS_ENSURE_STREAM",
+        ),
+    )
+    connect_timeout_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        validation_alias=AliasChoices(
+            "connect_timeout_seconds",
+            "RAVN_VALKYRIE_COMMAND_NATS_CONNECT_TIMEOUT_SECONDS",
+        ),
+    )
+    max_reconnect_attempts: int = Field(
+        default=0,
+        ge=0,
+        validation_alias=AliasChoices(
+            "max_reconnect_attempts",
+            "RAVN_VALKYRIE_COMMAND_NATS_MAX_RECONNECT_ATTEMPTS",
+        ),
+    )
+    start_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        validation_alias=AliasChoices(
+            "start_timeout_seconds",
+            "RAVN_VALKYRIE_COMMAND_NATS_START_TIMEOUT_SECONDS",
+        ),
+    )
+    tls_ca_file: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "tls_ca_file",
+            "RAVN_VALKYRIE_COMMAND_TLS_CA_FILE",
+        ),
+    )
+    tls_cert_file: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "tls_cert_file",
+            "RAVN_VALKYRIE_COMMAND_TLS_CERT_FILE",
+        ),
+    )
+    tls_key_file: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "tls_key_file",
+            "RAVN_VALKYRIE_COMMAND_TLS_KEY_FILE",
+        ),
+    )
+    tls_hostname: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "tls_hostname",
+            "RAVN_VALKYRIE_COMMAND_TLS_HOSTNAME",
+        ),
+    )
+    tls_handshake_first: bool | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "tls_handshake_first",
+            "RAVN_VALKYRIE_COMMAND_TLS_HANDSHAKE_FIRST",
+        ),
+    )
+    tls_insecure_skip_verify: bool | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "tls_insecure_skip_verify",
+            "RAVN_VALKYRIE_COMMAND_TLS_INSECURE_SKIP_VERIFY",
+        ),
+    )
+
+
+class ValkyrieRoomConfig(_LegacyAliasSettings):
+    """Typed Skuld room bridge settings."""
+
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+
+    url: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "url",
+            "RAVN_VALKYRIE_SKULD_ROOM_URL",
+        ),
+    )
+    timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        validation_alias=AliasChoices(
+            "timeout_seconds",
+            "RAVN_VALKYRIE_SKULD_ROOM_TIMEOUT_SECONDS",
+        ),
+    )
+
+
+class OdinReviewConfig(_LegacyAliasSettings):
+    """Durable ODIN review queue and expiry policy."""
+
+    database_url: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "database_url",
+            "RAVN_ODIN_REVIEW_DATABASE_URL",
+        ),
+    )
+    store_path: str = Field(
+        default="~/.ravn/odin_review_queue.json",
+        validation_alias=AliasChoices(
+            "store_path",
+            "RAVN_ODIN_REVIEW_STORE_PATH",
+        ),
+    )
+    default_ttl_seconds: float = Field(
+        default=0.0,
+        ge=0,
+        validation_alias=AliasChoices(
+            "default_ttl_seconds", "RAVN_ODIN_REVIEW_DEFAULT_TTL_SECONDS"
+        ),
+    )
+    evolution_build_ttl_seconds: float | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices(
+            "evolution_build_ttl_seconds",
+            "RAVN_ODIN_REVIEW_TTL_SECONDS_EVOLUTION_BUILD",
+        ),
+    )
+    skill_promotion_ttl_seconds: float | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices(
+            "skill_promotion_ttl_seconds",
+            "RAVN_ODIN_REVIEW_TTL_SECONDS_SKILL_PROMOTION",
+        ),
+    )
+    flock_learning_ttl_seconds: float | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices(
+            "flock_learning_ttl_seconds",
+            "RAVN_ODIN_REVIEW_TTL_SECONDS_FLOCK_LEARNING",
+        ),
+    )
+    court_escalation_ttl_seconds: float | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices(
+            "court_escalation_ttl_seconds",
+            "RAVN_ODIN_REVIEW_TTL_SECONDS_COURT_ESCALATION",
+        ),
+    )
+    autonomy_change_ttl_seconds: float | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices(
+            "autonomy_change_ttl_seconds",
+            "RAVN_ODIN_REVIEW_TTL_SECONDS_AUTONOMY_CHANGE",
+        ),
+    )
+    morning_brief_ttl_seconds: float | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices(
+            "morning_brief_ttl_seconds",
+            "RAVN_ODIN_REVIEW_TTL_SECONDS_MORNING_BRIEF",
+        ),
+    )
+    sweep_interval_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        validation_alias=AliasChoices(
+            "sweep_interval_seconds", "RAVN_ODIN_REVIEW_SWEEP_INTERVAL_SECONDS"
+        ),
+    )
+
+    def ttl_seconds_by_kind(self) -> dict[str, float]:
+        """Return only per-kind TTL overrides explicitly configured."""
+        values: dict[str, float] = {}
+        for kind in (
+            "evolution_build",
+            "skill_promotion",
+            "flock_learning",
+            "court_escalation",
+            "autonomy_change",
+            "morning_brief",
+        ):
+            value = getattr(self, f"{kind}_ttl_seconds")
+            if value is not None:
+                values[kind] = value
+        return values
+
+
+class ValkyrieRuntimeConfig(_LegacyAliasSettings):
+    """Valkyrie API runtime behavior, loaded through Ravn settings."""
+
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+
+    telemetry: ValkyrieTelemetryConfig = Field(default_factory=ValkyrieTelemetryConfig)
+    command: ValkyrieCommandConfig = Field(default_factory=ValkyrieCommandConfig)
+    room: ValkyrieRoomConfig = Field(default_factory=ValkyrieRoomConfig)
+    odin_reviews: OdinReviewConfig = Field(default_factory=OdinReviewConfig)
+    brief_interval_seconds: float = Field(
+        default=86_400.0,
+        ge=0,
+        validation_alias=AliasChoices(
+            "brief_interval_seconds",
+            "RAVN_VALKYRIE_BRIEF_INTERVAL_SECONDS",
+        ),
+    )
 
 
 class Settings(BaseSettings):
@@ -3070,6 +4014,9 @@ class Settings(BaseSettings):
     # Resident Valkyrie self-evolution loop (builder/reviewer/rollback)
     resident_evolution: ResidentEvolutionConfig = Field(default_factory=ResidentEvolutionConfig)
 
+    resident_state: ResidentStateConfig = Field(default_factory=ResidentStateConfig)
+    resident_inbox: ResidentInboxConfig = Field(default_factory=ResidentInboxConfig)
+
     # NIU-588: post-session reflection → Mímir learnings
     reflection: PostSessionReflectionConfig = Field(default_factory=PostSessionReflectionConfig)
 
@@ -3090,6 +4037,9 @@ class Settings(BaseSettings):
 
     # Warden discovery for UI/Guild/Observatory surfaces.
     warden_discovery: WardenDiscoveryConfig = Field(default_factory=WardenDiscoveryConfig)
+
+    # Standalone-resident discovery (helm-deployed residents outside Forge).
+    resident_discovery: ResidentDiscoveryConfig = Field(default_factory=ResidentDiscoveryConfig)
 
     # NIU-435: cascade coordinator / flock delegation / ephemeral spawn
     cascade: CascadeConfig = Field(default_factory=CascadeConfig)
@@ -3126,6 +4076,30 @@ class Settings(BaseSettings):
     environment: EnvironmentConfig = Field(
         default_factory=EnvironmentConfig,
         description="Environment identity and signal subscriptions for resident Valkyries.",
+    )
+    valkyrie: ValkyrieRuntimeConfig = Field(
+        default_factory=ValkyrieRuntimeConfig,
+        description="Resident Valkyrie API transport and bridge configuration.",
+    )
+    runtime_executor: RuntimeExecutorConfig = Field(
+        default_factory=RuntimeExecutorConfig,
+        description="Resident CLI transport overrides supplied by the session runtime.",
+    )
+    runtime_persona: str = Field(
+        default="default",
+        validation_alias=AliasChoices(
+            "runtime_persona",
+            "RAVN_PERSONA",
+        ),
+        description="Persona selected for this resident runtime.",
+    )
+    state_dir: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "state_dir",
+            "RAVN_STATE_DIR",
+        ),
+        description="Writable resident state directory; empty uses workspace or home.",
     )
 
     # Legacy — kept so existing CLI wiring (NIU-426) continues to work

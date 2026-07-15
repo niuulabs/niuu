@@ -1,14 +1,22 @@
-"""Minimal async JSON HTTP client seam for tool-build backends.
+"""Minimal async JSON HTTP client boundary for tool-build backends.
 
 A tiny protocol so the Forge/Ting backends are unit-testable with a fake
-client (no live services, no docker) while the real implementation wraps
-httpx with the same PAT bearer-token pattern ravn already uses to reach Ting.
+client while the real implementation authenticates with projected workload
+identity inside the cluster.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+import httpx
+
+from niuu.adapters.outbound.http_auth import (
+    StaticBearerTokenAuthAdapter,
+    WorkloadIdentityBearerTokenAuthAdapter,
+)
+from niuu.ports.http_auth import HttpAuthPort
 
 
 @dataclass(frozen=True)
@@ -18,7 +26,7 @@ class HttpResponse:
 
 
 class AsyncJsonHttpClient(Protocol):
-    """Bearer-authenticated JSON GET/POST used by the build backends."""
+    """Authenticated JSON GET/POST used by the build backends."""
 
     async def get(self, url: str) -> HttpResponse:
         raise NotImplementedError
@@ -27,44 +35,89 @@ class AsyncJsonHttpClient(Protocol):
         raise NotImplementedError
 
 
-def client_from_pat_env(pat_env: str) -> HttpxJsonClient:
-    """Build the real client, bearer-authenticated from an env-var-named PAT.
+def client_from_workload_identity(
+    *,
+    base_url: str,
+    external_token_env: str = "",
+    workload_token_file: str = "",
+    workload_exchange_url: str = "",
+    workload_audiences: list[str] | None = None,
+    workload_scopes: list[str] | None = None,
+    timeout_seconds: float = 30.0,
+    transport: httpx.BaseTransport | None = None,
+) -> HttpxJsonClient:
+    """Build the real client for dynamic tool-build adapters.
 
-    Backend constructors take plain YAML kwargs (dynamic-adapter rule), so
-    config names the env var and the token resolves here at construction
-    time — it is never stored in config.
+    In-cluster Ravn/Valkyrie calls use projected workload identity by default.
+    ``external_token_env`` is intentionally explicit for non-cluster callers
+    that still need to bring an already-issued bearer token.
+
+    ``workload_scopes`` requests a least-privilege valkyrie_build token at the
+    exchange — a build backend passes exactly the scope its launch endpoint
+    enforces, so a leaked build token cannot do anything else.
     """
-    import os  # noqa: PLC0415
-
-    token = os.environ.get(pat_env, "") if pat_env else ""
-    return HttpxJsonClient(token=token)
+    if external_token_env:
+        return HttpxJsonClient(
+            auth=StaticBearerTokenAuthAdapter(token_env=external_token_env),
+            timeout_seconds=timeout_seconds,
+        )
+    return HttpxJsonClient(
+        auth=WorkloadIdentityBearerTokenAuthAdapter(
+            base_url=base_url,
+            token_file=workload_token_file,
+            exchange_url=workload_exchange_url,
+            audiences=workload_audiences,
+            scopes=workload_scopes,
+            timeout_seconds=timeout_seconds,
+            transport=transport,
+        ),
+        timeout_seconds=timeout_seconds,
+    )
 
 
 class HttpxJsonClient:
-    """httpx-backed :class:`AsyncJsonHttpClient` with PAT bearer auth."""
+    """httpx-backed :class:`AsyncJsonHttpClient` with pluggable bearer auth."""
 
-    def __init__(self, *, token: str = "", timeout_seconds: float = 30.0) -> None:
-        self._token = token
+    def __init__(
+        self,
+        *,
+        auth: HttpAuthPort | None = None,
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        self._auth = auth
         self._timeout = timeout_seconds
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
+        if self._auth is not None:
+            headers.update(self._auth.headers())
         return headers
+
+    async def _resolve_headers(self) -> dict[str, str]:
+        """Resolve auth headers off the event loop.
+
+        ``HttpAuthPort.headers()`` is sync by contract and the workload-identity
+        adapter performs a blocking token exchange on cache miss — run it in a
+        worker thread so a refresh never stalls every other coroutine.
+        """
+        import asyncio  # noqa: PLC0415
+
+        return await asyncio.to_thread(self._headers)
 
     async def get(self, url: str) -> HttpResponse:
         import httpx  # noqa: PLC0415
 
+        headers = await self._resolve_headers()
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.get(url, headers=self._headers())
+            resp = await client.get(url, headers=headers)
             return HttpResponse(status_code=resp.status_code, body=_safe_json(resp))
 
     async def post(self, url: str, json_body: dict[str, Any]) -> HttpResponse:
         import httpx  # noqa: PLC0415
 
+        headers = await self._resolve_headers()
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(url, headers=self._headers(), json=json_body)
+            resp = await client.post(url, headers=headers, json=json_body)
             return HttpResponse(status_code=resp.status_code, body=_safe_json(resp))
 
 

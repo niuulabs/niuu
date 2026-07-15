@@ -39,6 +39,18 @@ export const sessionSchema = z.object({
   tokenCount: z.number().int().nonnegative().optional(),
   /** Total cost of this session in USD. */
   costUsd: z.number().nonnegative().optional(),
+  /**
+   * Skuld WebSocket URL for live chat, when this session is backed by a running
+   * broker. `null` (or absent) means no live chat surface is available — the
+   * same protocol as Volundr live sessions.
+   */
+  chatEndpoint: z.string().nullish(),
+  /** Opaque owning target used for resident commands and routing. */
+  instanceId: z.string().optional(),
+  flockId: z.string().uuid().optional(),
+  flockMemberId: z.string().uuid().optional(),
+  flockRole: z.string().optional(),
+  flockPeerId: z.string().optional(),
 });
 
 export type Session = z.infer<typeof sessionSchema>;

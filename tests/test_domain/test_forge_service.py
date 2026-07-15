@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -39,6 +40,7 @@ async def test_create_and_start_session_delegates_to_session_service() -> None:
         initial_prompt="start",
         workload_type="interactive",
         workload_config={},
+        persona_name="reviewer",
     )
 
     result = await forge.create_and_start_session(data)
@@ -57,7 +59,7 @@ async def test_create_and_start_session_delegates_to_session_service() -> None:
         system_prompt="system",
         initial_prompt="start",
         workload_type="interactive",
-        workload_config=None,
+        workload_config={"persona": "reviewer"},
     )
 
 
@@ -286,6 +288,36 @@ async def test_update_activity_delegates_to_session_service() -> None:
         session_id,
         SessionActivityState.ACTIVE,
         {"source": "test"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_activity_forwards_state_since() -> None:
+    """FAULT A regression: the facade MUST accept and forward state_since.
+
+    The REST endpoint calls forge.update_activity(..., state_since=...). Before the
+    fix the facade lacked the param, so this raised TypeError on every activity
+    report (swallowed into a false 204 -> activity_state never persisted). This test
+    would have caught that: it passes state_since and asserts it reaches the deep
+    session service.
+    """
+    session_service = AsyncMock(spec=SessionService)
+    forge = ForgeService(session_service)
+    session_id = uuid4()
+    state_since = datetime(2026, 6, 28, 12, 0, 0, tzinfo=UTC)
+
+    await forge.update_activity(
+        session_id,
+        SessionActivityState.ACTIVE,
+        {"source": "test"},
+        state_since=state_since,
+    )
+
+    session_service.update_activity.assert_awaited_once_with(
+        session_id,
+        SessionActivityState.ACTIVE,
+        {"source": "test"},
+        state_since=state_since,
     )
 
 

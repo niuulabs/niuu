@@ -11,6 +11,7 @@ Groups
 ``skill``     — skill_list, skill_run  (conditional on settings.skill.enabled)
 ``kubernetes``— read-only Kubernetes inspection tools for resident Valkyries
 ``platform``  — volundr/ting platform tools  (conditional on gateway.platform.enabled)
+``workflow``  — workflow catalog discovery/launch tools backed by capability_sources
 ``cascade``   — marker group; cascade tools are wired externally via build_cascade_tools()
 
 Runtime context keys
@@ -79,26 +80,42 @@ def _build_skill_port(settings: Settings, workspace: Any) -> Any:
     )
 
 
+def _platform_kwargs(settings: Settings, *, workflow_aliases: bool = False) -> dict[str, Any]:
+    platform = settings.gateway.platform
+    kwargs = {
+        "base_url": platform.base_url,
+        "timeout": platform.timeout,
+        "pat_token": platform.pat_token,
+        "workload_token_file": platform.workload_token_file,
+        "exchange_url": platform.workload_exchange_url,
+        "audiences": platform.workload_audiences,
+    }
+    if workflow_aliases:
+        kwargs["workflow_aliases"] = {
+            name: alias.model_dump(exclude_none=True)
+            for name, alias in platform.workflow_aliases.items()
+        }
+    return kwargs
+
+
+def _ting_workflow_kwargs(settings: Settings, ctx: dict[str, Any]) -> dict[str, Any]:
+    kwargs = _platform_kwargs(settings, workflow_aliases=True)
+    if ctx.get("session_join_manager") is not None:
+        kwargs["session_join_manager"] = ctx["session_join_manager"]
+    return kwargs
+
+
 def _build_web_search_kwargs(settings: Settings, _ctx: dict[str, Any]) -> dict[str, Any]:
     """Construct kwargs for WebSearchTool, including the dynamic provider."""
     from ravn.cli.commands import _import_class, _inject_secrets  # noqa: PLC0415
 
     ws_cfg = settings.tools.web.search
-    provider = None
-    mock_path = "ravn.adapters.tools.web_search.MockWebSearchProvider"
-    if ws_cfg.provider.adapter != mock_path:
-        import logging  # noqa: PLC0415
-
-        logger = logging.getLogger(__name__)
-        try:
-            cls = _import_class(ws_cfg.provider.adapter)
-            merged = _inject_secrets(
-                dict(ws_cfg.provider.kwargs),
-                ws_cfg.provider.secret_kwargs_env,
-            )
-            provider = cls(**merged)
-        except Exception as exc:
-            logger.warning("Failed to load web search provider: %s — using mock", exc)
+    cls = _import_class(ws_cfg.provider.adapter)
+    merged = _inject_secrets(
+        dict(ws_cfg.provider.kwargs),
+        ws_cfg.provider.secret_kwargs_env,
+    )
+    provider = cls(**merged)
     return {"provider": provider, "num_results": ws_cfg.num_results}
 
 
@@ -320,51 +337,103 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         adapter="ravn.adapters.tools.platform_tools.VolundrSessionTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: {
-            "base_url": s.gateway.platform.base_url,
-            "timeout": s.gateway.platform.timeout,
-            "pat_token": s.gateway.platform.pat_token,
-        },
+        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
     ),
     "volundr_git": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.VolundrGitTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: {
-            "base_url": s.gateway.platform.base_url,
-            "timeout": s.gateway.platform.timeout,
-            "pat_token": s.gateway.platform.pat_token,
-        },
+        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
     ),
     "ting_saga": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.TingSagaTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: {
-            "base_url": s.gateway.platform.base_url,
-            "timeout": s.gateway.platform.timeout,
-            "pat_token": s.gateway.platform.pat_token,
-        },
+        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
     ),
     "ting_workflow": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.TingWorkflowTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: {
-            "base_url": s.gateway.platform.base_url,
-            "timeout": s.gateway.platform.timeout,
-            "pat_token": s.gateway.platform.pat_token,
-        },
+        kwargs_fn=_ting_workflow_kwargs,
+    ),
+    "ting_research": BuiltinToolDef(
+        adapter="ravn.adapters.tools.platform_tools.TingResearchTool",
+        groups=frozenset({"platform"}),
+        condition=lambda s: s.gateway.platform.enabled,
+        kwargs_fn=_ting_workflow_kwargs,
     ),
     "tracker_issue": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.TrackerIssueTool",
         groups=frozenset({"platform"}),
         condition=lambda s: s.gateway.platform.enabled,
-        kwargs_fn=lambda s, ctx: {
-            "base_url": s.gateway.platform.base_url,
-            "timeout": s.gateway.platform.timeout,
-            "pat_token": s.gateway.platform.pat_token,
-        },
+        kwargs_fn=lambda s, ctx: _platform_kwargs(s),
+    ),
+    "session_join": BuiltinToolDef(
+        adapter="ravn.adapters.tools.session_join_tool.SessionJoinTool",
+        groups=frozenset({"platform"}),
+        condition=lambda s: s.gateway.platform.enabled and s.skuld.enabled,
+        # The manager is built by the resident daemon's composition root and
+        # injected via runtime context; the tool is skipped when it is absent.
+        required_context=frozenset({"session_join_manager"}),
+        kwargs_fn=lambda s, ctx: {"manager": ctx["session_join_manager"]},
+    ),
+    "ting_plan": BuiltinToolDef(
+        adapter="ravn.adapters.tools.platform_tools.TingPlanTool",
+        groups=frozenset({"platform"}),
+        condition=lambda s: s.gateway.platform.enabled,
+        kwargs_fn=_ting_workflow_kwargs,
+    ),
+    "ting_spec": BuiltinToolDef(
+        adapter="ravn.adapters.tools.platform_tools.TingSpecTool",
+        groups=frozenset({"platform"}),
+        condition=lambda s: s.gateway.platform.enabled,
+        kwargs_fn=_ting_workflow_kwargs,
+    ),
+    # =========================================================================
+    # workflow — resident workflow catalog tools backed by capability_sources
+    # =========================================================================
+    "workflow_list": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowListTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
+    "workflow_describe": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowDescribeTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
+    "workflow_launch": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowLaunchTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
+    "workflow_status": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowStatusTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
+    "workflow_events": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowEventsTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
+    "workflow_artifacts": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowArtifactsTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
+    ),
+    "workflow_artifact_read": BuiltinToolDef(
+        adapter="ravn.adapters.tools.workflow_tools.WorkflowArtifactReadTool",
+        groups=frozenset({"workflow"}),
+        required_context=frozenset({"workflow_sources"}),
+        kwargs_fn=lambda _s, ctx: {"sources": ctx["workflow_sources"]},
     ),
     # =========================================================================
     # ravn — persona management tools
@@ -376,5 +445,15 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
     "persona_save": BuiltinToolDef(
         adapter="ravn.adapters.tools.persona_tools.PersonaSaveTool",
         groups=frozenset({"ravn"}),
+    ),
+    "capability_list": BuiltinToolDef(
+        adapter="ravn.adapters.tools.capability_catalog.CapabilityListTool",
+        groups=frozenset({"ravn"}),
+        required_context=frozenset({"capability_tools_provider"}),
+        kwargs_fn=lambda _s, ctx: {
+            "tools_provider": ctx["capability_tools_provider"],
+            "skill_port": ctx.get("skill_port"),
+            "workflow_sources": ctx.get("workflow_sources") or [],
+        },
     ),
 }

@@ -643,7 +643,7 @@ describe('SessionTerminalLive', () => {
     render(<SessionTerminalLive url="ws://localhost:8080/terminal/ws" />);
 
     await waitFor(() => expect(mockXtermOpen).toHaveBeenCalled());
-    expect(resizeObservers).toHaveLength(1);
+    await waitFor(() => expect(resizeObservers).toHaveLength(1));
 
     const fitCallsBeforeResize = mockFitAddonFit.mock.calls.length;
     resizeObservers[0]?.callback([] as ResizeObserverEntry[], resizeObservers[0] as ResizeObserver);

@@ -13,8 +13,11 @@ import type {
   ITrackerBrowserService,
   IWorkflowService,
   IResearchService,
+  ISpecsService,
   WorkflowLaunchRequest,
   CreateResearchCampaignRequest,
+  CreateSpecCampaignRequest,
+  ReviewSpecCampaignRequest,
   UpdateResearchCampaignRequest,
   IDispatchBus,
   DispatchResult,
@@ -1052,6 +1055,10 @@ export function createMockTingService(): ITingService {
       return sagas.get(id) ?? null;
     },
 
+    async deleteSaga(id: string) {
+      sagas.delete(id);
+    },
+
     async getPhases(sagaId: string) {
       return phasesBySaga.get(sagaId) ?? [];
     },
@@ -1216,6 +1223,14 @@ export function createMockTingService(): ITingService {
       };
     },
 
+    async listPlanSessions(): Promise<PlanSession[]> {
+      return [];
+    },
+
+    async cancelPlanSession(_campaignSlug: string): Promise<void> {
+      return undefined;
+    },
+
     async extractStructure(_text: string): Promise<ExtractedStructure> {
       return {
         found: true,
@@ -1281,6 +1296,22 @@ export function createMockTingService(): ITingService {
         instanceName: target.mode === 'instance' ? 'Assigned target' : undefined,
         targetTags: target.mode === 'tags' ? target.tags : undefined,
         targetMatch: target.mode === 'tags' ? (target.match ?? 'all') : undefined,
+      };
+      sagas.set(sagaId, updated);
+      return updated;
+    },
+
+    async assignRepos(sagaId: string, repoRefs) {
+      const saga = sagas.get(sagaId);
+      if (!saga) {
+        throw new Error(`Saga not found: ${sagaId}`);
+      }
+
+      const updated: Saga = {
+        ...saga,
+        repos: repoRefs.map((entry) => entry.repo),
+        repoRefs,
+        baseBranch: repoRefs[0]?.branch ?? saga.baseBranch,
       };
       sagas.set(sagaId, updated);
       return updated;
@@ -1810,6 +1841,200 @@ export function createMockResearchService(): IResearchService {
         ...artifact,
         content: `# ${artifact.title}\n\nMock content for ${artifact.path}.`,
       } satisfies CampaignArtifactDetail;
+    },
+  };
+}
+
+export function createMockSpecsService(): ISpecsService {
+  const now = new Date().toISOString();
+  const seedCampaign: ResearchCampaignDetail = {
+    id: '22222222-2222-4222-8222-222222222222',
+    slug: 'smart-device-control-protocol',
+    name: 'SDCP operator specification',
+    ownerId: 'dev-user',
+    workflowId: '96ecf5df-18a0-542b-9df6-aef6aef6a5db',
+    workflowVersion: '1.0.0',
+    workflowName: 'Specification Stack',
+    sessionId: 'mock-session-spec',
+    sessionName: 'SDCP operator specification',
+    status: 'blocked',
+    activeStageId: 'spec-prd-review',
+    stageState: [
+      {
+        stageId: 'spec-frame',
+        label: 'Frame initiative',
+        status: 'complete',
+        startedAt: now,
+        completedAt: now,
+      },
+      {
+        stageId: 'spec-prd',
+        label: 'Draft PRD',
+        status: 'complete',
+        startedAt: now,
+        completedAt: now,
+      },
+      {
+        stageId: 'spec-prd-review',
+        label: 'Review PRD',
+        status: 'blocked',
+        startedAt: now,
+        completedAt: null,
+        reason: 'Review required',
+      },
+    ],
+    metadata: {
+      surface: 'ting.specs',
+      prompt: 'Plan SDCP v3.0.0 as a Kubernetes operator for 3D printers.',
+      repos: ['niuulabs/volundr'],
+      pending_workflow_gates: [
+        {
+          id: 'mock-prd-gate',
+          node_id: 'spec-prd-gate',
+          status: 'pending',
+          summary: 'PRD approval gate',
+          instructions:
+            'Approve the PRD or request changes with feedback before SRD drafting begins.',
+        },
+      ],
+    },
+    createdAt: now,
+    updatedAt: now,
+    lastActivityAt: now,
+    completedAt: null,
+    artifacts: [
+      {
+        path: 'specifications/smart-device-control-protocol/00-brief.md',
+        title: 'Brief',
+        updatedAt: now,
+        kind: 'brief',
+        publishState: 'unknown',
+        sourceIds: [],
+        summary: 'Initiative framing',
+      },
+      {
+        path: 'specifications/smart-device-control-protocol/10-prd.md',
+        title: 'PRD',
+        updatedAt: now,
+        kind: 'prd',
+        publishState: 'unknown',
+        sourceIds: [],
+        summary: 'Product requirements draft',
+      },
+      {
+        path: 'specifications/smart-device-control-protocol/11-prd-review.md',
+        title: 'PRD Review',
+        updatedAt: now,
+        kind: 'prd_review',
+        publishState: 'unknown',
+        sourceIds: [],
+        summary: 'Review notes',
+      },
+    ],
+    canonicalArtifacts: {
+      brief: 'specifications/smart-device-control-protocol/00-brief.md',
+      prd: 'specifications/smart-device-control-protocol/10-prd.md',
+      prd_review: 'specifications/smart-device-control-protocol/11-prd-review.md',
+    },
+  };
+  const campaigns = new Map<string, ResearchCampaignDetail>([[seedCampaign.slug, seedCampaign]]);
+
+  return {
+    async listCampaigns() {
+      return Array.from(campaigns.values()).map((campaign) => ({ ...campaign }));
+    },
+
+    async getCampaign(slug: string) {
+      return campaigns.get(slug) ?? null;
+    },
+
+    async createCampaign(request: CreateSpecCampaignRequest) {
+      const slug =
+        (request.name || request.prompt)
+          .toLowerCase()
+          .match(/[a-z0-9]+/g)
+          ?.join('-')
+          .slice(0, 96) || `spec-${campaigns.size + 1}`;
+      const createdAt = new Date().toISOString();
+      const campaign: ResearchCampaignDetail = {
+        id: crypto.randomUUID(),
+        slug,
+        name: request.name || request.prompt.slice(0, 80),
+        ownerId: 'dev-user',
+        workflowId: request.workflowId ?? '96ecf5df-18a0-542b-9df6-aef6aef6a5db',
+        workflowVersion: '1.0.0',
+        workflowName: 'Specification Stack',
+        sessionId: `mock-session-${slug}`,
+        sessionName: request.name || slug,
+        status: 'running',
+        activeStageId: 'spec-frame',
+        stageState: [
+          {
+            stageId: 'spec-frame',
+            label: 'Frame initiative',
+            status: 'active',
+            startedAt: createdAt,
+            completedAt: null,
+          },
+        ],
+        metadata: {
+          surface: 'ting.specs',
+          prompt: request.prompt,
+          context: request.context ?? '',
+          repo: request.repo ?? request.repos?.[0] ?? '',
+          repos: request.repos ?? (request.repo ? [request.repo] : []),
+          branch: request.branch ?? '',
+          connection_id: request.connectionId ?? '',
+        },
+        createdAt,
+        updatedAt: createdAt,
+        lastActivityAt: createdAt,
+        completedAt: null,
+        artifacts: [],
+        canonicalArtifacts: {},
+      };
+      campaigns.set(slug, campaign);
+      return campaign;
+    },
+
+    async deleteCampaign(slug: string) {
+      campaigns.delete(slug);
+    },
+
+    async listArtifacts(slug: string) {
+      return campaigns.get(slug)?.artifacts ?? [];
+    },
+
+    async getArtifact(slug: string, path: string) {
+      const artifact = campaigns.get(slug)?.artifacts.find((item) => item.path === path);
+      if (!artifact) return null;
+      return {
+        ...artifact,
+        content: `# ${artifact.title}\n\nMock specification content for ${artifact.path}.`,
+      } satisfies CampaignArtifactDetail;
+    },
+
+    async reviewCampaign(slug: string, request: ReviewSpecCampaignRequest) {
+      const current = campaigns.get(slug);
+      if (!current) throw new Error(`Spec campaign ${slug} not found`);
+      const updated: ResearchCampaignDetail = {
+        ...current,
+        status: request.decision === 'approve' ? 'running' : 'blocked',
+        metadata: {
+          ...current.metadata,
+          pending_workflow_gates:
+            request.decision === 'approve' ? [] : current.metadata.pending_workflow_gates,
+          latest_spec_review: {
+            decision: request.decision,
+            notes: request.notes ?? '',
+            gate_id: request.gateId ?? '',
+            node_id: request.nodeId ?? '',
+          },
+        },
+        updatedAt: new Date().toISOString(),
+      };
+      campaigns.set(slug, updated);
+      return updated;
     },
   };
 }

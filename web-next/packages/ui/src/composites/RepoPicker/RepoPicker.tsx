@@ -78,6 +78,7 @@ export interface RepoSelectProps {
   repos: RepoRecord[];
   value: string;
   onChange: (value: string) => void;
+  id?: string;
   placeholder?: string;
   excludedRepos?: string[];
   valueMode?: 'cloneUrl' | 'slug';
@@ -89,6 +90,7 @@ export function RepoSelect({
   repos,
   value,
   onChange,
+  id,
   placeholder = 'Select repository',
   excludedRepos = [],
   valueMode = 'cloneUrl',
@@ -99,6 +101,7 @@ export function RepoSelect({
 
   return (
     <select
+      id={id}
       value={value}
       onChange={(event) => onChange(event.target.value)}
       data-testid={testId}

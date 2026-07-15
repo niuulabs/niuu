@@ -18,6 +18,7 @@ import type {
 } from '../ports';
 import type { Saga } from '../domain/saga';
 import type { Workflow } from '../domain/workflow';
+import type { RepoRecord } from '@niuulabs/ui';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -115,6 +116,18 @@ const MOCK_WORKFLOW: Workflow = {
   edges: [],
 };
 
+const MOCK_REPOS: RepoRecord[] = [
+  {
+    provider: 'github',
+    org: 'niuulabs',
+    name: 'volundr',
+    url: 'https://github.com/niuulabs/volundr',
+    cloneUrl: 'https://github.com/niuulabs/volundr.git',
+    defaultBranch: 'dev',
+    branches: ['dev', 'main'],
+  },
+];
+
 function makeSvc(overrides: Partial<ITingService> = {}): Partial<ITingService> {
   return {
     getSagas: vi.fn().mockResolvedValue([]),
@@ -145,7 +158,13 @@ function wrap(svc: Partial<ITingService>, workflowSvc?: Partial<IWorkflowService
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={client}>
-        <ServicesProvider services={{ ting: svc, 'ting.workflows': wfSvc }}>
+        <ServicesProvider
+          services={{
+            ting: svc,
+            'ting.workflows': wfSvc,
+            'niuu.repos': { getRepos: vi.fn().mockResolvedValue(MOCK_REPOS) },
+          }}
+        >
           {children}
         </ServicesProvider>
       </QueryClientProvider>
@@ -178,6 +197,42 @@ describe('PlanPrompt', () => {
     fireEvent.submit(screen.getByRole('form', { name: /plan prompt form/i }));
 
     expect(onSubmit).toHaveBeenCalledWith('Build auth', 'niuulabs/volundr');
+  });
+
+  it('uses the shared repository select when repos are available', async () => {
+    const onSubmit = vi.fn();
+    render(<PlanPrompt onSubmit={onSubmit} loading={false} error={null} repos={MOCK_REPOS} />);
+
+    await userEvent.type(screen.getByRole('textbox', { name: /goal description/i }), 'Build auth');
+    await userEvent.selectOptions(
+      screen.getByLabelText(/target repository/i),
+      'https://github.com/niuulabs/volundr.git',
+    );
+    fireEvent.submit(screen.getByRole('form', { name: /plan prompt form/i }));
+
+    expect(onSubmit).toHaveBeenCalledWith('Build auth', 'https://github.com/niuulabs/volundr.git');
+  });
+
+  it('leaves the shared repository select empty by default', async () => {
+    const onSubmit = vi.fn();
+    render(<PlanPrompt onSubmit={onSubmit} loading={false} error={null} repos={MOCK_REPOS} />);
+
+    await waitFor(() => expect(screen.getByLabelText(/target repository/i)).toHaveValue(''));
+    await userEvent.type(screen.getByRole('textbox', { name: /goal description/i }), 'Build auth');
+    fireEvent.submit(screen.getByRole('form', { name: /plan prompt form/i }));
+
+    expect(onSubmit).toHaveBeenCalledWith('Build auth', '');
+  });
+
+  it('submits when repository is empty', async () => {
+    const onSubmit = vi.fn();
+    render(<PlanPrompt onSubmit={onSubmit} loading={false} error={null} />);
+
+    await userEvent.type(screen.getByRole('textbox', { name: /goal description/i }), 'Build auth');
+    expect(screen.getByRole('button', { name: /next/i })).toBeEnabled();
+    fireEvent.submit(screen.getByRole('form', { name: /plan prompt form/i }));
+
+    expect(onSubmit).toHaveBeenCalledWith('Build auth', '');
   });
 
   it('does not submit when prompt is empty', () => {
@@ -335,6 +390,7 @@ describe('PlanRuns', () => {
     // Use aria-label to disambiguate from StateDot's inner role="status"
     expect(screen.getByLabelText(/decomposing plan/i)).toBeInTheDocument();
     expect(screen.getByText(/Ravns are mapping the work/i)).toBeInTheDocument();
+    expect(screen.getByText(/can take a few minutes or longer/i)).toBeInTheDocument();
   });
 
   it('shows raven activity lines', () => {
@@ -494,7 +550,7 @@ describe('PlanDraft', () => {
     expect(onReplan).toHaveBeenCalled();
   });
 
-  it('calls onSaveDraft when save as draft button clicked', () => {
+  it('calls onSaveDraft when keep in wizard is clicked', () => {
     const onSaveDraft = vi.fn();
     render(
       <PlanDraft
@@ -507,7 +563,7 @@ describe('PlanDraft', () => {
         onEditPhase={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /save as draft/i }));
+    fireEvent.click(screen.getByRole('button', { name: /keep in wizard/i }));
     expect(onSaveDraft).toHaveBeenCalled();
   });
 
@@ -628,7 +684,7 @@ describe('PlanDraft', () => {
     expect(screen.getByText('M')).toBeInTheDocument();
   });
 
-  it('renders "Own saga" button for each run (disabled stub)', () => {
+  it('marks Own saga unavailable for each run', () => {
     render(
       <PlanDraft
         structure={MOCK_STRUCTURE}
@@ -639,7 +695,9 @@ describe('PlanDraft', () => {
         onEditPhase={vi.fn()}
       />,
     );
-    const ownSagaButtons = screen.getAllByRole('button', { name: /promote run .* to own saga/i });
+    const ownSagaButtons = screen.getAllByRole('button', {
+      name: /promote run .* to own saga unavailable/i,
+    });
     expect(ownSagaButtons.length).toBeGreaterThan(0);
     ownSagaButtons.forEach((btn) => expect(btn).toBeDisabled());
   });
@@ -677,7 +735,7 @@ describe('PlanDraft', () => {
     expect(screen.queryAllByRole('button', { name: /remove run/i })).toHaveLength(0);
   });
 
-  it('shows "Draft saved (local only)" feedback after clicking save as draft', async () => {
+  it('shows explicit in-wizard retention feedback', async () => {
     render(
       <PlanDraft
         structure={MOCK_STRUCTURE}
@@ -689,10 +747,8 @@ describe('PlanDraft', () => {
         onEditPhase={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /save as draft/i }));
-    await waitFor(() =>
-      expect(screen.getByText(/draft saved \(local only\)/i)).toBeInTheDocument(),
-    );
+    fireEvent.click(screen.getByRole('button', { name: /keep in wizard/i }));
+    await waitFor(() => expect(screen.getByText(/draft kept in this wizard/i)).toBeInTheDocument());
   });
 });
 
@@ -862,7 +918,7 @@ describe('PlanWizard integration', () => {
     expect(screen.getByText('untested')).toBeInTheDocument();
   });
 
-  it('draft shows Re-plan and Save as draft buttons', async () => {
+  it('draft shows Re-plan and Keep in wizard buttons', async () => {
     const svc = makeSvc();
     render(<PlanWizard />, { wrapper: wrap(svc) });
 
@@ -878,7 +934,7 @@ describe('PlanWizard integration', () => {
     });
 
     expect(screen.getByRole('button', { name: /re-plan/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /save as draft/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /keep in wizard/i })).toBeInTheDocument();
   });
 
   it('re-plan button re-runs decomposition', async () => {
@@ -928,6 +984,58 @@ describe('PlanWizard integration', () => {
 
     await waitFor(() => expect(screen.getByTestId('plan-approved')).toBeInTheDocument());
     expect(screen.getByText('Saga launched!')).toBeInTheDocument();
+  });
+
+  it('lists and resumes active planning sessions', async () => {
+    const activeSession: PlanSession = {
+      sessionId: 'plan-active-1',
+      campaignSlug: 'plan-sdcp-operator',
+      name: 'Plan SDCP operator',
+      prompt: 'Plan SDCP operator',
+      repo: '',
+      status: 'running',
+      chatEndpoint: null,
+      questions: [{ id: 'planning-feedback', question: 'Any scope boundaries?' }],
+    };
+    const getPlanSession = vi.fn().mockResolvedValue(activeSession);
+    const svc = makeSvc({
+      listPlanSessions: vi.fn().mockResolvedValue([activeSession]),
+      getPlanSession,
+    });
+    render(<PlanWizard />, { wrapper: wrap(svc) });
+
+    await waitFor(() => expect(screen.getByText('Active plans')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /resume/i }));
+
+    await waitFor(() => expect(getPlanSession).toHaveBeenCalledWith('plan-sdcp-operator'));
+    expect(screen.getByText('Clarify your plan')).toBeInTheDocument();
+    expect(screen.getByText('Any scope boundaries?')).toBeInTheDocument();
+  });
+
+  it('cancels active planning sessions from the prompt step', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const activeSession: PlanSession = {
+      sessionId: 'plan-active-1',
+      campaignSlug: 'plan-sdcp-operator',
+      name: 'Plan SDCP operator',
+      prompt: 'Plan SDCP operator',
+      repo: '',
+      status: 'running',
+      chatEndpoint: null,
+      questions: [],
+    };
+    const cancelPlanSession = vi.fn().mockResolvedValue(undefined);
+    const svc = makeSvc({
+      listPlanSessions: vi.fn().mockResolvedValue([activeSession]),
+      cancelPlanSession,
+    });
+    render(<PlanWizard />, { wrapper: wrap(svc) });
+
+    await waitFor(() => expect(screen.getByText('Active plans')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    await waitFor(() => expect(cancelPlanSession).toHaveBeenCalledWith('plan-sdcp-operator'));
+    confirmSpy.mockRestore();
   });
 
   it('can navigate back from questions to prompt', async () => {

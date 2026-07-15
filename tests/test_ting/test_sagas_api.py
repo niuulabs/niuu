@@ -2,22 +2,27 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
+import ting.api.sagas as sagas_api
 from niuu.domain.models import (
     InstanceKind,
     InstanceVisibility,
     Principal,
     RegisteredInstance,
 )
+from ting.api.dispatch import resolve_volundr_factory
 from ting.api.phases import create_saga_phases_router
+from ting.api.research import resolve_workflow_campaign_repo
 from ting.api.sagas import (
     _build_phase_summary,
     _can_use_workflow,
@@ -31,7 +36,8 @@ from ting.api.sagas import (
     resolve_volundr,
 )
 from ting.api.tracker import resolve_trackers
-from ting.config import AuthConfig
+from ting.api.workflows import resolve_workflow_repo
+from ting.config import AuthConfig, Settings
 from ting.domain.models import (
     Phase,
     PhaseStatus,
@@ -42,9 +48,13 @@ from ting.domain.models import (
     TrackerIssue,
     TrackerMilestone,
     TrackerProject,
+    WorkflowCampaign,
+    WorkflowCampaignStatus,
     WorkflowDefinition,
     WorkflowScope,
 )
+from ting.ports.volundr import VolundrSession
+from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
 
 from .test_tracker_api import MockSagaRepo, MockTracker
@@ -73,6 +83,50 @@ class InMemoryWorkflowRepository(WorkflowRepository):
         return self._workflows.pop(workflow_id, None) is not None
 
 
+class InMemoryWorkflowCampaignRepository(WorkflowCampaignRepository):
+    def __init__(self, campaigns: list[WorkflowCampaign] | None = None) -> None:
+        self._campaigns = {campaign.id: campaign for campaign in campaigns or []}
+
+    async def list_campaigns(self, *, owner_id: str) -> list[WorkflowCampaign]:
+        return [campaign for campaign in self._campaigns.values() if campaign.owner_id == owner_id]
+
+    async def list_active_campaigns(self) -> list[WorkflowCampaign]:
+        return [
+            campaign
+            for campaign in self._campaigns.values()
+            if campaign.status
+            in {
+                WorkflowCampaignStatus.PENDING,
+                WorkflowCampaignStatus.RUNNING,
+                WorkflowCampaignStatus.BLOCKED,
+            }
+        ]
+
+    async def get_campaign(self, campaign_id) -> WorkflowCampaign | None:
+        return self._campaigns.get(campaign_id)
+
+    async def get_campaign_by_slug(
+        self,
+        slug: str,
+        *,
+        owner_id: str | None = None,
+    ) -> WorkflowCampaign | None:
+        for campaign in self._campaigns.values():
+            if campaign.slug != slug:
+                continue
+            if owner_id is not None and campaign.owner_id != owner_id:
+                continue
+            return campaign
+        return None
+
+    async def save_campaign(self, campaign: WorkflowCampaign) -> WorkflowCampaign:
+        self._campaigns[campaign.id] = campaign
+        return campaign
+
+    async def delete_campaign(self, campaign_id) -> bool:
+        return self._campaigns.pop(campaign_id, None) is not None
+
+
 def _workflow(*, executable: bool = True) -> WorkflowDefinition:
     now = datetime.now(UTC)
     return WorkflowDefinition(
@@ -94,6 +148,50 @@ def _workflow(*, executable: bool = True) -> WorkflowDefinition:
                 },
             ],
             "edges": [{"id": "e1", "source": "trigger-1", "target": "stage-1"}],
+        },
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _planning_workflow() -> WorkflowDefinition:
+    now = datetime.now(UTC)
+    return WorkflowDefinition(
+        id=uuid4(),
+        name="Saga Planning",
+        description="Planning workflow",
+        version="1.0.0",
+        scope=WorkflowScope.SYSTEM,
+        owner_id=None,
+        graph={
+            "tags": ["planning", "saga"],
+            "nodes": [
+                {"id": "plan-request", "kind": "trigger", "dispatchEvent": "plan.requested"},
+                {
+                    "id": "plan-clarify",
+                    "kind": "stage",
+                    "label": "Clarify brief",
+                    "stageMembers": [
+                        {
+                            "personaId": "specification-framer",
+                            "budget": 12,
+                            "model": "gpt-5.5",
+                            "consumesEventTypes": ["plan.requested"],
+                        }
+                    ],
+                },
+                {
+                    "id": "plan-gate",
+                    "kind": "gate",
+                    "mode": "human_approval",
+                    "approvalEvent": "plan.brief.approved",
+                    "changesRequestedEvent": "plan.brief.changes_requested",
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "plan-request", "target": "plan-clarify"},
+                {"id": "e2", "source": "plan-clarify", "target": "plan-gate"},
+            ],
         },
         created_at=now,
         updated_at=now,
@@ -709,6 +807,31 @@ class TestAssignWorkflow:
         assert data[0]["runs"][0]["reviewer_session_id"] == "reviewer-1"
         assert data[0]["runs"][0]["review_round"] == 2
 
+    def test_hydrates_persisted_run_tracker_link(self, saga_repo: MockSagaRepo):
+        class LinkTracker(MockTracker):
+            async def get_run(self, tracker_id: str) -> Run:
+                run = await super().get_run(tracker_id)
+                return replace(
+                    run,
+                    identifier="A-2",
+                    url="https://linear.app/test/issue/A-2/open-task",
+                )
+
+        app = FastAPI()
+        app.include_router(create_saga_phases_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [LinkTracker()]
+        app.dependency_overrides[resolve_saga_repo] = lambda: saga_repo
+        app.state.settings = _dev_settings()
+        client = TestClient(app)
+        saga_id = str(saga_repo.sagas[0].id)
+
+        resp = client.get(f"/api/v1/ting/sagas/{saga_id}/phases")
+
+        assert resp.status_code == 200
+        run = resp.json()[0]["runs"][0]
+        assert run["identifier"] == "A-2"
+        assert run["url"] == "https://linear.app/test/issue/A-2/open-task"
+
     def test_synthesizes_tracker_backed_phases_when_repo_has_none(
         self,
         client: TestClient,
@@ -777,6 +900,50 @@ class TestGetSagaErrors:
         assert data[0]["name"] == "Alpha"
 
 
+class TestAssignRepos:
+    def test_assigns_multiple_repos_with_branches(
+        self,
+        client: TestClient,
+        saga_repo: MockSagaRepo,
+    ) -> None:
+        saga_id = saga_repo.sagas[0].id
+
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_id}/repos",
+            json={
+                "repo_refs": [
+                    {"repo": "niuulabs/volundr", "branch": "dev"},
+                    {"repo": "niuulabs/infrastructure", "branch": "main"},
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["repos"] == ["niuulabs/volundr", "niuulabs/infrastructure"]
+        assert body["repo_refs"] == [
+            {"repo": "niuulabs/volundr", "branch": "dev"},
+            {"repo": "niuulabs/infrastructure", "branch": "main"},
+        ]
+        assert saga_repo.sagas[0].repo_branches == {
+            "niuulabs/volundr": "dev",
+            "niuulabs/infrastructure": "main",
+        }
+
+    def test_rejects_empty_repo_assignment(
+        self,
+        client: TestClient,
+        saga_repo: MockSagaRepo,
+    ) -> None:
+        response = client.put(
+            f"/api/v1/ting/sagas/{saga_repo.sagas[0].id}/repos",
+            json={"repo_refs": []},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == "At least one repository is required"
+
+
 class TestSpawnPlanSession:
     def test_plan_config_returns_finalize_prompt(self, mock_tracker: MockTracker) -> None:
         app = FastAPI()
@@ -792,38 +959,488 @@ class TestSpawnPlanSession:
         assert response.status_code == 200
         assert response.json() == {"finalize_prompt": "Finish the structure"}
 
-    def test_defaults_base_branch_to_main(self, mock_tracker: MockTracker) -> None:
+    def test_plan_request_allows_missing_repo(self) -> None:
+        body = sagas_api.PlanRequest.model_validate({"spec": "Plan SDCP operator"})
+
+        assert body.repo == ""
+        assert body.base_branch == "main"
+
+    def test_lists_active_plan_sessions(self, mock_tracker: MockTracker) -> None:
+        workflow = _planning_workflow()
+        now = datetime.now(UTC)
+        active_plan = WorkflowCampaign(
+            id=uuid4(),
+            slug="plan-sdcp-operator",
+            name="Plan SDCP operator",
+            owner_id="dev-user",
+            workflow_id=workflow.id,
+            workflow_version=workflow.version,
+            workflow_name=workflow.name,
+            workflow_snapshot={"graph": workflow.graph},
+            session_id="plan-1",
+            session_name="plan-sdcp-operator",
+            status=WorkflowCampaignStatus.RUNNING,
+            active_stage_id="plan-clarify",
+            stage_state=[],
+            metadata={"surface": "ting.plan", "spec": "Plan SDCP operator", "repo": ""},
+            created_at=now,
+            updated_at=now,
+        )
+        completed_plan = replace(
+            active_plan,
+            id=uuid4(),
+            slug="done",
+            status=WorkflowCampaignStatus.COMPLETED,
+        )
         app = FastAPI()
         app.include_router(create_sagas_router())
         app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
         app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
-        mock_volundr = AsyncMock()
-        mock_volundr.list_integration_ids.return_value = []
-        mock_volundr.spawn_session.return_value = MagicMock(
-            id="plan-1",
-            chat_endpoint="/api/v1/forge/sessions/plan-1/messages",
+        app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: (
+            InMemoryWorkflowCampaignRepository([active_plan, completed_plan])
         )
-        app.dependency_overrides[resolve_volundr] = lambda: mock_volundr
-        settings = _dev_settings()
+        app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=True))
+        client = TestClient(app)
+
+        response = client.get("/api/v1/ting/sagas/plan")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert [item["campaign_slug"] for item in body] == ["plan-sdcp-operator"]
+        assert body[0]["name"] == "Plan SDCP operator"
+        assert body[0]["prompt"] == "Plan SDCP operator"
+        assert body[0]["repo"] == ""
+
+    def test_cancels_active_plan_session(self, mock_tracker: MockTracker) -> None:
+        workflow = _planning_workflow()
+        now = datetime.now(UTC)
+        active_plan = WorkflowCampaign(
+            id=uuid4(),
+            slug="plan-sdcp-operator",
+            name="Plan SDCP operator",
+            owner_id="dev-user",
+            workflow_id=workflow.id,
+            workflow_version=workflow.version,
+            workflow_name=workflow.name,
+            workflow_snapshot={"graph": workflow.graph},
+            session_id="plan-1",
+            session_name="plan-sdcp-operator",
+            status=WorkflowCampaignStatus.RUNNING,
+            active_stage_id="plan-clarify",
+            stage_state=[],
+            metadata={"surface": "ting.plan", "spec": "Plan SDCP operator", "repo": ""},
+            created_at=now,
+            updated_at=now,
+        )
+        campaign_repo = InMemoryWorkflowCampaignRepository([active_plan])
+        app = FastAPI()
+        app.include_router(create_sagas_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
+        app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
+        app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaign_repo
+        app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=True))
+        client = TestClient(app)
+
+        response = client.delete("/api/v1/ting/sagas/plan/plan-sdcp-operator")
+
+        assert response.status_code == 204
+        stored = campaign_repo._campaigns[active_plan.id]
+        assert stored.status == WorkflowCampaignStatus.FAILED
+        assert stored.active_stage_id is None
+        assert stored.metadata["cancelled_by"] == "ting.plan"
+        assert stored.completed_at is not None
+
+        list_response = client.get("/api/v1/ting/sagas/plan")
+        assert list_response.status_code == 200
+        assert list_response.json() == []
+
+    def test_defaults_base_branch_to_main(
+        self, mock_tracker: MockTracker, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sagas_api, "_PLAN_FEEDBACK_POLL_SECONDS", 0)
+        monkeypatch.setattr(sagas_api, "_PLAN_GATE_POLL_SECONDS", 0)
+        app = FastAPI()
+        app.include_router(create_sagas_router())
+        app.dependency_overrides[resolve_trackers] = lambda: [mock_tracker]
+        app.dependency_overrides[resolve_saga_repo] = MockSagaRepo
+        workflow = _planning_workflow()
+        workflow_repo = InMemoryWorkflowRepository([workflow])
+        app.dependency_overrides[resolve_workflow_repo] = lambda: workflow_repo
+        campaign_repo = InMemoryWorkflowCampaignRepository()
+        app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaign_repo
+
+        adapter = MagicMock()
+        adapter.name = "local"
+        adapter.target_id = "local"
+        adapter.spawn_session = AsyncMock(
+            return_value=VolundrSession(
+                id="plan-1",
+                name="plan-1",
+                status="starting",
+                tracker_issue_id="workflow:ship-the-dashboard",
+                chat_endpoint="/api/v1/forge/sessions/plan-1/messages",
+            )
+        )
+        adapter.get_last_assistant_message = AsyncMock(
+            return_value="""```json
+{
+  "name": "Dashboard Saga",
+  "risks": [
+    {"kind": "blast", "message": "Touches dashboard routing."}
+  ],
+  "phases": [
+    {
+      "name": "Plan",
+      "runs": [
+        {
+          "name": "Draft dashboard plan",
+          "description": "Create the implementation plan.",
+          "acceptance_criteria": ["Plan is reviewable"],
+          "declared_files": ["docs/plan.md"],
+          "estimate_hours": 2,
+          "confidence": 0.8
+        }
+      ]
+    }
+  ]
+}
+```"""
+        )
+        adapter.get_conversation = AsyncMock(return_value={"turns": []})
+        adapter.send_message = AsyncMock()
+        adapter.get_workflow_gates = AsyncMock(
+            return_value=[
+                {
+                    "id": "plan-brief-gate:plan-1:1",
+                    "node_id": "plan-brief-gate",
+                    "status": "pending",
+                }
+            ]
+        )
+        adapter.resolve_workflow_gate = AsyncMock(return_value={"status": "resolved"})
+        volundr_factory = AsyncMock()
+        volundr_factory.for_principal.return_value = [adapter]
+        volundr_factory.primary_for_principal.return_value = adapter
+        app.dependency_overrides[resolve_volundr_factory] = lambda: volundr_factory
+
+        settings = Settings(auth=AuthConfig(allow_anonymous_dev=True))
         settings.dispatch.default_model = "claude-opus"
-        settings.dispatch.default_system_prompt = "dispatch-system"
         settings.planner.planner_system_prompt = ""
         app.state.settings = settings
 
         client = TestClient(app)
         resp = client.post(
             "/api/v1/ting/sagas/plan",
-            json={"spec": "Ship the dashboard", "repo": "niuulabs/volundr"},
+            json={
+                "spec": "Ship the dashboard",
+                "repo": "niuulabs/volundr",
+                "workflowId": str(workflow.id),
+                "connectionId": "local",
+            },
         )
 
         assert resp.status_code == 201
-        assert resp.json() == {
-            "session_id": "plan-1",
-            "chat_endpoint": "/api/v1/forge/sessions/plan-1/messages",
-        }
-        spawn_request = mock_volundr.spawn_session.await_args.args[0]
-        assert spawn_request.base_branch == "main"
+        body = resp.json()
+        assert body["session_id"] == "plan-1"
+        assert body["chat_endpoint"] == "/api/v1/forge/sessions/plan-1/messages"
+        assert body["campaign_slug"] == "plan-ship-the-dashboard"
+        assert body["workflow_name"] == "Saga Planning"
+        assert body["status"] == "pending"
+        assert body["active_stage_id"] == "plan-clarify"
+        assert body["stage_state"][0]["label"] == "Clarify brief"
+        assert body["questions"][0]["id"] == "planning-feedback"
+        assert "constraints" in body["questions"][0]["question"]
+        spawn_request = adapter.spawn_session.await_args.args[0]
         assert spawn_request.repo == "niuulabs/volundr"
+        assert spawn_request.branch == "main"
+        assert spawn_request.base_branch == ""
+        assert spawn_request.workload_type == "ravn_flock"
+        assert spawn_request.profile is None
+        assert spawn_request.workload_config["workflow"]["name"] == "Saga Planning"
+        assert spawn_request.workload_config["workflow"]["graph"]["tags"] == ["planning", "saga"]
+        assert spawn_request.workload_config["provenance"] == {
+            "surface": "ting.plan",
+            "repo": "niuulabs/volundr",
+            "base_branch": "main",
+            "connection_id": "local",
+        }
+        campaign = next(iter(campaign_repo._campaigns.values()), None)
+        assert campaign is not None
+        assert campaign.workflow_name == "Saga Planning"
+        assert campaign.session_id == "plan-1"
+        assert campaign.metadata["repo"] == "niuulabs/volundr"
+        assert campaign.metadata["base_branch"] == "main"
+        assert campaign.metadata["connection_id"] == "local"
+        assert campaign.stage_state[0].status == "active"
+
+        status_resp = client.get("/api/v1/ting/sagas/plan/plan-ship-the-dashboard")
+        assert status_resp.status_code == 200
+        status_body = status_resp.json()
+        assert status_body["session_id"] == "plan-1"
+        assert status_body["active_stage_id"] == "plan-brief-gate"
+        assert status_body["questions"][0]["id"] == "planning-feedback"
+        assert status_body["questions"][0]["hint"] == (
+            "Keep this focused; the answer is sent to the active workflow run before drafting."
+        )
+
+        adapter.get_workflow_gates.return_value = [
+            {
+                "id": "plan-review-gate:plan-1:2",
+                "node_id": "plan-review-gate",
+                "status": "pending",
+                "summary": "Review the bounded one-phase draft before publishing.",
+            }
+        ]
+        review_status_resp = client.get("/api/v1/ting/sagas/plan/plan-ship-the-dashboard")
+        assert review_status_resp.status_code == 200
+        review_status_body = review_status_resp.json()
+        assert review_status_body["active_stage_id"] == "plan-review-gate"
+        assert review_status_body["questions"][0]["id"] == "draft-feedback"
+        assert "draft plan review" in review_status_body["questions"][0]["question"]
+        assert review_status_body["questions"][0]["hint"] == (
+            "Review the bounded one-phase draft before publishing."
+        )
+
+        adapter.get_workflow_gates.return_value = []
+        campaign_repo._campaigns[campaign.id] = replace(
+            campaign,
+            active_stage_id="plan-clarify",
+            metadata={
+                **campaign.metadata,
+                "pending_workflow_gates": [
+                    {
+                        "id": "plan-review-gate:plan-1:2",
+                        "node_id": "plan-review-gate",
+                        "status": "pending",
+                        "summary": "Persisted review gate from activity metadata.",
+                    }
+                ],
+            },
+        )
+        stored_status_resp = client.get("/api/v1/ting/sagas/plan/plan-ship-the-dashboard")
+        assert stored_status_resp.status_code == 200
+        stored_status_body = stored_status_resp.json()
+        assert stored_status_body["active_stage_id"] == "plan-review-gate"
+        assert stored_status_body["questions"][0]["id"] == "draft-feedback"
+        assert stored_status_body["questions"][0]["hint"] == (
+            "Persisted review gate from activity metadata."
+        )
+
+        draft_resp = client.get("/api/v1/ting/sagas/plan/plan-ship-the-dashboard/draft")
+        assert draft_resp.status_code == 200
+        draft = draft_resp.json()
+        assert draft["found"] is True
+        assert draft["structure"]["phases"][0]["runs"][0]["declared_files"] == ["docs/plan.md"]
+        assert draft["structure"]["risks"] == [
+            {"kind": "blast", "message": "Touches dashboard routing."}
+        ]
+        adapter.get_last_assistant_message.assert_awaited_once()
+        assert adapter.get_last_assistant_message.await_args.args == ("plan-1",)
+        assert adapter.get_last_assistant_message.await_args.kwargs["auth_token"] is None
+
+        adapter.get_last_assistant_message.reset_mock()
+        outcome_structure = json.dumps(
+            {
+                "name": "Workflow Outcome Draft",
+                "phases": [
+                    {
+                        "name": "Docs",
+                        "runs": [
+                            {
+                                "name": "Document workflow outcome",
+                                "description": "Record the reviewable draft path.",
+                                "acceptance_criteria": ["Draft renders before approval"],
+                                "declared_files": ["docs/workflow.md"],
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        adapter.get_conversation.return_value = {
+            "turns": [
+                {
+                    "role": "assistant",
+                    "content": f"""---outcome---
+verdict: drafted
+summary: Drafted one docs-only phase.
+structure: '{outcome_structure}'
+---end---""",
+                },
+                {
+                    "role": "assistant",
+                    "content": """---outcome---
+verdict: ready_for_gate
+summary: Plan is bounded and ready for human review.
+---end---""",
+                },
+            ],
+        }
+        outcome_draft_resp = client.get("/api/v1/ting/sagas/plan/plan-ship-the-dashboard/draft")
+        assert outcome_draft_resp.status_code == 200
+        outcome_draft = outcome_draft_resp.json()
+        assert outcome_draft["found"] is True
+        assert outcome_draft["structure"]["name"] == "Workflow Outcome Draft"
+        assert outcome_draft["structure"]["phases"][0]["runs"][0]["declared_files"] == [
+            "docs/workflow.md"
+        ]
+        adapter.get_last_assistant_message.assert_not_awaited()
+
+        adapter.get_conversation.return_value = {"turns": []}
+        adapter.get_last_assistant_message.reset_mock()
+        adapter.get_last_assistant_message.side_effect = httpx.HTTPStatusError(
+            "session gateway not ready",
+            request=httpx.Request("GET", "https://volundr.example/sessions/plan-1/conversation"),
+            response=httpx.Response(502),
+        )
+        transient_draft_resp = client.get("/api/v1/ting/sagas/plan/plan-ship-the-dashboard/draft")
+        assert transient_draft_resp.status_code == 200
+        assert transient_draft_resp.json() == {"found": False, "structure": None}
+        adapter.get_last_assistant_message.side_effect = None
+
+        adapter.get_workflow_gates.return_value = [
+            {
+                "id": "plan-brief-gate:plan-1:1",
+                "node_id": "plan-brief-gate",
+                "status": "pending",
+            }
+        ]
+        feedback_resp = client.post(
+            "/api/v1/ting/sagas/plan/plan-ship-the-dashboard/feedback",
+            json={"content": "Keep the first pass to one saga."},
+        )
+        assert feedback_resp.status_code == 200
+        assert feedback_resp.json() == {"status": "sent", "session_id": "plan-1"}
+        adapter.send_message.assert_awaited_once()
+        assert adapter.send_message.await_args.args[:2] == (
+            "plan-1",
+            "Keep the first pass to one saga.",
+        )
+        adapter.resolve_workflow_gate.assert_awaited_once_with(
+            "plan-1",
+            "plan-brief-gate:plan-1:1",
+            "APPROVE",
+            notes="Keep the first pass to one saga.",
+            source="ting.plan",
+            auth_token=None,
+            principal=adapter.send_message.await_args.kwargs["principal"],
+        )
+
+        adapter.send_message.reset_mock()
+        adapter.resolve_workflow_gate.reset_mock()
+        adapter.get_workflow_gates.reset_mock()
+        adapter.send_message.side_effect = [
+            httpx.HTTPStatusError(
+                "session gateway not ready",
+                request=httpx.Request("POST", "https://volundr.example/sessions/plan-1/messages"),
+                response=httpx.Response(503),
+            ),
+            None,
+        ]
+        adapter.get_workflow_gates.side_effect = [
+            httpx.HTTPStatusError(
+                "session gate endpoint not ready",
+                request=httpx.Request(
+                    "GET", "https://volundr.example/sessions/plan-1/workflow/gates"
+                ),
+                response=httpx.Response(502),
+            ),
+            [
+                {
+                    "id": "plan-brief-gate:plan-1:retry",
+                    "node_id": "plan-brief-gate",
+                    "status": "pending",
+                }
+            ],
+        ]
+        transient_feedback_resp = client.post(
+            "/api/v1/ting/sagas/plan/plan-ship-the-dashboard/feedback",
+            json={"content": "Retry once the session gateway is ready."},
+        )
+        assert transient_feedback_resp.status_code == 200
+        assert adapter.send_message.await_count == 2
+        assert adapter.get_workflow_gates.await_count == 2
+        adapter.resolve_workflow_gate.assert_awaited_once_with(
+            "plan-1",
+            "plan-brief-gate:plan-1:retry",
+            "APPROVE",
+            notes="Retry once the session gateway is ready.",
+            source="ting.plan",
+            auth_token=None,
+            principal=adapter.send_message.await_args.kwargs["principal"],
+        )
+        adapter.send_message.side_effect = None
+        adapter.get_workflow_gates.side_effect = None
+
+        adapter.send_message.reset_mock()
+        adapter.resolve_workflow_gate.reset_mock()
+        adapter.get_workflow_gates.return_value = [
+            {
+                "id": "plan-review-gate:plan-1:2",
+                "node_id": "plan-review-gate",
+                "status": "pending",
+            }
+        ]
+        review_feedback_resp = client.post(
+            "/api/v1/ting/sagas/plan/plan-ship-the-dashboard/feedback",
+            json={"content": "Keep this as one phase.", "decision": "changes_requested"},
+        )
+        assert review_feedback_resp.status_code == 200
+        adapter.resolve_workflow_gate.assert_awaited_once_with(
+            "plan-1",
+            "plan-review-gate:plan-1:2",
+            "CHANGES_REQUESTED",
+            notes="Keep this as one phase.",
+            source="ting.plan",
+            auth_token=None,
+            principal=adapter.send_message.await_args.kwargs["principal"],
+        )
+        adapter.get_last_assistant_message.reset_mock()
+        adapter.get_workflow_gates.return_value = []
+        stale_draft_resp = client.get("/api/v1/ting/sagas/plan/plan-ship-the-dashboard/draft")
+        assert stale_draft_resp.status_code == 200
+        assert stale_draft_resp.json() == {"found": False, "structure": None}
+        adapter.get_last_assistant_message.assert_not_awaited()
+
+        adapter.send_message.reset_mock()
+        adapter.resolve_workflow_gate.reset_mock()
+        adapter.get_workflow_gates.return_value = [
+            {
+                "id": "plan-review-gate:plan-1:3",
+                "node_id": "plan-review-gate",
+                "status": "pending",
+            }
+        ]
+        review_approve_resp = client.post(
+            "/api/v1/ting/sagas/plan/plan-ship-the-dashboard/feedback",
+            json={"content": "Approved; show this in Ting.", "decision": "approve"},
+        )
+        assert review_approve_resp.status_code == 200
+        adapter.resolve_workflow_gate.assert_awaited_once_with(
+            "plan-1",
+            "plan-review-gate:plan-1:3",
+            "APPROVE",
+            notes="Approved; show this in Ting.",
+            source="ting.plan",
+            auth_token=None,
+            principal=adapter.send_message.await_args.kwargs["principal"],
+        )
+
+        adapter.send_message.reset_mock()
+        adapter.resolve_workflow_gate.reset_mock()
+        adapter.get_workflow_gates.reset_mock()
+        adapter.send_message.side_effect = httpx.HTTPStatusError(
+            "session gateway already closed",
+            request=httpx.Request("POST", "https://volundr.example/sessions/plan-1/messages"),
+            response=httpx.Response(502),
+        )
+        stale_final_approve_resp = client.post(
+            "/api/v1/ting/sagas/plan/plan-ship-the-dashboard/feedback",
+            json={"content": "Approved in Ting Plan.", "decision": "approve"},
+        )
+        assert stale_final_approve_resp.status_code == 200
+        assert stale_final_approve_resp.json() == {"status": "sent", "session_id": "plan-1"}
+        adapter.resolve_workflow_gate.assert_not_awaited()
 
 
 class TestDeleteSaga:

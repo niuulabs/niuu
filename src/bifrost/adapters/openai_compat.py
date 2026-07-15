@@ -75,6 +75,7 @@ class OpenAICompatAdapter(ProviderPort):
     async def stream(self, request: AnthropicRequest, model: str) -> AsyncIterator[str]:
         payload = anthropic_to_openai(request, model)
         payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
         payload = self._prepare_payload(payload)
 
         message_id = f"msg_{uuid.uuid4().hex[:24]}"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import tomllib
+
 from typer.testing import CliRunner
 
 from cli.build import (
@@ -10,6 +12,7 @@ from cli.build import (
     INCLUDE_PACKAGE_DATA,
     INCLUDE_PACKAGES,
     NOFOLLOW_IMPORTS,
+    REPO_ROOT,
     build_cli,
     build_command,
     platform_suffix,
@@ -118,18 +121,31 @@ class TestConstants:
     def test_include_packages_has_all_five(self):
         required = {
             "audit",
+            "bifrost",
             "cli",
             "credentials",
             "features",
+            "guild",
             "identity",
             "integrations",
+            "mimir",
             "niuu",
+            "observatory",
+            "personas",
+            "ravn",
             "skuld",
             "tracker",
             "ting",
             "volundr",
         }
         assert required.issubset(set(INCLUDE_PACKAGES))
+
+    def test_includes_all_plugin_entry_point_packages(self):
+        pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+        entry_points = pyproject["project"]["entry-points"]["niuu.plugins"]
+        module_roots = {target.split(".", 1)[0] for target in entry_points.values()}
+
+        assert module_roots.issubset(set(INCLUDE_PACKAGES))
 
     def test_nofollow_excludes_test_frameworks(self):
         assert "pytest" in NOFOLLOW_IMPORTS

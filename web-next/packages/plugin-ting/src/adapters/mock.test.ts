@@ -187,6 +187,18 @@ describe('createMockTingService', () => {
     });
     expect(saga.targetMatch).toBe('all');
   });
+
+  it('assignRepos stores multiple repositories with branches', async () => {
+    const svc = createMockTingService();
+    const repoRefs = [
+      { repo: 'niuulabs/volundr', branch: 'dev' },
+      { repo: 'niuulabs/infrastructure', branch: 'main' },
+    ];
+    const saga = await svc.assignRepos('00000000-0000-0000-0000-000000000001', repoRefs);
+    expect(saga.repos).toEqual(['niuulabs/volundr', 'niuulabs/infrastructure']);
+    expect(saga.repoRefs).toEqual(repoRefs);
+    expect(saga.baseBranch).toBe('dev');
+  });
 });
 
 // ---------------------------------------------------------------------------

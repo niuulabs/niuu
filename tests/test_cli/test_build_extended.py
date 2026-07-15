@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from cli.build import (
     DATA_DIR_MAPPINGS,
+    DATA_FILE_MAPPINGS,
     build_cli,
     build_command,
     platform_suffix,
@@ -49,6 +50,21 @@ class TestPlatformSuffixNormalization:
 class TestBuildCommandDataDirs:
     """Tests for data directory inclusion in build_command."""
 
+    def test_web_dist_uses_current_frontend_build(self) -> None:
+        assert DATA_DIR_MAPPINGS[0][0].as_posix().endswith("web-next/apps/niuu/dist")
+        assert DATA_DIR_MAPPINGS[0][1] == "cli/web/dist"
+
+    def test_migration_globs_use_source_of_truth(self) -> None:
+        mappings = {src.as_posix(): dest for src, dest in DATA_FILE_MAPPINGS}
+
+        assert mappings[next(src for src in mappings if src.endswith("migrations/*.sql"))] == (
+            "cli/migrations/volundr/"
+        )
+        assert (
+            mappings[next(src for src in mappings if src.endswith("migrations/ting/*.sql"))]
+            == "cli/migrations/ting/"
+        )
+
     def test_skips_empty_data_dirs(self) -> None:
         with patch.object(Path, "is_dir", return_value=False):
             cmd = build_command()
@@ -71,6 +87,21 @@ class TestBuildCommandDataDirs:
         cmd_str = " ".join(cmd)
         assert "--include-data-dir=" in cmd_str
         assert "cli/test/data" in cmd_str
+
+    def test_includes_populated_data_file_globs(self, tmp_path: Path) -> None:
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        (data_dir / "file.sql").write_text("select 1;")
+
+        with patch(
+            "cli.build.DATA_FILE_MAPPINGS",
+            [(data_dir / "*.sql", "cli/test/data/")],
+        ):
+            cmd = build_command()
+
+        cmd_str = " ".join(cmd)
+        assert "--include-data-files=" in cmd_str
+        assert "cli/test/data/" in cmd_str
 
 
 class TestBuildCommandPginstall:

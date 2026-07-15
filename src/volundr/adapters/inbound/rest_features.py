@@ -7,9 +7,9 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from features.service import FeatureModule, FeatureService, UserFeaturePreference
+from niuu.domain.models import Principal
 from volundr.adapters.inbound.auth import extract_principal, require_role
-from volundr.domain.models import Principal
-from volundr.domain.services.feature import FeatureModule, FeatureService, UserFeaturePreference
 
 logger = logging.getLogger(__name__)
 

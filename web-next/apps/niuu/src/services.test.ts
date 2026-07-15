@@ -23,6 +23,7 @@ const tingMocks = vi.hoisted(() => ({
   createMockTrackerService: vi.fn(() => ({ kind: 'mock-tracker' })),
   createMockWorkflowService: vi.fn(() => ({ kind: 'mock-workflows' })),
   createMockResearchService: vi.fn(() => ({ kind: 'mock-research' })),
+  createMockSpecsService: vi.fn(() => ({ kind: 'mock-specs' })),
   createMockDispatchBus: vi.fn(() => ({ kind: 'mock-dispatch' })),
   createMockTingSettingsService: vi.fn(() => ({ kind: 'mock-settings' })),
   createMockAuditLogService: vi.fn(() => ({ kind: 'mock-audit' })),
@@ -32,6 +33,7 @@ const tingMocks = vi.hoisted(() => ({
   buildTrackerHttpAdapter: vi.fn((client) => ({ kind: 'tracker', client })),
   buildWorkflowHttpAdapter: vi.fn((client) => ({ kind: 'workflows', client })),
   buildResearchHttpAdapter: vi.fn((client) => ({ kind: 'research', client })),
+  buildSpecsHttpAdapter: vi.fn((client) => ({ kind: 'specs', client })),
   buildDispatchBusHttpAdapter: vi.fn((client) => ({ kind: 'dispatch', client })),
   buildTingSettingsHttpAdapter: vi.fn((client) => ({ kind: 'settings', client })),
   buildTingAuditLogHttpAdapter: vi.fn((client) => ({ kind: 'audit', client })),
@@ -46,6 +48,7 @@ const ravnMocks = vi.hoisted(() => ({
   createMockWardenStore: vi.fn(() => ({})),
   buildRavnPersonaAdapter: vi.fn(() => ({})),
   buildRavnRavenAdapter: vi.fn(() => ({})),
+  buildRavnResidentControlAdapter: vi.fn(() => ({})),
   buildRavnSessionAdapter: vi.fn(() => ({})),
   buildRavnTriggerAdapter: vi.fn(() => ({})),
   buildRavnBudgetAdapter: vi.fn(() => ({})),
@@ -59,13 +62,25 @@ const observatoryMocks = vi.hoisted(() => ({
   buildObservatoryRegistryHttpAdapter: vi.fn(() => ({})),
   buildObservatoryTopologySseStream: vi.fn(() => ({})),
   buildObservatoryEventsSseStream: vi.fn(() => ({})),
+  buildObservatoryAgentDirectoryHttpAdapter: vi.fn((client) => ({
+    kind: 'observatory-agents',
+    client,
+  })),
 }));
 
 const valkyrieMocks = vi.hoisted(() => ({
   createMockValkyrieService: vi.fn(() => ({ kind: 'mock-valkyrie' })),
   createMockOdinReviewService: vi.fn(() => ({ kind: 'mock-valkyrie-reviews' })),
+  createMockRealmGovernanceService: vi.fn(() => ({ kind: 'mock-valkyrie-realms' })),
+  createMockValkyrieSkillsService: vi.fn(() => ({ kind: 'mock-valkyrie-skills' })),
   buildValkyrieHttpAdapter: vi.fn((client) => ({ kind: 'valkyrie', client })),
   buildOdinReviewHttpAdapter: vi.fn((client) => ({ kind: 'valkyrie-reviews', client })),
+  buildValkyrieSkillsHttpAdapter: vi.fn((client) => ({ kind: 'valkyrie-skills', client })),
+  buildRealmGovernanceHttpAdapter: vi.fn((realmsClient, workflowsClient) => ({
+    kind: 'valkyrie-realms',
+    realmsClient,
+    workflowsClient,
+  })),
 }));
 
 const volundrMocks = vi.hoisted(() => ({
@@ -111,6 +126,9 @@ vi.mock('@niuulabs/plugin-volundr', () => volundrMocks);
 
 import {
   buildServices,
+  ServiceUnavailableError,
+  isUnavailableService,
+  UnsupportedSessionStoreOperationError,
   buildServiceBackendStatus,
   resolveCanonicalServiceBase,
   resolveForgeServiceBase,
@@ -415,6 +433,7 @@ describe('buildServices live base selection', () => {
 
   it('builds separate forge runtime and volundr catalog adapters', () => {
     buildServices({
+      demoMode: true,
       services: {
         forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
         volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
@@ -443,6 +462,7 @@ describe('buildServices live base selection', () => {
 
   it('normalizes explicit Ting sub-service bases back to /api/v1/ting', () => {
     buildServices({
+      demoMode: true,
       services: {
         ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
         'ting.dispatcher': {
@@ -465,6 +485,10 @@ describe('buildServices live base selection', () => {
           mode: 'http',
           baseUrl: 'http://localhost:8080/api/v1/ting/research',
         },
+        'ting.specs': {
+          mode: 'http',
+          baseUrl: 'http://localhost:8080/api/v1/ting/specs',
+        },
       },
     } as any);
 
@@ -481,6 +505,9 @@ describe('buildServices live base selection', () => {
       basePath: 'http://localhost:8080/api/v1/ting',
     });
     expect(tingMocks.buildResearchHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ting',
+    });
+    expect(tingMocks.buildSpecsHttpAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1/ting',
     });
   });
@@ -529,8 +556,9 @@ describe('shared domain helpers', () => {
     });
   });
 
-  it('falls back to mock shared services when no shared api base exists', () => {
+  it('uses mock shared services only in explicit demo mode', () => {
     const config = {
+      demoMode: true,
       services: {
         ting: { mode: 'mock' },
         volundr: { mode: 'mock' },
@@ -560,12 +588,7 @@ describe('buildServiceBackendStatus', () => {
       target: 'http://localhost:8080/api/v1/forge',
       source: 'forge',
     });
-    expect(status['forge.metrics']).toEqual({
-      mode: 'live',
-      transport: 'http',
-      target: 'http://localhost:8080/api/v1/forge/metrics',
-      source: 'forge.metrics',
-    });
+    expect(status).not.toHaveProperty('forge.metrics');
     expect(status['forge.pty']).toEqual({
       mode: 'live',
       transport: 'ws',
@@ -583,6 +606,12 @@ describe('buildServiceBackendStatus', () => {
       transport: 'http',
       target: 'http://localhost:8080/api/v1/observatory/topology',
       source: 'observatory',
+    });
+    expect(status['observatory.agents']).toEqual({
+      mode: 'live',
+      transport: 'http',
+      target: 'http://localhost:8080/api/v1/niuu/observatory',
+      source: 'niuu',
     });
     expect(status['ravn.personas']).toEqual({
       mode: 'live',
@@ -628,21 +657,33 @@ describe('buildServiceBackendStatus', () => {
     });
   });
 
-  it('reports mock-only workflow and filesystem surfaces explicitly', () => {
-    const status = buildServiceBackendStatus({ services: {} } as any);
+  it('reports unavailable workflow and filesystem surfaces explicitly', () => {
+    const status = buildServiceBackendStatus({ demoMode: false, services: {} } as any);
 
     expect(status['ting.workflows']).toEqual({
-      mode: 'mock',
-      transport: 'mock',
+      mode: 'unavailable',
+      transport: 'none',
       target: null,
-      source: 'mock',
+      source: 'configuration',
     });
     expect(status.filesystem).toEqual({
-      mode: 'mock',
+      mode: 'unavailable',
+      transport: 'none',
+      target: null,
+      source: 'configuration',
+      note: 'No live filesystem API is wired yet.',
+    });
+  });
+
+  it('reports explicit demo adapters separately from unavailable services', () => {
+    const status = buildServiceBackendStatus({ demoMode: true, services: {} } as any);
+
+    expect(status['ting.workflows']).toEqual({
+      mode: 'demo',
       transport: 'mock',
       target: null,
-      source: 'mock',
-      note: 'No live filesystem API is wired yet.',
+      source: 'demo',
+      note: 'Explicit demo adapter; no live backend is connected.',
     });
   });
 
@@ -746,9 +787,23 @@ describe('buildServices', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
+  it('builds typed unavailable services without aborting optional composition', () => {
+    const services = buildServices({
+      demoMode: false,
+      theme: 'ice',
+      plugins: {},
+      services: {},
+    } as any);
+
+    const personas = services['ravn.personas'];
+    expect(isUnavailableService(personas)).toBe(true);
+    expect(() => (personas as any).listPersonas()).toThrow(ServiceUnavailableError);
+    expect(() => (personas as any).listPersonas()).toThrow('ravn.personas');
+  });
 
   it('builds Ting tracker and audit services against the shared api base', () => {
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -779,6 +834,7 @@ describe('buildServices', () => {
 
   it('prefers explicit tracker and audit domain configs over the derived shared base', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -798,6 +854,7 @@ describe('buildServices', () => {
 
   it('normalizes explicit Ting subdomain configs back to the shared Ting base', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -826,6 +883,10 @@ describe('buildServices', () => {
           mode: 'http',
           baseUrl: 'http://localhost:8080/api/v1/ting/research',
         },
+        'ting.specs': {
+          mode: 'http',
+          baseUrl: 'http://localhost:8080/api/v1/ting/specs',
+        },
       },
     } as any);
 
@@ -847,10 +908,14 @@ describe('buildServices', () => {
     expect(tingMocks.buildResearchHttpAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1/ting',
     });
+    expect(tingMocks.buildSpecsHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ting',
+    });
   });
 
   it('falls back to the Volundr catalog host when Ting is not live', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -868,6 +933,7 @@ describe('buildServices', () => {
 
   it('falls back to canonical shared routes when only the Forge base is live', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -894,6 +960,7 @@ describe('buildServices', () => {
 
   it('builds niuu.repos against the shared repo catalog route', () => {
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -907,6 +974,7 @@ describe('buildServices', () => {
 
   it('routes runtime reads through the Forge facade', async () => {
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -936,6 +1004,7 @@ describe('buildServices', () => {
 
   it('prefers an explicit filesystem base over the derived Volundr route', () => {
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -952,6 +1021,7 @@ describe('buildServices', () => {
 
   it('prefers explicit Ravn domain configs over the shared ravn base', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -974,6 +1044,9 @@ describe('buildServices', () => {
     expect(ravnMocks.buildRavnRavenAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1/ravn',
     });
+    expect(ravnMocks.buildRavnResidentControlAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ravn',
+    });
     expect(ravnMocks.buildRavnTriggerAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1/ravn',
     });
@@ -987,6 +1060,7 @@ describe('buildServices', () => {
 
   it('uses the explicit personas service base for the persona adapter when present', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1060,6 +1134,7 @@ describe('buildServices', () => {
     volundrMocks.buildVolundrHttpAdapter.mockReturnValue(liveVolundr as any);
 
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1116,8 +1191,45 @@ describe('buildServices', () => {
     expect(liveVolundr.deleteSession).toHaveBeenCalledWith('sess-live', undefined);
   });
 
+  it('maps an awaiting_input running session to the awaiting_input state', async () => {
+    const blocked = {
+      id: 'sess-blocked',
+      name: 'fix-auth',
+      source: { type: 'git', repo: 'github.com/niuulabs/volundr', branch: 'main' },
+      status: 'running',
+      model: 'claude-sonnet',
+      lastActive: Date.parse('2026-04-24T12:30:00Z'),
+      messageCount: 1,
+      tokensUsed: 10,
+      activityState: 'awaiting_input',
+      needsAttention: true,
+    };
+    const liveVolundr = {
+      kind: 'volundr',
+      getSessions: vi.fn().mockResolvedValue([blocked]),
+      getSession: vi.fn().mockResolvedValue(blocked),
+      listArchivedSessions: vi.fn().mockResolvedValue([]),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+      subscribe: vi.fn(() => () => {}),
+    };
+    volundrMocks.buildVolundrHttpAdapter.mockReturnValue(liveVolundr as any);
+
+    const services = buildServices({
+      demoMode: true,
+      theme: 'ice',
+      plugins: {},
+      services: { forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' } },
+    } as any);
+
+    const sessionStore = services.sessionStore as any;
+    await expect(sessionStore.listSessions()).resolves.toEqual([
+      expect.objectContaining({ id: 'sess-blocked', state: 'awaiting_input' }),
+    ]);
+  });
+
   it('prefers an explicit forge service base for the main Volundr http adapter', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1144,6 +1256,7 @@ describe('buildServices', () => {
         {
           id: 'sess-running',
           name: 'agent-runtime',
+          instanceName: 'Valhalla',
           podName: 'forge-pod-1',
           status: 'running',
           lastActive: Date.parse('2026-04-24T12:30:00Z'),
@@ -1156,6 +1269,7 @@ describe('buildServices', () => {
         {
           id: 'sess-queued',
           name: 'queued-runtime',
+          instanceName: 'Noatun',
           status: 'provisioning',
           lastActive: 0,
           source: { type: 'git', repo: 'github.com/niuulabs/volundr', branch: 'main' },
@@ -1171,6 +1285,7 @@ describe('buildServices', () => {
         nodes: [
           {
             name: 'node-a',
+            instanceSlug: 'valhalla',
             labels: {
               'topology.kubernetes.io/region': 'ca-hamilton-1',
             },
@@ -1188,6 +1303,7 @@ describe('buildServices', () => {
           },
           {
             name: 'node-b',
+            instanceSlug: 'noatun',
             labels: {
               'node-role.kubernetes.io/control-plane': 'true',
             },
@@ -1203,6 +1319,28 @@ describe('buildServices', () => {
           },
         ],
       }),
+      getTargets: vi.fn().mockResolvedValue([
+        {
+          id: 'target-noatun',
+          slug: 'noatun',
+          name: 'Noatun',
+          baseUrl: 'https://niuu.noatun.asgard.niuu.world',
+          enabled: true,
+          isDefault: true,
+          visibility: 'system',
+          tags: ['noatun', 'cpu'],
+        },
+        {
+          id: 'target-valhalla',
+          slug: 'valhalla',
+          name: 'Valhalla',
+          baseUrl: 'https://volundr.valhalla.asgard.niuu.world',
+          enabled: true,
+          isDefault: false,
+          visibility: 'system',
+          tags: ['valhalla', 'gpu'],
+        },
+      ]),
       getLaunchSpecs: vi.fn().mockResolvedValue([]),
       getLaunchSpec: vi.fn().mockResolvedValue(null),
       listArchivedSessions: vi.fn().mockResolvedValue([]),
@@ -1212,6 +1350,7 @@ describe('buildServices', () => {
     volundrMocks.buildVolundrHttpAdapter.mockReturnValue(liveVolundr as any);
 
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1222,35 +1361,45 @@ describe('buildServices', () => {
     const clusterAdapter = services['volundr.clusters'] as any;
     await expect(clusterAdapter.getClusters()).resolves.toEqual([
       expect.objectContaining({
-        id: 'shared',
-        name: 'Shared GPU Forge',
-        kind: 'gpu',
-        region: 'ca-hamilton-1',
-        capacity: { cpu: 12, memMi: 24576, gpu: 1 },
-        used: { cpu: 2, memMi: 9216, gpu: 1 },
-        runningSessions: 1,
+        id: 'target-noatun',
+        name: 'Noatun',
+        kind: 'primary',
+        region: 'noatun',
+        capacity: { cpu: 4, memMi: 8192, gpu: 0 },
+        used: { cpu: 0.5, memMi: 1024, gpu: 0 },
+        runningSessions: 0,
         queuedProvisions: 1,
         pods: [
-          expect.objectContaining({
-            name: 'forge-pod-1',
-            status: 'running',
-            startedAt: '2026-04-24T12:30:00.000Z',
-          }),
           expect.objectContaining({
             name: 'queued-runtime',
             status: 'pending',
             startedAt: '1970-01-01T00:00:00.000Z',
           }),
         ],
-        nodes: [
-          { id: 'node-a', status: 'ready', role: 'worker' },
-          { id: 'node-b', status: 'ready', role: 'control-plane' },
+        nodes: [{ id: 'node-b', status: 'ready', role: 'control-plane' }],
+      }),
+      expect.objectContaining({
+        id: 'target-valhalla',
+        name: 'Valhalla',
+        kind: 'gpu',
+        region: 'ca-hamilton-1',
+        capacity: { cpu: 8, memMi: 16384, gpu: 1 },
+        used: { cpu: 1.5, memMi: 8192, gpu: 1 },
+        runningSessions: 1,
+        queuedProvisions: 0,
+        pods: [
+          expect.objectContaining({
+            name: 'forge-pod-1',
+            status: 'running',
+            startedAt: '2026-04-24T12:30:00.000Z',
+          }),
         ],
+        nodes: [{ id: 'node-a', status: 'ready', role: 'worker' }],
       }),
     ]);
     expect(services.clusterAdapter).toBe(services['volundr.clusters']);
-    await expect(clusterAdapter.getCluster('shared')).resolves.toEqual(
-      expect.objectContaining({ id: 'shared' }),
+    await expect(clusterAdapter.getCluster('target-valhalla')).resolves.toEqual(
+      expect.objectContaining({ id: 'target-valhalla' }),
     );
   });
 
@@ -1269,6 +1418,7 @@ describe('buildServices', () => {
     volundrMocks.buildVolundrHttpAdapter.mockReturnValue(liveVolundr as any);
 
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1335,6 +1485,7 @@ describe('buildServices', () => {
     volundrMocks.buildVolundrHttpAdapter.mockReturnValue(liveVolundr as any);
 
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1356,13 +1507,14 @@ describe('buildServices', () => {
     await expect(clusterAdapter.getClusters()).resolves.toEqual([
       expect.objectContaining({
         region: 'shared',
-        status: 'warning',
+        status: 'healthy',
       }),
     ]);
   });
 
   it('keeps mock session stores when Volundr is not live', () => {
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {},
@@ -1460,6 +1612,7 @@ describe('buildServices', () => {
     volundrMocks.buildVolundrHttpAdapter.mockReturnValueOnce(liveVolundr as any);
 
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1507,8 +1660,12 @@ describe('buildServices', () => {
     await expect(sessionStore.listSessions({ ravnId: 'tenant-a' })).resolves.toEqual([
       expect.objectContaining({ id: 'sess-starting' }),
     ]);
-    await expect(sessionStore.createSession({})).rejects.toThrow(/not yet supported/);
-    await expect(sessionStore.updateSession('sess-idle', {})).rejects.toThrow(/not yet supported/);
+    await expect(sessionStore.createSession({})).rejects.toBeInstanceOf(
+      UnsupportedSessionStoreOperationError,
+    );
+    await expect(sessionStore.updateSession('sess-idle', {})).rejects.toBeInstanceOf(
+      UnsupportedSessionStoreOperationError,
+    );
 
     const unsubscribe = sessionStore.subscribe(vi.fn());
     unsubscribe();
@@ -1516,6 +1673,7 @@ describe('buildServices', () => {
 
   it('builds live stream and observatory adapters when those backends are configured', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1561,6 +1719,7 @@ describe('buildServices', () => {
 
   it('derives the bundled host pty websocket path from the live forge base when no explicit pty config exists', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1575,6 +1734,7 @@ describe('buildServices', () => {
 
   it('lets a grouped observatory base drive all observatory adapters by default', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1594,10 +1754,39 @@ describe('buildServices', () => {
     expect(observatoryMocks.buildObservatoryEventsSseStream).toHaveBeenCalledWith(
       'http://localhost:8080/api/v1/observatory/events',
     );
+    expect(observatoryMocks.buildObservatoryAgentDirectoryHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/observatory',
+    });
+  });
+
+  it('normalizes an explicit aggregate agent directory endpoint to its service root', () => {
+    const services = buildServices({
+      demoMode: false,
+      theme: 'ice',
+      plugins: {},
+      services: {
+        'observatory.agents': {
+          mode: 'http',
+          baseUrl: 'https://guild.example.test/api/v1/niuu/observatory/agents',
+        },
+      },
+    } as any);
+
+    expect(queryMocks.createApiClient).toHaveBeenCalledWith(
+      'https://guild.example.test/api/v1/niuu/observatory',
+    );
+    expect(observatoryMocks.buildObservatoryAgentDirectoryHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'https://guild.example.test/api/v1/niuu/observatory',
+    });
+    expect(services['observatory.agents']).toEqual({
+      kind: 'observatory-agents',
+      client: { basePath: 'https://guild.example.test/api/v1/niuu/observatory' },
+    });
   });
 
   it('prefers explicit observatory surface overrides over the grouped observatory base', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1619,6 +1808,7 @@ describe('buildServices', () => {
 
   it('normalizes an explicit observatory registry override back to the service root', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1636,6 +1826,7 @@ describe('buildServices', () => {
 
   it('registers Valkyrie mock services by default', () => {
     const services = buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {},
@@ -1643,10 +1834,43 @@ describe('buildServices', () => {
 
     expect(services.valkyrie).toEqual({ kind: 'mock-valkyrie' });
     expect(services['valkyrie.reviews']).toEqual({ kind: 'mock-valkyrie-reviews' });
+    expect(services['valkyrie.realms']).toEqual({ kind: 'mock-valkyrie-realms' });
+    expect(services['valkyrie.skills']).toEqual({ kind: 'mock-valkyrie-skills' });
   });
 
-  it('lets a grouped Valkyrie base drive dashboard and review adapters', () => {
+  it('wires realm governance to the shared API and Ting workflow bases', () => {
+    const services = buildServices({
+      demoMode: true,
+      theme: 'ice',
+      plugins: {},
+      services: {
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
+      },
+    } as any);
+
+    expect(valkyrieMocks.buildRealmGovernanceHttpAdapter).toHaveBeenCalledWith(
+      { basePath: 'http://localhost:8080/api/v1' },
+      { basePath: 'http://localhost:8080/api/v1/ting' },
+    );
+    expect(services['valkyrie.realms']).toMatchObject({ kind: 'valkyrie-realms' });
+  });
+
+  it('keeps realm governance mocked without a Ting workflow base', () => {
+    const services = buildServices({
+      demoMode: true,
+      theme: 'ice',
+      plugins: {},
+      services: {
+        forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+      },
+    } as any);
+
+    expect(services['valkyrie.realms']).toEqual({ kind: 'mock-valkyrie-realms' });
+  });
+
+  it('lets a grouped Valkyrie base drive dashboard, review, and skills adapters', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {
@@ -1664,10 +1888,34 @@ describe('buildServices', () => {
     expect(queryMocks.createApiClient).toHaveBeenCalledWith(
       'http://localhost:8080/api/v1/ravn/odin',
     );
+    // Learned skills ride the same dashboard base (`<valkyrieBase>/skills`).
+    expect(valkyrieMocks.buildValkyrieSkillsHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ravn/valkyrie',
+    });
+  });
+
+  it('prefers an explicit Valkyrie skills override over the grouped base', () => {
+    buildServices({
+      demoMode: true,
+      theme: 'ice',
+      plugins: {},
+      services: {
+        valkyrie: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ravn/valkyrie' },
+        'valkyrie.skills': {
+          mode: 'http',
+          baseUrl: 'http://localhost:8080/api/v1/ravn/valkyrie-custom',
+        },
+      },
+    } as any);
+
+    expect(valkyrieMocks.buildValkyrieSkillsHttpAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/ravn/valkyrie-custom',
+    });
   });
 
   it('prefers explicit Valkyrie review queue overrides over the grouped base', () => {
     buildServices({
+      demoMode: true,
       theme: 'ice',
       plugins: {},
       services: {

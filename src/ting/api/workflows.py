@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -11,6 +13,8 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, sta
 from pydantic import BaseModel, Field
 
 from niuu.domain.models import Principal
+from niuu.domain.services.token_scope import require_build_scope
+from niuu.domain.session_endpoint import public_session_endpoint
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.dispatch import resolve_volundr_factory
 from ting.domain.models import WorkflowDefinition, WorkflowScope
@@ -67,6 +71,21 @@ class WorkflowLaunchBody(BaseModel):
     repo: str = Field(default="", max_length=500)
     branch: str = Field(default="", max_length=255)
     connection_id: str | None = Field(default=None, max_length=255, alias="connectionId")
+    model: str = Field(default="", max_length=255)
+    definition: str | None = Field(default=None, max_length=255)
+    context: dict[str, Any] = Field(default_factory=dict)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    gate_auto_forward_after: str | None = Field(
+        default=None,
+        max_length=32,
+        alias="gateAutoForwardAfter",
+        description=(
+            "Override every gate node's autoForwardAfter for this launch "
+            "(e.g. '24h'). An empty string disables auto-forward entirely — "
+            "chat-driven approvals must wait for the human instead of "
+            "sailing past them. Omit to keep the definition's values."
+        ),
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -79,6 +98,7 @@ class WorkflowLaunchResponse(BaseModel):
     session_name: str = Field(serialization_alias="sessionName")
     status: str
     cluster_name: str = Field(default="", serialization_alias="clusterName")
+    chat_endpoint: str | None = Field(default=None, serialization_alias="chatEndpoint")
 
     model_config = {"populate_by_name": True}
 
@@ -208,6 +228,7 @@ def create_workflows_router() -> APIRouter:
         bearer_token: str | None = Depends(extract_bearer_token),
         repo: WorkflowRepository = Depends(resolve_workflow_repo),
         volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
+        _build_scope: None = Depends(require_build_scope("ting:workflow:launch")),
     ) -> WorkflowLaunchResponse:
         workflow = await repo.get_workflow(workflow_id)
         if workflow is None or not _can_view_workflow(workflow, principal):
@@ -221,7 +242,12 @@ def create_workflows_router() -> APIRouter:
             principal=principal,
             bearer_token=bearer_token,
         )
-        return _launch_response(execution.workflow, execution.slug, execution.session)
+        return _launch_response(
+            execution.workflow,
+            execution.slug,
+            execution.session,
+            public_host=request.url.hostname,
+        )
 
     return router
 
@@ -265,6 +291,8 @@ def _launch_response(
     workflow: WorkflowDefinition,
     slug: str,
     session: VolundrSession,
+    *,
+    public_host: str | None = None,
 ) -> WorkflowLaunchResponse:
     return WorkflowLaunchResponse(
         workflow_id=str(workflow.id),
@@ -274,7 +302,39 @@ def _launch_response(
         session_name=session.name,
         status=session.status,
         cluster_name=session.cluster_name,
+        chat_endpoint=public_session_endpoint(session.chat_endpoint, public_host=public_host),
     )
+
+
+# A duration far longer than any session lifetime — the way to say "never
+# auto-forward" without teaching every downstream duration parser a keyword.
+# Popping the key does NOT disable auto-forward: the Skuld gate consumer falls
+# back to a "30m" default for an absent value, so an empty override would
+# silently become 30 minutes — the opposite of the intended contract.
+_GATE_NEVER_AUTO_FORWARD = "87600h"
+
+
+def _apply_gate_auto_forward_override(
+    snapshot: dict[str, Any],
+    value: str,
+) -> dict[str, Any]:
+    """Return a snapshot copy with every gate node's autoForwardAfter overridden.
+
+    The snapshot shares the stored definition's graph object, so patching
+    happens on a deep copy — a per-launch override must never mutate the
+    workflow definition. An empty *value* means "never auto-forward" (the gate
+    waits for the human), encoded as a very large duration rather than by
+    removing the key (which the consumer would treat as its 30m default).
+    """
+    effective = value or _GATE_NEVER_AUTO_FORWARD
+    patched = copy.deepcopy(snapshot)
+    graph = patched.get("graph")
+    nodes = graph.get("nodes") if isinstance(graph, dict) else None
+    for node in nodes or []:
+        if not isinstance(node, dict) or node.get("kind") != "gate":
+            continue
+        node["autoForwardAfter"] = effective
+    return patched
 
 
 async def launch_workflow_execution(
@@ -287,6 +347,11 @@ async def launch_workflow_execution(
     bearer_token: str | None = None,
 ) -> WorkflowLaunchExecution:
     workflow_snapshot = build_workflow_snapshot(workflow)
+    if launch.gate_auto_forward_after is not None:
+        workflow_snapshot = _apply_gate_auto_forward_override(
+            workflow_snapshot,
+            launch.gate_auto_forward_after.strip(),
+        )
     launch_slug = _resolve_launch_slug(launch, workflow)
     session_name = _resolve_launch_session_name(launch, workflow, launch_slug)
     settings = request.app.state.settings
@@ -294,8 +359,8 @@ async def launch_workflow_execution(
     try:
         resolved_model, resolved_definition, workflow_personas = _resolve_workflow_execution(
             workflow_snapshot,
-            fallback_model=settings.dispatch.default_model,
-            requested_definition=_DEFAULT_WORKFLOW_LAUNCH_DEFINITION,
+            fallback_model=launch.model or settings.dispatch.default_model,
+            requested_definition=launch.definition or _DEFAULT_WORKFLOW_LAUNCH_DEFINITION,
             session_definitions=settings.session_definitions,
             configured_models=list(settings.bifrost.models),
         )
@@ -341,6 +406,7 @@ async def launch_workflow_execution(
                 "personas": workflow_personas,
                 "initiative_context": initiative_context,
                 "workflow": workflow_snapshot,
+                **({"provenance": dict(launch.provenance)} if launch.provenance else {}),
                 **({"mimir": workflow_mimir} if workflow_mimir else {}),
                 **(
                     {"sleipnir_publish_urls": list(settings.dispatch.flock.sleipnir_publish_urls)}
@@ -358,6 +424,7 @@ async def launch_workflow_execution(
                     else {}
                 ),
             },
+            credential_names=_mimir_auth_credential_names(workflow_mimir),
             definition=resolved_definition,
         ),
         auth_token=bearer_token,
@@ -427,6 +494,14 @@ def _build_workflow_initiative_context(
             launch.prompt.strip(),
         ]
     )
+    if launch.context:
+        lines.extend(
+            [
+                "",
+                "## Launch Context",
+                json.dumps(launch.context, indent=2, sort_keys=True),
+            ]
+        )
     lines.extend(
         [
             "",
@@ -448,6 +523,21 @@ def _build_workflow_initiative_context(
     return "\n".join(lines)
 
 
+def _mimir_auth_credential_names(mimir_config: dict[str, Any]) -> list[str]:
+    """Return credential names needed by workflow-backed Mimir resources."""
+    names: list[str] = []
+    seen: set[str] = set()
+    for raw_ref in list(mimir_config.get("registry_refs") or []):
+        if not isinstance(raw_ref, dict):
+            continue
+        auth_ref = str(raw_ref.get("auth_ref") or raw_ref.get("authRef") or "").strip()
+        if not auth_ref or auth_ref.startswith("integration:") or auth_ref in seen:
+            continue
+        seen.add(auth_ref)
+        names.append(auth_ref)
+    return names
+
+
 def _owner_id_for_scope(scope: WorkflowScope, principal: Principal) -> str | None:
     if scope == WorkflowScope.SYSTEM:
         return None
@@ -455,8 +545,9 @@ def _owner_id_for_scope(scope: WorkflowScope, principal: Principal) -> str | Non
 
 
 def _can_manage_system_workflows(principal: Principal) -> bool:
-    allowed_roles = {"ting:admin", "volundr:developer"}
-    return bool(set(principal.roles) & allowed_roles)
+    allowed_roles = {"admin", "ting:admin", "volundr:admin", "volundr:developer"}
+    normalized_roles = {role.strip() for role in principal.roles if role.strip()}
+    return bool(normalized_roles & allowed_roles)
 
 
 def _assert_can_manage_scope(scope: WorkflowScope, principal: Principal) -> None:

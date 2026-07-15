@@ -9,6 +9,7 @@ import {
   ErrorState,
   LoadingState,
   SessionChat,
+  type FileEntry,
   type MeshNotificationEvent,
   cn,
 } from '@niuulabs/ui';
@@ -26,6 +27,7 @@ import {
   FilePenLine,
   FolderOpen,
   GitCommitHorizontal,
+  MessageCircleReply,
   MessageSquareText,
   Play,
   RotateCcw,
@@ -62,7 +64,10 @@ import { SessionTerminalLive } from './SessionTerminalLive';
 import { StructuredLogViewer } from './components/StructuredLogViewer';
 import './LiveSessionDetailPage.css';
 
-type SessionTab = 'chat' | 'terminal' | 'diffs' | 'files' | 'chronicles' | 'telemetry' | 'logs';
+export type LiveSessionTab =
+  'chat' | 'terminal' | 'diffs' | 'files' | 'chronicles' | 'telemetry' | 'logs';
+
+type SessionTab = LiveSessionTab;
 
 const ALL_TABS: Array<{ id: SessionTab; label: string; icon: typeof MessageSquareText }> = [
   { id: 'chat', label: 'Chat', icon: MessageSquareText },
@@ -1928,7 +1933,7 @@ function TelemetryMetricCard({
   );
 }
 
-function TelemetryTab({
+export function TelemetryTab({
   sessionId,
   session,
   runLabel,
@@ -2716,7 +2721,13 @@ function DeleteSessionDialog({
   );
 }
 
-function LiveLogsTab({ sessionId, volundr }: { sessionId: string; volundr: IVolundrService }) {
+export function LiveLogsTab({
+  sessionId,
+  volundr,
+}: {
+  sessionId: string;
+  volundr: IVolundrService;
+}) {
   const [level, setLevel] = useState('DEBUG');
   const requestKey = `${sessionId}:${level}`;
   const [logState, setLogState] = useState<{
@@ -3102,6 +3113,49 @@ function authHeaders(): Record<string, string> {
   return Object.fromEntries(getAuthHeaders().entries());
 }
 
+interface SessionFileListPayload {
+  entries?: Array<FileEntry & { size?: number; modified?: string }>;
+}
+
+async function fetchSessionFiles(apiBase: string, path: string): Promise<FileEntry[]> {
+  const base = apiBase.endsWith('/') ? apiBase : `${apiBase}/`;
+  const url = new URL('api/files', base);
+  url.searchParams.set('root', 'workspace');
+  if (path) url.searchParams.set('path', path);
+
+  const response = await fetch(url.toString(), { headers: authHeaders() });
+  if (!response.ok) return [];
+  const payload = (await response.json()) as SessionFileListPayload;
+  return (payload.entries ?? [])
+    .filter((entry) => entry.type === 'file' || entry.type === 'directory')
+    .map((entry) => ({
+      name: entry.name,
+      path: entry.path,
+      type: entry.type,
+    }));
+}
+
+export async function fetchSessionMentionFiles(
+  query: string,
+  apiBase: string,
+): Promise<FileEntry[]> {
+  const normalized = query.trim().replace(/^\/+/, '');
+  if (!normalized) return fetchSessionFiles(apiBase, '');
+
+  if (normalized.endsWith('/')) {
+    return fetchSessionFiles(apiBase, normalized.replace(/\/+$/, ''));
+  }
+
+  const slashIndex = normalized.lastIndexOf('/');
+  const parentPath = slashIndex >= 0 ? normalized.slice(0, slashIndex) : '';
+  const term = (slashIndex >= 0 ? normalized.slice(slashIndex + 1) : normalized).toLowerCase();
+  const entries = await fetchSessionFiles(apiBase, parentPath);
+  if (!term) return entries;
+  return entries.filter(
+    (entry) => entry.name.toLowerCase().includes(term) || entry.path.toLowerCase().includes(term),
+  );
+}
+
 function useLiveDiffViewer(chatEndpoint: string | null) {
   const apiBase = useMemo(
     () => (chatEndpoint ? wsUrlToHttpBase(chatEndpoint) : null),
@@ -3451,23 +3505,32 @@ function LiveDiffsTab({ chatEndpoint }: { chatEndpoint: string | null }) {
 export function LiveSessionDetailPage({
   sessionId,
   readOnly = false,
+  initialTab = 'chat',
 }: {
   sessionId: string;
   readOnly?: boolean;
   initialTab?: SessionTab;
 }) {
-  return <LiveSessionDetailPageInner key={sessionId} sessionId={sessionId} readOnly={readOnly} />;
+  return (
+    <LiveSessionDetailPageInner
+      key={sessionId}
+      sessionId={sessionId}
+      readOnly={readOnly}
+      initialTab={initialTab}
+    />
+  );
 }
 
 function LiveSessionDetailPageInner({
   sessionId,
   readOnly = false,
+  initialTab = 'chat',
 }: {
   sessionId: string;
   readOnly?: boolean;
   initialTab?: SessionTab;
 }) {
-  const [activeTab, setActiveTab] = useState<SessionTab>('chat');
+  const [activeTab, setActiveTab] = useState<SessionTab>(initialTab);
   const [tabWasManuallySelected, setTabWasManuallySelected] = useState(false);
   const [actionBusy, setActionBusy] = useState<
     'start' | 'stop' | 'archive' | 'restore' | 'delete' | null
@@ -3691,6 +3754,23 @@ function LiveSessionDetailPageInner({
       chat.sendSetInternalVisibility(next);
     }
   }, [chat, isReady, showInternalMessages]);
+
+  const isFlockSession = useMemo(
+    () =>
+      Array.from(chat.participants.values()).some(
+        (participant) => participant.participantType === 'ravn',
+      ),
+    [chat.participants],
+  );
+  const canShowResendPromptToFlock =
+    isFlockSession && chat.capabilities.room_prompt_resend === true;
+
+  const canResendPromptToFlock =
+    isReady &&
+    isSessionConnected &&
+    !readOnly &&
+    liveSession?.status === 'running' &&
+    canShowResendPromptToFlock;
 
   const handleHumanGateReply = useCallback(
     (decision: 'APPROVE' | 'CHANGES_REQUESTED', notes: string) => {
@@ -3968,6 +4048,14 @@ function LiveSessionDetailPageInner({
               active={showInternalMessages}
               onClick={handleToggleInternalMessages}
             />
+            {canShowResendPromptToFlock && (
+              <SessionToolbarButton
+                icon={MessageCircleReply}
+                title="Resend prompt to flock"
+                onClick={chat.sendResendPrompt}
+                disabled={!canResendPromptToFlock}
+              />
+            )}
             {liveSession &&
               !readOnly &&
               (liveSession.status === 'running' ? (
@@ -4074,6 +4162,7 @@ function LiveSessionDetailPageInner({
                   meshEvents={chat.meshEvents}
                   agentEvents={chat.agentEvents}
                   pendingPermissions={chat.pendingPermissions}
+                  availableCommands={chat.availableCommands}
                   capabilities={chat.capabilities}
                   chatEndpoint={chatEndpoint}
                   sessionName={sessionName}
@@ -4086,6 +4175,7 @@ function LiveSessionDetailPageInner({
                   onSetThinkingTokens={chat.sendSetThinkingTokens}
                   onRewindFiles={chat.sendRewindFiles}
                   onPermissionRespond={chat.respondToPermission}
+                  onFetchFiles={fetchSessionMentionFiles}
                   onMessageCountChange={setVisibleMessageCount}
                   renderPermissions={permissionRenderer}
                 />

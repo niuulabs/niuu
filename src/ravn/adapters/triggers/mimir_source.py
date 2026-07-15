@@ -6,16 +6,9 @@ is enqueued for the mimir-curator persona.
 
 Implements ``TriggerPort`` (``ravn.ports.trigger``).
 
-TODO (dynamic trigger loading): This trigger should eventually be loadable
-from config YAML using the same fully-qualified class path pattern as adapters:
-
-    mimir:
-      triggers:
-        - trigger: "ravn.adapters.triggers.mimir_source.MimirSourceTrigger"
-          poll_interval_seconds: 60
-
-See ``rules/dynamic-adapters.md`` for the pattern.  Until dynamic loading is
-implemented, this trigger is wired explicitly in ``cli/commands.py``.
+The trigger is composed explicitly by the Ravn daemon because it shares the
+live Mimir port and drive-loop queue with sibling triggers. Its behavior is fully
+typed by ``MimirSourceTriggerConfig``.
 """
 
 from __future__ import annotations

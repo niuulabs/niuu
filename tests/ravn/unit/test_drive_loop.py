@@ -1012,6 +1012,27 @@ async def test_directed_message_steers_single_active_agent(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_directed_message_interceptor_can_consume_reply(tmp_path: Path) -> None:
+    loop, _ = _make_drive_loop(tmp_path)
+    loop.enqueue = AsyncMock()
+    interceptor = AsyncMock(return_value=True)
+    loop.register_directed_message_interceptor(interceptor)
+
+    steerable = MagicMock()
+    steerable.supports_steering = True
+    steerable.steering_mode = "live"
+    steerable.steer = AsyncMock(return_value=True)
+    loop._active_agents["task-1"] = steerable
+
+    metadata = {"help_context": {"operator_contact_id": "operator-contact-risky"}}
+    await loop._handle_directed_message("Approved", metadata)
+
+    interceptor.assert_awaited_once_with("Approved", metadata)
+    steerable.steer.assert_not_called()
+    loop.enqueue.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_directed_message_falls_back_to_enqueue_when_steering_unavailable(
     tmp_path: Path,
 ) -> None:

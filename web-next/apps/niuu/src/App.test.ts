@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { publishServiceBackends, resolveConfigEndpoint, shouldBypassAuthGate } from './App';
+import {
+  listUnavailableServiceNames,
+  publishServiceBackends,
+  resolveConfigEndpoint,
+  shouldBypassAuthGate,
+} from './App';
 
 function makeStorage(initial: Record<string, string> = {}) {
   const state = new Map(Object.entries(initial));
@@ -46,6 +51,18 @@ describe('resolveConfigEndpoint', () => {
       '/config.json',
     );
     expect(storage.setItem).not.toHaveBeenCalled();
+  });
+});
+
+describe('listUnavailableServiceNames', () => {
+  it('selects only explicitly unavailable backends for the shell notice', () => {
+    expect(
+      listUnavailableServiceNames({
+        forge: { mode: 'live' },
+        ting: { mode: 'unavailable' },
+        mimir: { mode: 'demo' },
+      }),
+    ).toEqual(['ting']);
   });
 });
 

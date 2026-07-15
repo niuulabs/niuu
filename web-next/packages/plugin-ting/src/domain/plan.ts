@@ -29,7 +29,7 @@ const VALID_TRANSITIONS: Record<PlanStep, readonly PlanStep[]> = {
   prompt: ['questions'],
   questions: ['running', 'prompt'],
   running: ['draft', 'questions'],
-  draft: ['approved', 'running'],
+  draft: ['approved', 'running', 'questions'],
   approved: [],
 };
 

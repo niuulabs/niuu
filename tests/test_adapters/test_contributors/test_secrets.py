@@ -87,6 +87,32 @@ class TestSecretInjectionContributor:
         assert result.values == {}
         assert result.pod_spec is None
 
+    async def test_no_adapter_returns_openshell_mapping_values(self, session):
+        defn = _definition(
+            slug="openai",
+            env_from_credentials={"OPENAI_API_KEY": "api_key"},
+        )
+        registry = _registry([defn])
+
+        ctx = SessionContext(
+            integration_connections=(_connection("openai-cred", "openai"),),
+        )
+        c = SecretInjectionContributor(integration_registry=registry)
+        result = await c.contribute(session, ctx)
+
+        assert result.pod_spec is None
+        assert result.values == {
+            "openshell": {
+                "credentialMappings": [
+                    {
+                        "credentialName": "openai-cred",
+                        "envMappings": {"OPENAI_API_KEY": "api_key"},
+                        "fileMappings": {},
+                    }
+                ]
+            }
+        }
+
     async def test_no_owner_returns_empty(self):
         session = Session(name="test", model="claude", source=GitSource(repo="", branch="main"))
         adapter = AsyncMock()
@@ -109,6 +135,17 @@ class TestSecretInjectionContributor:
         c = SecretInjectionContributor(secret_injection=adapter)
         result = await c.contribute(session, ctx)
         assert result.pod_spec is pod_spec
+        assert result.values == {
+            "openshell": {
+                "credentialMappings": [
+                    {
+                        "credentialName": "my-cred",
+                        "envMappings": {},
+                        "fileMappings": {},
+                    }
+                ]
+            }
+        }
         adapter.pod_spec_additions.assert_called_once_with("user-1", str(session.id))
         adapter.ensure_secret_provider_class.assert_called_once_with(
             "user-1",
@@ -116,6 +153,31 @@ class TestSecretInjectionContributor:
             session_id=str(session.id),
             tenant_id=None,
         )
+
+    async def test_openshell_backend_skips_k8s_injection_resources(self, session):
+        adapter = AsyncMock()
+        ctx = SessionContext(
+            runtime_backend="openshell",
+            integration_connections=(_connection("my-cred", "test"),),
+        )
+        c = SecretInjectionContributor(secret_injection=adapter)
+
+        result = await c.contribute(session, ctx)
+
+        assert result.pod_spec is None
+        assert result.values == {
+            "openshell": {
+                "credentialMappings": [
+                    {
+                        "credentialName": "my-cred",
+                        "envMappings": {},
+                        "fileMappings": {},
+                    }
+                ]
+            }
+        }
+        adapter.ensure_secret_provider_class.assert_not_called()
+        adapter.pod_spec_additions.assert_not_called()
 
     async def test_builds_mappings_from_registry(self, session):
         """Credential mappings include env and file mappings from definitions."""
@@ -194,6 +256,45 @@ class TestSecretInjectionContributor:
         mappings = adapter.ensure_secret_provider_class.call_args[0][1]
         assert mappings[0].file_mappings == {
             "/home/dev/.claude/credentials.json": "oauth_token",
+        }
+
+    async def test_integration_auth_ref_maps_mimir_token_file(self, session):
+        """Mimir auth refs can target an integration slug portably."""
+        defn = _definition(
+            slug="volundr",
+            env_from_credentials={"EXTERNAL_SERVICE_TOKEN": "token"},
+        )
+        registry = _registry([defn])
+
+        adapter = AsyncMock()
+        adapter.pod_spec_additions.return_value = PodSpecAdditions()
+        adapter.ensure_secret_provider_class.return_value = None
+
+        ctx = SessionContext(
+            integration_connections=(_connection("volundr-session-runtime-valhalla", "volundr"),),
+            workload_type="ravn_flock",
+            workload_config={
+                "mimir": {
+                    "registry_refs": [
+                        {
+                            "mount_name": "mimir-yggdrasil",
+                            "auth_ref": "integration:volundr",
+                        }
+                    ]
+                }
+            },
+        )
+        c = SecretInjectionContributor(
+            secret_injection=adapter,
+            integration_registry=registry,
+        )
+        await c.contribute(session, ctx)
+
+        mappings = adapter.ensure_secret_provider_class.call_args[0][1]
+        assert mappings[0].credential_name == "volundr-session-runtime-valhalla"
+        assert mappings[0].env_mappings == {"EXTERNAL_SERVICE_TOKEN": "token"}
+        assert mappings[0].file_mappings == {
+            "/run/secrets/mimir/integration-volundr/token": "token",
         }
 
     async def test_direct_credential_names_fallback_without_store(self, session):

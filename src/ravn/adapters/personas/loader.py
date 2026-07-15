@@ -160,6 +160,8 @@ class PersonaConfig:
             d["executor"] = executor_dict
 
         llm_dict: dict = {}
+        if self.llm.primary_alias:
+            llm_dict["primary_alias"] = self.llm.primary_alias
         if self.llm.thinking_enabled:
             llm_dict["thinking_enabled"] = self.llm.thinking_enabled
         if self.llm.max_tokens:
@@ -1158,7 +1160,7 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
             llm_raw = raw["llm"]
 
         llm = PersonaLLMConfig(
-            primary_alias="",
+            primary_alias=str(llm_raw.get("primary_alias", "")),
             thinking_enabled=_safe_bool(llm_raw.get("thinking_enabled", False)),
             max_tokens=_safe_int(llm_raw.get("max_tokens", 0)),
         )

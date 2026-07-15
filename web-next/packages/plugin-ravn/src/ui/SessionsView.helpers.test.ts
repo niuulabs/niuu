@@ -12,6 +12,7 @@ import {
   formatShortTime,
   formatTimelineStamp,
   formatTokenCount,
+  groupSessionsByRavn,
   normalizeLabel,
   parseEmit,
   pickDefaultSession,
@@ -278,5 +279,51 @@ describe('SessionsView helpers', () => {
         'two',
       ),
     ).toBe('two');
+  });
+
+  it('groups sessions by their owning ravn and keeps active sessions first', () => {
+    const ravens = [
+      {
+        id: 'aaaaaaaa-0000-4000-8000-000000000001',
+        personaName: 'builder',
+        status: 'active',
+        model: 'model-a',
+        createdAt: '2026-05-01T09:00:00.000Z',
+      },
+      {
+        id: 'bbbbbbbb-0000-4000-8000-000000000002',
+        personaName: 'reviewer',
+        status: 'idle',
+        model: 'model-b',
+        createdAt: '2026-05-01T09:00:00.000Z',
+      },
+    ];
+    const sessions = [
+      {
+        ...baseSession,
+        id: '10000001-0000-4000-8000-000000000010',
+        ravnId: ravens[0]!.id,
+        status: 'idle',
+      },
+      {
+        ...baseSession,
+        id: '10000001-0000-4000-8000-000000000011',
+        ravnId: ravens[1]!.id,
+        status: 'idle',
+      },
+      {
+        ...baseSession,
+        id: '10000001-0000-4000-8000-000000000012',
+        ravnId: ravens[0]!.id,
+        status: 'running',
+      },
+    ];
+
+    const groups = groupSessionsByRavn(sessions as never, ravens as never);
+
+    expect(groups).toHaveLength(2);
+    expect(groups[0]?.ravn?.personaName).toBe('builder');
+    expect(groups[0]?.sessions.map((session) => session.status)).toEqual(['running', 'idle']);
+    expect(groups[1]?.ravn?.personaName).toBe('reviewer');
   });
 });

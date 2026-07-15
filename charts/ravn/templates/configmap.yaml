@@ -1,0 +1,11 @@
+{{- if .Values.config.settings }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ravn.fullname" . }}-config
+  labels:
+    {{- include "ravn.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- toYaml .Values.config.settings | nindent 4 }}
+{{- end }}

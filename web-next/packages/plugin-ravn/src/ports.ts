@@ -5,8 +5,14 @@
  * cost) or type aliases. Implementations live in src/adapters/.
  */
 
-import type { BudgetState, PersonaRole, FieldType } from '@niuulabs/domain';
-import type { Ravn } from './domain/ravn';
+import type {
+  BudgetState,
+  FieldType,
+  IPersonaCatalog,
+  PersonaRole,
+  PersonaSummary,
+} from '@niuulabs/domain';
+import type { Ravn, ResidentDeploymentProfile } from './domain/ravn';
 import type { Session } from './domain/session';
 import type { Trigger } from './domain/trigger';
 import type { Message } from './domain/message';
@@ -43,20 +49,7 @@ export interface PersonaFanIn {
   params: Record<string, unknown>;
 }
 
-export interface PersonaSummary {
-  name: string;
-  role: PersonaRole;
-  letter: string;
-  color: string;
-  summary: string;
-  permissionMode: string;
-  allowedTools: string[];
-  iterationBudget: number;
-  isBuiltin: boolean;
-  hasOverride: boolean;
-  producesEvent: string;
-  consumesEvents: string[];
-}
+export type { PersonaFilter, PersonaSummary } from '@niuulabs/domain';
 
 export interface PersonaDetail extends PersonaSummary {
   description: string;
@@ -99,15 +92,12 @@ export interface PersonaForkRequest {
   newName: string;
 }
 
-export type PersonaFilter = 'all' | 'builtin' | 'custom';
-
 // ---------------------------------------------------------------------------
 // Port interfaces
 // ---------------------------------------------------------------------------
 
 /** CRUD store for Persona configurations. */
-export interface IPersonaStore {
-  listPersonas(filter?: PersonaFilter): Promise<PersonaSummary[]>;
+export interface IPersonaStore extends IPersonaCatalog {
   getPersona(name: string): Promise<PersonaDetail>;
   getPersonaYaml(name: string): Promise<string>;
   createPersona(req: PersonaCreateRequest): Promise<PersonaDetail>;
@@ -122,11 +112,56 @@ export interface IRavenStream {
   getRaven(id: string): Promise<Ravn>;
 }
 
+export type ResidentLifecycleAction = 'restart' | 'suspend' | 'resume';
+
+export interface DeployResidentRequest {
+  name: string;
+  profileId: string;
+  instanceId: string;
+  personaName?: string;
+  model?: string;
+  flockId?: string;
+  flockMemberId?: string;
+  flockRole?: string;
+  flockPeerId?: string;
+}
+
+export interface CreateResidentSessionRequest {
+  title: string;
+  model?: string;
+}
+
+export interface ResidentLogEntry {
+  timestampMs: number;
+  level: string;
+  source: string;
+  target: string;
+  message: string;
+  fields: Record<string, string>;
+}
+
+export interface ResidentLogPage {
+  entries: ResidentLogEntry[];
+  bufferTotal: number;
+}
+
+/** Commands and backend-aware reads for managed resident runtimes. */
+export interface IResidentControl {
+  listProfiles(): Promise<ResidentDeploymentProfile[]>;
+  deploy(request: DeployResidentRequest): Promise<Ravn>;
+  applyLifecycle(ravn: Ravn, action: ResidentLifecycleAction): Promise<Ravn>;
+  delete(ravn: Ravn): Promise<void>;
+  getLogs(ravn: Ravn): Promise<ResidentLogPage>;
+  listSessions(ravn: Ravn): Promise<Session[]>;
+  createSession(ravn: Ravn, request: CreateResidentSessionRequest): Promise<Session>;
+  deleteSession(ravn: Ravn, sessionId: string): Promise<void>;
+}
+
 /** Read stream for Session transcripts. */
 export interface ISessionStream {
   listSessions(): Promise<Session[]>;
-  getSession(id: string): Promise<Session>;
-  getMessages(sessionId: string): Promise<Message[]>;
+  getSession(id: string, instanceId?: string, ravnId?: string): Promise<Session>;
+  getMessages(sessionId: string, instanceId?: string, ravnId?: string): Promise<Message[]>;
 }
 
 /** CRUD store for Triggers. */

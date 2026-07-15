@@ -23,21 +23,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
 
       - name: Run ruff linting
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check --output-format=github src/ tests/
 
       - name: Check ruff formatting
-        run: uv run ruff format --check src/ tests/ || echo "::warning::Formatting issues found - consider running 'ruff format src/ tests/'"
-        continue-on-error: true
+        run: |
+          output="$(uv run ruff format --check src/ tests/ 2>&1)" || {
+            printf '%s\n' "$output"
+            printf '%s\n' "$output" | sed -n 's/^Would reformat: //p' | while IFS= read -r file; do
+              echo "::error file=${file}::Ruff formatting required"
+            done
+            diff_output="$(uv run ruff format --diff src/ tests/ 2>&1 || true)"
+            diff_output="${diff_output//'%'/'%25'}"
+            diff_output="${diff_output//$'\n'/'%0A'}"
+            diff_output="${diff_output//$'\r'/'%0D'}"
+            echo "::error title=Ruff formatting diff::${diff_output}"
+            exit 1
+          }
 
   test:
     name: "Python: Test ${{ matrix.pkg.name }}"
@@ -77,27 +88,42 @@ jobs:
             cov: "--cov=src/sleipnir"
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env
 
       - name: Run tests with coverage
         run: |
+          set -o pipefail
+          set +e
+          output_file="$(mktemp)"
           uv run pytest ${{ matrix.pkg.paths }} -v --tb=short \
             --override-ini="addopts=" \
             ${{ matrix.pkg.cov }} \
             --cov-report=term-missing \
             --cov-report=xml \
-            --cov-fail-under=85
+            --cov-fail-under=85 2>&1 | tee "$output_file"
+          status=${PIPESTATUS[0]}
+          set -e
+          if (( status != 0 )); then
+            failure_summary="$(grep -E '^(FAILED|ERROR) ' "$output_file" | tail -n 60 || true)"
+            failure_tail="$(tail -n 20 "$output_file")"
+            failure_output="${failure_summary}"$'\n'"${failure_tail}"
+            failure_output="${failure_output//'%'/'%25'}"
+            failure_output="${failure_output//$'\n'/'%0A'}"
+            failure_output="${failure_output//$'\r'/'%0D'}"
+            echo "::error title=Python test failure (${{ matrix.pkg.name }})::${failure_output}"
+          fi
+          exit "$status"
 
       - name: Upload coverage to Codecov
         if: always() && hashFiles('coverage.xml') != ''
-        uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v6.0.1
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           files: coverage.xml
           flags: ${{ matrix.pkg.flag }}
@@ -112,11 +138,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden runner
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Python + uv
         uses: ./.github/actions/setup-python-env

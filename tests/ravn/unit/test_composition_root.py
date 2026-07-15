@@ -538,6 +538,126 @@ class TestBuildTools:
         assert "ravn_memory_search" not in tool_names
         assert "session_search" not in tool_names
 
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_workflow_tools_absent_without_capability_sources(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        from ravn.cli.commands import _build_tools
+        from ravn.domain.models import Session
+
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            no_tools=False,
+            persona_config=None,
+        )
+
+        tool_names = {t.name for t in tools}
+        assert "workflow_list" not in tool_names
+        assert "workflow_launch" not in tool_names
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_workflow_tools_added_from_capability_sources(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        from ravn.cli.commands import _build_tools
+        from ravn.config import CapabilitySourceConfig
+        from ravn.domain.models import Session
+
+        settings.environment.capability_sources = [
+            CapabilitySourceConfig(
+                adapter=("tests.test_ravn.test_workflow_tools.FakeWorkflowCapabilitySource")
+            )
+        ]
+
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            no_tools=False,
+            persona_config=None,
+        )
+
+        tool_names = {t.name for t in tools}
+        assert {"workflow_list", "workflow_describe", "workflow_launch"}.issubset(tool_names)
+        assert "capability_list" in tool_names
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_workflow_tools_respect_exact_disabled_filter(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        from ravn.cli.commands import _build_tools
+        from ravn.config import CapabilitySourceConfig
+        from ravn.domain.models import Session
+
+        settings.environment.capability_sources = [
+            CapabilitySourceConfig(
+                adapter=("tests.test_ravn.test_workflow_tools.FakeWorkflowCapabilitySource")
+            )
+        ]
+        settings.tools.disabled = ["workflow_launch"]
+
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            no_tools=False,
+            persona_config=None,
+        )
+
+        tool_names = {t.name for t in tools}
+        assert "workflow_list" in tool_names
+        assert "workflow_launch" not in tool_names
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_valkyrie_persona_loads_capability_catalog_and_workflow_tools(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        from ravn.adapters.personas.loader import FilesystemPersonaAdapter
+        from ravn.cli.commands import _build_tools
+        from ravn.config import CapabilitySourceConfig
+        from ravn.domain.models import Session
+
+        settings.environment.type = "k8s"
+        settings.environment.capability_sources = [
+            CapabilitySourceConfig(
+                adapter=("tests.test_ravn.test_workflow_tools.FakeWorkflowCapabilitySource")
+            )
+        ]
+        persona = FilesystemPersonaAdapter().load("k8s-valkyrie")
+
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            no_tools=False,
+            persona_config=persona,
+        )
+
+        tool_names = {t.name for t in tools}
+        assert {"capability_list", "workflow_list", "workflow_launch"}.issubset(tool_names)
+
 
 # ---------------------------------------------------------------------------
 # _get_tool_group
@@ -654,6 +774,25 @@ class TestFilterTools:
         groups = _groups_for_persona(persona)
         assert "mimir" in groups
         assert "extended" in groups
+
+    def test_workflow_alias_expands_to_dynamic_tools(self, settings: Settings) -> None:
+        from ravn.cli.commands import _filter_tools, _groups_for_persona
+
+        tools = [
+            self._make_tool("workflow_list"),
+            self._make_tool("workflow_describe"),
+            self._make_tool("workflow_launch"),
+            self._make_tool("web_fetch"),
+        ]
+        persona = MagicMock(allowed_tools=["workflow"], forbidden_tools=None)
+
+        assert "workflow" in _groups_for_persona(persona)
+        result = _filter_tools(tools, settings, persona)
+        assert [t.name for t in result] == [
+            "workflow_list",
+            "workflow_describe",
+            "workflow_launch",
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -942,3 +1081,74 @@ class TestBuildMimir:
         assert result._write_routing.resolve("self/notes.md") == ["local"]
         assert result._write_routing.resolve("project/arch.md") == ["hosted"]
         assert result._write_routing.resolve("other/page.md") == ["local"]
+
+
+class TestBuildMimirAuthWorkloadDefaults:
+    """Workload Mímir auth threads gateway.platform config (config-first rule)."""
+
+    def test_workload_auth_falls_back_to_platform_config(self, settings: Settings) -> None:
+        from ravn.cli.commands import _build_mimir_auth
+        from ravn.config import MimirAuthConfig
+
+        settings.gateway.platform.enabled = True
+        settings.gateway.platform.workload_token_file = "/var/run/secrets/niuu-workload/token"
+        settings.gateway.platform.workload_exchange_url = "http://volundr.svc/exchange"
+
+        auth = _build_mimir_auth(settings, MimirAuthConfig(type="workload"))
+        assert auth.type == "workload"
+        assert auth.token_file == "/var/run/secrets/niuu-workload/token"
+        assert auth.exchange_url == "http://volundr.svc/exchange"
+
+    def test_workload_auth_derives_exchange_url_from_platform_base_url(
+        self, settings: Settings
+    ) -> None:
+        from ravn.cli.commands import _build_mimir_auth
+        from ravn.config import MimirAuthConfig
+
+        settings.gateway.platform.enabled = True
+        settings.gateway.platform.base_url = "http://volundr.svc/"
+        settings.gateway.platform.workload_exchange_url = ""
+
+        auth = _build_mimir_auth(settings, MimirAuthConfig(type="workload"))
+        assert auth.exchange_url == "http://volundr.svc/api/v1/tokens/workload/exchange"
+
+    def test_workload_auth_explicit_instance_values_win(self, settings: Settings) -> None:
+        from ravn.cli.commands import _build_mimir_auth
+        from ravn.config import MimirAuthConfig
+
+        settings.gateway.platform.enabled = True
+        settings.gateway.platform.workload_token_file = "/platform/token"
+        settings.gateway.platform.workload_exchange_url = "http://platform/exchange"
+
+        auth = _build_mimir_auth(
+            settings,
+            MimirAuthConfig(
+                type="workload",
+                token_file="/instance/token",
+                exchange_url="http://instance/exchange",
+            ),
+        )
+        assert auth.token_file == "/instance/token"
+        assert auth.exchange_url == "http://instance/exchange"
+
+    def test_workload_auth_platform_disabled_keeps_none(self, settings: Settings) -> None:
+        from ravn.cli.commands import _build_mimir_auth
+        from ravn.config import MimirAuthConfig
+
+        settings.gateway.platform.enabled = False
+        auth = _build_mimir_auth(settings, MimirAuthConfig(type="workload"))
+        # None means the HTTP adapter keeps its legacy env-var fallback.
+        assert auth.token_file is None
+        assert auth.exchange_url is None
+
+    def test_bearer_auth_is_not_threaded(self, settings: Settings) -> None:
+        from ravn.cli.commands import _build_mimir_auth
+        from ravn.config import MimirAuthConfig
+
+        settings.gateway.platform.enabled = True
+        settings.gateway.platform.workload_exchange_url = "http://platform/exchange"
+
+        auth = _build_mimir_auth(settings, MimirAuthConfig(type="bearer", token="tok"))
+        assert auth.type == "bearer"
+        assert auth.token == "tok"
+        assert auth.exchange_url is None

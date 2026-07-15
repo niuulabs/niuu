@@ -4,12 +4,26 @@ from __future__ import annotations
 
 import pytest
 
-from ravn.config import EnvironmentConfig, Settings, SignalSourceConfig
+from mimir.adapters.markdown import MarkdownMimirAdapter
+from ravn.cli.commands import _build_environment_signal_runtime
+from ravn.config import (
+    CapabilitySourceConfig,
+    EnvironmentConfig,
+    Settings,
+    SignalSourceConfig,
+)
+from ravn.domain.capability_catalog import WorkflowCapability
 from ravn.domain.models import AgentTask
 from ravn.environment_signal_runtime import (
     EnvironmentSignalRuntime,
     build_runtime_environment,
 )
+from ravn.ports.capability import (
+    WorkflowCapabilityPort,
+    WorkflowLaunchRequest,
+    WorkflowLaunchResult,
+)
+from ravn.resident_inbox import MimirResidentInbox
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.events import SleipnirEvent
 
@@ -50,6 +64,46 @@ def _settings() -> Settings:
     )
     settings.mesh.own_peer_id = "valkyrie-host-jozef"
     return settings
+
+
+class FakeWorkflowCapabilitySource(WorkflowCapabilityPort):
+    launched: list[WorkflowLaunchRequest] = []
+    list_calls = 0
+
+    async def list_workflows(self) -> list[WorkflowCapability]:
+        self.__class__.list_calls += 1
+        return [
+            WorkflowCapability(
+                workflow_id="wf-incident",
+                name="Incident Investigation",
+                version="1.0.0",
+                tags=["incident", "host"],
+            )
+        ]
+
+    async def launch_workflow(self, request: WorkflowLaunchRequest) -> WorkflowLaunchResult:
+        self.launched.append(request)
+        return WorkflowLaunchResult(
+            workflow_id=request.workflow_id,
+            workflow_name="Incident Investigation",
+            session_id="session-from-policy",
+            session_name=request.session_name,
+            status="running",
+            slug="session-from-policy",
+            cluster_name="ymir",
+            owner_id="owner-1",
+            tenant_id="tenant-1",
+            workload_subject="system:serviceaccount:nats:valkyrie-host-jozef",
+            workload_name="valkyrie-host-jozef",
+        )
+
+
+class WakefulnessProbe:
+    def __init__(self) -> None:
+        self.activity_count = 0
+
+    def notify_activity(self) -> None:
+        self.activity_count += 1
 
 
 def test_build_runtime_environment_reuses_configured_flocks_and_sources() -> None:
@@ -169,6 +223,93 @@ async def test_runtime_runs_resident_learning_before_enqueueing_signal_task() ->
 
 
 @pytest.mark.asyncio
+async def test_daemon_environment_signal_is_recorded_into_resident_inbox(
+    tmp_path,
+) -> None:
+    settings = _settings()
+    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    bus = InProcessBus()
+    runtime = _build_environment_signal_runtime(
+        settings,
+        publisher=bus,
+        mimir=mimir,
+        owns_publisher=False,
+    )
+
+    assert runtime is not None
+    count = await runtime.collect_once()
+    source = MimirResidentInbox(mimir)
+    rows = await source.list_signals(status="", limit=5)
+    pages = await mimir.list_pages(prefix="resident/inbox/signals")
+
+    assert count == 1
+    assert len(pages) == 1
+    assert len(rows) == 1
+    _path, signal = rows[0]
+    assert signal.source == "host-events"
+    assert signal.kind == "signal.host.event"
+    assert "Disk usage crossed 95%" in signal.summary
+
+
+@pytest.mark.asyncio
+async def test_daemon_environment_signal_recording_notifies_wakefulness(
+    tmp_path,
+) -> None:
+    settings = _settings()
+    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    bus = InProcessBus()
+    wakefulness = WakefulnessProbe()
+    runtime = _build_environment_signal_runtime(
+        settings,
+        publisher=bus,
+        mimir=mimir,
+        resident_wakefulness=wakefulness,
+        owns_publisher=False,
+    )
+
+    assert runtime is not None
+    await runtime.collect_once()
+
+    assert wakefulness.activity_count == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_exposes_workflow_sources_as_tools_without_policy_routing() -> None:
+    bus = InProcessBus()
+    telemetry: list[SleipnirEvent] = []
+    enqueued: list[AgentTask] = []
+    FakeWorkflowCapabilitySource.launched = []
+    FakeWorkflowCapabilitySource.list_calls = 0
+    settings = _settings()
+    settings.environment.capability_sources = [
+        CapabilitySourceConfig(
+            adapter=("tests.test_ravn.test_environment_signal_runtime.FakeWorkflowCapabilitySource")
+        )
+    ]
+    await bus.subscribe(["valkyrie.signal_poll.completed"], lambda event: _record(telemetry, event))
+
+    runtime = EnvironmentSignalRuntime(
+        settings=settings,
+        publisher=bus,
+        enqueue=lambda task: _enqueue(enqueued, task),
+    )
+
+    count = await runtime.collect_once()
+    await bus.flush()
+
+    assert count == 1
+    assert len(enqueued) == 1
+    assert FakeWorkflowCapabilitySource.launched == []
+    assert FakeWorkflowCapabilitySource.list_calls == 0
+    assert "## Remote workflows" in enqueued[0].initiative_context
+    assert "`workflow_list`" in enqueued[0].initiative_context
+    assert "`workflow_launch`" in enqueued[0].initiative_context
+    assert "hidden signal policy" in enqueued[0].initiative_context
+    assert telemetry[0].payload["workflow_capability_source_count"] == 1
+    assert telemetry[0].payload["enqueued_task_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_resident_learning_failure_is_published_and_recovered() -> None:
     bus = InProcessBus()
     failures: list[SleipnirEvent] = []
@@ -223,7 +364,7 @@ async def test_defer_to_investigation_appends_the_build_mandate() -> None:
     assert "## Resident learning" in context
     assert "## Required before you finish" in context
     assert "`inspect.host.host.disk-pressure`" in context
-    assert "Do not finish without calling" in context
+    assert "If no suitable capability exists, use `build_tool`" in context
     # It lands after the outcome schema so the model weights it.
     assert context.index("## Required before you finish") > context.index("---end---")
 
@@ -260,6 +401,130 @@ async def test_runtime_start_publishes_configuration_telemetry() -> None:
     assert payload["llm_model"] == _settings().effective_model()
     assert payload["reflection_model"] == _settings().effective_memory_reflection_model()
     assert payload["nats_subject"] == "ravn.environment.valkyrie.runtime.started"
+
+
+@pytest.mark.asyncio
+async def test_charter_travels_in_runtime_telemetry_and_task_context() -> None:
+    bus = InProcessBus()
+    telemetry: list[SleipnirEvent] = []
+    enqueued: list[AgentTask] = []
+    await bus.subscribe(["valkyrie.runtime.started"], lambda event: _record(telemetry, event))
+    settings = _settings()
+    settings.environment.charter = (
+        "Keep the host healthy and quiet; escalate only real risk to Jozef."
+    )
+    runtime = EnvironmentSignalRuntime(
+        settings=settings,
+        publisher=bus,
+        enqueue=lambda task: _enqueue(enqueued, task),
+    )
+
+    await runtime.start()
+    await bus.flush()
+    await runtime.stop()
+    await runtime.collect_once()
+
+    assert telemetry[0].payload["charter"] == (
+        "Keep the host healthy and quiet; escalate only real risk to Jozef."
+    )
+    assert enqueued
+    assert "**Charter:** Keep the host healthy and quiet" in enqueued[0].initiative_context
+
+
+@pytest.mark.asyncio
+async def test_below_threshold_signals_accumulate_for_idle_triage() -> None:
+    bus = InProcessBus()
+    enqueued: list[AgentTask] = []
+    settings = _settings()
+    # The only configured signal is critical; raise the bar so nothing enqueues.
+    settings.environment.signal_task_severities = ["never"]
+    runtime = EnvironmentSignalRuntime(
+        settings=settings,
+        publisher=bus,
+        enqueue=lambda task: _enqueue(enqueued, task),
+    )
+
+    count = await runtime.collect_once()
+    await bus.flush()
+
+    assert count == 1
+    assert enqueued == []
+    task = runtime._triage_task(runtime._untriaged)
+    assert task.triggered_by == "signal:idle_triage"
+    assert task.title == "Idle triage: 1 routine signal(s)"
+    context = task.initiative_context
+    assert "# Idle triage" in context
+    assert "signal_task_severities" in context
+    assert "**critical**: 1" in context
+    assert "## Sample signals" in context
+    assert "(critical, host-events)" in context
+    assert "---outcome---" in context and "---end---" in context
+    assert "operational_state: watching" in context
+
+
+@pytest.mark.asyncio
+async def test_idle_triage_loop_enqueues_and_resets_batch() -> None:
+    import asyncio
+
+    bus = InProcessBus()
+    enqueued: list[AgentTask] = []
+    settings = _settings()
+    settings.environment.signal_task_severities = ["never"]
+    settings.environment.idle_triage_interval_seconds = 0.01
+    settings.environment.idle_triage_max_signals = 5
+    runtime = EnvironmentSignalRuntime(
+        settings=settings,
+        publisher=bus,
+        enqueue=lambda task: _enqueue(enqueued, task),
+    )
+
+    await runtime.collect_once()
+    await runtime.start()
+    for _ in range(200):
+        if enqueued:
+            break
+        await asyncio.sleep(0.01)
+    await runtime.stop()
+
+    triage_tasks = [task for task in enqueued if task.triggered_by == "signal:idle_triage"]
+    assert triage_tasks, "idle triage loop never enqueued a task"
+    assert runtime._untriaged == []
+
+
+def test_untriaged_buffer_is_capped() -> None:
+    settings = _settings()
+    settings.environment.idle_triage_max_signals = 3
+    runtime = EnvironmentSignalRuntime(settings=settings, publisher=InProcessBus())
+    for index in range(6):
+        runtime._untriaged.append(
+            {
+                "signal_ref": f"sig-{index}",
+                "signal_type": "host",
+                "severity": "info",
+                "source_id": "host-events",
+                "summary": f"signal {index}",
+            }
+        )
+    event = SleipnirEvent(
+        event_type="signal.host.event",
+        source="test",
+        payload={},
+        summary="s",
+        urgency=0.1,
+        domain="infrastructure",
+        timestamp=SleipnirEvent.now(),
+    )
+
+    class _Sig:
+        provider_event_id = "p"
+        dedupe_key = "d"
+        signal_type = "host"
+        severity = "info"
+        source_id = "host-events"
+
+    runtime._remember_untriaged(_Sig(), event)  # type: ignore[arg-type]
+
+    assert len(runtime._untriaged) == 3
 
 
 async def _record(events: list[SleipnirEvent], event: SleipnirEvent) -> None:

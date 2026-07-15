@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
+import logging
+import os
+import sys
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -18,6 +22,8 @@ from ravn.domain.models import Message, Session, TokenUsage, ToolCall, ToolResul
 from ravn.ports.channel import ChannelPort
 from ravn.ports.checkpoint import CheckpointPort
 from ravn.ports.executor import ExecutionAgentPort, ExecutorPort
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -68,6 +74,39 @@ def _sum_model_usage(raw: dict | None) -> TokenUsage:
     )
 
 
+def _is_ting_workflow_tool(tool_name: str) -> bool:
+    name = tool_name.replace("-", "_")
+    return name.startswith("ting_") or any(
+        marker in name for marker in ("__ting_", "/ting_", ".ting_")
+    )
+
+
+def _decode_tool_result_json(content: str) -> dict[str, Any] | None:
+    text = content.strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    wrapped_content = data.get("content")
+    if isinstance(wrapped_content, list):
+        for item in wrapped_content:
+            if not isinstance(item, dict):
+                continue
+            item_text = item.get("text")
+            if not isinstance(item_text, str) or not item_text.strip():
+                continue
+            nested = _decode_tool_result_json(item_text)
+            if nested is not None:
+                return nested
+
+    return data
+
+
 class CliTransportAgent(ExecutionAgentPort):
     """Agent-shaped wrapper that executes turns through a CLI transport."""
 
@@ -85,6 +124,7 @@ class CliTransportAgent(ExecutionAgentPort):
         task_id: str,
         persona: str,
         preloaded_tools: Iterable[object] = (),
+        session_join_manager: Any | None = None,
     ) -> None:
         self._transport_binding = transport_binding
         self._transport_kwargs = dict(transport_kwargs)
@@ -103,6 +143,7 @@ class CliTransportAgent(ExecutionAgentPort):
         self._tools = {
             getattr(tool, "name", f"tool_{idx}"): tool for idx, tool in enumerate(preloaded_tools)
         }
+        self._session_join_manager = session_join_manager
         self._interrupt_reason: InterruptReason | None = None
         self._current_tool_names: dict[str, str] = {}
         self._turn_tool_calls: list[ToolCall] = []
@@ -274,6 +315,12 @@ class CliTransportAgent(ExecutionAgentPort):
             await self._emit_delta(data, correlation_id)
             return
 
+        if event_type == "content_block_start":
+            block = data.get("content_block")
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                await self._record_tool_result_block(block, correlation_id)
+            return
+
         if event_type in {"assistant", "message"}:
             await self._emit_message_event(data, correlation_id)
             return
@@ -354,24 +401,61 @@ class CliTransportAgent(ExecutionAgentPort):
         for block in content:
             if not isinstance(block, dict) or block.get("type") != "tool_result":
                 continue
-            tool_use_id = str(block.get("tool_use_id", ""))
-            tool_name = self._current_tool_names.get(tool_use_id, "")
-            result = str(block.get("content", ""))
-            is_error = bool(block.get("is_error", False))
-            self._turn_tool_results.append(
-                ToolResult(tool_call_id=tool_use_id, content=result, is_error=is_error)
+            await self._record_tool_result_block(block, correlation_id)
+
+    async def _record_tool_result_block(self, block: dict, correlation_id: str) -> None:
+        tool_use_id = str(block.get("tool_use_id", ""))
+        tool_name = self._current_tool_names.get(tool_use_id, "")
+        result = str(block.get("content", ""))
+        is_error = bool(block.get("is_error", False))
+        self._turn_tool_results.append(
+            ToolResult(tool_call_id=tool_use_id, content=result, is_error=is_error)
+        )
+        if not is_error:
+            await self._join_launched_workflow_session(tool_name, result)
+        await self._channel.emit(
+            RavnEvent.tool_result(
+                source=self._source_id,
+                tool_name=tool_name,
+                result=result,
+                correlation_id=correlation_id,
+                session_id=correlation_id,
+                task_id=self._task_id,
+                is_error=is_error,
             )
-            await self._channel.emit(
-                RavnEvent.tool_result(
-                    source=self._source_id,
-                    tool_name=tool_name,
-                    result=result,
-                    correlation_id=correlation_id,
-                    session_id=correlation_id,
-                    task_id=self._task_id,
-                    is_error=is_error,
+        )
+
+    async def _join_launched_workflow_session(self, tool_name: str, result: str) -> None:
+        manager = self._session_join_manager
+        if manager is None or not _is_ting_workflow_tool(tool_name):
+            return
+        payload = _decode_tool_result_json(result)
+        if not payload:
+            return
+        if isinstance(payload.get("data"), dict):
+            payload = payload["data"]
+        session_id = str(payload.get("sessionId") or payload.get("session_id") or "").strip()
+        chat_endpoint = str(
+            payload.get("chatEndpoint") or payload.get("chat_endpoint") or ""
+        ).strip()
+        if not session_id or not chat_endpoint:
+            return
+        task = asyncio.create_task(
+            manager.join(session_id, chat_endpoint),
+            name=f"join-workflow-session-{session_id}",
+        )
+
+        def _log_join_result(done: asyncio.Task) -> None:
+            try:
+                done.result()
+            except Exception:
+                logger.warning(
+                    "CLI executor failed to join launched workflow session %s",
+                    session_id,
+                    exc_info=True,
                 )
-            )
+
+        task.add_done_callback(_log_join_result)
 
     async def _emit_content_block(self, block: dict, correlation_id: str) -> None:
         block_type = str(block.get("type", ""))
@@ -435,6 +519,7 @@ class CliTransportExecutor(ExecutorPort):
         session: Session = kwargs["session"]
         task_id = str(kwargs.get("task_id") or session.id)
         permission_mode = str(kwargs.get("permission_mode", "workspace_write"))
+        tools = list(kwargs.get("tools", []))
         transport_kwargs = {
             "workspace_dir": workspace_dir,
             "model": str(kwargs.get("model", "")),
@@ -445,7 +530,11 @@ class CliTransportExecutor(ExecutorPort):
         if not _delegates_permission_config_to_cli(self._binding.cls):
             transport_kwargs["skip_permissions"] = permission_mode != "prompt"
         if "mcp_servers" in kwargs:
-            transport_kwargs["mcp_servers"] = kwargs["mcp_servers"]
+            transport_kwargs["mcp_servers"] = _with_ravn_tool_mcp_server(
+                list(kwargs["mcp_servers"]),
+                persona=str(kwargs.get("persona", "")),
+                tools=tools,
+            )
         transport_kwargs.update(self._transport_kwargs)
 
         return CliTransportAgent(
@@ -459,5 +548,37 @@ class CliTransportExecutor(ExecutorPort):
             checkpoint_port=kwargs.get("checkpoint_port"),
             task_id=task_id,
             persona=str(kwargs.get("persona", "")),
-            preloaded_tools=kwargs.get("tools", []),
+            preloaded_tools=tools,
+            session_join_manager=kwargs.get("session_join_manager"),
         )
+
+
+def _with_ravn_tool_mcp_server(
+    mcp_servers: list[dict[str, Any]],
+    *,
+    persona: str,
+    tools: list[object],
+) -> list[dict[str, Any]]:
+    if not tools or any(str(server.get("name") or "") == "ravn-tools" for server in mcp_servers):
+        return mcp_servers
+
+    env: dict[str, str] = {}
+    if config := os.environ.get("RAVN_CONFIG"):
+        env["RAVN_CONFIG"] = config
+    if pythonpath := os.environ.get("PYTHONPATH"):
+        env["PYTHONPATH"] = pythonpath
+
+    args = ["-m", "ravn", "tool-mcp"]
+    if persona:
+        args.extend(["--persona", persona])
+
+    return [
+        *mcp_servers,
+        {
+            "name": "ravn-tools",
+            "type": "stdio",
+            "command": sys.executable,
+            "args": args,
+            "env": env,
+        },
+    ]

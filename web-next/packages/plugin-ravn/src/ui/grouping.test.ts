@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { groupRavens, topBudgetSpenders, modelToLocation } from './grouping';
+import { groupRavens, topBudgetSpenders } from './grouping';
 import type { Ravn } from '../domain/ravn';
 import type { BudgetState } from '@niuulabs/domain';
 
@@ -9,6 +9,7 @@ const RAVENS: Ravn[] = [
     personaName: 'coder',
     status: 'active',
     model: 'claude-sonnet-4-6',
+    location: 'midgard',
     createdAt: '2026-04-15T09:00:00Z',
   },
   {
@@ -16,6 +17,7 @@ const RAVENS: Ravn[] = [
     personaName: 'fjölnir',
     status: 'active',
     model: 'claude-opus-4-6',
+    location: 'asgard',
     createdAt: '2026-04-15T08:00:00Z',
   },
   {
@@ -23,6 +25,7 @@ const RAVENS: Ravn[] = [
     personaName: 'gefjon',
     status: 'idle',
     model: 'claude-haiku-4-5',
+    location: 'jotunheim',
     createdAt: '2026-04-15T07:00:00Z',
   },
   {
@@ -30,24 +33,10 @@ const RAVENS: Ravn[] = [
     personaName: 'höðr',
     status: 'suspended',
     model: 'claude-sonnet-4-6',
+    location: 'midgard',
     createdAt: '2026-04-14T20:00:00Z',
   },
 ];
-
-describe('modelToLocation', () => {
-  it('maps opus model to asgard', () => {
-    expect(modelToLocation('claude-opus-4-6')).toBe('asgard');
-  });
-
-  it('maps haiku model to jotunheim', () => {
-    expect(modelToLocation('claude-haiku-4-5')).toBe('jotunheim');
-  });
-
-  it('maps sonnet (and unknown) model to midgard', () => {
-    expect(modelToLocation('claude-sonnet-4-6')).toBe('midgard');
-    expect(modelToLocation('unknown-model')).toBe('midgard');
-  });
-});
 
 describe('groupRavens', () => {
   describe('none grouping', () => {
@@ -95,11 +84,22 @@ describe('groupRavens', () => {
   });
 
   describe('location grouping', () => {
-    it('groups ravens by model-derived location', () => {
+    it('groups ravens by explicit location', () => {
       const result = groupRavens(RAVENS, 'location');
       expect(result.asgard).toHaveLength(1); // opus
       expect(result.jotunheim).toHaveLength(1); // haiku
       expect(result.midgard).toHaveLength(2); // 2× sonnet
+    });
+  });
+
+  describe('flock grouping', () => {
+    it('groups flock members and keeps independent ravens separate', () => {
+      const flocked = RAVENS.map((ravn, index) =>
+        index < 2 ? { ...ravn, flockId: '11111111-1111-1111-1111-111111111111' } : ravn,
+      );
+      const result = groupRavens(flocked, 'flock');
+      expect(result['mesh 11111111']).toHaveLength(2);
+      expect(result.independent).toHaveLength(2);
     });
   });
 

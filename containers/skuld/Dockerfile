@@ -1,4 +1,4 @@
-FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64 AS builder
+FROM ubuntu:26.04@sha256:b7f48194d4d8b763a478a621cdc81c27be222ba2206ca3ca6bc42b49685f3d9e AS builder
 
 ARG TARGETARCH
 
@@ -38,7 +38,7 @@ RUN uv sync --frozen --no-dev --no-editable
 # ---------------------------------------------------------------------------
 # Runtime — Node.js stays (needed for claude-code/codex CLI at runtime)
 # ---------------------------------------------------------------------------
-FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64
+FROM ubuntu:26.04@sha256:b7f48194d4d8b763a478a621cdc81c27be222ba2206ca3ca6bc42b49685f3d9e
 
 
 LABEL org.opencontainers.image.title="skuld"
@@ -55,6 +55,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     git \
+    iproute2 \
     jq \
     tmux \
     vim \
@@ -85,10 +86,20 @@ RUN cd /opt/npm-bootstrap \
     && ln -sf /opt/skuld-tools/node_modules/.bin/codex /usr/local/bin/codex \
     && ln -sf /opt/skuld-tools/node_modules/.bin/opencode /usr/local/bin/opencode
 
+# Grok Build CLI (ACP stdio transport — Scaldy / Grok pipeline) is NOT pre-installed:
+# it is a large arch-specific binary distributed via the official xAI installer.
+# Provide it at deploy time via one of:
+#   - volumeMount the `grok` binary into PATH inside the pod, or
+#   - a custom image extending this one that runs the xAI grok installer, plus
+#   - XAI_API_KEY (and optional XAI_BASE_URL for the dev API) — see entrypoint.sh.
+# GrokACPTransport fails gracefully at start() if `grok` is missing from PATH.
+
 # Create app user with UID 1000 (matches helm chart runAsUser)
 RUN existing=$(getent passwd 1000 | cut -d: -f1) && \
     [ -n "$existing" ] && userdel -r "$existing" || true && \
-    useradd -m -s /bin/bash -u 1000 skuld
+    useradd -m -s /bin/bash -u 1000 skuld && \
+    groupadd -r sandbox && \
+    useradd -m -s /bin/bash -g sandbox sandbox
 
 # Copy the pre-built venv from builder.
 ENV VIRTUAL_ENV=/opt/venv
@@ -102,6 +113,11 @@ RUN chmod +x /app/entrypoint.sh
 # Copy svc CLI tool
 COPY containers/skuld/svc /usr/local/bin/svc
 RUN chmod +x /usr/local/bin/svc
+
+# OpenShell local Docker proof bootstrap: starts the installed broker and exits
+# after its health endpoint is ready, leaving the sandbox resident.
+COPY scripts/openshell-run-installed-skuld.sh /usr/local/bin/openshell-run-installed-skuld
+RUN chmod +x /usr/local/bin/openshell-run-installed-skuld
 
 # Set working directory
 WORKDIR /app

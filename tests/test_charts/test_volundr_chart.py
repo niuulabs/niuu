@@ -1,5 +1,6 @@
 """Tests for Volundr Helm chart templates."""
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,23 @@ class TestChartMetadata:
         """Test chart has version."""
         assert "version" in chart_yaml
         assert chart_yaml["version"]
+
+
+class TestEnvoySidecarConfig:
+    """Tests for the Envoy sidecar configmap template."""
+
+    @pytest.fixture
+    def envoy_template(self) -> str:
+        """Load the raw envoy configmap template text."""
+        template_path = CHART_DIR / "templates" / "envoy-configmap.yaml"
+        return template_path.read_text()
+
+    def test_websocket_upgrades_enabled(self, envoy_template):
+        """Browser session WebSockets (/s/{id}/session) terminate at this
+        sidecar; without upgrade_configs Envoy rejects every Upgrade request
+        with 403 before JWT auth or routing runs."""
+        assert "upgrade_configs:" in envoy_template
+        assert "- upgrade_type: websocket" in envoy_template
 
 
 class TestValuesDefaults:
@@ -173,6 +191,14 @@ class TestValuesDefaults:
         """Test skuld-codex broker has correct transportAdapter class path."""
         broker = values_yaml["sessionDefinitions"]["skuldCodex"]["defaults"]["broker"]
         assert broker["transportAdapter"] == "skuld.transports.codex_ws.CodexWebSocketTransport"
+
+    @pytest.mark.parametrize(
+        "definition",
+        ["skuldClaude", "skuldClaudeInteractive", "skuldCodex", "skuldOpenCode"],
+    )
+    def test_agent_session_definitions_default_to_full_access(self, values_yaml, definition):
+        broker = values_yaml["sessionDefinitions"][definition]["defaults"]["broker"]
+        assert broker["skipPermissions"] is True
 
     def test_both_session_defs_use_same_image_repo(self, values_yaml):
         """Test skuld-claude and skuld-codex reference the same image repo."""
@@ -444,6 +470,10 @@ class TestRbacTemplate:
         flux_api_group = "helm.toolkit.fluxcd.io"
         assert f'apiGroups: ["{flux_api_group}"]' in template_yaml
 
+    def test_flux_controller_can_observe_resident_deployments(self, template_yaml):
+        assert 'apiGroups: ["apps"]' in template_yaml
+        assert 'resources: ["deployments"]' in template_yaml
+
     def test_has_cluster_wide_conditional(self, template_yaml):
         """Test template has cluster-wide conditional."""
         assert ".Values.rbac.clusterWide" in template_yaml
@@ -474,6 +504,101 @@ class TestConfigMapTemplate:
         """Test template has HOST and PORT."""
         assert "HOST:" in template_yaml
         assert "PORT:" in template_yaml
+
+    def test_empty_resident_profiles_render_as_list(self):
+        result = subprocess.run(
+            ["helm", "template", "test", str(CHART_DIR)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        configmap = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr"
+        )
+        config = yaml.safe_load(configmap["data"]["config.yaml"])
+
+        assert config["resident_runtimes"]["profiles"] == []
+
+    def test_ci_values_run_resident_runtime_migrations(self):
+        result = subprocess.run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                "-f",
+                str(CHART_DIR / "ci-values.yaml"),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        deployment = next(doc for doc in documents if doc.get("kind") == "Deployment")
+        init_containers = deployment["spec"]["template"]["spec"].get("initContainers", [])
+        migrations = next(
+            container for container in init_containers if container["name"] == "migrate"
+        )
+        migration_config = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr-migrations"
+        )
+
+        assert migrations["args"][-1] == "up"
+        assert "000055_resident_runtimes.up.sql" in migration_config["data"]
+        assert "000056_resident_usage.up.sql" in migration_config["data"]
+        assert "000058_resident_session_traces.up.sql" in migration_config["data"]
+        assert "000059_resident_session_events.up.sql" in migration_config["data"]
+
+        migration_dir = CHART_DIR.parent.parent / "migrations"
+        expected_migrations = {path.name for path in migration_dir.glob("*.sql")}
+        assert set(migration_config["data"]) == expected_migrations
+
+    def test_resident_session_controllers_render_with_backend_binding(self):
+        result = subprocess.run(
+            [
+                "helm",
+                "template",
+                "test",
+                str(CHART_DIR),
+                "--set",
+                (
+                    "residentRuntimeSessionControllers[0].adapter="
+                    "volundr.adapters.outbound.hermes_gateway.HermesResidentSessionController"
+                ),
+                "--set",
+                "residentRuntimeSessionControllers[0].runtimeBackend=openshell",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        documents = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+        configmap = next(
+            doc
+            for doc in documents
+            if doc.get("kind") == "ConfigMap"
+            and doc.get("metadata", {}).get("name") == "test-volundr"
+        )
+        config = yaml.safe_load(configmap["data"]["config.yaml"])
+
+        assert config["resident_runtimes"]["session_controllers"] == [
+            {
+                "adapter": (
+                    "volundr.adapters.outbound.hermes_gateway.HermesResidentSessionController"
+                ),
+                "runtime_backend": "openshell",
+                "optional": False,
+                "kwargs": {},
+                "secret_kwargs_env": {},
+            }
+        ]
 
 
 class TestHpaTemplate:

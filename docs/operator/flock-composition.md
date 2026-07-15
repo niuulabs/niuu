@@ -91,7 +91,7 @@ kubectl get configmap ravn-personas -n volundr -o yaml
 
 ### 3. HTTP (multi-cluster / cross-namespace)
 
-Each sidecar pulls personas from the Volundr REST API using a PAT (Personal Access Token) mounted as a Kubernetes secret. This backend is ideal when:
+Each sidecar pulls personas from the Volundr REST API using projected workload identity exchanged for a short-lived Niuu JWT. This backend is ideal when:
 
 - Sidecars run in a different cluster or namespace from Volundr.
 - You want all personas served from a single central registry with no ConfigMap projection delay.
@@ -100,34 +100,25 @@ Each sidecar pulls personas from the Volundr REST API using a PAT (Personal Acce
 
 - In-memory LRU cache with configurable TTL (default 60 s) to avoid hammering Volundr.
 - Fail-closed: on network errors the last cached value is returned; `None` if nothing is cached.
-- Auth: `RAVN_VOLUNDR_TOKEN` env var → `Authorization: Bearer <token>`.
+- Auth: projected workload token → `/api/v1/tokens/workload/exchange` → `Authorization: Bearer <jwt>`.
 
 **Helm values**:
 
 ```yaml
 personaSource:
   mode: http
-  http:
-    baseUrl: http://volundr.volundr.svc.cluster.local:8080
-    tokenSecretName: ravn-volundr-token  # k8s Secret holding the PAT
-    cacheTtlSeconds: 60
+  httpBaseUrl: https://niuu.example.com
 ```
 
 **Full installation walkthrough**:
 
-1. Issue a PAT via the Volundr API or admin UI.
-2. Create the secret:
-   ```bash
-   kubectl create secret generic ravn-volundr-token \
-     --from-literal=token=<your-pat-value> \
-     -n volundr
-   ```
+1. Ensure the session workload identity contributor is enabled so Ravn sidecars receive `NIUU_WORKLOAD_IDENTITY_TOKEN_FILE`.
+2. Point `personaSource.httpBaseUrl` at the Envoy-facing Volundr endpoint.
 3. Install the chart:
    ```bash
    helm upgrade --install volundr charts/volundr \
      --set personaSource.mode=http \
-     --set "personaSource.http.baseUrl=http://volundr:8080" \
-     --set personaSource.http.tokenSecretName=ravn-volundr-token \
+     --set "personaSource.httpBaseUrl=https://niuu.example.com" \
      --namespace volundr --create-namespace
    ```
 
@@ -203,7 +194,7 @@ Create or update a flow:
 ```bash
 curl -X POST http://localhost:8080/api/v1/flock-flows \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $RAVN_VOLUNDR_TOKEN" \
+  -H "Authorization: Bearer $VOLUNDR_BEARER_TOKEN" \
   -d '{
     "name": "code-review-flow",
     "description": "Standard code review",
@@ -222,14 +213,14 @@ List flows:
 
 ```bash
 curl http://localhost:8080/api/v1/flock-flows \
-  -H "Authorization: Bearer $RAVN_VOLUNDR_TOKEN"
+  -H "Authorization: Bearer $VOLUNDR_BEARER_TOKEN"
 ```
 
 Delete a flow:
 
 ```bash
 curl -X DELETE http://localhost:8080/api/v1/flock-flows/code-review-flow \
-  -H "Authorization: Bearer $RAVN_VOLUNDR_TOKEN"
+  -H "Authorization: Bearer $VOLUNDR_BEARER_TOKEN"
 ```
 
 ---

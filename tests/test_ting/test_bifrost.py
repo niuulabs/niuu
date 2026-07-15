@@ -93,6 +93,21 @@ class TestParseAndValidate:
         result = parse_and_validate(raw)
         assert result.name == "User Management Saga"
 
+    def test_preserves_plan_risks(self) -> None:
+        raw = json.dumps(
+            {
+                **VALID_RESPONSE,
+                "risks": [
+                    {"kind": "blast", "message": "Touches shared dispatch behavior."},
+                    {"kind": "", "message": "Ignored because kind is empty."},
+                ],
+            }
+        )
+        result = parse_and_validate(raw)
+        assert [(risk.kind, risk.message) for risk in result.risks] == [
+            ("blast", "Touches shared dispatch behavior.")
+        ]
+
     def test_invalid_json(self) -> None:
         with pytest.raises(json.JSONDecodeError):
             parse_and_validate("not json at all")

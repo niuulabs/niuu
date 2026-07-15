@@ -130,7 +130,7 @@ class TestFilesystemPersonaAdapterParse:
         assert cfg.allowed_tools == ["file", "git"]
         assert cfg.forbidden_tools == ["cascade"]
         assert cfg.permission_mode == "workspace-write"
-        assert cfg.llm.primary_alias == ""
+        assert cfg.llm.primary_alias == "balanced"
         assert cfg.llm.thinking_enabled is True
         assert cfg.iteration_budget == 25
 
@@ -401,7 +401,14 @@ class TestBuiltinPersonas:
     def test_all_builtins_have_positive_budgets(self) -> None:
         for p in _BUILTIN_PERSONAS_DIR.glob("*.yaml"):
             cfg = self._load(p.stem)
+            if p.stem == "product-steward":
+                assert cfg.iteration_budget == 0
+                continue
             assert cfg.iteration_budget > 0, f"{p.stem} has non-positive iteration_budget"
+
+    def test_product_steward_uses_runtime_model(self) -> None:
+        cfg = self._load("product-steward")
+        assert cfg.llm.primary_alias == ""
 
     # ------------------------------------------------------------------
     # Specialist personas (NIU-586)
@@ -523,7 +530,7 @@ class TestBuiltinPersonas:
         assert cfg.permission_mode == "workspace-write"
         assert cfg.iteration_budget == 15
         assert cfg.llm.thinking_enabled is False
-        assert cfg.llm.primary_alias == ""
+        assert cfg.llm.primary_alias == "balanced"
 
     def test_ship_agent_allowed_tools(self) -> None:
         cfg = _BUILTIN_PERSONAS["ship-agent"]
@@ -860,7 +867,7 @@ class TestBuildAgentWithPersona:
         assert agent._system_prompt == settings.agent.system_prompt
         assert agent.max_iterations == settings.agent.max_iterations
 
-    def test_persona_empty_system_prompt_keeps_settings_default(self) -> None:
+    def test_persona_empty_system_prompt_keeps_settings_prompt_and_zero_budget(self) -> None:
         from unittest.mock import MagicMock
 
         from ravn.cli.commands import _build_agent
@@ -877,7 +884,7 @@ class TestBuildAgentWithPersona:
             agent, _ = _build_agent(settings, persona_config=persona)
 
         assert agent._system_prompt == settings.agent.system_prompt
-        assert agent.max_iterations == settings.agent.max_iterations
+        assert agent.max_iterations == 0
 
     def test_read_only_persona_uses_deny_all_permission(self) -> None:
         from unittest.mock import MagicMock, patch

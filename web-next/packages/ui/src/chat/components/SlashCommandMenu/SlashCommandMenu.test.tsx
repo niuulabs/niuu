@@ -16,6 +16,19 @@ describe('SlashCommandMenu', () => {
     expect(screen.getByText('/summarize')).toBeInTheDocument();
   });
 
+  it('renders command descriptions when provided', () => {
+    render(
+      <SlashCommandMenu
+        commands={[{ name: 'compact', type: 'command' as const, description: 'Compact context' }]}
+        selectedIndex={0}
+        onSelect={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('/compact')).toBeInTheDocument();
+    expect(screen.getByText('Compact context')).toBeInTheDocument();
+  });
+
   it('marks selected item', () => {
     render(<SlashCommandMenu commands={commands} selectedIndex={1} onSelect={vi.fn()} />);
     const items = screen.getAllByRole('option');

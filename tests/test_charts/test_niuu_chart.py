@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 CHART_DIR = Path(__file__).parent.parent.parent / "charts" / "niuu"
+GUILD_CHART_DIR = Path(__file__).parent.parent.parent / "charts" / "guild"
 
 
 class TestValuesDefaults:
@@ -39,6 +40,13 @@ class TestValuesDefaults:
         )
 
         assert tokens_route["service"] == "volundr"
+
+    def test_session_proxy_route_uses_target_volundr_backend(self, values_yaml: dict) -> None:
+        session_route = next(
+            route for route in values_yaml["ingress"]["routeSets"]["api"] if route["path"] == "/s"
+        )
+
+        assert session_route["service"] == "volundr"
 
 
 class TestIngressTemplate:
@@ -72,6 +80,18 @@ class TestIngressTemplate:
         rendered = _render_niuu_chart()
 
         assert _service_for_path(rendered, "/api/v1/tokens") == "niuu-test-volundr"
+
+    def test_renders_session_proxy_route_to_volundr(self) -> None:
+        rendered = _render_niuu_chart()
+
+        assert _service_for_path(rendered, "/s") == "niuu-test-volundr"
+
+
+def test_guild_envoy_accepts_websocket_upgrades() -> None:
+    envoy_template = (GUILD_CHART_DIR / "templates" / "envoy-configmap.yaml").read_text()
+
+    assert "upgrade_configs:" in envoy_template
+    assert "- upgrade_type: websocket" in envoy_template
 
 
 def _render_niuu_chart(*extra_args: str) -> str:

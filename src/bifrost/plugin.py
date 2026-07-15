@@ -2,22 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
-from niuu.ports.plugin import APIRouteDomain, Service, ServiceDefinition, ServicePlugin
-
-
-class _BifrostService(Service):
-    """Bifrost lifecycle service."""
-
-    async def start(self) -> None:
-        pass
-
-    async def stop(self) -> None:
-        pass
-
-    async def health_check(self) -> bool:
-        return True
+from niuu.ports.plugin import APIRouteDomain, ServiceDefinition, ServicePlugin
 
 
 class BifrostPlugin(ServicePlugin):
@@ -32,23 +20,21 @@ class BifrostPlugin(ServicePlugin):
         return "Anthropic-compatible LLM proxy — streaming passthrough, token tracking"
 
     def register_service(self) -> ServiceDefinition:
-        return ServiceDefinition(
+        return ServiceDefinition.hosted(
             name="bifrost",
             description="Anthropic-compatible LLM proxy",
-            factory=_BifrostService,
             default_enabled=True,
             depends_on=[],
             default_port=8082,
         )
 
-    def create_service(self) -> Service:
-        return self.register_service().factory()
-
     def create_api_app(self) -> Any:
         from bifrost.app import create_app
         from bifrost.config import BifrostConfig
 
-        return create_app(BifrostConfig())
+        raw_config = os.environ.get("BIFROST_CONFIG", "").strip()
+        config = BifrostConfig.model_validate_json(raw_config) if raw_config else BifrostConfig()
+        return create_app(config)
 
     def api_route_domains(self) -> tuple[APIRouteDomain, ...]:
         return (

@@ -14,6 +14,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from ravn.api import create_app
+from ravn.api.valkyrie_config import (
+    ValkyrieDashboardConfig,
+    configured_environment_records,
+)
 from ravn.api.valkyries import (
     HuddleJoinRequest,
     HuddleSendRequest,
@@ -28,6 +32,7 @@ from ravn.api.valkyries import (
     create_valkyrie_router,
 )
 from ravn.api.warden_stream import WardenStreamBroker
+from ravn.config import ValkyrieTelemetryConfig
 from ravn.ports.warden_deployer import (
     WardenDeploymentError,
     WardenDeploymentResult,
@@ -40,7 +45,8 @@ from sleipnir.domain.events import SleipnirEvent
 
 
 class FakeWardenDeployer:
-    def __init__(self, *, fail_on: str = "") -> None:
+    def __init__(self, *, service_path: Path, fail_on: str = "") -> None:
+        self._service_path = service_path
         self._fail_on = fail_on
 
     def install(self, spec: WardenSpec, *, warden_dir: Path, workspace_root: Path | None = None):
@@ -51,13 +57,12 @@ class FakeWardenDeployer:
             warden_dir=warden_dir,
             workspace_root=workspace_root,
         )
-        service_path = warden_dir / "warden.plist"
-        service_path.write_text("service", encoding="utf-8")
+        self._service_path.write_text("service", encoding="utf-8")
         return WardenDeploymentResult(
             supervisor=WardenSupervisor(
                 installed=True,
                 service_label=service_label(spec.id),
-                service_file=str(service_path),
+                service_file=str(self._service_path),
                 config_file=str(config_path),
                 start_command=start_command(spec, config_path=config_path),
                 last_install_at=datetime.now(UTC),
@@ -120,7 +125,9 @@ class FakeSleipnirPublisher:
 def _store(tmp_path: Path, *, fail_on: str = "") -> WardenStore:
     return WardenStore(
         root=tmp_path,
-        deployer_factory=lambda spec: FakeWardenDeployer(fail_on=fail_on),
+        deployer_factory=lambda spec: FakeWardenDeployer(
+            service_path=tmp_path / "warden.plist", fail_on=fail_on
+        ),
     )
 
 
@@ -175,13 +182,47 @@ def client_with_personas(tmp_path) -> TestClient:
     return TestClient(create_app(persona_loader=loader))
 
 
-def test_status_endpoint(client: TestClient):
+@respx.mock
+def test_status_endpoint_reports_live_counts(client: TestClient):
+    respx.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    respx.get("http://localhost:8080/api/v1/forge/sessions").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "ravn-flock",
+                    "name": "Ravn flock",
+                    "status": "running",
+                    "workload_type": "ravn_flock",
+                }
+            ],
+        )
+    )
+
     resp = client.get("/api/v1/ravn/status")
+
     assert resp.status_code == 200
-    data = resp.json()
-    assert data["service"] == "ravn"
-    assert data["healthy"] is True
-    assert "session_count" in data
+    assert resp.json() == {
+        "service": "ravn",
+        "session_count": 1,
+        "fleet_member_count": 0,
+        "healthy": True,
+    }
+
+
+@respx.mock
+def test_status_endpoint_reports_discovery_unavailable(client: TestClient):
+    respx.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    respx.get("http://localhost:8080/api/v1/forge/sessions").mock(return_value=httpx.Response(503))
+
+    resp = client.get("/api/v1/ravn/status")
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Ravn runtime discovery is unavailable"
 
 
 def test_valkyrie_dashboard_projection(client: TestClient):
@@ -193,7 +234,8 @@ def test_valkyrie_dashboard_projection(client: TestClient):
     assert data["flocks"][0]["natsSubject"] == "flock.k8s.>"
     assert data["liveReport"]["routeSubject"] == "obs.valhalla"
     assert data["telemetry"]["verified"] is False
-    assert "demo projection" in data["telemetry"]["gaps"][1]
+    assert data["telemetry"]["source"] == "unavailable"
+    assert "No runtime-derived" in data["telemetry"]["gaps"][1]
     assert data["signals"] == []
     assert data["learnings"] == []
 
@@ -401,7 +443,7 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
     assert telemetry["totals"]["llmTokens"] == 42
     assert telemetry["totals"]["logEvents"] == 1
     assert telemetry["totals"]["budgetDrops"] == 1
-    assert telemetry["byEnvironment"][0]["environmentId"] == "ymir"
+    assert telemetry["byEnvironment"][0]["environmentId"] == "env-k8s-ymir"
     assert telemetry["byEnvironment"][0]["tasksEnqueued"] == 2
     assert telemetry["byEnvironment"][0]["judgments"] == 1
     assert telemetry["recentOutcomes"][0]["type"] == "action"
@@ -411,7 +453,7 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
         == "Persistent ImagePullBackOff requires inspection."
     )
     assert telemetry["recentEvents"][0]["kind"] == "log"
-    assert telemetry["recentEvents"][0]["environmentId"] == "ymir"
+    assert telemetry["recentEvents"][0]["environmentId"] == "env-k8s-ymir"
     assert telemetry["recentLogs"][0]["message"] == "daily budget warning"
     assert telemetry["recentLearning"][0]["status"] == "wakefulness"
     assert telemetry["recentToolNeeds"][0]["capability"] == "k8s.inspect_pod"
@@ -428,6 +470,179 @@ def test_valkyrie_dashboard_aggregates_verified_telemetry_events():
     assert any(event.get("valkyrieName") == "Sigrun" for event in telemetry["recentEvents"])
     assert telemetry["llm"]["model"] == "Qwen/Qwen3.6-35B-A3B-FP8"
     assert projection.logs()[0]["component"] == "drive_loop"
+
+
+def test_poll_and_heartbeat_chatter_stays_out_of_the_activity_feed():
+    """Cadence telemetry must not evict judgments from recentEvents.
+
+    Polls fire every few seconds per source; letting them into the capped
+    activity feed buries every real decision within minutes. They keep
+    their own projection (recentPolls + totals).
+    """
+    projection = ValkyrieDashboardProjection()
+    for index in range(3):
+        projection.record_event(
+            SleipnirEvent(
+                event_type="valkyrie.signal_poll.completed",
+                source="ravn:valkyrie:ymir",
+                payload={
+                    "environment_id": "ymir",
+                    "source_id": "kubernetes-events",
+                    "collected_count": 28,
+                    "published_count": 0,
+                    "duplicate_count": 28,
+                    "enqueued_task_count": 0,
+                },
+                summary="poll complete",
+                urgency=0.1,
+                domain="infrastructure",
+                timestamp=datetime(2026, 6, 4, 20, 0, index, tzinfo=UTC),
+            )
+        )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.presence.heartbeat",
+            source="ravn:valkyrie:ymir",
+            payload={"environment_id": "ymir", "valkyrie_id": "valkyrie-ymir-k8s"},
+            summary="heartbeat",
+            urgency=0.1,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 0, 30, tzinfo=UTC),
+        )
+    )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.judgment.proposed",
+            source="ravn:valkyrie:ymir",
+            payload={
+                "environment_id": "ymir",
+                "valkyrie_id": "valkyrie-ymir-k8s",
+                "fields": {"tier": "ambient", "operational_state": "watching"},
+            },
+            summary="idle triage judgment",
+            urgency=0.3,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 1, tzinfo=UTC),
+        )
+    )
+
+    telemetry = projection.dashboard()["telemetry"]
+
+    event_types = [entry["eventType"] for entry in telemetry["recentEvents"]]
+    assert "valkyrie.signal_poll.completed" not in event_types
+    assert "valkyrie.presence.heartbeat" not in event_types
+    assert "valkyrie.judgment.proposed" in event_types
+    # The cadence data is still fully accounted for elsewhere.
+    assert telemetry["totals"]["pollsCompleted"] == 3
+    assert telemetry["totals"]["signalsCollected"] == 84
+    assert len(telemetry["recentPolls"]) == 3
+
+
+def test_recent_events_carry_correlation_causation_and_tier():
+    """The activity page groups events into causal stories.
+
+    That requires each recentEvents entry to pass through the Sleipnir
+    correlation_id/causation_id envelope fields and the judgment tier, so
+    the UI can chain signal -> judgment -> action and collapse ambient
+    triage without re-deriving any of it client-side.
+    """
+    projection = ValkyrieDashboardProjection()
+    projection.record_event(
+        SleipnirEvent(
+            event_type="signal.kubernetes.event",
+            source="ravn:valkyrie:ymir",
+            payload={"environment_id": "ymir", "reason": "ImagePullBackOff"},
+            summary="pod stuck in ImagePullBackOff",
+            urgency=0.6,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 0, tzinfo=UTC),
+            event_id="evt-signal-1",
+            correlation_id="corr-imagepull",
+        )
+    )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.judgment.proposed",
+            source="ravn:valkyrie:ymir",
+            payload={
+                "environment_id": "ymir",
+                "valkyrie_id": "valkyrie-ymir-k8s",
+                "fields": {"tier": "Ambient", "operational_state": "watching"},
+            },
+            summary="Triaged 3 routine signals — nothing needed",
+            urgency=0.2,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 1, tzinfo=UTC),
+            event_id="evt-judgment-1",
+            correlation_id="corr-imagepull",
+            causation_id="evt-signal-1",
+        )
+    )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.action.completed",
+            source="ravn:valkyrie:ymir",
+            payload={
+                "environment_id": "ymir",
+                "valkyrie_id": "valkyrie-ymir-k8s",
+                "tier": "present",
+            },
+            summary="restarted the rollout",
+            urgency=0.5,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 2, tzinfo=UTC),
+            event_id="evt-action-1",
+            correlation_id="corr-imagepull",
+            causation_id="evt-judgment-1",
+        )
+    )
+
+    telemetry = projection.dashboard()["telemetry"]
+
+    by_id = {entry["id"]: entry for entry in telemetry["recentEvents"]}
+    assert by_id["evt-signal-1"]["correlationId"] == "corr-imagepull"
+    assert by_id["evt-signal-1"]["causationId"] == ""
+    assert by_id["evt-signal-1"]["tier"] == ""
+    assert by_id["evt-judgment-1"]["correlationId"] == "corr-imagepull"
+    assert by_id["evt-judgment-1"]["causationId"] == "evt-signal-1"
+    # Tier is read from the judgment's nested fields dict and normalized.
+    assert by_id["evt-judgment-1"]["tier"] == "ambient"
+    assert by_id["evt-action-1"]["causationId"] == "evt-judgment-1"
+    # Top-level payload tier still passes through for action events.
+    assert by_id["evt-action-1"]["tier"] == "present"
+
+
+def test_valkyrie_dashboard_projects_operational_state_from_live_judgments():
+    projection = ValkyrieDashboardProjection()
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.judgment.proposed",
+            source="ravn:valkyrie:noatun",
+            payload={
+                "environment_id": "noatun",
+                "valkyrie_id": "valkyrie-noatun-k8s",
+                "fields": {
+                    "operational_state": "investigating",
+                    "state_summary": "Volume attach failure needs pod and PVC evidence.",
+                    "desired_state": "Cluster storage attachments are healthy",
+                    "severity": "warning",
+                },
+            },
+            summary="judgment proposed",
+            urgency=0.6,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 3, tzinfo=UTC),
+        )
+    )
+
+    state = projection.dashboard()["operationalStates"][0]
+
+    assert state["environmentId"] == "env-k8s-noatun"
+    assert state["name"] == "Investigating"
+    assert state["observed"] == "Volume attach failure needs pod and PVC evidence."
+    assert state["desired"] == "Cluster storage attachments are healthy"
+    assert state["drift"] == "minor"
+    assert state["maintainedBy"] == ["valkyrie-noatun-k8s"]
 
 
 def test_valkyrie_huddle_endpoints_call_skuld_room_client_before_projecting():
@@ -919,8 +1134,20 @@ def test_valkyrie_telemetry_events_can_be_filtered_and_limited(client: TestClien
     events = response.json()
     assert len(events) == 1
     assert events[0]["eventType"] == "learning.adoption.recorded"
-    assert events[0]["environmentId"] == "ymir"
+    assert events[0]["environmentId"] == "env-k8s-ymir"
     assert events[0]["details"]["learning_id"] == "learning-2"
+
+    canonical_response = client.get(
+        "/api/v1/ravn/valkyrie/telemetry/events",
+        params={
+            "event_type": "learning.adoption.recorded",
+            "environment_id": "env-k8s-ymir",
+            "contains": "learning-2",
+            "limit": 1,
+        },
+    )
+    assert canonical_response.status_code == 200
+    assert canonical_response.json() == events
 
 
 def test_valkyrie_telemetry_events_filter_before_recent_display_cap(client: TestClient):
@@ -1206,6 +1433,99 @@ def test_valkyrie_dashboard_marks_observed_runtime_identity(monkeypatch):
     assert dashboard["telemetry"]["runtime"][0]["valkyrieName"] == "Runa"
 
 
+def test_valkyrie_dashboard_projects_activity_without_runtime_identity(monkeypatch):
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", _valkyrie_catalog())
+    projection = ValkyrieDashboardProjection()
+    projection.record_event(
+        SleipnirEvent(
+            event_type="valkyrie.signal_poll.completed",
+            source="ravn:valkyrie:valhalla",
+            payload={
+                "environment_id": "valhalla",
+                "valkyrie_id": "valkyrie-valhalla-k8s",
+                "valkyrie_name": "Sigrun",
+                "source_id": "kubernetes-events",
+                "collected_count": 3,
+                "published_count": 1,
+                "duplicate_count": 2,
+                "enqueued_task_count": 0,
+            },
+            summary="poll complete",
+            urgency=0.2,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 1, tzinfo=UTC),
+        )
+    )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="signal.kubernetes.event",
+            source="adapter:kubernetes-events",
+            payload={
+                "environment_id": "valhalla",
+                "signal_id": "pod:worker:ImagePullBackOff",
+                "kind": "Pod",
+                "reason": "ImagePullBackOff",
+                "severity": "warning",
+            },
+            summary="Pod worker is failing image pull",
+            urgency=0.6,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 2, tzinfo=UTC),
+        )
+    )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="odin.court.decided",
+            source="odin-court:valhalla",
+            payload={
+                "environment_id": "valhalla",
+                "court_id": "court-valhalla-1",
+                "decision": "record_only",
+                "authority_boundary": "human",
+            },
+            summary="ODIN court court-valhalla-1 decided: record_only",
+            urgency=0.2,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 3, tzinfo=UTC),
+            correlation_id="corr-valhalla-1",
+        )
+    )
+    projection.record_event(
+        SleipnirEvent(
+            event_type="attention.decision.made",
+            source="odin-court:valhalla",
+            payload={
+                "environment_id": "valhalla",
+                "root_correlation_id": "corr-valhalla-1",
+                "decision": "record_only",
+                "tier": "ambient",
+                "action_authorization": "human",
+                "escalation_path": "none",
+            },
+            summary="Attention decision record_only/ambient",
+            urgency=0.2,
+            domain="infrastructure",
+            timestamp=datetime(2026, 6, 4, 20, 3, 1, tzinfo=UTC),
+            correlation_id="corr-valhalla-1",
+        )
+    )
+
+    dashboard = projection.dashboard()
+    valkyrie = dashboard["valkyries"][0]
+    environment = dashboard["environments"][0]
+
+    assert valkyrie["identitySource"] == "observed"
+    assert valkyrie["lastObservedAt"] == "2026-06-04T20:01:00+00:00"
+    assert environment["identitySource"] == "observed"
+    assert environment["lastSignalAt"] == "2026-06-04T20:03:01+00:00"
+    assert dashboard["signals"][0]["summary"] == "Pod worker is failing image pull"
+    assert dashboard["signals"][0]["severity"] == "warning"
+    assert len(dashboard["courtDecisions"]) == 1
+    assert dashboard["courtDecisions"][0]["title"] == "Attention decision record_only/ambient"
+    assert dashboard["courtDecisions"][0]["status"] == "executed"
+    assert dashboard["courtDecisions"][0]["risk"] == "low"
+
+
 def test_valkyrie_dashboard_keeps_runtime_telemetry_when_raw_signals_are_noisy():
     projection = ValkyrieDashboardProjection()
     projection.record_event(
@@ -1359,11 +1679,40 @@ def test_valkyrie_dashboard_uses_configured_environment_catalog(monkeypatch):
     assert dashboard["learnings"] == []
 
 
+def test_valkyrie_dashboard_accepts_typed_catalog_config(monkeypatch):
+    monkeypatch.delenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", raising=False)
+    config = ValkyrieDashboardConfig(
+        environments_json=json.dumps([{"id": "midgard", "name": "Midgard"}])
+    )
+
+    dashboard = ValkyrieDashboardProjection(config).dashboard()
+
+    assert [environment["id"] for environment in dashboard["environments"]] == ["env-midgard"]
+
+
+def test_valkyrie_dashboard_rejects_malformed_typed_catalog():
+    with pytest.raises(ValueError, match="invalid Valkyrie dashboard catalog JSON"):
+        ValkyrieDashboardConfig(environments_json="{not-json")
+
+
+def test_valkyrie_dashboard_rejects_unreadable_catalog_file(tmp_path):
+    config = ValkyrieDashboardConfig(environments_file=str(tmp_path / "missing.json"))
+
+    with pytest.raises(ValueError, match="cannot read Valkyrie dashboard catalog"):
+        configured_environment_records(config)
+
+
 def test_valkyrie_dashboard_telemetry_nats_subscription_is_explicit_opt_in(monkeypatch):
     monkeypatch.setenv("NATS_URL", "nats://should-not-be-used:4222")
     monkeypatch.delenv("RAVN_VALKYRIE_TELEMETRY_NATS_URL", raising=False)
 
-    assert build_nats_telemetry_subscription_from_env(ValkyrieDashboardProjection()) is None
+    assert (
+        build_nats_telemetry_subscription_from_env(
+            ValkyrieDashboardProjection(),
+            config=ValkyrieTelemetryConfig(),
+        )
+        is None
+    )
 
 
 def test_valkyrie_dashboard_telemetry_nats_subscription_supports_multiple_streams(
@@ -1791,21 +2140,210 @@ def test_valkyrie_signal_stream_replays_events(client: TestClient):
     assert "signal-k8s-checkout-probe" not in body
 
 
-def test_list_sessions_returns_seeded_runtime_sessions(client: TestClient):
-    resp = client.get("/api/v1/ravn/sessions")
+def test_list_sessions_returns_live_ravn_sessions(client: TestClient):
+    import httpx
+    import respx
+
+    # /sessions is real discovery now — it proxies the Forge sessions API and
+    # keeps only ravn workloads (flock rooms) with their chat endpoints.
+    with respx.mock(assert_all_called=False) as router:
+        router.get("http://localhost:8080/api/v1/forge/sessions").mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "11111111-2222-4333-8444-555555555555",
+                        "name": "research campaign",
+                        "status": "running",
+                        "model": "claude-opus-4-8",
+                        "chat_endpoint": "ws://host/s/1/session",
+                        "workload_type": "ravn_flock",
+                        "created_at": "2026-07-04T10:00:00Z",
+                    },
+                    {
+                        "id": "22222222-2222-4333-8444-555555555555",
+                        "status": "running",
+                        "model": "gpt-5.5",
+                        "chat_endpoint": None,
+                        "workload_type": "session",
+                        "created_at": "2026-07-04T10:00:00Z",
+                    },
+                ],
+            )
+        )
+        router.get("http://localhost:8080/api/v1/forge/resident-runtimes").respond(json=[])
+        resp = client.get("/api/v1/ravn/sessions")
     assert resp.status_code == 200
     data = resp.json()
     assert isinstance(data, list)
-    assert data
-    assert data[0]["ravn_id"]
+    # Only the ravn workload survives; plain coding sessions are excluded.
+    assert len(data) == 1
+    assert data[0]["ravn_id"] == "11111111-2222-4333-8444-555555555555"
+    assert data[0]["status"] == "running"
+    assert data[0]["chat_endpoint"] == "ws://host/s/1/session"
 
 
-def test_stop_session(client: TestClient):
-    resp = client.post("/api/v1/ravn/sessions/my-session-id/stop")
+def test_get_native_session_uses_owning_resident_hint(client: TestClient):
+    import respx
+
+    session_id = "11111111-2222-4333-8444-555555555555"
+    first_ravn = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    second_ravn = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+    runtimes = [
+        {
+            "id": first_ravn,
+            "name": "first",
+            "capabilities": ["session.list"],
+        },
+        {
+            "id": second_ravn,
+            "name": "second",
+            "capabilities": ["session.list"],
+        },
+    ]
+    native = {
+        "id": session_id,
+        "title": "shared native id",
+        "status": "running",
+        "model": "niuu/Qwen/Qwen3.6-35B-A3B-FP8",
+        "createdAt": "2026-07-12T01:00:00Z",
+    }
+    with respx.mock(assert_all_called=False) as router:
+        router.get(f"http://localhost:8080/api/v1/forge/sessions/{session_id}").respond(404)
+        router.get(f"http://localhost:8080/api/v1/forge/resident-runtimes/{session_id}").respond(
+            404
+        )
+        router.get("http://localhost:8080/api/v1/forge/resident-runtimes").respond(json=runtimes)
+        first_route = router.get(
+            f"http://localhost:8080/api/v1/forge/resident-runtimes/{first_ravn}/sessions"
+        ).respond(json=[native])
+        second_route = router.get(
+            f"http://localhost:8080/api/v1/forge/resident-runtimes/{second_ravn}/sessions"
+        ).respond(json=[native])
+
+        response = client.get(
+            f"/api/v1/ravn/sessions/{session_id}", params={"ravn_id": second_ravn}
+        )
+
+    assert response.status_code == 200
+    assert response.json()["ravn_id"] == second_ravn
+    assert not first_route.called
+    assert second_route.called
+
+
+def test_resident_create_lifecycle_and_delete_proxy_target_control_plane(client: TestClient):
+    import httpx
+    import respx
+
+    runtime = {
+        "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        "name": "Muninn",
+        "personaName": "product-steward",
+        "model": "gpt-5.6",
+        "backend": "helmrelease",
+        "engine": "ravn",
+        "profileId": "ravn-helm",
+        "desiredState": "running",
+        "observedState": "deploying",
+        "backendRef": {"kind": "HelmRelease", "name": "resident-id"},
+        "endpoints": [{"kind": "chat", "protocol": "skuld-v1", "url": "/s/id/session"}],
+        "capabilities": ["chat", "runtime.suspend"],
+        "conditions": [],
+    }
+    with respx.mock(assert_all_called=False) as router:
+        create_route = router.post("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+            return_value=httpx.Response(201, json=runtime)
+        )
+        suspend_route = router.post(
+            "http://localhost:8080/api/v1/forge/resident-runtimes/"
+            "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/suspend"
+        ).mock(return_value=httpx.Response(200, json=runtime))
+        delete_route = router.delete(
+            "http://localhost:8080/api/v1/forge/resident-runtimes/"
+            "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        ).mock(return_value=httpx.Response(204))
+
+        created = client.post(
+            "/api/v1/ravn/ravens",
+            json={
+                "name": "Muninn",
+                "profile_id": "ravn-helm",
+                "flock_id": "11111111-1111-4111-8111-111111111111",
+                "flock_member_id": "22222222-2222-4222-8222-222222222222",
+                "flock_role": "coordinator",
+                "flock_peer_id": "ravn-muninn",
+            },
+        )
+        suspended = client.post("/api/v1/ravn/ravens/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/suspend")
+        deleted = client.delete("/api/v1/ravn/ravens/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+
+    assert created.status_code == 201
+    assert created.json()["managed"] is True
+    assert created.json()["endpoints"] == runtime["endpoints"]
+    assert create_route.calls.last.request.read() == (
+        b'{"name":"Muninn","profile_id":"ravn-helm","persona_name":"","model":"",'
+        b'"flock_id":"11111111-1111-4111-8111-111111111111",'
+        b'"flock_member_id":"22222222-2222-4222-8222-222222222222",'
+        b'"flock_role":"coordinator","flock_peer_id":"ravn-muninn"}'
+    )
+    assert suspended.status_code == 200
+    assert deleted.status_code == 204
+    assert create_route.called and suspend_route.called and delete_route.called
+
+
+@respx.mock
+def test_stop_session_forwards_to_forge_with_caller_identity(client: TestClient):
+    route = respx.post("http://localhost:8080/api/v1/forge/sessions/my-session-id/stop").mock(
+        return_value=httpx.Response(
+            200,
+            json={"session_id": "my-session-id", "status": "stopped"},
+        )
+    )
+
+    resp = client.post(
+        "/api/v1/ravn/sessions/my-session-id/stop",
+        headers={"x-auth-user-id": "user-1"},
+    )
+
     assert resp.status_code == 200
-    data = resp.json()
-    assert data["session_id"] == "my-session-id"
-    assert data["status"] == "stopped"
+    assert resp.json() == {"session_id": "my-session-id", "status": "stopped"}
+    assert route.calls.last.request.headers["x-auth-user-id"] == "user-1"
+
+
+@respx.mock
+def test_stop_session_reports_forge_unavailable(client: TestClient):
+    respx.post("http://localhost:8080/api/v1/forge/sessions/my-session-id/stop").mock(
+        return_value=httpx.Response(503)
+    )
+
+    resp = client.post("/api/v1/ravn/sessions/my-session-id/stop")
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Forge session lifecycle is unavailable"
+
+
+@respx.mock
+def test_stop_session_preserves_forge_state_conflict(client: TestClient):
+    respx.post("http://localhost:8080/api/v1/forge/sessions/not-running/stop").mock(
+        return_value=httpx.Response(409, json={"detail": "Session cannot stop from created"})
+    )
+
+    resp = client.post("/api/v1/ravn/sessions/not-running/stop")
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Session cannot stop from created"
+
+
+@respx.mock
+def test_stop_session_does_not_fake_success_for_unknown_session(client: TestClient):
+    respx.post("http://localhost:8080/api/v1/forge/sessions/unknown/stop").mock(
+        return_value=httpx.Response(404)
+    )
+
+    resp = client.post("/api/v1/ravn/sessions/unknown/stop")
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Forge-backed Ravn session not found"
 
 
 def test_personas_not_mounted_without_loader(client: TestClient):
@@ -1825,6 +2363,26 @@ def test_create_app_no_args_returns_fastapi():
     from fastapi import FastAPI
 
     assert isinstance(create_app(), FastAPI)
+
+
+def test_sessions_dial_platform_base_url_from_settings():
+    """gateway.platform.base_url in Settings is the forge API the directory calls."""
+    from ravn.config import Settings
+
+    settings = Settings(gateway={"platform": {"base_url": "http://forge.configured.internal:9999"}})
+    client = TestClient(create_app(settings=settings))
+    with respx.mock:
+        route = respx.get("http://forge.configured.internal:9999/api/v1/forge/sessions").respond(
+            json=[]
+        )
+        resident_route = respx.get(
+            "http://forge.configured.internal:9999/api/v1/forge/resident-runtimes"
+        ).respond(json=[])
+        resp = client.get("/api/v1/ravn/sessions")
+    assert resp.status_code == 200
+    assert resp.json() == []
+    assert route.called
+    assert resident_route.called
 
 
 def test_list_wardens_returns_empty_list_when_store_is_empty(tmp_path):
@@ -1912,7 +2470,7 @@ def test_create_warden_persists_console_mount_and_schedule_config(tmp_path):
             "read_mount_names": ["scratch"],
             "write_mount_names": ["permanent"],
             "schedules": {"dream_cycle_cron_expression": "*/30 * * * *"},
-            "console": {"enabled": True, "host": "0.0.0.0", "port": 8610, "auth_mode": "token"},
+            "console": {"enabled": True, "host": "127.0.0.1", "port": 8610},
         },
     )
 
@@ -1925,6 +2483,36 @@ def test_create_warden_persists_console_mount_and_schedule_config(tmp_path):
     assert payload["schedules"]["dream_cycle_cron_expression"] == "*/30 * * * *"
     assert payload["console"]["enabled"] is True
     assert payload["console"]["port"] == 8610
+
+
+def test_create_warden_rejects_fake_token_console_auth(tmp_path):
+    client = TestClient(create_app(warden_store=_store(tmp_path)))
+
+    response = client.post(
+        "/api/v1/ravn/wardens",
+        json={
+            "name": "Unsafe Console",
+            "console": {"host": "127.0.0.1", "auth_mode": "token"},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "token authentication is not implemented" in response.text
+
+
+def test_create_warden_rejects_unauthenticated_remote_console(tmp_path):
+    client = TestClient(create_app(warden_store=_store(tmp_path)))
+
+    response = client.post(
+        "/api/v1/ravn/wardens",
+        json={
+            "name": "Remote Console",
+            "console": {"host": "0.0.0.0", "auth_mode": "noop"},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "only bind to a loopback host" in response.text
 
 
 def test_get_warden_returns_404_when_missing(tmp_path):
@@ -1983,7 +2571,9 @@ def test_install_warden_generates_service_artifacts(tmp_path):
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["supervisor"]["installed"] is True
-    assert payload["supervisor"]["service_file"].endswith(".plist")
+    service_path = tmp_path / "warden.plist"
+    assert payload["supervisor"]["service_file"] == str(service_path)
+    assert service_path.read_text(encoding="utf-8") == "service"
     assert payload["runtime"]["state"] == "idle"
 
 
@@ -2147,6 +2737,26 @@ def test_get_warden_logs_supports_all_streams_and_parsed_lines(tmp_path):
     assert {entry["source"] for entry in merged} == {"stdout", "stderr"}
 
 
+def test_get_warden_logs_cannot_read_outside_warden_directory(tmp_path):
+    outside_log = tmp_path / "outside.log"
+    outside_log.write_text("secret\n", encoding="utf-8")
+    store = _store(tmp_path / "wardens")
+    created = store.create(WardenSpec(id="", name="Research Warden"))
+    store.save(
+        created.model_copy(
+            update={
+                "supervisor": created.supervisor.model_copy(update={"stdout_log": str(outside_log)})
+            }
+        )
+    )
+    client = TestClient(create_app(warden_store=store))
+
+    resp = client.get(f"/api/v1/ravn/wardens/{created.id}/logs?stream=stdout")
+
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
 def test_get_warden_logs_rejects_invalid_stream(tmp_path):
     store = _store(tmp_path)
     created = store.create(WardenSpec(id="", name="Research Warden"))
@@ -2279,3 +2889,129 @@ def test_missing_warden_mutation_endpoints_return_404(tmp_path, path: str, metho
 
     assert resp.status_code == 404
     assert resp.json()["detail"] == "Warden not found"
+
+
+def test_every_configured_environment_gets_a_standing_open_huddle(monkeypatch):
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", _valkyrie_catalog())
+    projection = ValkyrieDashboardProjection()
+
+    huddles = projection.dashboard()["huddles"]
+
+    assert len(huddles) == 1
+    huddle = huddles[0]
+    assert huddle["id"] == "huddle-env-k8s-valhalla"
+    assert huddle["environmentId"] == "env-k8s-valhalla"
+    assert huddle["title"] == "Valhalla k8s huddle"
+    assert huddle["status"] == "open"
+    # The resident sits in its own room; no flock scope on environment rooms.
+    assert huddle["participantIds"] == ["valkyrie-valhalla-k8s"]
+    assert huddle["targetFlockId"] == ""
+    assert huddle["joined"] is False
+
+
+def test_operator_can_join_and_message_the_standing_environment_huddle(monkeypatch):
+    class FakeRoomClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def join_huddle(self, huddle: dict, request: HuddleJoinRequest) -> dict:
+            self.calls.append("join")
+            return {"status": "joined"}
+
+        async def send_huddle_message(self, huddle: dict, request: HuddleSendRequest) -> dict:
+            self.calls.append("message")
+            return {"status": "sent"}
+
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", _valkyrie_catalog())
+    projection = ValkyrieDashboardProjection()
+    app = FastAPI()
+    app.include_router(create_valkyrie_router(projection=projection, room_client=FakeRoomClient()))
+    client = TestClient(app)
+
+    joined = client.post(
+        "/api/v1/ravn/valkyrie/huddles/huddle-env-k8s-valhalla/join",
+        json={
+            "huddleId": "huddle-env-k8s-valhalla",
+            "participantId": "human:operator",
+            "displayName": "Operator",
+            "action": "observe",
+        },
+    )
+    sent = client.post(
+        "/api/v1/ravn/valkyrie/huddles/huddle-env-k8s-valhalla/messages",
+        json={
+            "huddleId": "huddle-env-k8s-valhalla",
+            "body": "Status update please.",
+            "directedTo": ["valkyrie-valhalla-k8s"],
+            "authorId": "human:operator",
+        },
+    )
+
+    assert joined.status_code == 200
+    assert joined.json()["joined"] is True
+    assert sent.status_code == 200
+    assert sent.json()["body"] == "Status update please."
+
+
+def test_directed_huddle_message_without_room_bridge_fails_loudly(monkeypatch):
+    monkeypatch.delenv("RAVN_VALKYRIE_SKULD_ROOM_URL", raising=False)
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", _valkyrie_catalog())
+    projection = ValkyrieDashboardProjection()
+    # Joined while the bridge was up; the bridge is gone at send time.
+    projection.join_huddle(
+        HuddleJoinRequest(
+            huddleId="huddle-env-k8s-valhalla",
+            participantId="human:operator",
+            displayName="Operator",
+            action="observe",
+        )
+    )
+    app = FastAPI()
+    app.include_router(create_valkyrie_router(projection=projection))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/ravn/valkyrie/huddles/huddle-env-k8s-valhalla/messages",
+        json={
+            "huddleId": "huddle-env-k8s-valhalla",
+            "body": "Status update please.",
+            "directedTo": ["valkyrie-valhalla-k8s"],
+            "authorId": "human:operator",
+        },
+    )
+
+    assert response.status_code == 503
+    assert "cannot reach the resident" in response.json()["detail"]
+    # Nothing was recorded — a refused DM must not look delivered.
+    assert projection.dashboard()["huddles"][0]["messages"] == []
+
+
+def test_undirected_huddle_message_without_room_bridge_still_records(monkeypatch):
+    monkeypatch.delenv("RAVN_VALKYRIE_SKULD_ROOM_URL", raising=False)
+    monkeypatch.setenv("RAVN_VALKYRIE_DASHBOARD_ENVIRONMENTS_JSON", _valkyrie_catalog())
+    projection = ValkyrieDashboardProjection()
+    projection.join_huddle(
+        HuddleJoinRequest(
+            huddleId="huddle-env-k8s-valhalla",
+            participantId="human:operator",
+            displayName="Operator",
+            action="observe",
+        )
+    )
+    app = FastAPI()
+    app.include_router(create_valkyrie_router(projection=projection))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/ravn/valkyrie/huddles/huddle-env-k8s-valhalla/messages",
+        json={
+            "huddleId": "huddle-env-k8s-valhalla",
+            "body": "Room note for whoever reads the transcript.",
+            "authorId": "human:operator",
+        },
+    )
+
+    assert response.status_code == 200
+    assert projection.dashboard()["huddles"][0]["messages"][0]["body"] == (
+        "Room note for whoever reads the transcript."
+    )

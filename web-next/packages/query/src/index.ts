@@ -3,6 +3,7 @@ export {
   setTokenProvider,
   getAccessToken,
   getAuthHeaders,
+  getWebSocketAuth,
   withAuthQuery,
   ApiClientError,
   type ApiClient,

@@ -1,0 +1,1 @@
+"""Capability discovery adapters."""

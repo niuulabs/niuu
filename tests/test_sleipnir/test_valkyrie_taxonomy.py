@@ -530,3 +530,75 @@ def test_demo_event_chain_examples_round_trip_and_preserve_causation(chain_facto
     assert restored[0].causation_id is None
     for previous, current in zip(restored[:-1], restored[1:], strict=True):
         assert current.causation_id == previous.event_id
+
+
+# ---------------------------------------------------------------------------
+# Judgment summaries read as sentences, not tier/action codes
+# ---------------------------------------------------------------------------
+
+
+def test_judgment_summary_names_the_learned_skill() -> None:
+    from sleipnir.domain.catalog import judgment_summary
+
+    summary = judgment_summary(
+        valkyrie_id="valkyrie-valhalla-k8s",
+        environment_id="valhalla",
+        attention_tier="ambient",
+        recommended_action="none",
+        evidence=[
+            {"event_id": "sig-1"},
+            {"skill_name": "valkyrie-inspect-kubernetes-service-nodeassigned"},
+        ],
+    )
+
+    # The most interesting fact — WHICH learned skill handled the signal — is
+    # in the sentence, not buried in evidence JSON.
+    assert "valkyrie-inspect-kubernetes-service-nodeassigned" in summary
+    assert "no action needed" in summary
+    assert "ambient/" not in summary
+
+
+def test_judgment_summary_with_skill_and_real_action() -> None:
+    from sleipnir.domain.catalog import judgment_summary
+
+    summary = judgment_summary(
+        valkyrie_id="runa",
+        attention_tier="present",
+        recommended_action="restart_deployment",
+        evidence=[{"skill_name": "probe"}],
+    )
+
+    assert "used learned skill 'probe'" in summary
+    assert "recommends: restart_deployment" in summary
+
+
+def test_judgment_summary_without_skill_stays_plain() -> None:
+    from sleipnir.domain.catalog import judgment_summary
+
+    assert (
+        judgment_summary(valkyrie_id="runa", attention_tier="ambient", recommended_action="watch")
+        == "Valkyrie runa judged nothing needs action (ambient)"
+    )
+    assert judgment_summary(
+        valkyrie_id="runa",
+        environment_id="valhalla",
+        attention_tier="urgent",
+        recommended_action="page_operator",
+    ) == ("Valkyrie runa in valhalla recommends: page_operator (urgent)")
+
+
+def test_judgment_proposed_event_uses_readable_summary() -> None:
+    from sleipnir.domain.catalog import valkyrie_judgment_proposed
+
+    event = valkyrie_judgment_proposed(
+        environment_id="valhalla",
+        valkyrie_id="valkyrie-valhalla-k8s",
+        attention_tier="ambient",
+        recommended_action="none",
+        authority_boundary="autonomous",
+        confidence=0.8,
+        source="test",
+        evidence=[{"skill_name": "inspect_nodeassigned"}],
+    )
+
+    assert "learned skill 'inspect_nodeassigned'" in event.summary

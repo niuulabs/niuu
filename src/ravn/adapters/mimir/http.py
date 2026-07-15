@@ -18,7 +18,9 @@ SPIFFE mTLS (production)::
 from __future__ import annotations
 
 import logging
+import time
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -62,27 +64,71 @@ class HttpMimirAdapter(MimirPort):
         self._auth = auth
         self._timeout = timeout
         self._client: httpx.AsyncClient | None = None
+        self._workload_token: str | None = None
+        self._workload_token_expires_at: float = 0.0
 
     # ------------------------------------------------------------------
     # Client lifecycle
     # ------------------------------------------------------------------
 
-    def _get_client(self) -> httpx.AsyncClient:
+    async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            headers = self._build_headers()
             self._client = httpx.AsyncClient(
                 base_url=self._base_url,
-                headers=headers,
                 timeout=self._timeout,
             )
         return self._client
 
-    def _build_headers(self) -> dict[str, str]:
+    async def _build_headers(self) -> dict[str, str]:
         if self._auth is None:
             return {}
         if self._auth.type == "bearer" and self._auth.token:
             return {"Authorization": f"Bearer {self._auth.token}"}
+        if self._auth.type == "workload":
+            token = await self._resolve_workload_token()
+            if token:
+                return {"Authorization": f"Bearer {token}"}
         return {}
+
+    async def _resolve_workload_token(self) -> str:
+        now = time.time()
+        if self._workload_token and self._workload_token_expires_at - 30 > now:
+            return self._workload_token
+
+        if self._auth is None:
+            return ""
+        token_file = self._auth.token_file or "/var/run/secrets/niuu-workload/token"
+        token_path = Path(token_file)
+        if not token_path.exists():
+            return ""
+        proof = token_path.read_text(encoding="utf-8").strip()
+        if not proof:
+            return ""
+
+        exchange_url = self._auth.exchange_url
+        if not exchange_url:
+            return ""
+        audiences = list(self._auth.audiences or ("mimir",))
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.post(
+                exchange_url,
+                json={"token": proof, "audiences": audiences},
+            )
+        response.raise_for_status()
+        payload = response.json()
+        token = str(payload.get("token") or "")
+        if not token:
+            raise RuntimeError("workload token exchange returned no token")
+        expires_at = payload.get("expiresAt") or payload.get("expires_at")
+        self._workload_token = token
+        self._workload_token_expires_at = float(expires_at or (now + 300))
+        return token
+
+    async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        client = await self._get_client()
+        headers = dict(kwargs.pop("headers", {}) or {})
+        headers.update(await self._build_headers())
+        return await client.request(method, path, headers=headers, **kwargs)
 
     async def aclose(self) -> None:
         """Close the underlying HTTP client."""
@@ -95,22 +141,20 @@ class HttpMimirAdapter(MimirPort):
 
     async def ingest(self, source: MimirSource) -> list[str]:
         """POST /mimir/ingest — persist a raw source."""
-        client = self._get_client()
         payload = {
             "title": source.title,
             "content": source.content,
             "source_type": source.source_type,
             "origin_url": source.origin_url,
         }
-        response = await client.post("/mimir/ingest", json=payload)
+        response = await self._request("POST", "/mimir/ingest", json=payload)
         response.raise_for_status()
         data = response.json()
         return data.get("pages_updated", [])
 
     async def query(self, question: str) -> MimirQueryResult:
         """GET /mimir/search — find relevant pages for *question*."""
-        client = self._get_client()
-        response = await client.get("/mimir/search", params={"q": question})
+        response = await self._request("GET", "/mimir/search", params={"q": question})
         response.raise_for_status()
         results = response.json()
         pages = [_parse_search_result(r) for r in results]
@@ -118,8 +162,7 @@ class HttpMimirAdapter(MimirPort):
 
     async def search(self, query: str) -> list[MimirPage]:
         """GET /mimir/search — full-text search."""
-        client = self._get_client()
-        response = await client.get("/mimir/search", params={"q": query})
+        response = await self._request("GET", "/mimir/search", params={"q": query})
         response.raise_for_status()
         return [_parse_search_result(r) for r in response.json()]
 
@@ -131,14 +174,16 @@ class HttpMimirAdapter(MimirPort):
         meta: MimirPageMeta | None = None,
     ) -> None:
         """PUT /mimir/page — create or replace a wiki page."""
-        client = self._get_client()
-        response = await client.put("/mimir/page", json={"path": path, "content": content})
+        response = await self._request(
+            "PUT",
+            "/mimir/page",
+            json={"path": path, "content": content},
+        )
         response.raise_for_status()
 
     async def get_page(self, path: str) -> MimirPage:
         """GET /mimir/page?path=... — return full page with metadata."""
-        client = self._get_client()
-        response = await client.get("/mimir/page", params={"path": path})
+        response = await self._request("GET", "/mimir/page", params={"path": path})
         if response.status_code == 404:
             raise FileNotFoundError(f"Mímir page not found: {path}")
         response.raise_for_status()
@@ -148,8 +193,7 @@ class HttpMimirAdapter(MimirPort):
 
     async def read_page(self, path: str) -> str:
         """GET /mimir/page?path=... — return raw Markdown content."""
-        client = self._get_client()
-        response = await client.get("/mimir/page", params={"path": path})
+        response = await self._request("GET", "/mimir/page", params={"path": path})
         if response.status_code == 404:
             raise FileNotFoundError(f"Mímir page not found: {path}")
         response.raise_for_status()
@@ -161,23 +205,21 @@ class HttpMimirAdapter(MimirPort):
         prefix: str | None = None,
     ) -> list[MimirPageMeta]:
         """GET /mimir/pages — list pages, optionally filtered by category or prefix."""
-        client = self._get_client()
         params: dict[str, Any] = {}
         if category is not None:
             params["category"] = category
         if prefix is not None:
             params["prefix"] = prefix
-        response = await client.get("/mimir/pages", params=params)
+        response = await self._request("GET", "/mimir/pages", params=params)
         response.raise_for_status()
         return [_parse_page_meta(m) for m in response.json()]
 
     async def lint(self, fix: bool = False) -> MimirLintReport:
         """GET /mimir/lint or POST /mimir/lint/fix — return health-check report."""
-        client = self._get_client()
         if fix:
-            response = await client.post("/mimir/lint/fix")
+            response = await self._request("POST", "/mimir/lint/fix")
         else:
-            response = await client.get("/mimir/lint")
+            response = await self._request("GET", "/mimir/lint")
         response.raise_for_status()
         data = response.json()
         issues = [
@@ -197,8 +239,7 @@ class HttpMimirAdapter(MimirPort):
 
     async def read_source(self, source_id: str) -> MimirSource | None:
         """GET /mimir/source?source_id=... — return full raw source."""
-        client = self._get_client()
-        response = await client.get("/mimir/source", params={"source_id": source_id})
+        response = await self._request("GET", "/mimir/source", params={"source_id": source_id})
         if response.status_code == 404:
             return None
         response.raise_for_status()
@@ -219,11 +260,10 @@ class HttpMimirAdapter(MimirPort):
         limit: int = 50,
     ) -> list[MimirPage]:
         """GET /api/threads/queue — return open threads sorted by weight descending."""
-        client = self._get_client()
         params: dict[str, Any] = {"limit": limit}
         if owner_id:
             params["owner_id"] = owner_id
-        response = await client.get("/api/threads/queue", params=params)
+        response = await self._request("GET", "/api/threads/queue", params=params)
         response.raise_for_status()
         return [_parse_thread_page(p) for p in response.json()]
 
@@ -233,18 +273,17 @@ class HttpMimirAdapter(MimirPort):
         limit: int = 100,
     ) -> list[MimirPage]:
         """GET /api/threads — list threads, optionally filtered by state."""
-        client = self._get_client()
         params: dict[str, Any] = {"limit": limit}
         if state is not None:
             params["state"] = state.value
-        response = await client.get("/api/threads", params=params)
+        response = await self._request("GET", "/api/threads", params=params)
         response.raise_for_status()
         return [_parse_thread_page(p) for p in response.json()]
 
     async def update_thread_state(self, path: str, state: ThreadState) -> None:
         """PATCH /api/threads/{encoded_path}/state — transition a thread to *state*."""
-        client = self._get_client()
-        response = await client.patch(
+        response = await self._request(
+            "PATCH",
             f"/api/threads/{_encode_path(path)}/state",
             json={"state": state.value},
         )
@@ -259,11 +298,11 @@ class HttpMimirAdapter(MimirPort):
         signals: dict | None = None,
     ) -> None:
         """PATCH /api/threads/{encoded_path}/weight — update the weight score for a thread."""
-        client = self._get_client()
         payload: dict[str, Any] = {"weight": weight}
         if signals is not None:
             payload["signals"] = signals
-        response = await client.patch(
+        response = await self._request(
+            "PATCH",
             f"/api/threads/{_encode_path(path)}/weight",
             json=payload,
         )
@@ -277,8 +316,8 @@ class HttpMimirAdapter(MimirPort):
         Raises ``ThreadOwnershipError`` if the thread already has a different owner
         (server returns 409 Conflict).
         """
-        client = self._get_client()
-        response = await client.post(
+        response = await self._request(
+            "POST",
             f"/api/threads/{_encode_path(path)}/owner",
             json={"owner_id": owner_id},
         )
@@ -291,11 +330,10 @@ class HttpMimirAdapter(MimirPort):
 
     async def list_sources(self, *, unprocessed_only: bool = False) -> list[MimirSourceMeta]:
         """GET /mimir/sources — list raw sources, optionally unprocessed only."""
-        client = self._get_client()
         params: dict[str, Any] = {}
         if unprocessed_only:
             params["unprocessed"] = "true"
-        response = await client.get("/mimir/sources", params=params)
+        response = await self._request("GET", "/mimir/sources", params=params)
         if response.status_code == 404:
             # Endpoint not yet available on older Mímir deployments — treat as empty.
             logger.debug(

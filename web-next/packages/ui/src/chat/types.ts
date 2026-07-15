@@ -24,6 +24,7 @@ export interface ChatMessagePart {
   readonly input?: Record<string, unknown>;
   readonly tool_use_id?: string;
   readonly content?: string;
+  readonly phase?: 'commentary' | 'final_answer';
 }
 
 export interface ParticipantMeta {
@@ -45,6 +46,11 @@ export interface ParticipantMeta {
 }
 
 export type RoomParticipant = ParticipantMeta;
+
+export interface AgentEventTarget {
+  participant: RoomParticipant;
+  eventType: string;
+}
 
 export interface ChatMessage {
   id: string;
@@ -73,13 +79,7 @@ export interface AgentInternalEvent {
 }
 
 export type MeshVerdict =
-  | 'approve'
-  | 'pass'
-  | 'retry'
-  | 'escalate'
-  | 'fail'
-  | 'needs_changes'
-  | 'needs_review';
+  'approve' | 'pass' | 'retry' | 'escalate' | 'fail' | 'needs_changes' | 'needs_review';
 
 interface MeshEventBase {
   id: string;
@@ -128,6 +128,14 @@ export interface PermissionRequest {
 
 export type PermissionBehavior = 'allow_once' | 'allow_always' | 'deny';
 
+export interface InputRequest {
+  requestId: string;
+  questions: Array<{
+    prompt: string;
+    choices: string[];
+  }>;
+}
+
 export interface FileEntry {
   name: string;
   path: string;
@@ -147,4 +155,5 @@ export interface SessionCapabilities {
   terminal_keys?: boolean;
   terminal_resize?: boolean;
   terminal_panes?: boolean;
+  room_prompt_resend?: boolean;
 }

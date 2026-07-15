@@ -5,8 +5,6 @@ Design principles:
 - Receives messages via a Meta webhook (HTTP POST from Meta's servers).
 - Runs a lightweight FastAPI app on a configurable port for webhook delivery.
 - chat_id: E.164 phone number (e.g. ``"+4412345678"``) or group JID.
-- ``mode: local_bridge`` is a future extension (whatsapp-web.js); currently
-  raises :class:`NotImplementedError` to avoid silent misconfiguration.
 - The webhook GET endpoint handles Meta's challenge verification flow.
 - Voice messages are flagged and routed with a note (STT depends on NIU-533).
 """
@@ -54,11 +52,6 @@ class WhatsAppGateway(GatewayHttpMixin, GatewayChannelPort):
         *,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
-        if config.mode == "local_bridge":
-            raise NotImplementedError(
-                "WhatsApp local_bridge mode (whatsapp-web.js) is not yet implemented. "
-                "Use mode: business_api with the Meta Cloud API."
-            )
         self._config = config
         self._gateway = gateway
         self._api_key: str = os.environ.get(config.api_key_env, "")

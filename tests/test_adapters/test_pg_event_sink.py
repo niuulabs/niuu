@@ -1,9 +1,12 @@
 """Tests for PostgresEventSink adapter."""
 
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
+
+import asyncpg
 
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.domain.models import SessionEvent, SessionEventType
@@ -120,6 +123,91 @@ class TestPostgresEventSinkEmit:
         assert args[7] is None
         # tokens_in (index 5) should be None
         assert args[5] is None
+
+
+class TestNulSanitization:
+    """PostgreSQL text/JSONB cannot store U+0000 or lone surrogates; event.data
+    AND the text columns must be sanitized (U+FFFD) so a poisoned event never
+    wedges the whole executemany batch (the real bug)."""
+
+    NUL = chr(0)
+    SUR = chr(0xD800)
+    R = "�"
+
+    @classmethod
+    def _decoded_data(cls, data: dict) -> dict:
+        # _event_to_args is the single serialization choke-point for both
+        # _insert_one and emit_batch; data is index 4.
+        args = PostgresEventSink._event_to_args(_make_event(data=data))
+        return json.loads(args[4])
+
+    def test_nul_in_string_value_replaced(self):
+        assert self._decoded_data({"content_preview": f"hang{self.NUL}listing"}) == {
+            "content_preview": f"hang{self.R}listing"
+        }
+
+    def test_nul_nested_in_dict_and_list_replaced(self):
+        decoded = self._decoded_data(
+            {
+                "outer": {"inner": f"a{self.NUL}b"},
+                "items": [f"x{self.NUL}y", {"deep": f"p{self.NUL}q"}],
+            }
+        )
+        assert decoded["outer"]["inner"] == f"a{self.R}b"
+        assert decoded["items"] == [f"x{self.R}y", {"deep": f"p{self.R}q"}]
+
+    def test_nul_in_dict_key_replaced(self):
+        assert self._decoded_data({f"ke{self.NUL}y": "value"}) == {f"ke{self.R}y": "value"}
+
+    def test_lone_surrogate_replaced(self):
+        assert self._decoded_data({"text": f"p{self.SUR}q"}) == {"text": f"p{self.R}q"}
+
+    def test_text_columns_event_type_and_model_sanitized(self):
+        # event_type ($3) / model ($10) are plain text — scrub them too.
+        args = PostgresEventSink._event_to_args(_make_event(model=f"opus{self.NUL}4"))
+        assert args[9] == f"opus{self.R}4"  # model
+
+    def test_valid_unicode_preserved(self):
+        assert self._decoded_data({"text": "café — 日本語 😀"}) == {"text": "café — 日本語 😀"}
+
+    def test_no_nul_data_unchanged_byte_for_byte(self):
+        data = {"content_preview": "hello", "content_length": 5}
+        args = PostgresEventSink._event_to_args(_make_event(data=data))
+        assert args[4] == json.dumps(data)
+
+    async def test_emit_batch_replaces_nul(self):
+        pool = AsyncMock()
+        sink = PostgresEventSink(pool)
+        events = [_make_event(sequence=i, data={"t": f"v{self.NUL}{i}"}) for i in range(3)]
+
+        await sink.emit_batch(events)
+
+        rows = pool.executemany.call_args[0][1]
+        for i, row in enumerate(rows):
+            assert json.loads(row[4]) == {"t": f"v{self.R}{i}"}
+
+    async def test_emit_batch_retries_scrubbed_when_insert_still_raises(self):
+        # Defensive: a still-thrown UntranslatableCharacterError must not drop the batch.
+        pool = AsyncMock()
+        pool.executemany = AsyncMock(
+            side_effect=[asyncpg.exceptions.UntranslatableCharacterError("boom"), None]
+        )
+        sink = PostgresEventSink(pool)
+
+        await sink.emit_batch([_make_event(data={"t": "ok"})])
+
+        assert pool.executemany.await_count == 2
+
+    async def test_insert_one_retries_scrubbed_when_insert_still_raises(self):
+        pool = AsyncMock()
+        pool.execute = AsyncMock(
+            side_effect=[asyncpg.exceptions.UntranslatableCharacterError("boom"), None]
+        )
+        sink = PostgresEventSink(pool, buffer_size=1)
+
+        await sink.emit(_make_event(data={"t": "ok"}))
+
+        assert pool.execute.await_count == 2
 
 
 class TestPostgresEventSinkRead:

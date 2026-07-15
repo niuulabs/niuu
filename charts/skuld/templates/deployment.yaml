@@ -5,7 +5,11 @@ metadata:
   labels:
     {{- include "skuld.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.replicaCount }}
+  {{- if include "skuld.residentEnabled" . }}
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "skuld.selectorLabels" . | nindent 6 }}
@@ -13,12 +17,21 @@ spec:
     metadata:
       labels:
         {{- include "skuld.labels" . | nindent 8 }}
+        {{- if include "skuld.residentEnabled" . }}
+        niuu.world/kind: resident
+        niuu.world/persona: {{ include "skuld.residentPersona" . | quote }}
+        {{- end }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.podAnnotations }}
+      {{- if or .Values.podAnnotations (include "skuld.residentEnabled" .) }}
       annotations:
+        {{- if and (include "skuld.residentEnabled" .) (not (hasKey .Values.podAnnotations "niuu.world/resident-name")) }}
+        niuu.world/resident-name: {{ include "skuld.residentName" . | quote }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
     spec:
       {{- if .Values.session.name }}
@@ -277,10 +290,21 @@ spec:
             {{- range .Values.mesh.peerPorts }}
             - {{- toYaml . | nindent 14 }}
             {{- end }}
+            {{- if and (include "skuld.residentEnabled" .) (not .Values.mesh.peerPorts) }}
+            - name: mesh-pub
+              containerPort: 7480
+              protocol: TCP
+            - name: mesh-rep
+              containerPort: 7481
+              protocol: TCP
+            - name: mesh-hs
+              containerPort: 7580
+              protocol: TCP
+            {{- end }}
           env:
             - name: SKULD__SESSION__WORKSPACE_DIR
               value: {{ include "skuld.workspacePath" . | quote }}
-            {{- if .Values.volundr.apiUrl }}
+            {{- if and .Values.volundr.apiUrl (not (include "skuld.residentEnabled" .)) }}
             - name: SKULD__VOLUNDR_API_URL
               value: {{ .Values.volundr.apiUrl | quote }}
             {{- end }}
@@ -288,6 +312,13 @@ spec:
               value: {{ .Values.volundr.serviceUserId | default "skuld-broker" | quote }}
             - name: SKULD__SERVICE_TENANT_ID
               value: {{ .Values.volundr.serviceTenantId | default "default" | quote }}
+            {{- if .Values.volundr.externalApiTokenSecret.name }}
+            - name: SKULD__EXTERNAL_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.volundr.externalApiTokenSecret.name | quote }}
+                  key: {{ .Values.volundr.externalApiTokenSecret.key | default "token" | quote }}
+            {{- end }}
             {{- if .Values.homeVolume.enabled }}
             - name: HOME
               value: {{ .Values.homeVolume.mountPath | quote }}
@@ -353,9 +384,77 @@ spec:
               subPath: manifest.json
               readOnly: true
             {{- end }}
+            {{- if and (include "skuld.residentEnabled" .) .Values.resident.platform.enabled }}
+            - name: niuu-workload-identity
+              mountPath: /var/run/secrets/niuu-workload
+              readOnly: true
+            {{- end }}
             {{- range .Values.extraVolumeMounts }}
             - {{- toYaml . | nindent 14 }}
             {{- end }}
+        {{- if include "skuld.residentEnabled" . }}
+        # Ravn resident daemon — the long-lived room-mode agent behind the broker
+        - name: ravn
+          image: {{ include "skuld.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsUser: {{ .Values.securityContext.runAsUser }}
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+          command:
+            - python
+            - -m
+            - ravn
+            - daemon
+            - --config
+            - /etc/ravn/config.yaml
+            - --persona
+            - {{ include "skuld.residentPersona" . | quote }}
+          env:
+            - name: RAVN_PERSONA
+              value: {{ include "skuld.residentPersona" . | quote }}
+            - name: RAVN_PEER_ID
+              value: {{ .Values.resident.flock.peerId | default (printf "flock-%s" (include "skuld.residentPersona" .)) | quote }}
+            - name: HOME
+              value: /workspace
+            - name: RAVN_STATE_DIR
+              value: /workspace/.ravn
+            {{- range .Values.resident.envSecrets }}
+            - name: {{ .envVar }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
+          ports:
+            - name: ravn-pub
+              containerPort: 7482
+              protocol: TCP
+            - name: ravn-rep
+              containerPort: 7483
+              protocol: TCP
+            - name: ravn-hs
+              containerPort: 7581
+              protocol: TCP
+            - name: ravn-gw
+              containerPort: 7781
+              protocol: TCP
+          volumeMounts:
+            {{- if .Values.persistence.enabled }}
+            - name: sessions
+              mountPath: /workspace
+              subPath: {{ include "skuld.sessionId" . }}/workspace
+            {{- end }}
+            - name: ravn-config
+              mountPath: /etc/ravn/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            {{- if .Values.resident.platform.enabled }}
+            - name: niuu-workload-identity
+              mountPath: /var/run/secrets/niuu-workload
+              readOnly: true
+            {{- end }}
+        {{- end }}
         {{- range .Values.extraContainers }}
         - {{- toYaml . | nindent 10 }}
         {{- end }}
@@ -370,7 +469,7 @@ spec:
             readOnlyRootFilesystem: false
           env:
             - name: SESSION_ID
-              value: {{ .Values.session.id | quote }}
+              value: {{ include "skuld.sessionId" . | quote }}
             - name: SESSION_NAME
               value: {{ .Values.session.name | quote }}
             - name: WORKSPACE_DIR
@@ -458,8 +557,26 @@ spec:
         {{- end }}
         {{- if .Values.persistence.enabled }}
         - name: sessions
+          {{- if .Values.persistence.emptyDir }}
+          emptyDir: {}
+          {{- else }}
           persistentVolumeClaim:
             claimName: {{ .Values.persistence.existingClaim }}
+          {{- end }}
+        {{- end }}
+        {{- if include "skuld.residentEnabled" . }}
+        - name: ravn-config
+          configMap:
+            name: {{ include "skuld.fullname" . }}-ravn-config
+        {{- if .Values.resident.platform.enabled }}
+        - name: niuu-workload-identity
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: {{ .Values.resident.workloadIdentity.audience | quote }}
+                  expirationSeconds: {{ .Values.resident.workloadIdentity.expirationSeconds }}
+        {{- end }}
         {{- end }}
         {{- if .Values.homeVolume.enabled }}
         - name: home

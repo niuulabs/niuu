@@ -246,6 +246,45 @@ database:
 #           repository: "ghcr.io/niuulabs/skuld"
 #           tag: "latest"
 #
+# ── OpenShell gateway example ─────────────────────────────────────
+# Creates OpenShell sandboxes through the gateway API. Auth uses Keycloak
+# client credentials; mount OPENSHELL_OIDC_CLIENT_SECRET from an existing
+# secret via secretKwargs.
+#
+#   podManager:
+#     adapter: "volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager"
+#     kwargs:
+#       gateway_endpoint: "openshell.openshell.svc.cluster.local:8080"
+#       token_url: "https://keycloak.niuu.world/realms/volundr/protocol/openid-connect/token"
+#       client_id: "openshell-volundr-agent"
+#       sandbox_image: "ghcr.io/niuulabs/skuld:openshell-codex-openbao-20260709-7"
+#       sandbox_command: ["/usr/local/bin/openshell-run-installed-skuld"]
+#       sandbox_home: "/sandbox"
+#       sandbox_policy:                # OpenShell SandboxPolicy; required for real clients
+#         version: 1
+#         filesystem:
+#           include_workdir: true
+#           read_only: ["/bin", "/etc", "/lib", "/opt", "/usr"]
+#           read_write: ["/sandbox", "/run/secrets", "/tmp", "/dev/null"]
+#         process:
+#           run_as_user: sandbox
+#           run_as_group: sandbox
+#         network_policies: {}
+#       credential_token_endpoint: "http://niuu-volundr.volundr.svc.cluster.local/api/v1/internal/openshell/credential-token"
+#       volundr_api_url: "http://niuu-volundr.volundr.svc.cluster.local"
+#       workload_audience: "volundr-api"
+#       workload_roles: ["volundr:developer"]
+#       spiffe_jwks_uri: "https://spire-spiffe-oidc-discovery-provider.spire.svc.cluster.local/keys"
+#       spiffe_issuer: "https://spire-spiffe-oidc-discovery-provider.spire.svc.cluster.local"
+#       spiffe_audience: "http://niuu-volundr.volundr.svc.cluster.local/api/v1/internal/openshell/credential-token"
+#       spiffe_subject_prefix: "spiffe://niuu.world/openshell/sandbox/"
+#       spiffe_ca_cert_path: "/etc/spire/ca.crt"
+#       service_port: 9200
+#     secretKwargs:
+#       - kwarg: "client_secret"
+#         secretName: "openshell-volundr-agent-oidc"
+#         secretKey: "OPENSHELL_OIDC_CLIENT_SECRET"
+#
 # Session provisioning readiness polling
 provisioning:
   # -- Maximum time to wait for infrastructure readiness in seconds
@@ -258,6 +297,8 @@ bifrost:
   url: "http://127.0.0.1:8080"
   # -- HTTP timeout for catalog fetches
   timeoutSeconds: 10.0
+  # -- Interval between successful model catalog refreshes
+  catalogRefreshIntervalSeconds: 60.0
   auth:
     # -- Fully-qualified outbound auth adapter class
     adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
@@ -287,6 +328,65 @@ podManager:
     code_path: "/"
   # -- Secret kwargs from K8s Secrets, merged into kwargs at runtime
   # Each entry: { kwarg: "name", secretName: "k8s-secret", secretKey: "key" }
+  secretKwargs: []
+
+# Operator-approved resident deployment profiles for this target. Profiles are
+# hidden from the API until explicitly configured and enabled; backend-specific
+# deployment details remain server-side.
+residentRuntimeProfiles: []
+# - id: ravn-helm
+#   enabled: true
+#   displayName: Resident Ravn (Helm)
+#   description: Long-lived Ravn deployed through the existing Skuld chart
+#   backend: helmrelease
+#   engine: ravn
+#   capabilities: [chat, runtime.restart, runtime.suspend, logs, metrics, usage, flock]
+#   defaultModel: claude-sonnet-4-6
+#   # Engine compatibility policy; only IDs currently enabled in Bifrost are exposed.
+#   allowedModels: [claude-sonnet-4-6]
+#   catalogVendors: [anthropic]
+#   modelPrefix: ""
+#   labels: [resident, ravn]
+#   deployment:
+#     values:
+#       persistence:
+#         enabled: true
+#         emptyDir: false
+#         existingClaim: volundr-sessions
+#       resident:
+#         persona: product-steward
+#         platform:
+#           enabled: true
+#           baseUrl: http://niuu-volundr.volundr.svc.cluster.local
+#         flock:
+#           mesh:
+#             adapters: [{adapter: sleipnir, transport: nats}]
+#             nats:
+#               servers: [nats://sleipnir.sleipnir.svc.cluster.local:4222]
+
+# Additional resident backend adapters. A PodManager that also implements the
+# resident controller port is registered automatically and should not be repeated.
+residentRuntimeControllers: []
+# - adapter: volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager
+#   kwargs: {}
+#   secretKwargs: []
+
+# Engine-protocol adapters behind resident runtime backends.
+residentRuntimeSessionControllers: []
+# - adapter: volundr.adapters.outbound.openclaw_gateway.OpenClawResidentSessionController
+#   runtimeBackend: openshell
+#   optional: false
+#   kwargs: {}
+#   secretKwargs: []
+
+# -- Seconds between resident HelmRelease/Deployment reconciliation passes
+residentRuntimeReconciliationIntervalSeconds: 10.0
+
+# Sleipnir is the transport for cross-runtime flock RPC and platform events.
+sleipnir:
+  enabled: false
+  adapter: sleipnir.adapters.in_process.InProcessBus
+  kwargs: {}
   secretKwargs: []
 
 # Chronicle configuration
@@ -452,11 +552,39 @@ envoy:
     # Rules are evaluated in order; matching prefixes skip the JWT check.
     bypassPrefixes:
       - /api/v1/identity/auth/config
+      - /api/v1/tokens/workload/exchange
+      - /api/v1/tokens/workload/jwks
       - /health
+    # -- Additional JWT provider for short-lived Niuu workload tokens.
+    # When enabled, Envoy accepts either Keycloak user tokens or workload tokens.
+    workload:
+      enabled: false
+      issuer: ""
+      audiences: []
+      # Defaults to the app-local workload JWKS endpoint when empty.
+      jwksUri: ""
+      jwksTimeout: "5s"
+      jwksCacheDurationSeconds: 300
+      tenantClaim: "tenant_id"
+      rolesClaim: "resource_access.volundr.roles"
+      extraClaimHeaders: []
   # -- Extra HTTP filters (inserted before the router filter)
   extraHttpFilters: []
   # -- Extra upstream clusters
   extraClusters: []
+
+workloadIdentity:
+  enabled: false
+  issuer: ""
+  audiences:
+    - volundr-api
+  tokenTtlSeconds: 900
+  keyId: niuu-workload
+  signingKey:
+    existingSecret: ""
+    key: private-key.pem
+  verifiers: []
+  mappings: []
 
 # Identity adapter (dynamic adapter pattern)
 # Switch between identity/authentication backends by changing the adapter class.
@@ -749,6 +877,12 @@ config:
   logFormat: json
   # -- Host to bind to
   host: "0.0.0.0"
+  # -- Internal shared-host address injected into local Skuld brokers
+  serverHost: "127.0.0.1"
+  # -- Browser-reachable shared-host address used in local session endpoints
+  serverPublicHost: "127.0.0.1"
+  # -- Internal OpenShell gateway used for server-side session proxying
+  openshellInternalGatewayUrl: "http://openshell.openshell.svc.cluster.local:8080"
   # -- Number of uvicorn workers
   workers: 4
   # -- Session timeout in seconds
@@ -822,7 +956,7 @@ sessionDefinitions:
         # -- Fully-qualified transport adapter class path
         transportAdapter: "skuld.transports.sdk.SDKTransport"
         # -- Skip tool permission prompts (--dangerously-skip-permissions)
-        skipPermissions: false
+        skipPermissions: true
         # -- Enable Claude Code experimental Agent Teams
         agentTeams: false
 
@@ -1067,8 +1201,8 @@ sessionDefinitions:
         cliType: codex-ws
         # -- Fully-qualified transport adapter class path
         transportAdapter: "skuld.transports.codex_ws.CodexWebSocketTransport"
-        # -- Skip tool permission prompts (--full-auto for Codex)
-        skipPermissions: false
+        # -- Skip prompts and use approvalPolicy=never with danger-full-access
+        skipPermissions: true
         agentTeams: false
 
       image:
@@ -1167,7 +1301,7 @@ sessionDefinitions:
         # -- Fully-qualified transport adapter class path
         transportAdapter: "skuld.transports.opencode.OpenCodeHttpTransport"
         # -- Skip tool permission prompts
-        skipPermissions: false
+        skipPermissions: true
         agentTeams: false
 
       image:
@@ -1671,8 +1805,8 @@ lifecycle: {}
 #
 #   http
 #     Ravn sidecars fetch personas at runtime via the volundr REST API.
-#     No ConfigMap volume is needed.  A Secret holding the PAT is mounted
-#     and the RAVN_VOLUNDR_TOKEN env var is injected into each sidecar.
+#     No ConfigMap volume is needed. Sidecars authenticate with their
+#     projected workload identity and the configured Envoy-facing Volundr URL.
 #
 #   filesystem (dev / single-node)
 #     Sidecars use only the bundled built-in personas shipped in the ravn image.
@@ -1687,8 +1821,3 @@ personaSource:
   mountPath: /etc/ravn/personas
   # -- Volundr base URL that sidecars call to fetch personas (http mode)
   httpBaseUrl: http://volundr:8080
-  # -- PAT value written into the ravn-token Secret (http mode, leave empty to skip)
-  ravnToken: ""
-  # -- Name of the existing Secret holding the PAT (http mode).
-  # Defaults to "<fullname>-ravn-token" if ravnToken is set above.
-  existingTokenSecret: ""

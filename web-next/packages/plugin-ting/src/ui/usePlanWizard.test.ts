@@ -146,6 +146,106 @@ describe('usePlanWizard — submitPrompt', () => {
     expect(result.current.state.questions[0]?.question).toBe('Which repos?');
   });
 
+  it('refreshes workflow-backed plan session status', async () => {
+    const getPlanSession = vi.fn().mockResolvedValue({
+      ...MOCK_SESSION,
+      campaignSlug: 'plan-auth',
+      status: 'running',
+      activeStageId: 'plan-breakdown',
+      stageState: [{ stageId: 'plan-breakdown', label: 'Draft saga breakdown', status: 'active' }],
+      questions: [
+        {
+          id: 'draft-feedback',
+          question: 'What should change before this draft is approved?',
+        },
+      ],
+    });
+    const svc = makeMockService({
+      spawnPlanSession: vi.fn().mockResolvedValue({
+        ...MOCK_SESSION,
+        campaignSlug: 'plan-auth',
+        status: 'pending',
+      }),
+      getPlanSession,
+    });
+    const { result } = renderHook(() => usePlanWizard(), { wrapper: makeWrapper(svc) });
+
+    await act(async () => {
+      await result.current.submitPrompt('Build auth module', 'niuulabs/volundr');
+    });
+
+    await waitFor(() => expect(getPlanSession).toHaveBeenCalledWith('plan-auth'));
+    await waitFor(() => {
+      expect(result.current.state.session?.status).toBe('running');
+      expect(result.current.state.session?.activeStageId).toBe('plan-breakdown');
+      expect(result.current.state.questions[0]?.id).toBe('draft-feedback');
+    });
+  });
+
+  it('keeps waiting for the draft when a live draft review gate appears', async () => {
+    vi.useFakeTimers();
+    try {
+      const getPlanSession = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ...MOCK_SESSION,
+          campaignSlug: 'plan-auth',
+          status: 'running',
+          questions: [],
+        })
+        .mockResolvedValueOnce({
+          ...MOCK_SESSION,
+          campaignSlug: 'plan-auth',
+          status: 'running',
+          questions: [],
+        })
+        .mockResolvedValue({
+          ...MOCK_SESSION,
+          campaignSlug: 'plan-auth',
+          status: 'running',
+          activeStageId: 'plan-review-gate',
+          questions: [
+            {
+              id: 'draft-feedback',
+              question: 'The workflow is waiting on draft plan review.',
+            },
+          ],
+        });
+      const svc = makeMockService({
+        decompose: vi.fn(() => new Promise<Phase[]>(() => {})),
+        spawnPlanSession: vi.fn().mockResolvedValue({
+          ...MOCK_SESSION,
+          campaignSlug: 'plan-auth',
+          status: 'pending',
+        }),
+        getPlanSession,
+      });
+      const { result } = renderHook(() => usePlanWizard(), { wrapper: makeWrapper(svc) });
+
+      await act(async () => {
+        await result.current.submitPrompt('Build auth module', 'niuulabs/volundr');
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        await result.current.submitAnswers({ q1: 'Keep this to one saga' });
+      });
+      expect(result.current.state.step).toBe('running');
+
+      await act(async () => {
+        vi.advanceTimersByTime(5000);
+        await Promise.resolve();
+      });
+
+      expect(result.current.state.step).toBe('running');
+      expect(result.current.state.questions[0]?.id).toBe('draft-feedback');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('sets error on service failure', async () => {
     const svc = makeMockService({
       spawnPlanSession: vi.fn().mockRejectedValue(new Error('service down')),
@@ -163,19 +263,111 @@ describe('usePlanWizard — submitPrompt', () => {
 
 describe('usePlanWizard — submitAnswers', () => {
   it('transitions to running step', async () => {
-    const svc = makeMockService();
+    const svc = makeMockService({
+      decompose: vi.fn(() => new Promise<Phase[]>(() => {})),
+    });
     const { result } = renderHook(() => usePlanWizard(), { wrapper: makeWrapper(svc) });
 
     await act(async () => {
       await result.current.submitPrompt('Build auth', 'niuulabs/volundr');
     });
 
-    act(() => {
-      result.current.submitAnswers({ q1: 'niuulabs/volundr', q2: 'main' });
+    await act(async () => {
+      await result.current.submitAnswers({ q1: 'niuulabs/volundr', q2: 'main' });
     });
 
     expect(result.current.state.step).toBe('running');
     expect(result.current.state.answers).toEqual({ q1: 'niuulabs/volundr', q2: 'main' });
+  });
+
+  it('sends clarification answers to the workflow-backed plan session', async () => {
+    const sendPlanFeedback = vi.fn().mockResolvedValue(undefined);
+    const svc = makeMockService({
+      decompose: vi.fn(() => new Promise<Phase[]>(() => {})),
+      spawnPlanSession: vi.fn().mockResolvedValue({
+        ...MOCK_SESSION,
+        campaignSlug: 'plan-auth',
+      }),
+      sendPlanFeedback,
+    });
+    const { result } = renderHook(() => usePlanWizard(), { wrapper: makeWrapper(svc) });
+
+    await act(async () => {
+      await result.current.submitPrompt('Build auth', 'niuulabs/volundr');
+    });
+
+    await act(async () => {
+      await result.current.submitAnswers({ q1: 'Keep this to one saga', q2: '' });
+    });
+
+    expect(sendPlanFeedback).toHaveBeenCalledWith(
+      'plan-auth',
+      'Planning feedback:\n- Keep this to one saga',
+      'approve',
+    );
+    expect(result.current.state.step).toBe('running');
+  });
+
+  it('shows the running step while workflow gate feedback is still being sent', async () => {
+    let resolveFeedback!: () => void;
+    const sendPlanFeedback = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFeedback = resolve;
+        }),
+    );
+    const svc = makeMockService({
+      decompose: vi.fn(() => new Promise<Phase[]>(() => {})),
+      spawnPlanSession: vi.fn().mockResolvedValue({
+        ...MOCK_SESSION,
+        campaignSlug: 'plan-auth',
+      }),
+      sendPlanFeedback,
+    });
+    const { result } = renderHook(() => usePlanWizard(), { wrapper: makeWrapper(svc) });
+
+    await act(async () => {
+      await result.current.submitPrompt('Build auth', 'niuulabs/volundr');
+    });
+
+    await act(async () => {
+      void result.current.submitAnswers({ q1: 'Keep this to one saga' });
+    });
+
+    expect(sendPlanFeedback).toHaveBeenCalledWith(
+      'plan-auth',
+      'Planning feedback:\n- Keep this to one saga',
+      'approve',
+    );
+    expect(result.current.state.step).toBe('running');
+    expect(result.current.state.answers).toEqual({ q1: 'Keep this to one saga' });
+
+    await act(async () => {
+      resolveFeedback();
+    });
+  });
+
+  it('surfaces workflow gate feedback failures on the running step', async () => {
+    const svc = makeMockService({
+      decompose: vi.fn(() => new Promise<Phase[]>(() => {})),
+      spawnPlanSession: vi.fn().mockResolvedValue({
+        ...MOCK_SESSION,
+        campaignSlug: 'plan-auth',
+      }),
+      sendPlanFeedback: vi.fn().mockRejectedValue(new Error('gate unavailable')),
+    });
+    const { result } = renderHook(() => usePlanWizard(), { wrapper: makeWrapper(svc) });
+
+    await act(async () => {
+      await result.current.submitPrompt('Build auth', 'niuulabs/volundr');
+    });
+
+    await act(async () => {
+      await result.current.submitAnswers({ q1: 'Keep this to one saga' });
+    });
+
+    expect(result.current.state.step).toBe('running');
+    await waitFor(() => expect(result.current.state.error).toBe('gate unavailable'));
   });
 
   it('auto-decomposes and transitions to draft', async () => {
@@ -186,12 +378,67 @@ describe('usePlanWizard — submitAnswers', () => {
       await result.current.submitPrompt('Build auth', 'niuulabs/volundr');
     });
 
-    act(() => {
-      result.current.submitAnswers({ q1: 'niuulabs/volundr' });
+    await act(async () => {
+      await result.current.submitAnswers({ q1: 'niuulabs/volundr' });
     });
 
     await waitFor(() => expect(result.current.state.step).toBe('draft'));
     expect(result.current.state.structure).not.toBeNull();
+  });
+
+  it('uses workflow-backed draft before falling back to decompose', async () => {
+    const decompose = vi.fn().mockResolvedValue(MOCK_PHASES);
+    const getPlanDraft = vi.fn().mockResolvedValue(MOCK_STRUCTURE);
+    const svc = makeMockService({
+      spawnPlanSession: vi.fn().mockResolvedValue({
+        ...MOCK_SESSION,
+        campaignSlug: 'plan-auth',
+      }),
+      getPlanDraft,
+      decompose,
+    });
+    const { result } = renderHook(() => usePlanWizard(), { wrapper: makeWrapper(svc) });
+
+    await act(async () => {
+      await result.current.submitPrompt('Build auth', 'niuulabs/volundr');
+    });
+
+    await act(async () => {
+      await result.current.submitAnswers({ q1: 'niuulabs/volundr' });
+    });
+
+    await waitFor(() => expect(result.current.state.step).toBe('draft'));
+    expect(getPlanDraft).toHaveBeenCalledWith('plan-auth');
+    expect(decompose).not.toHaveBeenCalled();
+    expect(result.current.state.structure?.structure?.name).toBe('Test Saga');
+  });
+
+  it('waits for workflow draft when it is not ready', async () => {
+    const decompose = vi.fn().mockResolvedValue(MOCK_PHASES);
+    const getPlanDraft = vi.fn().mockResolvedValue({ found: false, structure: null });
+    const svc = makeMockService({
+      spawnPlanSession: vi.fn().mockResolvedValue({
+        ...MOCK_SESSION,
+        campaignSlug: 'plan-auth',
+      }),
+      getPlanDraft,
+      decompose,
+    });
+    const { result, unmount } = renderHook(() => usePlanWizard(), { wrapper: makeWrapper(svc) });
+
+    await act(async () => {
+      await result.current.submitPrompt('Build auth', 'niuulabs/volundr');
+    });
+
+    await act(async () => {
+      await result.current.submitAnswers({ q1: 'niuulabs/volundr' });
+    });
+
+    await waitFor(() => expect(getPlanDraft).toHaveBeenCalledTimes(1));
+    expect(result.current.state.step).toBe('running');
+    expect(decompose).not.toHaveBeenCalled();
+
+    unmount();
   });
 });
 
@@ -203,8 +450,8 @@ describe('usePlanWizard — approveDraft', () => {
       await result.current.submitPrompt('Build auth', 'niuulabs/volundr');
     });
 
-    act(() => {
-      result.current.submitAnswers({ q1: 'niuulabs/volundr' });
+    await act(async () => {
+      await result.current.submitAnswers({ q1: 'niuulabs/volundr' });
     });
 
     await waitFor(() => expect(result.current.state.step).toBe('draft'));
@@ -221,6 +468,53 @@ describe('usePlanWizard — approveDraft', () => {
 
     expect(result.current.state.step).toBe('approved');
     expect(result.current.state.saga).not.toBeNull();
+  });
+
+  it('approves the workflow review gate before committing a workflow-backed draft', async () => {
+    const sendPlanFeedback = vi.fn().mockResolvedValue(undefined);
+    const commitSaga = vi.fn().mockResolvedValue(MOCK_SAGA);
+    const svc = makeMockService({
+      spawnPlanSession: vi.fn().mockResolvedValue({
+        ...MOCK_SESSION,
+        campaignSlug: 'plan-auth',
+      }),
+      getPlanDraft: vi.fn().mockResolvedValue(MOCK_STRUCTURE),
+      sendPlanFeedback,
+      commitSaga,
+    });
+    const result = await advanceToDraft(svc);
+
+    await act(async () => {
+      await result.current.approveDraft();
+    });
+
+    expect(sendPlanFeedback).toHaveBeenCalledWith('plan-auth', 'Approved in Ting Plan.', 'approve');
+    expect(commitSaga).toHaveBeenCalled();
+    expect(result.current.state.step).toBe('approved');
+  });
+
+  it('still commits when final workflow approval feedback is already stale', async () => {
+    const sendPlanFeedback = vi.fn().mockRejectedValue(new Error('session gateway closed'));
+    const commitSaga = vi.fn().mockResolvedValue(MOCK_SAGA);
+    const svc = makeMockService({
+      spawnPlanSession: vi.fn().mockResolvedValue({
+        ...MOCK_SESSION,
+        campaignSlug: 'plan-auth',
+      }),
+      getPlanDraft: vi.fn().mockResolvedValue(MOCK_STRUCTURE),
+      sendPlanFeedback,
+      commitSaga,
+    });
+    const result = await advanceToDraft(svc);
+
+    await act(async () => {
+      await result.current.approveDraft();
+    });
+
+    expect(sendPlanFeedback).toHaveBeenCalledWith('plan-auth', 'Approved in Ting Plan.', 'approve');
+    expect(commitSaga).toHaveBeenCalled();
+    expect(result.current.state.step).toBe('approved');
+    expect(result.current.state.error).toBeNull();
   });
 
   it('sets error on commit failure', async () => {
@@ -267,7 +561,9 @@ describe('usePlanWizard — editPhase', () => {
     await act(async () => {
       await result.current.submitPrompt('Build auth', 'niuulabs/volundr');
     });
-    act(() => result.current.submitAnswers({}));
+    await act(async () => {
+      await result.current.submitAnswers({});
+    });
     await waitFor(() => expect(result.current.state.step).toBe('draft'));
 
     act(() => result.current.editPhase(0, 'Renamed Phase'));
@@ -302,7 +598,9 @@ describe('usePlanWizard — decompose error', () => {
     await act(async () => {
       await result.current.submitPrompt('Build auth', 'repo');
     });
-    act(() => result.current.submitAnswers({}));
+    await act(async () => {
+      await result.current.submitAnswers({});
+    });
 
     await waitFor(() => expect(result.current.state.error).toBe('decompose failed'));
     expect(result.current.state.step).toBe('running');
@@ -315,7 +613,9 @@ describe('usePlanWizard — replan', () => {
     await act(async () => {
       await result.current.submitPrompt('Build auth', 'repo');
     });
-    act(() => result.current.submitAnswers({}));
+    await act(async () => {
+      await result.current.submitAnswers({});
+    });
     await waitFor(() => expect(result.current.state.step).toBe('draft'));
     return result;
   }
@@ -349,6 +649,70 @@ describe('usePlanWizard — replan', () => {
     // decompose called twice: once initially, once after replan
     expect(svc.decompose).toHaveBeenCalledTimes(2);
   });
+
+  it('asks for draft feedback when re-planning a workflow-backed draft', async () => {
+    const sendPlanFeedback = vi.fn().mockResolvedValue(undefined);
+    const svc = makeMockService({
+      spawnPlanSession: vi.fn().mockResolvedValue({
+        ...MOCK_SESSION,
+        campaignSlug: 'plan-auth',
+      }),
+      getPlanDraft: vi
+        .fn()
+        .mockResolvedValueOnce(MOCK_STRUCTURE)
+        .mockResolvedValue({ found: false, structure: null }),
+      sendPlanFeedback,
+    });
+    const result = await advanceToDraft(svc);
+
+    act(() => result.current.replan());
+
+    expect(result.current.state.step).toBe('questions');
+    expect(result.current.state.questions[0]?.id).toBe('draft-feedback');
+
+    await act(async () => {
+      await result.current.submitAnswers({ 'draft-feedback': 'Keep it to one phase.' });
+    });
+
+    expect(sendPlanFeedback).toHaveBeenLastCalledWith(
+      'plan-auth',
+      'Draft feedback:\n- Keep it to one phase.',
+      'changes_requested',
+    );
+    expect(result.current.state.step).toBe('running');
+  });
+
+  it('uses the live draft review gate question when re-planning a workflow-backed draft', async () => {
+    const sendPlanFeedback = vi.fn().mockResolvedValue(undefined);
+    const svc = makeMockService({
+      spawnPlanSession: vi.fn().mockResolvedValue({
+        ...MOCK_SESSION,
+        campaignSlug: 'plan-auth',
+      }),
+      getPlanSession: vi.fn().mockResolvedValue({
+        ...MOCK_SESSION,
+        campaignSlug: 'plan-auth',
+        questions: [
+          {
+            id: 'draft-feedback',
+            question: 'The workflow is waiting on draft plan review.',
+            hint: 'Review the bounded draft.',
+          },
+        ],
+      }),
+      getPlanDraft: vi.fn().mockResolvedValue(MOCK_STRUCTURE),
+      sendPlanFeedback,
+    });
+    const result = await advanceToDraft(svc);
+
+    act(() => result.current.replan());
+
+    expect(result.current.state.step).toBe('questions');
+    expect(result.current.state.questions[0]?.question).toBe(
+      'The workflow is waiting on draft plan review.',
+    );
+    expect(result.current.state.questions[0]?.hint).toBe('Review the bounded draft.');
+  });
 });
 
 describe('usePlanWizard — saveDraft', () => {
@@ -359,7 +723,9 @@ describe('usePlanWizard — saveDraft', () => {
     await act(async () => {
       await result.current.submitPrompt('Build auth', 'repo');
     });
-    act(() => result.current.submitAnswers({}));
+    await act(async () => {
+      await result.current.submitAnswers({});
+    });
     await waitFor(() => expect(result.current.state.step).toBe('draft'));
 
     const stepBefore = result.current.state.step;
@@ -375,7 +741,9 @@ describe('usePlanWizard — saveDraft', () => {
     await act(async () => {
       await result.current.submitPrompt('Build auth', 'repo');
     });
-    act(() => result.current.submitAnswers({}));
+    await act(async () => {
+      await result.current.submitAnswers({});
+    });
     await waitFor(() => expect(result.current.state.step).toBe('draft'));
 
     expect(result.current.state.draftSaved).toBe(false);

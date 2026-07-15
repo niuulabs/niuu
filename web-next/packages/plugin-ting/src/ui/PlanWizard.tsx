@@ -1,4 +1,7 @@
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useService } from '@niuulabs/plugin-sdk';
 import { Rune } from '@niuulabs/ui';
+import type { RepoRecord } from '@niuulabs/ui';
 import { PLAN_STEPS } from '../domain/plan';
 import { StepDots } from './StepDots';
 import { usePlanWizard } from './usePlanWizard';
@@ -9,7 +12,12 @@ import { PlanRuns } from './PlanRuns';
 import { PlanDraft } from './PlanDraft';
 import { PlanApproved } from './PlanApproved';
 import { PlanGuidanceRail } from './PlanGuidanceRail';
+import type { ITingService, PlanSession } from '../ports';
 import './PlanWizard.css';
+
+type RepoCatalogService = {
+  getRepos(): Promise<RepoRecord[]>;
+};
 
 /**
  * Plan wizard — five‐step flow for decomposing a human goal into a saga.
@@ -20,9 +28,13 @@ import './PlanWizard.css';
  *         Full-width on running and approved (content fills the width).
  */
 export function PlanWizard() {
+  const ting = useService<ITingService>('ting');
+  const queryClient = useQueryClient();
+  const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const {
     state,
     submitPrompt,
+    resumePlanSession,
     submitAnswers,
     approveDraft,
     editPhase,
@@ -33,10 +45,29 @@ export function PlanWizard() {
     saveDraft,
   } = usePlanWizard();
   const { data: workflows = [] } = useWorkflows();
+  const { data: repos = [] } = useQuery({
+    queryKey: ['ting-plan-repos'],
+    queryFn: () => repoCatalog.getRepos(),
+  });
+  const { data: planSessions = [] } = useQuery({
+    queryKey: ['ting-plan-sessions'],
+    queryFn: () => (ting.listPlanSessions ? ting.listPlanSessions() : Promise.resolve([])),
+    enabled: state.step === 'prompt' && Boolean(ting.listPlanSessions),
+    refetchInterval: state.step === 'prompt' ? 5000 : false,
+  });
 
   function handleNewPlan() {
     // Navigate back to /ting/plan to start fresh (the wizard unmounts and remounts)
     window.location.href = '/ting/plan';
+  }
+
+  async function handleCancelPlanSession(session: PlanSession) {
+    if (!session.campaignSlug || !ting.cancelPlanSession) return;
+    if (!window.confirm(`Cancel "${session.name || session.prompt || session.campaignSlug}"?`)) {
+      return;
+    }
+    await ting.cancelPlanSession(session.campaignSlug);
+    await queryClient.invalidateQueries({ queryKey: ['ting-plan-sessions'] });
   }
 
   const showGuidance =
@@ -62,7 +93,20 @@ export function PlanWizard() {
           <StepDots steps={PLAN_STEPS} current={state.step} />
 
           {state.step === 'prompt' && (
-            <PlanPrompt onSubmit={submitPrompt} loading={state.loading} error={state.error} />
+            <>
+              <ActivePlanSessions
+                sessions={planSessions}
+                loading={state.loading}
+                onResume={resumePlanSession}
+                onCancel={handleCancelPlanSession}
+              />
+              <PlanPrompt
+                onSubmit={submitPrompt}
+                loading={state.loading}
+                error={state.error}
+                repos={repos}
+              />
+            </>
           )}
 
           {state.step === 'questions' && (
@@ -118,5 +162,54 @@ export function PlanWizard() {
         </div>
       )}
     </div>
+  );
+}
+
+function ActivePlanSessions({
+  sessions,
+  loading,
+  onResume,
+  onCancel,
+}: {
+  sessions: PlanSession[];
+  loading: boolean;
+  onResume(session: PlanSession): void;
+  onCancel(session: PlanSession): void;
+}) {
+  if (sessions.length === 0) return null;
+
+  return (
+    <section className="ting-plan-card ting-plan-sessions" aria-label="Active planning sessions">
+      <div className="ting-plan-sessions__head">
+        <div>
+          <h2>Active plans</h2>
+          <p>Resume a planning workflow that is already running.</p>
+        </div>
+        <span>{sessions.length}</span>
+      </div>
+      <div className="ting-plan-sessions__list">
+        {sessions.map((session) => (
+          <div key={session.campaignSlug ?? session.sessionId} className="ting-plan-session-row">
+            <span>
+              <strong>{session.name || session.prompt || session.campaignSlug || 'Plan'}</strong>
+              <small>{session.repo || 'no repository selected'}</small>
+            </span>
+            <span className="ting-plan-session-row__actions">
+              <span className="ting-plan-session-row__meta">{session.status || 'running'}</span>
+              <button type="button" disabled={loading} onClick={() => onResume(session)}>
+                Resume
+              </button>
+              <button
+                type="button"
+                disabled={loading || !session.campaignSlug}
+                onClick={() => onCancel(session)}
+              >
+                Cancel
+              </button>
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }

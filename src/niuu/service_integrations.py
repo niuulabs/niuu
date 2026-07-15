@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
 from niuu.domain.models import IntegrationConnection, IntegrationType, SecretType
-from niuu.service_settings import Settings
+
+
+class IntegrationSettings(Protocol):
+    """Settings section required for integration seeding."""
+
+    integrations: Any
 
 
 async def seed_linear_integration(
@@ -61,7 +67,7 @@ def seeded_integration_connection_id(
 async def seed_configured_integrations(
     integration_repo: object,
     credential_store: object,
-    settings: Settings,
+    settings: IntegrationSettings,
 ) -> None:
     """Seed configured integration connections into storage at startup."""
     for seed in settings.integrations.seed_connections:
@@ -98,7 +104,7 @@ async def seed_configured_integrations(
         await integration_repo.save_connection(connection)
 
 
-def has_seeded_linear_integration(settings: Settings) -> bool:
+def has_seeded_linear_integration(settings: IntegrationSettings) -> bool:
     """Return whether config already seeds a Linear issue-tracker connection."""
     for seed in settings.integrations.seed_connections:
         if seed.integration_type != IntegrationType.ISSUE_TRACKER:

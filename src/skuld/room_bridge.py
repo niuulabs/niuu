@@ -41,6 +41,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _matches_subscription(event_type: str, subscriptions: tuple[str, ...]) -> bool:
+    for pattern in subscriptions:
+        if pattern == event_type:
+            return True
+        if pattern.endswith(".*") and event_type.startswith(pattern[:-1]):
+            return True
+        if pattern.endswith("*") and event_type.startswith(pattern[:-1]):
+            return True
+    return False
+
+
 _GIT_COMMIT_PREFIXES = ("git commit", "git -c ", "git -C ")
 _GIT_COMMIT_OUTPUT_RE = re.compile(r"\[[\w/-]+\s+([a-f0-9]{7,})\]\s+(.+)")
 
@@ -54,6 +66,34 @@ _RAVN_ACTIVITY_MAP: dict[str, str] = {
     "task_complete": "idle",
     "decision": "thinking",
 }
+
+
+def help_needed_frame_to_room_notification(meta: ParticipantMeta, frame: dict) -> dict:
+    """Translate a Ravn help_needed frame into Skuld's room notification shape."""
+    data = frame.get("data", {})
+    if isinstance(data, str):
+        data = {"summary": data}
+    if not isinstance(data, dict):
+        data = {}
+
+    notification: dict = {
+        "type": "room_notification",
+        "notificationType": "help_needed",
+        "participantId": meta.peer_id,
+        "participant": asdict(meta),
+        "persona": data.get("persona", meta.persona),
+        "reason": data.get("reason", "unknown"),
+        "summary": data.get("summary", "Agent needs help"),
+        "attempted": data.get("attempted", []),
+        "recommendation": data.get("recommendation", ""),
+        "urgency": frame.get("metadata", {}).get("urgency", 0.85),
+    }
+
+    context = data.get("context")
+    if context:
+        notification["context"] = context
+    return notification
+
 
 HUMAN_ENVIRONMENT_ROLES: frozenset[str] = frozenset(
     {"observer", "teacher", "approver", "debugger", "owner"}
@@ -1028,7 +1068,11 @@ class RoomBridge:
         """Translate a response/error frame into a room_message event."""
         msg_id = str(uuid.uuid4())
         content = frame.get("data", "")
-        thread_id = frame.get("metadata", {}).get("thread_id")
+        metadata = frame.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        thread_id = metadata.get("thread_id")
+        visibility = frame.get("visibility") or "public"
 
         room_event: dict = {
             "type": "room_message",
@@ -1036,7 +1080,7 @@ class RoomBridge:
             "participantId": meta.peer_id,
             "participant": asdict(meta),
             "content": content,
-            "visibility": frame.get("visibility", "public"),
+            "visibility": visibility,
         }
         if is_error:
             room_event["error"] = True
@@ -1059,10 +1103,11 @@ class RoomBridge:
                 id=msg_id,
                 role="assistant",
                 content=content,
+                metadata=metadata,
                 participant_id=meta.peer_id,
                 participant_meta=asdict(meta),
                 thread_id=thread_id,
-                visibility="public",
+                visibility=visibility,
             )
             self._append_turn(turn)
 
@@ -1076,7 +1121,7 @@ class RoomBridge:
                 content=content,
                 visibility=room_event["visibility"],
                 thread_id=thread_id or "",
-                metadata=frame.get("metadata", {}),
+                metadata=metadata,
             )
 
     async def _handle_activity_frame(
@@ -1120,28 +1165,10 @@ class RoomBridge:
         Emits a high-visibility notification that surfaces in the user's chat
         without requiring them to watch logs.
         """
-        data = frame.get("data", {})
-        if isinstance(data, str):
-            # If data is a string, wrap it
-            data = {"summary": data}
-
-        notification: dict = {
-            "type": "room_notification",
-            "notificationType": "help_needed",
-            "participantId": meta.peer_id,
-            "participant": asdict(meta),
-            "persona": data.get("persona", meta.persona),
-            "reason": data.get("reason", "unknown"),
-            "summary": data.get("summary", "Agent needs help"),
-            "attempted": data.get("attempted", []),
-            "recommendation": data.get("recommendation", ""),
-            "urgency": frame.get("metadata", {}).get("urgency", 0.85),
-        }
+        notification = help_needed_frame_to_room_notification(meta, frame)
 
         # Include context if provided (file paths, errors, etc.)
-        context = data.get("context")
-        if context:
-            notification["context"] = context
+        context = notification.get("context")
         if isinstance(context, dict):
             self._pending_help_context[meta.peer_id] = {
                 "help_summary": notification["summary"],
@@ -1201,12 +1228,36 @@ class RoomBridge:
             outcome["verdict"] = verdict
 
         await self._channels.broadcast(outcome)
+        await self._send_outcome_to_subscribed_ravns(outcome)
         logger.info(
             "RoomBridge: outcome broadcast peer_id=%s event_type=%s verdict=%s",
             meta.peer_id,
             event_type,
             verdict,
         )
+
+    async def _send_outcome_to_subscribed_ravns(self, outcome: dict) -> None:
+        event_type = str(outcome.get("eventType") or "").strip()
+        if not event_type:
+            return
+
+        payload = json.dumps(outcome)
+        for peer_id, meta in list(self._participants.items()):
+            if not meta.subscribes_to:
+                continue
+            if not _matches_subscription(event_type, meta.subscribes_to):
+                continue
+            ws = self._websockets.get(peer_id)
+            if ws is None:
+                continue
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                logger.warning(
+                    "RoomBridge: failed to send room_outcome to peer_id=%s",
+                    peer_id,
+                    exc_info=True,
+                )
 
     async def _handle_mesh_delegation_frame(
         self,
@@ -1328,6 +1379,10 @@ class RoomBridge:
                 exc_info=True,
             )
             return False
+
+    def pending_help_peer_ids(self) -> tuple[str, ...]:
+        """Return Ravn peer ids with pending help context for directed replies."""
+        return tuple(self._pending_help_context.keys())
 
     # ------------------------------------------------------------------
     # Room state

@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -36,8 +36,20 @@ from niuu.config import (
     HttpAuthAdapterConfig,
     InstanceRegistryConfig,
 )
+from niuu.config_models import (
+    DatabaseConfig,
+    SessionDefinitionConfig,
+    WorkloadIdentityConfig,
+    default_session_definitions,
+)
 from ravn.config import PersonaSourceConfig
-from volundr.domain.models import IntegrationType, SecretType
+from volundr.domain.models import (
+    IntegrationType,
+    ResidentBackend,
+    ResidentCapability,
+    ResidentEngine,
+    SecretType,
+)
 
 __all__ = ["GitHubInstance", "GitLabInstance"]
 
@@ -211,36 +223,16 @@ class PermissionAutoApprovalConfig(BaseModel):
     )
 
 
-class LoggingConfig(BaseModel):
+class LoggingConfig(BaseSettings):
     """Logging configuration.
 
-    Reads LOG_LEVEL and LOG_FORMAT environment variables if set.
+    Supports legacy LOG_LEVEL and LOG_FORMAT aliases.
     """
 
-    level: str = Field(default_factory=lambda: os.environ.get("LOG_LEVEL", "info"))
-    format: str = Field(default_factory=lambda: os.environ.get("LOG_FORMAT", "text"))
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
 
-
-class DatabaseConfig(BaseModel):
-    """PostgreSQL database configuration."""
-
-    host: str = Field(default="localhost")
-    port: int = Field(default=5432)
-    user: str = Field(default="volundr")
-    password: str = Field(default="volundr")
-    name: str = Field(default="volundr")
-    min_pool_size: int = Field(default=5)
-    max_pool_size: int = Field(default=20)
-
-    @property
-    def database(self) -> str:
-        """Alias for name to maintain compatibility."""
-        return self.name
-
-    @property
-    def dsn(self) -> str:
-        """Return PostgreSQL connection string."""
-        return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
+    level: str = Field(default="info", validation_alias=AliasChoices("level", "LOG_LEVEL"))
+    format: str = Field(default="text", validation_alias=AliasChoices("format", "LOG_FORMAT"))
 
 
 class PodManagerConfig(BaseModel):
@@ -272,6 +264,82 @@ class PodManagerConfig(BaseModel):
     )
 
 
+class ResidentProfileConfig(BaseModel):
+    """One operator-approved resident backend and engine combination."""
+
+    id: str = Field(min_length=1, max_length=100)
+    enabled: bool = True
+    display_name: str = Field(min_length=1, max_length=255)
+    description: str = ""
+    backend: ResidentBackend
+    engine: ResidentEngine
+    capabilities: list[ResidentCapability] = Field(default_factory=list)
+    default_model: str = ""
+    allowed_models: list[str] = Field(default_factory=list)
+    catalog_vendors: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Bifrost model vendors accepted by this resident engine. Empty means all vendors."
+        ),
+    )
+    model_prefix: str = Field(
+        default="",
+        description="Prefix added to canonical Bifrost model IDs for the resident engine.",
+    )
+    labels: list[str] = Field(default_factory=list)
+    deployment: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Backend-owned deployment input, never exposed through the profile API.",
+    )
+
+
+class ResidentSessionControllerConfig(BaseModel):
+    """One dynamically configured resident engine protocol adapter."""
+
+    adapter: str = Field(min_length=1)
+    runtime_backend: ResidentBackend
+    optional: bool = False
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+
+class ResidentRuntimesConfig(BaseModel):
+    """Configured resident deployment profiles for this Volundr target."""
+
+    controllers: list[PodManagerConfig] = Field(
+        default_factory=list,
+        description=(
+            "Additional dynamically configured resident runtime controllers. "
+            "A resident-capable pod manager is registered automatically."
+        ),
+    )
+    session_controllers: list[ResidentSessionControllerConfig] = Field(
+        default_factory=lambda: [
+            ResidentSessionControllerConfig(
+                adapter=(
+                    "volundr.adapters.outbound.openclaw_gateway.OpenClawResidentSessionController"
+                ),
+                runtime_backend=ResidentBackend.OPENSHELL,
+                optional=True,
+            )
+        ],
+        description="Dynamically configured resident engine protocol adapters.",
+    )
+    profiles: list[ResidentProfileConfig] = Field(default_factory=list)
+    reconciliation_interval_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description="Interval between resident backend reconciliation passes.",
+    )
+
+    @model_validator(mode="after")
+    def validate_unique_profile_ids(self) -> "ResidentRuntimesConfig":
+        ids = [profile.id for profile in self.profiles]
+        if len(ids) != len(set(ids)):
+            raise ValueError("resident_runtimes.profiles ids must be unique")
+        return self
+
+
 class MCPServerEntry(BaseModel):
     """Configuration for an available MCP server."""
 
@@ -281,164 +349,6 @@ class MCPServerEntry(BaseModel):
     url: str | None = None
     args: list[str] = Field(default_factory=list)
     description: str = ""
-
-
-class SessionDefinitionConfig(BaseModel):
-    """Configuration for a single session definition (e.g. skuldClaude, skuldCodex).
-
-    Session definitions describe available AI backend configurations.
-    Each definition has a unique key, display metadata, and a ``defaults``
-    dict that gets merged into Helm values when a session is created with
-    this definition.
-    """
-
-    enabled: bool = True
-    display_name: str = ""
-    description: str = ""
-    labels: list[str] = Field(default_factory=list)
-    default_model: str = ""
-    compatible_providers: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Model providers this runtime accepts (e.g. ['anthropic'], "
-            "['openai']). An empty list means the runtime is provider-neutral "
-            "and accepts any model."
-        ),
-    )
-    defaults: dict[str, Any] = Field(default_factory=dict)
-
-
-def _default_session_definitions() -> dict[str, SessionDefinitionConfig]:
-    """Built-in session definitions so the wizard works without Helm config.
-
-    These carry only broker-level config (cliType, transportAdapter).
-    Helm values merge on top when running in Kubernetes.
-    """
-    return {
-        "skuldClaude": SessionDefinitionConfig(
-            enabled=True,
-            display_name="Claude Code",
-            description="Anthropic Claude — full IDE with terminal, tools, and MCP",
-            labels=["session", "claude"],
-            default_model="claude-opus-4-8",
-            compatible_providers=["anthropic"],
-            defaults={
-                "broker": {
-                    "cliType": "claude",
-                    "transport": "sdk",
-                    "transportAdapter": "skuld.transports.sdk.SDKTransport",
-                    "agentTeams": False,
-                },
-            },
-        ),
-        "skuldClaudeInteractive": SessionDefinitionConfig(
-            enabled=True,
-            display_name="Claude Code Interactive",
-            description=(
-                "Anthropic Claude Code through a tmux-backed interactive terminal "
-                "for subscription sessions, slash commands, and terminal controls"
-            ),
-            labels=["session", "claude", "interactive"],
-            default_model="claude-sonnet-4-6",
-            compatible_providers=["anthropic"],
-            defaults={
-                "broker": {
-                    "cliType": "claude",
-                    "transport": "tmux-interactive",
-                    "transportAdapter": (
-                        "skuld.transports.tmux_interactive.TmuxInteractiveTransport"
-                    ),
-                    "skipPermissions": True,
-                    "agentTeams": False,
-                },
-            },
-        ),
-        "skuldCodex": SessionDefinitionConfig(
-            enabled=True,
-            display_name="OpenAI Codex",
-            description="OpenAI Codex — WebSocket protocol with streaming and tools",
-            labels=["session", "codex"],
-            default_model="",
-            compatible_providers=["openai"],
-            defaults={
-                "broker": {
-                    "cliType": "codex-ws",
-                    "transportAdapter": "skuld.transports.codex_ws.CodexWebSocketTransport",
-                    "agentTeams": False,
-                },
-            },
-        ),
-        "skuldCodexExec": SessionDefinitionConfig(
-            enabled=True,
-            display_name="OpenAI Codex (Batch)",
-            description=(
-                "OpenAI Codex — subprocess transport tuned for autonomous workflow execution"
-            ),
-            labels=["session", "codex", "batch"],
-            default_model="",
-            compatible_providers=["openai"],
-            defaults={
-                "broker": {
-                    "cliType": "codex",
-                    "transportAdapter": "skuld.transports.codex.CodexSubprocessTransport",
-                    "agentTeams": False,
-                },
-            },
-        ),
-        "skuldOpenCode": SessionDefinitionConfig(
-            enabled=True,
-            display_name="OpenCode",
-            description="Model-neutral AI coding agent — Claude, OpenAI, Gemini, local",
-            labels=["session", "opencode"],
-            default_model="",
-            compatible_providers=[],
-            defaults={
-                "broker": {
-                    "cliType": "opencode",
-                    "transportAdapter": "skuld.transports.opencode.OpenCodeHttpTransport",
-                    "agentTeams": False,
-                },
-            },
-        ),
-        "skuldClaudeRemote": SessionDefinitionConfig(
-            enabled=True,
-            display_name="Claude Remote Control",
-            description=(
-                "Claude Code in Remote Control mode — pair with the Claude app or "
-                "claude.ai/code; the native app drives the session"
-            ),
-            labels=["session", "claude", "remote-control"],
-            default_model="",
-            compatible_providers=["anthropic"],
-            defaults={
-                "broker": {
-                    "cliType": "claude",
-                    "transportAdapter": "skuld.transports.remote_control.RemoteControlTransport",
-                    "agentTeams": False,
-                },
-            },
-        ),
-        "skuldCodexRemote": SessionDefinitionConfig(
-            enabled=True,
-            display_name="Codex Remote Control",
-            description=(
-                "Codex Remote Control — requires the standalone Codex install; "
-                "fails fast with guidance until it exists"
-            ),
-            labels=["session", "codex", "remote-control"],
-            default_model="",
-            compatible_providers=["openai"],
-            defaults={
-                "broker": {
-                    "cliType": "codex",
-                    "transportAdapter": (
-                        "skuld.transports.remote_control.CodexRemoteControlTransport"
-                    ),
-                    "agentTeams": False,
-                },
-            },
-        ),
-    }
 
 
 def _deep_merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -475,7 +385,7 @@ def merge_session_definitions(
     """Deep-merge configured session definition overrides onto built-in defaults."""
     merged = {
         key: definition.model_copy(deep=True)
-        for key, definition in _default_session_definitions().items()
+        for key, definition in default_session_definitions().items()
     }
     for key, override in (overrides or {}).items():
         if key in merged:
@@ -607,24 +517,88 @@ class EventPipelineConfig(BaseModel):
 
 
 class SessionLivenessConfig(BaseModel):
-    """Liveness reconciliation for running sessions.
+    """Liveness reconciliation for running sessions (INV-9).
 
     A session whose broker has died can otherwise sit in ``running`` forever
     with a stale ``chat_endpoint`` (clients then open a socket to a tombstone and
-    see nothing). The reconciler marks running sessions that have gone silent —
-    no activity heartbeat for ``stale_after_seconds`` — as ``stopped`` and clears
-    their endpoints, so the list reflects reality and clients stop dialing dead
-    brokers.
+    see nothing). Two complementary mechanisms keep the row truthful:
 
-    Disabled by default: brokers currently report activity only on STATE
-    CHANGES, so a quiet-but-alive session can go silent for long stretches and
-    would be falsely reaped. Enable with a generous stale_after_seconds (or
-    once periodic broker heartbeats land).
+    1. **Pod-status reconcile** (``reconcile_enabled``, ON by default). A periodic
+       loop probes ``pod_manager.status()`` for active sessions and corrects the
+       row when the runtime state diverges. Kubernetes sessions additionally
+       recover failed rows from Ready HelmReleases and remove runtime resources
+       behind terminal rows. Because it consults the authoritative pod manager
+       rather than a heartbeat clock, it never false-reaps a quiet-but-alive
+       session, so it is safe to enable by default.
+
+    2. **Heartbeat reaper** (``enabled``, OFF by default). The legacy reaper marks
+       running sessions that have gone silent — no activity heartbeat for
+       ``stale_after_seconds`` — as ``stopped``. Brokers currently report activity
+       only on STATE CHANGES, so a quiet-but-alive session can go silent for long
+       stretches and would be falsely reaped; this mechanism stays secondary and
+       off by default. Enable with a generous ``stale_after_seconds`` once
+       periodic broker heartbeats land.
     """
 
     enabled: bool = Field(default=False)
     stale_after_seconds: int = Field(default=600, ge=30)
     check_interval_seconds: int = Field(default=120, ge=10)
+    exempt_workload_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Workload types the heartbeat reaper never reaps. Use for "
+            "long-lived workloads that idle by design — a quiet session is "
+            "not a dead one (pod-status reconcile still catches real death)."
+        ),
+    )
+    reconcile_enabled: bool = Field(
+        default=True,
+        description=(
+            "Periodically reconcile session rows against pod_manager.status(). "
+            "Pod-status authoritative, so it never false-reaps idle-but-alive sessions."
+        ),
+    )
+    reconcile_interval_seconds: int = Field(
+        default=60,
+        ge=5,
+        description="Interval between pod-status reconcile sweeps.",
+    )
+
+
+class ReplayConfig(BaseModel):
+    """Replay-as-live WebSocket: re-emit recorded ``session_event_log`` frames,
+    paced by the recorded ``ts`` deltas, so a live-session client renders a
+    finished session (or a checked-in fixture) as if it were streaming live.
+
+    The DB route is read-only and auth-gated (mirrors the already-served REST
+    ``GET .../log`` replay), so it defaults ON. The fixture route serves
+    synthetic data UNAUTHENTICATED and defaults OFF (enable only in dev/CI).
+    """
+
+    enabled: bool = Field(default=True)
+    fixtures_enabled: bool = Field(default=False)
+    default_speed: float = Field(default=1.0, gt=0)
+    max_gap_seconds: float = Field(default=2.0, ge=0)
+    # Unified read-path visibility default (SRD FR-7 / INV-10): internal
+    # tool_use/tool_result blocks are HIDDEN by default across ALL three read
+    # paths — live broadcast (``WebSocketChannel(show_internal=False)``), replay,
+    # and cold-read (``GET .../log``). One default, one toggle wire-message
+    # (``set_internal_visibility``), one ``filter_internal_blocks`` predicate, so
+    # the dropped set is identical everywhere. This was historically ``True`` for
+    # replay only, which diverged from the live default; it is now aligned to the
+    # live default. Flip to ``True`` only if a deployment wants internals shown by
+    # default on EVERY path (the toggle still works regardless).
+    default_show_internal: bool = Field(default=False)
+    page_size: int = Field(default=500, ge=1, le=5000)
+    fixtures_dir: str | None = Field(default=None)
+
+    def fixtures_dir_path(self) -> Path:
+        """Resolve the fixtures directory (defaults to the packaged dir)."""
+        if self.fixtures_dir:
+            return Path(self.fixtures_dir)
+        from volundr.replay.fixtures import default_fixtures_dir
+
+        return default_fixtures_dir()
 
 
 class SleipnirConfig(BaseModel):
@@ -652,6 +626,49 @@ class SleipnirConfig(BaseModel):
         description="Fully-qualified class path for the Sleipnir adapter.",
     )
     kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+
+class PushNotificationConfig(BaseModel):
+    """Push / attention notification fan-out (optional).
+
+    When enabled, a session entering ``awaiting_input`` dispatches a push to the
+    owner's registered devices through the configured NotificationChannel
+    adapter. Off by default; the default adapter only logs.
+
+    Example YAML::
+
+        push:
+          enabled: true
+          adapter: "volundr.adapters.outbound.push_channels.ApnsNotificationChannel"
+          min_urgency: 0.8
+          kwargs:
+            team_id: "ABCDE12345"
+            key_id: "KEY1234567"
+            bundle_id: "com.niuu.forge"
+          secret_kwargs_env:
+            private_key: "APNS_PRIVATE_KEY"
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable push notifications for sessions that need attention.",
+    )
+    adapter: str = Field(
+        default="volundr.adapters.outbound.push_channels.LoggingNotificationChannel",
+        description="Fully-qualified NotificationChannel class path.",
+    )
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Mapping of kwarg names to env var names holding secret values.",
+    )
+    min_urgency: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description="Drop pushes below this urgency.",
+    )
 
 
 class IdentityConfig(BaseModel):
@@ -1055,25 +1072,6 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
             },
             auth_type="api_key",
         ),
-        IntegrationDefinitionConfig(
-            slug="volundr",
-            name="Volundr API",
-            description="Volundr API connection — PAT for session-to-control-plane auth",
-            integration_type="code_forge",
-            icon="volundr",
-            credential_schema={
-                "required": ["token"],
-                "properties": {
-                    "token": {
-                        "label": "Personal Access Token",
-                        "type": "password",
-                        "description": "PAT for authenticating to the Volundr API",
-                    },
-                },
-            },
-            env_from_credentials={"VOLUNDR_API_TOKEN": "token"},
-            auth_type="pat",
-        ),
     ]
 
 
@@ -1476,6 +1474,11 @@ class VolundrBifrostConfig(BifrostConfig):
         default=10.0,
         description="HTTP timeout for Bifrost catalog calls.",
     )
+    catalog_refresh_interval_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        description="Interval between successful Bifrost catalog refreshes.",
+    )
     auth: HttpAuthAdapterConfig = Field(default_factory=HttpAuthAdapterConfig)
 
 
@@ -1493,11 +1496,60 @@ class ObservatoryGuildConfig(BaseModel):
     auth: HttpAuthAdapterConfig = Field(default_factory=HttpAuthAdapterConfig)
 
 
+class AgentDirectoryConfig(BaseModel):
+    """Local card resolution and Guild fan-out bounds for the Agent Directory."""
+
+    instance_id: str = Field(
+        default="local-observatory",
+        min_length=1,
+        description="Stable identity of this Observatory source.",
+    )
+    cluster_id: str = Field(
+        default="",
+        description="Cluster identity used when discovery records omit placement.",
+    )
+    card_timeout_seconds: float = Field(
+        default=4.0,
+        gt=0,
+        description="Timeout for Agent Card and signature-key retrieval.",
+    )
+    card_cache_ttl_seconds: float = Field(
+        default=300.0,
+        ge=0,
+        description="Fallback card cache TTL when the owning service omits Cache-Control.",
+    )
+    local_max_concurrency: int = Field(
+        default=8,
+        ge=1,
+        description="Maximum concurrent Agent Card resolutions per local directory request.",
+    )
+    guild_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description="Timeout for each Guild-to-Observatory directory request.",
+    )
+    guild_max_concurrency: int = Field(
+        default=8,
+        ge=1,
+        description="Maximum concurrent Observatory fan-out requests from Guild.",
+    )
+    signature_algorithms: list[str] = Field(
+        default_factory=lambda: ["ES256", "ES384", "RS256", "RS384", "PS256", "EdDSA"],
+        min_length=1,
+        description="Accepted Agent Card JWS algorithms.",
+    )
+    authenticated_card_origins: list[str] = Field(
+        default_factory=list,
+        description="HTTP(S) origins trusted to receive caller authentication for card retrieval.",
+    )
+
+
 class ObservatoryConfig(BaseModel):
     """Observatory plugin configuration."""
 
     guild: ObservatoryGuildConfig = Field(default_factory=ObservatoryGuildConfig)
     discovery: list[DynamicAdapterConfig] = Field(default_factory=list)
+    directory: AgentDirectoryConfig = Field(default_factory=AgentDirectoryConfig)
 
 
 class Settings(BaseSettings):
@@ -1521,16 +1573,90 @@ class Settings(BaseSettings):
     )
 
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    server_host: str = Field(
+        default="127.0.0.1",
+        validation_alias=AliasChoices("server_host", "NIUU_SERVER_HOST"),
+        description="Internal host used by locally spawned session brokers.",
+    )
+    server_public_host: str = Field(
+        default="127.0.0.1",
+        validation_alias=AliasChoices(
+            "server_public_host",
+            "NIUU_SERVER_PUBLIC_HOST",
+            "NIUU_SERVER_HOST",
+        ),
+        description="Host published in browser-facing local session endpoints.",
+    )
+    server_port: int = Field(
+        default=8080,
+        ge=1,
+        le=65535,
+        validation_alias=AliasChoices("server_port", "NIUU_SERVER_PORT"),
+        description="Port of the shared Niuu host used by local session brokers.",
+    )
+    openshell_internal_gateway_url: str = Field(
+        default="http://openshell.openshell.svc.cluster.local:8080",
+        validation_alias=AliasChoices(
+            "openshell_internal_gateway_url",
+            "OPENSHELL_INTERNAL_GATEWAY_URL",
+        ),
+        description="Internal OpenShell gateway URL used for server-side session proxying.",
+    )
+    openshell_gateway_endpoint: str = Field(
+        default="openshell.openshell.svc.cluster.local:8080",
+        validation_alias=AliasChoices(
+            "openshell_gateway_endpoint",
+            "OPENSHELL_GATEWAY_ENDPOINT",
+        ),
+        description="OpenShell gRPC gateway endpoint forwarded to its pod-manager adapter.",
+    )
+    openshell_gateway_public_url: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "openshell_gateway_public_url",
+            "OPENSHELL_GATEWAY_PUBLIC_URL",
+        ),
+        description="Browser-reachable OpenShell gateway URL.",
+    )
+    openshell_oidc_token_url: str = Field(
+        default="https://keycloak.niuu.world/realms/volundr/protocol/openid-connect/token",
+        validation_alias=AliasChoices(
+            "openshell_oidc_token_url",
+            "OPENSHELL_OIDC_TOKEN_URL",
+        ),
+        description="OIDC token endpoint used for OpenShell client credentials.",
+    )
+    openshell_oidc_client_id: str = Field(
+        default="openshell-volundr-agent",
+        validation_alias=AliasChoices(
+            "openshell_oidc_client_id",
+            "OPENSHELL_OIDC_CLIENT_ID",
+        ),
+        description="OIDC client id used for OpenShell client credentials.",
+    )
+    openshell_oidc_client_secret: str = Field(
+        default="",
+        exclude=True,
+        repr=False,
+        validation_alias=AliasChoices(
+            "openshell_oidc_client_secret",
+            "OPENSHELL_OIDC_CLIENT_SECRET",
+        ),
+        description="OIDC client secret; prefer pod_manager.secret_kwargs_env.",
+    )
     cors: CorsConfig = Field(default_factory=CorsConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
+    resident_runtimes: ResidentRuntimesConfig = Field(default_factory=ResidentRuntimesConfig)
     git: GitConfig = Field(default_factory=GitConfig)
     niuu: InstanceRegistryConfig = Field(default_factory=InstanceRegistryConfig)
     chronicle: ChronicleConfig = Field(default_factory=ChronicleConfig)
     archive_store: ArchiveStoreConfig = Field(default_factory=ArchiveStoreConfig)
     event_pipeline: EventPipelineConfig = Field(default_factory=EventPipelineConfig)
     session_liveness: SessionLivenessConfig = Field(default_factory=SessionLivenessConfig)
+    replay: ReplayConfig = Field(default_factory=ReplayConfig)
     sleipnir: SleipnirConfig = Field(default_factory=SleipnirConfig)
+    push: PushNotificationConfig = Field(default_factory=PushNotificationConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)
     credential_store: CredentialStoreConfig = Field(default_factory=CredentialStoreConfig)
@@ -1541,6 +1667,7 @@ class Settings(BaseSettings):
     webhooks: WebhooksConfig = Field(default_factory=WebhooksConfig)
     linear: LinearConfig = Field(default_factory=LinearConfig)
     pat: PATConfig = Field(default_factory=PATConfig)
+    workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
     auth_discovery: AuthDiscoveryConfig = Field(default_factory=AuthDiscoveryConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     oauth: OAuthConfig = Field(default_factory=OAuthConfig)
@@ -1554,8 +1681,22 @@ class Settings(BaseSettings):
     external_sessions: ExternalSessionsConfig = Field(default_factory=ExternalSessionsConfig)
     telegram_ingress: TelegramIngressConfig = Field(default_factory=TelegramIngressConfig)
     session_contributors: list[SessionContributorConfig] = Field(default_factory=list)
+    ravn_flock_image: str = Field(
+        default="",
+        description=(
+            "Optional image used for auto-wired Ravn flock sidecars. "
+            "When empty, the contributor's built-in default is used."
+        ),
+    )
+    ravn_flock_init_writer_image: str = Field(
+        default="",
+        description=(
+            "Optional image used by Ravn flock init containers that write per-persona "
+            "config files. When empty, the contributor's built-in default is used."
+        ),
+    )
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
-        default_factory=_default_session_definitions,
+        default_factory=default_session_definitions,
         description="Session definitions keyed by name (e.g. skuldClaude, skuldCodex).",
     )
     bifrost: VolundrBifrostConfig = Field(default_factory=VolundrBifrostConfig)

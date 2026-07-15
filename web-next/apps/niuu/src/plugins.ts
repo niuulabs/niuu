@@ -1,5 +1,6 @@
-import { createElement } from 'react';
+import { createElement, useEffect } from 'react';
 import { createRoute } from '@tanstack/react-router';
+import { useAuth } from '@niuulabs/auth';
 import { bifrostPlugin } from '@niuulabs/plugin-bifrost/plugin';
 import { loginPlugin } from '@niuulabs/plugin-login';
 import { ravnPlugin } from '@niuulabs/plugin-ravn';
@@ -27,30 +28,26 @@ function GuildTopbar() {
   );
 }
 
+function LogoutRoute() {
+  const { logout } = useAuth();
+
+  useEffect(() => {
+    logout();
+  }, [logout]);
+
+  return null;
+}
+
 const guildPlugin = definePlugin({
   id: 'guild',
-  rune: 'ᚹ',
+  rune: 'G',
   title: 'Guild',
   subtitle: 'runtime registry',
-  tabs: [
-    { id: 'instances', label: 'Instances', path: '/guild' },
-    { id: 'access', label: 'Access', path: '/guild/access' },
-    { id: 'connections', label: 'Connections', path: '/guild/connections' },
-  ],
+  tabs: [{ id: 'instances', label: 'Instances', path: '/guild' }],
   routes: (rootRoute) => [
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/guild',
-      component: GuildPage,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/guild/access',
-      component: GuildPage,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/guild/connections',
       component: GuildPage,
     }),
   ],
@@ -82,15 +79,31 @@ const settingsPlugin = definePlugin({
   ],
 });
 
+const logoutPlugin = definePlugin({
+  id: 'logout',
+  rune: '\u23fb',
+  title: 'Sign out',
+  subtitle: 'end session',
+  position: 'bottom',
+  routes: (rootRoute) => [
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/logout',
+      component: LogoutRoute,
+    }),
+  ],
+});
+
 export const plugins: PluginDescriptor[] = [
   loginPlugin,
-  bifrostPlugin,
   volundrPlugin,
   tingPlugin,
-  mimirPlugin,
   ravnPlugin,
+  mimirPlugin,
   valkyriePlugin,
   observatoryPlugin,
+  bifrostPlugin,
   guildPlugin,
   settingsPlugin,
+  logoutPlugin,
 ];

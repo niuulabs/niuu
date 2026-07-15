@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import asdict, dataclass, field, fields, replace
@@ -26,9 +27,15 @@ from ravn.odin.review import (
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
 from ravn.valkyrie_evolution.learned_tools import (
+    LocalLearnedToolRunner,
+    learned_tool_artifact_path,
+    learned_tool_path,
     learned_tool_storage,
+    learned_tool_venvs_dir,
     manifest_review_boundaries,
     manifest_safety_class,
+    read_learned_tool_artifact,
+    superseded_artifact_path,
     write_learned_tool,
     write_learned_tool_artifact,
 )
@@ -49,6 +56,7 @@ from ravn.valkyrie_evolution.tool_runtime import (
     tool_path_for_skill,
     write_tool,
 )
+from ravn.valkyrie_evolution.tool_verification import verify_learned_tool_in_ephemeral_venv
 from sleipnir.domain import registry
 from sleipnir.domain.catalog import (
     learning_adoption_recorded,
@@ -64,6 +72,27 @@ logger = logging.getLogger(__name__)
 
 LearningAction = Literal["adopted", "rejected", "rolled_back", "ignored", "held"]
 
+#: Event types this module publishes on install/rollback. Consumers (the realm
+#: capability sync, dashboards) import these from the publisher so the
+#: producer/consumer contract cannot drift.
+EVOLUTION_ACTIVATED_EVENT = "valkyrie.evolution.activated"
+EVOLUTION_ROLLED_BACK_EVENT = "valkyrie.evolution.rolled_back"
+
+#: Snapshot event: one per currently-installed learned skill, republished on
+#: startup and a heartbeat. Activation events fire once at ADOPTION time (rare,
+#: historical), so a dashboard that starts with REPLAY_SECONDS=0 never sees the
+#: skills a resident already carries. This event carries the same enriched
+#: record shape the mirror already consumes plus a ``status`` field, so the
+#: dashboard's skill mirror reflects the resident's live INVENTORY, not just
+#: lifecycle transitions.
+EVOLUTION_SKILL_INVENTORY_EVENT = "valkyrie.evolution.skill_inventory"
+
+#: ``status`` value carried by a skill-inventory event for an installed skill.
+SKILL_INVENTORY_STATUS_PRESENT = "present"
+
+#: How often the resident republishes its full skill inventory (seconds).
+DEFAULT_SKILL_INVENTORY_INTERVAL_SECONDS = 300.0
+
 #: Consecutive implementation failures before a skill is auto-rolled-back.
 #: A regressed tool must fail repeatedly, never once — transient failures
 #: (timeouts, odd payloads) must not destroy adopted learning.
@@ -71,6 +100,17 @@ DEFAULT_ROLLBACK_CONSECUTIVE_FAILURES = 3
 
 #: Tail of the failing tool's stderr carried in rollback judgment evidence.
 DEFAULT_ROLLBACK_STDERR_EVIDENCE_CHARS = 500
+
+#: Tail of the peer re-verification logs carried in a rejection's rationale
+#: (and therefore the durable ledger) when adoption verification fails.
+DEFAULT_VERIFY_LOG_EVIDENCE_CHARS = 2000
+
+#: How much one useful/good_action operator feedback verdict raises the
+#: stored learning's confidence (clamped at 1.0).
+DEFAULT_FEEDBACK_CONFIDENCE_BUMP = 0.05
+
+#: Confidence ceiling for operator reinforcement.
+MAX_LEARNING_CONFIDENCE = 1.0
 
 _SKILL_ARTIFACT_TYPES = frozenset({"ravn_skill_tool", "tool_skill", "agent_tool"})
 _SAFE_REDACTION_STATES = frozenset({"", "none", "redacted", "safe"})
@@ -120,6 +160,13 @@ class ResidentLearningArtifact:
     tool_code: str = ""
     tool_entry_point: str = "run"
     learned_tool_manifest: dict[str, Any] = field(default_factory=dict)
+    #: Self-contained test module travelling with the proposal (contract v2);
+    #: peers re-verify it independently before installing (P6.2).
+    test_code: str = ""
+    #: pip requirement strings the tool needs ([] for stdlib-only tools).
+    requirements: list[str] = field(default_factory=list)
+    #: artifact_id of the version this artifact replaces (P6.3 version chain).
+    supersedes: str = ""
     canary_sample: dict[str, Any] = field(default_factory=dict)
     causation_id: str = ""
     correlation_id: str = ""
@@ -191,8 +238,10 @@ class ResidentLearningRuntime:
         tools_dir: str | Path | None = None,
         tool_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
         rollback_consecutive_failures: int = DEFAULT_ROLLBACK_CONSECUTIVE_FAILURES,
+        feedback_confidence_bump: float = DEFAULT_FEEDBACK_CONFIDENCE_BUMP,
         learning_store: FlockLearningStore | None = None,
         review_requester: ReviewRequester | None = None,
+        skill_inventory_interval_seconds: float = DEFAULT_SKILL_INVENTORY_INTERVAL_SECONDS,
     ) -> None:
         self.identity = identity
         self._skills = skills
@@ -202,11 +251,21 @@ class ResidentLearningRuntime:
         self._policy = policy or ResidentLearningPolicy()
         self._source = source or identity.valkyrie_id
         self._tools_dir = Path(tools_dir) if tools_dir else None
+        self._learned_tool_runner = (
+            LocalLearnedToolRunner(
+                venvs_dir=learned_tool_venvs_dir(self._tools_dir.parent),
+            )
+            if self._tools_dir is not None
+            else None
+        )
         self._tool_timeout_seconds = tool_timeout_seconds
         self._rollback_consecutive_failures = rollback_consecutive_failures
+        self._feedback_confidence_bump = feedback_confidence_bump
         self._learning_store = learning_store
         self._review_requester = review_requester
+        self._skill_inventory_interval_seconds = skill_inventory_interval_seconds
         self._subscription: Subscription | None = None
+        self._inventory_task: asyncio.Task[None] | None = None
         self._decisions: list[ResidentLearningDecision] = []
 
     @property
@@ -241,12 +300,246 @@ class ResidentLearningRuntime:
                     reannounced,
                     self.identity.valkyrie_id,
                 )
+        # Snapshot the resident's live inventory once subscriptions are up so a
+        # freshly-restarted dashboard (REPLAY_SECONDS=0) sees every skill the
+        # resident already carries, then keep it fresh on a heartbeat.
+        await self.publish_skill_inventory()
+        if self._inventory_task is None and self._skill_inventory_interval_seconds > 0:
+            self._inventory_task = asyncio.create_task(
+                self._run_inventory_loop(),
+                name="resident_skill_inventory",
+            )
 
     async def stop(self) -> None:
+        if self._inventory_task is not None:
+            self._inventory_task.cancel()
+            try:
+                await self._inventory_task
+            except asyncio.CancelledError:
+                # Expected after requesting cancellation of the heartbeat loop.
+                pass
+            self._inventory_task = None
         if self._subscription is None:
             return
         await self._subscription.unsubscribe()
         self._subscription = None
+
+    async def _run_inventory_loop(self) -> None:
+        """Republish the full skill inventory on the configured heartbeat.
+
+        Guarded like the wakefulness loop: a single bad snapshot must never
+        crash the daemon — it is logged and the next tick tries again.
+        """
+        while True:
+            await asyncio.sleep(self._skill_inventory_interval_seconds)
+            try:
+                await self.publish_skill_inventory()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "resident_learning: skill inventory heartbeat failed for %s",
+                    self.identity.valkyrie_id,
+                )
+
+    async def publish_skill_inventory(self) -> int:
+        """Publish one inventory event per currently-installed learned skill.
+
+        Enumerates learned-tool artifact envelopes on disk and managed skills
+        in the resident registry, builds a full enriched record for each, and
+        publishes an :data:`EVOLUTION_SKILL_INVENTORY_EVENT` so the dashboard
+        mirror reflects the resident's live inventory. A single bad skill is
+        logged and skipped — it must never abort the whole snapshot. Returns
+        the number of inventory events published.
+        """
+        published = 0
+        seen: set[str] = set()
+        for record in self._iter_learned_tool_inventory():
+            name = record["skill_name"]
+            if name in seen:
+                continue
+            seen.add(name)
+            if await self._publish_skill_inventory_record(record):
+                published += 1
+        for record in await self._iter_managed_skill_inventory():
+            name = record["skill_name"]
+            if name in seen:
+                continue
+            seen.add(name)
+            if await self._publish_skill_inventory_record(record):
+                published += 1
+        return published
+
+    async def _refresh_skill_inventory(self) -> None:
+        """Opportunistically republish the inventory; never raise into a caller.
+
+        Adoption/rollback flows call this so the dashboard reflects the change
+        immediately — but a snapshot failure must never break the install or
+        rollback that already succeeded.
+        """
+        try:
+            await self.publish_skill_inventory()
+        except Exception:  # noqa: BLE001 — inventory refresh is best-effort
+            logger.exception(
+                "resident_learning: opportunistic skill inventory refresh failed for %s",
+                self.identity.valkyrie_id,
+            )
+
+    def _iter_learned_tool_inventory(self) -> list[dict[str, Any]]:
+        """Full records for every installed learned-tool artifact envelope."""
+        if self._tools_dir is None:
+            return []
+        _code_dir, artifacts_dir = learned_tool_storage(self._tools_dir.parent)
+        if not artifacts_dir.is_dir():
+            return []
+        records: list[dict[str, Any]] = []
+        for artifact_file in sorted(artifacts_dir.glob("*.json")):
+            try:
+                artifact = read_learned_tool_artifact(artifact_file)
+            except Exception:  # noqa: BLE001 — one bad envelope must not abort the snapshot
+                logger.exception(
+                    "resident_learning: skipping unreadable learned-tool artifact %s",
+                    artifact_file,
+                )
+                continue
+            manifest = artifact.manifest
+            records.append(
+                {
+                    "skill_name": manifest.name,
+                    "skill_content": _agent_tool_content(
+                        ResidentLearningArtifact(
+                            learning_id=artifact.artifact_id,
+                            title=manifest.name,
+                            summary=manifest.description,
+                            content="",
+                            artifact_type="agent_tool",
+                            scope="environment",
+                            confidence=0.0,
+                            source_valkyrie_id=self.identity.valkyrie_id,
+                        ),
+                        manifest,
+                        manifest_safety_class(manifest),
+                    ),
+                    "learned_tool_manifest": manifest.to_dict(),
+                    "tool_code": artifact.tool_code,
+                    "test_code": artifact.test_code,
+                    "requirements": list(artifact.requirements),
+                    "summary_text": manifest.description,
+                    "learning_id": artifact.artifact_id,
+                    "adopted_at": artifact.created_at,
+                    "learning_scope": str(artifact.provenance.get("scope") or "environment"),
+                    "learning_source": f"flock-learning:{artifact.artifact_id}",
+                    "source_environment_id": str(
+                        artifact.provenance.get("source_environment_id") or ""
+                    ),
+                    "source_valkyrie_id": str(artifact.provenance.get("source_valkyrie_id") or ""),
+                }
+            )
+        return records
+
+    async def _iter_managed_skill_inventory(self) -> list[dict[str, Any]]:
+        """Full records for installed managed skills (markdown + optional tool)."""
+        try:
+            rows = await self._skills.list_skills()
+        except Exception:  # noqa: BLE001 — the registry must not abort the snapshot
+            logger.exception(
+                "resident_learning: could not enumerate managed skills for %s",
+                self.identity.valkyrie_id,
+            )
+            return []
+        records: list[dict[str, Any]] = []
+        for row in rows:
+            skill = row.get("skill") if isinstance(row, dict) else None
+            skill = skill if isinstance(skill, dict) else {}
+            name = str(skill.get("name") or "").strip()
+            if not name:
+                continue
+            metadata = row.get("metadata") if isinstance(row, dict) else None
+            metadata = metadata if isinstance(metadata, dict) else {}
+            records.append(
+                {
+                    "skill_name": name,
+                    "skill_content": str(skill.get("content") or ""),
+                    "learned_tool_manifest": {},
+                    "tool_code": self._skill_tool_code(name),
+                    "test_code": "",
+                    "requirements": [],
+                    "summary_text": str(skill.get("description") or ""),
+                    "learning_id": str(metadata.get("skill_id") or ""),
+                    "adopted_at": str(metadata.get("created_at") or skill.get("created_at") or ""),
+                    "learning_scope": str(metadata.get("scope") or "private"),
+                    "learning_source": str(metadata.get("source") or "manual"),
+                    "source_environment_id": str(metadata.get("source_environment_id") or ""),
+                    "source_valkyrie_id": str(metadata.get("source_valkyrie_id") or ""),
+                }
+            )
+        return records
+
+    def _skill_tool_code(self, skill_name: str) -> str:
+        """Read the co-installed tool implementation for a managed skill, if any."""
+        if self._tools_dir is None:
+            return ""
+        tool_path = tool_path_for_skill(self._tools_dir, skill_name)
+        if not tool_path.is_file():
+            return ""
+        try:
+            return tool_path.read_text(encoding="utf-8")
+        except OSError:
+            logger.warning(
+                "resident_learning: could not read tool implementation for skill %s",
+                skill_name,
+            )
+            return ""
+
+    async def _publish_skill_inventory_record(self, record: dict[str, Any]) -> bool:
+        """Publish one inventory event; log and swallow a per-skill failure."""
+        source_valkyrie_id = str(record.get("source_valkyrie_id") or "")
+        learning_source = str(record.get("learning_source") or "")
+        learning_scope = str(record.get("learning_scope") or "")
+        try:
+            await self._publisher.publish(
+                SleipnirEvent(
+                    event_type=EVOLUTION_SKILL_INVENTORY_EVENT,
+                    source=self._source,
+                    payload={
+                        "environment_id": self.identity.environment_id,
+                        "valkyrie_id": self.identity.valkyrie_id,
+                        "skill_name": record["skill_name"],
+                        "status": SKILL_INVENTORY_STATUS_PRESENT,
+                        "learning_id": record.get("learning_id") or "",
+                        "adopted_at": record.get("adopted_at") or "",
+                        "skill_content": record.get("skill_content") or "",
+                        "learned_tool_manifest": dict(record.get("learned_tool_manifest") or {}),
+                        "tool_code": record.get("tool_code") or "",
+                        "test_code": record.get("test_code") or "",
+                        "requirements": list(record.get("requirements") or []),
+                        "summary_text": record.get("summary_text") or "",
+                        "learning_scope": learning_scope,
+                        "learning_source": learning_source,
+                        "learning_origin": _learning_origin(
+                            source_valkyrie_id=source_valkyrie_id,
+                            resident_valkyrie_id=self.identity.valkyrie_id,
+                            learning_source=learning_source,
+                            learning_scope=learning_scope,
+                        ),
+                        "source_environment_id": record.get("source_environment_id") or "",
+                        "source_valkyrie_id": source_valkyrie_id,
+                    },
+                    summary=(
+                        f"{self.identity.valkyrie_id} has installed skill {record['skill_name']}"
+                    ),
+                    urgency=0.1,
+                    domain="infrastructure",
+                    timestamp=datetime.now(UTC),
+                )
+            )
+        except Exception:  # noqa: BLE001 — one skill must not abort the whole snapshot
+            logger.exception(
+                "resident_learning: failed to publish inventory for skill %s",
+                record.get("skill_name"),
+            )
+            return False
+        return True
 
     def _evolution_dedupe_key(self, capability: str) -> str:
         return f"{ReviewKind.EVOLUTION_BUILD.value}:{self.identity.environment_id}:{capability}"
@@ -372,6 +665,20 @@ class ResidentLearningRuntime:
         )
 
         await self._skills.archive(skill_name)
+        self._prune_tool_venv(skill_name)
+
+        try:
+            restored_artifact_id, restore_detail = await self._attempt_restore_of_superseded(
+                skill_name,
+                signal,
+            )
+        except Exception as exc:  # noqa: BLE001 — the rollback judgment must still publish
+            logger.exception(
+                "resident_learning: restore of superseded version failed for %s",
+                skill_name,
+            )
+            restored_artifact_id = ""
+            restore_detail = f"restore failed: {type(exc).__name__}: {exc}"
 
         artifact = ResidentLearningArtifact(
             learning_id=learning_id,
@@ -407,6 +714,8 @@ class ResidentLearningRuntime:
         self._decisions.append(decision)
         await self._publish_retraction(artifact, decision)
         await self._publish_adoption(artifact, decision)
+        # The archived skill is gone from disk — refresh so the dashboard drops it.
+        await self._refresh_skill_inventory()
         judgment = valkyrie_judgment_proposed(
             environment_id=self.identity.environment_id,
             valkyrie_id=self.identity.valkyrie_id,
@@ -427,6 +736,8 @@ class ResidentLearningRuntime:
                     "tool_error": tool_run.error,
                     "tool_stderr": tool_run.stderr[-DEFAULT_ROLLBACK_STDERR_EVIDENCE_CHARS:],
                     "learning_source": source or "resident_skill_registry",
+                    "restored_artifact_id": restored_artifact_id,
+                    "restore_detail": restore_detail,
                 }
             ],
             correlation_ids={"root": signal.signal_id},
@@ -443,7 +754,83 @@ class ResidentLearningRuntime:
             "judgmentEventId": judgment.event_id,
             "toolResult": {"error": tool_run.error},
             "consecutiveFailures": lifecycle.consecutive_failures,
+            "restoredArtifactId": restored_artifact_id,
         }
+
+    def _prune_tool_venv(self, skill_name: str) -> None:
+        """Best-effort: a rolled-back tool's dependency venv leaves with it."""
+        if self._tools_dir is None:
+            return
+        from ravn.valkyrie_evolution.tool_runtime import remove_tool_venv  # noqa: PLC0415
+
+        try:
+            remove_tool_venv(
+                venvs_dir=learned_tool_venvs_dir(self._tools_dir.parent),
+                tool_name=skill_name,
+            )
+        except Exception as exc:  # noqa: BLE001 — venv GC must never break a rollback
+            logger.warning("venv prune failed for %s: %s", skill_name, exc)
+
+    async def _attempt_restore_of_superseded(
+        self,
+        skill_name: str,
+        signal: OperationalSignal,
+    ) -> tuple[str, str]:
+        """Try to reinstall the version a rolled-back learned tool superseded.
+
+        Returns ``(restored_artifact_id, detail)``. The id is empty when the
+        rolled-back skill has no persisted learned-tool envelope (a plain
+        skill), no ``supersedes`` link (a first build — behavior is exactly
+        the historical archive-and-rebuild), the predecessor file is gone, or
+        the predecessor did not clear the install gate. Restore goes through
+        the one review/canary pipeline like any other install — no bypass.
+        """
+        if self._tools_dir is None:
+            return "", ""
+        _code_dir, artifacts_dir = learned_tool_storage(self._tools_dir.parent)
+        current_path = learned_tool_artifact_path(artifacts_dir, skill_name)
+        if not current_path.is_file():
+            return "", ""
+        current = read_learned_tool_artifact(current_path)
+        if not current.supersedes:
+            return "", ""
+        predecessor_path = superseded_artifact_path(
+            artifacts_dir,
+            skill_name,
+            current.supersedes,
+        )
+        if not predecessor_path.is_file():
+            return "", f"superseded artifact {current.supersedes} is no longer on disk"
+
+        predecessor = read_learned_tool_artifact(predecessor_path)
+        restore_artifact = ResidentLearningArtifact(
+            learning_id=predecessor.artifact_id,
+            title=predecessor.manifest.name,
+            summary=(f"Restore {predecessor.artifact_id} after rollback of {current.artifact_id}"),
+            content="",
+            artifact_type="agent_tool",
+            scope="environment",
+            confidence=0.0,
+            source_environment_id=self.identity.environment_id,
+            promotion_id=predecessor.artifact_id,
+            domain=self.identity.domain,
+            redaction_status="redacted",
+            tool_code=predecessor.tool_code,
+            tool_entry_point=predecessor.manifest.entry_point,
+            learned_tool_manifest=predecessor.manifest.to_dict(),
+            test_code=predecessor.test_code,
+            requirements=list(predecessor.requirements),
+            supersedes=predecessor.supersedes,
+            correlation_id=signal.signal_id,
+            command_action="restore_superseded_version",
+        )
+        decision = await self._review_canary_install(restore_artifact, signal=signal)
+        if decision.action != "adopted":
+            return (
+                "",
+                f"predecessor {predecessor.artifact_id} was not restored: {decision.rationale}",
+            )
+        return predecessor.artifact_id, decision.rationale
 
     async def _run_skill_tool(
         self,
@@ -454,19 +841,37 @@ class ResidentLearningRuntime:
         if self._tools_dir is None:
             return None
         tool_path = tool_path_for_skill(self._tools_dir, str(skill.name))
-        if not tool_path.is_file():
+        payload = {
+            "signal_id": signal.signal_id,
+            "event_type": signal.event_type,
+            "severity": signal.severity,
+            "summary": signal.summary,
+            "payload": signal.payload,
+        }
+        if tool_path.is_file():
+            return await run_tool(
+                tool_path,
+                payload,
+                entry_point=_tool_entry_point_from_content(str(skill.content)),
+                timeout_seconds=self._tool_timeout_seconds,
+            )
+
+        code_dir, artifacts_dir = learned_tool_storage(self._tools_dir.parent)
+        artifact_path = learned_tool_artifact_path(artifacts_dir, str(skill.name))
+        if not artifact_path.is_file() or self._learned_tool_runner is None:
             return None
-        return await run_tool(
-            tool_path,
-            {
-                "signal_id": signal.signal_id,
-                "event_type": signal.event_type,
-                "severity": signal.severity,
-                "summary": signal.summary,
-                "payload": signal.payload,
-            },
-            entry_point=_tool_entry_point_from_content(str(skill.content)),
+        artifact = read_learned_tool_artifact(artifact_path)
+        # Agent tools declare their own input schema. Surface the operational
+        # payload at the top level while retaining the signal envelope for tools
+        # that need event metadata.
+        learned_payload = {**payload, **signal.payload}
+        return await self._learned_tool_runner.run(
+            learned_tool_path(code_dir, artifact.manifest.name),
+            learned_payload,
+            entry_point=artifact.manifest.entry_point,
             timeout_seconds=self._tool_timeout_seconds,
+            requirements=artifact.requirements,
+            declared_reach=artifact.manifest.declared_reach,
         )
 
     async def _handle_learning_event(self, event: SleipnirEvent) -> None:
@@ -546,6 +951,9 @@ class ResidentLearningRuntime:
             return await self._apply_court_review(item)
         if kind in {ReviewKind.EVOLUTION_BUILD.value, ReviewKind.FLOCK_LEARNING.value}:
             return await self._apply_learning_review(item)
+        if kind == ReviewKind.MORNING_BRIEF.value:
+            # Briefs are informational; the operator verdict is the whole action.
+            return "applied", "brief acknowledged", None
         return "apply_failed", f"unknown review kind: {kind!r}", None
 
     async def _apply_autonomy_review(
@@ -673,6 +1081,16 @@ class ResidentLearningRuntime:
             # Flock-broadcast commands reach every resident; the irrelevant
             # ones stay quiet instead of flooding the bus with rejections.
             return "ignored", reason, None
+        feedback = item.evidence.get("feedback")
+        feedback = dict(feedback) if isinstance(feedback, dict) else {}
+        if feedback:
+            # Whatever the lifecycle effect, the verdict lands in the stored
+            # learning so future dreams can weigh operator judgment.
+            self._record_operator_feedback(artifact, feedback)
+        if item.requested_action == "feedback":
+            return await self._apply_learning_feedback(artifact, feedback)
+        if item.requested_action == "revise":
+            return await self._apply_learning_revision(item, artifact)
         if item.status == ReviewStatus.REJECTED.value:
             decision = ResidentLearningDecision(
                 "rejected",
@@ -718,6 +1136,166 @@ class ResidentLearningRuntime:
             kwargs["correlation_id"] = item.correlation_id or item.item_id
         kwargs["causation_id"] = item.causation_id or ""
         return ResidentLearningArtifact(**kwargs)
+
+    def _learning_record_for(
+        self,
+        artifact: ResidentLearningArtifact,
+    ) -> FlockLearningRecord | None:
+        """The durable ledger record for one learning, created when absent."""
+        if self._learning_store is None:
+            return None
+        try:
+            return self._learning_store.get(artifact.learning_id)
+        except ValueError:
+            return FlockLearningRecord(
+                exchange_id=artifact.learning_id,
+                candidate=_candidate_from_artifact(artifact),
+            )
+
+    def _record_operator_feedback(
+        self,
+        artifact: ResidentLearningArtifact,
+        feedback: dict[str, Any],
+    ) -> None:
+        """Persist the operator verdict on the stored learning."""
+        record = self._learning_record_for(artifact)
+        if record is None:
+            logger.warning(
+                "resident_learning: no learning store configured; operator "
+                "feedback on %s is not durable",
+                artifact.learning_id,
+            )
+            return
+        record.operator_feedback = {
+            "verdict": str(feedback.get("verdict") or ""),
+            "reason": str(feedback.get("reason") or ""),
+            "operator_id": str(feedback.get("operatorId") or feedback.get("operator_id") or ""),
+            "recorded_at": str(
+                feedback.get("recordedAt")
+                or feedback.get("recorded_at")
+                or datetime.now(UTC).isoformat()
+            ),
+        }
+        self._learning_store.save(record)
+
+    async def _apply_learning_feedback(
+        self,
+        artifact: ResidentLearningArtifact,
+        feedback: dict[str, Any],
+    ) -> tuple[str, str, ResidentLearningDecision | None]:
+        """Apply a pure feedback verdict: reinforcement or local rejection.
+
+        ``useful``/``good_action`` raise the stored learning's confidence by
+        the configured bump; ``bad_action`` on a not-yet-adopted learning is
+        a durable local rejection. Lifecycle-changing verdicts (rollback,
+        dismissal, tier moves) arrive as their existing dedicated commands.
+        """
+        verdict = str(feedback.get("verdict") or "")
+        if verdict in {"useful", "good_action"}:
+            record = self._learning_record_for(artifact)
+            if record is None:
+                return (
+                    "apply_failed",
+                    "no learning store configured; operator reinforcement cannot be applied",
+                    None,
+                )
+            reinforced = min(
+                record.candidate.confidence + self._feedback_confidence_bump,
+                MAX_LEARNING_CONFIDENCE,
+            )
+            record.candidate = replace(record.candidate, confidence=reinforced)
+            self._learning_store.save(record)
+            detail = f"operator feedback {verdict}: confidence reinforced to {reinforced:.2f}"
+            await self._publish_learning_update(artifact, record, rationale=detail)
+            return "applied", detail, None
+        if verdict == "bad_action":
+            decision = ResidentLearningDecision(
+                "rejected",
+                (f"operator feedback bad_action: {feedback.get('reason') or 'no reason given'}"),
+                relevant=True,
+            )
+            await self._publish_adoption(artifact, decision)
+            return "applied", decision.rationale, decision
+        return "applied", f"operator feedback {verdict or 'unknown'} recorded", None
+
+    async def _apply_learning_revision(
+        self,
+        item: ReviewItem,
+        artifact: ResidentLearningArtifact,
+    ) -> tuple[str, str, ResidentLearningDecision | None]:
+        """Apply an operator revision command.
+
+        Candidate revisions are edited in place with a revision marker;
+        revisions of adopted learnings arrive as superseding candidates that
+        re-enter the one review/canary install pipeline.
+        """
+        revision = item.evidence.get("revision")
+        revision = dict(revision) if isinstance(revision, dict) else {}
+        superseded_id = str(revision.get("superseded_id") or artifact.supersedes or "")
+        if superseded_id:
+            decision = await self.evaluate_and_apply(artifact)
+            outcome = "applied" if decision.action in {"adopted", "held"} else "apply_failed"
+            return outcome, decision.rationale, decision
+
+        record = self._learning_record_for(artifact)
+        if record is None:
+            return (
+                "apply_failed",
+                "no learning store configured; candidate revision cannot be applied",
+                None,
+            )
+        updates: dict[str, str] = {}
+        if str(revision.get("title") or "").strip():
+            updates["title"] = str(revision["title"])
+        if str(revision.get("summary") or "").strip():
+            updates["summary"] = str(revision["summary"])
+        if str(revision.get("content") or "").strip():
+            updates["content"] = str(revision["content"])
+        if not updates:
+            return "apply_failed", "revision command carried no edits", None
+        record.candidate = replace(record.candidate, **updates)
+        record.revision += 1
+        self._learning_store.save(record)
+        detail = f"revision {record.revision} applied to candidate {artifact.learning_id}"
+        await self._publish_learning_update(artifact, record, rationale=detail)
+        return "applied", detail, None
+
+    async def _publish_learning_update(
+        self,
+        artifact: ResidentLearningArtifact,
+        record: FlockLearningRecord,
+        *,
+        rationale: str,
+    ) -> None:
+        """Re-emit the learning update event so dashboard mirrors converge."""
+        event = learning_adoption_recorded(
+            environment_id=self.identity.environment_id,
+            learning_id=artifact.learning_id,
+            promotion_id=artifact.promotion_id or artifact.learning_id,
+            action="updated",
+            rationale=rationale,
+            source=self._source,
+            correlation_id=artifact.correlation_id or artifact.learning_id,
+            causation_id=artifact.causation_id,
+        )
+        event.payload.update(
+            {
+                "resident_valkyrie_id": self.identity.valkyrie_id,
+                "ack_kind": "resident_learning",
+                "artifact_type": artifact.artifact_type,
+                "scope": _normalise_scope(artifact.scope),
+                "title": record.candidate.title,
+                "summary_text": record.candidate.summary,
+                "confidence": record.candidate.confidence,
+                "repetition": record.repetition,
+                "revision": record.revision,
+                "feedback": dict(record.operator_feedback),
+                "additional_nats_subjects": [
+                    _flock_nats_subject(self.identity, "learning.adoption.recorded")
+                ],
+            }
+        )
+        await self._publisher.publish(event)
 
     async def evaluate_and_apply(
         self,
@@ -800,6 +1378,10 @@ class ResidentLearningRuntime:
             await self._file_install_review(artifact, build, review, signal)
             return decision
 
+        verify_rejection = await self._verify_peer_artifact(artifact, review)
+        if verify_rejection is not None:
+            return verify_rejection
+
         canary_payload = artifact.canary_sample or (
             dict(signal.payload) if signal is not None else {}
         )
@@ -860,8 +1442,50 @@ class ResidentLearningRuntime:
         )
         await self._publish_activation(artifact, skill_name, review)
         await self._publish_adoption(artifact, decision)
+        # Refresh the dashboard's inventory the moment a new skill lands.
+        await self._refresh_skill_inventory()
         if self_built and artifact.flock_id:
             await self._publish_flock_learning_proposal(artifact, build, review)
+        return decision
+
+    async def _verify_peer_artifact(
+        self,
+        artifact: ResidentLearningArtifact,
+        review: ReviewResult,
+    ) -> ResidentLearningDecision | None:
+        """Independently re-verify a peer artifact before install (P6.2).
+
+        Never trust the teacher's own "it works": when a peer proposal carries
+        a self-contained test module, it re-runs from scratch in a throwaway
+        venv here — with the tool's declared requirements installed — before
+        anything touches this resident. A failure is a durable rejection in
+        the ledger (same shape as every other rejection, so NIU-1034 dedupe
+        keeps working). Artifacts without test_code keep the canary-only path:
+        old proposals are weaker evidence, not punishable offences. Self-built
+        artifacts were already verified (and repaired) by build_tool.
+        """
+        if artifact.source_valkyrie_id == self.identity.valkyrie_id:
+            return None
+        if not artifact.test_code.strip() or not artifact.tool_code.strip():
+            return None
+        result = await asyncio.to_thread(
+            verify_learned_tool_in_ephemeral_venv,
+            tool_name=artifact.title or "learned_tool",
+            tool_code=artifact.tool_code,
+            test_code=artifact.test_code,
+            requirements=list(artifact.requirements),
+            entry_point=artifact.tool_entry_point or "run",
+        )
+        if result.ok:
+            return None
+        logs_tail = result.logs[-DEFAULT_VERIFY_LOG_EVIDENCE_CHARS:]
+        decision = ResidentLearningDecision(
+            "rejected",
+            f"Peer re-verification failed before install: {logs_tail}",
+            review=review,
+            relevant=True,
+        )
+        await self._publish_adoption(artifact, decision)
         return decision
 
     async def _file_install_review(
@@ -972,6 +1596,8 @@ class ResidentLearningRuntime:
             )
             await self._publish_retraction(artifact, decision)
             await self._publish_adoption(artifact, decision)
+            # The archived skill is gone from disk — refresh so the dashboard drops it.
+            await self._refresh_skill_inventory()
             return decision
 
         decision = ResidentLearningDecision(
@@ -991,45 +1617,54 @@ class ResidentLearningRuntime:
         artifact: ResidentLearningArtifact,
         build: BuildResult,
     ) -> str:
+        skill_name = build.skill_name
         if build.artifact_type == "agent_tool":
-            tool_name = _install_learned_tool_artifact(
+            skill_name = _install_learned_tool_artifact(
                 tools_dir=self._tools_dir,
                 artifact=artifact,
                 build=build,
             )
-            return tool_name
 
         scope = _normalise_scope(artifact.scope)
         try:
             await self._skills.create(
-                name=build.skill_name,
+                name=skill_name,
                 content=build.skill_content,
                 description=build.description,
                 scope=scope,
                 environment_id=self.identity.environment_id,
                 domain=self.identity.domain or artifact.domain,
                 source=f"flock-learning:{artifact.learning_id}",
+                source_environment_id=artifact.source_environment_id,
+                source_valkyrie_id=artifact.source_valkyrie_id,
                 action_safety_class=_safety_class_from_content(build.skill_content),
             )
         except ValueError:
             await self._skills.update(
-                name=build.skill_name,
+                name=skill_name,
                 content=build.skill_content,
                 description=build.description,
+                source=f"flock-learning:{artifact.learning_id}",
+                source_environment_id=artifact.source_environment_id,
+                source_valkyrie_id=artifact.source_valkyrie_id,
             )
             await self._skills.promote(
-                build.skill_name,
+                skill_name,
                 scope=scope,
                 environment_id=self.identity.environment_id,
                 domain=self.identity.domain or artifact.domain,
             )
-        if build.has_tool_implementation and self._tools_dir is not None:
+        if (
+            build.artifact_type != "agent_tool"
+            and build.has_tool_implementation
+            and self._tools_dir is not None
+        ):
             write_tool(
                 tools_dir=self._tools_dir,
-                skill_name=build.skill_name,
+                skill_name=skill_name,
                 tool_code=build.tool_code,
             )
-        return build.skill_name
+        return skill_name
 
     async def _archive_learning_skill(self, artifact: ResidentLearningArtifact) -> str:
         rows = await self._skills.list_skills(include_archived=True)
@@ -1051,11 +1686,37 @@ class ResidentLearningRuntime:
 
     async def _find_installed_skill_by_capability(self, capability: str) -> Any | None:
         rows = await self._skills.list_skills()
-        marker = f"capability: {capability}"
+        capabilities = [capability]
+        if capability.startswith("inspect.kubernetes."):
+            capabilities.append(capability.replace("inspect.kubernetes.", "inspect.", 1))
+        markers = [f"capability: {candidate}" for candidate in capabilities]
         for row in rows:
             skill = row["skill"]
-            if marker in str(skill.get("content", "")):
+            if any(marker in str(skill.get("content", "")) for marker in markers):
                 return type("RunnableSkill", (), skill)()
+
+        # Agent-tool artifacts installed before they were represented in the
+        # managed skill registry still need to be discoverable and metered.
+        # Register the durable envelope lazily, then use it for this signal.
+        for record in self._iter_learned_tool_inventory():
+            if not any(marker in record["skill_content"] for marker in markers):
+                continue
+            try:
+                skill = await self._skills.create(
+                    name=record["skill_name"],
+                    content=record["skill_content"],
+                    description=record["summary_text"],
+                    scope=_normalise_scope(record["learning_scope"]),
+                    environment_id=self.identity.environment_id,
+                    domain=self.identity.domain,
+                    source=record["learning_source"],
+                    source_environment_id=record["source_environment_id"],
+                    source_valkyrie_id=record["source_valkyrie_id"],
+                    action_safety_class=_safety_class_from_content(record["skill_content"]),
+                )
+            except ValueError:
+                continue
+            return skill
         return None
 
     async def _publish_odin_decision(
@@ -1106,7 +1767,7 @@ class ResidentLearningRuntime:
     ) -> None:
         await self._publisher.publish(
             SleipnirEvent(
-                event_type="valkyrie.evolution.activated",
+                event_type=EVOLUTION_ACTIVATED_EVENT,
                 source=self._source,
                 payload={
                     "environment_id": self.identity.environment_id,
@@ -1120,6 +1781,15 @@ class ResidentLearningRuntime:
                     "source_valkyrie_id": artifact.source_valkyrie_id,
                     "review_outcome": review.outcome,
                     "autonomy_mode": self.identity.autonomy_mode,
+                    # Full artifact body so the dashboard can show the skill an
+                    # operator sees referenced in judgment evidence without
+                    # reaching into the resident's disk.
+                    "skill_content": artifact.content,
+                    "learned_tool_manifest": dict(artifact.learned_tool_manifest or {}),
+                    "tool_code": artifact.tool_code,
+                    "test_code": artifact.test_code,
+                    "requirements": list(artifact.requirements),
+                    "summary_text": artifact.summary,
                 },
                 summary=f"{self.identity.valkyrie_id} installed learning skill {skill_name}",
                 urgency=0.25,
@@ -1137,7 +1807,7 @@ class ResidentLearningRuntime:
     ) -> None:
         await self._publisher.publish(
             SleipnirEvent(
-                event_type="valkyrie.evolution.rolled_back",
+                event_type=EVOLUTION_ROLLED_BACK_EVENT,
                 source=self._source,
                 payload={
                     "environment_id": self.identity.environment_id,
@@ -1218,6 +1888,8 @@ class ResidentLearningRuntime:
                 tool_code=build.tool_code,
                 tool_entry_point=build.tool_entry_point,
                 learned_tool_manifest=artifact.learned_tool_manifest,
+                test_code=artifact.test_code,
+                requirements=list(artifact.requirements),
                 canary_sample=artifact.canary_sample,
                 review_outcome=review.outcome,
                 builder_evidence=build.evidence,
@@ -1255,19 +1927,32 @@ class ResidentLearningRuntime:
         self,
         artifact: ResidentLearningArtifact,
         decision: ResidentLearningDecision,
-    ) -> None:
-        """Record the decision in the durable flock-learning ledger."""
+    ) -> FlockLearningRecord | None:
+        """Record the decision in the durable flock-learning ledger.
+
+        A learning re-produced under a fresh id (a repeated dream) folds
+        into the existing non-rejected record by fingerprint: repetition
+        counts up instead of duplicate records piling up.
+        """
         if self._learning_store is None:
-            return
+            return None
         if decision.action not in {"adopted", "rejected", "rolled_back"}:
-            return
+            return None
         if decision.action == "rejected" and not decision.relevant:
             # Irrelevant learnings (wrong flock/domain) stay out of the ledger;
             # they were never candidates for this environment.
-            return
+            return None
         try:
             record = self._learning_store.get(artifact.learning_id)
         except ValueError:
+            # Only adoptions fold: a rejection folded onto the fingerprint
+            # match would silently decline the original adopted learning.
+            record = (
+                self._learning_store.fold_duplicate(_candidate_from_artifact(artifact))
+                if decision.action == "adopted"
+                else None
+            )
+        if record is None:
             record = FlockLearningRecord(
                 exchange_id=artifact.learning_id,
                 candidate=_candidate_from_artifact(artifact),
@@ -1290,14 +1975,14 @@ class ResidentLearningRuntime:
                 for environment_id in record.active_environment_ids
                 if environment_id != self.identity.environment_id
             ]
-        self._learning_store.save(record)
+        return self._learning_store.save(record)
 
     async def _publish_adoption(
         self,
         artifact: ResidentLearningArtifact,
         decision: ResidentLearningDecision,
     ) -> None:
-        self._persist_learning_decision(artifact, decision)
+        record = self._persist_learning_decision(artifact, decision)
         event = learning_adoption_recorded(
             environment_id=self.identity.environment_id,
             learning_id=artifact.learning_id,
@@ -1322,6 +2007,7 @@ class ResidentLearningRuntime:
                 "source_environment_id": artifact.source_environment_id,
                 "source_valkyrie_id": artifact.source_valkyrie_id,
                 "command_action": artifact.command_action,
+                "repetition": record.repetition if record is not None else 1,
                 "additional_nats_subjects": [
                     _flock_nats_subject(self.identity, "learning.adoption.recorded")
                 ],
@@ -1348,6 +2034,8 @@ def _candidate_from_artifact(artifact: ResidentLearningArtifact) -> FlockLearnin
         metadata={
             "domain": artifact.domain,
             "artifact_type": artifact.artifact_type,
+            "scope": _normalise_scope(artifact.scope),
+            "supersedes": artifact.supersedes,
             "learned_tool_manifest": dict(artifact.learned_tool_manifest),
         },
     )
@@ -1391,6 +2079,8 @@ def _artifact_from_event(event: SleipnirEvent) -> ResidentLearningArtifact:
             if isinstance(payload.get("learned_tool_manifest"), dict)
             else {}
         ),
+        test_code=str(payload.get("test_code") or ""),
+        requirements=[str(item) for item in list(payload.get("requirements") or [])],
         canary_sample=(
             dict(payload["canary_sample"]) if isinstance(payload.get("canary_sample"), dict) else {}
         ),
@@ -1458,6 +2148,7 @@ def review_inputs(
             "promotion_id": artifact.promotion_id,
             "source_environment_id": artifact.source_environment_id,
             "source_valkyrie_id": artifact.source_valkyrie_id,
+            "scope": _normalise_scope(artifact.scope),
             "learned_tool_manifest": dict(artifact.learned_tool_manifest),
         },
     )
@@ -1470,6 +2161,21 @@ def _build_artifact_type(artifact: ResidentLearningArtifact) -> str:
     return artifact.artifact_type
 
 
+def _learning_origin(
+    *,
+    source_valkyrie_id: str,
+    resident_valkyrie_id: str,
+    learning_source: str = "",
+    learning_scope: str = "",
+) -> str:
+    """Classify installed learning without inventing missing historic provenance."""
+    if source_valkyrie_id:
+        return "local" if source_valkyrie_id == resident_valkyrie_id else "peer"
+    if learning_source.startswith("flock-learning:") or learning_scope in {"flock", "shared"}:
+        return "unknown"
+    return "local"
+
+
 def _agent_tool_content(
     artifact: ResidentLearningArtifact,
     manifest: LearnedToolManifest,
@@ -1478,7 +2184,7 @@ def _agent_tool_content(
     return (
         f"# learned tool: {manifest.name}\n"
         "metadata:\n"
-        f"  capability: tool.{manifest.name}\n"
+        f"  capability: {manifest.name}\n"
         f"  source: {artifact.source_valkyrie_id or 'resident-agent'}\n"
         f"  safety_class: {safety_class}\n"
         f"  tool_entry_point: {manifest.entry_point}\n"
@@ -1517,7 +2223,15 @@ def _install_learned_tool_artifact(
 ) -> str:
     if tools_dir is None:
         raise ValueError("agent_tool install requires a resident tools directory")
-    learned = _learned_tool_artifact_from_build(build)
+    learned = replace(
+        _learned_tool_artifact_from_build(build),
+        # Contract v2 payload travels with the proposal, not the build
+        # projection: persist it so re-verification and per-tool venv
+        # provisioning survive the install.
+        test_code=artifact.test_code,
+        requirements=list(artifact.requirements),
+        supersedes=artifact.supersedes,
+    )
     # The resident tools dir lives under the state dir; learned tools live in
     # the one canonical location beside it, shared with build_tool authoring.
     code_dir, artifacts_dir = learned_tool_storage(tools_dir.parent)
@@ -1656,6 +2370,8 @@ def flock_learning_proposed_event(
     tool_code: str = "",
     tool_entry_point: str = "run",
     learned_tool_manifest: dict[str, Any] | None = None,
+    test_code: str = "",
+    requirements: list[str] | None = None,
     canary_sample: dict[str, Any] | None = None,
     review_outcome: str = "",
     builder_evidence: dict[str, Any] | None = None,
@@ -1691,6 +2407,8 @@ def flock_learning_proposed_event(
             "tool_code": tool_code,
             "tool_entry_point": tool_entry_point,
             "learned_tool_manifest": dict(learned_tool_manifest or {}),
+            "test_code": test_code,
+            "requirements": list(requirements or []),
             "canary_sample": dict(canary_sample or {}),
             "review_outcome": review_outcome,
             "builder_evidence": dict(builder_evidence or {}),

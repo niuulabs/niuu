@@ -51,6 +51,19 @@ class GitContributor(SessionContributor):
         if not session.repo:
             return SessionContribution()
 
+        if context.runtime_backend == "openshell":
+            base_branch = getattr(session.source, "base_branch", "") if session.source else ""
+            return SessionContribution(
+                values={
+                    "git": {
+                        "repoUrl": session.repo,
+                        "cloneUrl": session.repo,
+                        "branch": session.branch,
+                        "baseBranch": base_branch,
+                    },
+                }
+            )
+
         clone_url = None
 
         # Prefer user-scoped resolution (shared + per-user credentials)

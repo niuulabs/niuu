@@ -16,6 +16,7 @@ Public re-exports kept here for backward compatibility.
 from __future__ import annotations
 
 import logging
+import re
 import socket
 from typing import Any, Protocol, runtime_checkable
 
@@ -27,6 +28,12 @@ MESH_ALIASES: dict[str, str] = {
     "sleipnir": "ravn.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter",
     "webhook": "ravn.adapters.mesh.webhook.WebhookMeshAdapter",
 }
+
+
+def mesh_event_prefix(environment_id: str = "") -> str:
+    """Return the event namespace for one isolated mesh environment."""
+    normalized = re.sub(r"[^a-z0-9_]", "_", environment_id.strip().lower()).strip("_")
+    return f"ravn.mesh.realm_{normalized}" if normalized else "ravn.mesh"
 
 
 @runtime_checkable
@@ -49,6 +56,7 @@ def build_mesh_from_adapters_list(
     *,
     discovery: Any | None = None,
     sleipnir_transport_builder: Any | None = None,
+    environment_id: str = "",
 ) -> Any:
     """Build mesh from a list of adapter entries (dynamic import pattern).
 
@@ -67,6 +75,8 @@ def build_mesh_from_adapters_list(
         Optional callable(adapter_entry) -> (publisher, subscriber) for
         Sleipnir adapters that need transport injection. If None, Sleipnir
         adapters are instantiated with kwargs only.
+    environment_id:
+        Flock/realm identifier used to isolate Sleipnir subjects.
 
     Returns
     -------
@@ -94,8 +104,12 @@ def build_mesh_from_adapters_list(
         kwargs["discovery"] = discovery
         kwargs.setdefault("rpc_timeout_s", rpc_timeout_s)
 
+        is_sleipnir = "sleipnir" in fq_class.lower()
+        if is_sleipnir:
+            kwargs.setdefault("environment_id", environment_id)
+
         # Sleipnir adapters need publisher/subscriber injection
-        if "sleipnir" in fq_class.lower() and sleipnir_transport_builder is not None:
+        if is_sleipnir and sleipnir_transport_builder is not None:
             transport = sleipnir_transport_builder(entry)
             if transport is None:
                 logger.warning("mesh: failed to build Sleipnir transport, skipping")
@@ -103,6 +117,7 @@ def build_mesh_from_adapters_list(
             kwargs["publisher"] = transport
             kwargs["subscriber"] = transport
             kwargs.pop("discovery", None)
+            kwargs.pop("transport", None)
 
         try:
             transports.append(cls(**kwargs))
@@ -120,7 +135,12 @@ def build_mesh_from_adapters_list(
     return CompositeMeshAdapter(transports=transports, own_peer_id=own_peer_id)
 
 
-def build_in_process_mesh(own_peer_id: str, rpc_timeout_s: float) -> Any:
+def build_in_process_mesh(
+    own_peer_id: str,
+    rpc_timeout_s: float,
+    *,
+    environment_id: str = "",
+) -> Any:
     """Build a SleipnirMeshAdapter backed by InProcessBus (local/test mode)."""
     SleipnirMeshAdapter = import_class("ravn.adapters.mesh.sleipnir_mesh.SleipnirMeshAdapter")  # noqa: N806
     InProcessBus = import_class("sleipnir.adapters.in_process.InProcessBus")  # noqa: N806
@@ -131,6 +151,7 @@ def build_in_process_mesh(own_peer_id: str, rpc_timeout_s: float) -> Any:
         subscriber=bus,
         own_peer_id=own_peer_id,
         rpc_timeout_s=rpc_timeout_s,
+        environment_id=environment_id,
     )
 
 

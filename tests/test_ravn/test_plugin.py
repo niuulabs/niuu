@@ -4,31 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from niuu.ports.plugin import Service, ServiceDefinition, TUIPageSpec
-from ravn.plugin import RavnPlugin, _RavnService
-
-# ---------------------------------------------------------------------------
-# _RavnService lifecycle
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_ravn_service_start_is_noop():
-    svc = _RavnService()
-    await svc.start()  # Should not raise
-
-
-@pytest.mark.asyncio
-async def test_ravn_service_stop_is_noop():
-    svc = _RavnService()
-    await svc.stop()  # Should not raise
-
-
-@pytest.mark.asyncio
-async def test_ravn_service_health_check_returns_true():
-    svc = _RavnService()
-    assert await svc.health_check() is True
-
+from niuu.ports.plugin import ServiceDefinition, ServiceLifecycle, TUIPageSpec
+from ravn.plugin import RavnPlugin
 
 # ---------------------------------------------------------------------------
 # RavnPlugin identity
@@ -57,22 +34,17 @@ def test_register_service_returns_definition():
     assert defn.name == "ravn"
 
 
-def test_register_service_factory_creates_service():
+def test_service_is_host_mounted():
     plugin = RavnPlugin()
-    defn = plugin.register_service()
-    svc = defn.factory()
-    assert isinstance(svc, Service)
+    definition = plugin.register_service()
+    assert definition.lifecycle is ServiceLifecycle.HOSTED
+    assert definition.factory is None
+    assert plugin.create_service() is None
 
 
-def test_create_service_returns_service():
+def test_depends_on_returns_postgres():
     plugin = RavnPlugin()
-    svc = plugin.create_service()
-    assert isinstance(svc, Service)
-
-
-def test_depends_on_returns_empty():
-    plugin = RavnPlugin()
-    assert list(plugin.depends_on()) == []
+    assert list(plugin.depends_on()) == ["postgres"]
 
 
 def test_register_service_depends_on_postgres():
@@ -340,20 +312,40 @@ def test_create_api_app_lists_ravens_sessions_and_triggers():
 
     client = TestClient(app)
 
-    ravens = client.get("/api/v1/ravn/ravens")
-    assert ravens.status_code == 200
-    assert isinstance(ravens.json(), list)
-    assert ravens.json()[0]["persona_name"]
+    import httpx
+    import respx
 
-    sessions = client.get("/api/v1/ravn/sessions")
+    with respx.mock(assert_all_called=False) as router:
+        router.get("http://localhost:8080/api/v1/forge/resident-runtimes").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        ravens = client.get("/api/v1/ravn/ravens")
+        router.get("http://localhost:8080/api/v1/forge/sessions").mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "11111111-2222-4333-8444-555555555555",
+                        "name": "research campaign",
+                        "status": "running",
+                        "model": "claude-opus-4-8",
+                        "chat_endpoint": "ws://host/s/1/session",
+                        "workload_type": "ravn_flock",
+                    }
+                ],
+            )
+        )
+        sessions = client.get("/api/v1/ravn/sessions")
+    assert ravens.status_code == 200
+    assert ravens.json() == []
     assert sessions.status_code == 200
     assert isinstance(sessions.json(), list)
-    assert sessions.json()[0]["ravn_id"]
+    assert sessions.json()[0]["ravn_id"] == "11111111-2222-4333-8444-555555555555"
+    assert sessions.json()[0]["chat_endpoint"]
 
     triggers = client.get("/api/v1/ravn/triggers")
-    assert triggers.status_code == 200
-    assert isinstance(triggers.json(), list)
-    assert triggers.json()[0]["persona_name"]
+    assert triggers.status_code == 503
+    assert triggers.json()["detail"] == "Ravn trigger persistence is unavailable"
 
 
 def test_create_api_app_supports_session_messages_and_budget_routes():
@@ -369,25 +361,40 @@ def test_create_api_app_supports_session_messages_and_budget_routes():
 
     client = TestClient(app)
 
-    session = client.get("/api/v1/ravn/sessions/10000001-0000-4000-8000-000000000001")
-    assert session.status_code == 200
-    assert session.json()["persona_name"] == "sindri"
+    import httpx
+    import respx
 
-    messages = client.get("/api/v1/ravn/sessions/10000001-0000-4000-8000-000000000001/messages")
+    sid = "11111111-2222-4333-8444-555555555555"
+    forge_session = {
+        "id": sid,
+        "name": "research campaign",
+        "status": "running",
+        "model": "claude-opus-4-8",
+        "chat_endpoint": "ws://host/s/1/session",
+        "workload_type": "ravn_flock",
+    }
+    with respx.mock(assert_all_called=False) as router:
+        router.get(f"http://localhost:8080/api/v1/forge/sessions/{sid}").mock(
+            return_value=httpx.Response(200, json=forge_session)
+        )
+        session = client.get(f"/api/v1/ravn/sessions/{sid}")
+        # Live transcript flows over the chat WS, so REST messages is empty.
+        messages = client.get(f"/api/v1/ravn/sessions/{sid}/messages")
+    assert session.status_code == 200
+    assert session.json()["persona_name"] == "research campaign"
     assert messages.status_code == 200
-    assert isinstance(messages.json(), list)
-    assert messages.json()[0]["session_id"] == "10000001-0000-4000-8000-000000000001"
+    assert messages.json() == []
 
     budget = client.get("/api/v1/ravn/budget/a3f1b2c4-8e7d-4a6f-9b0c-1d2e3f4a5b6c")
-    assert budget.status_code == 200
-    assert budget.json()["spent_usd"] > 0
+    assert budget.status_code == 503
+    assert budget.json()["detail"] == "Ravn budget persistence is unavailable"
 
     fleet = client.get("/api/v1/ravn/budget/fleet")
-    assert fleet.status_code == 200
-    assert fleet.json()["cap_usd"] > 0
+    assert fleet.status_code == 503
+    assert fleet.json()["detail"] == "Ravn budget persistence is unavailable"
 
 
-def test_create_api_app_supports_trigger_crud():
+def test_create_api_app_rejects_trigger_mutation_without_store():
     from pathlib import Path
 
     from fastapi.testclient import TestClient
@@ -409,8 +416,9 @@ def test_create_api_app_supports_trigger_crud():
             "enabled": True,
         },
     )
-    assert created.status_code == 201
-    created_id = created.json()["id"]
+    assert created.status_code == 503
+    assert created.json()["detail"] == "Ravn trigger persistence is unavailable"
 
-    deleted = client.delete(f"/api/v1/ravn/triggers/{created_id}")
-    assert deleted.status_code == 204
+    deleted = client.delete("/api/v1/ravn/triggers/missing")
+    assert deleted.status_code == 503
+    assert deleted.json()["detail"] == "Ravn trigger persistence is unavailable"

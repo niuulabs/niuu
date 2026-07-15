@@ -5,9 +5,8 @@ definitions from a central volundr instance at runtime.
 
 Auth
 ----
-The adapter reads a PAT from an environment variable (default
-``RAVN_VOLUNDR_TOKEN``) and sends it as ``Authorization: Bearer <token>``.
-The token is mounted as a Kubernetes secret in production.
+The adapter uses projected workload identity by default. Non-cluster callers
+may pass ``external_token_env`` to send an already-issued bearer token.
 
 Cache
 -----
@@ -29,11 +28,15 @@ keep running with stale data rather than crashing.
 from __future__ import annotations
 
 import logging
-import os
 
 import httpx
 
+from niuu.adapters.outbound.http_auth import (
+    StaticBearerTokenAuthAdapter,
+    WorkloadIdentityBearerTokenAuthAdapter,
+)
 from niuu.domain.models import CacheEntry
+from niuu.ports.http_auth import HttpAuthPort
 from ravn.adapters.personas.loader import (
     PersonaConfig,
     PersonaLLMConfig,
@@ -47,7 +50,28 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT_SECONDS: float = 5.0
 _DEFAULT_CACHE_TTL_SECONDS: int = 60
-_DEFAULT_TOKEN_ENV: str = "RAVN_VOLUNDR_TOKEN"
+
+
+def _persona_auth(
+    *,
+    base_url: str,
+    external_token_env: str,
+    workload_token_file: str,
+    workload_exchange_url: str,
+    workload_audiences: list[str] | None,
+    timeout_seconds: float,
+    transport: httpx.BaseTransport | None,
+) -> HttpAuthPort:
+    if external_token_env:
+        return StaticBearerTokenAuthAdapter(token_env=external_token_env)
+    return WorkloadIdentityBearerTokenAuthAdapter(
+        base_url=base_url,
+        token_file=workload_token_file,
+        exchange_url=workload_exchange_url,
+        audiences=workload_audiences or ["volundr-api"],
+        timeout_seconds=timeout_seconds,
+        transport=transport,
+    )
 
 
 class HttpPersonaAdapter(PersonaPort):
@@ -57,8 +81,7 @@ class HttpPersonaAdapter(PersonaPort):
         base_url:           Base URL of the volundr service, e.g. ``http://volundr:8080``.
         timeout_seconds:    HTTP request timeout (default 5 s).
         cache_ttl_seconds:  Cache lifetime per persona (default 60 s).
-        token_env:          Name of the env var that holds the PAT
-                            (default ``RAVN_VOLUNDR_TOKEN``).
+        external_token_env: Optional env var holding an external bearer token.
     """
 
     def __init__(
@@ -67,15 +90,26 @@ class HttpPersonaAdapter(PersonaPort):
         base_url: str,
         timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
         cache_ttl_seconds: int = _DEFAULT_CACHE_TTL_SECONDS,
-        token_env: str = _DEFAULT_TOKEN_ENV,
+        external_token_env: str = "",
+        workload_token_file: str = "",
+        workload_exchange_url: str = "",
+        workload_audiences: list[str] | None = None,
         # Private: injected in tests to avoid real network calls.
         _transport: httpx.BaseTransport | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout_seconds
         self._ttl = cache_ttl_seconds
-        self._token_env = token_env
         self._transport = _transport
+        self._auth = _persona_auth(
+            base_url=self._base_url,
+            external_token_env=external_token_env,
+            workload_token_file=workload_token_file,
+            workload_exchange_url=workload_exchange_url,
+            workload_audiences=workload_audiences,
+            timeout_seconds=timeout_seconds,
+            transport=_transport,
+        )
         self._http: httpx.Client | None = None
 
         # Per-persona cache: name → CacheEntry(PersonaConfig | None)
@@ -93,10 +127,7 @@ class HttpPersonaAdapter(PersonaPort):
         return self._http
 
     def _auth_headers(self) -> dict[str, str]:
-        token = os.environ.get(self._token_env, "")
-        if not token:
-            return {}
-        return {"Authorization": f"Bearer {token}"}
+        return self._auth.headers()
 
     def _get(self, *paths: str) -> tuple[httpx.Response, str]:
         """GET the first successful path, falling back across known persona prefixes.
@@ -215,17 +246,3 @@ class HttpPersonaAdapter(PersonaPort):
         names = sorted(item["name"] for item in response.json())
         self._names_cache = CacheEntry(names, self._ttl)
         return list(names)
-
-    # ------------------------------------------------------------------
-    # Write operations — not supported
-    # ------------------------------------------------------------------
-
-    def save(self, config: PersonaConfig) -> None:
-        raise NotImplementedError(
-            "Use the volundr REST API to edit personas; this adapter is read-only."
-        )
-
-    def delete(self, name: str) -> bool:
-        raise NotImplementedError(
-            "Use the volundr REST API to edit personas; this adapter is read-only."
-        )

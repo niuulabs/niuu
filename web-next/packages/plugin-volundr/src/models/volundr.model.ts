@@ -49,6 +49,12 @@ export interface ResourceType {
 
 export interface NodeResourceSummary {
   name: string;
+  instanceId?: string;
+  instance_id?: string;
+  instanceName?: string;
+  instance_name?: string;
+  instanceSlug?: string;
+  instance_slug?: string;
   labels: Record<string, string>;
   allocatable: Record<string, string>;
   allocated: Record<string, string>;
@@ -56,6 +62,14 @@ export interface NodeResourceSummary {
 }
 
 export interface ClusterResourceInfo {
+  instances?: Array<{
+    id: string;
+    name: string;
+    slug: string;
+    isDefault?: boolean;
+    is_default?: boolean;
+    tags?: string[];
+  }>;
   resourceTypes: ResourceType[];
   nodes: NodeResourceSummary[];
 }
@@ -148,6 +162,7 @@ export interface VolundrSession {
   source: SessionSource;
   status: SessionStatus;
   model: string;
+  personaName?: string;
   lastActive: number;
   messageCount: number;
   tokensUsed: number;
@@ -161,7 +176,9 @@ export interface VolundrSession {
   taskType?: string;
   archivedAt?: Date;
   trackerIssue?: TrackerIssue;
-  activityState?: 'active' | 'idle' | 'tool_executing' | null;
+  activityState?: 'active' | 'idle' | 'tool_executing' | 'awaiting_input' | null;
+  /** True when the session is blocked waiting on the user (awaiting_input). */
+  needsAttention?: boolean;
   ownerId?: string;
   tenantId?: string;
   instanceId?: string;
@@ -219,6 +236,7 @@ export interface VolundrWorkflowGate {
 export interface VolundrStats {
   activeSessions: number;
   totalSessions: number;
+  sessionsToday: number;
   tokensToday: number;
   localTokens: number;
   cloudTokens: number;
@@ -228,7 +246,7 @@ export interface VolundrStats {
     activePods?: number[];
     tokensToday?: number[];
     costToday?: number[];
-    gpus?: number[];
+    sessionsToday?: number[];
   };
 }
 
@@ -515,12 +533,7 @@ export interface VolundrLaunchSpec {
 // ---------------------------------------------------------------------------
 
 export type SecretType =
-  | 'api_key'
-  | 'oauth_token'
-  | 'git_credential'
-  | 'ssh_key'
-  | 'tls_cert'
-  | 'generic';
+  'api_key' | 'oauth_token' | 'git_credential' | 'ssh_key' | 'tls_cert' | 'generic';
 
 export interface StoredCredential {
   id: string;

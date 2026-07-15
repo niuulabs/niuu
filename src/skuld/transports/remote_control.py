@@ -60,6 +60,9 @@ class RemoteControlTransport(CLITransport):
         model: str = "",
         session_id: str = "",
         skip_permissions: bool = False,
+        cli_binary: str = "claude",
+        session_name: str = "volundr",
+        remote_control_permission_mode: str = "",
         **_kwargs: object,
     ) -> None:
         super().__init__()
@@ -67,6 +70,9 @@ class RemoteControlTransport(CLITransport):
         self._model = model
         self._session_id_hint = session_id
         self._skip_permissions = skip_permissions
+        self._cli_binary = cli_binary
+        self._session_name = session_name
+        self._permission_mode = remote_control_permission_mode
         self._process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._url: str | None = None
@@ -103,13 +109,13 @@ class RemoteControlTransport(CLITransport):
         return self._url
 
     def _build_command(self) -> list[str]:
-        binary = os.environ.get("SKULD__CLI_BINARY", "claude")
-        base = os.environ.get("SKULD__SESSION__NAME") or "volundr"
+        binary = self._cli_binary
+        base = self._session_name or "volundr"
         # Bake the unique token into the display name so the worker process
         # carries it in argv (the handle stop() uses to target only this session).
         name = f"{base}-{self._token}" if self._token else base
         # The native app uses the host permission mode for the sessions it spawns.
-        perm = os.environ.get("SKULD__REMOTE_CONTROL_PERMISSION_MODE") or (
+        perm = self._permission_mode or (
             "bypassPermissions" if self._skip_permissions else "default"
         )
         return [
@@ -199,7 +205,9 @@ class RemoteControlTransport(CLITransport):
         with suppress(Exception):
             await self._emit({"type": "remote_control", "subtype": "paired", "url": url})
 
-    async def send_message(self, content: str) -> None:
+    async def send_message(
+        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+    ) -> None:
         # The native app owns the conversation; re-surface the pairing link.
         if self._url:
             with suppress(Exception):
@@ -279,80 +287,3 @@ class RemoteControlTransport(CLITransport):
         await asyncio.sleep(1)
         self._sweep_kill(signal.SIGKILL)
         self._process = None
-
-
-# Path the managed Codex remote-control daemon requires (standalone installer
-# only — the npm `@openai/codex` install cannot manage it).
-_CODEX_STANDALONE = "~/.codex/packages/standalone/current/codex"
-
-
-class CodexRemoteControlTransport(CLITransport):
-    """Codex Remote Control — experimental, gated on the standalone Codex install.
-
-    `codex remote-control` (managed app-server daemon + control socket that the
-    native Codex app attaches to) only runs from the standalone installer's fixed
-    path; the npm `codex` errors with "managed standalone Codex install not
-    found". Until that install exists this transport fails fast with a clear,
-    actionable notice rather than spawning a broken process. The launch/pairing
-    path is intentionally not wired yet (the user opted for "Claude now, Codex
-    stubbed").
-    """
-
-    def __init__(
-        self,
-        workspace_dir: str,
-        model: str = "",
-        session_id: str = "",
-        **_kwargs: object,
-    ) -> None:
-        super().__init__()
-        self.workspace_dir = workspace_dir
-        self._model = model
-
-    @property
-    def capabilities(self) -> TransportCapabilities:
-        return TransportCapabilities(send_message=False)
-
-    @property
-    def session_id(self) -> str | None:
-        return None
-
-    @property
-    def last_result(self) -> dict | None:
-        return None
-
-    @property
-    def is_alive(self) -> bool:
-        return False
-
-    async def _notice(self) -> None:
-        if os.path.exists(os.path.expanduser(_CODEX_STANDALONE)):
-            text = (
-                "Codex Remote Control (experimental): the standalone install was "
-                "detected, but the launch/pairing path is not wired yet. Use the "
-                "Claude Remote Control session type for now."
-            )
-        else:
-            text = (
-                "⚠️ **Codex Remote Control is not available on this host yet.**\n\n"
-                "It needs the *standalone* Codex install (`curl … install.sh`) — the "
-                "npm `codex` install can't manage the remote-control daemon (missing "
-                f"`{_CODEX_STANDALONE}`). Install standalone Codex, then this session "
-                "type will pair like Claude Remote Control. (Experimental.)"
-            )
-        with suppress(Exception):
-            await self._emit(
-                {
-                    "type": "assistant",
-                    "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
-                }
-            )
-
-    async def start(self) -> None:
-        await self._notice()
-
-    async def send_message(self, content: str) -> None:
-        await self._notice()
-
-    async def stop(self) -> None:
-        return None

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Dialog, DialogContent, DialogTrigger, DialogClose } from './Dialog';
 
@@ -121,7 +121,7 @@ describe('Dialog', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     // Click the overlay (it has class niuu-dialog-overlay)
     const overlay = document.querySelector('.niuu-dialog-overlay') as HTMLElement;
-    fireEvent.pointerDown(overlay, { button: 0, bubbles: true });
+    await user.click(overlay);
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 

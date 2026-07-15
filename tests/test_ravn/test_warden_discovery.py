@@ -17,7 +17,7 @@ from ravn.adapters.warden_discovery.local_host import LocalHostWardenDiscoveryAd
 from ravn.adapters.warden_discovery.spec import WardenSpecDiscoveryAdapter
 from ravn.api import create_app
 from ravn.config import WardenDiscoveryConfig
-from ravn.warden.discovery import CompositeWardenDiscoveryAdapter
+from ravn.warden.discovery import CompositeWardenDiscoveryAdapter, build_warden_discovery
 from ravn.warden.models import WardenSpec
 from ravn.warden.store import WardenStore
 
@@ -48,6 +48,33 @@ async def test_composite_discovery_uses_later_adapter_for_duplicate_ids() -> Non
     assert [(warden.id, warden.name) for warden in wardens] == [("shared", "Observed")]
 
 
+@pytest.mark.asyncio
+async def test_composite_discovery_tolerates_failing_adapter() -> None:
+    healthy = _StaticDiscovery([WardenSpec(id="ok", name="Healthy")])
+
+    wardens = await CompositeWardenDiscoveryAdapter([_FailingDiscovery(), healthy]).list_wardens()
+
+    assert [warden.id for warden in wardens] == ["ok"]
+
+
+@pytest.mark.asyncio
+async def test_build_warden_discovery_branches(tmp_path) -> None:
+    store = WardenStore(tmp_path)
+    store.save(WardenSpec(id="persisted", name="Persisted"))
+
+    default = build_warden_discovery(None, store=store)
+    disabled = build_warden_discovery(WardenDiscoveryConfig(enabled=False), store=store)
+    empty = build_warden_discovery(WardenDiscoveryConfig(adapters=[]), store=store)
+    configured = build_warden_discovery(WardenDiscoveryConfig(), store=store)
+
+    assert isinstance(default, WardenSpecDiscoveryAdapter)
+    assert isinstance(disabled, CompositeWardenDiscoveryAdapter)
+    assert await disabled.list_wardens() == []
+    assert isinstance(empty, WardenSpecDiscoveryAdapter)
+    assert isinstance(configured, CompositeWardenDiscoveryAdapter)
+    assert [warden.id for warden in await configured.list_wardens()] == ["persisted"]
+
+
 def test_warden_discovery_config_parses_adapter_json() -> None:
     config = WardenDiscoveryConfig(
         adapters_json="""
@@ -68,9 +95,7 @@ def test_warden_discovery_config_parses_adapter_json() -> None:
 
 
 def test_ravn_api_lists_discovered_wardens_and_blocks_lifecycle(tmp_path) -> None:
-    discovery = _StaticDiscovery(
-        [WardenSpec(id="mimir-shared-warden", name="Mimir Shared Warden")]
-    )
+    discovery = _StaticDiscovery([WardenSpec(id="mimir-shared-warden", name="Mimir Shared Warden")])
     client = TestClient(
         create_app(
             warden_store=WardenStore(tmp_path),
@@ -197,6 +222,11 @@ class _StaticDiscovery:
 
     async def list_wardens(self) -> list[WardenSpec]:
         return self._wardens
+
+
+class _FailingDiscovery:
+    async def list_wardens(self) -> list[WardenSpec]:
+        raise RuntimeError("source unreachable")
 
 
 def _deployment(

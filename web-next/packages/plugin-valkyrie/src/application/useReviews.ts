@@ -1,6 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
-import type { IOdinReviewService, ReviewDecisionRequest, ReviewListFilters } from '../ports';
+import type {
+  IOdinReviewService,
+  ReviewDecisionRequest,
+  ReviewListFilters,
+  ReviewSummaryFilters,
+} from '../ports';
 
 export const REVIEWS_QUERY_KEY = ['valkyrie', 'reviews'] as const;
 
@@ -13,11 +18,11 @@ export function useReviewList(filters: ReviewListFilters = {}) {
   });
 }
 
-export function useReviewSummary() {
+export function useReviewSummary(filters: ReviewSummaryFilters = {}) {
   const service = useService<IOdinReviewService>('valkyrie.reviews');
   return useQuery({
-    queryKey: [...REVIEWS_QUERY_KEY, 'summary'],
-    queryFn: () => service.getSummary(),
+    queryKey: [...REVIEWS_QUERY_KEY, 'summary', filters],
+    queryFn: () => service.getSummary(filters),
     refetchInterval: 10_000,
   });
 }

@@ -230,8 +230,9 @@ Join contract:
   Flock-scoped, so k8s/printer/inbox authority cannot bleed across Flocks.
 - Environment action authorities are passed to Skuld on join; approval powers
   are stripped when the Environment has no reviewable actions.
-- `RAVN_VALKYRIE_SKULD_ROOM_URL` is deployment plumbing only. It selects the
-  Skuld room service, not the user, role, action, or Flock authority.
+- `valkyrie.room.url` is the canonical Skuld room service setting; it does not
+  select the user, role, action, or Flock authority.
+  `RAVN_VALKYRIE_SKULD_ROOM_URL` remains a validated legacy environment alias.
 
 The huddle is a side panel or tab, not the primary product metaphor.
 

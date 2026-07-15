@@ -1,6 +1,7 @@
 """Tests for the InMemoryEventBroadcaster adapter."""
 
 import asyncio
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
@@ -52,6 +53,8 @@ def sample_stats() -> Stats:
         local_tokens=200,
         cloud_tokens=800,
         cost_today=Decimal("0.50"),
+        sessions_today=3,
+        sparklines={"sessionsToday": [1.0, 2.0, 3.0]},
     )
 
 
@@ -322,6 +325,25 @@ class TestInMemoryEventBroadcaster:
         assert event.data["status"] == sample_session.status.value
 
     @pytest.mark.asyncio
+    async def test_session_event_carries_needs_attention(
+        self,
+        broadcaster: InMemoryEventBroadcaster,
+        sample_session: Session,
+    ):
+        """The session payload exposes needs_attention so a badge lights up
+        from session_updated alone."""
+        from volundr.domain.models import SessionActivityState
+
+        sample_session.activity_state = SessionActivityState.TOOL_EXECUTING
+        busy = broadcaster.create_session_event(EventType.SESSION_UPDATED, sample_session)
+        assert busy.data["needs_attention"] is False
+
+        sample_session.activity_state = SessionActivityState.AWAITING_INPUT
+        blocked = broadcaster.create_session_event(EventType.SESSION_UPDATED, sample_session)
+        assert blocked.data["needs_attention"] is True
+        assert blocked.data["activity_state"] == "awaiting_input"
+
+    @pytest.mark.asyncio
     async def test_create_stats_event(
         self,
         broadcaster: InMemoryEventBroadcaster,
@@ -332,7 +354,9 @@ class TestInMemoryEventBroadcaster:
 
         assert event.type == EventType.STATS_UPDATED
         assert event.data["active_sessions"] == sample_stats.active_sessions
+        assert event.data["sessions_today"] == sample_stats.sessions_today
         assert event.data["cost_today"] == float(sample_stats.cost_today)
+        assert event.data["sparklines"] == sample_stats.sparklines
 
     @pytest.mark.asyncio
     async def test_create_heartbeat_event(self, broadcaster: InMemoryEventBroadcaster):
@@ -548,6 +572,37 @@ class TestInMemoryEventBroadcaster:
         assert evt.data["commits"] == []
         assert evt.data["token_burn"] == []
 
+    @pytest.mark.asyncio
+    async def test_chronicle_session_id_escapes_control_characters_in_log(
+        self, broadcaster: InMemoryEventBroadcaster, caplog
+    ):
+        session_id = "session\r\nforged\tentry\x1b[31m"
+        timeline_event = TimelineEvent(
+            id=uuid4(),
+            chronicle_id=uuid4(),
+            session_id=uuid4(),
+            t=0,
+            type=TimelineEventType.SESSION,
+            label="session started",
+        )
+        timeline = TimelineResponse(events=[timeline_event], files=[], commits=[], token_burn=[])
+
+        with caplog.at_level(logging.INFO, logger="volundr.adapters.outbound.broadcaster"):
+            await broadcaster.publish_chronicle_event(
+                session_id,
+                timeline_event,
+                timeline,  # type: ignore[arg-type]
+            )
+
+        message = next(
+            record.getMessage()
+            for record in caplog.records
+            if "SSE broadcast chronicle_event" in record.getMessage()
+        )
+        assert repr(session_id) in message
+        assert "\r" not in message and "\n" not in message
+        assert "\t" not in message and "\x1b" not in message
+
 
 # ---------------------------------------------------------------------------
 # Sleipnir forwarding tests
@@ -656,6 +711,45 @@ class TestInMemoryEventBroadcasterSleipnirForwarding:
 
         arg: SleipnirEvent = publisher.publish.call_args[0][0]
         assert arg.event_type == registry.VOLUNDR_SESSION_CREATED
+
+    @pytest.mark.asyncio
+    async def test_session_needs_input_forwarded_with_high_urgency(self):
+        """SESSION_NEEDS_INPUT is forwarded to the bus at high urgency so it
+        outranks routine churn for urgency-gated notification consumers."""
+        from sleipnir.domain import registry
+        from sleipnir.domain.events import SleipnirEvent
+
+        publisher = AsyncMock()
+        publisher.publish = AsyncMock()
+        b = InMemoryEventBroadcaster(max_queue_size=10, sleipnir_publisher=publisher)
+        event = RealtimeEvent(
+            type=EventType.SESSION_NEEDS_INPUT,
+            data={"session_id": "sess-1", "kind": "question"},
+            timestamp=datetime.now(UTC),
+        )
+
+        await b.publish(event)
+
+        arg: SleipnirEvent = publisher.publish.call_args[0][0]
+        assert arg.event_type == registry.VOLUNDR_SESSION_NEEDS_INPUT
+        assert arg.urgency == 0.9
+        assert arg.payload["kind"] == "question"
+
+    @pytest.mark.asyncio
+    async def test_session_activity_not_forwarded_to_bus(self):
+        """Routine activity stays SSE-only — it must not flood the platform bus."""
+        publisher = AsyncMock()
+        publisher.publish = AsyncMock()
+        b = InMemoryEventBroadcaster(max_queue_size=10, sleipnir_publisher=publisher)
+        event = RealtimeEvent(
+            type=EventType.SESSION_ACTIVITY,
+            data={"session_id": "sess-1", "state": "tool_executing"},
+            timestamp=datetime.now(UTC),
+        )
+
+        await b.publish(event)
+
+        publisher.publish.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_custom_source_used_in_sleipnir_event(self):

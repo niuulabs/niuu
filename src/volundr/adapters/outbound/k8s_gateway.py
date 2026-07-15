@@ -63,6 +63,9 @@ class K8sGatewayAdapter(GatewayPort):
         issuer_url: str = "",
         audience: str = "volundr",
         jwks_uri: str = "",
+        workload_issuer_url: str = "",
+        workload_audience: str = "volundr-api",
+        workload_jwks_uri: str = "",
         cors_origins: list[str] | None = None,
         **_extra: object,
     ):
@@ -73,6 +76,9 @@ class K8sGatewayAdapter(GatewayPort):
         self._issuer_url = issuer_url
         self._audience = audience
         self._jwks_uri = jwks_uri
+        self._workload_issuer_url = workload_issuer_url
+        self._workload_audience = workload_audience
+        self._workload_jwks_uri = workload_jwks_uri
         self._cors_origins = cors_origins or ["*"]
 
     def get_gateway_config(self) -> dict[str, str]:
@@ -93,5 +99,11 @@ class K8sGatewayAdapter(GatewayPort):
             config["audience"] = self._audience
         if self._jwks_uri:
             config["jwks_uri"] = self._jwks_uri
+        if self._workload_issuer_url:
+            config["workload_issuer_url"] = self._workload_issuer_url
+        if self._workload_audience:
+            config["workload_audience"] = self._workload_audience
+        if self._workload_jwks_uri:
+            config["workload_jwks_uri"] = self._workload_jwks_uri
         config["cors_origins"] = ",".join(self._cors_origins)
         return config

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -13,7 +14,8 @@ from ravn.adapters.executors.cli import (
 )
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.events import RavnEvent
-from ravn.domain.models import Message, Session
+from ravn.domain.models import Message, Session, ToolResult
+from ravn.ports.tool import ToolPort
 
 
 class _CollectingChannel:
@@ -22,6 +24,27 @@ class _CollectingChannel:
 
     async def emit(self, event: RavnEvent) -> None:
         self.events.append(event)
+
+
+class DummyTool(ToolPort):
+    @property
+    def name(self) -> str:
+        return "dummy_tool"
+
+    @property
+    def description(self) -> str:
+        return "Dummy test tool."
+
+    @property
+    def input_schema(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    @property
+    def required_permission(self) -> str:
+        return "test:dummy"
+
+    async def execute(self, input: dict) -> ToolResult:
+        return ToolResult(tool_call_id="", content="ok")
 
 
 class FakeResumableTransport(CLITransport):
@@ -303,6 +326,7 @@ def _make_agent(
     binding: _TransportBinding | None = None,
     session: Session | None = None,
     channel: _CollectingChannel | None = None,
+    session_join_manager: object | None = None,
 ) -> tuple[CliTransportAgent, _CollectingChannel]:
     bound_channel = channel or _CollectingChannel()
     agent = CliTransportAgent(
@@ -321,6 +345,7 @@ def _make_agent(
         task_id="task-helper",
         persona="reviewer",
         preloaded_tools=[type("Tool", (), {"name": "alpha"})()],
+        session_join_manager=session_join_manager,
     )
     return agent, bound_channel
 
@@ -444,8 +469,172 @@ async def test_cli_transport_agent_emits_event_variants_and_filters_transport_kw
     assert [result.is_error for result in agent._turn_tool_results] == [True]
 
 
+@pytest.mark.asyncio
+async def test_cli_transport_agent_joins_ting_workflow_result() -> None:
+    class JoinManager:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def join(self, session_id: str, chat_endpoint: str) -> dict:
+            self.calls.append((session_id, chat_endpoint))
+            return {"connected": True}
+
+    manager = JoinManager()
+    agent, channel = _make_agent(session_join_manager=manager)
+    agent._current_tool_names["tool-1"] = "mcp__ravn_tools__ting_workflow"
+
+    await agent._handle_transport_event(
+        {
+            "type": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tool-1",
+                    "content": json.dumps(
+                        {
+                            "status": "ok",
+                            "data": {
+                                "sessionId": "sess-1",
+                                "chatEndpoint": "wss://sessions.example/s/sess-1/session",
+                            },
+                        }
+                    ),
+                }
+            ],
+        }
+    )
+    await asyncio.sleep(0)
+
+    assert manager.calls == [("sess-1", "wss://sessions.example/s/sess-1/session")]
+    assert channel.events[-1].payload["tool_name"] == "mcp__ravn_tools__ting_workflow"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool_name",
+    ["ting_research", "ting_plan", "ting_spec", "ting_adhoc_workflow"],
+)
+async def test_cli_transport_agent_joins_durable_ting_tool_result(tool_name: str) -> None:
+    class JoinManager:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def join(self, session_id: str, chat_endpoint: str) -> dict:
+            self.calls.append((session_id, chat_endpoint))
+            return {"connected": True}
+
+    manager = JoinManager()
+    agent, channel = _make_agent(session_join_manager=manager)
+    agent._current_tool_names["tool-1"] = f"mcp__ravn_tools__{tool_name}"
+
+    await agent._handle_transport_event(
+        {
+            "type": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tool-1",
+                    "content": json.dumps(
+                        {
+                            "status": "ok",
+                            "data": {
+                                "sessionId": "sess-1",
+                                "chatEndpoint": "wss://sessions.example/s/sess-1/session",
+                            },
+                        }
+                    ),
+                }
+            ],
+        }
+    )
+    await asyncio.sleep(0)
+
+    assert manager.calls == [("sess-1", "wss://sessions.example/s/sess-1/session")]
+    assert channel.events[-1].payload["tool_name"] == f"mcp__ravn_tools__{tool_name}"
+
+
+@pytest.mark.asyncio
+async def test_cli_transport_agent_joins_codex_ws_tool_result_block() -> None:
+    class JoinManager:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def join(self, session_id: str, chat_endpoint: str) -> dict:
+            self.calls.append((session_id, chat_endpoint))
+            return {"connected": True}
+
+    manager = JoinManager()
+    agent, channel = _make_agent(session_join_manager=manager)
+    agent._current_tool_names["tool-1"] = "mcp__ravn_tools__ting_workflow"
+
+    await agent._handle_transport_event(
+        {
+            "type": "content_block_start",
+            "content_block": {
+                "type": "tool_result",
+                "tool_use_id": "tool-1",
+                "content": json.dumps(
+                    {
+                        "sessionId": "sess-2",
+                        "chatEndpoint": "wss://sessions.example/s/sess-2/session",
+                    }
+                ),
+            },
+        }
+    )
+    await asyncio.sleep(0)
+
+    assert manager.calls == [("sess-2", "wss://sessions.example/s/sess-2/session")]
+    assert channel.events[-1].payload["tool_name"] == "mcp__ravn_tools__ting_workflow"
+
+
+@pytest.mark.asyncio
+async def test_cli_transport_agent_joins_codex_ws_wrapped_mcp_tool_result() -> None:
+    class JoinManager:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def join(self, session_id: str, chat_endpoint: str) -> dict:
+            self.calls.append((session_id, chat_endpoint))
+            return {"connected": True}
+
+    manager = JoinManager()
+    agent, _channel = _make_agent(session_join_manager=manager)
+    agent._current_tool_names["tool-1"] = "ravn-tools/ting_workflow"
+
+    await agent._handle_transport_event(
+        {
+            "type": "content_block_start",
+            "content_block": {
+                "type": "tool_result",
+                "tool_use_id": "tool-1",
+                "content": json.dumps(
+                    {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps(
+                                    {
+                                        "sessionId": "sess-3",
+                                        "chatEndpoint": ("wss://sessions.example/s/sess-3/session"),
+                                    }
+                                ),
+                            }
+                        ],
+                        "isError": False,
+                    }
+                ),
+            },
+        }
+    )
+    await asyncio.sleep(0)
+
+    assert manager.calls == [("sess-3", "wss://sessions.example/s/sess-3/session")]
+
+
 def test_cli_executor_passes_mcp_servers_to_transport() -> None:
     channel = _CollectingChannel()
+    manager = object()
     executor = CliTransportExecutor(
         transport_adapter="tests.test_ravn.test_executor_cli.FakeResumableTransport"
     )
@@ -462,8 +651,10 @@ def test_cli_executor_passes_mcp_servers_to_transport() -> None:
         permission_mode="read_only",
         tools=[],
         mcp_servers=[{"name": "mimir-local", "command": "python3", "args": ["-m", "mimir"]}],
+        session_join_manager=manager,
     )
 
+    assert agent._session_join_manager is manager
     assert agent._transport_kwargs["mcp_servers"] == [
         {"name": "mimir-local", "command": "python3", "args": ["-m", "mimir"]}
     ]
@@ -494,6 +685,33 @@ def test_cli_executor_passes_mcp_servers_to_codex_transport() -> None:
         ("mcp_servers.mimir-local.command", '"python3"'),
         ("mcp_servers.mimir-local.args", '["-m", "mimir"]'),
     ]
+
+
+def test_cli_executor_adds_ravn_tools_mcp_server_when_tools_are_preloaded() -> None:
+    channel = _CollectingChannel()
+    executor = CliTransportExecutor(
+        transport_adapter="skuld.transports.codex.CodexSubprocessTransport"
+    )
+    agent = executor.build(
+        channel=channel,
+        system_prompt="You are a researcher.",
+        session=Session(),
+        model="gpt-5.5",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-ravn-tool-mcp",
+        persona="product-steward",
+        workspace_dir="/tmp/workspace",
+        permission_mode="read_only",
+        tools=[DummyTool()],
+        mcp_servers=[],
+    )
+
+    transport = agent._create_transport()
+    assert any(
+        key == "mcp_servers.ravn-tools.args" and '"tool-mcp"' in value
+        for key, value in transport._mcp_overrides
+    )
 
 
 def test_cli_executor_delegates_codex_ws_permissions_to_codex_config() -> None:

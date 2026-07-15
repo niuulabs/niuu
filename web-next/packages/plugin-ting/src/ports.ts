@@ -7,7 +7,7 @@
  * Implementations live in src/adapters/.
  */
 
-import type { Saga, Phase } from './domain/saga';
+import type { Saga, Phase, SagaRepoRef } from './domain/saga';
 import type { DispatcherState } from './domain/dispatcher';
 import type { SessionInfo } from './domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from './domain/tracker';
@@ -41,6 +41,8 @@ export type {
   CampaignStageState,
   ResearchCampaignStatus,
 } from './domain/research';
+export type SpecCampaign = ResearchCampaign;
+export type SpecCampaignDetail = ResearchCampaignDetail;
 export type {
   FlockConfig,
   DispatchDefaults,
@@ -79,6 +81,22 @@ export interface CommitSagaRequest {
 export interface PlanSession {
   sessionId: string;
   chatEndpoint: string | null;
+  name?: string | null;
+  prompt?: string | null;
+  repo?: string | null;
+  campaignSlug?: string | null;
+  workflowName?: string | null;
+  status?: string | null;
+  activeStageId?: string | null;
+  updatedAt?: string | null;
+  stageState?: {
+    stageId: string;
+    label: string;
+    status: string;
+    startedAt?: string | null;
+    completedAt?: string | null;
+    reason?: string | null;
+  }[];
   /** Clarifying questions from the planning raven. Empty when the backend omits them. */
   questions: ClarifyingQuestion[];
 }
@@ -148,6 +166,7 @@ export interface RunSessionMessage {
 export interface ITingService {
   getSagas(): Promise<Saga[]>;
   getSaga(id: string): Promise<Saga | null>;
+  deleteSaga?(id: string): Promise<void>;
   getPhases(sagaId: string): Promise<Phase[]>;
   listRunMessages(runId: string): Promise<RunSessionMessage[]>;
   sendRunMessage(runId: string, content: string, targetPeerId?: string): Promise<RunSessionMessage>;
@@ -155,9 +174,19 @@ export interface ITingService {
   commitSaga(request: CommitSagaRequest): Promise<Saga>;
   decompose(spec: string, repo: string): Promise<Phase[]>;
   spawnPlanSession(spec: string, repo: string): Promise<PlanSession>;
+  listPlanSessions?(): Promise<PlanSession[]>;
+  getPlanSession?(campaignSlug: string): Promise<PlanSession | null>;
+  cancelPlanSession?(campaignSlug: string): Promise<void>;
+  getPlanDraft?(campaignSlug: string): Promise<ExtractedStructure>;
+  sendPlanFeedback?(
+    campaignSlug: string,
+    content: string,
+    decision?: 'approve' | 'changes_requested',
+  ): Promise<void>;
   extractStructure(text: string): Promise<ExtractedStructure>;
   assignWorkflow(sagaId: string, workflowId: string | null): Promise<Saga>;
   assignTarget(sagaId: string, target: SagaTargetSelection): Promise<Saga>;
+  assignRepos(sagaId: string, repoRefs: SagaRepoRef[]): Promise<Saga>;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +325,34 @@ export interface IResearchService {
   deleteCampaign(slug: string): Promise<void>;
   listArtifacts(slug: string): Promise<CampaignArtifact[]>;
   getArtifact(slug: string, path: string): Promise<CampaignArtifactDetail | null>;
+}
+
+export interface CreateSpecCampaignRequest {
+  prompt: string;
+  name?: string;
+  workflowId?: string;
+  repo?: string;
+  repos?: string[];
+  branch?: string;
+  context?: string;
+  connectionId?: string;
+}
+
+export interface ReviewSpecCampaignRequest {
+  decision: 'approve' | 'changes_requested';
+  notes?: string;
+  gateId?: string;
+  nodeId?: string;
+}
+
+export interface ISpecsService {
+  listCampaigns(): Promise<SpecCampaign[]>;
+  getCampaign(slug: string): Promise<SpecCampaignDetail | null>;
+  createCampaign(request: CreateSpecCampaignRequest): Promise<SpecCampaign>;
+  deleteCampaign(slug: string): Promise<void>;
+  listArtifacts(slug: string): Promise<CampaignArtifact[]>;
+  getArtifact(slug: string, path: string): Promise<CampaignArtifactDetail | null>;
+  reviewCampaign(slug: string, request: ReviewSpecCampaignRequest): Promise<SpecCampaign>;
 }
 
 // ---------------------------------------------------------------------------

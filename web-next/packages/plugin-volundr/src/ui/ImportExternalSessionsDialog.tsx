@@ -153,7 +153,7 @@ export function ImportExternalSessionsDialog({
 }: ImportExternalSessionsDialogProps) {
   const volundr = useService<IVolundrService>('volundr');
   const queryClient = useQueryClient();
-  const externalQuery = useExternalSessions();
+  const externalQuery = useExternalSessions({ enabled: open });
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [importErrors, setImportErrors] = useState<Record<string, string>>({});
 

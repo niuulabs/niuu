@@ -1,4 +1,4 @@
-import { File, Folder, Loader2 } from 'lucide-react';
+import { File, Folder, Loader2, Radio } from 'lucide-react';
 import { cn } from '../../../utils/cn';
 import { resolveParticipantColor } from '../../utils/participantColor';
 import type { MentionMenuItem } from '../../hooks/useMentionMenu';
@@ -19,11 +19,42 @@ export function MentionMenu({
   onSelect,
   onExpand,
 }: MentionMenuProps) {
-  const agentItems = items.filter((i) => i.kind === 'agent');
+  const eventItems = items.filter((i) => i.kind === 'agent' && i.eventType);
+  const agentItems = items.filter((i) => i.kind === 'agent' && !i.eventType);
   const fileItems = items.filter((i) => i.kind === 'file');
 
   return (
     <div className="niuu-chat-mention-menu" role="listbox" data-testid="mention-menu">
+      {eventItems.length > 0 && (
+        <div className="niuu-chat-mention-section">
+          <div className="niuu-chat-mention-section-header">Events</div>
+          {eventItems.map((item) => {
+            if (item.kind !== 'agent' || !item.eventType) return null;
+            const { participant } = item;
+            const idx = items.indexOf(item);
+            return (
+              <button
+                key={`${participant.peerId}:${item.eventType}`}
+                type="button"
+                className={cn(
+                  'niuu-chat-mention-item',
+                  idx === selectedIndex && 'niuu-chat-mention-item--selected',
+                )}
+                role="option"
+                aria-selected={idx === selectedIndex}
+                data-menu-index={idx}
+                onClick={() => onSelect(item)}
+              >
+                <Radio className="niuu-chat-mention-event-icon" aria-hidden="true" />
+                <span className="niuu-chat-mention-item-name">{item.eventType}</span>
+                <span className="niuu-chat-mention-item-context">
+                  {participant.displayName || participant.persona}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
       {agentItems.length > 0 && (
         <div className="niuu-chat-mention-section">
           <div className="niuu-chat-mention-section-header">Agents</div>
@@ -34,7 +65,7 @@ export function MentionMenu({
             const idx = items.indexOf(item);
             return (
               <button
-                key={participant.peerId}
+                key={`${participant.peerId}:${item.eventType ?? ''}`}
                 type="button"
                 className={cn(
                   'niuu-chat-mention-item',
@@ -50,7 +81,9 @@ export function MentionMenu({
                   style={{ backgroundColor: color }}
                   aria-hidden="true"
                 />
-                <span className="niuu-chat-mention-item-name">{participant.persona}</span>
+                <span className="niuu-chat-mention-item-name">
+                  {participant.displayName || participant.persona}
+                </span>
               </button>
             );
           })}

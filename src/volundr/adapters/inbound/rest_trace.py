@@ -9,9 +9,11 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field
 
+from volundr.adapters.inbound.auth import check_session_or_resident_access
 from volundr.domain.models import SessionSpan, SessionSpanStatus
 from volundr.domain.ports import SessionSpanRepository
-from volundr.domain.services.session import SessionAccessDeniedError, SessionService
+from volundr.domain.services.resident_runtime import ResidentRuntimeService
+from volundr.domain.services.session import SessionService
 
 
 def _utc_now() -> datetime:
@@ -187,6 +189,7 @@ def _build_summary(spans: list[SessionSpan]) -> SessionTraceSummaryResponse:
 def create_trace_router(
     span_repository: SessionSpanRepository,
     session_service: SessionService | None = None,
+    resident_runtime_service: ResidentRuntimeService | None = None,
     *,
     prefix: str = "/api/v1/forge",
 ) -> APIRouter:
@@ -195,21 +198,14 @@ def create_trace_router(
     async def _check_event_access(
         request: Request, session_id: UUID, action: str = "emit_trace"
     ) -> None:
-        if session_service is None:
-            return
-        from volundr.adapters.inbound.auth import extract_principal
-
-        principal = await extract_principal(request)
-        session = await session_service.get_session(session_id)
-        if session is None:
-            return
-        try:
-            await session_service._check_access(session, principal, action)
-        except SessionAccessDeniedError:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Not authorized to access trace for session {session_id}",
-            )
+        await check_session_or_resident_access(
+            request,
+            session_id,
+            session_service=session_service,
+            resident_runtime_service=resident_runtime_service,
+            action=action,
+            resource_name="trace",
+        )
 
     @router.post(
         "/spans/start",

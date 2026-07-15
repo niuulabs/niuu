@@ -373,6 +373,14 @@ describe('buildTingHttpAdapter', () => {
     });
   });
 
+  describe('deleteSaga', () => {
+    it('calls DELETE /sagas/:id', async () => {
+      const client = makeClient();
+      await buildTingHttpAdapter(client).deleteSaga?.('saga-1');
+      expect(client.delete).toHaveBeenCalledWith('/sagas/saga-1');
+    });
+  });
+
   describe('getPhases', () => {
     it('calls GET /sagas/:id/phases', async () => {
       const client = makeClient();
@@ -488,7 +496,23 @@ describe('buildTingHttpAdapter', () => {
   describe('spawnPlanSession', () => {
     it('calls POST /sagas/plan', async () => {
       const client = makeClient();
-      client.post.mockResolvedValue({ session_id: 'sess-1', chat_endpoint: null });
+      client.post.mockResolvedValue({
+        session_id: 'sess-1',
+        chat_endpoint: null,
+        campaign_slug: 'plan-auth',
+        workflow_name: 'Saga Planning',
+        status: 'pending',
+        active_stage_id: 'plan-clarify',
+        stage_state: [{ stage_id: 'plan-clarify', label: 'Clarify brief', status: 'active' }],
+        questions: [
+          {
+            id: 'planning-feedback',
+            question: 'What constraints should this workflow account for?',
+            hint: 'Keep this focused.',
+            kind: 'text',
+          },
+        ],
+      });
       const result = await buildTingHttpAdapter(client).spawnPlanSession('spec text', 'my/repo');
       expect(client.post).toHaveBeenCalledWith('/sagas/plan', {
         spec: 'spec text',
@@ -496,15 +520,152 @@ describe('buildTingHttpAdapter', () => {
       });
       expect(result.sessionId).toBe('sess-1');
       expect(result.chatEndpoint).toBeNull();
+      expect(result.campaignSlug).toBe('plan-auth');
+      expect(result.workflowName).toBe('Saga Planning');
+      expect(result.activeStageId).toBe('plan-clarify');
+      expect(result.stageState?.[0]?.label).toBe('Clarify brief');
+      expect(result.questions[0]?.id).toBe('planning-feedback');
+    });
+
+    it('lists active plan sessions', async () => {
+      const client = makeClient();
+      client.get.mockResolvedValue([
+        {
+          session_id: 'sess-1',
+          chat_endpoint: null,
+          name: 'Plan SDCP operator',
+          prompt: 'Plan SDCP operator',
+          repo: '',
+          campaign_slug: 'plan-sdcp-operator',
+          workflow_name: 'Saga Planning',
+          status: 'running',
+          active_stage_id: 'plan-clarify',
+          updated_at: '2026-07-01T12:00:00Z',
+          stage_state: [{ stage_id: 'plan-clarify', label: 'Clarify brief', status: 'active' }],
+        },
+      ]);
+
+      const result = await buildTingHttpAdapter(client).listPlanSessions?.();
+
+      expect(client.get).toHaveBeenCalledWith('/sagas/plan');
+      expect(result?.[0]?.sessionId).toBe('sess-1');
+      expect(result?.[0]?.name).toBe('Plan SDCP operator');
+      expect(result?.[0]?.repo).toBe('');
+      expect(result?.[0]?.updatedAt).toBe('2026-07-01T12:00:00Z');
+    });
+
+    it('fetches persisted plan session status', async () => {
+      const client = makeClient();
+      client.get.mockResolvedValue({
+        session_id: 'sess-1',
+        chat_endpoint: null,
+        campaign_slug: 'plan-auth',
+        workflow_name: 'Saga Planning',
+        status: 'running',
+        active_stage_id: 'plan-breakdown',
+        stage_state: [
+          { stage_id: 'plan-breakdown', label: 'Draft saga breakdown', status: 'active' },
+        ],
+      });
+
+      const result = await buildTingHttpAdapter(client).getPlanSession?.('plan-auth');
+
+      expect(client.get).toHaveBeenCalledWith('/sagas/plan/plan-auth');
+      expect(result?.status).toBe('running');
+      expect(result?.activeStageId).toBe('plan-breakdown');
+      expect(result?.stageState?.[0]?.label).toBe('Draft saga breakdown');
+    });
+
+    it('fetches a workflow-backed plan draft', async () => {
+      const client = makeClient();
+      client.get.mockResolvedValue({
+        found: true,
+        structure: {
+          name: 'Auth Saga',
+          risks: [{ kind: 'blast', message: 'Touches auth dispatch.' }],
+          phases: [
+            {
+              name: 'Build',
+              runs: [
+                {
+                  name: 'JWT refresh',
+                  description: 'Add silent refresh',
+                  acceptance_criteria: ['Refreshes before expiry'],
+                  declared_files: ['src/auth/refresh.ts'],
+                  estimate_hours: 4,
+                  confidence: 80,
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      const result = await buildTingHttpAdapter(client).getPlanDraft?.('plan-auth');
+
+      expect(client.get).toHaveBeenCalledWith('/sagas/plan/plan-auth/draft');
+      expect(result?.found).toBe(true);
+      expect(result?.structure?.name).toBe('Auth Saga');
+      expect(result?.structure?.risks?.[0]?.kind).toBe('blast');
+      expect(result?.structure?.phases[0]?.runs[0]?.acceptanceCriteria).toEqual([
+        'Refreshes before expiry',
+      ]);
+    });
+
+    it('sends plan feedback to the workflow session', async () => {
+      const client = makeClient();
+      client.post.mockResolvedValue({ status: 'sent' });
+
+      await buildTingHttpAdapter(client).sendPlanFeedback?.(
+        'plan-auth',
+        'make it smaller',
+        'changes_requested',
+      );
+
+      expect(client.post).toHaveBeenCalledWith('/sagas/plan/plan-auth/feedback', {
+        content: 'make it smaller',
+        decision: 'changes_requested',
+      });
+    });
+
+    it('cancels a plan session', async () => {
+      const client = makeClient();
+
+      await buildTingHttpAdapter(client).cancelPlanSession?.('plan-auth');
+
+      expect(client.delete).toHaveBeenCalledWith('/sagas/plan/plan-auth');
     });
   });
 
   describe('extractStructure', () => {
     it('calls POST /sagas/extract-structure', async () => {
       const client = makeClient();
-      client.post.mockResolvedValue({ found: true, structure: null });
-      await buildTingHttpAdapter(client).extractStructure('some text');
+      client.post.mockResolvedValue({
+        found: true,
+        structure: {
+          name: 'Auth Saga',
+          risks: [{ kind: 'blast', message: 'Touches auth dispatch.' }],
+          phases: [
+            {
+              name: 'Build',
+              runs: [
+                {
+                  name: 'JWT refresh',
+                  description: 'Add silent refresh',
+                  acceptance_criteria: ['Refreshes before expiry'],
+                  declared_files: ['src/auth/refresh.ts'],
+                  estimate_hours: 4,
+                  confidence: 80,
+                },
+              ],
+            },
+          ],
+        },
+      });
+      const result = await buildTingHttpAdapter(client).extractStructure('some text');
       expect(client.post).toHaveBeenCalledWith('/sagas/extract-structure', { text: 'some text' });
+      expect(result.structure?.phases[0]?.runs[0]?.declaredFiles).toEqual(['src/auth/refresh.ts']);
+      expect(result.structure?.risks?.[0]?.message).toBe('Touches auth dispatch.');
     });
   });
 
@@ -640,6 +801,30 @@ describe('buildTingHttpAdapter', () => {
       });
       expect(saga.targetTags).toEqual(['gpu', 'valhalla']);
     });
+
+    it('assigns saga repositories with per-repo branches', async () => {
+      const client = makeClient();
+      client.put.mockResolvedValue({
+        ...rawSaga,
+        repos: ['niuulabs/volundr', 'niuulabs/infrastructure'],
+        repo_refs: [
+          { repo: 'niuulabs/volundr', branch: 'dev' },
+          { repo: 'niuulabs/infrastructure', branch: 'main' },
+        ],
+      });
+
+      const repoRefs = [
+        { repo: 'niuulabs/volundr', branch: 'dev' },
+        { repo: 'niuulabs/infrastructure', branch: 'main' },
+      ];
+      const saga = await buildTingHttpAdapter(client).assignRepos('saga-1', repoRefs);
+
+      expect(client.put).toHaveBeenCalledWith('/sagas/saga-1/repos', {
+        repos: ['niuulabs/volundr', 'niuulabs/infrastructure'],
+        repo_refs: repoRefs,
+      });
+      expect(saga.repoRefs).toEqual(repoRefs);
+    });
   });
 
   describe('interface compliance', () => {
@@ -648,12 +833,15 @@ describe('buildTingHttpAdapter', () => {
       const svc: ITingService = buildTingHttpAdapter(client);
       expect(typeof svc.getSagas).toBe('function');
       expect(typeof svc.getSaga).toBe('function');
+      expect(typeof svc.deleteSaga).toBe('function');
       expect(typeof svc.getPhases).toBe('function');
       expect(typeof svc.createSaga).toBe('function');
       expect(typeof svc.commitSaga).toBe('function');
       expect(typeof svc.decompose).toBe('function');
       expect(typeof svc.spawnPlanSession).toBe('function');
+      expect(typeof svc.cancelPlanSession).toBe('function');
       expect(typeof svc.extractStructure).toBe('function');
+      expect(typeof svc.assignRepos).toBe('function');
     });
   });
 });
@@ -840,6 +1028,58 @@ describe('buildWorkflowHttpAdapter', () => {
       edges: rawWorkflow.edges,
       resourceBindings: [],
     });
+  });
+
+  it('creates a user copy when saving a system workflow is forbidden', async () => {
+    const client = makeClient();
+    const systemWorkflow = { ...rawWorkflow, scope: 'system' as const, owner_id: null };
+    client.get.mockResolvedValue(systemWorkflow);
+    client.put.mockRejectedValue(new Error('403'));
+    client.post.mockResolvedValue({ ...rawWorkflow, scope: 'user' as const });
+
+    await buildWorkflowHttpAdapter(client).saveWorkflow({
+      id: systemWorkflow.id,
+      name: systemWorkflow.name,
+      description: systemWorkflow.description,
+      version: systemWorkflow.version,
+      scope: systemWorkflow.scope,
+      ownerId: systemWorkflow.owner_id,
+      nodes: systemWorkflow.nodes,
+      edges: systemWorkflow.edges,
+      tags: [],
+      resourceBindings: systemWorkflow.resourceBindings,
+    } as Workflow);
+
+    expect(client.put).toHaveBeenCalledWith(
+      `/workflows/${encodeURIComponent(systemWorkflow.id)}`,
+      expect.objectContaining({ scope: 'system' }),
+    );
+    expect(client.post).toHaveBeenCalledWith(
+      '/workflows',
+      expect.objectContaining({ name: systemWorkflow.name, scope: 'user' }),
+    );
+  });
+
+  it('surfaces update failures for owned user workflows', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue(rawWorkflow);
+    client.put.mockRejectedValue(new Error('500'));
+
+    await expect(
+      buildWorkflowHttpAdapter(client).saveWorkflow({
+        id: rawWorkflow.id,
+        name: rawWorkflow.name,
+        description: rawWorkflow.description,
+        version: rawWorkflow.version,
+        scope: rawWorkflow.scope,
+        ownerId: rawWorkflow.owner_id,
+        nodes: rawWorkflow.nodes,
+        edges: rawWorkflow.edges,
+        resourceBindings: rawWorkflow.resourceBindings,
+      } as Workflow),
+    ).rejects.toThrow('500');
+
+    expect(client.post).not.toHaveBeenCalled();
   });
 
   it('creates workflows when the existence probe returns null instead of throwing', async () => {

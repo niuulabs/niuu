@@ -75,9 +75,20 @@ class TestExtractTokenFromWebSocket:
         )
         assert _extract_token_from_websocket(ws) == "header-token"
 
-    def test_query_param_fallback(self):
+    def test_envoy_query_param(self):
+        ws = self._make_ws(query_params={"token": "query-token"})
+        assert _extract_token_from_websocket(ws) == "query-token"
+
+    def test_legacy_query_param_fallback(self):
         ws = self._make_ws(query_params={"access_token": "query-token"})
         assert _extract_token_from_websocket(ws) == "query-token"
+
+    def test_websocket_subprotocol_preferred_over_query_param(self):
+        ws = self._make_ws(
+            headers={"sec-websocket-protocol": "volundr.bearer.protocol-token"},
+            query_params={"access_token": "query-token"},
+        )
+        assert _extract_token_from_websocket(ws) == "protocol-token"
 
     def test_no_token_returns_none(self):
         ws = self._make_ws()
@@ -127,6 +138,18 @@ class TestBrokerJwtIntegration:
         assert test_broker._user_jwt == token
         assert test_broker._user_claims["sub"] == "user-99"
 
+    def test_update_jwt_from_websocket_with_subprotocol(self, test_broker):
+        claims = {"sub": "user-protocol"}
+        token = _make_jwt(claims)
+        ws = MagicMock()
+        ws.headers = {"sec-websocket-protocol": f"chat, volundr.bearer.{token}"}
+        ws.query_params = {}
+
+        test_broker._update_jwt_from_websocket(ws)
+
+        assert test_broker._user_jwt == token
+        assert test_broker._user_claims["sub"] == "user-protocol"
+
     def test_update_jwt_refreshes_on_reconnect(self, test_broker):
         old_token = _make_jwt({"sub": "user-1"})
         new_token = _make_jwt({"sub": "user-1", "exp": 9999999999})
@@ -146,12 +169,12 @@ class TestBrokerJwtIntegration:
     def test_build_auth_headers_with_jwt(self, test_broker):
         token = _make_jwt({"sub": "u1"})
         test_broker._user_jwt = token
-        with patch.dict("os.environ", {"VOLUNDR_API_TOKEN": ""}, clear=False):
+        with patch.dict("os.environ", {"VOLUNDR_EXTERNAL_API_TOKEN": ""}, clear=False):
             headers = test_broker._build_auth_headers()
         assert headers == {"Authorization": f"Bearer {token}"}
 
     def test_build_auth_headers_no_token_returns_empty(self, test_broker, monkeypatch):
-        monkeypatch.delenv("VOLUNDR_API_TOKEN", raising=False)
+        monkeypatch.delenv("VOLUNDR_EXTERNAL_API_TOKEN", raising=False)
         test_broker._user_jwt = None
         headers = test_broker._build_auth_headers()
         assert headers == {}
@@ -161,7 +184,7 @@ class TestBrokerJwtIntegration:
         token = _make_jwt({"sub": "u1"})
         test_broker._user_jwt = token
 
-        with patch.dict("os.environ", {"VOLUNDR_API_TOKEN": ""}, clear=False):
+        with patch.dict("os.environ", {"VOLUNDR_EXTERNAL_API_TOKEN": ""}, clear=False):
             client = await test_broker._get_http_client()
         assert client.headers.get("authorization") == f"Bearer {token}"
 
@@ -174,7 +197,7 @@ class TestBrokerJwtIntegration:
         token1 = _make_jwt({"sub": "u1"})
         token2 = _make_jwt({"sub": "u1", "refreshed": True})
 
-        with patch.dict("os.environ", {"VOLUNDR_API_TOKEN": ""}, clear=False):
+        with patch.dict("os.environ", {"VOLUNDR_EXTERNAL_API_TOKEN": ""}, clear=False):
             test_broker._user_jwt = token1
             client1 = await test_broker._get_http_client()
 
@@ -198,7 +221,7 @@ class TestBrokerJwtIntegration:
         ws.headers = {"authorization": f"Bearer {token}"}
         ws.query_params = {}
 
-        with patch.dict("os.environ", {"VOLUNDR_API_TOKEN": ""}, clear=False):
+        with patch.dict("os.environ", {"VOLUNDR_EXTERNAL_API_TOKEN": ""}, clear=False):
             test_broker._update_jwt_from_websocket(ws)
 
         mock_watcher.update_headers.assert_called_once_with({"Authorization": f"Bearer {token}"})
@@ -230,8 +253,8 @@ class TestBrokerJwtIntegration:
 
     @pytest.mark.asyncio
     async def test_get_http_client_fallback_when_no_jwt(self, test_broker, monkeypatch):
-        """When no JWT or PAT is set, client has no auth headers."""
-        monkeypatch.delenv("VOLUNDR_API_TOKEN", raising=False)
+        """When no JWT or external token is set, client has no auth headers."""
+        monkeypatch.delenv("VOLUNDR_EXTERNAL_API_TOKEN", raising=False)
         test_broker._user_jwt = None
         client = await test_broker._get_http_client()
         assert "authorization" not in {k.lower() for k in client.headers.keys()}

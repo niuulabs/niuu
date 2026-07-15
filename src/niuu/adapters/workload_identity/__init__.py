@@ -1,0 +1,1 @@
+"""Workload identity verifier adapters."""

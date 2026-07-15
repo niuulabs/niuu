@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
-import niuu.main as niuu_main
+import cli.shared_host as niuu_main
 from niuu.config import GitConfig
-from niuu.service_settings import Settings
+from volundr.config import Settings
 
 
 class _DummyGitRegistry:
@@ -98,12 +98,12 @@ def test_create_app_mounts_shared_identity_features_and_personas(monkeypatch) ->
         assert response.status_code == 200
         assert response.json()["issuer"] == "https://issuer.example.com"
 
-        paths = {route.path for route in app.routes}
+        paths = set(client.get("/openapi.json").json()["paths"])
         assert "/api/v1/niuu/repos" in paths
         assert "/api/v1/identity/auth/config" in paths
         assert "/api/v1/features" in paths
         assert "/api/v1/personas" in paths
-        assert "/api/v1/ravn/personas" in paths
+        assert client.get("/api/v1/ravn/personas").status_code == 401
         assert "/api/v1/tokens" in paths
         assert "/api/v1/credentials/settings" in paths
         assert "/api/v1/credentials/user" in paths

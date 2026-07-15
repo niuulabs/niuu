@@ -67,18 +67,20 @@ const ACTIVE_SESSION_STATES: SessionState[] = [
   'ready',
   'running',
   'idle',
+  'awaiting_input',
 ];
 
 const SESSION_STATE_ORDER: Record<SessionState, number> = {
-  running: 0,
-  idle: 1,
-  ready: 2,
-  provisioning: 3,
-  requested: 4,
-  failed: 5,
-  terminating: 6,
-  terminated: 7,
-  archived: 8,
+  awaiting_input: 0,
+  running: 1,
+  idle: 2,
+  ready: 3,
+  provisioning: 4,
+  requested: 5,
+  failed: 6,
+  terminating: 7,
+  terminated: 8,
+  archived: 9,
 };
 
 const PANEL_SURFACE_STYLE = {

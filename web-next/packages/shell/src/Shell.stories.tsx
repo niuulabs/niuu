@@ -52,7 +52,7 @@ const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 function ShellStoryWrapper({ children }: { children: React.ReactNode }) {
   return (
     <QueryClientProvider client={qc}>
-      <ConfigProvider value={{ theme: 'ice', plugins: {}, services: {} }}>
+      <ConfigProvider value={{ demoMode: false, theme: 'ice', plugins: {}, services: {} }}>
         <ServicesProvider services={{}}>
           <FeatureCatalogProvider>{children}</FeatureCatalogProvider>
         </ServicesProvider>

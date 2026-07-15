@@ -199,4 +199,61 @@ describe('ObservatorySubnav', () => {
     expect(screen.getByTestId('filter-agents')).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByTestId('filter-all')).toHaveAttribute('aria-pressed', 'false');
   });
+
+  it('renders selection and run metadata fallbacks', () => {
+    vi.mocked(useTopology).mockReturnValue({
+      ...MOCK_TOPOLOGY,
+      nodes: [
+        {
+          id: 'realm-no-vlan',
+          typeId: 'realm',
+          label: 'utgard',
+          parentId: null,
+          status: 'healthy',
+        },
+        {
+          id: 'cluster-selected',
+          typeId: 'cluster',
+          label: 'selected cluster',
+          parentId: 'realm-no-vlan',
+          status: 'healthy',
+        },
+        {
+          id: 'run-forming',
+          typeId: 'run',
+          label: 'forming fallback',
+          parentId: 'cluster-selected',
+          status: 'observing',
+          state: 'forming',
+        },
+        {
+          id: 'run-unknown',
+          typeId: 'run',
+          label: 'unknown fallback',
+          parentId: 'cluster-selected',
+          status: 'observing',
+        },
+      ],
+    });
+    mockUseObservatoryStore.mockReturnValue([
+      { selectedId: 'realm-no-vlan', filter: 'runs' },
+      { setSelected: mockSetSelected, setFilter: mockSetFilter },
+    ]);
+    const { rerender } = render(<ObservatorySubnav />);
+
+    expect(screen.getByTestId('realm-realm-no-vlan')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByText(/vlan/i)).not.toBeInTheDocument();
+    expect(screen.getByText('forming fallback')).toBeInTheDocument();
+    expect(screen.getByText('unknown fallback')).toBeInTheDocument();
+    expect(screen.getByText('—')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('run-run-forming'));
+    expect(mockSetSelected).toHaveBeenCalledWith('run-forming');
+
+    mockUseObservatoryStore.mockReturnValue([
+      { selectedId: 'cluster-selected', filter: 'runs' },
+      { setSelected: mockSetSelected, setFilter: mockSetFilter },
+    ]);
+    rerender(<ObservatorySubnav />);
+    expect(screen.getByTestId('cluster-cluster-selected')).toHaveAttribute('aria-pressed', 'true');
+  });
 });

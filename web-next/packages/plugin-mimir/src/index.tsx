@@ -13,7 +13,7 @@ import { MimirTopbar } from './ui/MimirTopbar';
 
 export const mimirPlugin = definePlugin({
   id: 'mimir',
-  rune: 'ᛗ',
+  rune: 'M',
   title: 'Mímir',
   subtitle: 'the well of knowledge',
   tabs: [

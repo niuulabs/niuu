@@ -20,6 +20,7 @@ import yaml
 
 from bifrost.config import ManagedModelConfig
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
+from niuu.config_models import default_session_definitions
 from ting.domain.models import (
     Saga,
     SagaStatus,
@@ -32,7 +33,6 @@ from ting.domain.services.dispatch_service import (
     build_flock_prompt,
 )
 from ting.ports.volundr import SpawnRequest
-from volundr.config import _default_session_definitions
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -84,7 +84,7 @@ def _make_flock_config(**overrides) -> DispatchConfig:
         flock_mimir_hosted_url="https://mimir.example.com",
         flock_mimir_registry_path="~/.ravn/mimir/.mimir-registry.json",
         flock_sleipnir_publish_urls=["nats://sleipnir.example.com"],
-        session_definitions=_default_session_definitions(),
+        session_definitions=default_session_definitions(),
     )
     defaults.update(overrides)
     return DispatchConfig(**defaults)
@@ -365,7 +365,7 @@ class TestBuildSpawnRequestFlockEnabled:
 
     def test_workflow_snapshot_can_mix_runtime_providers_per_stage(self) -> None:
         config = _make_flock_config(
-            session_definitions=_default_session_definitions(),
+            session_definitions=default_session_definitions(),
             configured_models=[
                 ManagedModelConfig(
                     id="claude-sonnet-4-6",

@@ -113,6 +113,19 @@ envoy:
       - /mimir/health
       - /api/v1/mimir/health
       - /mimir/stats
+    workload:
+      enabled: false
+      issuer: ""
+      audiences: []
+      jwksUri: ""
+      jwksTimeout: "5s"
+      jwksCacheDurationSeconds: 300
+      tenantClaim: "tenant_id"
+      rolesClaim: "resource_access.mimir.roles"
+      jwksHost: ""
+      jwksPort: 443
+      jwksTls: true
+      extraClaimHeaders: []
   extraHttpFilters: []
   extraClusters: []
 
@@ -124,6 +137,17 @@ resources:
   limits:
     cpu: 500m
     memory: 256Mi
+
+# -- Startup probe. Liveness and readiness probes remain disabled until this
+# succeeds.
+startupProbe:
+  enabled: true
+  path: /health
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 5
+  successThreshold: 1
+  failureThreshold: 60
 
 autoscaling:
   # -- Enable HorizontalPodAutoscaler.

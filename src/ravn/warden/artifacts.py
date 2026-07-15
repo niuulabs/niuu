@@ -17,6 +17,15 @@ from niuu.domain.model_runtime import (
 from ravn.warden.models import WardenSpec
 
 
+def confined_path(root: Path, *parts: str) -> Path:
+    """Return a resolved child path that cannot escape *root*."""
+    resolved_root = root.expanduser().resolve()
+    candidate = resolved_root.joinpath(*parts).resolve()
+    if candidate == resolved_root or not candidate.is_relative_to(resolved_root):
+        raise ValueError("warden path must remain within its configured root")
+    return candidate
+
+
 def service_label(warden_id: str) -> str:
     """Return the canonical supervisor label for one warden."""
     return f"dev.niuu.ravn.warden.{warden_id}"
@@ -24,17 +33,17 @@ def service_label(warden_id: str) -> str:
 
 def runtime_config_path(warden_dir: Path) -> Path:
     """Return the generated runtime config path for one warden."""
-    return warden_dir / "config.yaml"
+    return confined_path(warden_dir, "config.yaml")
 
 
 def log_path(warden_dir: Path) -> Path:
     """Return the stdout log path for one warden."""
-    return warden_dir / "warden.log"
+    return confined_path(warden_dir, "warden.log")
 
 
 def error_log_path(warden_dir: Path) -> Path:
     """Return the stderr log path for one warden."""
-    return warden_dir / "warden.error.log"
+    return confined_path(warden_dir, "warden.error.log")
 
 
 def local_python_executable() -> str:
@@ -139,7 +148,11 @@ def runtime_config_payload(
     if not write_mounts and read_mounts:
         write_mounts = [read_mounts[0]]
     all_mounts = list(dict.fromkeys([*read_mounts, *write_mounts]))
-    state_root = (warden_dir or (Path.home() / ".ravn" / "wardens" / spec.id)).expanduser()
+    state_root = (
+        warden_dir.expanduser().resolve()
+        if warden_dir is not None
+        else confined_path(Path.home() / ".ravn" / "wardens", spec.id)
+    )
     queue_journal_path = state_root / "queue.json"
     daemon_state_dir = state_root / "state"
 

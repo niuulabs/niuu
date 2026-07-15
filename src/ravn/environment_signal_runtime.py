@@ -113,6 +113,7 @@ class EnvironmentSignalRuntime:
         self._adapters: list[SignalAdapter] = []
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._tasks: list[asyncio.Task] = []
+        self._untriaged: list[dict[str, Any]] = []
 
     @property
     def source_count(self) -> int:
@@ -130,6 +131,14 @@ class EnvironmentSignalRuntime:
                 asyncio.create_task(
                     self._poll_loop(adapter),
                     name=f"environment_signal:{adapter.source_id}",
+                )
+            )
+        triage_interval = self._settings.environment.idle_triage_interval_seconds
+        if self._enqueue is not None and triage_interval > 0:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._idle_triage_loop(triage_interval),
+                    name=f"environment_triage:{self._environment.id}",
                 )
             )
 
@@ -224,6 +233,8 @@ class EnvironmentSignalRuntime:
                         )
                     )
                     enqueued_count += 1
+                else:
+                    self._remember_untriaged(signal, event)
         duration_ms = int((perf_counter() - started) * 1000)
         await self._publish_signal_poll_completed(
             adapter,
@@ -242,6 +253,121 @@ class EnvironmentSignalRuntime:
             self._environment.id,
         )
         return len(events)
+
+    def _remember_untriaged(self, signal: NormalizedSignal, event: SleipnirEvent) -> None:
+        self._untriaged.append(
+            {
+                "signal_ref": event.event_id or signal.provider_event_id or signal.dedupe_key,
+                "signal_type": signal.signal_type,
+                "severity": signal.severity,
+                "source_id": signal.source_id,
+                "summary": event.summary,
+            }
+        )
+        max_signals = self._settings.environment.idle_triage_max_signals
+        if len(self._untriaged) > max_signals:
+            self._untriaged = self._untriaged[-max_signals:]
+
+    async def _idle_triage_loop(self, interval: float) -> None:
+        """Periodically make the resident reason over below-threshold signals.
+
+        Without this, a quiet environment produces zero judgments and the
+        dashboard shows silence even though signals were seen — watching
+        should be an observable act, not an absence of records.
+        """
+        if self._enqueue is None:
+            return
+        while True:
+            await asyncio.sleep(interval)
+            batch, self._untriaged = self._untriaged, []
+            if not batch:
+                continue
+            try:
+                await self._enqueue(self._triage_task(batch))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "environment_signals: idle triage enqueue failed: %s",
+                    exc,
+                )
+
+    def _triage_task(self, batch: list[dict[str, Any]]) -> AgentTask:
+        peer_id = self._settings.mesh.own_peer_id or "unknown"
+        severity_counts: dict[str, int] = {}
+        source_counts: dict[str, int] = {}
+        for entry in batch:
+            severity_counts[entry["severity"]] = severity_counts.get(entry["severity"], 0) + 1
+            source_counts[entry["source_id"]] = source_counts.get(entry["source_id"], 0) + 1
+        sample_lines = "\n".join(
+            f"- `{entry['signal_type']}` ({entry['severity']}, {entry['source_id']}): "
+            f"{entry['summary']}"
+            for entry in batch[:15]
+        )
+        severity_lines = "\n".join(
+            f"- **{severity}**: {count}" for severity, count in sorted(severity_counts.items())
+        )
+        signal_refs = "\n".join(f"  - {entry['signal_ref']}" for entry in batch[:25])
+        outcome_template = (
+            "---outcome---\n"
+            "decision: watch\n"
+            f"environment_id: {self._environment.id}\n"
+            f"environment_type: {self._environment.type}\n"
+            f"valkyrie_id: {peer_id}\n"
+            "signal_refs:\n"
+            f"{signal_refs}\n"
+            "tier: ambient\n"
+            "confidence: 0.5\n"
+            "operational_state: watching\n"
+            "wakefulness: watching\n"
+            "rationale: concise summary of why the environment needs no action\n"
+            "evidence: []\n"
+            "recommended_action: none\n"
+            "action_authority: autonomous\n"
+            "action_capability: none\n"
+            "target_surfaces: []\n"
+            'expires_at: ""\n'
+            "dissent_refs: []\n"
+            "correlation_ids:\n"
+            f"  environment: {self._environment.id}\n"
+            "---end---"
+        )
+        charter_section = ""
+        charter = self._settings.environment.charter.strip()
+        if charter:
+            charter_section = f"\n## Charter\n\n{charter}\n"
+        context = (
+            f"# Idle triage — {len(batch)} routine signal(s)\n\n"
+            "None of the signals below crossed the task severity threshold "
+            f"(`signal_task_severities: {self._settings.environment.signal_task_severities}`). "
+            "Review the batch as a whole and confirm — or refute — that the "
+            "environment is healthy.\n"
+            f"{charter_section}\n"
+            "## Severity breakdown\n\n"
+            f"{severity_lines}\n\n"
+            "## Sample signals\n\n"
+            f"{sample_lines}\n\n"
+            "## Your task\n\n"
+            "Judge whether the aggregate pattern is routine or hides an emerging "
+            "problem (repeated warnings from one source, a drift in volume, a "
+            "new signal type). Say explicitly WHY nothing is actionable, or "
+            "escalate what is.\n\n"
+            "## Required outcome\n\n"
+            "Finish with exactly one `valkyrie.judgment.proposed` block:\n\n"
+            "```text\n"
+            f"{outcome_template}\n"
+            "```\n"
+        )
+        return AgentTask(
+            task_id=f"task_{int(datetime.now(UTC).timestamp() * 1000):x}_{uuid.uuid4().hex[:8]}",
+            title=f"Idle triage: {len(batch)} routine signal(s)",
+            initiative_context=context,
+            triggered_by="signal:idle_triage",
+            output_mode=self._output_mode,
+            persona=self._persona,
+            priority=9,
+            root_correlation_id=f"idle-triage:{self._environment.id}",
+        )
 
     def _remember(self, signal: NormalizedSignal) -> bool:
         key = f"{signal.source_id}:{signal.provider_event_id or signal.dedupe_key}"
@@ -304,9 +430,11 @@ class EnvironmentSignalRuntime:
         ]
         if resident_personality:
             resident_lines.append(f"- **Personality:** {resident_personality}")
+        charter = self._settings.environment.charter.strip()
+        if charter:
+            resident_lines.append(f"- **Charter:** {charter}")
 
-        # Markdown section the agent reads about what resident learning already
-        # found, plus the (last-placed, heavily-weighted) build mandate.
+        # Markdown section the agent reads about what resident learning already found.
         learning_section = ""
         closing_section = ""
         if resident_learning_result:
@@ -329,11 +457,10 @@ class EnvironmentSignalRuntime:
                 closing_section = (
                     "\n## Required before you finish\n\n"
                     f"No installed instrument matches capability `{capability}`. "
-                    "Decide for yourself what instrument this investigation and "
-                    "its follow-ups actually need — **you write that spec, it is "
-                    "not pre-defined** — then capitalise the gap with `build_tool`: "
+                    "Decide for yourself which available skill or tool should handle "
+                    "the signal. If no suitable capability exists, use `build_tool`: "
                     "author the `tool_code` yourself, or pass your spec as "
-                    "`build_request` to commission a build session.\n\n"
+                    "`build_request` so the configured builder can produce it.\n\n"
                     "Guardrails, not recipes:\n\n"
                     "- Declare the tool's **real reach** — review gates on it, and "
                     "mutating reach is held for an operator.\n"
@@ -342,10 +469,9 @@ class EnvironmentSignalRuntime:
                     "- When access is missing, return a clear error object instead "
                     "of raising, so the canary still passes in restricted "
                     "environments.\n\n"
-                    "Then run the new tool on this signal and cite its result in "
-                    "the outcome. If the tool is held for operator review, say so "
-                    "in the rationale. **Do not finish without calling "
-                    "`build_tool`.**\n"
+                    "When you build or use a capability, cite the result in the "
+                    "outcome. If the tool is held for operator review, say so in "
+                    "the rationale.\n"
                 )
             elif decision:
                 learning_section = (
@@ -353,6 +479,20 @@ class EnvironmentSignalRuntime:
                     f"- **Decision:** `{decision}`\n"
                     f"- **Capability:** `{capability}`\n"
                 )
+
+        workflow_section = ""
+        if self._workflow_capability_sources_enabled():
+            workflow_section = (
+                "\n## Remote workflows\n\n"
+                "Remote workflows are available as ordinary tools. Use "
+                "`workflow_list` to inspect the catalog and `workflow_launch` only "
+                "when the task genuinely needs a workflow-backed build, research, "
+                "or operations run. Treat them like any other tool: choose based "
+                "on the current task, not on a hidden signal policy. After launching, "
+                "do not treat the launch receipt as the outcome; use `workflow_status` "
+                "and then `workflow_events`, `workflow_artifacts`, or "
+                "`workflow_artifact_read` to inspect what Ting reports.\n"
+            )
 
         payload_json = json.dumps(signal.normalized_payload, indent=2, sort_keys=True, default=str)
         object_json = json.dumps(signal.object_ref, sort_keys=True, default=str)
@@ -405,6 +545,7 @@ class EnvironmentSignalRuntime:
             f"{payload_json}\n"
             "```\n"
             f"{learning_section}\n"
+            f"{workflow_section}\n"
             "## Your task\n\n"
             "Decide whether this is noise, needs a **watching** state, or "
             "**requires action**. Use existing tools, memory, and resident "
@@ -412,8 +553,10 @@ class EnvironmentSignalRuntime:
             "`skill_run` are available, inspect and load the relevant runbook "
             "first. If the investigation is blocked because the toolbox lacks a "
             "reusable instrument, call `build_tool` with a manifest, declared "
-            "reach, and canary input, then use the newly registered tool before "
-            "deciding — or note the review item when the tool requires approval.\n\n"
+            "reach, and canary input; when a builder backend is configured, pass "
+            "a `build_request` and let that backend produce the tool. Then use "
+            "the newly registered tool before deciding — or note the review item "
+            "when the tool requires approval.\n\n"
             "## Required outcome\n\n"
             "Finish with exactly one `valkyrie.judgment.proposed` block in this "
             "shape — keep the `---outcome---` / `---end---` delimiters, valid YAML "
@@ -445,6 +588,12 @@ class EnvironmentSignalRuntime:
     def _resident_personality(self) -> str:
         return self._settings.environment.resident_personality.strip()
 
+    def _workflow_capability_sources_enabled(self) -> bool:
+        return any(
+            source.enabled and source.adapter
+            for source in self._settings.environment.capability_sources
+        )
+
     async def _publish_runtime_started(self) -> None:
         sources = [
             {
@@ -457,6 +606,7 @@ class EnvironmentSignalRuntime:
             "valkyrie_id": self._settings.mesh.own_peer_id,
             "valkyrie_name": self._resident_name(),
             "resident_personality": self._resident_personality(),
+            "charter": self._settings.environment.charter.strip(),
             "environment_id": self._environment.id,
             "source_count": len(sources),
             "sources": sources,
@@ -520,6 +670,13 @@ class EnvironmentSignalRuntime:
             "enqueued_task_count": enqueued_count,
             "resident_learning_checked_count": resident_checked_count,
             "resident_learning_used_count": resident_used_count,
+            "workflow_capability_source_count": len(
+                [
+                    source
+                    for source in self._settings.environment.capability_sources
+                    if source.enabled and source.adapter
+                ]
+            ),
             "drive_loop_enabled": self._enqueue is not None,
             "duration_ms": duration_ms,
             "severity_counts": severity_counts,

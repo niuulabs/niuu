@@ -305,7 +305,7 @@ comments: fix the null branch
         assert alias_event.payload["canonical_event_type"] == "review.completed"
         assert alias_event.payload["routing_only"] is True
         assert alias_event.payload["bubble_up"] is False
-        assert alias_event.payload["room_bridge_skip"] is True
+        assert "room_bridge_skip" not in alias_event.payload
 
         assert skuld_channel.emit.await_count == 2
         emitted = skuld_channel.emit.await_args_list[0].args[0]
@@ -485,6 +485,18 @@ correlation_ids:
 
         assert outcome["expires_at"] == "2026-06-04T20:30:00+00:00"
         json.dumps(outcome)
+
+    def test_resident_valkyrie_normalization_accepts_common_state_aliases(self) -> None:
+        outcome = normalize_valkyrie_outcome(
+            registry.VALKYRIE_JUDGMENT_PROPOSED,
+            {
+                "operational_state": "investigate",
+                "wakefulness": "watchful",
+            },
+        )
+
+        assert outcome["operational_state"] == "investigating"
+        assert outcome["wakefulness"] == "watching"
 
     def test_resident_valkyrie_normalization_coerces_loose_correlation_ids(self) -> None:
         list_outcome = normalize_valkyrie_outcome(
@@ -826,9 +838,7 @@ brief_path: research/campaigns/example/brief.md
         assert materialized.read_text(encoding="utf-8") == "# Brief\n\nReady."
         dl._mimir.get_page.assert_awaited_once_with("research/campaigns/example/brief.md")
         event = mesh.publish.await_args_list[0].args[0]
-        assert event.payload["fields"]["workspace_paths"] == [
-            "research/campaigns/example/brief.md"
-        ]
+        assert event.payload["fields"]["workspace_paths"] == ["research/campaigns/example/brief.md"]
 
     @pytest.mark.asyncio
     async def test_split_outcome_markers_still_route_alias_for_wrapped_codex_output(self) -> None:

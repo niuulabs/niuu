@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 import respx
@@ -141,6 +143,90 @@ def test_list_sessions_can_dispatch_to_embedded_local_target() -> None:
     ]
 
 
+def test_resident_control_dispatches_through_embedded_target() -> None:
+    embedded = FastAPI()
+    runtime = {
+        "id": "resident-1",
+        "name": "Local NemoClaw",
+        "backend": "local",
+        "engine": "openclaw",
+    }
+
+    @embedded.get("/api/v1/forge/resident-profiles")
+    async def profiles() -> list[dict[str, Any]]:
+        return [{"id": "nemoclaw-local", "backend": "local", "engine": "openclaw"}]
+
+    @embedded.get("/api/v1/forge/resident-runtimes")
+    async def runtimes() -> list[dict[str, Any]]:
+        return [runtime]
+
+    @embedded.post("/api/v1/forge/resident-runtimes", status_code=201)
+    async def create_runtime(body: dict[str, Any]) -> dict[str, Any]:
+        assert body["profile_id"] == "nemoclaw-local"
+        assert "instance_id" not in body
+        return runtime
+
+    @embedded.get("/api/v1/forge/resident-runtimes/{runtime_id}")
+    async def get_runtime(runtime_id: str) -> dict[str, Any]:
+        assert runtime_id == runtime["id"]
+        return runtime
+
+    @embedded.post("/api/v1/forge/resident-runtimes/{runtime_id}/restart")
+    async def restart_runtime(runtime_id: str) -> dict[str, Any]:
+        return {**runtime, "id": runtime_id, "observed_state": "active"}
+
+    @embedded.get("/api/v1/forge/resident-runtimes/{runtime_id}/sessions")
+    async def list_native_sessions(runtime_id: str) -> list[dict[str, Any]]:
+        return [{"id": "session-1", "resident_id": runtime_id}]
+
+    @embedded.post("/api/v1/forge/resident-runtimes/{runtime_id}/sessions", status_code=201)
+    async def create_native_session(runtime_id: str) -> dict[str, Any]:
+        return {"id": "session-2", "resident_id": runtime_id}
+
+    client = _client(
+        [
+            _instance(
+                "local",
+                base_url="embedded://local-forge",
+                is_default=True,
+                config={"transport": "embedded"},
+            )
+        ],
+        embedded_forge_app=embedded,
+    )
+
+    profiles_response = client.get("/api/v1/forge/resident-profiles", headers=_headers())
+    assert profiles_response.status_code == 200
+    assert profiles_response.json()[0]["instance_id"] == "local"
+    assert client.get("/api/v1/forge/resident-runtimes", headers=_headers()).status_code == 200
+    created = client.post(
+        "/api/v1/forge/resident-runtimes",
+        headers=_headers(),
+        json={"profile_id": "nemoclaw-local", "name": "Nemo", "instance_id": "local"},
+    )
+    assert created.status_code == 201
+    assert created.json()["instance_id"] == "local"
+    assert (
+        client.post(
+            "/api/v1/forge/resident-runtimes/resident-1/restart",
+            headers=_headers(),
+        ).status_code
+        == 200
+    )
+    sessions = client.get(
+        "/api/v1/forge/resident-runtimes/resident-1/sessions",
+        headers=_headers(),
+    )
+    assert sessions.json()[0]["instance_id"] == "local"
+    created_session = client.post(
+        "/api/v1/forge/resident-runtimes/resident-1/sessions",
+        headers=_headers(),
+        json={"title": "New session"},
+    )
+    assert created_session.status_code == 201
+    assert created_session.json()["instance_id"] == "local"
+
+
 def test_embedded_target_fails_loud_without_local_app() -> None:
     client = _client(
         [
@@ -215,6 +301,26 @@ def test_get_session_searches_visible_instances() -> None:
     assert payload["id"] == "s2"
     assert payload["instance_id"] == "beta"
     assert payload["instance_name"] == "Instance beta"
+
+
+@respx.mock
+def test_get_session_rebases_target_relative_chat_endpoint() -> None:
+    client = _client([_instance("noatun", base_url="https://niuu.noatun.asgard.niuu.world")])
+    respx.get("https://niuu.noatun.asgard.niuu.world/api/v1/forge/sessions/s2").mock(
+        return_value=Response(
+            200,
+            json={
+                "id": "s2",
+                "status": "running",
+                "chat_endpoint": "/s/s2/session",
+            },
+        )
+    )
+
+    response = client.get("/api/v1/forge/sessions/s2", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()["chat_endpoint"] == ("wss://niuu.noatun.asgard.niuu.world/s/s2/session")
 
 
 @respx.mock
@@ -307,6 +413,43 @@ def test_create_session_uses_requested_instance_and_strips_instance_hints() -> N
 
 
 @respx.mock
+def test_create_session_syncs_custom_persona_to_selected_target() -> None:
+    embedded = FastAPI()
+    embedded.state.persona_registry = SimpleNamespace(
+        get_persona=AsyncMock(
+            return_value=SimpleNamespace(
+                has_override=True,
+                payload={"name": "custom-reviewer", "system_prompt_template": "Review"},
+            )
+        )
+    )
+    client = _client(
+        [_instance("target", base_url="http://target", is_default=True)],
+        embedded_forge_app=embedded,
+    )
+    respx.get("http://target/api/v1/personas/custom-reviewer").mock(return_value=Response(404))
+    sync = respx.post("http://target/api/v1/personas").mock(
+        return_value=Response(201, json={"name": "custom-reviewer"})
+    )
+    launch = respx.post("http://target/api/v1/forge/sessions").mock(
+        return_value=Response(201, json={"id": "s-persona"})
+    )
+
+    response = client.post(
+        "/api/v1/forge/sessions",
+        headers=_headers(),
+        json={"name": "review-session", "persona_name": "custom-reviewer"},
+    )
+
+    assert response.status_code == 201
+    assert sync.called
+    assert launch.called
+    embedded.state.persona_registry.get_persona.assert_awaited_once_with(
+        "user-a", "custom-reviewer"
+    )
+
+
+@respx.mock
 def test_create_session_targets_instance_by_tags() -> None:
     client = _client(
         [
@@ -387,11 +530,12 @@ def test_get_stats_aggregates_totals_and_merges_sparklines() -> None:
             json={
                 "active_sessions": 2,
                 "totalSessions": 5,
+                "sessions_today": 1,
                 "tokens_today": 10,
                 "localTokens": 3,
                 "cloud_tokens": 7,
                 "costToday": 1.25,
-                "sparklines": {"tokens": [1, 2], "cost": [0.5, 0.75]},
+                "sparklines": {"tokens": [1, 2], "cost": [0.5, 0.75], "sessionsToday": [1, 0]},
             },
         )
     )
@@ -401,11 +545,12 @@ def test_get_stats_aggregates_totals_and_merges_sparklines() -> None:
             json={
                 "activeSessions": 4,
                 "total_sessions": 6,
+                "sessionsToday": 2,
                 "tokensToday": 20,
                 "local_tokens": 5,
                 "cloudTokens": 9,
                 "cost_today": 2.5,
-                "sparklines": {"tokens": [3, 4, 5]},
+                "sparklines": {"tokens": [3, 4, 5], "sessionsToday": [0, 2, 1]},
             },
         )
     )
@@ -416,18 +561,23 @@ def test_get_stats_aggregates_totals_and_merges_sparklines() -> None:
     assert response.json() == {
         "active_sessions": 6,
         "total_sessions": 11,
+        "sessions_today": 3,
         "tokens_today": 30,
         "local_tokens": 8,
         "cloud_tokens": 16,
         "cost_today": 3.75,
-        "sparklines": {"tokens": [4.0, 6.0, 5.0], "cost": [0.5, 0.75]},
+        "sparklines": {
+            "tokens": [4.0, 6.0, 5.0],
+            "cost": [0.5, 0.75],
+            "sessionsToday": [1.0, 2.0, 1.0],
+        },
     }
 
 
 @respx.mock
 def test_get_cluster_resources_returns_camel_and_snake_resource_keys() -> None:
     client = _client([_instance("alpha", base_url="http://alpha")])
-    respx.get("http://alpha/api/v1/forge/cluster/resources").mock(
+    respx.get("http://alpha/api/v1/volundr/resources").mock(
         return_value=Response(
             200,
             json={
@@ -461,7 +611,9 @@ def test_get_cluster_resources_returns_camel_and_snake_resource_keys() -> None:
     assert payload["resourceTypes"][0]["resourceKey"] == "nvidia.com/gpu"
     assert payload["resourceTypes"][0]["display_name"] == "GPU"
     assert payload["resourceTypes"][0]["displayName"] == "GPU"
+    assert payload["instances"][0]["slug"] == "alpha"
     assert payload["nodes"][0]["name"] == "alpha/node-a"
+    assert payload["nodes"][0]["instance_slug"] == "alpha"
 
 
 @respx.mock
@@ -691,6 +843,43 @@ def test_proxy_routes_forward_to_session_owner(
             assert payload == expected_body
     else:
         assert response.content == b""
+    assert route.called
+
+
+@pytest.mark.parametrize(
+    ("suffix", "payload"),
+    [
+        ("trace", {"spans": [{"id": "span-1"}], "lanes": []}),
+        ("trace/summary", {"turn_count": 1, "tool_call_count": 0}),
+    ],
+)
+@respx.mock
+def test_trace_routes_fall_back_to_resident_owner(suffix: str, payload: dict[str, Any]) -> None:
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha"),
+            _instance("beta", base_url="http://beta"),
+        ]
+    )
+    for base_url in ("http://alpha", "http://beta"):
+        respx.get(f"{base_url}/api/v1/forge/sessions/resident-1").mock(return_value=Response(404))
+    respx.get("http://alpha/api/v1/forge/resident-runtimes/resident-1").mock(
+        return_value=Response(404)
+    )
+    respx.get("http://beta/api/v1/forge/resident-runtimes/resident-1").mock(
+        return_value=Response(200, json={"id": "resident-1", "name": "Hermes"})
+    )
+    route = respx.get(f"http://beta/api/v1/forge/sessions/resident-1/{suffix}").mock(
+        return_value=Response(200, json=payload)
+    )
+
+    response = client.get(
+        f"/api/v1/forge/sessions/resident-1/{suffix}",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == payload
     assert route.called
 
 

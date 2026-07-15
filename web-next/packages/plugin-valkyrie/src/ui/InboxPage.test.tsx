@@ -8,8 +8,43 @@ vi.mock('shiki', () => ({
   codeToHtml: vi.fn().mockRejectedValue(new Error('no highlight in test')),
 }));
 import { createMockOdinReviewService, createSeedReviewItems } from '../adapters/mock';
+import { LIST_LIMIT, type ReviewItem } from '../domain';
 import { wrapWithValkyrie } from '../testing/wrapWithValkyrie';
 import { InboxPage } from './InboxPage';
+
+function morningBriefItem(): ReviewItem {
+  return {
+    itemId: 'review:morning_brief:env-k8s-valhalla:2026-06-03',
+    kind: 'morning_brief',
+    requestedAction: 'acknowledge',
+    environmentId: 'env-k8s-valhalla',
+    valkyrieId: '',
+    title: 'Morning brief — env-k8s-valhalla',
+    summary: '37 signal(s) observed, 3 decision(s) taken in the last brief window.',
+    audience: 'environment',
+    flockId: '',
+    domain: '',
+    riskClass: 'low',
+    safetyClass: 'read_only',
+    urgency: 0.2,
+    requestedCapability: 'approve',
+    evidence: {
+      brief_markdown:
+        '# Morning brief — env-k8s-valhalla\n\nSignals observed: 37\nDecisions taken: 3',
+      decision_count: 3,
+      signal_count: 37,
+    },
+    status: 'pending',
+    requestedBy: 'ravn:valkyrie-brief',
+    requestedAt: '2026-06-03T06:00:00Z',
+    decidedBy: '',
+    decidedAt: '',
+    decisionReason: '',
+    resolvedAt: '',
+    applyOutcome: '',
+    applyDetail: '',
+  };
+}
 
 function renderInbox(services: Record<string, unknown> = {}) {
   return render(<InboxPage />, { wrapper: wrapWithValkyrie(services) });
@@ -103,6 +138,44 @@ describe('InboxPage', () => {
     });
   });
 
+  it('searches and filters the full queue, then groups the visible page', async () => {
+    const user = userEvent.setup();
+    renderInbox();
+    await screen.findAllByTestId('review-card');
+
+    await user.selectOptions(screen.getByLabelText('Filter by environment'), 'env-noatun');
+    await user.selectOptions(screen.getByLabelText('Filter by risk'), 'high');
+    await user.type(screen.getByLabelText('Search review inbox'), 'checkout');
+    await user.click(screen.getByRole('button', { name: 'Search' }));
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('review-card')).toHaveLength(1);
+    });
+    expect(screen.getByTestId('inbox-list-range')).toHaveTextContent('1–1 of 1 matching');
+    expect(screen.getByText('env-noatun · 1')).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText('Group reviews by'), 'risk');
+    expect(screen.getByText('high risk · 1')).toBeInTheDocument();
+  });
+
+  it('renders a morning brief with its digest markdown and effect statement', async () => {
+    const user = userEvent.setup();
+    const withBrief = createMockOdinReviewService([...createSeedReviewItems(), morningBriefItem()]);
+    renderInbox({ 'valkyrie.reviews': withBrief });
+
+    const cards = await screen.findAllByTestId('review-card');
+    const briefCard = cards.find((card) => card.textContent?.includes('Morning brief'));
+    expect(briefCard).toBeDefined();
+    expect(briefCard).toHaveTextContent('brief');
+    await user.click(briefCard!);
+
+    expect(screen.getByTestId('review-lineage')).toHaveTextContent('daily digest');
+    expect(await screen.findByTestId('review-brief')).toHaveTextContent('Signals observed: 37');
+    expect(screen.getByTestId('review-decision')).toHaveTextContent(
+      'Approving marks this brief as read',
+    );
+  });
+
   it('shows an empty state when nothing is pending', async () => {
     const empty = createMockOdinReviewService(
       createSeedReviewItems().filter((item) => item.status !== 'pending'),
@@ -120,5 +193,36 @@ describe('InboxPage', () => {
     };
     renderInbox({ 'valkyrie.reviews': broken });
     expect(await screen.findByTestId('inbox-error')).toHaveTextContent('queue offline');
+  });
+
+  it('pages through the full queue while rendering at most LIST_LIMIT items', async () => {
+    const user = userEvent.setup();
+    const base = createSeedReviewItems()[0]!;
+    const many = Array.from({ length: 25 }, (_, index) => ({
+      ...base,
+      itemId: `review:bulk:${index}`,
+      title: `Bulk review ${index}`,
+      status: 'pending' as const,
+      requestedAt: `2026-06-03T${String(10 + Math.floor(index / 10))}:${String(
+        10 + (index % 10),
+      )}:00Z`,
+    }));
+    const service = createMockOdinReviewService(many);
+    const listSpy = vi.spyOn(service, 'listReviews');
+    renderInbox({ 'valkyrie.reviews': service });
+
+    const cards = await screen.findAllByTestId('review-card');
+    expect(cards).toHaveLength(LIST_LIMIT);
+    expect(screen.getByTestId('inbox-pending-count')).toHaveTextContent('25 pending');
+    expect(screen.getByTestId('inbox-list-range')).toHaveTextContent('1–20 of 25 matching');
+    expect(listSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: LIST_LIMIT + 1, offset: 0 }),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(screen.getAllByTestId('review-card')).toHaveLength(5));
+    expect(screen.getByTestId('inbox-list-range')).toHaveTextContent('21–25 of 25 matching');
+    expect(screen.getByText('2 / 2')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
   });
 });

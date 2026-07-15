@@ -8,10 +8,167 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from tests.conftest import MockEventBroadcaster
-from volundr.adapters.inbound.rest import create_router
+from volundr.adapters.inbound.rest import (
+    _server_side_http_proxy_target,
+    _server_side_ws_connect_overrides,
+    create_router,
+)
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
-from volundr.domain.models import EventType, RealtimeEvent
+from volundr.domain.models import DeviceToken, EventType, RealtimeEvent
+from volundr.domain.ports import DeviceTokenRepository
 from volundr.domain.services import SessionService, StatsService
+
+
+def test_server_side_ws_connect_overrides_openshell_service_host():
+    overrides = _server_side_ws_connect_overrides(
+        "ws://forge-8093e93dc7634efeb2c382--skuld.openshell.localhost:8080/session",
+        gateway_url="http://openshell.openshell.svc.cluster.local:8080",
+    )
+
+    assert overrides == {
+        "host": "openshell.openshell.svc.cluster.local",
+        "port": 8080,
+        "proxy": None,
+    }
+
+
+def test_server_side_http_proxy_target_openshell_service_host():
+    url, headers = _server_side_http_proxy_target(
+        "http://forge-123--skuld.openshell.localhost:8080/api/conversation/history",
+        gateway_url="http://openshell.openshell.svc.cluster.local:8080",
+    )
+
+    assert url == ("http://openshell.openshell.svc.cluster.local:8080/api/conversation/history")
+    assert headers == {"Host": "forge-123--skuld.openshell.localhost:8080"}
+
+
+class _FakeDeviceRepo(DeviceTokenRepository):
+    """In-memory device repository for REST endpoint tests."""
+
+    def __init__(self):
+        self.devices: list[DeviceToken] = []
+
+    async def upsert(self, device: DeviceToken) -> DeviceToken:
+        self.devices = [
+            d
+            for d in self.devices
+            if not (d.owner_id == device.owner_id and d.token == device.token)
+        ]
+        self.devices.append(device)
+        return device
+
+    async def list_for_owner(self, owner_id: str) -> list[DeviceToken]:
+        return [d for d in self.devices if d.owner_id == owner_id]
+
+    async def delete(self, owner_id: str, token: str) -> bool:
+        before = len(self.devices)
+        self.devices = [
+            d for d in self.devices if not (d.owner_id == owner_id and d.token == token)
+        ]
+        return len(self.devices) < before
+
+
+class _StubIdentity:
+    """Minimal identity so _optional_principal resolves a header principal."""
+
+    async def get_or_provision_user(self, principal):
+        return None
+
+
+class TestDeviceEndpoints:
+    """Tests for the push device registration endpoints."""
+
+    @pytest.fixture
+    def device_repo(self):
+        return _FakeDeviceRepo()
+
+    @pytest.fixture
+    def client(self, repository, pod_manager, stats_repository, pricing_provider, device_repo):
+        app = FastAPI()
+        app.state.identity = _StubIdentity()
+        session_service = SessionService(repository=repository, pod_manager=pod_manager)
+        router = create_router(
+            session_service=session_service,
+            stats_service=StatsService(stats_repository),
+            pricing_provider=pricing_provider,
+            device_repository=device_repo,
+        )
+        app.include_router(router)
+        return TestClient(app)
+
+    _AUTH = {"x-auth-user-id": "user-1"}
+
+    def test_register_then_list(self, client, device_repo):
+        resp = client.post(
+            "/api/v1/forge/devices",
+            json={"platform": "ios", "token": "tok-1", "app_bundle_id": "com.niuu.forge"},
+            headers=self._AUTH,
+        )
+        assert resp.status_code == 201
+        assert resp.json()["platform"] == "ios"
+        assert resp.json()["token"] == "tok-1"
+
+        listed = client.get("/api/v1/forge/devices", headers=self._AUTH)
+        assert listed.status_code == 200
+        assert [d["token"] for d in listed.json()] == ["tok-1"]
+
+    def test_register_is_idempotent(self, client):
+        body = {"platform": "ios", "token": "tok-1"}
+        client.post("/api/v1/forge/devices", json=body, headers=self._AUTH)
+        client.post("/api/v1/forge/devices", json=body, headers=self._AUTH)
+        listed = client.get("/api/v1/forge/devices", headers=self._AUTH)
+        assert len(listed.json()) == 1
+
+    def test_register_rejects_bad_platform(self, client):
+        resp = client.post(
+            "/api/v1/forge/devices",
+            json={"platform": "blackberry", "token": "t"},
+            headers=self._AUTH,
+        )
+        assert resp.status_code == 422
+
+    def test_unregister(self, client):
+        client.post(
+            "/api/v1/forge/devices",
+            json={"platform": "ios", "token": "tok-1"},
+            headers=self._AUTH,
+        )
+        resp = client.request("DELETE", "/api/v1/forge/devices/tok-1", headers=self._AUTH)
+        assert resp.status_code == 204
+        listed = client.get("/api/v1/forge/devices", headers=self._AUTH)
+        assert listed.json() == []
+
+    def test_requires_authentication(self, client):
+        # No x-auth-user-id header -> no principal -> 401.
+        assert client.get("/api/v1/forge/devices").status_code == 401
+
+    def test_owner_isolation(self, client):
+        client.post(
+            "/api/v1/forge/devices",
+            json={"platform": "ios", "token": "tok-1"},
+            headers={"x-auth-user-id": "user-1"},
+        )
+        other = client.get("/api/v1/forge/devices", headers={"x-auth-user-id": "user-2"})
+        assert other.json() == []
+
+    def test_503_when_repository_absent(
+        self, repository, pod_manager, stats_repository, pricing_provider
+    ):
+        app = FastAPI()
+        app.state.identity = _StubIdentity()
+        router = create_router(
+            session_service=SessionService(repository=repository, pod_manager=pod_manager),
+            stats_service=StatsService(stats_repository),
+            pricing_provider=pricing_provider,
+        )
+        app.include_router(router)
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/forge/devices",
+            json={"platform": "ios", "token": "t"},
+            headers=self._AUTH,
+        )
+        assert resp.status_code == 503
 
 
 class TestSSEEndpoint:

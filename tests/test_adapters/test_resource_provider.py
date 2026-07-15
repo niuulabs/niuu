@@ -266,6 +266,67 @@ class TestK8sResourceProviderKubeconfig:
             assert isinstance(info, ClusterResourceInfo)
 
     @pytest.mark.asyncio
+    async def test_discover_reports_pod_requests_as_allocated_resources(self):
+        mock_config = MagicMock()
+        mock_config.load_incluster_config = AsyncMock()
+        mock_client = MagicMock()
+        mock_v1 = MagicMock()
+        mock_client.CoreV1Api.return_value = mock_v1
+        mock_v1.list_node = AsyncMock(
+            return_value=SimpleNamespace(
+                items=[
+                    SimpleNamespace(
+                        metadata=SimpleNamespace(name="node-a", labels={}),
+                        status=SimpleNamespace(allocatable={"cpu": "8", "memory": "16Gi"}),
+                    )
+                ]
+            )
+        )
+        mock_v1.list_namespaced_pod = AsyncMock(
+            return_value=SimpleNamespace(
+                items=[
+                    SimpleNamespace(
+                        status=SimpleNamespace(phase="Running"),
+                        spec=SimpleNamespace(
+                            node_name="node-a",
+                            containers=[
+                                SimpleNamespace(
+                                    resources=SimpleNamespace(
+                                        requests={
+                                            "cpu": "500m",
+                                            "memory": "1Gi",
+                                            "nvidia.com/gpu": "1",
+                                        }
+                                    )
+                                )
+                            ],
+                        ),
+                    )
+                ]
+            )
+        )
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "kubernetes_asyncio": SimpleNamespace(client=mock_client, config=mock_config),
+                "kubernetes_asyncio.client": mock_client,
+                "kubernetes_asyncio.config": mock_config,
+            },
+        ):
+            import importlib
+
+            importlib.reload(k8s_mod)
+            info = await k8s_mod.K8sResourceProvider(namespace="skuld").discover()
+
+            mock_v1.list_namespaced_pod.assert_called_once_with(namespace="skuld")
+            assert info.nodes[0].allocated == {
+                "cpu": "500m",
+                "memory": "1024Mi",
+                "nvidia.com/gpu": "1",
+            }
+
+    @pytest.mark.asyncio
     async def test_all_failures_fall_back_to_static_types(self):
         """When all config loading fails, return static resource types."""
         provider = k8s_mod.K8sResourceProvider(kubeconfig="/nonexistent/path")

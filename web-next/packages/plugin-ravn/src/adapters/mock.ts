@@ -183,6 +183,26 @@ const SEED_PERSONAS: PersonaSummary[] = [
     consumesEvents: [],
   },
   {
+    name: 'product-steward',
+    role: 'plan',
+    letter: 'P',
+    color: 'var(--color-accent-cyan)',
+    summary: 'Long-lived product steward for chat, memory, and workflow launch.',
+    permissionMode: 'read-only',
+    allowedTools: ['mimir', 'volundr_session', 'ting_workflow', 'ting_plan', 'ting_spec'],
+    iterationBudget: 0,
+    isBuiltin: true,
+    hasOverride: false,
+    producesEvent: '',
+    consumesEvents: [
+      'research.completed',
+      'research.failed',
+      'spec.completed',
+      'plan.completed',
+      'delivery.completed',
+    ],
+  },
+  {
     name: 'qa-agent',
     role: 'qa',
     letter: 'Q',
@@ -617,6 +637,11 @@ const SEED_RAVENS: Ravn[] = [
     mcpServers: ['filesystem', 'git', 'bash'],
     gatewayChannels: ['slack-dev', 'github-webhook'],
     eventSubscriptions: ['code.requested', 'bug.fix.requested', 'code.changed'],
+    residentName: 'sindri',
+    peerId: 'peer-sindri-01',
+    kind: 'resident',
+    chatEndpoint: null,
+    sessionId: '0f8e7d6c-5b4a-4392-8170-6e5d4c3b2a19',
   },
   {
     id: 'b7e2c9d1-3a4f-4b8e-a1c6-5d7f8e9a0b2c',
@@ -855,6 +880,8 @@ const SEED_SESSIONS: Session[] = [
     messageCount: 6,
     tokenCount: 4820,
     costUsd: 0.18,
+    // Mock never opens sockets — a null endpoint keeps the read-only surface.
+    chatEndpoint: null,
   },
   {
     id: '10000001-0000-4000-8000-000000000002',

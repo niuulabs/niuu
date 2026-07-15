@@ -16,7 +16,9 @@ from mimir.adapters.markdown import MarkdownMimirAdapter
 from niuu.domain.mimir import MimirPage
 from niuu.domain.models import Principal
 from niuu.ports.mimir import MimirPort
+from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.adapters.mimir.http import HttpMimirAdapter
+from ravn.domain.mimir import MimirAuth
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.workflows import (
@@ -42,6 +44,7 @@ from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
 
 _DEFAULT_RESEARCH_WORKFLOW_NAME = "Research Campaign"
+_RESEARCH_SURFACE = "ting.research"
 logger = logging.getLogger(__name__)
 _MANIFEST_PATH_RE = re.compile(
     r"(research/campaigns/[A-Za-z0-9._/-]+\.md|learnings/research/[A-Za-z0-9._-]+\.md|followups/research/[A-Za-z0-9._-]+\.md)"
@@ -61,6 +64,8 @@ class ResearchCampaignCreateBody(BaseModel):
     workflow_id: UUID | None = Field(default=None, alias="workflowId")
     repo: str = Field(default="", max_length=500)
     branch: str = Field(default="", max_length=255)
+    model: str = Field(default="", max_length=255)
+    definition: str | None = Field(default=None, max_length=255)
     mode: str = Field(default="exploratory", max_length=64)
     audience: str = Field(default="", max_length=255)
     deliverable: str = Field(default="", max_length=255)
@@ -68,6 +73,11 @@ class ResearchCampaignCreateBody(BaseModel):
     constraints: list[str] = Field(default_factory=list)
     monitoring_cadence: str | None = Field(default=None, alias="monitoringCadence", max_length=255)
     connection_id: str | None = Field(default=None, alias="connectionId", max_length=255)
+    gate_auto_forward_after: str | None = Field(
+        default=None,
+        max_length=32,
+        alias="gateAutoForwardAfter",
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -112,6 +122,7 @@ class ResearchCampaignResponse(BaseModel):
     workflow_name: str = Field(serialization_alias="workflowName")
     session_id: str = Field(serialization_alias="sessionId")
     session_name: str = Field(serialization_alias="sessionName")
+    chat_endpoint: str | None = Field(default=None, serialization_alias="chatEndpoint")
     status: str
     active_stage_id: str | None = Field(default=None, serialization_alias="activeStageId")
     stage_state: list[CampaignStageStateResponse] = Field(
@@ -158,7 +169,11 @@ def create_research_router() -> APIRouter:
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
         volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
     ) -> list[ResearchCampaignResponse]:
-        campaigns = await repo.list_campaigns(owner_id=principal.user_id)
+        campaigns = [
+            campaign
+            for campaign in await repo.list_campaigns(owner_id=principal.user_id)
+            if _is_research_campaign(campaign)
+        ]
         refreshed = [
             await _refresh_campaign_runtime(
                 request=request,
@@ -199,6 +214,9 @@ def create_research_router() -> APIRouter:
             repo=body.repo,
             branch=body.branch,
             connectionId=body.connection_id,
+            model=body.model,
+            definition=body.definition,
+            gateAutoForwardAfter=body.gate_auto_forward_after,
         )
         execution = await launch_workflow_execution(
             request=request,
@@ -228,6 +246,7 @@ def create_research_router() -> APIRouter:
             stage_state=stage_state,
             metadata={
                 "question": body.question,
+                "surface": _RESEARCH_SURFACE,
                 "mode": body.mode,
                 "audience": body.audience,
                 "deliverable": body.deliverable,
@@ -246,7 +265,7 @@ def create_research_router() -> APIRouter:
         )
         saved = await campaign_repo.save_campaign(campaign)
         await _emit_campaign_event(request, "workflow.campaign.created", saved)
-        return _to_campaign_response(saved)
+        return _to_campaign_response(saved, chat_endpoint=execution.session.chat_endpoint)
 
     @router.get("/campaigns/{slug}", response_model=ResearchCampaignDetailResponse)
     async def get_campaign(
@@ -257,7 +276,7 @@ def create_research_router() -> APIRouter:
         volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
     ) -> ResearchCampaignDetailResponse:
         campaign = await repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
-        if campaign is None:
+        if campaign is None or not _is_research_campaign(campaign):
             raise HTTPException(status_code=404, detail="Campaign not found")
         refreshed = await _refresh_campaign_runtime(
             request=request,
@@ -300,7 +319,7 @@ def create_research_router() -> APIRouter:
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
     ) -> ResearchCampaignResponse:
         campaign = await repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
-        if campaign is None:
+        if campaign is None or not _is_research_campaign(campaign):
             raise HTTPException(status_code=404, detail="Campaign not found")
 
         next_slug = campaign.slug
@@ -345,7 +364,7 @@ def create_research_router() -> APIRouter:
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
     ) -> None:
         campaign = await repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
-        if campaign is None:
+        if campaign is None or not _is_research_campaign(campaign):
             raise HTTPException(status_code=404, detail="Campaign not found")
         deleted = await repo.delete_campaign(campaign.id)
         if not deleted:
@@ -372,7 +391,7 @@ def create_research_router() -> APIRouter:
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
     ) -> list[CampaignArtifactResponse]:
         campaign = await repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
-        if campaign is None:
+        if campaign is None or not _is_research_campaign(campaign):
             raise HTTPException(status_code=404, detail="Campaign not found")
         artifacts, _canonical = await _load_campaign_artifacts(
             campaign,
@@ -389,7 +408,7 @@ def create_research_router() -> APIRouter:
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
     ) -> CampaignArtifactDetailResponse:
         campaign = await repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
-        if campaign is None:
+        if campaign is None or not _is_research_campaign(campaign):
             raise HTTPException(status_code=404, detail="Campaign not found")
         if not _campaign_owns_path(campaign.slug, path):
             raise HTTPException(status_code=404, detail="Artifact not found")
@@ -449,6 +468,16 @@ def _workflow_has_tag(workflow: WorkflowDefinition, tag: str) -> bool:
     raw_tags = graph.get("tags") or []
     normalized = {str(item).strip().lower() for item in raw_tags if str(item).strip()}
     return tag.strip().lower() in normalized
+
+
+def _is_research_campaign(campaign: WorkflowCampaign) -> bool:
+    surface = str(campaign.metadata.get("surface") or "").strip()
+    if surface:
+        return surface == _RESEARCH_SURFACE
+    return (
+        campaign.workflow_name == _DEFAULT_RESEARCH_WORKFLOW_NAME
+        or campaign.metadata.get("question") is not None
+    )
 
 
 async def _reserve_slug(repo: WorkflowCampaignRepository, base_slug: str) -> str:
@@ -862,17 +891,40 @@ def _resolve_campaign_mimir_port(campaign: WorkflowCampaign, settings: Any) -> M
             mount_name = str(ref.get("mount_name") or "")
             if default_mounts and mount_name not in default_mounts:
                 continue
-            path = str(ref.get("path") or "").strip()
             url = str(ref.get("url") or "").strip()
+            path = str(ref.get("path") or "").strip()
+            if url:
+                return HttpMimirAdapter(base_url=url, auth=_mimir_http_auth(settings))
             if path:
                 return MarkdownMimirAdapter(root=path)
-            if url:
-                return HttpMimirAdapter(base_url=url)
 
     hosted_url = str(settings.dispatch.flock.mimir_hosted_url or "").strip()
     if hosted_url:
-        return HttpMimirAdapter(base_url=hosted_url)
+        return HttpMimirAdapter(base_url=hosted_url, auth=_mimir_http_auth(settings))
     return None
+
+
+def _mimir_http_auth(settings: Any) -> MimirAuth | None:
+    config = getattr(getattr(settings, "volundr", None), "auth", None)
+    if config is None:
+        return None
+
+    try:
+        cls = import_class(config.adapter)
+        kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
+        adapter = cls(**kwargs)
+        header = str(adapter.headers().get("Authorization") or "")
+    except Exception as exc:
+        logger.warning("Unable to build Mimir HTTP auth from Ting outbound auth: %s", exc)
+        return None
+
+    prefix = "Bearer "
+    if not header.startswith(prefix):
+        return None
+    token = header[len(prefix) :].strip()
+    if not token:
+        return None
+    return MimirAuth(type="bearer", token=token)
 
 
 def _campaign_owns_path(slug: str, path: str) -> bool:
@@ -916,7 +968,11 @@ def _to_stage_response(stage: CampaignStageState) -> CampaignStageStateResponse:
     )
 
 
-def _to_campaign_response(campaign: WorkflowCampaign) -> ResearchCampaignResponse:
+def _to_campaign_response(
+    campaign: WorkflowCampaign,
+    *,
+    chat_endpoint: str | None = None,
+) -> ResearchCampaignResponse:
     return ResearchCampaignResponse(
         id=str(campaign.id),
         slug=campaign.slug,
@@ -927,6 +983,7 @@ def _to_campaign_response(campaign: WorkflowCampaign) -> ResearchCampaignRespons
         workflow_name=campaign.workflow_name,
         session_id=campaign.session_id,
         session_name=campaign.session_name,
+        chat_endpoint=chat_endpoint,
         status=campaign.status.value,
         active_stage_id=campaign.active_stage_id,
         stage_state=[_to_stage_response(stage) for stage in campaign.stage_state],

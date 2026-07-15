@@ -20,11 +20,12 @@ class TestRavnEventType:
         assert RavnEventType.ERROR == "error"
         assert RavnEventType.DECISION == "decision"
         assert RavnEventType.TASK_COMPLETE == "task_complete"
+        assert RavnEventType.USAGE == "usage"
 
     def test_member_count(self) -> None:
-        # 11 types: THOUGHT, TOOL_START, TOOL_RESULT, RESPONSE, ERROR,
-        # DECISION, TASK_COMPLETE, TASK_STARTED, TASK_STUCK, OUTCOME, HELP_NEEDED
-        assert len(RavnEventType) == 11
+        # 12 types: THOUGHT, TOOL_START, TOOL_RESULT, RESPONSE, ERROR,
+        # DECISION, TASK_COMPLETE, TASK_STARTED, TASK_STUCK, OUTCOME, HELP_NEEDED, USAGE
+        assert len(RavnEventType) == 12
 
 
 class TestRavnEvent:
@@ -118,6 +119,34 @@ class TestRavnEvent:
         ev = RavnEvent.task_complete(_SRC, True, _CID, _SID)
         assert ev.type == RavnEventType.TASK_COMPLETE
         assert ev.payload["success"] is True
+
+    def test_usage_factory(self) -> None:
+        ev = RavnEvent.usage(
+            _SRC,
+            model="gpt-5.5",
+            input_tokens=10,
+            output_tokens=5,
+            cache_read_tokens=2,
+            cache_write_tokens=1,
+            thinking_tokens=3,
+            cost_usd=0.01,
+            usage_id="usage-1",
+            persona="researcher",
+            correlation_id=_CID,
+            session_id=_SID,
+            task_id="task-123",
+        )
+        assert ev.type == RavnEventType.USAGE
+        assert ev.payload["model"] == "gpt-5.5"
+        assert ev.payload["inputTokens"] == 10
+        assert ev.payload["outputTokens"] == 5
+        assert ev.payload["cacheReadInputTokens"] == 2
+        assert ev.payload["cacheCreationInputTokens"] == 1
+        assert ev.payload["thinkingTokens"] == 3
+        assert ev.payload["costUSD"] == 0.01
+        assert ev.payload["usage_id"] == "usage-1"
+        assert ev.payload["persona"] == "researcher"
+        assert ev.task_id == "task-123"
 
     def test_frozen(self) -> None:
         ev = RavnEvent.thought(_SRC, "test", _CID, _SID)

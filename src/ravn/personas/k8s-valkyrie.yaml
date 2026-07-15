@@ -94,7 +94,17 @@ system_prompt_template: |
   transient signal.
 
 allowed_tools:
-  [ravn, file, terminal, kubernetes_inspect, mimir_query, mimir_search, mimir_read, mimir_write]
+  [
+    ravn,
+    workflow,
+    file,
+    terminal,
+    kubernetes_inspect,
+    mimir_query,
+    mimir_search,
+    mimir_read,
+    mimir_write,
+  ]
 forbidden_tools: [cascade, volundr, ask_user]
 permission_mode: workspace-write
 

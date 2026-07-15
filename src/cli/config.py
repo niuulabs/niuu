@@ -13,6 +13,8 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from bifrost.config import BifrostConfig
+
 DEFAULT_CONFIG_DIR = Path.home() / ".niuu"
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.yaml"
 
@@ -113,16 +115,6 @@ class PodManagerConfig(BaseModel):
         return data
 
 
-class AnthropicConfig(BaseModel):
-    """Anthropic API configuration."""
-
-    api_key: str = Field(default="", description="Anthropic API key.")
-    api_key_env: str = Field(
-        default="ANTHROPIC_API_KEY",
-        description="Environment variable name for the API key (fallback).",
-    )
-
-
 class ServerConfig(BaseModel):
     """Server configuration — single port for all services."""
 
@@ -194,14 +186,14 @@ class CLISettings(BaseSettings):
 
     mode: str = Field(
         default="mini",
-        description="Operating mode: 'mini' (local) or 'cluster'.",
+        description="Operating mode: 'mini', 'openshell', or 'cluster'.",
     )
-    anthropic: AnthropicConfig = Field(default_factory=AnthropicConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     plugins: PluginConfig = Field(default_factory=PluginConfig)
     services: ServiceConfig = Field(default_factory=ServiceConfig)
+    bifrost: BifrostConfig = Field(default_factory=BifrostConfig)
     service_overrides: dict[str, PerServiceConfig] = Field(
         default_factory=dict,
         description="Per-service enabled/port overrides keyed by service name.",

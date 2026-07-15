@@ -278,9 +278,15 @@ class DirectK8sPodManager(PodManager):
         """
         return f"ws://{self._ingress_backend}{self._session_path(session)}/session"
 
+    def initial_chat_endpoint(self, session: Session) -> str | None:
+        return self._chat_endpoint(session)
+
     def _code_endpoint(self, session: Session) -> str:
         """Build the editor endpoint URL."""
         return f"http://{self._ingress_backend}{self._session_path(session)}/"
+
+    def initial_code_endpoint(self, session: Session) -> str | None:
+        return self._code_endpoint(session)
 
     def _build_labels(self, session: Session) -> dict[str, str]:
         """Build standard labels for Kubernetes resources."""
@@ -296,6 +302,18 @@ class DirectK8sPodManager(PodManager):
         env: list[dict[str, str]] = [
             {"name": "SESSION_ID", "value": str(session.id)},
             {"name": "SESSION_NAME", "value": session.name},
+            # Session ownership — the broker enforces these on inbound
+            # WebSocket connections (skuld.config.WsAuthConfig).
+            *(
+                [{"name": "SKULD__SESSION__OWNER_ID", "value": session.owner_id}]
+                if session.owner_id
+                else []
+            ),
+            *(
+                [{"name": "SKULD__SESSION__TENANT_ID", "value": session.tenant_id}]
+                if session.tenant_id
+                else []
+            ),
             {"name": "DATABASE__HOST", "value": self._db_host},
             {"name": "DATABASE__PORT", "value": str(self._db_port)},
             {"name": "DATABASE__USER", "value": self._db_user},
@@ -1283,7 +1301,7 @@ echo "Git credential helper configured"
             elapsed += self._poll_interval
 
         logger.warning("Timed out waiting for session %s after %.1fs", session.id, timeout)
-        return SessionStatus.FAILED
+        return await self.status(session)
 
     async def close(self) -> None:
         """Close the Kubernetes API client."""

@@ -147,6 +147,7 @@ describe('__testables', () => {
     expect(
       buildStartSessionBody({
         name: 'alpha',
+        personaName: 'reviewer',
         source: { type: 'git', repo: 'r', branch: 'main' },
         model: 'sonnet',
         terminalRestricted: true,
@@ -160,6 +161,7 @@ describe('__testables', () => {
       }),
     ).toEqual({
       name: 'alpha',
+      persona_name: 'reviewer',
       source: { type: 'git', repo: 'r', branch: 'main' },
       model: 'sonnet',
       terminal_restricted: true,
@@ -261,6 +263,23 @@ describe('__testables', () => {
     const plain = normalizeSession(base);
     expect(plain.origin).toBeUndefined();
     expect(plain.externalSessionId).toBeNull();
+  });
+
+  it('derives needsAttention from awaiting_input or the explicit flag', () => {
+    const base = {
+      id: 's',
+      name: 'a',
+      source: { type: 'git' as const, repo: 'r', branch: 'main' },
+      status: 'running' as const,
+      model: 'm',
+    };
+    expect(normalizeSession({ ...base, activity_state: 'awaiting_input' }).needsAttention).toBe(
+      true,
+    );
+    expect(
+      normalizeSession({ ...base, needs_attention: true, activity_state: 'idle' }).needsAttention,
+    ).toBe(true);
+    expect(normalizeSession({ ...base, activity_state: 'active' }).needsAttention).toBe(false);
   });
 
   it('normalizes external session payloads with fallback defaults', () => {
@@ -1952,6 +1971,51 @@ describe('buildVolundrHttpAdapter', () => {
     expect(close).not.toHaveBeenCalled();
     unsubStats();
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies session_activity events to the cached session', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([]);
+
+    let onEvent: ((frame: { event?: string; data: string }) => void) | undefined;
+    const openStream = vi.fn((_url: string, options: { onEvent?: typeof onEvent }) => {
+      onEvent = options.onEvent;
+      return { close: vi.fn() };
+    });
+
+    const svc = buildVolundrHttpAdapter(client, openStream as never);
+    const seen: Array<Array<{ id: string; activityState?: string; needsAttention?: boolean }>> = [];
+    svc.subscribe((sessions) => seen.push(sessions as never));
+    await Promise.resolve();
+
+    onEvent?.({
+      event: 'session_updated',
+      data: JSON.stringify({
+        id: 'sess-1',
+        name: 'alpha',
+        source: { type: 'git', repo: 'r', branch: 'main' },
+        status: 'running',
+        model: 'm',
+        activity_state: 'active',
+      }),
+    });
+    // Unknown session is ignored (no throw, no phantom entry).
+    onEvent?.({
+      event: 'session_activity',
+      data: JSON.stringify({ session_id: 'ghost', state: 'awaiting_input' }),
+    });
+    onEvent?.({
+      event: 'session_activity',
+      data: JSON.stringify({ session_id: 'sess-1', state: 'awaiting_input' }),
+    });
+
+    const last = seen.at(-1);
+    expect(last).toHaveLength(1);
+    expect(last?.[0]).toMatchObject({
+      id: 'sess-1',
+      activityState: 'awaiting_input',
+      needsAttention: true,
+    });
   });
 
   it('streams chronicle updates for a specific session from the shared SSE feed', async () => {

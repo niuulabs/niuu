@@ -325,7 +325,9 @@ class SdkWebSocketTransport(CLITransport):
         logger.debug("_handle_cli_message: emitting event type=%s to broker", msg_type)
         await self._emit(filtered)
 
-    async def send_message(self, content: str) -> None:
+    async def send_message(
+        self, content: str, *, msg_id: str | None = None, request_id: str | None = None
+    ) -> None:
         logger.info(
             "send_message: alive=%s, spawning=%s, pid=%s, cli_ws=%s, connected=%s, len=%d",
             self._alive,

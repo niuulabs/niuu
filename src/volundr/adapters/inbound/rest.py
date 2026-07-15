@@ -1,10 +1,12 @@
 """FastAPI REST adapter for session management."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
+import time
 from datetime import UTC, datetime
 from pathlib import Path as FilePath
 from typing import Any
@@ -13,15 +15,20 @@ from uuid import UUID, uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from niuu.domain.services.token_scope import OPENSHELL_SESSION_TOKEN_USE, require_build_scope
+from niuu.domain.session_endpoint import public_session_endpoint
+from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turns
 from volundr.adapters.inbound.auth import extract_principal, require_role
 from volundr.config import PermissionAutoApprovalConfig
 from volundr.domain.models import (
     Chronicle,
     ChronicleStatus,
     CleanupTarget,
+    DevicePlatform,
+    DeviceToken,
     ExternalSessionRecord,
     GitProviderType,
     GitSource,
@@ -37,6 +44,7 @@ from volundr.domain.models import (
     WorkspaceStatus,
 )
 from volundr.domain.ports import (
+    DeviceTokenRepository,
     EventBroadcaster,
     GitAuthError,
     GitRepoNotFoundError,
@@ -72,28 +80,75 @@ from volundr.session_archive import load_workspace_transcript
 
 logger = logging.getLogger(__name__)
 WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
+DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL = "http://openshell.openshell.svc.cluster.local:8080"
+OPENSHELL_SERVICE_HOST_SUFFIX = ".openshell.localhost"
+# How long send_session_message holds the WS open waiting for the broker's
+# correlated delivery ACK before reporting the message as "pending" (the broker's
+# bounded retry then drives it to delivered/failed). Named so it is not a magic
+# number; the broker — not this grace — owns the delivery durability guarantee, so
+# a short grace is correct: a no-ACK is reported as pending/accepted, never "sent".
+SEND_MESSAGE_ACK_GRACE_SECONDS = 3.0
 
 
-def _public_session_endpoint(endpoint: str | None) -> str | None:
+def _public_session_endpoint(
+    endpoint: str | None,
+    session_id: str = "",
+    *,
+    public_host: str = "127.0.0.1",
+) -> str | None:
     """Normalize loopback session endpoints for browser-facing clients."""
-    if not endpoint:
-        return endpoint
+    return public_session_endpoint(
+        endpoint,
+        session_id=session_id,
+        public_host=public_host,
+    )
+
+
+def _public_workload_url(session: Session, *keys: str) -> str | None:
+    """Expose one explicitly configured HTTP(S) workload URL without leaking config."""
+    value = next(
+        (
+            str(session.workload_config.get(key) or "").strip()
+            for key in keys
+            if str(session.workload_config.get(key) or "").strip()
+        ),
+        "",
+    )
+    if not value:
+        return None
     try:
-        parsed = urlsplit(endpoint)
+        parsed = urlsplit(value)
     except ValueError:
-        return endpoint
-    if parsed.hostname != "127.0.0.1":
-        return endpoint
-    host = (
-        os.environ.get("NIUU_SERVER_PUBLIC_HOST")
-        or os.environ.get("NIUU_SERVER_HOST")
-        or "127.0.0.1"
-    ).strip() or "127.0.0.1"
-    public_host = "localhost" if host == "127.0.0.1" else host
-    netloc = public_host
-    if parsed.port is not None:
-        netloc = f"{public_host}:{parsed.port}"
-    return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        return None
+    return value
+
+
+def _server_side_ws_connect_overrides(
+    ws_url: str,
+    *,
+    gateway_url: str = DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL,
+) -> dict[str, object]:
+    try:
+        parsed = urlsplit(ws_url)
+    except ValueError:
+        return {}
+    if not parsed.hostname or not parsed.hostname.endswith(OPENSHELL_SERVICE_HOST_SUFFIX):
+        return {}
+    try:
+        gateway = urlsplit(gateway_url)
+    except ValueError:
+        return {}
+    if not gateway.hostname:
+        return {}
+    return {
+        "host": gateway.hostname,
+        "port": gateway.port or (443 if gateway.scheme == "https" else 80),
+        "proxy": None,
+    }
 
 
 def _sanitize_log(value: object) -> str:
@@ -134,6 +189,94 @@ def _workspace_dir_from_session(session: Session) -> FilePath | None:
     return None
 
 
+# FAULT-C durable-count cache: `session_id -> (event_log_seq, durable_turn_count)`. The FAULT-C
+# reconciliation needs the durable turn count to detect a desynced (short) live body, but rebuilding
+# the whole durable transcript on every poll is ~4s on a big session (profiled). The count is stable
+# while the event log hasn't grown, so we key the cached count on MAX(seq): a hit at the same seq
+# skips the rebuild entirely; a new seq (or a short live body) falls back to the exact rebuild.
+_DURABLE_COUNT_CACHE: dict[str, tuple[int, int]] = {}
+_DURABLE_COUNT_CACHE_MAX = 512
+
+
+def _durable_count_cache_put(session_id: str, seq: int, count: int) -> None:
+    if (
+        len(_DURABLE_COUNT_CACHE) >= _DURABLE_COUNT_CACHE_MAX
+        and session_id not in _DURABLE_COUNT_CACHE
+    ):
+        # Crude bound: drop an arbitrary existing entry (FIFO-ish via iteration order).
+        _DURABLE_COUNT_CACHE.pop(next(iter(_DURABLE_COUNT_CACHE)), None)
+    _DURABLE_COUNT_CACHE[session_id] = (seq, count)
+
+
+# Sessions with an in-flight background durable-count warm (dedup so a burst of cold polls spawns
+# at most ONE rebuild per session).
+_DURABLE_WARMING: set[str] = set()
+
+
+async def _warm_durable_count(
+    forge: ForgeService, session_id: UUID, seq: int, sid_str: str
+) -> None:
+    """Background: rebuild the durable transcript ONCE to populate the count cache at ``seq`` so
+    the next conversation poll can detect a desync WITHOUT blocking the (cold) open. Fire-and-
+    forget; never raises into the event loop."""
+    try:
+        durable = await forge.get_transcript(session_id)
+        turns = durable.get("turns") if isinstance(durable, dict) else None
+        _durable_count_cache_put(sid_str, seq, len(turns) if isinstance(turns, list) else 0)
+    except Exception:  # pragma: no cover - a background warmer must never crash the loop
+        pass
+    finally:
+        _DURABLE_WARMING.discard(sid_str)
+
+
+def _live_transcript_is_renderable(payload: object) -> bool:
+    """True if a live-pod conversation result is worth returning verbatim.
+
+    BUG-2: a tmux session whose WS crashed mid-turn keeps an alive pod that answers
+    /conversation/history with HTTP 200 but an empty / seed-only body — returning that
+    verbatim renders a "dead" session. This gate lets such a body fall through to the
+    durable-log rebuild WITHOUT discarding a healthy STILL-STREAMING first turn (which is
+    legitimately seed-only but `is_active` / has a `last_activity` hint).
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("turns"), list):
+        return False
+    turns = payload["turns"]
+    if payload.get("is_active") or (payload.get("last_activity") or ""):
+        return True  # streaming / thinking — keep verbatim
+    if not turns:
+        return False
+    has_assistant = any(isinstance(t, dict) and t.get("role") == "assistant" for t in turns)
+    if not has_assistant and len(turns) <= 1:
+        return False  # seed-only, not active -> rebuild from the durable log
+    return True
+
+
+def _live_body_has_in_progress_turn(payload: object) -> bool:
+    """True if the live conversation body carries a still-running in_progress turn.
+
+    The FAULT C count-vs-durable reconciliation must NOT run while the live body holds
+    an in_progress turn, or it can drop the live streaming turn in favour of a durable
+    rebuild that merely happens to count more turns. The broker's `is_active` /
+    `last_activity` streaming hints are NOT a reliable proxy: a tool_use-only assistant
+    block (the entire tool-execution window) leaves those flags empty while
+    `_serialize_in_progress_turn()` still emits the running turn. So gate on the turn
+    payload itself — the last turn marked `in_progress` (or `metadata.status ==
+    'in_progress'`) — rather than the buffer flags.
+    """
+    if not isinstance(payload, dict):
+        return False
+    turns = payload.get("turns")
+    if not isinstance(turns, list) or not turns:
+        return False
+    last = turns[-1]
+    if not isinstance(last, dict):
+        return False
+    if last.get("in_progress") is True:
+        return True
+    metadata = last.get("metadata")
+    return isinstance(metadata, dict) and metadata.get("status") == "in_progress"
+
+
 def _session_proxy_url(base_url: str, *path_segments: str) -> str:
     """Build a validated session-pod URL from a trusted base and encoded path segments."""
     parsed = urlsplit(base_url)
@@ -152,6 +295,26 @@ def _session_proxy_url(base_url: str, *path_segments: str) -> str:
     else:
         path = "/"
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def _server_side_http_proxy_target(
+    url: str,
+    *,
+    gateway_url: str = DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL,
+) -> tuple[str, dict[str, str]]:
+    """Route an OpenShell service URL through the in-cluster gateway."""
+    parsed = urlsplit(url)
+    if not parsed.hostname or not parsed.hostname.endswith(OPENSHELL_SERVICE_HOST_SUFFIX):
+        return url, {}
+
+    gateway = urlsplit(gateway_url)
+    if not gateway.scheme or not gateway.netloc:
+        raise ValueError("OpenShell internal gateway must be an absolute URL")
+
+    routed_url = urlunsplit(
+        (gateway.scheme, gateway.netloc, parsed.path, parsed.query, parsed.fragment)
+    )
+    return routed_url, {"Host": parsed.netloc}
 
 
 def _fallback_workspace_logs(
@@ -229,6 +392,11 @@ class SessionCreate(BaseModel):
         default="",
         max_length=100,
         description="LLM model identifier (e.g. claude-sonnet-4-6)",
+    )
+    persona_name: str = Field(
+        default="",
+        max_length=255,
+        description="Persona from the authenticated user's Ravn persona catalog",
     )
     source: SessionSource = Field(
         default_factory=GitSource,
@@ -506,8 +674,62 @@ class DeleteSessionBody(BaseModel):
 class ActivityReport(BaseModel):
     """Request model for reporting session activity state."""
 
-    state: str = Field(description="Activity state (active/idle/tool_executing)")
+    state: str = Field(description="Activity state (active/idle/tool_executing/awaiting_input)")
+    state_since: datetime | None = Field(
+        default=None,
+        description=(
+            "ISO8601 UTC timestamp of when the session entered this state. "
+            "Optional for backward-compat with older brokers that omit it."
+        ),
+    )
     metadata: dict = Field(default_factory=dict, description="Activity metadata")
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _coerce_metadata(cls, value: object) -> dict:
+        """Tolerate a null / JSON-string / non-dict ``metadata`` instead of 422-ing the
+        whole heartbeat. A 30s activity heartbeat that gets rejected freezes the session's
+        ui_status/last_active for every client (FORGE tmux-reconnect bug), so we coerce a
+        malformed-but-recoverable metadata to ``{}`` rather than drop the state update."""
+        if value is None:
+            return {}
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except (ValueError, TypeError):
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return value if isinstance(value, dict) else {}
+
+
+class DeviceRegistration(BaseModel):
+    """Request model for registering a push device."""
+
+    platform: str = Field(description="Device platform (ios/android/web)")
+    token: str = Field(min_length=1, max_length=512, description="Push token / endpoint")
+    app_bundle_id: str | None = Field(default=None, description="APNs topic (bundle id) to target")
+
+
+class DeviceResponse(BaseModel):
+    """Response model for a registered push device."""
+
+    id: UUID
+    platform: str
+    token: str
+    app_bundle_id: str | None = None
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def from_device(cls, device: DeviceToken) -> "DeviceResponse":
+        return cls(
+            id=device.id,
+            platform=device.platform.value,
+            token=device.token,
+            app_bundle_id=device.app_bundle_id,
+            created_at=device.created_at.isoformat(),
+            updated_at=device.updated_at.isoformat(),
+        )
 
 
 class SessionResponse(BaseModel):
@@ -516,6 +738,7 @@ class SessionResponse(BaseModel):
     id: UUID = Field(description="Unique session identifier")
     name: str = Field(description="Human-readable session name")
     model: str = Field(description="LLM model identifier")
+    persona_name: str = Field(default="", description="Persona attached at launch")
     source: SessionSource = Field(description="Workspace source config")
     status: SessionStatus = Field(description="Current lifecycle status")
     chat_endpoint: str | None = Field(
@@ -523,6 +746,26 @@ class SessionResponse(BaseModel):
     )
     code_endpoint: str | None = Field(
         description="Editor IDE URL (null when not running)",
+    )
+    a2a_card_url: str | None = Field(
+        default=None,
+        serialization_alias="a2aCardUrl",
+        description="Standard Agent Card URL when this workflow session is A2A-addressable",
+    )
+    a2a_endpoint_url: str | None = Field(
+        default=None,
+        serialization_alias="a2aEndpointUrl",
+        description="Preferred A2A protocol endpoint when explicitly published by the workload",
+    )
+    environment_id: str | None = Field(
+        default=None,
+        serialization_alias="environmentId",
+        description="Environment containing the addressable workflow session",
+    )
+    a2a_visibility: str = Field(
+        default="user",
+        serialization_alias="a2aVisibility",
+        description="Explicit Agent Directory visibility scope",
     )
     created_at: str = Field(description="ISO 8601 creation timestamp")
     updated_at: str = Field(description="ISO 8601 last update timestamp")
@@ -561,11 +804,30 @@ class SessionResponse(BaseModel):
     )
     activity_state: str | None = Field(
         default=None,
-        description="Current activity state (active/idle/tool_executing)",
+        description=(
+            "Current activity state "
+            "(provisioning/active/idle/tool_executing/awaiting_input/stopped)"
+        ),
+    )
+    activity_state_since: str | None = Field(
+        default=None,
+        description=(
+            "ISO 8601 UTC timestamp of when the session entered its current "
+            "activity_state (null if never reported). Lets clients render an "
+            "accurate elapsed time for the current state."
+        ),
     )
     activity_metadata: dict = Field(
         default_factory=dict,
         description="Metadata from the latest activity report",
+    )
+    needs_attention: bool = Field(
+        default=False,
+        description=(
+            "True when the session is blocked waiting on the user "
+            "(activity_state == awaiting_input). Lets clients and the iOS widget "
+            "highlight 'needs you' sessions without re-deriving the rule."
+        ),
     )
     workload_type: str = Field(
         default="session",
@@ -610,16 +872,52 @@ class SessionResponse(BaseModel):
     }
 
     @classmethod
-    def from_session(cls, session: Session) -> "SessionResponse":
+    def from_session(
+        cls,
+        session: Session,
+        *,
+        public_host: str = "127.0.0.1",
+    ) -> "SessionResponse":
         """Create response from domain model."""
         return cls(
             id=session.id,
             name=session.name,
             model=session.model,
+            persona_name=str(session.workload_config.get("persona") or ""),
             source=session.source,
             status=session.status,
-            chat_endpoint=_public_session_endpoint(session.chat_endpoint),
+            chat_endpoint=_public_session_endpoint(
+                session.chat_endpoint,
+                str(session.id),
+                public_host=public_host,
+            ),
             code_endpoint=session.code_endpoint,
+            a2a_card_url=_public_workload_url(
+                session,
+                "a2aCardUrl",
+                "a2a_card_url",
+            ),
+            a2a_endpoint_url=_public_workload_url(
+                session,
+                "a2aEndpointUrl",
+                "a2a_endpoint_url",
+            ),
+            environment_id=(
+                str(
+                    session.workload_config.get("environmentId")
+                    or session.workload_config.get("environment_id")
+                    or ""
+                ).strip()
+                or None
+            ),
+            a2a_visibility=(
+                str(
+                    session.workload_config.get("a2aVisibility")
+                    or session.workload_config.get("a2a_visibility")
+                    or "user"
+                ).strip()
+                or "user"
+            ),
             created_at=session.created_at.isoformat(),
             updated_at=session.updated_at.isoformat(),
             last_active=(
@@ -638,7 +936,11 @@ class SessionResponse(BaseModel):
             owner_id=session.owner_id,
             tenant_id=session.tenant_id,
             activity_state=(session.activity_state.value if session.activity_state else None),
+            activity_state_since=(
+                session.activity_state_since.isoformat() if session.activity_state_since else None
+            ),
             activity_metadata=session.activity_metadata,
+            needs_attention=session.needs_attention,
             workload_type=session.workload_type,
             origin=session.origin,
             external_session_id=session.external_session_id,
@@ -987,12 +1289,17 @@ class TimelineEventCreate(BaseModel):
 class StatsResponse(BaseModel):
     """Response model for aggregate statistics."""
 
-    active_sessions: int = Field(description="Currently running sessions")
-    total_sessions: int = Field(description="Total sessions (all statuses)")
-    tokens_today: int = Field(description="Tokens consumed today")
-    local_tokens: int = Field(description="Tokens from local models today")
-    cloud_tokens: int = Field(description="Tokens from cloud models today")
-    cost_today: float = Field(description="Total cloud cost today in USD")
+    active_sessions: int = Field(default=0, description="Currently running sessions")
+    total_sessions: int = Field(default=0, description="Total sessions (all statuses)")
+    sessions_today: int = Field(default=0, description="Sessions created today")
+    tokens_today: int = Field(default=0, description="Tokens consumed today")
+    local_tokens: int = Field(default=0, description="Tokens from local models today")
+    cloud_tokens: int = Field(default=0, description="Tokens from cloud models today")
+    cost_today: float = Field(default=0.0, description="Total cloud cost today in USD")
+    sparklines: dict[str, list[float]] = Field(
+        default_factory=dict,
+        description="Historical KPI samples for lightweight dashboard sparklines",
+    )
 
 
 class TokenUsageReport(BaseModel):
@@ -1100,10 +1407,33 @@ def create_router(
     archive_service=None,
     *,
     external_session_service: ExternalSessionService | None = None,
+    device_repository: DeviceTokenRepository | None = None,
     prefix: str = "/api/v1/forge",
+    server_public_host: str = "127.0.0.1",
+    openshell_internal_gateway_url: str = DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL,
 ) -> APIRouter:
     """Create FastAPI router with session, stats, token, repo, and SSE endpoints."""
     router = APIRouter(prefix=prefix)
+
+    def _session_response(session: Session) -> SessionResponse:
+        return SessionResponse.from_session(session, public_host=server_public_host)
+
+    def _http_proxy_target(url: str) -> tuple[str, dict[str, str]]:
+        return _server_side_http_proxy_target(
+            url,
+            gateway_url=openshell_internal_gateway_url,
+        )
+
+    @router.get("/version", tags=["Forge"])
+    async def forge_version() -> dict:
+        """Identify the running Forge API build (git sha / branch) so an operator
+        can confirm which version is live. Skuld brokers run from the same
+        checkout, so the same sha applies to the broker (which also reports it in
+        its ``system/init`` event)."""
+        from niuu.build_info import build_info
+
+        return {"service": "forge-api", **build_info()}
+
     forge = ForgeService(
         session_service,
         stats_service=stats_service,
@@ -1113,6 +1443,16 @@ def create_router(
         chronicle_service=chronicle_service,
         archive_service=archive_service,
     )
+
+    def _require_bound_workload_session(request: Request, session_id: UUID) -> None:
+        if request.headers.get("x-auth-token-use") != OPENSHELL_SESSION_TOKEN_USE:
+            return
+        if request.headers.get("x-auth-workload-session-id") == str(session_id):
+            return
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="OpenShell workload token is not bound to this session",
+        )
 
     async def _optional_principal(request: Request) -> Principal | None:
         """Extract principal if identity is configured, else return None.
@@ -1217,7 +1557,7 @@ def create_router(
             include_archived=include_archived,
             principal=principal,
         )
-        return [SessionResponse.from_session(s) for s in sessions]
+        return [_session_response(s) for s in sessions]
 
     @router.get(
         "/sessions/stream",
@@ -1390,7 +1730,7 @@ def create_router(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(e),
             )
-        return SessionResponse.from_session(session)
+        return _session_response(session)
 
     @router.post(
         "/sessions",
@@ -1402,12 +1742,19 @@ def create_router(
         },
         tags=["Sessions"],
     )
-    async def create_session(request: Request, data: SessionCreate) -> SessionResponse:
+    async def create_session(
+        request: Request,
+        data: SessionCreate,
+        _build_scope: None = Depends(require_build_scope("forge:session:create")),
+    ) -> SessionResponse:
         """Create and start a new session.
 
         Creates the session record then immediately starts its pods.
         If launch_spec is set, the launch spec provides defaults for
         repo/branch/model and is passed to the pod manager to build task_args.
+
+        A Valkyrie build token must carry the ``forge:session:create`` scope;
+        ordinary human PATs and workload tokens are unaffected.
         """
         principal = await _optional_principal(request)
         try:
@@ -1422,7 +1769,7 @@ def create_router(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(e),
             )
-        return SessionResponse.from_session(started)
+        return _session_response(started)
 
     @router.get(
         "/sessions/{session_id}",
@@ -1450,7 +1797,7 @@ def create_router(
                 detail=f"Access denied to session {session_id}",
             )
 
-        return SessionResponse.from_session(session)
+        return _session_response(session)
 
     @router.post(
         "/sessions/{session_id}/permissions/auto-approval/evaluate",
@@ -1520,7 +1867,7 @@ def create_router(
                 tracker_issue_id=data.tracker_issue_id,
                 principal=principal,
             )
-            return SessionResponse.from_session(session)
+            return _session_response(session)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -1601,7 +1948,7 @@ def create_router(
                 launch_spec=launch_spec,
                 principal=principal,
             )
-            return SessionResponse.from_session(session)
+            return _session_response(session)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -1634,7 +1981,7 @@ def create_router(
         principal = await _optional_principal(request)
         try:
             session = await forge.stop_session(session_id, principal=principal)
-            return SessionResponse.from_session(session)
+            return _session_response(session)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -1667,6 +2014,7 @@ def create_router(
         Updates the session's activity_state and broadcasts a
         session_activity SSE event for downstream consumers (e.g. Ting).
         """
+        _require_bound_workload_session(request, session_id)
         # Authorization: caller must own the session
         principal = await _optional_principal(request)
         session = await forge.get_session(session_id)
@@ -1694,7 +2042,9 @@ def create_router(
             _sanitize_log(data.metadata),
         )
         try:
-            updated = await forge.update_activity(session_id, activity_state, data.metadata)
+            updated = await forge.update_activity(
+                session_id, activity_state, data.metadata, state_since=data.state_since
+            )
             logger.info(
                 "Activity updated: session=%s state=%s broadcaster=%s",
                 _sanitize_log(session_id),
@@ -1707,8 +2057,103 @@ def create_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
             )
-        except Exception:
+        except Exception as e:
+            # FAULT A defence: previously this swallowed the error and the endpoint
+            # still returned 204, so a real persistence failure masqueraded as
+            # success and the broker never learned delivery failed. Surface a 500
+            # so the broker can retry. (After the facade fix this path should never
+            # trigger in practice.)
             logger.exception("Activity update failed for session %s", _sanitize_log(session_id))
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Activity update failed for session {session_id}",
+            ) from e
+
+    @router.post(
+        "/devices",
+        response_model=DeviceResponse,
+        status_code=status.HTTP_201_CREATED,
+        responses={401: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+        tags=["Devices"],
+    )
+    async def register_device(request: Request, data: DeviceRegistration) -> DeviceResponse:
+        """Register a push device for the authenticated user.
+
+        The iOS app/widget calls this so a session that needs attention can fan
+        a push out to it. Idempotent on (owner, token).
+        """
+        if device_repository is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Device registration not available",
+            )
+        principal = await _optional_principal(request)
+        if principal is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required to register a device",
+            )
+        try:
+            platform = DevicePlatform(data.platform)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Invalid device platform: {data.platform}",
+            )
+        device = DeviceToken(
+            owner_id=principal.user_id,
+            platform=platform,
+            token=data.token,
+            app_bundle_id=data.app_bundle_id,
+        )
+        stored = await device_repository.upsert(device)
+        return DeviceResponse.from_device(stored)
+
+    @router.get(
+        "/devices",
+        response_model=list[DeviceResponse],
+        responses={401: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+        tags=["Devices"],
+    )
+    async def list_devices(request: Request) -> list[DeviceResponse]:
+        """List the authenticated user's registered push devices."""
+        if device_repository is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Device registration not available",
+            )
+        principal = await _optional_principal(request)
+        if principal is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+            )
+        devices = await device_repository.list_for_owner(principal.user_id)
+        return [DeviceResponse.from_device(d) for d in devices]
+
+    @router.delete(
+        "/devices/{token}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        responses={401: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+        tags=["Devices"],
+    )
+    async def unregister_device(
+        request: Request,
+        token: str = Path(description="The push token to unregister"),
+    ) -> None:
+        """Unregister a push device for the authenticated user."""
+        if device_repository is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Device registration not available",
+            )
+        principal = await _optional_principal(request)
+        if principal is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+            )
+        await device_repository.delete(principal.user_id, token)
 
     @router.patch(
         "/sessions/{session_id}/archive",
@@ -1729,7 +2174,7 @@ def create_router(
                 session_id,
                 principal=principal,
             )
-            return SessionResponse.from_session(session)
+            return _session_response(session)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -1765,7 +2210,7 @@ def create_router(
                 session_id,
                 principal=principal,
             )
-            return SessionResponse.from_session(session)
+            return _session_response(session)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -1799,10 +2244,12 @@ def create_router(
         return StatsResponse(
             active_sessions=stats.active_sessions,
             total_sessions=stats.total_sessions,
+            sessions_today=stats.sessions_today,
             tokens_today=stats.tokens_today,
             local_tokens=stats.local_tokens,
             cloud_tokens=stats.cloud_tokens,
             cost_today=float(stats.cost_today),
+            sparklines=stats.sparklines or {},
         )
 
     @router.post(
@@ -1822,6 +2269,7 @@ def create_router(
         data: TokenUsageReport = ...,
     ) -> TokenUsageResponse:
         """Report token usage for a session."""
+        _require_bound_workload_session(request, session_id)
         if token_service is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -1916,9 +2364,13 @@ def create_router(
             auth = request.headers.get("authorization")
             if auth:
                 headers["Authorization"] = auth
+            proxy_url, routing_headers = _http_proxy_target(
+                _session_proxy_url(base_url, "api", "logs")
+            )
+            headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
-                    _session_proxy_url(base_url, "api", "logs"),
+                    proxy_url,
                     params={"lines": lines, "level": level},
                     headers=headers,
                 )
@@ -1986,9 +2438,13 @@ def create_router(
                 auth = request.headers.get("authorization")
                 if auth:
                     headers["Authorization"] = auth
+                proxy_url, routing_headers = _http_proxy_target(
+                    _session_proxy_url(base_url, "api", "logs", "aggregate")
+                )
+                headers.update(routing_headers)
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     response = await client.get(
-                        _session_proxy_url(base_url, "api", "logs", "aggregate"),
+                        proxy_url,
                         params={
                             "lines": lines,
                             "level": level,
@@ -2060,10 +2516,14 @@ def create_router(
                 headers[name] = value
         body = await request.body()
         try:
+            proxy_url, routing_headers = _http_proxy_target(
+                _session_proxy_url(base_url, "api", *path_segments)
+            )
+            headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
                 response = await client.request(
                     request.method,
-                    _session_proxy_url(base_url, "api", *path_segments),
+                    proxy_url,
                     params=list(request.query_params.multi_items()),
                     headers=headers,
                     content=body if body else None,
@@ -2110,6 +2570,24 @@ def create_router(
     ) -> Response:
         """Download a file from a live session through the owning Skuld broker."""
         response = await _proxy_session_api(request, session_id, "files", "download")
+        headers = {}
+        disposition = response.headers.get("content-disposition")
+        if disposition:
+            headers["content-disposition"] = disposition
+        return Response(
+            content=response.content,
+            media_type=response.headers.get("content-type", "application/octet-stream"),
+            headers=headers,
+        )
+
+    @router.get("/sessions/{session_id}/files/presented/{file_id}", tags=["Sessions"])
+    async def download_presented_file(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+        file_id: str = Path(description="Opaque presented-file id (present-file command)"),
+    ) -> Response:
+        """Download a presented file (present-file command) by opaque id via the owning broker."""
+        response = await _proxy_session_api(request, session_id, "files", "presented", file_id)
         headers = {}
         disposition = response.headers.get("content-disposition")
         if disposition:
@@ -2172,8 +2650,16 @@ def create_router(
         request: Request,
         session_id: UUID = Path(description="Unique session identifier"),
         body: dict = ...,
-    ) -> dict:
-        """Send a user message to a running session via its WebSocket."""
+    ) -> Response:
+        """Send a user message to a running session via its WebSocket.
+
+        INV-7 delivery contract: the response distinguishes delivered from
+        not-delivered. 200 ``status=delivered`` means the transport accepted the
+        message; 202 ``status=pending`` means the broker accepted it and its bounded
+        retry is still driving delivery (NOT a confirmed send); a terminal transport
+        rejection raises 502; an unreachable pod raises 409. ``unconfirmed`` is never
+        returned as success.
+        """
         import ssl
 
         from websockets.asyncio.client import connect
@@ -2219,37 +2705,107 @@ def create_router(
             ssl_ctx.check_hostname = False
             ssl_ctx.verify_mode = ssl.CERT_NONE
             connect_kwargs["ssl"] = ssl_ctx
+        connect_kwargs.update(
+            _server_side_ws_connect_overrides(
+                ws_url,
+                gateway_url=openshell_internal_gateway_url,
+            )
+        )
 
+        # INV-7: correlate this message with the broker's delivery ACK so the response
+        # distinguishes DELIVERED from NOT-delivered — a 200 means the transport actually
+        # accepted the message, not merely the broker socket. The broker emits
+        # user_delivered / user_delivery_failed tagged with this request_id once the
+        # transport accepts (or, after bounded retry, terminally rejects) the message.
+        # If no ACK arrives within the grace, the broker has ACCEPTED the message and its
+        # retry loop is still driving delivery: we report 202 "pending" (NOT "sent"), so
+        # the caller never reads an undelivered message as success.
+        req_id = str(uuid4())
+        delivery: dict[str, Any] | None = None
         try:
             async with connect(ws_url, **connect_kwargs) as ws:
                 # Send immediately. Draining startup traffic *before* sending can
                 # delay or drop the first user turn for transports that emit
                 # welcome or capability events while still coming online.
-                await ws.send(json.dumps({"type": "user", "content": content}))
+                await ws.send(
+                    json.dumps({"type": "user", "content": content, "request_id": req_id})
+                )
 
-                # Then hold the socket open for a short, bounded grace so the
-                # broker's receive loop actually consumes the frame before we
-                # close. A just-restarted broker may still be warming its
-                # transport on this very connection; closing instantly races that
-                # startup and silently drops the message (HTTP 200 "sent" but no
-                # assistant reply). Drain-and-discard broker frames until the
-                # deadline; the cap keeps send latency bounded even while the
-                # assistant streams a reply back over the same channel.
-                import contextlib
-
-                async def _drain() -> None:
+                # Hold the socket open until the broker ACKs delivery for THIS request_id,
+                # or a bounded grace elapses. Draining other frames meanwhile lets a
+                # just-restarted broker finish warming its transport on this very
+                # connection instead of racing a close (which silently drops the message).
+                async def _await_ack() -> dict[str, Any] | None:
                     while True:
-                        await ws.recv()
+                        raw = await ws.recv()
+                        try:
+                            frame = json.loads(raw)
+                        except (ValueError, TypeError):
+                            continue
+                        if (
+                            isinstance(frame, dict)
+                            and frame.get("request_id") == req_id
+                            and frame.get("type") in ("user_delivered", "user_delivery_failed")
+                        ):
+                            return frame
 
                 with contextlib.suppress(Exception):
-                    await asyncio.wait_for(_drain(), timeout=0.75)
+                    delivery = await asyncio.wait_for(
+                        _await_ack(), timeout=SEND_MESSAGE_ACK_GRACE_SECONDS
+                    )
         except Exception as e:
+            # The endpoint looked live (chat_endpoint set) but the broker socket
+            # is unreachable — the pod is gone. Reconcile the row so its stale
+            # RUNNING/endpoint self-heals, then fail deterministically (409) so
+            # the caller never reads this as a successful send (no false 'sent').
+            reconciled = await forge.reconcile_session(session_id)
+            detail = (
+                f"Session {session_id} is no longer reachable; "
+                "reconciled to "
+                f"{reconciled.status.value if reconciled else 'unknown'}. "
+                f"Message not delivered: {e}"
+            )
             raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Failed to send message to session: {e}",
+                status_code=status.HTTP_409_CONFLICT,
+                detail=detail,
             )
 
-        return {"status": "sent", "session_id": str(session_id)}
+        # Terminal failure: the broker exhausted its bounded retry and the transport
+        # rejected the message. Surface as an error — never a 200 "sent" (INV-7).
+        if isinstance(delivery, dict) and delivery.get("type") == "user_delivery_failed":
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Session did not accept the message: "
+                    f"{delivery.get('error') or 'delivery failed'}"
+                ),
+            )
+
+        # No ACK within the grace: the broker ACCEPTED the message and its retry loop
+        # is still driving delivery. This is NOT a confirmed send — report 202 pending
+        # so the caller can tell it is in flight, not delivered (INV-7).
+        if not isinstance(delivery, dict):
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content={
+                    "status": "pending",
+                    "session_id": str(session_id),
+                    "request_id": req_id,
+                    "delivery": "pending",
+                },
+            )
+
+        # Transport accepted the message (delivered, or delivered-but-blocked on an open
+        # question). 200 + delivery="delivered" is the only success contract.
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "status": "delivered",
+                "session_id": str(session_id),
+                "request_id": req_id,
+                "delivery": str(delivery.get("status") or "delivered"),
+            },
+        )
 
     @router.get(
         "/sessions/{session_id}/conversation",
@@ -2262,9 +2818,88 @@ def create_router(
     async def get_conversation(
         request: Request,
         session_id: UUID = Path(description="Unique session identifier"),
+        detail: str = Query(
+            "full",
+            description=(
+                "'shallow' elides heavy tool_result content to lazy-load "
+                "placeholders; fetch a full result via "
+                "/sessions/{id}/tool-result/{tool_use_id}."
+            ),
+        ),
+        limit: int = Query(
+            0,
+            ge=0,
+            description="Window to the last N turns (0 = all). The response carries total_turns "
+            "+ window_offset; fetch older turns with `before`.",
+        ),
+        before: int = Query(
+            0,
+            ge=0,
+            description="Skip N turns from the end before applying `limit` (Show-earlier paging).",
+        ),
     ) -> dict:
-        """Return conversation history from a live session or stopped-session workspace."""
+        """Return conversation history from a live session or stopped-session workspace.
+
+        When ``detail=shallow`` the heavy ``tool_result`` payloads are elided to
+        placeholders on BOTH the live-pod path (the broker elides at the source)
+        and the durable-log rebuild fallback (elided here), so the shape is
+        identical regardless of which path served the transcript.
+        """
+        shallow = detail == SHALLOW_DETAIL
+        timings: dict[str, float] = {}
+
+        def _maybe_elide(payload: dict, fetch_ms: float | None = None) -> dict:
+            """WINDOW (when limit>0) + elide (when shallow) + attach a server-side perf summary.
+
+            Windowing slices the turns to the LAST `limit` (skipping `before` from the end for
+            Show-earlier paging) and reports `total_turns` + `window_offset` so the client can show
+            "N earlier" and page older — this is the big TRANSIT win (a 1.7MB/82-turn open becomes
+            ~300KB/15 turns). The perf `_prep` block + `[perf]` log make prep-vs-transit visible."""
+            if not isinstance(payload, dict) or not isinstance(payload.get("turns"), list):
+                return payload
+            all_turns = payload["turns"]
+            total = len(all_turns)
+            if limit > 0:
+                end = max(0, total - before)
+                start = max(0, end - limit)
+                turns = all_turns[start:end]
+                window_offset = start  # older turns available before this window
+            else:
+                turns = all_turns
+                window_offset = 0
+            reelide_ms = 0.0
+            if shallow:
+                t = time.perf_counter()
+                turns = elide_turns(turns)
+                reelide_ms = (time.perf_counter() - t) * 1000.0
+            prep = dict(payload.get("_prep") or {})
+            prep.update(timings)
+            if fetch_ms is not None:
+                prep["volundr_fetch_ms"] = round(fetch_ms, 1)
+            prep["volundr_reelide_ms"] = round(reelide_ms, 1)
+            out = {
+                **payload,
+                "turns": turns,
+                "total_turns": total,
+                "window_offset": window_offset,
+                "_prep": prep,
+            }
+            logger.info(
+                "[perf] conversation session=%s shallow=%s fetch=%sms reelide=%.1fms "
+                "broker_build=%sms broker_elide=%sms turns=%s",
+                _sanitize_log(session_id),
+                shallow,
+                (f"{fetch_ms:.1f}" if fetch_ms is not None else "-"),
+                reelide_ms,
+                prep.get("build_ms", "-"),
+                prep.get("elide_ms", "-"),
+                prep.get("turns", len(out.get("turns", []))),
+            )
+            return out
+
+        t_sess = time.perf_counter()
         session = await forge.get_session(session_id)
+        timings["session_lookup_ms"] = round((time.perf_counter() - t_sess) * 1000.0, 1)
         if session is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -2273,20 +2908,120 @@ def create_router(
 
         try:
             if session.chat_endpoint:
+                t_tgt = time.perf_counter()
                 _, base_url = await forge.get_session_proxy_target(session_id)
+                timings["proxy_target_ms"] = round((time.perf_counter() - t_tgt) * 1000.0, 1)
 
                 headers = {}
                 auth = request.headers.get("authorization")
                 if auth:
                     headers["Authorization"] = auth
 
+                t_fetch = time.perf_counter()
+                proxy_url, routing_headers = _http_proxy_target(
+                    _session_proxy_url(base_url, "api", "conversation", "history")
+                )
+                headers.update(routing_headers)
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     response = await client.get(
-                        _session_proxy_url(base_url, "api", "conversation", "history"),
+                        proxy_url,
                         headers=headers,
+                        params={"detail": detail},
                     )
                     response.raise_for_status()
-                    return response.json()
+                    live = response.json()
+                    # Broker round-trip: build + (source) elide + serialize + localhost transfer +
+                    # JSON parse. For an old broker that ignores `detail` this is the FULL payload.
+                    fetch_ms = (time.perf_counter() - t_fetch) * 1000.0
+                    if _live_transcript_is_renderable(live):
+                        # FAULT C: a resumed/restarted broker can be desynced from
+                        # the durable log and serve FEWER turns than the durable
+                        # rebuild (partial history for a running session). Only when
+                        # the live body has NO in_progress/streaming turn do we
+                        # compare turn counts and prefer the durable rebuild iff it
+                        # has STRICTLY MORE turns. We gate PRIMARILY on the actual
+                        # turn payload (last turn `in_progress` /
+                        # `metadata.status == 'in_progress'`) — the broker's
+                        # is_active / last_activity buffer flags are NOT a reliable
+                        # proxy: a tool_use-only assistant block (the entire
+                        # tool-execution window) leaves those flags empty while the
+                        # body still carries the live in_progress turn, so the proxy
+                        # alone would wrongly run reconciliation and could drop it.
+                        # We ALSO keep the streaming-flag guard so a body that
+                        # signals active streaming is never reconciled.
+                        is_streaming = bool(
+                            isinstance(live, dict)
+                            and (live.get("is_active") or (live.get("last_activity") or ""))
+                        )
+                        if not (is_streaming or _live_body_has_in_progress_turn(live)):
+                            live_turns = live.get("turns") if isinstance(live, dict) else None
+                            live_count = len(live_turns) if isinstance(live_turns, list) else 0
+                            # CHEAP GATE + OPTIMISTIC OPEN: detecting a desync (broker serving
+                            # fewer turns than the durable log) needs the durable turn count, but
+                            # rebuilding the whole transcript for it is ~4s on a big session. Cache
+                            # the count keyed on MAX(seq): a warm hit answers instantly; a COLD miss
+                            # serves the live body NOW and warms the count in the BACKGROUND, so the
+                            # open never blocks on the rebuild. A real desync (rare; only after a
+                            # broker resume) self-heals on the next reconcile poll once warm.
+                            sid_str = str(session_id)
+                            seq = await forge.durable_latest_seq(session_id)
+                            cached = _DURABLE_COUNT_CACHE.get(sid_str)
+                            durable_count = (
+                                cached[1]
+                                if (cached is not None and seq > 0 and cached[0] == seq)
+                                else None
+                            )
+                            if durable_count is None:
+                                # COLD: serve live immediately; warm the count off the request path.
+                                timings["fault_c_optimistic"] = 1.0
+                                if seq > 0 and sid_str not in _DURABLE_WARMING:
+                                    _DURABLE_WARMING.add(sid_str)
+                                    asyncio.create_task(
+                                        _warm_durable_count(forge, session_id, seq, sid_str)
+                                    )
+                            elif durable_count > live_count:
+                                # WARM + desync: rebuild to return the fuller durable body (rare).
+                                t_dur = time.perf_counter()
+                                try:
+                                    durable = await forge.get_transcript(session_id)
+                                except (RuntimeError, ValueError):
+                                    durable = None
+                                timings["fault_c_rebuild_ms"] = round(
+                                    (time.perf_counter() - t_dur) * 1000.0, 1
+                                )
+                                durable_turns = (
+                                    durable.get("turns") if isinstance(durable, dict) else None
+                                )
+                                rebuilt = (
+                                    len(durable_turns) if isinstance(durable_turns, list) else 0
+                                )
+                                _durable_count_cache_put(sid_str, seq, rebuilt)
+                                if durable is not None and rebuilt > live_count:
+                                    logger.info(
+                                        "Live conversation for session %s is short "
+                                        "(%d turns) vs durable rebuild (%d turns); "
+                                        "preferring durable (FAULT C desync)",
+                                        _sanitize_log(session_id),
+                                        live_count,
+                                        rebuilt,
+                                    )
+                                    return _maybe_elide(durable)
+                            else:
+                                # Warm + live complete (durable not ahead) — no rebuild.
+                                timings["fault_c_cached"] = 1.0
+                        # A freshly-restarted broker already elided at the source;
+                        # re-eliding here is idempotent (placeholders have no
+                        # content) and lets a long-running broker that predates
+                        # this code serve shallow without a disruptive restart.
+                        return _maybe_elide(live, fetch_ms=fetch_ms)
+                    # BUG-2: an alive-but-empty / seed-only pod (e.g. a tmux session whose
+                    # WS crashed mid-turn) returns HTTP 200 with nothing renderable. Don't
+                    # short-circuit on it — fall through to the durable-log rebuild below.
+                    logger.info(
+                        "Live conversation for session %s is empty/seed-only; "
+                        "falling through to durable-log rebuild",
+                        _sanitize_log(session_id),
+                    )
         except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
             logger.info(
                 "Falling back to workspace transcript for session %s: %s",
@@ -2295,11 +3030,11 @@ def create_router(
             )
 
         try:
-            return await forge.get_transcript(session_id)
+            return _maybe_elide(await forge.get_transcript(session_id))
         except RuntimeError as e:
             fallback = _fallback_workspace_transcript(session)
             if fallback is not None:
-                return fallback
+                return _maybe_elide(fallback)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(e) or "Session archive service not available",
@@ -2309,6 +3044,90 @@ def create_router(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(e),
             )
+
+    @router.get(
+        "/sessions/{session_id}/tool-result/{tool_use_id}",
+        tags=["Sessions"],
+        responses={
+            404: {"model": ErrorResponse},
+            502: {"model": ErrorResponse},
+        },
+    )
+    async def get_tool_result(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+        tool_use_id: str = Path(description="tool_use_id of the result to fetch"),
+    ) -> dict:
+        """Return one full tool_result block by tool_use_id.
+
+        The lazy-load target for a shallow conversation: when a client expands an
+        elided placeholder it fetches the full content here. Proxies the live
+        session pod; falls back to scanning the durable transcript for
+        stopped/seed-only sessions. 404 when the result is absent.
+        """
+
+        def _scan(turns: list) -> dict | None:
+            for turn in turns:
+                parts = turn.get("parts") if isinstance(turn, dict) else None
+                for block in parts or []:
+                    if (
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_result"
+                        and block.get("tool_use_id") == tool_use_id
+                    ):
+                        return {
+                            "tool_use_id": tool_use_id,
+                            "content": block.get("content", ""),
+                            "is_error": bool(block.get("is_error", False)),
+                        }
+            return None
+
+        session = await forge.get_session(session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+
+        if session.chat_endpoint:
+            try:
+                _, base_url = await forge.get_session_proxy_target(session_id)
+                headers = {}
+                auth = request.headers.get("authorization")
+                if auth:
+                    headers["Authorization"] = auth
+                proxy_url, routing_headers = _http_proxy_target(
+                    _session_proxy_url(base_url, "api", "conversation", "tool-result", tool_use_id)
+                )
+                headers.update(routing_headers)
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(
+                        proxy_url,
+                        headers=headers,
+                    )
+                    if response.status_code != status.HTTP_404_NOT_FOUND:
+                        response.raise_for_status()
+                        return response.json()
+                    # 404 from the live pod → fall through to the durable scan
+                    # (the pod may have rebooted with a seed-only transcript).
+            except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
+                logger.info(
+                    "Live tool-result fetch failed for session %s; trying durable log: %s",
+                    _sanitize_log(session_id),
+                    _sanitize_log(e),
+                )
+
+        try:
+            transcript = await forge.get_transcript(session_id)
+        except (RuntimeError, ValueError):
+            transcript = _fallback_workspace_transcript(session) or {"turns": []}
+        found = _scan(transcript.get("turns", []) if isinstance(transcript, dict) else [])
+        if found is not None:
+            return found
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"tool_result not found: {tool_use_id}",
+        )
 
     @router.get(
         "/sessions/{session_id}/workflow/gates",
@@ -2338,22 +3157,42 @@ def create_router(
             auth = request.headers.get("authorization")
             if auth:
                 headers["Authorization"] = auth
+            proxy_url, routing_headers = _http_proxy_target(
+                _session_proxy_url(base_url, "api", "workflow", "gates")
+            )
+            headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
-                    _session_proxy_url(base_url, "api", "workflow", "gates"),
+                    proxy_url,
                     headers=headers,
                 )
                 response.raise_for_status()
                 return response.json()
-        except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
+        except httpx.HTTPStatusError as e:
             logger.warning(
-                "Workflow gate proxy failed for session %s: %s",
+                "Workflow gate proxy returned error for session %s: %s",
                 _sanitize_log(session_id),
                 _sanitize_log(e),
             )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Failed to fetch workflow gates from session pod: {e}",
+            )
+        except (ValueError, httpx.RequestError):
+            # Couldn't reach the pod — reconcile the stale row and fail
+            # deterministically (409) instead of a misleading bad-gateway.
+            reconciled = await forge.reconcile_session(session_id)
+            logger.warning(
+                "Workflow gate pod unreachable for session %s; reconciled to %s",
+                _sanitize_log(session_id),
+                reconciled.status.value if reconciled else "unknown",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Session {session_id} is no longer reachable; "
+                    f"reconciled to {reconciled.status.value if reconciled else 'unknown'}."
+                ),
             )
 
     @router.post(
@@ -2401,9 +3240,13 @@ def create_router(
             headers[WORKFLOW_GATE_INTENT_HEADER] = intent
 
         try:
+            proxy_url, routing_headers = _http_proxy_target(
+                _session_proxy_url(base_url, "api", "workflow", "gates", gate_id, "resolve")
+            )
+            headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
-                    _session_proxy_url(base_url, "api", "workflow", "gates", gate_id, "resolve"),
+                    proxy_url,
                     headers=headers,
                     json=body.model_dump(),
                 )
@@ -2414,9 +3257,16 @@ def create_router(
             detail = e.response.text[:500]
             raise HTTPException(status_code=status_code, detail=detail)
         except httpx.RequestError as e:
+            # Pod unreachable — reconcile the stale row and fail deterministically
+            # (409) so the caller never thinks the gate resolved.
+            reconciled = await forge.reconcile_session(session_id)
             raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Could not connect to session pod: {e}",
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Session {session_id} is no longer reachable; "
+                    f"reconciled to {reconciled.status.value if reconciled else 'unknown'}. "
+                    f"Gate not resolved: {e}"
+                ),
             )
 
     @router.get(
@@ -2488,7 +3338,25 @@ def create_router(
 
         media_type = "text/markdown; charset=utf-8" if format == "md" else "application/json"
         filename = f"session-{session_id}-transcript.{format}"
-        return FileResponse(path, media_type=media_type, filename=filename)
+        expected_artifact = f"transcript.{format}"
+        if path.name != expected_artifact:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Resolved transcript artifact has an unexpected name",
+            )
+        download_root = os.path.realpath(os.path.abspath(os.fspath(path.parent)))
+        checked_path = os.path.realpath(os.path.abspath(os.fspath(path)), strict=True)
+        download_prefix = download_root.rstrip(os.sep) + os.sep
+        if checked_path == download_root:
+            safe_download_path = download_root
+        elif checked_path.startswith(download_prefix):
+            safe_download_path = checked_path
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Resolved transcript artifact escapes its archive directory",
+            )
+        return FileResponse(safe_download_path, media_type=media_type, filename=filename)
 
     @router.get(
         "/sessions/{session_id}/archive",
@@ -2738,7 +3606,7 @@ def create_router(
         """Relaunch a session from a chronicle entry."""
         try:
             session = await forge.reforge_chronicle(chronicle_id)
-            return SessionResponse.from_session(session)
+            return _session_response(session)
         except RuntimeError as e:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -2983,9 +3851,13 @@ def create_router(
             proxy_headers["Authorization"] = auth_header
 
         try:
+            proxy_url, routing_headers = _http_proxy_target(
+                _session_proxy_url(base_url, "api", "diff")
+            )
+            proxy_headers.update(routing_headers)
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(
-                    _session_proxy_url(base_url, "api", "diff"),
+                    proxy_url,
                     params={"file": file, "base": base},
                     headers=proxy_headers,
                 )

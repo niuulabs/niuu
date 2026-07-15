@@ -12,7 +12,20 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
+from credentials.models import MCPServerConfig, MountType, SecretInfo, SecretMountSpec  # noqa: F401
+from identity.models import (  # noqa: F401
+    ProvisioningResult,
+    QuotaCheck,
+    StorageQuota,
+    Tenant,
+    TenantMembership,
+    TenantRole,
+    TenantTier,
+    User,
+    UserStatus,
+)
 from niuu.domain import models as shared_models
+from tracker.models import ProjectMapping, TrackerConnectionStatus, TrackerIssue  # noqa: F401
 
 CIStatus = shared_models.CIStatus
 GitProviderType = shared_models.GitProviderType
@@ -32,77 +45,15 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-class UserStatus(StrEnum):
-    """Status of a user account."""
+def flock_peer_id(persona: str) -> str:
+    """Mesh peer id for a flock ravn running *persona*.
 
-    PROVISIONING = "provisioning"
-    ACTIVE = "active"
-    SUSPENDED = "suspended"
-    FAILED = "failed"
-
-
-class TenantTier(StrEnum):
-    """Tier classification for a tenant."""
-
-    DEVELOPER = "developer"
-    TEAM = "team"
-    ENTERPRISE = "enterprise"
-
-
-class TenantRole(StrEnum):
-    """Role within a tenant."""
-
-    ADMIN = "volundr:admin"
-    DEVELOPER = "volundr:developer"
-    VIEWER = "volundr:viewer"
-
-
-@dataclass(frozen=True)
-class Tenant:
-    """A tenant in the hierarchy."""
-
-    id: str
-    path: str
-    name: str
-    parent_id: str | None = None
-    tier: TenantTier = TenantTier.DEVELOPER
-    max_sessions: int = 5
-    max_storage_gb: int = 50
-    created_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class User:
-    """A provisioned user."""
-
-    id: str  # IDP sub claim
-    email: str
-    display_name: str = ""
-    status: UserStatus = UserStatus.ACTIVE
-    home_pvc: str | None = None
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class TenantMembership:
-    """A user's membership in a tenant."""
-
-    user_id: str
-    tenant_id: str
-    role: TenantRole = TenantRole.DEVELOPER
-    granted_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class QuotaCheck:
-    """Result of a quota check along the tenant ancestor chain."""
-
-    allowed: bool
-    tenant_id: str
-    max_sessions: int
-    current_sessions: int
-    reason: str = ""
+    The single source of truth for this naming convention: the flock pod
+    builder and the Skuld relay's routing target must agree, or operator
+    chat and event relay silently target a participant that never
+    registered. Keep every derivation routed through here.
+    """
+    return f"flock-{persona}"
 
 
 class CleanupTarget(StrEnum):
@@ -126,11 +77,43 @@ class SessionStatus(StrEnum):
 
 
 class SessionActivityState(StrEnum):
-    """Activity state of a running session (orthogonal to lifecycle status)."""
+    """Activity state of a running session (orthogonal to lifecycle status).
 
+    This is the "what is the agent doing right now" axis, distinct from the
+    lifecycle ``status`` (which only tracks whether the container is up):
+
+    - ``provisioning`` — the session is booting; the CLI REPL is not ready yet.
+      The first real frame (system/init) flips it to ``idle``.
+    - ``active`` / ``tool_executing`` — the agent is progressing (thinking,
+      streaming, or running a tool). Both mean "busy".
+    - ``idle`` — the turn finished; the session is waiting for the user's next
+      message but is NOT blocked on anything.
+    - ``stopped`` — the transport died (e.g. its tmux session vanished); the
+      session is no longer running and the last live state is final.
+    - ``awaiting_input`` — the session is BLOCKED on a human: an
+      ``AskUserQuestion``, a confirmation, or a tool-permission prompt. This is
+      the "needs attention" state — the agent cannot make progress until the
+      user responds. ``activity_metadata`` carries the specifics via
+      ``kind`` (``question`` | ``confirmation`` | ``permission``), ``prompt``,
+      ``options``, and ``request_id``.
+    """
+
+    PROVISIONING = "provisioning"
     ACTIVE = "active"
     IDLE = "idle"
     TOOL_EXECUTING = "tool_executing"
+    AWAITING_INPUT = "awaiting_input"
+    STOPPED = "stopped"
+
+    @property
+    def is_busy(self) -> bool:
+        """True when the agent is actively progressing (not idle, not blocked)."""
+        return self in (SessionActivityState.ACTIVE, SessionActivityState.TOOL_EXECUTING)
+
+    @property
+    def needs_attention(self) -> bool:
+        """True when the session is blocked waiting on the user."""
+        return self is SessionActivityState.AWAITING_INPUT
 
 
 class EventType(StrEnum):
@@ -148,6 +131,7 @@ class EventType(StrEnum):
     PR_CREATED = "pr_created"
     PR_MERGED = "pr_merged"
     SESSION_ACTIVITY = "session_activity"
+    SESSION_NEEDS_INPUT = "session_needs_input"
 
 
 class CommunicationPlatform(StrEnum):
@@ -220,6 +204,8 @@ class Stats:
     local_tokens: int
     cloud_tokens: int
     cost_today: Decimal
+    sessions_today: int = 0
+    sparklines: dict[str, list[float]] | None = None
 
 
 @dataclass(frozen=True)
@@ -229,6 +215,53 @@ class RealtimeEvent:
     type: EventType
     data: dict
     timestamp: datetime
+
+
+class DevicePlatform(StrEnum):
+    """Platform a registered push device belongs to."""
+
+    IOS = "ios"
+    ANDROID = "android"
+    WEB = "web"
+
+
+class DeviceToken(BaseModel):
+    """A user's registered device for push notifications.
+
+    Stored per-owner so a session that needs attention can fan a push out to
+    every device the owner has registered (the iOS app/widget, etc.).
+    """
+
+    id: UUID = Field(default_factory=uuid4)
+    owner_id: str = Field(description="User ID (IDP sub) the device belongs to")
+    platform: DevicePlatform = Field(description="Device platform")
+    token: str = Field(
+        min_length=1,
+        max_length=512,
+        description="APNs device token, FCM token, or web-push endpoint",
+    )
+    app_bundle_id: str | None = Field(
+        default=None,
+        description="APNs topic (bundle id) to target; falls back to the channel default",
+    )
+    created_at: datetime = Field(default_factory=_utc_now)
+    updated_at: datetime = Field(default_factory=_utc_now)
+
+    model_config = {"frozen": False}
+
+
+@dataclass(frozen=True)
+class PushMessage:
+    """A user-facing push built from a session attention signal."""
+
+    owner_id: str
+    title: str
+    body: str
+    session_id: str
+    #: question | confirmation | permission
+    kind: str
+    urgency: float
+    request_id: str = ""
 
 
 class GitSource(BaseModel):
@@ -406,7 +439,18 @@ class Session(BaseModel):
     )
     activity_state: SessionActivityState | None = Field(
         default=None,
-        description="Current activity state (active/idle/tool_executing)",
+        description=(
+            "Current activity state "
+            "(provisioning/active/idle/tool_executing/awaiting_input/stopped)"
+        ),
+    )
+    activity_state_since: datetime | None = Field(
+        default=None,
+        description=(
+            "Timestamp (UTC) when the session ENTERED its current activity_state. "
+            "Stamped only on a real state change (not on re-asserting the same "
+            "state), so clients can render an accurate 'active for Ns' elapsed."
+        ),
     )
     activity_metadata: dict = Field(
         default_factory=dict,
@@ -415,6 +459,15 @@ class Session(BaseModel):
     workload_type: str = Field(
         default="session",
         description="Workload type used to launch the session",
+    )
+    workload_config: dict = Field(
+        default_factory=dict,
+        description=(
+            "Workload config used to launch the session (persisted so "
+            "workload identity — e.g. a flock's personas — survives "
+            "restarts). Internal: may carry auth refs; never expose raw "
+            "through the API."
+        ),
     )
     origin: str = Field(
         default="volundr",
@@ -435,8 +488,27 @@ class Session(BaseModel):
             "session is restarted."
         ),
     )
+    session_definition: str | None = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "Session definition (runtime type, e.g. skuldClaude / skuldGrok) the "
+            "session was launched with, persisted so restarts re-apply the same "
+            "transport instead of falling back to the platform default."
+        ),
+    )
 
     model_config = {"frozen": False}
+
+    @property
+    def needs_attention(self) -> bool:
+        """True when the session is blocked waiting on the user (awaiting_input).
+
+        Surfaced directly so clients (web badges, the iOS widget) and the REST
+        list endpoint can filter "this session needs you" without re-deriving
+        the rule from ``activity_state``.
+        """
+        return self.activity_state is SessionActivityState.AWAITING_INPUT
 
     @property
     def repo(self) -> str:
@@ -957,80 +1029,6 @@ class SavedPrompt(BaseModel):
     model_config = {"frozen": False}
 
 
-class TrackerIssue(BaseModel):
-    """Issue from an external issue tracker (Linear, Jira, GitHub Issues, etc.)."""
-
-    id: str = Field(
-        description="Internal issue ID from the tracker backend",
-    )
-    identifier: str = Field(
-        description="Human-readable issue identifier (e.g. NIU-57)",
-    )
-    title: str = Field(description="Issue title")
-    status: str = Field(
-        description="Current issue status (e.g. In Progress, Done)",
-    )
-    assignee: str | None = Field(
-        default=None,
-        description="Display name of the assigned user",
-    )
-    labels: list[str] = Field(
-        default_factory=list,
-        description="Labels attached to the issue",
-    )
-    priority: int = Field(
-        default=0,
-        description="Priority level (0=none, 1=urgent, 4=low)",
-    )
-    url: str = Field(
-        description="Web URL to view the issue in the tracker",
-    )
-
-    model_config = {"frozen": False}
-
-
-class ProjectMapping(BaseModel):
-    """Maps a git repo URL to an issue tracker project."""
-
-    id: UUID = Field(
-        default_factory=uuid4,
-        description="Unique mapping identifier",
-    )
-    repo_url: str = Field(description="Git repository URL to map")
-    project_id: str = Field(description="Issue tracker project ID")
-    project_name: str = Field(
-        default="",
-        description="Human-readable project name",
-    )
-    created_at: datetime = Field(
-        default_factory=_utc_now,
-        description="Timestamp when the mapping was created",
-    )
-
-    model_config = {"frozen": False}
-
-
-class TrackerConnectionStatus(BaseModel):
-    """Connection status for an issue tracker."""
-
-    connected: bool = Field(
-        description="Whether the tracker connection is active",
-    )
-    provider: str = Field(
-        description="Tracker provider name (e.g. linear, jira)",
-    )
-    workspace: str | None = Field(
-        default=None,
-        description="Workspace or organization name in the tracker",
-    )
-    user: str | None = Field(
-        default=None,
-        description="Authenticated user display name",
-    )
-
-    model_config = {"frozen": False}
-
-
 @dataclass(frozen=True)
 class MCPServerSpec:
     """MCP server specification for an integration.
@@ -1117,23 +1115,6 @@ class IntegrationDefinition:
 
 
 @dataclass(frozen=True)
-class MCPServerConfig:
-    """An available MCP server configuration."""
-
-    name: str
-    type: str = "stdio"
-    command: str | None = None
-    url: str | None = None
-    args: list[str] = ()  # type: ignore[assignment]
-    description: str = ""
-
-    def __post_init__(self) -> None:
-        # Ensure args is always a tuple for immutability
-        if not isinstance(self.args, tuple):
-            object.__setattr__(self, "args", tuple(self.args))
-
-
-@dataclass(frozen=True)
 class CredentialMapping:
     """Maps a stored credential to its injection targets.
 
@@ -1206,25 +1187,6 @@ class WorkloadPersonaOverride:
         return d
 
 
-class MountType(StrEnum):
-    """How a secret should be mounted into a session pod."""
-
-    ENV_FILE = "env_file"
-    FILE = "file"
-    TEMPLATE = "template"
-
-
-@dataclass(frozen=True)
-class SecretMountSpec:
-    """Specification for how a secret should be mounted."""
-
-    secret_path: str
-    mount_type: MountType
-    destination: str
-    template: str | None = None
-    renewal: bool = False
-
-
 @dataclass(frozen=True)
 class SecretProfile:
     """Named collection of secret mount specs for a tenant or user."""
@@ -1232,14 +1194,6 @@ class SecretProfile:
     owner_id: str
     owner_type: str  # "tenant" or "user"
     mounts: tuple[SecretMountSpec, ...] = ()
-
-
-@dataclass(frozen=True)
-class StorageQuota:
-    """Storage quota for a user."""
-
-    home_gb: int = 1
-    workspace_gb: int = 1
 
 
 class WorkspaceStatus(StrEnum):
@@ -1269,16 +1223,6 @@ class Workspace:
     source_ref: str | None = None
 
 
-@dataclass(frozen=True)
-class ProvisioningResult:
-    """Result of a user provisioning or reprovisioning operation."""
-
-    success: bool
-    user_id: str
-    home_pvc: str | None = None
-    errors: list[str] = field(default_factory=list)
-
-
 # Kubernetes label keys used for PVC isolation (Kyverno policy enforcement).
 # Keep in sync with charts/volundr/templates/kyverno-pvc-isolation.yaml.
 LABEL_OWNER = "volundr/owner"
@@ -1300,18 +1244,6 @@ class PVCRef:
 
     name: str
     namespace: str = "volundr-sessions"
-
-
-@dataclass(frozen=True)
-class SecretInfo:
-    """Metadata about an available Kubernetes secret."""
-
-    name: str
-    keys: list[str] = ()  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.keys, tuple):
-            object.__setattr__(self, "keys", tuple(self.keys))
 
 
 class LaunchScope(StrEnum):
@@ -1363,6 +1295,186 @@ class LaunchSpec(BaseModel):
 
     # Serialize/accept camelCase over the wire (web-next convention) while keeping
     # snake_case attribute access internally.
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class ResidentBackend(StrEnum):
+    """Infrastructure substrate that owns a resident runtime."""
+
+    HELMRELEASE = "helmrelease"
+    OPENSHELL = "openshell"
+    LOCAL = "local"
+
+
+class ResidentEngine(StrEnum):
+    """Agent protocol hosted by a resident runtime."""
+
+    RAVN = "ravn"
+    OPENCLAW = "openclaw"
+    HERMES = "hermes"
+
+
+class ResidentDesiredState(StrEnum):
+    """Operator-requested resident lifecycle state."""
+
+    RUNNING = "running"
+    SUSPENDED = "suspended"
+    DELETED = "deleted"
+
+
+class ResidentObservedState(StrEnum):
+    """State last observed from the owning deployment backend."""
+
+    PENDING = "pending"
+    DEPLOYING = "deploying"
+    ACTIVE = "active"
+    SUSPENDED = "suspended"
+    FAILED = "failed"
+    DELETING = "deleting"
+
+
+class ResidentCapability(StrEnum):
+    """Operations a resident runtime can actually perform."""
+
+    CHAT = "chat"
+    SESSION_LIST = "session.list"
+    SESSION_CREATE = "session.create"
+    SESSION_DELETE = "session.delete"
+    STEER = "steer"
+    INTERRUPT = "interrupt"
+    APPROVALS = "approvals"
+    RUNTIME_RESTART = "runtime.restart"
+    RUNTIME_SUSPEND = "runtime.suspend"
+    LOGS = "logs"
+    METRICS = "metrics"
+    USAGE = "usage"
+    FLOCK = "flock"
+
+
+class ResidentConditionStatus(StrEnum):
+    """Tri-state status for a reconciled resident condition."""
+
+    TRUE = "true"
+    FALSE = "false"
+    UNKNOWN = "unknown"
+
+
+class ResidentEndpoint(BaseModel):
+    """One normalized endpoint exposed by a resident runtime."""
+
+    kind: str = Field(min_length=1, max_length=64)
+    protocol: str = Field(min_length=1, max_length=100)
+    url: str = Field(min_length=1)
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class ResidentCondition(BaseModel):
+    """Actionable lifecycle condition reported by a deployment backend."""
+
+    type: str = Field(min_length=1, max_length=100)
+    status: ResidentConditionStatus
+    reason: str = Field(default="", max_length=255)
+    message: str = ""
+    last_transition_at: datetime = Field(default_factory=_utc_now)
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class ResidentLogEntry(BaseModel):
+    """One normalized backend log entry for a resident runtime."""
+
+    timestamp_ms: int = Field(ge=0)
+    level: str = ""
+    source: str = ""
+    target: str = ""
+    message: str = ""
+    fields: dict[str, str] = Field(default_factory=dict)
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class ResidentLogPage(BaseModel):
+    """Bounded resident log result returned by a backend adapter."""
+
+    entries: list[ResidentLogEntry] = Field(default_factory=list)
+    buffer_total: int = Field(default=0, ge=0)
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class ResidentDeploymentProfile(BaseModel):
+    """Operator-owned valid resident backend and engine combination."""
+
+    id: str = Field(min_length=1, max_length=100)
+    display_name: str = Field(min_length=1, max_length=255)
+    description: str = ""
+    backend: ResidentBackend
+    engine: ResidentEngine
+    capabilities: list[ResidentCapability] = Field(default_factory=list)
+    default_model: str = ""
+    allowed_models: list[str] = Field(default_factory=list)
+    model_prefix: str = ""
+    labels: list[str] = Field(default_factory=list)
+    deployment: dict[str, Any] = Field(default_factory=dict, exclude=True)
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class ResidentRuntime(BaseModel):
+    """Durable control-plane record for one long-lived resident runtime."""
+
+    id: UUID = Field(default_factory=uuid4)
+    owner_id: str = Field(min_length=1)
+    tenant_id: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=255)
+    persona_name: str = Field(default="", max_length=255)
+    model: str = Field(default="", max_length=255)
+    backend: ResidentBackend
+    engine: ResidentEngine
+    profile_id: str = Field(min_length=1, max_length=100)
+    flock_id: UUID | None = None
+    flock_member_id: UUID | None = None
+    flock_role: str = Field(default="", max_length=100)
+    flock_peer_id: str = Field(default="", max_length=255)
+    desired_state: ResidentDesiredState = ResidentDesiredState.RUNNING
+    observed_state: ResidentObservedState = ResidentObservedState.PENDING
+    backend_ref: dict[str, Any] = Field(default_factory=dict)
+    endpoints: list[ResidentEndpoint] = Field(default_factory=list)
+    capabilities: list[ResidentCapability] = Field(default_factory=list)
+    conditions: list[ResidentCondition] = Field(default_factory=list)
+    message_count: int = Field(default=0, ge=0)
+    tokens_used: int = Field(default=0, ge=0)
+    cost: Decimal = Field(default=Decimal("0"), ge=0)
+    created_at: datetime = Field(default_factory=_utc_now)
+    updated_at: datetime = Field(default_factory=_utc_now)
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class ResidentSessionStatus(StrEnum):
+    """Normalized activity state for one engine-owned resident session."""
+
+    IDLE = "idle"
+    RUNNING = "running"
+    FAILED = "failed"
+
+
+class ResidentSession(BaseModel):
+    """Backend-neutral projection of an engine-owned resident session."""
+
+    id: UUID
+    resident_id: UUID
+    title: str = ""
+    model: str = ""
+    status: ResidentSessionStatus = ResidentSessionStatus.IDLE
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    message_count: int = Field(default=0, ge=0)
+    tokens_used: int = Field(default=0, ge=0)
+    cost: Decimal = Field(default=Decimal("0"), ge=0)
+    chat_endpoint: str = ""
+
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
@@ -1446,6 +1558,13 @@ def _deep_merge(base: dict, override: dict) -> None:
         if key == "mcpServers" and isinstance(base.get(key), list) and isinstance(value, list):
             base[key] = _merge_mcp_server_lists(base[key], value)
             continue
+        if (
+            key == "credentialMappings"
+            and isinstance(base.get(key), list)
+            and isinstance(value, list)
+        ):
+            base[key] = _merge_credential_mapping_lists(base[key], value)
+            continue
         if key in base and isinstance(base[key], dict) and isinstance(value, dict):
             _deep_merge(base[key], value)
         else:
@@ -1471,6 +1590,33 @@ def _merge_mcp_server_lists(existing: list, override: list) -> list:
         index_by_name[name] = len(merged)
         merged.append(dict(entry))
 
+    return merged
+
+
+def _merge_credential_mapping_lists(existing: list, override: list) -> list:
+    """Merge credential mappings by name while combining env and file fields."""
+    merged: list = []
+    index_by_name: dict[str, int] = {}
+    for entry in list(existing) + list(override):
+        if not isinstance(entry, dict):
+            merged.append(entry)
+            continue
+        name = str(entry.get("credentialName") or entry.get("credential_name") or "").strip()
+        if not name:
+            merged.append(dict(entry))
+            continue
+        normalized = {
+            "credentialName": name,
+            "envMappings": dict(entry.get("envMappings") or entry.get("env_mappings") or {}),
+            "fileMappings": dict(entry.get("fileMappings") or entry.get("file_mappings") or {}),
+        }
+        if name not in index_by_name:
+            index_by_name[name] = len(merged)
+            merged.append(normalized)
+            continue
+        current = merged[index_by_name[name]]
+        current["envMappings"].update(normalized["envMappings"])
+        current["fileMappings"].update(normalized["fileMappings"])
     return merged
 
 

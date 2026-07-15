@@ -50,3 +50,22 @@ dispatcher must call Volundr as a specific user without an active browser sessio
 PATs are long-lived JWTs signed with the same symmetric key that Envoy validates,
 so they integrate with the existing infrastructure without requiring IDP changes.
 The shared PAT code lives in `src/niuu/` (service, port, adapter, model).
+
+### Exception: scoped Valkyrie build tokens (workload identity)
+
+The same sanctioned exception covers the short-lived tokens minted by the
+workload-identity exchange (`POST /api/v1/tokens/workload/exchange`). When the
+exchange request asks for build `scopes`, the issued JWT carries
+`token_use: "valkyrie_build"` and a `scopes` claim bounded to
+`KNOWN_BUILD_SCOPES` (`src/niuu/domain/services/token_scope.py`) — a
+least-privilege credential that can commission a build and nothing else,
+enforced fail-closed at the build entry points (Forge session create, Ting
+workflow launch). Tokens without `token_use == "valkyrie_build"` are never
+scope-checked, so human sessions and ordinary PATs are unaffected.
+
+Known limitation (deliberate, for now): PATs themselves cannot carry scopes —
+a leaked PAT retains its owner's full authority. Off-cluster Valkyries using
+a PAT via `external_token_env` therefore do not get least-privilege; scoped
+PAT minting is future work. When adding a NEW build entry point, add its scope
+to `KNOWN_BUILD_SCOPES` and a `require_build_scope(...)` dependency on the
+route — build tokens are only as narrow as the enforcement coverage.

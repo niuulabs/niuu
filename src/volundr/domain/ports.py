@@ -14,6 +14,16 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from credentials.ports import (  # noqa: F401
+    MCPServerProvider,
+    SecretAlreadyExistsError,
+    SecretManager,
+    SecretMountStrategy,
+    SecretValidationError,
+)
+from identity.models import Resource  # noqa: F401
+from identity.ports import AuthorizationPort, TenantRepository, UserRepository  # noqa: F401
+from niuu.domain.outcome import OutcomeField
 from niuu.ports.credentials import CredentialStorePort  # noqa: F401
 from niuu.ports.git import (
     GitAuthError,  # noqa: F401
@@ -21,12 +31,20 @@ from niuu.ports.git import (
     GitRepoNotFoundError,  # noqa: F401
     GitWorkflowProvider,  # noqa: F401
 )
+from niuu.ports.identity import (
+    IdentityPort,  # noqa: F401
+    InvalidTokenError,  # noqa: F401
+    UserProvisioningError,  # noqa: F401
+)
 from niuu.ports.integrations import IntegrationRepository  # noqa: F401
-from volundr.domain.models import (
+from niuu.ports.session_proxy import SessionProxyTarget
+from tracker.ports import IssueTrackerProvider, ProjectMappingRepository  # noqa: F401
+from volundr.domain.models import (  # noqa: F401
     Chronicle,
     ClusterResourceInfo,
     CommunicationRoute,
     CredentialMapping,
+    DeviceToken,
     ExternalSessionRecord,
     IntegrationConnection,
     LaunchSpec,
@@ -37,8 +55,18 @@ from volundr.domain.models import (
     Principal,
     ProjectMapping,
     PromptScope,
+    PushMessage,
     PVCRef,
     RealtimeEvent,
+    ResidentBackend,
+    ResidentCondition,
+    ResidentDeploymentProfile,
+    ResidentEndpoint,
+    ResidentEngine,
+    ResidentLogPage,
+    ResidentObservedState,
+    ResidentRuntime,
+    ResidentSession,
     RoomParticipantInfo,
     SavedPrompt,
     SecretInfo,
@@ -67,6 +95,7 @@ from volundr.domain.models import (
 )
 
 __all__ = [
+    "AuthorizationPort",
     "CredentialStorePort",
     "GitAuthError",
     "GitProvider",
@@ -74,6 +103,7 @@ __all__ = [
     "GitWorkflowProvider",
     "IntegrationRepository",
     "PATRepository",
+    "Resource",
 ]
 
 
@@ -125,6 +155,31 @@ class SessionRepository(ABC):
     @abstractmethod
     async def delete(self, session_id: UUID) -> bool:
         """Delete a session. Returns True if deleted, False if not found."""
+
+
+@dataclass(frozen=True)
+class OpenShellCredentialGrantToken:
+    """OAuth token response returned to an OpenShell sandbox supervisor."""
+
+    access_token: str
+    expires_in: int = 300
+    token_type: str = "Bearer"
+
+
+class OpenShellCredentialGrantPort(ABC):
+    """Exchange an OpenShell sandbox JWT-SVID for one authorized credential."""
+
+    @abstractmethod
+    async def exchange_credential_grant(
+        self,
+        *,
+        client_assertion: str,
+        client_assertion_type: str,
+        grant_type: str,
+        audience: str,
+        scope: str,
+    ) -> OpenShellCredentialGrantToken:
+        """Validate the sandbox identity and return a short-lived credential value."""
 
 
 class ExternalSessionProvider(ABC):
@@ -263,6 +318,14 @@ class TimelineRepository(ABC):
 class PodManager(ABC):
     """Port for managing session pods (Skuld, code-server, terminal)."""
 
+    def initial_chat_endpoint(self, session: Session) -> str | None:
+        """Return the deterministic chat endpoint before pods are ready, if known."""
+        return None
+
+    def initial_code_endpoint(self, session: Session) -> str | None:
+        """Return the deterministic code endpoint before pods are ready, if known."""
+        return None
+
     @abstractmethod
     async def start(
         self,
@@ -295,7 +358,7 @@ class PodManager(ABC):
     async def wait_for_ready(self, session: Session, timeout: float) -> SessionStatus:
         """Block until infrastructure is ready or failed.
 
-        Returns RUNNING if ready, FAILED if failed/timeout.
+        Returns the backend's current status when the wait ends.
         Each adapter implements this optimally for its backend.
         """
 
@@ -402,6 +465,55 @@ class EventBroadcaster(ABC):
         """
 
 
+class DeviceTokenRepository(ABC):
+    """Persistence port for per-user push device registrations."""
+
+    @abstractmethod
+    async def upsert(self, device: DeviceToken) -> DeviceToken:
+        """Register a device, or refresh it if the (owner, token) already exists."""
+
+    @abstractmethod
+    async def list_for_owner(self, owner_id: str) -> list[DeviceToken]:
+        """Return every device registered by an owner."""
+
+    @abstractmethod
+    async def delete(self, owner_id: str, token: str) -> bool:
+        """Remove a device registration. Returns True if one was deleted."""
+
+
+class NotificationChannel(ABC):
+    """Outbound port for delivering a push to a user's devices.
+
+    Implementations: APNs (direct), an outbound webhook relay, or a logging
+    no-op. Selected via the dynamic-adapter config so adding a channel is
+    config-only.
+    """
+
+    @abstractmethod
+    async def send(self, message: PushMessage, devices: list[DeviceToken]) -> None:
+        """Deliver a push. ``devices`` is the owner's registered devices (may be
+        empty for relay channels that resolve recipients themselves)."""
+
+
+class AttentionNotifier(ABC):
+    """Port the session service calls when a session needs the user.
+
+    Decouples session logic from the push delivery mechanism: the session
+    service emits the intent, an adapter resolves devices and dispatches.
+    """
+
+    @abstractmethod
+    async def notify_needs_input(
+        self,
+        session: Session,
+        *,
+        kind: str,
+        prompt: str,
+        request_id: str,
+    ) -> None:
+        """Alert the session owner that the session is blocked awaiting them."""
+
+
 class LaunchSpecProvider(ABC):
     """Read port for system-scope launch specs (config-seeded, read-only)."""
 
@@ -452,6 +564,213 @@ class LaunchSpecRepository(ABC):
     @abstractmethod
     async def clear_default(self, cli_tool: str) -> None:
         """Clear is_default for all user launch specs with the given cli_tool."""
+
+
+class ResidentDeploymentProfileProvider(ABC):
+    """Read-only provider for operator-approved resident deployment profiles."""
+
+    @abstractmethod
+    def get(self, profile_id: str) -> ResidentDeploymentProfile | None:
+        """Return one enabled profile by id."""
+
+    @abstractmethod
+    def list(self) -> list[ResidentDeploymentProfile]:
+        """Return every enabled deployment profile."""
+
+
+@dataclass(frozen=True)
+class ResidentRuntimeObservation:
+    """Normalized backend state returned by a resident deployment controller."""
+
+    observed_state: ResidentObservedState
+    backend_ref: dict[str, Any] = field(default_factory=dict)
+    endpoints: list[ResidentEndpoint] = field(default_factory=list)
+    conditions: list[ResidentCondition] = field(default_factory=list)
+
+
+class ResidentRuntimeController(ABC):
+    """Backend lifecycle port for long-lived resident runtimes."""
+
+    @property
+    @abstractmethod
+    def backend(self) -> ResidentBackend:
+        """Return the backend implemented by this controller."""
+
+    @abstractmethod
+    def supports(self, profile: ResidentDeploymentProfile) -> bool:
+        """Return whether this controller implements the complete profile."""
+
+    @abstractmethod
+    async def deploy(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        """Create or converge the backend resources for a resident."""
+
+    @abstractmethod
+    async def reconcile(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        """Converge and observe the backend resources owned by a resident."""
+
+    @abstractmethod
+    async def restart(
+        self,
+        runtime: ResidentRuntime,
+        profile: ResidentDeploymentProfile,
+    ) -> ResidentRuntimeObservation:
+        """Restart a running resident without replacing its durable storage."""
+
+    @abstractmethod
+    async def suspend(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
+        """Suspend a resident while retaining its durable storage."""
+
+    @abstractmethod
+    async def resume(self, runtime: ResidentRuntime) -> ResidentRuntimeObservation:
+        """Resume a suspended resident."""
+
+    @abstractmethod
+    async def delete(self, runtime: ResidentRuntime) -> bool:
+        """Delete backend resources, returning whether a resource existed."""
+
+
+class ResidentRuntimeLogReader(ABC):
+    """Optional backend port for normalized resident logs."""
+
+    @abstractmethod
+    async def logs(
+        self,
+        runtime: ResidentRuntime,
+        *,
+        lines: int,
+        sources: tuple[str, ...],
+        min_level: str,
+    ) -> ResidentLogPage:
+        """Return recent logs from the runtime-owning backend."""
+
+
+class ResidentRuntimeProxyTargetResolver(ABC):
+    """Optional backend port for routing resident Skuld traffic."""
+
+    @abstractmethod
+    def resident_proxy_target(self, runtime: ResidentRuntime) -> SessionProxyTarget | None:
+        """Resolve the backend service reached by the shared session proxy."""
+
+
+class ResidentDeviceApprover(ABC):
+    """Optional runtime capability for approving resident engine devices."""
+
+    @abstractmethod
+    async def approve_resident_device(
+        self,
+        runtime: ResidentRuntime,
+        *,
+        request_id: str,
+        gateway_token: str,
+    ) -> None:
+        """Approve an authenticated device challenge inside the owning runtime."""
+
+
+class ResidentChatConnection(ABC):
+    """One normalized shared-chat connection to a resident engine session."""
+
+    @abstractmethod
+    async def receive(self) -> dict[str, Any]:
+        """Receive the next shared-chat frame."""
+
+    @abstractmethod
+    async def send(self, frame: dict[str, Any]) -> None:
+        """Send one shared-chat command."""
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Close the engine connection."""
+
+
+class ResidentSessionController(ABC):
+    """Engine protocol port for sessions hosted by a resident runtime."""
+
+    @property
+    @abstractmethod
+    def engine(self) -> ResidentEngine:
+        """Return the resident engine implemented by this controller."""
+
+    @abstractmethod
+    async def list_sessions(self, runtime: ResidentRuntime) -> list[ResidentSession]:
+        """List engine-owned sessions for one resident."""
+
+    @abstractmethod
+    async def create_session(
+        self,
+        runtime: ResidentRuntime,
+        *,
+        title: str,
+        model: str,
+    ) -> ResidentSession:
+        """Create one durable engine-owned session."""
+
+    @abstractmethod
+    async def delete_session(self, runtime: ResidentRuntime, session_id: UUID) -> None:
+        """Delete one engine-owned session and transcript."""
+
+    @abstractmethod
+    async def connect_chat(
+        self,
+        runtime: ResidentRuntime,
+        session_id: UUID,
+    ) -> ResidentChatConnection:
+        """Open a normalized shared-chat connection."""
+
+
+class ResidentRuntimeRepository(ABC):
+    """Persistence port for long-lived resident runtime records."""
+
+    @abstractmethod
+    async def create(self, runtime: ResidentRuntime) -> ResidentRuntime:
+        """Persist a new resident runtime."""
+
+    @abstractmethod
+    async def get(self, runtime_id: UUID) -> ResidentRuntime | None:
+        """Return a resident runtime by id."""
+
+    @abstractmethod
+    async def get_by_owner_name(self, owner_id: str, name: str) -> ResidentRuntime | None:
+        """Return a resident runtime by owner and name."""
+
+    @abstractmethod
+    async def list(
+        self,
+        *,
+        tenant_id: str,
+        owner_id: str | None = None,
+    ) -> list[ResidentRuntime]:
+        """List resident runtimes in a tenant, optionally scoped to one owner."""
+
+    @abstractmethod
+    async def list_for_reconciliation(self) -> list[ResidentRuntime]:
+        """List every resident runtime requiring backend observation."""
+
+    @abstractmethod
+    async def update(self, runtime: ResidentRuntime) -> ResidentRuntime:
+        """Persist the current resident runtime state."""
+
+    @abstractmethod
+    async def add_usage(
+        self,
+        runtime_id: UUID,
+        *,
+        tokens: int,
+        cost: float,
+        message_count: int,
+    ) -> ResidentRuntime | None:
+        """Atomically add usage totals and return the updated resident."""
+
+    @abstractmethod
+    async def delete(self, runtime_id: UUID) -> bool:
+        """Delete a resident runtime record."""
 
 
 class EventSink(ABC):
@@ -555,6 +874,56 @@ class SessionEventLogRepository(ABC):
     async def latest_seq(self, session_id: UUID) -> int:
         """Return the highest seq stored for a session, or 0 if none."""
 
+    async def detect_conflicts(self, entries: list[SessionLogEntry]) -> list[int]:
+        """Return the seqs that ALREADY have a stored row with a DISTINCT payload.
+
+        ``append`` is idempotent on ``(session_id, seq)`` (ON CONFLICT DO NOTHING),
+        so re-appending the SAME frame is a silent no-op (INV-3 idempotency). That
+        same swallow, however, would also hide a genuine bug: a *different* payload
+        re-using a seq another frame already owns. This method is the off-hot-path,
+        queryable detection signal for that case (INV-3c): it reads back the stored
+        rows for the candidate seqs and returns the seqs whose stored frame DIFFERS
+        from the candidate (by ``payload``/``kind``/``role``/``request_id``).
+
+        This is a CONCRETE default built on :meth:`read_after` so in-memory fakes
+        inherit it for free. It is never called from ``append``; callers opt in on a
+        cold/validation path. Returns an empty list when ``entries`` is empty.
+        """
+        if not entries:
+            return []
+
+        by_session: dict[UUID, dict[int, SessionLogEntry]] = {}
+        for entry in entries:
+            by_session.setdefault(entry.session_id, {})[entry.seq] = entry
+
+        conflicts: list[int] = []
+        for session_id, candidates in by_session.items():
+            min_seq = min(candidates) - 1
+            max_seq = max(candidates)
+            stored = await self.read_after(
+                session_id,
+                after_seq=min_seq,
+                limit=max_seq - min_seq,
+            )
+            for row in stored:
+                candidate = candidates.get(row.seq)
+                if candidate is None:
+                    continue
+                if _log_entries_conflict(candidate, row):
+                    conflicts.append(row.seq)
+        conflicts.sort()
+        return conflicts
+
+
+def _log_entries_conflict(candidate: SessionLogEntry, stored: SessionLogEntry) -> bool:
+    """True when two entries share a seq but carry materially different content."""
+    return (
+        candidate.payload != stored.payload
+        or candidate.kind != stored.kind
+        or candidate.role != stored.role
+        or candidate.request_id != stored.request_id
+    )
+
 
 class SessionSpanRepository(ABC):
     """Read/write port for persisted session trace spans."""
@@ -612,246 +981,6 @@ class SavedPromptRepository(ABC):
     @abstractmethod
     async def search(self, query: str) -> list[SavedPrompt]:
         """Search prompts by name and content (case-insensitive)."""
-
-
-class MCPServerProvider(ABC):
-    """Port for reading available MCP server configurations."""
-
-    @abstractmethod
-    def list(self) -> list[MCPServerConfig]:
-        """Return all available MCP server configurations."""
-
-    @abstractmethod
-    def get(self, name: str) -> MCPServerConfig | None:
-        """Return a specific MCP server config by name."""
-
-
-class SecretManager(ABC):
-    """Port for managing Kubernetes secrets available to sessions."""
-
-    @abstractmethod
-    async def list(self) -> list[SecretInfo]:
-        """List available secrets (filtered by label selector)."""
-
-    @abstractmethod
-    async def get(self, name: str) -> SecretInfo | None:
-        """Get a specific secret's metadata by name."""
-
-    @abstractmethod
-    async def create(self, name: str, data: dict[str, str]) -> SecretInfo:
-        """Create a new secret with the given key-value pairs.
-
-        Raises:
-            SecretAlreadyExistsError: If a secret with this name already exists.
-            SecretValidationError: If the name is invalid.
-        """
-
-
-class SecretAlreadyExistsError(Exception):
-    """Raised when attempting to create a secret that already exists."""
-
-
-class SecretValidationError(Exception):
-    """Raised when a secret name fails validation."""
-
-
-class IssueTrackerProvider(ABC):
-    """Port for external issue tracker integration.
-
-    Supports Linear, Jira, GitHub Issues, or any other tracker.
-    """
-
-    @property
-    @abstractmethod
-    def provider_name(self) -> str:
-        """Return the name of this provider (e.g., 'linear', 'jira')."""
-
-    @abstractmethod
-    async def check_connection(self) -> TrackerConnectionStatus:
-        """Check the connection status to the issue tracker."""
-
-    @abstractmethod
-    async def search_issues(
-        self,
-        query: str,
-        project_id: str | None = None,
-    ) -> list[TrackerIssue]:
-        """Search issues by query string."""
-
-    @abstractmethod
-    async def get_recent_issues(
-        self,
-        project_id: str,
-        limit: int = 10,
-    ) -> list[TrackerIssue]:
-        """Get recent issues for a project."""
-
-    @abstractmethod
-    async def get_issue(self, issue_id: str) -> TrackerIssue | None:
-        """Get a single issue by ID or identifier."""
-
-    @abstractmethod
-    async def update_issue_status(
-        self,
-        issue_id: str,
-        status: str,
-    ) -> TrackerIssue:
-        """Update the status of an issue."""
-
-
-class ProjectMappingRepository(ABC):
-    """Port for project mapping persistence (repo URL -> tracker project)."""
-
-    @abstractmethod
-    async def create(self, mapping: ProjectMapping) -> ProjectMapping:
-        """Persist a new project mapping."""
-
-    @abstractmethod
-    async def list(self) -> list[ProjectMapping]:
-        """Retrieve all project mappings."""
-
-    @abstractmethod
-    async def get_by_repo(self, repo_url: str) -> ProjectMapping | None:
-        """Retrieve a mapping by repo URL."""
-
-    @abstractmethod
-    async def delete(self, mapping_id: UUID) -> bool:
-        """Delete a mapping. Returns True if deleted."""
-
-
-class TenantRepository(ABC):
-    """Port for tenant persistence operations."""
-
-    @abstractmethod
-    async def create(self, tenant: Tenant) -> Tenant:
-        """Persist a new tenant."""
-
-    @abstractmethod
-    async def get(self, tenant_id: str) -> Tenant | None:
-        """Retrieve a tenant by ID."""
-
-    @abstractmethod
-    async def get_by_path(self, path: str) -> Tenant | None:
-        """Retrieve a tenant by its materialized path."""
-
-    @abstractmethod
-    async def list(self, parent_id: str | None = None) -> list[Tenant]:
-        """List tenants, optionally filtered by parent."""
-
-    @abstractmethod
-    async def get_ancestors(self, path: str) -> list[Tenant]:
-        """Get all ancestors of a tenant path (root first)."""
-
-    @abstractmethod
-    async def update(self, tenant: Tenant) -> Tenant:
-        """Update a tenant."""
-
-    @abstractmethod
-    async def delete(self, tenant_id: str) -> bool:
-        """Delete a tenant. Returns True if deleted."""
-
-
-class UserRepository(ABC):
-    """Port for user persistence operations."""
-
-    @abstractmethod
-    async def create(self, user: User) -> User:
-        """Persist a new user."""
-
-    @abstractmethod
-    async def get(self, user_id: str) -> User | None:
-        """Retrieve a user by ID (IDP sub)."""
-
-    @abstractmethod
-    async def get_by_email(self, email: str) -> User | None:
-        """Retrieve a user by email."""
-
-    @abstractmethod
-    async def list(self) -> list[User]:
-        """List all users."""
-
-    @abstractmethod
-    async def update(self, user: User) -> User:
-        """Update a user."""
-
-    @abstractmethod
-    async def delete(self, user_id: str) -> bool:
-        """Delete a user. Returns True if deleted."""
-
-    @abstractmethod
-    async def add_membership(self, membership: TenantMembership) -> TenantMembership:
-        """Add a user to a tenant with a role."""
-
-    @abstractmethod
-    async def get_memberships(self, user_id: str) -> list[TenantMembership]:
-        """Get all tenant memberships for a user."""
-
-    @abstractmethod
-    async def get_members(self, tenant_id: str) -> list[TenantMembership]:
-        """Get all members of a tenant."""
-
-    @abstractmethod
-    async def remove_membership(self, user_id: str, tenant_id: str) -> bool:
-        """Remove a user from a tenant. Returns True if removed."""
-
-
-class IdentityPort(ABC):
-    """Port for identity/authentication operations."""
-
-    @abstractmethod
-    async def validate_token(self, raw_token: str) -> Principal:
-        """Validate a JWT and extract a Principal.
-
-        Raises:
-            InvalidTokenError: If the token is invalid or expired.
-        """
-
-    @abstractmethod
-    async def get_or_provision_user(self, principal: Principal) -> User:
-        """Get existing user or provision on first login (JIT).
-
-        Raises:
-            UserProvisioningError: If provisioning fails.
-        """
-
-
-class InvalidTokenError(Exception):
-    """Raised when a JWT is invalid, expired, or malformed."""
-
-
-class UserProvisioningError(Exception):
-    """Raised when JIT user provisioning fails."""
-
-
-@dataclass(frozen=True)
-class Resource:
-    """A resource for authorization checks."""
-
-    kind: str  # "session" | "secret" | "tenant" | "preset"
-    id: str
-    attr: dict
-
-
-class AuthorizationPort(ABC):
-    """Port for authorization decisions."""
-
-    @abstractmethod
-    async def is_allowed(
-        self,
-        principal: Principal,
-        action: str,
-        resource: Resource,
-    ) -> bool:
-        """Check if a principal is allowed to perform an action on a resource."""
-
-    @abstractmethod
-    async def filter_allowed(
-        self,
-        principal: Principal,
-        action: str,
-        resources: list[Resource],
-    ) -> list[Resource]:
-        """Filter a list of resources to only those the principal can access."""
 
 
 class SecretRepository(ABC):
@@ -962,7 +1091,7 @@ class StoragePort(ABC):
         self,
         session_id: str,
     ) -> None:
-        """Permanently delete a session's workspace PVC (explicit user action only)."""
+        """Permanently delete a session-scoped workspace PVC."""
 
     @abstractmethod
     async def get_user_storage_usage(
@@ -1098,26 +1227,6 @@ class GatewayPort(ABC):
             JWT/auth config needed by Skuld's HTTPRoute template.
             Empty dict when gateway routing is not configured.
         """
-
-
-class SecretMountStrategy(ABC):
-    """Strategy for mounting a specific secret type into a session pod."""
-
-    @abstractmethod
-    def secret_type(self) -> SecretType:
-        """Return the secret type this strategy handles."""
-
-    @abstractmethod
-    def default_mount_spec(
-        self,
-        secret_path: str,
-        secret_data: dict,
-    ) -> SecretMountSpec:
-        """Return the default mount spec for this secret type."""
-
-    @abstractmethod
-    def validate(self, secret_data: dict) -> list[str]:
-        """Validate secret data. Returns list of error messages (empty = valid)."""
 
 
 class SecretInjectionPort(ABC):
@@ -1283,6 +1392,7 @@ class SessionContext:
     principal: Principal | None = None
     definition: str | None = None
     launch_spec: str | None = None
+    runtime_backend: str = "kubernetes"
     terminal_restricted: bool = False
     credential_names: tuple[str, ...] = ()
     integration_ids: tuple[str, ...] = ()
@@ -1292,6 +1402,25 @@ class SessionContext:
     initial_prompt: str = ""
     workload_type: str = "session"
     workload_config: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SessionPersona:
+    """Runtime persona fields Forge can apply without owning Ravn storage."""
+
+    name: str
+    system_prompt: str
+    consumes_event_types: tuple[str, ...] = ()
+    produces_event_type: str = ""
+    produces_schema: dict[str, OutcomeField] = field(default_factory=dict)
+
+
+class SessionPersonaProvider(ABC):
+    """Resolve a persona in the launching user's catalog."""
+
+    @abstractmethod
+    async def get(self, owner_id: str, name: str) -> SessionPersona | None:
+        """Return the selected persona, or None when it does not exist."""
 
 
 @dataclass(frozen=True)

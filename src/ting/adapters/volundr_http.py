@@ -7,7 +7,7 @@ import json
 import logging
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse, urlunparse
 
 import httpx
 
@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
 INTEGRATIONS_PATH = "/api/v1/integrations"
+WORKFLOW_GATE_INTENT_HEADER = "x-niuu-workflow-gate-intent"
+WORKFLOW_GATE_INTENT_RESOLVE = "resolve"
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
 
 
 def _looks_like_local_path(value: str) -> bool:
@@ -32,6 +35,21 @@ def _local_mount_path(value: str) -> str | None:
     if not _looks_like_local_path(value):
         return None
     return str(Path(value).expanduser().resolve())
+
+
+def _public_chat_endpoint(chat_endpoint: str | None, base_url: str) -> str | None:
+    if not chat_endpoint:
+        return chat_endpoint
+    parsed = urlparse(chat_endpoint)
+    if parsed.hostname not in _LOOPBACK_HOSTS:
+        return chat_endpoint
+    base = urlparse(base_url)
+    if not base.scheme or not base.netloc:
+        return chat_endpoint
+    scheme = "wss" if base.scheme == "https" else "ws"
+    return urlunparse(
+        (scheme, base.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    )
 
 
 class VolundrHTTPAdapter(VolundrPort):
@@ -137,6 +155,7 @@ class VolundrHTTPAdapter(VolundrPort):
                     "workload_config": request.workload_config,
                     "launch_spec": request.profile,
                     "integration_ids": request.integration_ids,
+                    "credential_names": request.credential_names,
                 },
             )
             if resp.status_code >= 400:
@@ -149,7 +168,7 @@ class VolundrHTTPAdapter(VolundrPort):
                 name=data["name"],
                 status=data["status"],
                 tracker_issue_id=data.get("tracker_issue_id"),
-                chat_endpoint=data.get("chat_endpoint"),
+                chat_endpoint=_public_chat_endpoint(data.get("chat_endpoint"), self._base_url),
                 cluster_name=self._name,
                 repo=source.get("repo") or source.get("local_path", ""),
                 branch=source.get("branch", ""),
@@ -179,7 +198,7 @@ class VolundrHTTPAdapter(VolundrPort):
                 name=data["name"],
                 status=data["status"],
                 tracker_issue_id=data.get("tracker_issue_id"),
-                chat_endpoint=data.get("chat_endpoint"),
+                chat_endpoint=_public_chat_endpoint(data.get("chat_endpoint"), self._base_url),
                 cluster_name=self._name,
                 repo=source.get("repo") or source.get("local_path", ""),
                 branch=source.get("branch", ""),
@@ -209,6 +228,7 @@ class VolundrHTTPAdapter(VolundrPort):
                     name=s["name"],
                     status=s["status"],
                     tracker_issue_id=s.get("tracker_issue_id"),
+                    chat_endpoint=_public_chat_endpoint(s.get("chat_endpoint"), self._base_url),
                     cluster_name=self._name,
                     workload_type=s.get("workload_type", "default"),
                 )
@@ -286,6 +306,49 @@ class VolundrHTTPAdapter(VolundrPort):
             )
             resp.raise_for_status()
 
+    async def get_workflow_gates(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> list[dict]:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.get(
+                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/workflow/gates",
+                headers=self._headers(auth_token, principal),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, dict):
+                gates = data.get("gates", [])
+                return gates if isinstance(gates, list) else []
+            return data if isinstance(data, list) else []
+
+    async def resolve_workflow_gate(
+        self,
+        session_id: str,
+        gate_id: str,
+        decision: str,
+        *,
+        notes: str = "",
+        source: str = "ting",
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> dict:
+        headers = self._headers(auth_token, principal)
+        headers[WORKFLOW_GATE_INTENT_HEADER] = WORKFLOW_GATE_INTENT_RESOLVE
+        encoded_gate_id = quote(gate_id, safe="")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/workflow/gates/"
+                f"{encoded_gate_id}/resolve",
+                headers=headers,
+                json={"decision": decision, "notes": notes, "source": source},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     async def stop_session(
         self,
         session_id: str,
@@ -356,24 +419,40 @@ class VolundrHTTPAdapter(VolundrPort):
                 repos.extend(provider_repos)
             return repos
 
-    async def get_conversation(self, session_id: str) -> dict:
+    async def get_conversation(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> dict:
         """Fetch the full conversation history for a session."""
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(
                 f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/conversation",
-                headers=self._headers(),
+                headers=self._headers(auth_token, principal),
             )
             resp.raise_for_status()
             return resp.json()
 
-    async def get_last_assistant_message(self, session_id: str) -> str:
+    async def get_last_assistant_message(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> str:
         """Fetch the most recent assistant message containing a JSON assessment.
 
         Scans the last 3 assistant messages for a JSON block with a
         ``confidence`` key (the reviewer's final output).  Falls back to
         the very last assistant message if no JSON assessment is found.
         """
-        data = await self.get_conversation(session_id)
+        data = await self.get_conversation(
+            session_id,
+            auth_token=auth_token,
+            principal=principal,
+        )
         turns = data.get("turns", [])
         assistant_turns = [t for t in turns if t.get("role") == "assistant"]
         if not assistant_turns:

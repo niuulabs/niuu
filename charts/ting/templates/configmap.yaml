@@ -25,6 +25,9 @@ data:
       level: {{ .Values.config.logLevel | default "info" | quote }}
       format: {{ .Values.config.logFormat | default "json" | quote }}
 
+    notification:
+      public_origin: {{ .Values.config.publicOrigin | default "" | quote }}
+
     cors:
       allowed_origins:
         {{- range .Values.config.cors.allowedOrigins }}
@@ -113,6 +116,33 @@ data:
 
     auth:
       pat_ttl_days: {{ .Values.auth.patTtlDays | default 365 }}
+
+    workload_identity:
+      enabled: {{ .Values.workloadIdentity.enabled | default false }}
+      issuer: {{ .Values.workloadIdentity.issuer | default "" | quote }}
+      {{- if .Values.workloadIdentity.audiences }}
+      audiences:
+        {{- range .Values.workloadIdentity.audiences }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- else }}
+      audiences: []
+      {{- end }}
+      token_ttl_seconds: {{ .Values.workloadIdentity.tokenTtlSeconds | default 900 }}
+      key_id: {{ .Values.workloadIdentity.keyId | default "niuu-workload" | quote }}
+      signing_key_env: "NIUU_WORKLOAD_IDENTITY_SIGNING_KEY"
+      {{- if .Values.workloadIdentity.verifiers }}
+      verifiers:
+        {{- toYaml .Values.workloadIdentity.verifiers | nindent 8 }}
+      {{- else }}
+      verifiers: []
+      {{- end }}
+      {{- if .Values.workloadIdentity.mappings }}
+      mappings:
+        {{- toYaml .Values.workloadIdentity.mappings | nindent 8 }}
+      {{- else }}
+      mappings: []
+      {{- end }}
 
     credential_store:
       adapter: {{ .Values.credentialStore.adapter | quote }}

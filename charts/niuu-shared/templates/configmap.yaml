@@ -51,6 +51,27 @@ data:
         {{- else }}
         instances: []
         {{- end }}
+      gitlab:
+        enabled: {{ .Values.git.gitlab.enabled }}
+        base_url: "https://gitlab.com"
+        {{- if .Values.git.gitlab.instances }}
+        instances:
+          {{- range $i, $inst := .Values.git.gitlab.instances }}
+          - name: {{ $inst.name | quote }}
+            base_url: {{ $inst.baseUrl | default "https://gitlab.com" | quote }}
+            {{- if $inst.existingSecret }}
+            token_env: GIT_GITLAB_INSTANCE_{{ $i }}_TOKEN
+            {{- end }}
+            {{- if $inst.orgs }}
+            orgs:
+              {{- range $inst.orgs }}
+              - {{ . | quote }}
+              {{- end }}
+            {{- end }}
+          {{- end }}
+        {{- else }}
+        instances: []
+        {{- end }}
 
     database:
       min_pool_size: {{ .Values.database.minPoolSize | default 5 }}
@@ -119,24 +140,30 @@ data:
       token_issuer_adapter: {{ .Values.pat.token_issuer_adapter | quote }}
       token_issuer_kwargs: {{ .Values.pat.token_issuer_kwargs | toJson }}
       ttl_days: {{ .Values.pat.ttl_days | default 365 }}
-      gitlab:
-        enabled: {{ .Values.git.gitlab.enabled }}
-        base_url: "https://gitlab.com"
-        {{- if .Values.git.gitlab.instances }}
-        instances:
-          {{- range $i, $inst := .Values.git.gitlab.instances }}
-          - name: {{ $inst.name | quote }}
-            base_url: {{ $inst.baseUrl | default "https://gitlab.com" | quote }}
-            {{- if $inst.existingSecret }}
-            token_env: GIT_GITLAB_INSTANCE_{{ $i }}_TOKEN
-            {{- end }}
-            {{- if $inst.orgs }}
-            orgs:
-              {{- range $inst.orgs }}
-              - {{ . | quote }}
-              {{- end }}
-            {{- end }}
-          {{- end }}
-        {{- else }}
-        instances: []
+
+    workload_identity:
+      enabled: {{ .Values.workloadIdentity.enabled | default false }}
+      issuer: {{ .Values.workloadIdentity.issuer | default "" | quote }}
+      {{- if .Values.workloadIdentity.audiences }}
+      audiences:
+        {{- range .Values.workloadIdentity.audiences }}
+        - {{ . | quote }}
         {{- end }}
+      {{- else }}
+      audiences: []
+      {{- end }}
+      token_ttl_seconds: {{ .Values.workloadIdentity.tokenTtlSeconds | default 900 }}
+      key_id: {{ .Values.workloadIdentity.keyId | default "niuu-workload" | quote }}
+      signing_key_env: "NIUU_WORKLOAD_IDENTITY_SIGNING_KEY"
+      {{- if .Values.workloadIdentity.verifiers }}
+      verifiers:
+        {{- toYaml .Values.workloadIdentity.verifiers | nindent 8 }}
+      {{- else }}
+      verifiers: []
+      {{- end }}
+      {{- if .Values.workloadIdentity.mappings }}
+      mappings:
+        {{- toYaml .Values.workloadIdentity.mappings | nindent 8 }}
+      {{- else }}
+      mappings: []
+      {{- end }}
