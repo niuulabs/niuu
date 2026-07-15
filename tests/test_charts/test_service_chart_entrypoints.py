@@ -79,6 +79,14 @@ def test_agent_directory_chart_config_exposes_bounded_runtime_settings(chart: st
     assert ".Values.directory.authenticatedCardOrigins" in template
 
 
+def test_mimir_probes_use_constant_time_health_endpoint() -> None:
+    values = _load_values("mimir")
+    deployment = (CHARTS_DIR / "mimir" / "templates" / "deployment.yaml").read_text()
+
+    assert values["startupProbe"]["path"] == "/health"
+    assert "/mimir/stats" not in deployment
+
+
 @pytest.mark.parametrize("chart", CHARTS)
 def test_charts_default_niuu_deployment_cluster_value(chart: str) -> None:
     values = _load_values(chart)
