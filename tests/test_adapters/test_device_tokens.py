@@ -69,12 +69,14 @@ async def test_list_for_owner_returns_devices(repository, mock_pool, device_row)
 
 async def test_delete_returns_true_when_removed(repository, mock_pool):
     mock_pool.execute.return_value = "DELETE 1"
-    assert await repository.delete("user-1", "tok") is True
+    deleted = await repository.delete("user-1", "tok")
+    assert deleted is True
 
 
 async def test_delete_returns_false_when_absent(repository, mock_pool):
     mock_pool.execute.return_value = "DELETE 0"
-    assert await repository.delete("user-1", "tok") is False
+    deleted = await repository.delete("user-1", "tok")
+    assert deleted is False
 
 
 async def test_row_to_device_naive_datetime(repository, device_row):

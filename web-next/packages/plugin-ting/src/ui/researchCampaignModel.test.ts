@@ -107,7 +107,8 @@ describe('research campaign model', () => {
   it('handles drawer state without a browser global', () => {
     vi.stubGlobal('window', undefined);
     expect(readDrawerState()).toEqual({ open: false, tab: 'files' });
-    expect(writeDrawerState({ open: true, tab: 'files', file: 'brief.md' })).toBeUndefined();
+    writeDrawerState({ open: true, tab: 'files', file: 'brief.md' });
+    expect(readDrawerState()).toEqual({ open: false, tab: 'files' });
   });
 
   it('formats clocks, elapsed time, and word counts defensively', () => {

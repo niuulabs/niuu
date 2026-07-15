@@ -639,7 +639,8 @@ async def test_lifecycle_observation_and_delete_use_one_record(runtime_service) 
     assert resumed.desired_state is ResidentDesiredState.RUNNING
     assert observed.observed_state is ResidentObservedState.ACTIVE
     assert observed.backend_ref["kind"] == "Sandbox"
-    assert await service.delete(principal, runtime.id)
+    deleted = await service.delete(principal, runtime.id)
+    assert deleted
     assert runtime.id not in repository.items
 
 
