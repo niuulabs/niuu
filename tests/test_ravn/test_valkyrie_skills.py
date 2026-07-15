@@ -69,6 +69,7 @@ def test_skill_record_canonicalizes_environment_and_carries_artifact() -> None:
         "manifest": {"capability": "inspect.kubernetes.pod.oomkilled"},
         "learningId": "learn-k8s-oom",
         "adoptedAt": "2026-07-03T08:00:00+00:00",
+        "observedAt": "2026-07-03T08:00:00+00:00",
     }
 
 
@@ -103,6 +104,16 @@ def test_skill_record_handles_inventory_event_and_canonicalizes_env() -> None:
     assert record["testCode"] == _TEST_CODE
     assert record["requirements"] == ["kubernetes==29.0.0"]
     assert record["manifest"] == {"capability": "inspect.kubernetes.pod.oomkilled"}
+    assert record["adoptedAt"] == ""
+    assert record["observedAt"] == "2026-07-03T08:00:00+00:00"
+
+
+def test_inventory_uses_durable_adoption_timestamp() -> None:
+    record = skill_record_from_event(_inventory_event(adopted_at="2026-06-13T09:15:00+00:00"))
+
+    assert record is not None
+    assert record["adoptedAt"] == "2026-06-13T09:15:00+00:00"
+    assert record["observedAt"] == "2026-07-03T08:00:00+00:00"
 
 
 def test_skill_record_defaults_for_pre_enrichment_events() -> None:
@@ -128,6 +139,7 @@ def test_skill_record_defaults_for_pre_enrichment_events() -> None:
     assert record["requirements"] == []
     assert record["manifest"] == {}
     assert record["adoptedAt"]
+    assert record["observedAt"]
 
 
 def test_skill_record_formats_datetime_timestamps() -> None:
@@ -187,6 +199,7 @@ async def test_mirror_latest_wins_across_activation_and_inventory() -> None:
     record = mirror.get("env-k8s-valhalla", _SKILL_NAME)
     assert record is not None
     assert record["description"] == "from-inventory"
+    assert record["adoptedAt"] == "2026-07-03T08:00:00+00:00"
 
 
 @pytest.mark.asyncio

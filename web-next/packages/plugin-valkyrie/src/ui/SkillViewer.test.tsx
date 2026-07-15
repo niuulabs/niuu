@@ -12,7 +12,7 @@ describe('SkillViewer', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('shows description, adoption info, requirements, markdown, and both code blocks', async () => {
+  it('shows description, installation info, requirements, markdown, and both code blocks', async () => {
     render(
       <SkillViewer
         environmentId="env-k8s-valhalla"
@@ -25,7 +25,7 @@ describe('SkillViewer', () => {
     const dialog = await screen.findByRole('dialog');
     expect(dialog).toHaveTextContent('k8s_memory_pressure_probe');
     await waitFor(() => expect(dialog).toHaveTextContent('Read-only probe that inspects'));
-    expect(dialog).toHaveTextContent('Adopted');
+    expect(dialog).toHaveTextContent('Installed');
     expect(dialog).toHaveTextContent('valkyrie-valhalla-runa');
     expect(dialog).toHaveTextContent('kubernetes>=29.0.0');
     // skill markdown

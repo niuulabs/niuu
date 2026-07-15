@@ -68,10 +68,15 @@ def skill_record_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
     if str(event.get("event_type") or "") not in _SKILL_RECORD_EVENT_TYPES:
         return None
     payload = _payload(event)
+    event_type = str(event.get("event_type") or "")
     skill_name = str(payload.get("skill_name") or "").strip()
     if not skill_name:
         return None
     manifest = payload.get("learned_tool_manifest")
+    observed_at = _timestamp(event)
+    adopted_at = str(payload.get("adopted_at") or "")
+    if not adopted_at and event_type == EVOLUTION_ACTIVATED_EVENT:
+        adopted_at = observed_at
     return {
         "skillName": skill_name,
         "environmentId": canonical_environment_id(payload.get("environment_id")),
@@ -83,7 +88,8 @@ def skill_record_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
         "requirements": [str(entry) for entry in list(payload.get("requirements") or [])],
         "manifest": dict(manifest) if isinstance(manifest, dict) else {},
         "learningId": str(payload.get("learning_id") or ""),
-        "adoptedAt": _timestamp(event),
+        "adoptedAt": adopted_at,
+        "observedAt": observed_at,
     }
 
 
@@ -104,7 +110,11 @@ class ValkyrieSkillMirror:
         record = skill_record_from_event(_event_dict(event))
         if record is None:
             return
-        self._records[(record["environmentId"], record["skillName"])] = record
+        key = (record["environmentId"], record["skillName"])
+        previous = self._records.get(key)
+        if previous is not None and not record["adoptedAt"]:
+            record["adoptedAt"] = previous["adoptedAt"]
+        self._records[key] = record
 
     def list(self, environment_id: str) -> list[dict[str, Any]]:
         """Code-free summaries of the environment's learned skills."""
@@ -121,6 +131,13 @@ class ValkyrieSkillMirror:
     def get(self, environment_id: str, name: str) -> dict[str, Any] | None:
         """Full record — description, markdown, tool code, tests — or None."""
         return self._records.get((canonical_environment_id(environment_id), name))
+
+    def list_all(self) -> list[dict[str, Any]]:
+        """Code-free summaries for metrics across every configured environment."""
+        return sorted(
+            (_summary(record) for record in self._records.values()),
+            key=lambda summary: (summary["environmentId"], summary["skillName"]),
+        )
 
 
 def create_valkyrie_skills_router(mirror: ValkyrieSkillMirror) -> APIRouter:

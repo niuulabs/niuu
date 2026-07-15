@@ -40,6 +40,7 @@ import {
   type LearningRecord,
   type LearningScope,
   type RealmTrustGrant,
+  type SkillUsageStat,
   type ValkyrieDashboard,
   type ValkyrieEventTelemetry,
   type ValkyrieResident,
@@ -1408,11 +1409,13 @@ function LearnedSkillStrip({
 
 function LearnedSkillsPanel({
   skills,
+  skillStats,
   isLoading,
   error,
   onViewSkill,
 }: {
   skills: LearnedSkillSummary[];
+  skillStats: SkillUsageStat[];
   isLoading: boolean;
   error: unknown;
   onViewSkill: (name: string) => void;
@@ -1441,28 +1444,42 @@ function LearnedSkillsPanel({
             yet. Redeploy the platform API with the current build to enable it.
           </p>
         ) : null}
-        {skills.map((skill) => (
-          <button
-            key={skill.skillName}
-            type="button"
-            data-testid={`learned-skill-${skill.skillName}`}
-            onClick={() => onViewSkill(skill.skillName)}
-            className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-transparent niuu:bg-bg-primary niuu:p-3 niuu:text-left niuu:hover:border-brand/70"
-          >
-            <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">
-              <span className="niuu:truncate niuu:font-mono niuu:text-sm niuu:text-brand">
-                {skill.skillName}
-              </span>
-              <span className="niuu:shrink-0 niuu:text-[10px] niuu:text-text-muted">
-                adopted {timeAgo(skill.adoptedAt)} ago
-              </span>
-            </div>
-            <p className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">{skill.description}</p>
-          </button>
-        ))}
+        {skills.map((skill) => {
+          const usage = skillStats.find(
+            (row) => row.environmentId === skill.environmentId && row.skillName === skill.skillName,
+          );
+          const inventoryAge = skill.observedAt ? ` · seen ${timeAgo(skill.observedAt)} ago` : '';
+          return (
+            <button
+              key={skill.skillName}
+              type="button"
+              data-testid={`learned-skill-${skill.skillName}`}
+              onClick={() => onViewSkill(skill.skillName)}
+              className="niuu:rounded-md niuu:border niuu:border-solid niuu:border-transparent niuu:bg-bg-primary niuu:p-3 niuu:text-left niuu:hover:border-brand/70"
+            >
+              <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">
+                <span className="niuu:truncate niuu:font-mono niuu:text-sm niuu:text-brand">
+                  {skill.skillName}
+                </span>
+                <span className="niuu:shrink-0 niuu:text-[10px] niuu:text-text-muted">
+                  {skill.adoptedAt
+                    ? `installed ${timeAgo(skill.adoptedAt)} ago`
+                    : `installed${inventoryAge}`}
+                </span>
+              </div>
+              <p className="niuu:mt-1 niuu:text-xs niuu:text-text-muted">{skill.description}</p>
+              <p className="niuu:mt-2 niuu:text-[10px] niuu:text-text-muted">
+                {skill.hasCode ? 'executable tool' : 'guidance'} ·{' '}
+                {usage
+                  ? `${usage.uses} recorded use${usage.uses === 1 ? '' : 's'} · ${usage.successes} succeeded · ${usage.failures} failed`
+                  : 'no recorded use'}
+              </p>
+            </button>
+          );
+        })}
         {!isLoading && !error && skills.length === 0 ? (
           <p className={`niuu:text-sm ${MUTED}`}>
-            No learned skills adopted on this environment yet.
+            No learned skills installed on this environment yet.
           </p>
         ) : null}
       </div>
@@ -1495,6 +1512,7 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
     Boolean(selected),
   );
   const skillsQuery = useValkyrieSkills(selected?.environmentId ?? '', Boolean(selected));
+  const skillStatsQuery = useSkillStats(selected?.environmentId ?? '');
   // A realm's slug IS the environment's raw id; its build grant governs
   // what this resident may build, ahead of the configured autonomy mode.
   const realmSlug = realmSlugForEnvironment(selected?.environmentId ?? '');
@@ -1636,6 +1654,7 @@ function Console({ dashboard }: { dashboard: ValkyrieDashboard }) {
               />
               <LearnedSkillsPanel
                 skills={skills}
+                skillStats={skillStatsQuery.data ?? []}
                 isLoading={skillsQuery.isLoading}
                 error={skillsQuery.error}
                 onViewSkill={setViewedSkillName}
