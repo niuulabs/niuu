@@ -88,7 +88,7 @@ try:
     _NATS_AVAILABLE = True
 except ImportError:  # pragma: no cover
     DEFAULT_BUFFER_SIZE = 0
-    NatsClient = None  # type: ignore[assignment,misc]
+    NatsClient = object  # type: ignore[assignment,misc]
     TcpTransport = object  # type: ignore[assignment,misc]
     _NATS_AVAILABLE = False
 
@@ -190,6 +190,7 @@ class _HttpConnectNatsClient(NatsClient):
     """nats-py client that preserves the CONNECT transport before it is connected."""
 
     def __init__(self, proxy_url: str) -> None:
+        _require_nats()
         super().__init__()
         self._proxy_url = proxy_url
 
@@ -214,6 +215,7 @@ async def _connect_nats(
     proxy_url: str,
     options: dict[str, Any],
 ) -> Any:
+    _require_nats()
     resolved_proxy = _sandbox_proxy_url(proxy_url)
     if not resolved_proxy:
         return await nats.connect(
