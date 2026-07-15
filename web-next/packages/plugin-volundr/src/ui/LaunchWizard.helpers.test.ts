@@ -14,6 +14,7 @@ import {
   buildPresetRuntimePayload,
   buildResourceConfig,
   buildSessionSource,
+  buildWorkloadConfig,
   buildYamlRuntimeFields,
   definitionToTaskType,
   deriveCliTool,
@@ -52,6 +53,7 @@ function makeForm(overrides: Partial<WizardForm> = {}): WizardForm {
     mountPath: '~/code/niuu',
     sessionName: '',
     personaName: '',
+    workloadConfig: {},
     systemPrompt: '',
     initialPrompt: '',
     trackerQuery: '',
@@ -392,6 +394,22 @@ describe('LaunchWizard helpers', () => {
     expect(hasPresetBackedRuntime(makeForm({ envVars: [{ key: 'A', value: '1' }] }))).toBe(true);
     expect(hasPresetBackedRuntime(makeForm({ setupScripts: ['echo hi'] }))).toBe(true);
     expect(hasPresetBackedRuntime(makeForm({ personaName: 'reviewer' }))).toBe(true);
+    expect(
+      hasPresetBackedRuntime(makeForm({ workloadConfig: { a2aCardUrl: 'https://agent.test' } })),
+    ).toBe(true);
+    expect(
+      buildWorkloadConfig(
+        makeForm({ workloadConfig: { persona: 'old', a2aCardUrl: 'https://agent.test' } }),
+      ),
+    ).toEqual({ a2aCardUrl: 'https://agent.test' });
+    expect(
+      buildWorkloadConfig(
+        makeForm({
+          personaName: 'reviewer',
+          workloadConfig: { persona: 'old', a2aCardUrl: 'https://agent.test' },
+        }),
+      ),
+    ).toEqual({ persona: 'reviewer', a2aCardUrl: 'https://agent.test' });
   });
 
   it('builds preset payload variants for git, local mount, and blank flows', () => {

@@ -9,6 +9,7 @@ import type {
   VolundrLaunchSpec,
   VolundrTarget,
   VolundrWorkspace,
+  WorkloadConfig,
 } from '../models/volundr.model';
 
 export type WizardStep = 'source' | 'runtime' | 'confirm' | 'booting';
@@ -30,6 +31,7 @@ export interface WizardForm {
   mountPath: string;
   sessionName: string;
   personaName: string;
+  workloadConfig: WorkloadConfig;
   systemPrompt: string;
   initialPrompt: string;
   trackerQuery: string;
@@ -511,6 +513,11 @@ export function normalizeEnvVars(
   );
 }
 
+export function buildWorkloadConfig(form: WizardForm): WorkloadConfig {
+  const { persona: _persona, ...workloadConfig } = form.workloadConfig ?? {};
+  return form.personaName ? { ...workloadConfig, persona: form.personaName } : workloadConfig;
+}
+
 export function buildPresetRuntimePayload(
   form: WizardForm,
   presetName?: string,
@@ -550,7 +557,7 @@ export function buildPresetRuntimePayload(
     repos: [],
     setupScripts: form.setupScripts.filter((script) => script.trim()),
     workspaceLayout: {},
-    workloadConfig: form.personaName ? { persona: form.personaName } : {},
+    workloadConfig: buildWorkloadConfig(form),
   };
 }
 
@@ -619,14 +626,14 @@ export function buildYamlRuntimeFields(form: WizardForm) {
             },
     integrationIds: form.selectedIntegrations,
     setupScripts: form.setupScripts.filter((script) => script.trim()),
-    workloadConfig: form.personaName ? { persona: form.personaName } : {},
+    workloadConfig: buildWorkloadConfig(form),
   };
 }
 
 export function hasPresetBackedRuntime(form: WizardForm): boolean {
   return (
     form.mcpServers.length > 0 ||
-    Boolean(form.personaName) ||
+    Object.keys(buildWorkloadConfig(form)).length > 0 ||
     form.envVars.some((entry) => entry.key.trim()) ||
     form.setupScripts.some((script) => script.trim())
   );

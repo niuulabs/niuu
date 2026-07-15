@@ -78,6 +78,7 @@ export function AdvancedRuntimeSection({
       if (parsed.integrationIds) patch.selectedIntegrations = parsed.integrationIds;
       if (parsed.setupScripts) patch.setupScripts = parsed.setupScripts;
       if (parsed.workloadConfig) {
+        patch.workloadConfig = parsed.workloadConfig;
         patch.personaName =
           typeof parsed.workloadConfig.persona === 'string' ? parsed.workloadConfig.persona : '';
       }
