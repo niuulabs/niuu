@@ -675,6 +675,12 @@ async def test_flux_helmrelease_session_adapter_projects_ready_dev_sessions(
                         "id": session_id,
                         "name": f"session-{session_id[:4]}",
                         "model": "gpt-5.5",
+                        "a2aCardUrl": "https://agent.example/card.json",
+                        "a2aEndpointUrl": "https://agent.example/a2a",
+                        "environmentId": "production",
+                        "a2aVisibility": "tenant",
+                        "ownerId": "owner-1",
+                        "tenantId": "tenant-1",
                     },
                 }
             },
@@ -734,6 +740,15 @@ async def test_flux_helmrelease_session_adapter_projects_ready_dev_sessions(
     assert [node["label"] for node in session_nodes] == ["session-0025"]
     assert session_nodes[0]["parentId"] == "namespace-noatun-skuld"
     assert session_nodes[0]["model"] == "gpt-5.5"
+    entity = next(item for item in result.entities if item.kind == "skuld")
+    assert entity.endpoints == {
+        "a2a": "https://agent.example/a2a",
+        "a2aCard": "https://agent.example/card.json",
+    }
+    assert entity.metadata["environmentId"] == "production"
+    assert entity.metadata["visibility"] == "tenant"
+    assert entity.metadata["ownerId"] == "owner-1"
+    assert entity.metadata["tenantId"] == "tenant-1"
     assert len(snapshot["edges"]) == 1
     assert snapshot["edges"][0]["relationType"] == "manages"
 

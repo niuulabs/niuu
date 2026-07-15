@@ -43,6 +43,26 @@ class CoreSessionContributor(SessionContributor):
             },
         }
 
+        workload = context.workload_config
+        card_url = str(workload.get("a2aCardUrl") or workload.get("a2a_card_url") or "").strip()
+        if card_url:
+            values["session"].update(
+                {
+                    "a2aCardUrl": card_url,
+                    "a2aEndpointUrl": str(
+                        workload.get("a2aEndpointUrl") or workload.get("a2a_endpoint_url") or ""
+                    ).strip(),
+                    "environmentId": str(
+                        workload.get("environmentId") or workload.get("environment_id") or ""
+                    ).strip(),
+                    "a2aVisibility": str(
+                        workload.get("a2aVisibility") or workload.get("a2a_visibility") or "user"
+                    ).strip(),
+                    "ownerId": session.owner_id or "",
+                    "tenantId": session.tenant_id or "",
+                }
+            )
+
         if self._ingress_enabled:
             values["ingress"] = {
                 "host": f"{session.name}.{self._base_domain}",
