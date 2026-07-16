@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from ravn.adapters.tool_build import (
+    A2AToolBuildBackend,
     ForgeSessionToolBuildBackend,
     HttpResponse,
     TingWorkflowToolBuildBackend,
@@ -76,6 +77,7 @@ class _FakeHttpClient:
         self._routes = {key: list(values) for key, values in routes.items()}
         self.calls: list[tuple[str, str]] = []
         self.post_bodies: list[dict] = []
+        self.headers_seen: list[dict[str, str]] = []
 
     def _match(self, method: str, url: str) -> HttpResponse:
         for (route_method, suffix), responses in self._routes.items():
@@ -83,13 +85,21 @@ class _FakeHttpClient:
                 return responses.pop(0) if len(responses) > 1 else responses[0]
         raise AssertionError(f"no scripted response for {method} {url}")
 
-    async def get(self, url: str) -> HttpResponse:
+    async def get(self, url: str, *, headers: dict[str, str] | None = None) -> HttpResponse:
         self.calls.append(("GET", url))
+        self.headers_seen.append(dict(headers or {}))
         return self._match("GET", url)
 
-    async def post(self, url: str, json_body: dict) -> HttpResponse:
+    async def post(
+        self,
+        url: str,
+        json_body: dict,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> HttpResponse:
         self.calls.append(("POST", url))
         self.post_bodies.append(json_body)
+        self.headers_seen.append(dict(headers or {}))
         return self._match("POST", url)
 
 
@@ -691,3 +701,305 @@ async def test_ting_canonical_artifact_transport_error_falls_back() -> None:
     )
     result = await backend.build(_request())
     assert result.build_evidence == {"retrieval": "chronicle_scrape"}
+
+
+# ---------------------------------------------------------------------------
+# A2A backend
+# ---------------------------------------------------------------------------
+
+
+_A2A_ENDPOINT = "https://ting.example/api/v1/ting/a2a"
+
+
+def _a2a_card(*, skills: list[dict] | None = None, interfaces: list[dict] | None = None) -> dict:
+    return {
+        "name": "Niuu Workflows",
+        "description": "Launchable workflows",
+        "version": "1.0.0",
+        "supportedInterfaces": interfaces
+        if interfaces is not None
+        else [
+            {
+                "url": _A2A_ENDPOINT,
+                "protocolBinding": "JSONRPC",
+                "protocolVersion": "1.0",
+            }
+        ],
+        "skills": skills
+        if skills is not None
+        else [
+            {
+                "id": "wf-1",
+                "name": "tool-builder",
+                "description": "Builds learned tools",
+                "tags": ["tool-builder"],
+            }
+        ],
+    }
+
+
+def _a2a_task(state: str, *, artifacts: list[dict] | None = None) -> dict:
+    task: dict = {"id": "task-1", "contextId": "task-1", "status": {"state": state}}
+    if artifacts is not None:
+        task["artifacts"] = artifacts
+    return task
+
+
+def _rpc_result(result: dict) -> HttpResponse:
+    return HttpResponse(200, {"jsonrpc": "2.0", "id": "1", "result": result})
+
+
+def _a2a_backend(client: _FakeHttpClient, **kwargs) -> A2AToolBuildBackend:
+    return A2AToolBuildBackend(
+        client=client,
+        card_url="https://ting.example/.well-known/agent-card.json",
+        poll_interval_seconds=0,
+        sleep=_no_sleep,
+        **kwargs,
+    )
+
+
+async def test_a2a_backend_builds_from_inline_canonical_artifact() -> None:
+    artifacts = [
+        {
+            "artifactId": "research/campaigns/task-1/learned_tool.json",
+            "parts": [{"filename": "learned_tool.json", "text": _BUILT_CONTRACT}],
+        }
+    ]
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_task("TASK_STATE_WORKING")),
+                _rpc_result(_a2a_task("TASK_STATE_COMPLETED", artifacts=artifacts)),
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1")
+
+    result = await backend.build(_request())
+
+    assert result.manifest["name"] == "mimir_metric_window"
+    assert result.tool_code.startswith("def run")
+    assert result.test_code.startswith("def test_run")
+    assert result.requirements == ["httpx>=0.27"]
+    assert result.build_evidence == {"retrieval": "canonical_file"}
+    assert result.provenance["backend"] == "a2a"
+    assert result.provenance["a2a_task_id"] == "task-1"
+    assert result.provenance["workflow_id"] == "wf-1"
+
+    send_body = client.post_bodies[0]
+    assert send_body["method"] == "SendMessage"
+    message = send_body["params"]["message"]
+    assert message["metadata"]["workflowId"] == "wf-1"
+    assert message["metadata"]["sessionName"] == "tool-build-mimir_metric_window"
+    assert message["parts"][0]["text"]
+    assert client.post_bodies[1]["method"] == "GetTask"
+    assert all(headers.get("A2A-Version") == "1.0" for headers in client.headers_seen)
+
+
+async def test_a2a_backend_selects_skill_by_tag() -> None:
+    artifacts = [
+        {
+            "artifactId": "x/learned_tool.json",
+            "parts": [{"filename": "learned_tool.json", "text": _BUILT_CONTRACT}],
+        }
+    ]
+    card = _a2a_card(
+        skills=[
+            {"id": "wf-other", "name": "deploy", "tags": ["deploy"]},
+            {"id": "wf-9", "name": "tool-builder", "tags": ["tool-builder"]},
+        ]
+    )
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, card)],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_task("TASK_STATE_COMPLETED", artifacts=artifacts)),
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_selector={"tags": ["tool-builder"]})
+
+    result = await backend.build(_request())
+
+    assert result.provenance["workflow_id"] == "wf-9"
+    assert client.post_bodies[0]["params"]["message"]["metadata"]["workflowId"] == "wf-9"
+
+
+async def test_a2a_backend_fetches_url_part_artifact() -> None:
+    artifacts = [
+        {
+            "artifactId": "research/campaigns/task-1/learned_tool.json",
+            "parts": [
+                {
+                    "filename": "learned_tool.json",
+                    "url": "https://ting.example/api/v1/ting/research/campaigns/task-1/artifact?path=research%2Fcampaigns%2Ftask-1%2Flearned_tool.json",
+                }
+            ],
+        }
+    ]
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_task("TASK_STATE_COMPLETED", artifacts=artifacts)),
+            ],
+            ("GET", "learned_tool.json"): [
+                HttpResponse(200, {"path": "learned_tool.json", "content": _BUILT_CONTRACT})
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1")
+
+    result = await backend.build(_request())
+
+    assert result.tool_code.startswith("def run")
+    assert result.build_evidence == {"retrieval": "canonical_file"}
+
+
+async def test_a2a_backend_scrapes_inline_text_when_no_canonical() -> None:
+    artifacts = [
+        {
+            "artifactId": "research/campaigns/task-1/final.md",
+            "parts": [
+                {
+                    "filename": "final.md",
+                    "text": f"the result\n```json\n{_BUILT_CONTRACT}\n```\n",
+                }
+            ],
+        }
+    ]
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_task("TASK_STATE_COMPLETED", artifacts=artifacts)),
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1")
+
+    result = await backend.build(_request())
+
+    assert result.tool_code.startswith("def run")
+    assert result.build_evidence == {"retrieval": "inline_scrape"}
+
+
+async def test_a2a_backend_raises_on_failed_task() -> None:
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_task("TASK_STATE_FAILED")),
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1")
+
+    with pytest.raises(ToolBuildError, match="TASK_STATE_FAILED"):
+        await backend.build(_request())
+
+
+async def test_a2a_backend_raises_on_rpc_error() -> None:
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                HttpResponse(
+                    200,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "1",
+                        "error": {"code": -32602, "message": "unknown workflow: wf-1"},
+                    },
+                )
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1")
+
+    with pytest.raises(ToolBuildError, match="unknown workflow"):
+        await backend.build(_request())
+
+
+async def test_a2a_backend_requires_jsonrpc_interface() -> None:
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card(interfaces=[]))],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1")
+
+    with pytest.raises(ToolBuildError, match="no JSONRPC interface"):
+        await backend.build(_request())
+
+
+async def test_a2a_backend_requires_workflow_id_or_selector() -> None:
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+        }
+    )
+    backend = _a2a_backend(client)
+
+    with pytest.raises(ToolBuildError, match="workflow_id or workflow_selector"):
+        await backend.build(_request())
+
+
+async def test_a2a_backend_matches_ting_backend_result_shape() -> None:
+    """Parity: the same canned contract yields identical results on both backends."""
+    a2a_client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(
+                    _a2a_task(
+                        "TASK_STATE_COMPLETED",
+                        artifacts=[
+                            {
+                                "artifactId": "learned_tool.json",
+                                "parts": [
+                                    {"filename": "learned_tool.json", "text": _BUILT_CONTRACT}
+                                ],
+                            }
+                        ],
+                    )
+                ),
+            ],
+        }
+    )
+    ting_client = _FakeHttpClient(
+        {
+            ("POST", "/api/v1/ting/workflows/wf-1/launch"): [
+                HttpResponse(200, {"campaign_id": "camp-1"})
+            ],
+            ("GET", "/api/v1/ting/research/campaigns/camp-1"): [
+                HttpResponse(200, {"status": "COMPLETED"})
+            ],
+            ("GET", "/artifact?path=learned_tool.json"): [
+                HttpResponse(200, {"path": "learned_tool.json", "content": _BUILT_CONTRACT})
+            ],
+        }
+    )
+
+    a2a_result = await _a2a_backend(a2a_client, workflow_id="wf-1").build(_request())
+    ting_result = await TingWorkflowToolBuildBackend(
+        client=ting_client,
+        base_url="http://ting",
+        workflow_id="wf-1",
+        poll_interval_seconds=0,
+        sleep=_no_sleep,
+    ).build(_request())
+
+    assert a2a_result.manifest == ting_result.manifest
+    assert a2a_result.tool_code == ting_result.tool_code
+    assert a2a_result.test_code == ting_result.test_code
+    assert a2a_result.requirements == ting_result.requirements
+    assert a2a_result.build_evidence == ting_result.build_evidence

@@ -26,12 +26,22 @@ class HttpResponse:
 
 
 class AsyncJsonHttpClient(Protocol):
-    """Authenticated JSON GET/POST used by the build backends."""
+    """Authenticated JSON GET/POST used by the build backends.
 
-    async def get(self, url: str) -> HttpResponse:
+    ``headers`` are merged over the client's own (auth) headers — protocol
+    surfaces like A2A require per-call headers such as ``A2A-Version``.
+    """
+
+    async def get(self, url: str, *, headers: dict[str, str] | None = None) -> HttpResponse:
         raise NotImplementedError
 
-    async def post(self, url: str, json_body: dict[str, Any]) -> HttpResponse:
+    async def post(
+        self,
+        url: str,
+        json_body: dict[str, Any],
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> HttpResponse:
         raise NotImplementedError
 
 
@@ -104,20 +114,30 @@ class HttpxJsonClient:
 
         return await asyncio.to_thread(self._headers)
 
-    async def get(self, url: str) -> HttpResponse:
+    async def get(self, url: str, *, headers: dict[str, str] | None = None) -> HttpResponse:
         import httpx  # noqa: PLC0415
 
-        headers = await self._resolve_headers()
+        merged = await self._resolve_headers()
+        if headers:
+            merged.update(headers)
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.get(url, headers=headers)
+            resp = await client.get(url, headers=merged)
             return HttpResponse(status_code=resp.status_code, body=_safe_json(resp))
 
-    async def post(self, url: str, json_body: dict[str, Any]) -> HttpResponse:
+    async def post(
+        self,
+        url: str,
+        json_body: dict[str, Any],
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> HttpResponse:
         import httpx  # noqa: PLC0415
 
-        headers = await self._resolve_headers()
+        merged = await self._resolve_headers()
+        if headers:
+            merged.update(headers)
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(url, headers=headers, json=json_body)
+            resp = await client.post(url, headers=merged, json=json_body)
             return HttpResponse(status_code=resp.status_code, body=_safe_json(resp))
 
 
