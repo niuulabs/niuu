@@ -18,6 +18,13 @@ Workflow `description` and `tags` are projected verbatim onto the card —
 they are the semantic interface an LLM consumer reads to pick a skill.
 Treat them as agent-facing UI when authoring workflows.
 
+The public card lists **system-scope workflows only** — it is served
+unauthenticated, so it advertises the platform catalog, not private
+libraries. User-scope workflows are still launchable (SendMessage checks
+per-principal visibility); to *discover* them, authenticated callers use
+the `GetExtendedAgentCard` JSON-RPC method on the task endpoint, which
+returns the same card plus the caller's own workflows as skills.
+
 ## The task endpoint
 
 `POST /api/v1/ting/a2a` is a JSON-RPC 2.0 endpoint implementing `SendMessage`,
@@ -73,10 +80,41 @@ part pointing at the authenticated campaign-artifact route. Non-markdown
 canonical artifacts (default `learned_tool.json`) are probed via
 `a2a.extra_artifact_files`.
 
+#### Code outputs
+
+For code workflows the durable artifact is the **git branch the session
+pushes**, not a Mimir page. When a launch carries `repo`/`branch` metadata,
+both are echoed on the task's metadata so consumers know where the code
+landed (`task.metadata.repo` / `task.metadata.branch`); `sessionId` is
+always present for follow-up via the Forge session APIs (files, diff,
+transcript). Surfacing curated session deliverables (present-file cards)
+as first-class A2A artifacts needs a presented-files list API first —
+tracked as follow-up work, not silently absent.
+
 ### Cancel
 
 `CancelTask {"id": <taskId>}` stops the underlying session and reports the
 task `CANCELED`. Terminal tasks are not cancelable.
+
+## Bubbling gates to humans
+
+The A2A layer does not swallow gates — the gate lives in the workflow
+session exactly as before, so every existing surface still fires: the
+campaign projector emits `workflow.campaign.updated` when the run blocks,
+the review inbox and operator console show the pending gate, and a human
+can approve there. `INPUT_REQUIRED` on the task is an **additional**
+resolution channel, not a replacement.
+
+Consumer contract by agent type:
+
+- **Autonomous Valkyries** may reply with `gateDecision` themselves only
+  within their realm's autonomy grant; otherwise they route the decision
+  through ODIN court as usual.
+- **Interactive agents** (resident ravns with a human in the chat,
+  OpenClaw/Hermes controllers) must surface `INPUT_REQUIRED` to their
+  human — show the gate, collect the verdict, then send the reply message.
+  An agent must never auto-approve a gate on behalf of a human it is
+  fronting.
 
 ## Configuration
 

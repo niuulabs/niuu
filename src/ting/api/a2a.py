@@ -50,6 +50,8 @@ from google.protobuf.json_format import MessageToDict
 from niuu.domain.models import Principal
 from niuu.domain.services.token_scope import token_has_scope
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
+from ting.api.a2a_card import _endpoint_url as _card_endpoint_url
+from ting.api.a2a_card import build_agent_card
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.research import (
     _campaign_status_from_session,
@@ -112,6 +114,12 @@ def campaign_to_task(campaign: WorkflowCampaign) -> Task:
             "workflowId": str(campaign.workflow_id),
             "workflowName": campaign.workflow_name,
             "campaignName": campaign.name,
+            **({"repo": str(campaign.metadata["repo"])} if campaign.metadata.get("repo") else {}),
+            **(
+                {"branch": str(campaign.metadata["branch"])}
+                if campaign.metadata.get("branch")
+                else {}
+            ),
         }
     )
     return task
@@ -208,6 +216,10 @@ class WorkflowTaskHandler(RequestHandler):
                 "prompt": prompt,
                 "cluster_name": execution.session.cluster_name,
                 _CONTEXT_ID_KEY: message.context_id or slug,
+                # Code-output pointers: for code workflows the durable
+                # artifact is the branch the session pushes, not a Mimir page.
+                **({"repo": launch.repo} if launch.repo else {}),
+                **({"branch": launch.branch} if launch.branch else {}),
             },
             created_at=now,
             updated_at=now,
@@ -322,7 +334,20 @@ class WorkflowTaskHandler(RequestHandler):
         params: GetExtendedAgentCardRequest,
         context: ServerCallContext,
     ) -> AgentCard:
-        raise UnsupportedOperationError("the extended agent card is not supported")
+        """Authenticated card: the caller's user-scope workflows join the catalog.
+
+        The public well-known card only advertises system-scope workflows;
+        this is how a principal discovers their own workflows as skills.
+        """
+        settings = self._request.app.state.settings
+        workflows = await self._workflow_repo.list_workflows(
+            owner_id=self._principal.user_id,
+        )
+        return build_agent_card(
+            workflows=workflows,
+            config=settings.a2a,
+            endpoint_url=_card_endpoint_url(self._request, settings.a2a),
+        )
 
     # -- Internals ------------------------------------------------------ #
 

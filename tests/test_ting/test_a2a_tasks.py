@@ -43,7 +43,20 @@ class InMemoryWorkflowRepository(WorkflowRepository):
         owner_id: str,
         scope: WorkflowScope | None = None,
     ) -> list[WorkflowDefinition]:
-        return list(self._workflows.values())
+        workflows = list(self._workflows.values())
+        if scope == WorkflowScope.SYSTEM:
+            return [workflow for workflow in workflows if workflow.scope == WorkflowScope.SYSTEM]
+        if scope == WorkflowScope.USER:
+            return [
+                workflow
+                for workflow in workflows
+                if workflow.scope == WorkflowScope.USER and workflow.owner_id == owner_id
+            ]
+        return [
+            workflow
+            for workflow in workflows
+            if workflow.scope == WorkflowScope.SYSTEM or workflow.owner_id == owner_id
+        ]
 
     async def get_workflow(self, workflow_id: UUID) -> WorkflowDefinition | None:
         return self._workflows.get(workflow_id)
@@ -656,6 +669,65 @@ class TestProtocolSurface:
         )
 
         assert response.status_code == 401
+
+
+class TestExtendedAgentCard:
+    def test_extended_card_includes_callers_user_workflows(self) -> None:
+        system = _make_workflow(name="tool-builder")
+        now = datetime.now(UTC)
+        mine = WorkflowDefinition(
+            id=uuid4(),
+            name="my-private-flow",
+            description="Mine",
+            version="draft",
+            scope=WorkflowScope.USER,
+            owner_id="user-1",
+            graph={"tags": [], "nodes": [], "edges": []},
+            created_at=now,
+            updated_at=now,
+        )
+        theirs = WorkflowDefinition(
+            id=uuid4(),
+            name="their-private-flow",
+            description="Theirs",
+            version="draft",
+            scope=WorkflowScope.USER,
+            owner_id="user-2",
+            graph={"tags": [], "nodes": [], "edges": []},
+            created_at=now,
+            updated_at=now,
+        )
+        client, _, _ = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([system, mine, theirs]),
+        )
+
+        response = _rpc(client, "GetExtendedAgentCard", {})
+
+        assert response.status_code == 200
+        card = response.json()["result"]
+        names = {skill["name"] for skill in card["skills"]}
+        assert names == {"tool-builder", "my-private-flow"}
+        assert card["capabilities"]["extendedAgentCard"] is True
+
+
+class TestCodeOutputPointers:
+    def test_repo_and_branch_surface_on_task_metadata(self) -> None:
+        workflow = _make_workflow()
+        client, _, _ = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+        params = _send_params(str(workflow.id))
+        params["message"]["metadata"]["repo"] = "https://github.com/niuulabs/volundr.git"
+        params["message"]["metadata"]["branch"] = "feat/widget"
+
+        response = _rpc(client, "SendMessage", params)
+
+        task = response.json()["result"]["task"]
+        assert task["metadata"]["repo"] == "https://github.com/niuulabs/volundr.git"
+        assert task["metadata"]["branch"] == "feat/widget"
+
+        followup = _rpc(client, "GetTask", {"id": task["id"]})
+        assert followup.json()["result"]["metadata"]["branch"] == "feat/widget"
 
 
 def _mimir_workflow(root: Path) -> WorkflowDefinition:

@@ -107,6 +107,7 @@ class TestAgentCard:
         assert list(card.skills[0].tags) == ["tool-builder", "build"]
         assert card.capabilities.streaming is False
         assert card.capabilities.push_notifications is False
+        assert card.capabilities.extended_agent_card is True
         interface = card.supported_interfaces[0]
         assert interface.url.endswith(A2A_ENDPOINT_PATH)
         assert interface.protocol_binding == "JSONRPC"

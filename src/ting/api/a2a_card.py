@@ -2,8 +2,10 @@
 
 The card is rendered per request from the workflow store, so a workflow
 created in Ting is advertised on the next fetch with no restart or
-registration step. Only system-scope workflows appear: the public card is
-the platform catalog, not any user's private library.
+registration step. Only system-scope workflows appear on the public
+well-known card — it is the platform catalog, not any user's private
+library. Authenticated callers get their own user-scope workflows too via
+the A2A ``GetExtendedAgentCard`` method on the task endpoint.
 """
 
 from __future__ import annotations
@@ -46,7 +48,11 @@ def build_agent_card(
         name=config.agent_name,
         description=config.agent_description,
         version=package_version(),
-        capabilities=AgentCapabilities(streaming=False, push_notifications=False),
+        capabilities=AgentCapabilities(
+            streaming=False,
+            push_notifications=False,
+            extended_agent_card=True,
+        ),
         default_input_modes=["text/plain"],
         default_output_modes=["text/plain", "application/json"],
         supported_interfaces=[
