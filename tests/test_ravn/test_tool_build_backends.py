@@ -799,6 +799,54 @@ async def test_a2a_backend_builds_from_inline_canonical_artifact() -> None:
     assert all(headers.get("A2A-Version") == "1.0" for headers in client.headers_seen)
 
 
+async def test_a2a_backend_passes_connection_id_when_configured() -> None:
+    artifacts = [
+        {
+            "artifactId": "x/learned_tool.json",
+            "parts": [{"filename": "learned_tool.json", "text": _BUILT_CONTRACT}],
+        }
+    ]
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_task("TASK_STATE_COMPLETED", artifacts=artifacts)),
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1", connection_id="conn-valhalla")
+
+    await backend.build(_request())
+
+    metadata = client.post_bodies[0]["params"]["message"]["metadata"]
+    assert metadata["connectionId"] == "conn-valhalla"
+
+
+async def test_a2a_backend_omits_connection_id_by_default() -> None:
+    artifacts = [
+        {
+            "artifactId": "x/learned_tool.json",
+            "parts": [{"filename": "learned_tool.json", "text": _BUILT_CONTRACT}],
+        }
+    ]
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_task("TASK_STATE_COMPLETED", artifacts=artifacts)),
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1")
+
+    await backend.build(_request())
+
+    metadata = client.post_bodies[0]["params"]["message"]["metadata"]
+    assert "connectionId" not in metadata
+
+
 async def test_a2a_backend_selects_skill_by_tag() -> None:
     artifacts = [
         {

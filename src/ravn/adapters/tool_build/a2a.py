@@ -66,6 +66,7 @@ class A2AToolBuildBackend(ToolBuildBackend):
         repo: str = "",
         branch: str = "",
         model: str = "",
+        connection_id: str = "",
         max_poll_attempts: int = 120,
         poll_interval_seconds: float = 5.0,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -90,6 +91,7 @@ class A2AToolBuildBackend(ToolBuildBackend):
         self._repo = repo
         self._branch = branch
         self._model = model
+        self._connection_id = connection_id
         self._max_poll_attempts = max_poll_attempts
         self._poll_interval = poll_interval_seconds
         self._sleep = sleep
@@ -207,6 +209,10 @@ class A2AToolBuildBackend(ToolBuildBackend):
             metadata["branch"] = self._branch
         if self._model:
             metadata["model"] = self._model
+        if self._connection_id:
+            # Target a specific Volundr connection (e.g. the resident's own
+            # cluster) instead of the principal's default.
+            metadata["connectionId"] = self._connection_id
         result = await self._rpc(
             endpoint,
             "SendMessage",
