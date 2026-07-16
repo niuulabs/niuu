@@ -10,8 +10,11 @@ launch, which is also what makes the run visible to the projector.
 from __future__ import annotations
 
 import logging
+import mimetypes
+import posixpath
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from a2a.server.context import ServerCallContext
@@ -52,6 +55,7 @@ from ting.api.research import (
     _campaign_status_from_session,
     _emit_campaign_event,
     _initial_stage_state,
+    _resolve_campaign_mimir_port,
     resolve_workflow_campaign_repo,
 )
 from ting.api.workflows import (
@@ -214,7 +218,10 @@ class WorkflowTaskHandler(RequestHandler):
         context: ServerCallContext,
     ) -> Task | None:
         campaign = await self._owned_campaign(params.id)
-        return campaign_to_task(campaign)
+        task = campaign_to_task(campaign)
+        if task.status.state == TaskState.TASK_STATE_COMPLETED:
+            await self._attach_artifacts(task, campaign)
+        return task
 
     async def on_cancel_task(
         self,
@@ -314,6 +321,56 @@ class WorkflowTaskHandler(RequestHandler):
 
     # -- Internals ------------------------------------------------------ #
 
+    async def _attach_artifacts(self, task: Task, campaign: WorkflowCampaign) -> None:
+        """Project the campaign's Mimir pages onto ``task.artifacts``.
+
+        Only called for COMPLETED tasks: artifacts are outputs, and skipping
+        the Mimir round-trips on every mid-run poll keeps GetTask cheap.
+        Small text pages are inlined; anything over the configured limit
+        becomes a url part pointing at the authenticated artifact route.
+        """
+        settings = self._request.app.state.settings
+        adapter = _resolve_campaign_mimir_port(campaign, settings)
+        if adapter is None:
+            return
+        prefix = f"research/campaigns/{campaign.slug}/"
+        loaded: list[Any] = []
+        for meta in await adapter.list_pages(prefix=prefix):
+            try:
+                loaded.append(await adapter.get_page(meta.path))
+            except FileNotFoundError:
+                continue
+        listed_paths = {page.meta.path for page in loaded}
+        for name in settings.a2a.extra_artifact_files:
+            path = f"{prefix}{name}"
+            if path in listed_paths:
+                continue
+            try:
+                loaded.append(await adapter.get_page(path))
+            except FileNotFoundError:
+                continue
+
+        max_inline = settings.a2a.inline_artifact_max_chars
+        for page in sorted(loaded, key=lambda page: page.meta.path):
+            artifact = task.artifacts.add()
+            artifact.artifact_id = page.meta.path
+            artifact.name = page.meta.title or posixpath.basename(page.meta.path)
+            part = artifact.parts.add()
+            part.filename = posixpath.basename(page.meta.path)
+            part.media_type = _artifact_media_type(page.meta.path)
+            if len(page.content) <= max_inline:
+                part.text = page.content
+            else:
+                part.url = self._artifact_url(campaign, page.meta.path)
+
+    def _artifact_url(self, campaign: WorkflowCampaign, path: str) -> str:
+        settings = self._request.app.state.settings
+        base = settings.a2a.public_base_url.rstrip("/") or str(self._request.base_url).rstrip("/")
+        return (
+            f"{base}/api/v1/ting/research/campaigns/{campaign.slug}"
+            f"/artifact?path={quote(path, safe='')}"
+        )
+
     async def _resolve_workflow(self, metadata: dict[str, Any]):
         raw_id = str(metadata.get("workflowId") or "").strip()
         if not raw_id:
@@ -346,6 +403,15 @@ def _merged_metadata(params: SendMessageRequest) -> dict[str, Any]:
     merged.update(MessageToDict(params.metadata))
     merged.update(MessageToDict(params.message.metadata))
     return merged
+
+
+def _artifact_media_type(path: str) -> str:
+    if path.endswith(".json"):
+        return "application/json"
+    if path.endswith(".md"):
+        return "text/markdown"
+    guessed, _encoding = mimetypes.guess_type(path)
+    return guessed or "text/plain"
 
 
 def _prompt_from_message(message: Message) -> str:

@@ -45,6 +45,7 @@ from ting.ports.workflow_repository import WorkflowRepository
 
 _DEFAULT_RESEARCH_WORKFLOW_NAME = "Research Campaign"
 _RESEARCH_SURFACE = "ting.research"
+_A2A_SURFACE = "a2a"
 logger = logging.getLogger(__name__)
 _MANIFEST_PATH_RE = re.compile(
     r"(research/campaigns/[A-Za-z0-9._/-]+\.md|learnings/research/[A-Za-z0-9._-]+\.md|followups/research/[A-Za-z0-9._-]+\.md)"
@@ -391,7 +392,7 @@ def create_research_router() -> APIRouter:
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
     ) -> list[CampaignArtifactResponse]:
         campaign = await repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
-        if campaign is None or not _is_research_campaign(campaign):
+        if campaign is None or not _campaign_artifacts_accessible(campaign):
             raise HTTPException(status_code=404, detail="Campaign not found")
         artifacts, _canonical = await _load_campaign_artifacts(
             campaign,
@@ -408,7 +409,7 @@ def create_research_router() -> APIRouter:
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
     ) -> CampaignArtifactDetailResponse:
         campaign = await repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
-        if campaign is None or not _is_research_campaign(campaign):
+        if campaign is None or not _campaign_artifacts_accessible(campaign):
             raise HTTPException(status_code=404, detail="Campaign not found")
         if not _campaign_owns_path(campaign.slug, path):
             raise HTTPException(status_code=404, detail="Artifact not found")
@@ -478,6 +479,19 @@ def _is_research_campaign(campaign: WorkflowCampaign) -> bool:
         campaign.workflow_name == _DEFAULT_RESEARCH_WORKFLOW_NAME
         or campaign.metadata.get("question") is not None
     )
+
+
+def _campaign_artifacts_accessible(campaign: WorkflowCampaign) -> bool:
+    """Artifact routes serve research campaigns AND A2A-launched ones.
+
+    A2A tasks expose their outputs through these routes as url parts, so an
+    ``a2a``-surface campaign must be able to serve artifacts even though it
+    is not a research campaign.
+    """
+    surface = str(campaign.metadata.get("surface") or "").strip()
+    if surface == _A2A_SURFACE:
+        return True
+    return _is_research_campaign(campaign)
 
 
 async def _reserve_slug(repo: WorkflowCampaignRepository, base_slug: str) -> str:

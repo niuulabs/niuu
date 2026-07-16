@@ -1067,6 +1067,22 @@ class A2AConfig(BaseModel):
         ge=0,
         description="Cache-Control max-age for the served agent card.",
     )
+    inline_artifact_max_chars: int = Field(
+        default=65536,
+        ge=0,
+        description=(
+            "Campaign artifacts at or under this size are inlined as text "
+            "parts on the A2A task; larger ones become url parts."
+        ),
+    )
+    extra_artifact_files: list[str] = Field(
+        default_factory=lambda: ["learned_tool.json"],
+        description=(
+            "Filenames probed under the campaign artifact prefix in addition "
+            "to the page listing — Mimir's markdown listing only enumerates "
+            ".md pages, so canonical machine artifacts are named here."
+        ),
+    )
     public_base_url: str = Field(
         default="",
         description=(

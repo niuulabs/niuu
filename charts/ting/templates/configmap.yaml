@@ -122,6 +122,12 @@ data:
       {{- if .Values.a2a.cardMaxAgeSeconds }}
       card_max_age_seconds: {{ .Values.a2a.cardMaxAgeSeconds }}
       {{- end }}
+      {{- if .Values.a2a.inlineArtifactMaxChars }}
+      inline_artifact_max_chars: {{ .Values.a2a.inlineArtifactMaxChars }}
+      {{- end }}
+      {{- if .Values.a2a.extraArtifactFiles }}
+      extra_artifact_files: {{ .Values.a2a.extraArtifactFiles | toJson }}
+      {{- end }}
       {{- if .Values.a2a.publicBaseUrl }}
       public_base_url: {{ .Values.a2a.publicBaseUrl | quote }}
       {{- end }}

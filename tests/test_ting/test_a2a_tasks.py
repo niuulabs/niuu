@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -14,15 +15,16 @@ from fastapi.testclient import TestClient
 from niuu.domain.models import Principal
 from ting.api.a2a import create_a2a_router
 from ting.api.dispatch import resolve_volundr_factory
-from ting.api.research import resolve_workflow_campaign_repo
+from ting.api.research import create_research_router, resolve_workflow_campaign_repo
 from ting.api.workflows import resolve_workflow_repo
-from ting.config import AuthConfig, Settings
+from ting.config import A2AConfig, AuthConfig, Settings
 from ting.domain.models import (
     WorkflowCampaign,
     WorkflowCampaignStatus,
     WorkflowDefinition,
     WorkflowScope,
 )
+from ting.domain.workflow_snapshot import build_workflow_snapshot
 from ting.ports.volundr import SpawnRequest, VolundrPort, VolundrSession
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
@@ -222,6 +224,7 @@ def _make_campaign(
     owner_id: str = "user-1",
     status: WorkflowCampaignStatus = WorkflowCampaignStatus.RUNNING,
     metadata: dict[str, Any] | None = None,
+    workflow_snapshot: dict[str, Any] | None = None,
 ) -> WorkflowCampaign:
     now = datetime.now(UTC)
     return WorkflowCampaign(
@@ -232,7 +235,7 @@ def _make_campaign(
         workflow_id=uuid4(),
         workflow_version="1.0.0",
         workflow_name="tool-builder",
-        workflow_snapshot={"graph": {"nodes": [], "edges": []}},
+        workflow_snapshot=workflow_snapshot or {"graph": {"nodes": [], "edges": []}},
         session_id="session-123",
         session_name=slug,
         status=status,
@@ -269,13 +272,15 @@ def _make_client(
     workflow_repo: WorkflowRepository | None = None,
     campaign_repo: WorkflowCampaignRepository | None = None,
     volundr: RecordingVolundrPort | None = None,
+    settings: Settings | None = None,
 ) -> tuple[TestClient, InMemoryCampaignRepository, RecordingVolundrPort]:
     workflow_repo = workflow_repo or InMemoryWorkflowRepository()
     campaigns = campaign_repo or InMemoryCampaignRepository()
     port = volundr or RecordingVolundrPort()
     app = FastAPI()
     app.include_router(create_a2a_router())
-    app.state.settings = Settings(auth=AuthConfig(allow_anonymous_dev=False))
+    app.include_router(create_research_router())
+    app.state.settings = settings or Settings(auth=AuthConfig(allow_anonymous_dev=False))
     app.dependency_overrides[resolve_workflow_repo] = lambda: workflow_repo
     app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaigns
     app.dependency_overrides[resolve_volundr_factory] = lambda: RecordingVolundrFactory([port])
@@ -529,3 +534,111 @@ class TestProtocolSurface:
         )
 
         assert response.status_code == 401
+
+
+def _mimir_workflow(root: Path) -> WorkflowDefinition:
+    now = datetime.now(UTC)
+    return WorkflowDefinition(
+        id=uuid4(),
+        name="tool-builder",
+        description="Builds a learned tool.",
+        version="1.0.0",
+        scope=WorkflowScope.SYSTEM,
+        owner_id=None,
+        graph={
+            "tags": ["tool-builder"],
+            "nodes": [
+                {
+                    "id": "memory",
+                    "kind": "resource",
+                    "resourceType": "mimir",
+                    "bindingMode": "registry",
+                    "mount_name": "local",
+                    "path": str(root),
+                },
+                {
+                    "id": "stage-1",
+                    "kind": "stage",
+                    "label": "Build",
+                    "stageMembers": [{"personaId": "tool-smith", "model": "gpt-5.5"}],
+                },
+            ],
+            "edges": [],
+        },
+        created_at=now,
+        updated_at=now,
+    )
+
+
+class TestTaskArtifacts:
+    _SLUG = "build-widget"
+    _JSON_PATH = "research/campaigns/build-widget/learned_tool.json"
+    _JSON_CONTENT = '{"manifest": {"name": "widget"}}'
+
+    def _client_with_files(
+        self,
+        tmp_path: Path,
+        *,
+        status: WorkflowCampaignStatus = WorkflowCampaignStatus.COMPLETED,
+        inline_max: int = 65536,
+    ) -> tuple[TestClient, WorkflowCampaign]:
+        workflow = _mimir_workflow(tmp_path)
+        campaign = _make_campaign(
+            slug=self._SLUG,
+            status=status,
+            workflow_snapshot=build_workflow_snapshot(workflow),
+        )
+        artifact_dir = tmp_path / "wiki" / "research" / "campaigns" / self._SLUG
+        artifact_dir.mkdir(parents=True)
+        (artifact_dir / "learned_tool.json").write_text(self._JSON_CONTENT, encoding="utf-8")
+        (artifact_dir / "final.md").write_text("# Final\n\nDone.", encoding="utf-8")
+        settings = Settings(
+            auth=AuthConfig(allow_anonymous_dev=False),
+            a2a=A2AConfig(inline_artifact_max_chars=inline_max),
+        )
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([campaign]),
+            settings=settings,
+        )
+        return client, campaign
+
+    def test_completed_task_inlines_small_artifacts(self, tmp_path: Path) -> None:
+        client, campaign = self._client_with_files(tmp_path)
+
+        result = _rpc(client, "GetTask", {"id": campaign.slug}).json()["result"]
+
+        artifacts = {artifact["artifactId"]: artifact for artifact in result["artifacts"]}
+        assert self._JSON_PATH in artifacts
+        json_part = artifacts[self._JSON_PATH]["parts"][0]
+        assert json_part["text"] == self._JSON_CONTENT
+        assert json_part["mediaType"] == "application/json"
+        assert json_part["filename"] == "learned_tool.json"
+        md_part = artifacts["research/campaigns/build-widget/final.md"]["parts"][0]
+        assert md_part["mediaType"] == "text/markdown"
+        assert "Done." in md_part["text"]
+
+    def test_large_artifact_becomes_fetchable_url_part(self, tmp_path: Path) -> None:
+        client, campaign = self._client_with_files(tmp_path, inline_max=10)
+
+        result = _rpc(client, "GetTask", {"id": campaign.slug}).json()["result"]
+
+        part = {a["artifactId"]: a for a in result["artifacts"]}[self._JSON_PATH]["parts"][0]
+        assert "text" not in part
+        assert "/api/v1/ting/research/campaigns/build-widget/artifact?path=" in part["url"]
+
+        fetched = client.get(
+            part["url"].removeprefix("http://testserver"),
+            headers=_headers(),
+        )
+        assert fetched.status_code == 200
+        assert fetched.json()["content"] == self._JSON_CONTENT
+
+    def test_running_task_exposes_no_artifacts(self, tmp_path: Path) -> None:
+        client, campaign = self._client_with_files(
+            tmp_path,
+            status=WorkflowCampaignStatus.RUNNING,
+        )
+
+        result = _rpc(client, "GetTask", {"id": campaign.slug}).json()["result"]
+
+        assert result.get("artifacts", []) == []
