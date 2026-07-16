@@ -236,8 +236,13 @@ async def _hop4_reachability(backend: Any, kind: str) -> HopResult:
             reason="backend exposes no HTTP client to probe",
         )
 
-    path = _TING_WORKFLOWS_PATH if kind == "ting" else _FORGE_HEALTH_PATH
-    url = f"{base_url}{path}"
+    if kind == "a2a":
+        # base_url IS the card URL for the A2A backend — probing it verifies
+        # discovery end to end (DNS, TLS, auth headers, card route).
+        url = base_url
+    else:
+        path = _TING_WORKFLOWS_PATH if kind == "ting" else _FORGE_HEALTH_PATH
+        url = f"{base_url}{path}"
     try:
         response = await client.get(url)
     except Exception as exc:  # noqa: BLE001 — doctor must never throw
@@ -273,7 +278,7 @@ async def _hop4_reachability(backend: Any, kind: str) -> HopResult:
 
 
 async def _hop5_workflow(backend: Any, kind: str, hop4: HopResult) -> HopResult:
-    if kind != "ting":
+    if kind == "forge":
         return _skip(5, "workflow discovery", "not applicable to the forge_session backend")
 
     workflow_id = getattr(backend, "workflow_id", "")
@@ -298,13 +303,18 @@ async def _hop5_workflow(backend: Any, kind: str, hop4: HopResult) -> HopResult:
     if hop4.status is not HopStatus.PASS:
         return _skip(5, "workflow discovery", "reachability failed; cannot list workflows")
 
-    workflows = await _list_ting_workflows(backend)
+    if kind == "a2a":
+        workflows = await _list_a2a_skills(backend)
+        source = "agent card"
+    else:
+        workflows = await _list_ting_workflows(backend)
+        source = f"GET {_TING_WORKFLOWS_PATH}"
     if workflows is None:
         return HopResult(
             number=5,
             title="workflow discovery",
             status=HopStatus.FAIL,
-            reason=f"GET {_TING_WORKFLOWS_PATH} did not return a workflow list",
+            reason=f"{source} did not return a workflow list",
         )
 
     matches = [wf for wf in workflows if selector.matches(wf)]
@@ -339,6 +349,30 @@ async def _hop5_workflow(backend: Any, kind: str, hop4: HopResult) -> HopResult:
     )
 
 
+async def _list_a2a_skills(backend: Any) -> list[WorkflowCapability] | None:
+    card_url = str(getattr(backend, "card_url", "") or "")
+    client = _backend_client(backend)
+    if not card_url or client is None:
+        return None
+    try:
+        response = await client.get(card_url)
+    except Exception:  # noqa: BLE001 — doctor must never throw
+        return None
+    if getattr(response, "status_code", 0) != 200:
+        return None
+    body = getattr(response, "body", None)
+    if not isinstance(body, dict):
+        return None
+    skills = body.get("skills")
+    if not isinstance(skills, list):
+        return None
+    # The one skill mapper lives in the A2A backend — the doctor must see
+    # exactly the capabilities the backend it diagnoses sees.
+    from ravn.adapters.tool_build.a2a import _skill_capability  # noqa: PLC0415
+
+    return [_skill_capability(skill) for skill in skills]
+
+
 async def _list_ting_workflows(backend: Any) -> list[WorkflowCapability] | None:
     base_url = _backend_base_url(backend)
     client = _backend_client(backend)
@@ -371,13 +405,19 @@ def _skip(number: int, title: str, reason: str) -> HopResult:
 
 def _backend_kind(backend: Any) -> str:
     name = str(getattr(backend, "name", "") or "").lower()
+    if name == "a2a" or "A2A" in type(backend).__name__:
+        return "a2a"
     if "ting" in name or "TingWorkflow" in type(backend).__name__:
         return "ting"
     return "forge"
 
 
 def _backend_base_url(backend: Any) -> str:
-    return str(getattr(backend, "base_url", "") or "")
+    base = str(getattr(backend, "base_url", "") or "")
+    if base:
+        return base
+    # The A2A backend is addressed by its agent-card URL, not a base URL.
+    return str(getattr(backend, "card_url", "") or "")
 
 
 def _backend_client(backend: Any) -> Any | None:

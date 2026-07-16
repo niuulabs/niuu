@@ -128,10 +128,11 @@ def campaign_to_task(campaign: WorkflowCampaign) -> Task:
 class WorkflowTaskHandler(RequestHandler):
     """Per-request A2A handler bound to the caller's identity.
 
-    Streaming, push notifications, task listing, and the extended agent
-    card are deliberately unsupported: the agent card advertises
-    ``streaming=false`` / ``pushNotifications=false``, and polling
-    ``GetTask`` is the supported follow mechanism.
+    Streaming, push notifications, and task listing are deliberately
+    unsupported: the agent card advertises ``streaming=false`` /
+    ``pushNotifications=false``, and polling ``GetTask`` is the supported
+    follow mechanism. The extended agent card IS supported — it adds the
+    caller's user-scope workflows to the public catalog.
     """
 
     def __init__(

@@ -108,6 +108,16 @@ class A2AToolBuildBackend(ToolBuildBackend):
         """The authenticated HTTP client (read-only, for diagnostics)."""
         return self._client
 
+    @property
+    def workflow_id(self) -> str:
+        """Configured workflow id, or empty when discovery via selector is used."""
+        return self._workflow_id
+
+    @property
+    def workflow_selector(self) -> WorkflowSelector:
+        """Configured skill selector (names/tags) used to discover the builder."""
+        return self._workflow_selector
+
     async def build(self, request: ToolBuildRequest) -> ToolBuildResult:
         endpoint, workflow_id = await self._resolve_endpoint_and_workflow()
         _system, initial_prompt = build_prompts(request)
