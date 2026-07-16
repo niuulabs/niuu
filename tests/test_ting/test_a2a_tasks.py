@@ -100,6 +100,8 @@ class RecordingVolundrPort(VolundrPort):
         self._session_status = session_status
         self.spawned: list[SpawnRequest] = []
         self.stopped: list[str] = []
+        self.gates: list[dict] = []
+        self.resolved_gates: list[tuple[str, str, str, str, str]] = []
 
     @property
     def name(self) -> str:
@@ -153,10 +155,21 @@ class RecordingVolundrPort(VolundrPort):
         raise NotImplementedError
 
     async def get_workflow_gates(self, session_id: str, *, auth_token=None, principal=None):
-        return []
+        return list(self.gates)
 
-    async def resolve_workflow_gate(self, *args: Any, **kwargs: Any):
-        raise NotImplementedError
+    async def resolve_workflow_gate(
+        self,
+        session_id: str,
+        gate_id: str,
+        decision: str,
+        *,
+        notes: str = "",
+        source: str = "ting",
+        auth_token=None,
+        principal=None,
+    ) -> dict:
+        self.resolved_gates.append((session_id, gate_id, decision, notes, source))
+        return {"status": "resolved"}
 
     async def stop_session(self, session_id: str, *, auth_token=None, principal=None) -> None:
         self.stopped.append(session_id)
@@ -424,18 +437,127 @@ class TestSendMessage:
         assert response.status_code == 200
         assert "result" in response.json()
 
-    def test_continuation_with_task_id_is_unsupported(self) -> None:
-        workflow = _make_workflow()
-        client, _, _ = _make_client(
-            workflow_repo=InMemoryWorkflowRepository([workflow]),
+
+class TestGateContinuation:
+    @staticmethod
+    def _reply_params(
+        task_id: str,
+        *,
+        decision: str | None = "approve",
+        text: str = "LGTM",
+    ) -> dict[str, Any]:
+        metadata: dict[str, Any] = {}
+        if decision is not None:
+            metadata["gateDecision"] = decision
+        return {
+            "message": {
+                "messageId": "msg-2",
+                "role": "ROLE_USER",
+                "taskId": task_id,
+                "parts": [{"text": text}] if text else [],
+                "metadata": metadata,
+            }
+        }
+
+    def _blocked_client(
+        self,
+        *,
+        gates: list[dict] | None = None,
+        status: WorkflowCampaignStatus = WorkflowCampaignStatus.BLOCKED,
+    ) -> tuple[TestClient, WorkflowCampaign, RecordingVolundrPort]:
+        campaign = _make_campaign(status=status)
+        port = RecordingVolundrPort()
+        port.gates = (
+            gates
+            if gates is not None
+            else [{"id": "gate-1", "nodeId": "review", "status": "pending"}]
         )
-        params = _send_params(str(workflow.id))
-        params["message"]["taskId"] = "task-1"
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([campaign]),
+            volundr=port,
+        )
+        return client, campaign, port
+
+    def test_approve_resolves_gate_and_resumes_task(self) -> None:
+        client, campaign, port = self._blocked_client()
+
+        response = _rpc(client, "SendMessage", self._reply_params(campaign.slug))
+
+        result = response.json()["result"]["task"]
+        assert result["status"]["state"] == "TASK_STATE_WORKING"
+        assert port.resolved_gates == [("session-123", "gate-1", "APPROVE", "LGTM", "a2a")]
+
+    def test_request_changes_sends_notes(self) -> None:
+        client, campaign, port = self._blocked_client()
+
+        response = _rpc(
+            client,
+            "SendMessage",
+            self._reply_params(campaign.slug, decision="request_changes", text="Fix the tests"),
+        )
+
+        assert response.json()["result"]["task"]["status"]["state"] == "TASK_STATE_WORKING"
+        assert port.resolved_gates == [
+            ("session-123", "gate-1", "CHANGES_REQUESTED", "Fix the tests", "a2a")
+        ]
+
+    def test_request_changes_without_notes_is_invalid(self) -> None:
+        client, campaign, port = self._blocked_client()
+
+        response = _rpc(
+            client,
+            "SendMessage",
+            self._reply_params(campaign.slug, decision="request_changes", text=""),
+        )
+
+        error = response.json()["error"]
+        assert error["code"] == -32602
+        assert "review notes" in error["message"]
+        assert port.resolved_gates == []
+
+    def test_missing_gate_decision_is_invalid(self) -> None:
+        client, campaign, _ = self._blocked_client()
+
+        response = _rpc(client, "SendMessage", self._reply_params(campaign.slug, decision=None))
+
+        error = response.json()["error"]
+        assert error["code"] == -32602
+        assert "gateDecision" in error["message"]
+
+    def test_reply_on_non_blocked_task_is_rejected(self) -> None:
+        client, campaign, port = self._blocked_client(status=WorkflowCampaignStatus.RUNNING)
+
+        response = _rpc(client, "SendMessage", self._reply_params(campaign.slug))
+
+        error = response.json()["error"]
+        assert "not awaiting input" in error["message"]
+        assert port.resolved_gates == []
+
+    def test_reply_without_pending_gate_is_rejected(self) -> None:
+        client, campaign, port = self._blocked_client(
+            gates=[{"id": "gate-1", "nodeId": "review", "status": "resolved"}],
+        )
+
+        response = _rpc(client, "SendMessage", self._reply_params(campaign.slug))
+
+        error = response.json()["error"]
+        assert "no pending gate" in error["message"]
+        assert port.resolved_gates == []
+
+    def test_gate_id_metadata_disambiguates(self) -> None:
+        client, campaign, port = self._blocked_client(
+            gates=[
+                {"id": "gate-1", "nodeId": "lint", "status": "pending"},
+                {"id": "gate-2", "nodeId": "review", "status": "pending"},
+            ],
+        )
+        params = self._reply_params(campaign.slug)
+        params["message"]["metadata"]["gateId"] = "gate-2"
 
         response = _rpc(client, "SendMessage", params)
 
-        error = response.json()["error"]
-        assert "continuation" in error["message"]
+        assert response.status_code == 200
+        assert port.resolved_gates[0][1] == "gate-2"
 
 
 class TestGetTask:

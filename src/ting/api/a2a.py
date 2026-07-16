@@ -86,6 +86,14 @@ _STATUS_TO_STATE: dict[WorkflowCampaignStatus, int] = {
 }
 _TERMINAL_STATUSES = frozenset({WorkflowCampaignStatus.COMPLETED, WorkflowCampaignStatus.FAILED})
 
+# Reply convention for INPUT_REQUIRED tasks: metadata.gateDecision selects the
+# outcome, the message text becomes the reviewer comment.
+_GATE_DECISIONS: dict[str, str] = {
+    "approve": "APPROVE",
+    "request_changes": "CHANGES_REQUESTED",
+}
+_PENDING_GATE_STATUSES = frozenset({"", "pending", "open", "waiting", "help_needed", "blocked"})
+
 
 def campaign_to_task(campaign: WorkflowCampaign) -> Task:
     """Synthesize the A2A Task view of a workflow campaign."""
@@ -144,10 +152,7 @@ class WorkflowTaskHandler(RequestHandler):
     ) -> Task | Message:
         message = params.message
         if message.task_id:
-            raise UnsupportedOperationError(
-                "task continuation is not supported yet; send a new message "
-                "without taskId to launch a workflow"
-            )
+            return await self._continue_task(message)
         if not token_has_scope(self._bearer_token or "", LAUNCH_SCOPE):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -321,6 +326,72 @@ class WorkflowTaskHandler(RequestHandler):
 
     # -- Internals ------------------------------------------------------ #
 
+    async def _continue_task(self, message: Message) -> Task:
+        """Resolve a pending workflow gate from a reply on an INPUT_REQUIRED task."""
+        campaign = await self._owned_campaign(message.task_id)
+        task = campaign_to_task(campaign)
+        if task.status.state != TaskState.TASK_STATE_INPUT_REQUIRED:
+            raise InvalidParamsError(
+                f"task {message.task_id} is not awaiting input; "
+                "replies are only accepted in the INPUT_REQUIRED state"
+            )
+
+        metadata = MessageToDict(message.metadata)
+        raw_decision = str(metadata.get("gateDecision") or "").strip().lower()
+        decision = _GATE_DECISIONS.get(raw_decision)
+        if decision is None:
+            raise InvalidParamsError('metadata.gateDecision must be "approve" or "request_changes"')
+        notes = _prompt_from_message(message)
+        if decision == "CHANGES_REQUESTED" and not notes:
+            raise InvalidParamsError(
+                "a text part with review notes is required when requesting changes"
+            )
+
+        adapter = await self._volundr_factory.primary_for_owner(campaign.owner_id)
+        if adapter is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="No Volundr connection is available for this user",
+            )
+        gates = await adapter.get_workflow_gates(
+            campaign.session_id,
+            auth_token=self._bearer_token,
+            principal=self._principal,
+        )
+        gate_id = _select_pending_gate_id(
+            gates,
+            gate_id=str(metadata.get("gateId") or ""),
+            node_id=str(metadata.get("nodeId") or ""),
+        )
+        if gate_id is None:
+            raise InvalidParamsError(
+                f"task {message.task_id} has no pending gate matching the reply"
+            )
+        await adapter.resolve_workflow_gate(
+            campaign.session_id,
+            gate_id,
+            decision,
+            notes=notes,
+            source=A2A_SURFACE,
+            auth_token=self._bearer_token,
+            principal=self._principal,
+        )
+
+        # Optimistically report the task back in WORKING; the campaign
+        # projector re-syncs the real session state on its next tick.
+        now = datetime.now(UTC)
+        updated = WorkflowCampaign(
+            **{
+                **campaign.__dict__,
+                "status": WorkflowCampaignStatus.RUNNING,
+                "updated_at": now,
+                "last_activity_at": now,
+            }
+        )
+        saved = await self._campaign_repo.save_campaign(updated)
+        await _emit_campaign_event(self._request, "workflow.campaign.updated", saved)
+        return campaign_to_task(saved)
+
     async def _attach_artifacts(self, task: Task, campaign: WorkflowCampaign) -> None:
         """Project the campaign's Mimir pages onto ``task.artifacts``.
 
@@ -403,6 +474,31 @@ def _merged_metadata(params: SendMessageRequest) -> dict[str, Any]:
     merged.update(MessageToDict(params.metadata))
     merged.update(MessageToDict(params.message.metadata))
     return merged
+
+
+def _select_pending_gate_id(
+    gates: list[dict],
+    *,
+    gate_id: str,
+    node_id: str,
+) -> str | None:
+    wanted_gate = gate_id.strip()
+    wanted_node = node_id.strip()
+    for gate in gates:
+        if not isinstance(gate, dict):
+            continue
+        candidate = str(gate.get("id") or gate.get("gate_id") or gate.get("gateId") or "").strip()
+        candidate_node = str(gate.get("node_id") or gate.get("nodeId") or "").strip()
+        gate_status = str(gate.get("status") or "").strip().lower()
+        if gate_status not in _PENDING_GATE_STATUSES:
+            continue
+        if wanted_gate and candidate != wanted_gate:
+            continue
+        if wanted_node and candidate_node != wanted_node:
+            continue
+        if candidate:
+            return candidate
+    return None
 
 
 def _artifact_media_type(path: str) -> str:

@@ -1058,7 +1058,9 @@ class A2AConfig(BaseModel):
     agent_description: str = Field(
         default=(
             "Launchable Niuu platform workflows. Each skill is a Ting workflow; "
-            "send a message with metadata.workflowId to start a run."
+            "send a message with metadata.workflowId to start a run. Reply to a "
+            "task in INPUT_REQUIRED with metadata.gateDecision "
+            '("approve" or "request_changes") to resolve its workflow gate.'
         ),
         description="Agent description advertised on the A2A agent card.",
     )
