@@ -319,6 +319,7 @@ class TestTingPlugin:
             "settings-api",
             "ting-channel-api",
             "event-api",
+            "a2a-card-api",
             "ting-api",
         ]
         assert route_domains[0].prefixes == ("/api/v1/tracker/projects", "/api/v1/tracker/import")
