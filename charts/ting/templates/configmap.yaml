@@ -111,6 +111,22 @@ data:
       auto_approve_threshold: {{ .Values.review.autoApproveThreshold }}
       {{- end }}
     {{- end }}
+    {{- if .Values.a2a }}
+    a2a:
+      {{- if .Values.a2a.agentName }}
+      agent_name: {{ .Values.a2a.agentName | quote }}
+      {{- end }}
+      {{- if .Values.a2a.agentDescription }}
+      agent_description: {{ .Values.a2a.agentDescription | quote }}
+      {{- end }}
+      {{- if .Values.a2a.cardMaxAgeSeconds }}
+      card_max_age_seconds: {{ .Values.a2a.cardMaxAgeSeconds }}
+      {{- end }}
+      {{- if .Values.a2a.publicBaseUrl }}
+      public_base_url: {{ .Values.a2a.publicBaseUrl | quote }}
+      {{- end }}
+    {{- end }}
+
     cerbos:
       url: {{ .Values.cerbos.url | default "http://localhost:3592" | quote }}
 

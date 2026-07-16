@@ -100,6 +100,7 @@ _PLUGIN_API_PREFIXES: dict[str, list[str]] = {
 }
 
 _PLUGIN_ROUTE_DOMAINS: dict[str, str] = {
+    "a2a-card-api": "ting",
     "admin-api": "volundr",
     "audit-api": "audit",
     "bifrost-api": "bifrost",

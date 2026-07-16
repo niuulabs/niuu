@@ -1048,6 +1048,34 @@ class EventsConfig(BaseModel):
     )
 
 
+class A2AConfig(BaseModel):
+    """Agent-to-Agent protocol surface (agent card + task endpoint)."""
+
+    agent_name: str = Field(
+        default="Niuu Workflows",
+        description="Agent name advertised on the A2A agent card.",
+    )
+    agent_description: str = Field(
+        default=(
+            "Launchable Niuu platform workflows. Each skill is a Ting workflow; "
+            "send a message with metadata.workflowId to start a run."
+        ),
+        description="Agent description advertised on the A2A agent card.",
+    )
+    card_max_age_seconds: int = Field(
+        default=60,
+        ge=0,
+        description="Cache-Control max-age for the served agent card.",
+    )
+    public_base_url: str = Field(
+        default="",
+        description=(
+            "Public origin used for interface URLs on the agent card. "
+            "Falls back to the request base URL when empty."
+        ),
+    )
+
+
 class Settings(BaseSettings):
     """Application settings.
 
@@ -1094,6 +1122,7 @@ class Settings(BaseSettings):
     watcher: WatcherConfig = Field(default_factory=WatcherConfig)
     event_bus: EventBusConfig = Field(default_factory=EventBusConfig)
     events: EventsConfig = Field(default_factory=EventsConfig)
+    a2a: A2AConfig = Field(default_factory=A2AConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)

@@ -145,6 +145,17 @@ planner:
   # -- Prompt injected when the user clicks "Finalize Plan". Leave empty for built-in default.
   finalizePrompt: ""
 
+# A2A protocol surface (agent card + task endpoint)
+a2a:
+  # -- Agent name advertised on the A2A agent card. Leave empty for built-in default.
+  agentName: ""
+  # -- Agent description advertised on the A2A agent card. Leave empty for built-in default.
+  agentDescription: ""
+  # -- Cache-Control max-age for the served agent card. Leave empty for built-in default.
+  cardMaxAgeSeconds: ""
+  # -- Public origin for interface URLs on the card. Leave empty to use the request base URL.
+  publicBaseUrl: ""
+
 # Review configuration
 review:
   # -- System prompt for reviewer sessions. Leave empty for built-in default.
