@@ -157,3 +157,111 @@ def test_parse_inbox_signal_without_json_block_returns_none() -> None:
     from ravn.resident_inbox import parse_inbox_signal
 
     assert parse_inbox_signal("# Just a heading\n\nno embedded json here") is None
+
+
+# ---------------------------------------------------------------------------
+# Signal retention (NIU-1118 follow-up): the inbox is a rolling working set
+# ---------------------------------------------------------------------------
+
+
+def _make_inbox(tmp_path, **retention):
+    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    return MimirResidentInbox(mimir, **retention), mimir
+
+
+def _signals_dir(tmp_path):
+    return tmp_path / "mimir" / "wiki" / "resident" / "inbox" / "signals"
+
+
+@pytest.mark.asyncio
+async def test_retention_prunes_pages_beyond_the_count_cap(tmp_path) -> None:
+    inbox, _ = _make_inbox(
+        tmp_path,
+        retention_max_pages=3,
+        retention_max_age_days=0,
+        retention_sweep_interval_seconds=0.0,
+    )
+    for index in range(6):
+        await inbox.write_directed_message(
+            content=f"signal number {index}",
+            metadata={"telegram_message_id": str(index)},
+        )
+
+    assert len(list(_signals_dir(tmp_path).glob("*.md"))) == 3
+
+
+@pytest.mark.asyncio
+async def test_retention_prunes_pages_older_than_max_age(tmp_path) -> None:
+    import os
+    import time
+
+    inbox, _ = _make_inbox(
+        tmp_path,
+        retention_max_pages=0,
+        retention_max_age_days=1.0,
+        retention_sweep_interval_seconds=0.0,
+    )
+    await inbox.write_directed_message(
+        content="stale signal",
+        metadata={"telegram_message_id": "old"},
+    )
+    stale = next(iter(_signals_dir(tmp_path).glob("*.md")))
+    two_days_ago = time.time() - 2 * 86400
+    os.utime(stale, (two_days_ago, two_days_ago))
+
+    pruned = inbox.prune_signals()
+
+    assert pruned == 1
+    assert not stale.exists()
+
+
+@pytest.mark.asyncio
+async def test_retention_disabled_keeps_everything(tmp_path) -> None:
+    inbox, _ = _make_inbox(
+        tmp_path,
+        retention_max_pages=0,
+        retention_max_age_days=0,
+        retention_sweep_interval_seconds=0.0,
+    )
+    for index in range(4):
+        await inbox.write_directed_message(
+            content=f"signal number {index}",
+            metadata={"telegram_message_id": str(index)},
+        )
+
+    assert len(list(_signals_dir(tmp_path).glob("*.md"))) == 4
+
+
+@pytest.mark.asyncio
+async def test_retention_sweeps_are_throttled(tmp_path) -> None:
+    inbox, _ = _make_inbox(
+        tmp_path,
+        retention_max_pages=1,
+        retention_max_age_days=0,
+        retention_sweep_interval_seconds=3600.0,
+    )
+    for index in range(4):
+        await inbox.write_directed_message(
+            content=f"signal number {index}",
+            metadata={"telegram_message_id": str(index)},
+        )
+
+    # The first write swept (nothing to prune yet); later writes are inside
+    # the throttle window, so the surplus pages are still on disk.
+    assert len(list(_signals_dir(tmp_path).glob("*.md"))) > 1
+
+
+def test_retention_without_filesystem_root_warns_and_skips(caplog) -> None:
+    import logging
+
+    class NoFsMimir:
+        def filesystem_root(self):
+            return None
+
+    inbox = MimirResidentInbox(NoFsMimir())
+    with caplog.at_level(logging.WARNING, logger="ravn.resident_inbox.backend"):
+        assert inbox.prune_signals() == 0
+        assert inbox.prune_signals() == 0
+
+    warnings = [r for r in caplog.records if "not filesystem-backed" in r.message]
+    assert len(warnings) == 1

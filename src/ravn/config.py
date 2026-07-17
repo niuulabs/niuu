@@ -301,6 +301,16 @@ class ToolGroupConfig(BaseModel):
 class ToolsConfig(BaseModel):
     """Tool availability and custom adapter configuration."""
 
+    max_result_chars: int = Field(
+        default=100_000,
+        description=(
+            "Maximum characters of a single tool result injected into agent "
+            "history. Oversized results are truncated with an explicit marker; "
+            "context compression protects the most recent messages, so one "
+            "giant result would otherwise make the turn unrecoverable "
+            "(NIU-1118). 0 disables the cap."
+        ),
+    )
     enabled: list[str] = Field(
         default_factory=list,
         description=(
@@ -2849,6 +2859,32 @@ class ResidentInboxConfig(BaseModel):
     min_attach_score: int = Field(
         default=2,
         description="Minimum keyword overlap required before attaching to an existing objective.",
+    )
+    signal_retention_max_pages: int = Field(
+        default=500,
+        description=(
+            "Maximum resident inbox signal pages kept in Mimir. The inbox is a "
+            "rolling working set, not an archive — signal pages are write-only "
+            "records that otherwise accumulate without bound and poison "
+            "mimir search/list over the wiki (observed: 104k pages / 440MB, "
+            "NIU-1118). Oldest pages beyond the cap are pruned. 0 disables "
+            "count-based pruning."
+        ),
+    )
+    signal_retention_max_age_days: float = Field(
+        default=7.0,
+        description=(
+            "Maximum age in days of resident inbox signal pages; older pages "
+            "are pruned. 0 disables age-based pruning."
+        ),
+    )
+    signal_retention_sweep_interval_seconds: float = Field(
+        default=900.0,
+        description=(
+            "Minimum seconds between inbox retention sweeps. Sweeps run off "
+            "the signal write path in a worker thread; this throttle bounds "
+            "how often the signals directory is rescanned."
+        ),
     )
 
 

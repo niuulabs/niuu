@@ -134,6 +134,8 @@ class RavnAgent:
         stop_on_outcome: bool = False,
         # NIU-1118: hard per-call prompt budget; 0 disables
         max_prompt_tokens: int = 0,
+        # NIU-1118: cap one tool result's contribution to history; 0 disables
+        max_tool_result_chars: int = 0,
     ) -> None:
         self._llm = llm
         self._tools = {t.name: t for t in tools}
@@ -191,6 +193,8 @@ class RavnAgent:
         self._stop_on_outcome = stop_on_outcome
         # NIU-1118: hard per-call prompt budget; 0 disables
         self._max_prompt_tokens = max_prompt_tokens
+        # NIU-1118: cap one tool result's contribution to history; 0 disables
+        self._max_tool_result_chars = max_tool_result_chars
 
     @property
     def session(self) -> Session:
@@ -555,6 +559,11 @@ class RavnAgent:
 
                 result = await self._execute_tool(tool_call)
 
+                # NIU-1118: cap the result BEFORE it enters history — one
+                # oversized result lands in the compression-protected tail
+                # and would make the rest of the turn unrecoverable.
+                result = self._truncate_oversized_tool_result(tool_call, result)
+
                 # Inject budget warning into the tool result content.
                 result = _maybe_append_budget_warning(result, self._iteration_budget)
 
@@ -790,6 +799,42 @@ class RavnAgent:
         )
         logger.error("%s", error)
         raise error
+
+    def _truncate_oversized_tool_result(
+        self,
+        tool_call: ToolCall,
+        result: ToolResult,
+    ) -> ToolResult:
+        """Bound a single tool result's contribution to the conversation.
+
+        Observed in production (NIU-1118): one mimir tool result injected
+        ~229MB into history; compression protects the most recent messages,
+        so nothing downstream could shrink it and the turn died on the prompt
+        budget. Truncate here with an explicit marker so the model knows the
+        result is partial and the turn can continue.
+        """
+        limit = self._max_tool_result_chars
+        content = result.content
+        if limit <= 0 or not isinstance(content, str) or len(content) <= limit:
+            return result
+        dropped = len(content) - limit
+        logger.warning(
+            "tool result for %r truncated: %d of %d chars dropped (max_tool_result_chars=%d)",
+            tool_call.name,
+            dropped,
+            len(content),
+            limit,
+        )
+        marker = (
+            f"\n\n[tool result truncated: {dropped} characters beyond the "
+            f"{limit}-character limit were dropped — narrow the query or "
+            "paginate instead of repeating the same call]"
+        )
+        return ToolResult(
+            tool_call_id=result.tool_call_id,
+            content=content[:limit] + marker,
+            is_error=result.is_error,
+        )
 
     async def _maybe_compress(
         self,

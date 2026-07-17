@@ -53,7 +53,13 @@ def _build_environment_signal_runtime(
     ):
         from ravn.resident_inbox import MimirResidentInbox  # noqa: PLC0415
 
-        resident_signal_recorder = MimirResidentInbox(mimir)
+        inbox_cfg = settings.resident_inbox
+        resident_signal_recorder = MimirResidentInbox(
+            mimir,
+            retention_max_pages=inbox_cfg.signal_retention_max_pages,
+            retention_max_age_days=inbox_cfg.signal_retention_max_age_days,
+            retention_sweep_interval_seconds=inbox_cfg.signal_retention_sweep_interval_seconds,
+        )
 
     async def _process_resident_signal(event: Any) -> Any:
         result: dict[str, Any] = {}

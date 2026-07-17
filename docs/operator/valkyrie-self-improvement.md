@@ -168,11 +168,24 @@ resident_evolution:
   large share of a 131k context window; keep it only as a temporary
   escape hatch.
 
-Related bound: `context_management.max_prompt_tokens` (0 = off) is a hard
-per-call budget for the estimated prompt (system + tool schemas + history).
-When a turn still exceeds it after context compression, the call fails loudly
-with a per-section breakdown instead of overflowing the model window. Every
-turn also logs a `prompt_composition:` line with per-section token estimates.
+Related bounds (all NIU-1118):
+
+- `context_management.max_prompt_tokens` (0 = off) — hard per-call budget for
+  the estimated prompt (system + tool schemas + history). When a turn still
+  exceeds it after context compression, the call fails loudly with a
+  per-section breakdown instead of overflowing the model window. Every turn
+  also logs a `prompt_composition:` line with per-section token estimates.
+- `tools.max_result_chars` (default 100000, 0 = off) — caps one tool result's
+  contribution to history. Compression protects the most recent messages, so
+  a single giant result (observed: a 229MB mimir result) would otherwise make
+  the turn unrecoverable; oversized results are truncated with an explicit
+  marker telling the model to narrow the query.
+- `resident_inbox.signal_retention_max_pages` / `signal_retention_max_age_days`
+  (defaults 500 / 7d, 0 = off) — rolling retention for
+  `resident/inbox/signals` Mimir pages, swept off the signal write path.
+  Signal pages are write-only operational records; without retention they
+  accumulate without bound (observed: 104k pages / 440MB) and poison mimir
+  search over the wiki.
 
 ### 6. Lifecycle knobs
 
