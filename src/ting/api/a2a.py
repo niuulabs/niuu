@@ -239,6 +239,8 @@ class WorkflowTaskHandler(RequestHandler):
         task = campaign_to_task(campaign)
         if task.status.state == TaskState.TASK_STATE_COMPLETED:
             await self._attach_artifacts(task, campaign)
+        if task.status.state == TaskState.TASK_STATE_INPUT_REQUIRED:
+            await self._attach_pending_gates(task, campaign)
         return task
 
     async def on_cancel_task(
@@ -418,6 +420,37 @@ class WorkflowTaskHandler(RequestHandler):
         await _emit_campaign_event(self._request, "workflow.campaign.updated", saved)
         return campaign_to_task(saved)
 
+    async def _attach_pending_gates(self, task: Task, campaign: WorkflowCampaign) -> None:
+        """Attach the pending gate question(s) to an INPUT_REQUIRED task.
+
+        The gate reply channel (SendMessage + ``metadata.gateDecision``) is
+        useless to a remote agent that cannot see WHAT the workflow is asking,
+        so expose each pending gate's label/condition/instructions in task
+        metadata. Best-effort: the reply path re-fetches gates
+        authoritatively, so a transient fetch failure only degrades context,
+        never correctness.
+        """
+        adapter = await self._volundr_factory.primary_for_owner(campaign.owner_id)
+        if adapter is None:
+            return
+        try:
+            gates = await adapter.get_workflow_gates(
+                campaign.session_id,
+                auth_token=self._bearer_token,
+                principal=self._principal,
+            )
+        except Exception as exc:
+            logger.warning("a2a: failed to fetch pending gates for task %s: %s", task.id, exc)
+            return
+        pending = [
+            _pending_gate_view(gate)
+            for gate in gates
+            if isinstance(gate, dict)
+            and str(gate.get("status") or "").strip().lower() in _PENDING_GATE_STATUSES
+        ]
+        if pending:
+            task.metadata.update({"pendingGates": pending})
+
     async def _attach_artifacts(self, task: Task, campaign: WorkflowCampaign) -> None:
         """Project the campaign's Mimir pages onto ``task.artifacts``.
 
@@ -525,6 +558,18 @@ def _select_pending_gate_id(
         if candidate:
             return candidate
     return None
+
+
+def _pending_gate_view(gate: dict) -> dict[str, str]:
+    """Project a skuld WorkflowGateState dict to the A2A-facing gate context."""
+    return {
+        "gateId": str(gate.get("id") or ""),
+        "nodeId": str(gate.get("node_id") or gate.get("nodeId") or ""),
+        "label": str(gate.get("label") or ""),
+        "condition": str(gate.get("condition") or ""),
+        "instructions": str(gate.get("instructions") or ""),
+        "summary": str(gate.get("summary") or ""),
+    }
 
 
 def _artifact_media_type(path: str) -> str:

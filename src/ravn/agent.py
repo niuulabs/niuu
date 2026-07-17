@@ -246,6 +246,11 @@ class RavnAgent:
             self._interrupt_reason = reason
 
     @property
+    def llm(self) -> LLMPort:
+        """The active LLM adapter (read-only, for composition wiring)."""
+        return self._llm
+
+    @property
     def llm_adapter_name(self) -> str:
         """Class name of the active LLM adapter."""
         return type(self._llm).__name__

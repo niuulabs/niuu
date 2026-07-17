@@ -1025,10 +1025,30 @@
           - personaId: specification-framer
             budget: 16
             model: gpt-5.5
-            consumesEventTypes: [capability.requested]
+            consumesEventTypes: [capability.requested, specification.changes_requested]
         position:
           x: 352
           y: 280
+      - id: capability-spec-gate
+        kind: gate
+        label: Confirm capability specification
+        condition: >-
+          The framed capability specification must be confirmed by the
+          commissioning agent before implementation starts.
+        mode: human_approval
+        pendingBehavior: help_needed
+        approvalEvent: specification.approved
+        changesRequestedEvent: specification.changes_requested
+        instructions: >-
+          Review the framed specification against the capability gap that
+          commissioned this build. Approve when the spec captures the intended
+          tool (name, inputs, reach, behavior); request focused changes when
+          it drifts from the request. The commissioning Valkyrie answers this
+          gate over A2A within its autonomy grant.
+        autoForwardAfter: 45m
+        position:
+          x: 528
+          y: 448
       - id: capability-build
         kind: stage
         label: Build tool or skill
@@ -1048,7 +1068,7 @@
           - personaId: coder
             budget: 48
             model: gpt-5.5
-            consumesEventTypes: [specification.ready, review.changes_requested]
+            consumesEventTypes: [specification.approved, review.changes_requested]
         position:
           x: 704
           y: 280
@@ -1100,10 +1120,18 @@
         source: capability-request
         target: capability-frame
         label: capability.requested -> capability.requested
-      - id: edge-capability-frame-to-build
+      - id: edge-capability-frame-to-spec-gate
         source: capability-frame
-        target: capability-build
+        target: capability-spec-gate
         label: specification.ready -> specification.ready
+      - id: edge-capability-spec-gate-to-build
+        source: capability-spec-gate
+        target: capability-build
+        label: specification.approved -> specification.approved
+      - id: edge-capability-spec-gate-to-frame
+        source: capability-spec-gate
+        target: capability-frame
+        label: specification.changes_requested -> specification.changes_requested
       - id: edge-capability-build-to-review
         source: capability-build
         target: capability-review

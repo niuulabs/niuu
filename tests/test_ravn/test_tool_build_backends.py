@@ -1051,3 +1051,171 @@ async def test_a2a_backend_matches_ting_backend_result_shape() -> None:
     assert a2a_result.test_code == ting_result.test_code
     assert a2a_result.requirements == ting_result.requirements
     assert a2a_result.build_evidence == ting_result.build_evidence
+
+
+# ---------------------------------------------------------------------------
+# A2A backend — workflow gate handling (INPUT_REQUIRED back-and-forth)
+# ---------------------------------------------------------------------------
+
+
+_SPEC_GATE = {
+    "gateId": "gate-1",
+    "nodeId": "capability-spec-gate",
+    "label": "Confirm capability specification",
+    "condition": "The framed spec must be confirmed before implementation.",
+    "instructions": "Approve when the spec captures the intended tool.",
+    "summary": "",
+}
+
+
+def _a2a_gated_task(gate: dict | None = None) -> dict:
+    task = _a2a_task("TASK_STATE_INPUT_REQUIRED")
+    task["metadata"] = {"pendingGates": [gate or _SPEC_GATE]}
+    return task
+
+
+def _approving_reviewer(record: list | None = None):
+    async def _review(request, gate):
+        if record is not None:
+            record.append((request.name, gate))
+        return "approve", "Spec matches the commissioned capability."
+
+    return _review
+
+
+_A2A_DONE_ARTIFACTS = [
+    {
+        "artifactId": "research/campaigns/task-1/learned_tool.json",
+        "parts": [{"filename": "learned_tool.json", "text": _BUILT_CONTRACT}],
+    }
+]
+
+
+async def test_a2a_backend_answers_gate_and_completes() -> None:
+    seen_gates: list = []
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_task("TASK_STATE_WORKING")),
+                _rpc_result(_a2a_gated_task()),
+                _rpc_result({"task": _a2a_task("TASK_STATE_WORKING")}),
+                _rpc_result(_a2a_task("TASK_STATE_WORKING")),
+                _rpc_result(_a2a_task("TASK_STATE_COMPLETED", artifacts=_A2A_DONE_ARTIFACTS)),
+            ],
+        }
+    )
+    backend = _a2a_backend(
+        client,
+        workflow_id="wf-1",
+        gate_reviewer=_approving_reviewer(seen_gates),
+    )
+
+    result = await backend.build(_request())
+
+    # The reviewer saw the gate question exposed by GetTask.
+    assert seen_gates == [("mimir_metric_window", _SPEC_GATE)]
+    # The exchange is recorded verbatim in the build evidence.
+    exchanges = result.build_evidence["gate_exchanges"]
+    assert len(exchanges) == 1
+    assert exchanges[0]["decision"] == "approve"
+    assert exchanges[0]["delivery"] == "delivered"
+    assert exchanges[0]["gate"]["label"] == "Confirm capability specification"
+    assert result.provenance["gate_exchanges"] == exchanges
+    # The gate reply went over A2A with the documented contract.
+    reply = next(
+        body
+        for body in client.post_bodies
+        if body["method"] == "SendMessage" and body["params"]["message"].get("taskId") == "task-1"
+    )
+    assert reply["params"]["message"]["metadata"]["gateDecision"] == "approve"
+    assert reply["params"]["message"]["metadata"]["gateId"] == "gate-1"
+    assert reply["params"]["message"]["parts"][0]["text"].startswith("Spec matches")
+
+
+async def test_a2a_backend_fails_loud_on_gate_without_reviewer() -> None:
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_gated_task()),
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1")
+
+    with pytest.raises(ToolBuildError, match="no gate_reviewer"):
+        await backend.build(_request())
+
+
+async def test_a2a_backend_bounds_gate_rounds() -> None:
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_gated_task()),
+            ],
+        }
+    )
+    backend = _a2a_backend(
+        client,
+        workflow_id="wf-1",
+        gate_reviewer=_approving_reviewer(),
+        max_gate_rounds=1,
+    )
+
+    with pytest.raises(ToolBuildError, match="exceeded 1 gate rounds"):
+        await backend.build(_request())
+
+
+async def test_a2a_backend_request_changes_requires_notes() -> None:
+    async def _changes_no_notes(request, gate):
+        return "request_changes", ""
+
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_gated_task()),
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1", gate_reviewer=_changes_no_notes)
+
+    with pytest.raises(ToolBuildError, match="without notes"):
+        await backend.build(_request())
+
+
+async def test_a2a_backend_stale_gate_reply_keeps_polling() -> None:
+    stale_error = HttpResponse(
+        200,
+        {
+            "jsonrpc": "2.0",
+            "id": "1",
+            "error": {
+                "code": -32602,
+                "message": "task task-1 has no pending gate matching the reply",
+            },
+        },
+    )
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_gated_task()),
+                stale_error,
+                _rpc_result(_a2a_task("TASK_STATE_COMPLETED", artifacts=_A2A_DONE_ARTIFACTS)),
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1", gate_reviewer=_approving_reviewer())
+
+    result = await backend.build(_request())
+
+    exchanges = result.build_evidence["gate_exchanges"]
+    assert exchanges[0]["delivery"] == "stale"

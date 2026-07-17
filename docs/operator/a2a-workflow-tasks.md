@@ -109,7 +109,14 @@ Consumer contract by agent type:
 
 - **Autonomous Valkyries** may reply with `gateDecision` themselves only
   within their realm's autonomy grant; otherwise they route the decision
-  through ODIN court as usual.
+  through ODIN court as usual. The ravn `A2AToolBuildBackend` implements
+  this: on `INPUT_REQUIRED` it reads the pending gate context that `GetTask`
+  attaches (`metadata.pendingGates`: gateId, label, condition, instructions),
+  has the resident's own LLM decide approve/request_changes against the
+  commissioned build request, sends the reply message, and records the full
+  question/answer exchange in the build evidence. Rounds are bounded
+  (`max_gate_rounds`, default 3) and a gate with no configured reviewer fails
+  the build loudly — never a silent auto-approve.
 - **Interactive agents** (resident ravns with a human in the chat,
   OpenClaw/Hermes controllers) must surface `INPUT_REQUIRED` to their
   human — show the gate, collect the verdict, then send the reply message.

@@ -614,6 +614,54 @@ class TestGetTask:
 
         assert "error" in response.json()
 
+    def test_input_required_task_carries_pending_gate_context(self) -> None:
+        campaign = _make_campaign(status=WorkflowCampaignStatus.BLOCKED)
+        port = RecordingVolundrPort()
+        port.gates = [
+            {
+                "id": "gate-1",
+                "node_id": "capability-spec-gate",
+                "status": "pending",
+                "label": "Confirm capability specification",
+                "condition": "The framed spec must be confirmed.",
+                "instructions": "Approve when the spec captures the tool.",
+                "summary": "",
+            },
+            {"id": "gate-0", "node_id": "old-gate", "status": "resolved"},
+        ]
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([campaign]),
+            volundr=port,
+        )
+
+        response = _rpc(client, "GetTask", {"id": campaign.slug})
+
+        task = response.json()["result"]
+        assert task["status"]["state"] == "TASK_STATE_INPUT_REQUIRED"
+        assert task["metadata"]["pendingGates"] == [
+            {
+                "gateId": "gate-1",
+                "nodeId": "capability-spec-gate",
+                "label": "Confirm capability specification",
+                "condition": "The framed spec must be confirmed.",
+                "instructions": "Approve when the spec captures the tool.",
+                "summary": "",
+            }
+        ]
+
+    def test_working_task_carries_no_pending_gates(self) -> None:
+        campaign = _make_campaign(status=WorkflowCampaignStatus.RUNNING)
+        port = RecordingVolundrPort()
+        port.gates = [{"id": "gate-1", "node_id": "n", "status": "pending"}]
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([campaign]),
+            volundr=port,
+        )
+
+        response = _rpc(client, "GetTask", {"id": campaign.slug})
+
+        assert "pendingGates" not in response.json()["result"].get("metadata", {})
+
 
 class TestCancelTask:
     def test_cancel_stops_session_and_reports_canceled(self) -> None:
