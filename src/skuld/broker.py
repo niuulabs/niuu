@@ -261,6 +261,30 @@ class PeerWatchState:
     warned: bool = False
 
 
+@dataclass
+class PendingHelpRequest:
+    """A peer's genuine question, awaiting an answer from the commissioner.
+
+    Recorded when a room peer emits a ``help_needed`` frame — the peer is
+    blocked on information it cannot responsibly guess. The answer is
+    delivered back to the asking peer as a directed room message.
+    """
+
+    id: str
+    peer_id: str
+    persona: str
+    summary: str
+    reason: str
+    recommendation: str
+    context: dict[str, Any]
+    attempted: list[str]
+    requested_at: str
+    status: str = "pending"  # pending | answered
+    answered_at: str = ""
+    answer: str = ""
+    answer_source: str = ""
+
+
 def _workflow_terminal_requirements_satisfied(
     node: WorkflowTerminalNode,
     artifacts: SessionArtifacts,
@@ -378,6 +402,12 @@ class Broker(
         self._workflow_gate_attempts: dict[tuple[str, str], int] = {}
         self._workflow_gate_state_ids_by_key: dict[tuple[str, str], str] = {}
         self._workflow_gate_states: dict[str, WorkflowGateState] = {}
+        # Genuine agent questions: a peer that emits help_needed is asking the
+        # party that commissioned this session for information it cannot
+        # responsibly guess. Tracked like gate states so callers (Volundr
+        # proxy -> Ting -> A2A) can list them and deliver an answer back to
+        # the asking peer as a directed room message.
+        self._pending_help_requests: dict[str, PendingHelpRequest] = {}
         self._workflow_terminal_nodes = _workflow_terminal_nodes(self._settings.workflow.graph)
         self._workflow_terminal_index: dict[str, list[WorkflowTerminalNode]] = {}
         for node in self._workflow_terminal_nodes:
@@ -1156,6 +1186,7 @@ class Broker(
         if event_type == "outcome":
             await self._emit_peer_outcome_pipeline_event(peer_id, frame)
         elif event_type == "help_needed":
+            self._record_pending_help_request(peer_id, frame)
             await self._report_peer_help_needed_activity(peer_id, frame)
             await self._emit_peer_help_needed_sleipnir_event(peer_id, frame)
 
@@ -1440,6 +1471,79 @@ class Broker(
             reverse=True,
         )
         return [asdict(state) for state in states]
+
+    def _record_pending_help_request(self, peer_id: str, frame: dict[str, Any]) -> None:
+        """Track a peer's help_needed question so a remote caller can answer it."""
+        payload = self._build_peer_help_needed_payload(peer_id, frame)
+        if payload is None:
+            return
+        request = PendingHelpRequest(
+            id=uuid.uuid4().hex[:12],
+            peer_id=peer_id,
+            persona=str(payload.get("persona") or ""),
+            summary=str(payload.get("summary") or ""),
+            reason=str(payload.get("reason") or ""),
+            recommendation=str(payload.get("recommendation") or ""),
+            context=dict(payload.get("context") or {}),
+            attempted=[str(item) for item in payload.get("attempted") or []],
+            requested_at=datetime.now(UTC).isoformat(),
+        )
+        self._pending_help_requests[request.id] = request
+        logger.info(
+            "Pending help request recorded: id=%s peer=%s persona=%s summary=%s",
+            request.id,
+            peer_id,
+            request.persona,
+            request.summary[:200],
+        )
+
+    def list_help_requests(self) -> list[dict[str, Any]]:
+        """Return help requests ordered from newest to oldest."""
+        ordered = sorted(
+            self._pending_help_requests.values(),
+            key=lambda request: request.requested_at,
+            reverse=True,
+        )
+        return [asdict(request) for request in ordered]
+
+    async def answer_help_request(
+        self,
+        request_id: str,
+        answer: str,
+        *,
+        source: str = "external",
+    ) -> str:
+        """Deliver an answer to a pending help request's asking peer.
+
+        The answer travels as a directed room message to the peer that asked,
+        so it lands in that agent's conversation exactly like a human reply
+        would. Returns the routed message id.
+        """
+        request = self._pending_help_requests.get(request_id)
+        if request is None:
+            raise ValueError(f"unknown help request: {request_id}")
+        if request.status != "pending":
+            raise ValueError(f"help request {request_id} is already {request.status}")
+        if not answer.strip():
+            raise ValueError("answer must not be empty")
+        message_id = await self.handle_directed_room_message(
+            request.peer_id,
+            answer,
+            source=source,
+            metadata={"help_request_id": request.id},
+        )
+        request.status = "answered"
+        request.answered_at = datetime.now(UTC).isoformat()
+        request.answer = answer
+        request.answer_source = source
+        logger.info(
+            "Help request %s answered by %s -> peer=%s message=%s",
+            request.id,
+            source,
+            request.peer_id,
+            message_id,
+        )
+        return message_id
 
     def _workflow_activation_id_from_frame(self, frame: dict[str, Any]) -> str:
         data = frame.get("data", {})

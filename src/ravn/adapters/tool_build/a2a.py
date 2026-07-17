@@ -23,7 +23,7 @@ from ravn.adapters.tool_build._contract import (
     parse_tool_build_document,
     parse_tool_build_response,
 )
-from ravn.adapters.tool_build.gate_review import GateReviewer
+from ravn.adapters.tool_build.gate_review import GateReviewer, QuestionAnswerer
 from ravn.adapters.tool_build.http import AsyncJsonHttpClient, client_from_workload_identity
 from ravn.domain.capability_catalog import (
     WorkflowCapability,
@@ -53,6 +53,10 @@ _TERMINAL_STATES = frozenset({_COMPLETED_STATE, *_FAILED_STATES})
 #: lag or auto-forward) — benign; keep polling instead of failing the build.
 _STALE_GATE_MARKERS = ("no pending gate", "not awaiting input")
 
+#: Reply errors that mean the question resolved between poll and reply
+#: (answered elsewhere, e.g. by an operator) — benign; keep polling.
+_STALE_QUESTION_MARKERS = ("no pending question", "not awaiting input")
+
 
 class A2AToolBuildBackend(ToolBuildBackend):
     """Launch a workflow task over A2A, poll it, and retrieve the artifact."""
@@ -75,6 +79,7 @@ class A2AToolBuildBackend(ToolBuildBackend):
         max_poll_attempts: int = 120,
         poll_interval_seconds: float = 5.0,
         gate_reviewer: GateReviewer | None = None,
+        question_answerer: QuestionAnswerer | None = None,
         max_gate_rounds: int = 3,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -101,11 +106,14 @@ class A2AToolBuildBackend(ToolBuildBackend):
         self._connection_id = connection_id
         self._max_poll_attempts = max_poll_attempts
         self._poll_interval = poll_interval_seconds
-        # Gate handling: on INPUT_REQUIRED the reviewer decides
-        # approve/request_changes within the resident's autonomy grant.
-        # Without a reviewer, a gated workflow fails loudly — a build is
-        # never silently auto-approved.
+        # INPUT_REQUIRED handling. A pending peer QUESTION (help_needed) is
+        # answered with information by the question_answerer; a pending
+        # workflow GATE is decided approve/request_changes by the
+        # gate_reviewer — both act within the resident's autonomy grant.
+        # Without the matching callable, the build fails loudly; nothing is
+        # silently auto-approved or guessed.
         self._gate_reviewer = gate_reviewer
+        self._question_answerer = question_answerer
         self._max_gate_rounds = max_gate_rounds
         self._sleep = sleep
 
@@ -209,12 +217,79 @@ class A2AToolBuildBackend(ToolBuildBackend):
                 if rounds > self._max_gate_rounds:
                     raise ToolBuildError(
                         f"A2A task {task_id} exceeded {self._max_gate_rounds} "
-                        "gate rounds without completing"
+                        "input rounds without completing"
                     )
-                exchange = await self._answer_gate(endpoint, task_id, task, request, round=rounds)
+                question = _first_pending_question(task)
+                if question:
+                    exchange = await self._answer_question(
+                        endpoint, task_id, question, request, round=rounds
+                    )
+                else:
+                    exchange = await self._answer_gate(
+                        endpoint, task_id, task, request, round=rounds
+                    )
                 exchanges.append(exchange)
             await self._sleep(self._poll_interval)
         return task, exchanges
+
+    async def _answer_question(
+        self,
+        endpoint: str,
+        task_id: str,
+        question: dict[str, Any],
+        request: ToolBuildRequest,
+        *,
+        round: int,  # noqa: A002
+    ) -> dict[str, Any]:
+        """Answer a peer's genuine question with information, not a verdict."""
+        if self._question_answerer is None:
+            raise ToolBuildError(
+                f"A2A task {task_id} has a pending question from the build "
+                "flock but no question_answerer is configured"
+            )
+        answer = str(await self._question_answerer(request, question) or "").strip()
+        if not answer:
+            raise ToolBuildError("question answerer returned an empty answer")
+
+        metadata: dict[str, Any] = {}
+        request_id = str(question.get("requestId") or "")
+        if request_id:
+            metadata["requestId"] = request_id
+        exchange: dict[str, Any] = {
+            "round": round,
+            "kind": "question",
+            "question": question,
+            "answer": answer,
+        }
+        try:
+            await self._rpc(
+                endpoint,
+                "SendMessage",
+                {
+                    "message": {
+                        "messageId": str(uuid4()),
+                        "taskId": task_id,
+                        "role": "ROLE_USER",
+                        "parts": [{"text": answer}],
+                        "metadata": metadata,
+                    }
+                },
+            )
+        except ToolBuildError as exc:
+            if any(marker in str(exc) for marker in _STALE_QUESTION_MARKERS):
+                logger.warning("A2A question reply for task %s was stale: %s", task_id, exc)
+                exchange["delivery"] = "stale"
+                return exchange
+            raise
+        exchange["delivery"] = "delivered"
+        logger.info(
+            "A2A question round %d for task %s: answered %s (%s)",
+            round,
+            task_id,
+            str(question.get("persona") or "peer"),
+            str(question.get("question") or "")[:120],
+        )
+        return exchange
 
     async def _answer_gate(
         self,
@@ -484,6 +559,20 @@ def _task_state(task: Any) -> str:
     if not isinstance(status, dict):
         return ""
     return str(status.get("state") or "")
+
+
+def _first_pending_question(task: dict[str, Any]) -> dict[str, Any]:
+    """The first pending peer question attached to an INPUT_REQUIRED task."""
+    metadata = task.get("metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    questions = metadata.get("pendingQuestions")
+    if not isinstance(questions, list):
+        return {}
+    for question in questions:
+        if isinstance(question, dict):
+            return question
+    return {}
 
 
 def _first_pending_gate(task: dict[str, Any]) -> dict[str, Any]:

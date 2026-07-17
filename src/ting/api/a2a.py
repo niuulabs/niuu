@@ -240,6 +240,7 @@ class WorkflowTaskHandler(RequestHandler):
         if task.status.state == TaskState.TASK_STATE_COMPLETED:
             await self._attach_artifacts(task, campaign)
         if task.status.state == TaskState.TASK_STATE_INPUT_REQUIRED:
+            await self._attach_pending_questions(task, campaign)
             await self._attach_pending_gates(task, campaign)
         return task
 
@@ -355,7 +356,13 @@ class WorkflowTaskHandler(RequestHandler):
     # -- Internals ------------------------------------------------------ #
 
     async def _continue_task(self, message: Message) -> Task:
-        """Resolve a pending workflow gate from a reply on an INPUT_REQUIRED task."""
+        """Handle a reply on an INPUT_REQUIRED task.
+
+        Two reply kinds, routed by ``metadata.gateDecision``:
+        - present: resolve a pending workflow gate (approve/request_changes)
+        - absent: the message text answers a pending peer question
+          (``help_needed``) and is delivered to the asking peer
+        """
         campaign = await self._owned_campaign(message.task_id)
         task = campaign_to_task(campaign)
         if task.status.state != TaskState.TASK_STATE_INPUT_REQUIRED:
@@ -366,6 +373,8 @@ class WorkflowTaskHandler(RequestHandler):
 
         metadata = MessageToDict(message.metadata)
         raw_decision = str(metadata.get("gateDecision") or "").strip().lower()
+        if not raw_decision:
+            return await self._answer_question(message, campaign, metadata)
         decision = _GATE_DECISIONS.get(raw_decision)
         if decision is None:
             raise InvalidParamsError('metadata.gateDecision must be "approve" or "request_changes"')
@@ -419,6 +428,93 @@ class WorkflowTaskHandler(RequestHandler):
         saved = await self._campaign_repo.save_campaign(updated)
         await _emit_campaign_event(self._request, "workflow.campaign.updated", saved)
         return campaign_to_task(saved)
+
+    async def _answer_question(
+        self,
+        message: Message,
+        campaign: WorkflowCampaign,
+        metadata: dict[str, Any],
+    ) -> Task:
+        """Deliver a plain-text reply to the peer whose question blocked the task."""
+        answer = _prompt_from_message(message)
+        if not answer:
+            raise InvalidParamsError(
+                "a reply without gateDecision answers a pending question and "
+                "must include a non-empty text part"
+            )
+        adapter = await self._volundr_factory.primary_for_owner(campaign.owner_id)
+        if adapter is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="No Volundr connection is available for this user",
+            )
+        requests = await adapter.get_help_requests(
+            campaign.session_id,
+            auth_token=self._bearer_token,
+            principal=self._principal,
+        )
+        request_id = _select_pending_question_id(
+            requests,
+            request_id=str(metadata.get("requestId") or ""),
+        )
+        if request_id is None:
+            raise InvalidParamsError(
+                f"task {message.task_id} has no pending question matching the reply"
+            )
+        await adapter.answer_help_request(
+            campaign.session_id,
+            request_id,
+            answer,
+            source=A2A_SURFACE,
+            auth_token=self._bearer_token,
+            principal=self._principal,
+        )
+
+        # Optimistically report the task back in WORKING; the campaign
+        # projector re-syncs the real session state on its next tick.
+        now = datetime.now(UTC)
+        updated = WorkflowCampaign(
+            **{
+                **campaign.__dict__,
+                "status": WorkflowCampaignStatus.RUNNING,
+                "updated_at": now,
+                "last_activity_at": now,
+            }
+        )
+        saved = await self._campaign_repo.save_campaign(updated)
+        await _emit_campaign_event(self._request, "workflow.campaign.updated", saved)
+        return campaign_to_task(saved)
+
+    async def _attach_pending_questions(self, task: Task, campaign: WorkflowCampaign) -> None:
+        """Attach pending peer questions to an INPUT_REQUIRED task.
+
+        A flock peer that emitted ``help_needed`` is genuinely blocked on
+        information only the commissioning agent has. Expose the question so
+        the remote agent can answer it with a plain reply message (no
+        gateDecision) — the answer routes back to the asking peer.
+        """
+        adapter = await self._volundr_factory.primary_for_owner(campaign.owner_id)
+        if adapter is None:
+            return
+        try:
+            requests = await adapter.get_help_requests(
+                campaign.session_id,
+                auth_token=self._bearer_token,
+                principal=self._principal,
+            )
+        except Exception as exc:
+            logger.warning(
+                "a2a: failed to fetch pending help requests for task %s: %s", task.id, exc
+            )
+            return
+        pending = [
+            _pending_question_view(request)
+            for request in requests
+            if isinstance(request, dict)
+            and str(request.get("status") or "").strip().lower() == "pending"
+        ]
+        if pending:
+            task.metadata.update({"pendingQuestions": pending})
 
     async def _attach_pending_gates(self, task: Task, campaign: WorkflowCampaign) -> None:
         """Attach the pending gate question(s) to an INPUT_REQUIRED task.
@@ -554,6 +650,38 @@ def _select_pending_gate_id(
         if wanted_gate and candidate != wanted_gate:
             continue
         if wanted_node and candidate_node != wanted_node:
+            continue
+        if candidate:
+            return candidate
+    return None
+
+
+def _pending_question_view(request: dict) -> dict[str, Any]:
+    """Project a skuld PendingHelpRequest dict to the A2A-facing question."""
+    attempted = request.get("attempted")
+    return {
+        "requestId": str(request.get("id") or ""),
+        "persona": str(request.get("persona") or ""),
+        "question": str(request.get("summary") or ""),
+        "reason": str(request.get("reason") or ""),
+        "recommendation": str(request.get("recommendation") or ""),
+        "attempted": [str(item) for item in attempted] if isinstance(attempted, list) else [],
+    }
+
+
+def _select_pending_question_id(
+    requests: list[dict],
+    *,
+    request_id: str,
+) -> str | None:
+    wanted = request_id.strip()
+    for request in requests:
+        if not isinstance(request, dict):
+            continue
+        candidate = str(request.get("id") or "").strip()
+        if str(request.get("status") or "").strip().lower() != "pending":
+            continue
+        if wanted and candidate != wanted:
             continue
         if candidate:
             return candidate

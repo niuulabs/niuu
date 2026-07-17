@@ -84,6 +84,38 @@ class WorkflowCampaignProjector:
         if session is None:
             return
         next_status = _status_from_session(session.status, fallback=campaign.status)
+        if next_status == WorkflowCampaignStatus.RUNNING:
+            # Volundr's lifecycle status never says "waiting" — blocked-ness is
+            # a session-internal condition (a peer's pending help question or a
+            # pending workflow gate). Derive it from the live blockers so the
+            # A2A task honestly reports INPUT_REQUIRED when the flock is
+            # actually asking for input.
+            if await self._session_awaits_input(adapter, campaign.session_id):
+                next_status = WorkflowCampaignStatus.BLOCKED
+
+        await self._apply_status(campaign, session, next_status)
+
+    async def _session_awaits_input(self, adapter, session_id: str) -> bool:
+        """True when the session has a pending help question or workflow gate.
+
+        Best-effort: a transient fetch failure reads as not-blocked; the next
+        tick retries. Failures are logged so silence is never mistaken for
+        health.
+        """
+        try:
+            if _has_pending_entry(await adapter.get_help_requests(session_id)):
+                return True
+            if _has_pending_entry(await adapter.get_workflow_gates(session_id)):
+                return True
+        except Exception:
+            logger.warning(
+                "Workflow campaign projector could not fetch session blockers for %s",
+                session_id,
+                exc_info=True,
+            )
+        return False
+
+    async def _apply_status(self, campaign: WorkflowCampaign, session, next_status) -> None:
         if next_status == campaign.status and session.name == campaign.session_name:
             return
 
@@ -121,6 +153,17 @@ class WorkflowCampaignProjector:
                 },
             )
         )
+
+
+_PENDING_BLOCKER_STATUSES = frozenset({"", "pending", "open", "waiting", "help_needed", "blocked"})
+
+
+def _has_pending_entry(entries: list, status_key: str = "status") -> bool:
+    return any(
+        isinstance(entry, dict)
+        and str(entry.get(status_key) or "").strip().lower() in _PENDING_BLOCKER_STATUSES
+        for entry in entries
+    )
 
 
 def _status_from_session(

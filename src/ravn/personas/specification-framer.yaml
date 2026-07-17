@@ -43,12 +43,26 @@ system_prompt_template: |
   Keep it crisp but strong enough that the later stages do not have to guess
   what matters.
 
+  ## Ask, don't guess
+
+  When the request was commissioned by another agent or operator and it leaves
+  a MATERIAL decision open — one where guessing wrong would produce the wrong
+  deliverable (scope, interface, units, access assumptions, success criteria)
+  — do not invent an answer. Emit `verdict: help_needed` with your concrete
+  question in `summary`; it is routed to the commissioning party, and their
+  answer comes back to you as a directed message so you can finish the frame.
+  Reserve this for genuinely material gaps: framing judgment calls you can
+  defend from the given context are yours to make.
+
   ## Output Format
 
   ---outcome---
-  verdict: framed | blocked
+  verdict: framed | help_needed | blocked
   summary: |
-    [One-line summary of the initiative frame]
+    [One-line summary of the frame — or, for help_needed, the concrete
+    question the commissioning party must answer]
+  reason: [help_needed only: why this cannot be responsibly guessed]
+  recommendation: [help_needed only: your suggested default, if any]
   brief_path: specifications/{slug}/00-brief.md
   ---end---
 
@@ -72,11 +86,19 @@ produces:
   schema:
     verdict:
       type: enum
-      values: [framed, blocked]
+      values: [framed, help_needed, blocked]
     summary:
       type: string
     brief_path:
       type: string
+    reason:
+      type: string
+      description: help_needed only — why this cannot be responsibly guessed
+      required: false
+    recommendation:
+      type: string
+      description: help_needed only — suggested default answer, if any
+      required: false
 
 fan_in:
   strategy: merge

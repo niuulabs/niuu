@@ -5860,3 +5860,111 @@ class TestWorkloadTokenRefresh:
         b = self._broker(tmp_path, token_file=str(tmp_path / "does-not-exist"))
         await b._refresh_workload_token()
         assert b._workload_jwt is None or b._workload_jwt == ""
+
+
+class TestPendingHelpRequests:
+    """help_needed frames become answerable pending requests (A2A question path)."""
+
+    @pytest.fixture
+    def settings(self, tmp_path):
+        return SkuldSettings(
+            session={"id": "test-session-123"},
+            transport="subprocess",
+            host="0.0.0.0",
+            port=8081,
+            peer_watchdog={"silence_seconds": 30.0, "tool_silence_seconds": 30.0},
+        )
+
+    _FRAME = {
+        "metadata": {"urgency": 0.9},
+        "data": {
+            "summary": "Which namespaces are in scope for the PVC summary?",
+            "reason": "needs_context",
+            "attempted": ["re-read the build request"],
+            "recommendation": "Assume all namespaces.",
+            "context": {"workflow_node_id": "capability-frame"},
+            "persona": "specification-framer",
+        },
+    }
+
+    def _broker(self, settings, tmp_path):
+        settings.session.workspace_dir = str(tmp_path)
+        broker_under_test = Broker(settings=settings)
+        broker_under_test._room_bridge = MagicMock()
+        broker_under_test._room_bridge.participants = {
+            "flock-specification-framer": MagicMock(persona="specification-framer")
+        }
+        return broker_under_test
+
+    @pytest.mark.asyncio
+    async def test_help_needed_records_pending_request(self, settings, tmp_path):
+        broker_under_test = self._broker(settings, tmp_path)
+
+        await broker_under_test._observe_room_peer_event(
+            "flock-specification-framer", "help_needed", dict(self._FRAME)
+        )
+
+        requests = broker_under_test.list_help_requests()
+        assert len(requests) == 1
+        request = requests[0]
+        assert request["status"] == "pending"
+        assert request["peer_id"] == "flock-specification-framer"
+        assert request["persona"] == "specification-framer"
+        assert request["summary"] == "Which namespaces are in scope for the PVC summary?"
+        assert request["attempted"] == ["re-read the build request"]
+
+    @pytest.mark.asyncio
+    async def test_answer_routes_directed_message_to_asking_peer(self, settings, tmp_path):
+        broker_under_test = self._broker(settings, tmp_path)
+        await broker_under_test._observe_room_peer_event(
+            "flock-specification-framer", "help_needed", dict(self._FRAME)
+        )
+        broker_under_test.handle_directed_room_message = AsyncMock(return_value="msg-42")
+        request_id = broker_under_test.list_help_requests()[0]["id"]
+
+        message_id = await broker_under_test.answer_help_request(
+            request_id, "All namespaces, read-only.", source="a2a"
+        )
+
+        assert message_id == "msg-42"
+        broker_under_test.handle_directed_room_message.assert_awaited_once_with(
+            "flock-specification-framer",
+            "All namespaces, read-only.",
+            source="a2a",
+            metadata={"help_request_id": request_id},
+        )
+        answered = broker_under_test.list_help_requests()[0]
+        assert answered["status"] == "answered"
+        assert answered["answer"] == "All namespaces, read-only."
+        assert answered["answer_source"] == "a2a"
+
+    @pytest.mark.asyncio
+    async def test_answer_unknown_request_raises(self, settings, tmp_path):
+        broker_under_test = self._broker(settings, tmp_path)
+
+        with pytest.raises(ValueError, match="unknown help request"):
+            await broker_under_test.answer_help_request("nope", "answer")
+
+    @pytest.mark.asyncio
+    async def test_answered_request_cannot_be_answered_twice(self, settings, tmp_path):
+        broker_under_test = self._broker(settings, tmp_path)
+        await broker_under_test._observe_room_peer_event(
+            "flock-specification-framer", "help_needed", dict(self._FRAME)
+        )
+        broker_under_test.handle_directed_room_message = AsyncMock(return_value="msg-1")
+        request_id = broker_under_test.list_help_requests()[0]["id"]
+        await broker_under_test.answer_help_request(request_id, "First answer.")
+
+        with pytest.raises(ValueError, match="already answered"):
+            await broker_under_test.answer_help_request(request_id, "Second answer.")
+
+    @pytest.mark.asyncio
+    async def test_empty_answer_raises(self, settings, tmp_path):
+        broker_under_test = self._broker(settings, tmp_path)
+        await broker_under_test._observe_room_peer_event(
+            "flock-specification-framer", "help_needed", dict(self._FRAME)
+        )
+        request_id = broker_under_test.list_help_requests()[0]["id"]
+
+        with pytest.raises(ValueError, match="answer must not be empty"):
+            await broker_under_test.answer_help_request(request_id, "   ")

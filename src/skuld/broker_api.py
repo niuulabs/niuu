@@ -910,6 +910,35 @@ async def get_workflow_gates() -> dict:
     return {"gates": broker.list_workflow_gates()}
 
 
+class _HelpAnswerRequest(BaseModel):
+    """Request body answering a peer's pending help request."""
+
+    answer: str
+    source: str = "external"
+
+
+@app.get("/api/help/requests")
+async def get_help_requests() -> dict:
+    """Return peer help requests (genuine agent questions) for this session."""
+    return {"requests": broker.list_help_requests()}
+
+
+@app.post("/api/help/requests/{request_id}/answer")
+async def answer_help_request(request_id: str, body: _HelpAnswerRequest) -> dict:
+    """Answer a pending help request; the answer routes to the asking peer."""
+    try:
+        message_id = await broker.answer_help_request(
+            request_id,
+            body.answer,
+            source=body.source,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"status": "answered", "message_id": message_id}
+
+
 @app.post("/api/workflow/gates/{gate_id}/resolve")
 async def resolve_workflow_gate(
     request: Request,

@@ -111,6 +111,85 @@ def build_llm_gate_reviewer(
     return _review
 
 
+#: (request, question_context) -> answer text delivered to the asking peer.
+QuestionAnswerer = Callable[[ToolBuildRequest, dict[str, Any]], Awaitable[str]]
+
+_ANSWER_MAX_TOKENS = 700
+
+_ANSWER_SYSTEM_PROMPT = (
+    "You are {valkyrie_id}, a resident Valkyrie. An agent building a tool YOU "
+    "commissioned is blocked on a question only you can answer. Answer it "
+    "directly and concretely from what you know about the capability you "
+    "requested. Give decisions, not options; if the question exceeds what you "
+    "specified, decide now and say so. Plain text, no preamble."
+)
+
+_ANSWER_PROMPT = """An agent in the tool-builder workflow you commissioned is blocked and asks:
+
+## Their question
+- Persona: {persona}
+- Question: {question}
+- Why they are blocked: {reason}
+- What they already tried: {attempted}
+- Their suggestion: {recommendation}
+
+## What you commissioned
+- Tool name: {name}
+- Description: {description}
+- Build request: {build_request}
+- Input schema: {input_schema}
+- Required permission: {required_permission}
+- Declared reach: {declared_reach}
+
+Answer the question so they can continue. Be specific and decisive."""
+
+
+def build_llm_question_answerer(
+    *,
+    llm: Any,
+    model: str,
+    valkyrie_id: str,
+) -> QuestionAnswerer:
+    """Return a QuestionAnswerer that answers peer questions with the resident's LLM."""
+
+    async def _answer(request: ToolBuildRequest, question: dict[str, Any]) -> str:
+        attempted = question.get("attempted")
+        prompt = _ANSWER_PROMPT.format(
+            persona=str(question.get("persona") or "unknown"),
+            question=str(question.get("question") or question.get("summary") or ""),
+            reason=str(question.get("reason") or ""),
+            attempted="; ".join(str(item) for item in attempted)
+            if isinstance(attempted, list) and attempted
+            else "nothing stated",
+            recommendation=str(question.get("recommendation") or "none"),
+            name=request.name,
+            description=request.description,
+            build_request=request.build_request,
+            input_schema=request.input_schema,
+            required_permission=request.required_permission,
+            declared_reach=request.declared_reach,
+        )
+        response = await llm.generate(
+            [{"role": "user", "content": prompt}],
+            tools=[],
+            system=_ANSWER_SYSTEM_PROMPT.format(valkyrie_id=valkyrie_id),
+            model=model,
+            max_tokens=_ANSWER_MAX_TOKENS,
+        )
+        answer = str(getattr(response, "content", "") or "").strip()
+        if not answer:
+            raise ToolBuildError("question answerer produced an empty answer")
+        logger.info(
+            "question answered by %s for %s: %s",
+            valkyrie_id,
+            str(question.get("persona") or "peer"),
+            answer[:200],
+        )
+        return answer
+
+    return _answer
+
+
 def parse_gate_verdict(content: str) -> tuple[str, str] | None:
     """Parse an LLM verdict into (decision, notes), or None when unparseable.
 

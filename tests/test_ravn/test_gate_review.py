@@ -103,3 +103,37 @@ class TestLlmGateReviewer:
 
         assert decision == "request_changes"
         assert notes == "pin the input schema types"
+
+
+class TestLlmQuestionAnswerer:
+    async def test_answers_with_build_context_in_prompt(self) -> None:
+        from ravn.adapters.tool_build.gate_review import build_llm_question_answerer
+
+        llm = _ScriptedLLM(["All namespaces; read-only; report GiB per namespace."])
+        answerer = build_llm_question_answerer(
+            llm=llm, model="qwen-test", valkyrie_id="valkyrie-valhalla-k8s"
+        )
+        question = {
+            "persona": "specification-framer",
+            "question": "Which namespaces are in scope?",
+            "reason": "needs_context",
+            "recommendation": "All namespaces.",
+            "attempted": ["re-read the request"],
+        }
+
+        answer = await answerer(_request(), question)
+
+        assert answer.startswith("All namespaces")
+        prompt = llm.calls[0]["messages"][0]["content"]
+        assert "Which namespaces are in scope?" in prompt
+        assert "Build a tool that reads pod restart counts." in prompt
+        assert "re-read the request" in prompt
+
+    async def test_empty_answer_fails_loud(self) -> None:
+        from ravn.adapters.tool_build.gate_review import build_llm_question_answerer
+
+        llm = _ScriptedLLM(["   "])
+        answerer = build_llm_question_answerer(llm=llm, model="m", valkyrie_id="v")
+
+        with pytest.raises(ToolBuildError, match="empty answer"):
+            await answerer(_request(), {"question": "anything"})

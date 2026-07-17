@@ -115,6 +115,8 @@ class RecordingVolundrPort(VolundrPort):
         self.stopped: list[str] = []
         self.gates: list[dict] = []
         self.resolved_gates: list[tuple[str, str, str, str, str]] = []
+        self.help_requests: list[dict] = []
+        self.answered_help: list[tuple[str, str, str, str]] = []
 
     @property
     def name(self) -> str:
@@ -169,6 +171,22 @@ class RecordingVolundrPort(VolundrPort):
 
     async def get_workflow_gates(self, session_id: str, *, auth_token=None, principal=None):
         return list(self.gates)
+
+    async def get_help_requests(self, session_id: str, *, auth_token=None, principal=None):
+        return list(self.help_requests)
+
+    async def answer_help_request(
+        self,
+        session_id: str,
+        request_id: str,
+        answer: str,
+        *,
+        source: str = "ting",
+        auth_token=None,
+        principal=None,
+    ) -> dict:
+        self.answered_help.append((session_id, request_id, answer, source))
+        return {"status": "answered", "message_id": "msg-1"}
 
     async def resolve_workflow_gate(
         self,
@@ -528,14 +546,16 @@ class TestGateContinuation:
         assert "review notes" in error["message"]
         assert port.resolved_gates == []
 
-    def test_missing_gate_decision_is_invalid(self) -> None:
+    def test_decisionless_reply_without_pending_question_is_rejected(self) -> None:
+        # No gateDecision routes the reply to the question path; with only a
+        # gate pending (no peer question) the reply has nothing to answer.
         client, campaign, _ = self._blocked_client()
 
         response = _rpc(client, "SendMessage", self._reply_params(campaign.slug, decision=None))
 
         error = response.json()["error"]
         assert error["code"] == -32602
-        assert "gateDecision" in error["message"]
+        assert "no pending question" in error["message"]
 
     def test_reply_on_non_blocked_task_is_rejected(self) -> None:
         client, campaign, port = self._blocked_client(status=WorkflowCampaignStatus.RUNNING)
@@ -884,3 +904,118 @@ class TestTaskArtifacts:
         result = _rpc(client, "GetTask", {"id": campaign.slug}).json()["result"]
 
         assert result.get("artifacts", []) == []
+
+
+class TestQuestionReplies:
+    """Genuine peer questions (help_needed) answered over A2A — no gateDecision."""
+
+    _QUESTION = {
+        "id": "help-1",
+        "status": "pending",
+        "peer_id": "ravn-specification-framer",
+        "persona": "specification-framer",
+        "summary": "Which namespaces are in scope for the PVC summary?",
+        "reason": "needs_context",
+        "recommendation": "Assume all namespaces unless told otherwise.",
+        "attempted": ["re-read the build request"],
+        "context": {},
+    }
+
+    def _blocked_with_question(
+        self,
+    ) -> tuple[TestClient, WorkflowCampaign, RecordingVolundrPort]:
+        campaign = _make_campaign(status=WorkflowCampaignStatus.BLOCKED)
+        port = RecordingVolundrPort()
+        port.help_requests = [dict(self._QUESTION)]
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([campaign]),
+            volundr=port,
+        )
+        return client, campaign, port
+
+    @staticmethod
+    def _answer_params(task_id: str, *, text: str, metadata: dict | None = None) -> dict:
+        return {
+            "message": {
+                "messageId": "msg-3",
+                "role": "ROLE_USER",
+                "taskId": task_id,
+                "parts": [{"text": text}] if text else [],
+                "metadata": metadata or {},
+            }
+        }
+
+    def test_plain_reply_answers_pending_question(self) -> None:
+        client, campaign, port = self._blocked_with_question()
+
+        response = _rpc(
+            client,
+            "SendMessage",
+            self._answer_params(campaign.slug, text="All namespaces, read-only access."),
+        )
+
+        result = response.json()["result"]["task"]
+        assert result["status"]["state"] == "TASK_STATE_WORKING"
+        assert port.answered_help == [
+            ("session-123", "help-1", "All namespaces, read-only access.", "a2a")
+        ]
+
+    def test_reply_without_text_is_invalid(self) -> None:
+        client, campaign, port = self._blocked_with_question()
+
+        response = _rpc(client, "SendMessage", self._answer_params(campaign.slug, text=""))
+
+        error = response.json()["error"]
+        assert error["code"] == -32602
+        assert "non-empty text part" in error["message"]
+        assert port.answered_help == []
+
+    def test_request_id_metadata_selects_question(self) -> None:
+        client, campaign, port = self._blocked_with_question()
+        port.help_requests.append({**self._QUESTION, "id": "help-2", "summary": "Second question"})
+
+        response = _rpc(
+            client,
+            "SendMessage",
+            self._answer_params(
+                campaign.slug,
+                text="Answer for the second question.",
+                metadata={"requestId": "help-2"},
+            ),
+        )
+
+        assert response.json()["result"]["task"]["status"]["state"] == "TASK_STATE_WORKING"
+        assert port.answered_help[0][1] == "help-2"
+
+    def test_answered_question_is_not_reanswerable(self) -> None:
+        client, campaign, port = self._blocked_with_question()
+        port.help_requests[0]["status"] = "answered"
+
+        response = _rpc(
+            client,
+            "SendMessage",
+            self._answer_params(campaign.slug, text="Too late."),
+        )
+
+        error = response.json()["error"]
+        assert "no pending question" in error["message"]
+        assert port.answered_help == []
+
+    def test_get_task_attaches_pending_questions(self) -> None:
+        client, campaign, _ = self._blocked_with_question()
+
+        response = _rpc(client, "GetTask", {"id": campaign.slug})
+
+        task = response.json()["result"]
+        assert task["status"]["state"] == "TASK_STATE_INPUT_REQUIRED"
+        questions = task["metadata"]["pendingQuestions"]
+        assert questions == [
+            {
+                "requestId": "help-1",
+                "persona": "specification-framer",
+                "question": "Which namespaces are in scope for the PVC summary?",
+                "reason": "needs_context",
+                "recommendation": "Assume all namespaces unless told otherwise.",
+                "attempted": ["re-read the build request"],
+            }
+        ]

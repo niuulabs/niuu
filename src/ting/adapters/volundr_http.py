@@ -349,6 +349,46 @@ class VolundrHTTPAdapter(VolundrPort):
             resp.raise_for_status()
             return resp.json()
 
+    async def get_help_requests(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> list[dict]:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.get(
+                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/help/requests",
+                headers=self._headers(auth_token, principal),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, dict):
+                requests = data.get("requests", [])
+                return requests if isinstance(requests, list) else []
+            return data if isinstance(data, list) else []
+
+    async def answer_help_request(
+        self,
+        session_id: str,
+        request_id: str,
+        answer: str,
+        *,
+        source: str = "ting",
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> dict:
+        encoded_request_id = quote(request_id, safe="")
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/help/requests/"
+                f"{encoded_request_id}/answer",
+                headers=self._headers(auth_token, principal),
+                json={"answer": answer, "source": source},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     async def stop_session(
         self,
         session_id: str,

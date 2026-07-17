@@ -1167,7 +1167,7 @@ async def test_a2a_backend_bounds_gate_rounds() -> None:
         max_gate_rounds=1,
     )
 
-    with pytest.raises(ToolBuildError, match="exceeded 1 gate rounds"):
+    with pytest.raises(ToolBuildError, match="exceeded 1 input rounds"):
         await backend.build(_request())
 
 
@@ -1219,3 +1219,75 @@ async def test_a2a_backend_stale_gate_reply_keeps_polling() -> None:
 
     exchanges = result.build_evidence["gate_exchanges"]
     assert exchanges[0]["delivery"] == "stale"
+
+
+def _a2a_questioned_task() -> dict:
+    task = _a2a_task("TASK_STATE_INPUT_REQUIRED")
+    task["metadata"] = {
+        "pendingQuestions": [
+            {
+                "requestId": "help-1",
+                "persona": "specification-framer",
+                "question": "Which namespaces are in scope?",
+                "reason": "needs_context",
+                "recommendation": "All namespaces.",
+                "attempted": [],
+            }
+        ]
+    }
+    return task
+
+
+async def test_a2a_backend_answers_peer_question_and_completes() -> None:
+    seen: list = []
+
+    async def _answerer(request, question):
+        seen.append((request.name, question["question"]))
+        return "All namespaces, read-only; totals per namespace and storage class."
+
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_questioned_task()),
+                _rpc_result({"task": _a2a_task("TASK_STATE_WORKING")}),
+                _rpc_result(_a2a_task("TASK_STATE_COMPLETED", artifacts=_A2A_DONE_ARTIFACTS)),
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1", question_answerer=_answerer)
+
+    result = await backend.build(_request())
+
+    assert seen == [("mimir_metric_window", "Which namespaces are in scope?")]
+    exchanges = result.build_evidence["gate_exchanges"]
+    assert exchanges[0]["kind"] == "question"
+    assert exchanges[0]["delivery"] == "delivered"
+    assert exchanges[0]["question"]["persona"] == "specification-framer"
+    assert exchanges[0]["answer"].startswith("All namespaces")
+    reply = next(
+        body
+        for body in client.post_bodies
+        if body["method"] == "SendMessage" and body["params"]["message"].get("taskId") == "task-1"
+    )
+    # A question reply is a plain informative message — no gateDecision.
+    assert "gateDecision" not in reply["params"]["message"]["metadata"]
+    assert reply["params"]["message"]["metadata"]["requestId"] == "help-1"
+    assert reply["params"]["message"]["parts"][0]["text"].startswith("All namespaces")
+
+
+async def test_a2a_backend_fails_loud_on_question_without_answerer() -> None:
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_questioned_task()),
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1", gate_reviewer=_approving_reviewer())
+
+    with pytest.raises(ToolBuildError, match="no question_answerer"):
+        await backend.build(_request())

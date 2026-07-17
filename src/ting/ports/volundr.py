@@ -200,6 +200,29 @@ class VolundrPort(ABC):
         """Resolve a workflow gate for a running Volundr session."""
         raise NotImplementedError
 
+    async def get_help_requests(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> list[dict]:
+        """Return peer help requests (agent questions) for a running session."""
+        return []
+
+    async def answer_help_request(
+        self,
+        session_id: str,
+        request_id: str,
+        answer: str,
+        *,
+        source: str = "ting",
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> dict:
+        """Answer a pending peer help request in a running session."""
+        raise NotImplementedError
+
     @abstractmethod
     async def stop_session(
         self,
