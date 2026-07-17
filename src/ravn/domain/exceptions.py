@@ -45,6 +45,31 @@ class ConfigurationError(RavnError):
     """Raised when Ravn is misconfigured."""
 
 
+class PromptBudgetExceededError(RavnError):
+    """Raised when a turn's estimated prompt exceeds the configured hard budget.
+
+    Raised instead of sending a request that would overflow the model's
+    context window — the message carries a per-section breakdown so the
+    oversized section is identifiable from the failure alone.
+    """
+
+    def __init__(
+        self,
+        *,
+        estimated_tokens: int,
+        budget_tokens: int,
+        sections: dict[str, int],
+    ) -> None:
+        self.estimated_tokens = estimated_tokens
+        self.budget_tokens = budget_tokens
+        self.sections = dict(sections)
+        breakdown = ", ".join(f"{name}≈{count}" for name, count in sections.items())
+        super().__init__(
+            f"Prompt budget exceeded: estimated {estimated_tokens} tokens > "
+            f"budget {budget_tokens} ({breakdown})"
+        )
+
+
 class AllProvidersExhaustedError(RavnError):
     """Raised when all LLM providers in the fallback chain have failed."""
 

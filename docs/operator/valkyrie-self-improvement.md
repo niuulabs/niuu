@@ -149,6 +149,31 @@ resident_evolution:
   that run Docker** (adds container isolation + network scoping). Not
   available in k8s pods — do not configure it there.
 
+### 5b. Injection mode — HOW installed tools reach the prompt
+
+```yaml
+resident_evolution:
+  learned_tool_injection_mode: dispatch   # dispatch (default) | bulk
+```
+
+- `dispatch` (default): learned tools are NOT preloaded into the tool schema
+  of every LLM call. The resident discovers them with `capability_list`
+  (entries tagged `learned`) and executes them by name through the single
+  `learned_tool_run` tool — the same retrieval-on-demand model markdown
+  skills already use. Per-turn prompt size stays independent of how many
+  tools the resident has accumulated (NIU-1118).
+- `bulk`: legacy behavior — every persisted artifact is loaded as a native
+  callable tool on every turn, and every manifest description lands in every
+  request's tool schema. With ~50 accumulated tools this alone consumed a
+  large share of a 131k context window; keep it only as a temporary
+  escape hatch.
+
+Related bound: `context_management.max_prompt_tokens` (0 = off) is a hard
+per-call budget for the estimated prompt (system + tool schemas + history).
+When a turn still exceeds it after context compression, the call fails loudly
+with a per-section breakdown instead of overflowing the model window. Every
+turn also logs a `prompt_composition:` line with per-section token estimates.
+
 ### 6. Lifecycle knobs
 
 ```yaml
@@ -197,9 +222,10 @@ security budget — set trust levels accordingly.
    runs; the result verifies; in `guarded` mode an install review appears in
    the operator inbox, in `autonomous` mode a read-reach tool installs
    directly.
-5. **Validate adoption** — the tool appears in the session toolbox and in the
-   realm ledger: `curl {BASE_URL}/api/v1/realms/{slug}/capabilities` shows it
-   with `status: present`.
+5. **Validate adoption** — the tool is registered in the building session's
+   toolbox, appears in `capability_list` (tagged `learned`, runnable via
+   `learned_tool_run` in every later session), and shows in the realm ledger:
+   `curl {BASE_URL}/api/v1/realms/{slug}/capabilities` with `status: present`.
 6. **Validate rollback** — after `rollback_consecutive_failures` real
    failures, the skill archives, the capability flips to `status: gap`, and a
    `rebuild` judgment reaches the inbox. (Do not force this in production;

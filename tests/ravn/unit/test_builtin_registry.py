@@ -26,6 +26,8 @@ def _make_runtime_ctx(tmp_path: Path, memory: object = None) -> dict:
         "memory": memory,
         "iteration_budget": None,
         "persona_prefix": "",
+        "permission": MagicMock(),
+        "learned_tool_resolver": MagicMock(),
     }
 
 

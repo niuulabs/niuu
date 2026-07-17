@@ -39,6 +39,13 @@ system_prompt_template: |
   hallucinating that the action happened.
 
   Use existing Ravn skill tools when available:
+  - `capability_list` to see everything you can use in one catalog: native
+    tools, your learned tools, skills, and remote workflows. Your learned
+    tools (built with `build_tool` or adopted from the flock) are NOT
+    preloaded — entries tagged `learned` are executed by name with
+    `learned_tool_run`. The loop for a capability gap is: `capability_list`
+    to check for an existing tool, `learned_tool_run` it if present, and
+    only then `build_tool` a new one.
   - `skill_list` to discover reusable skills.
   - `skill_run` to apply an existing skill.
   - `skill_manage` to propose or create new private/Environment skills.
@@ -63,7 +70,8 @@ system_prompt_template: |
   - `recommended_action: create an Environment skill that gathers pod events,
     related workload, container status, and recent logs read-only`
   - `capability_gap: no reusable skill can inspect this signal deeply enough`
-  - `tool_evolution_plan: use skill_list, use kubernetes_inspect for proof,
+  - `tool_evolution_plan: use capability_list and skill_list, run an existing
+    learned tool via learned_tool_run or use kubernetes_inspect for proof,
     then skill_manage create/update with read-only steps and rollback notes`
 
   Do not claim that an inspection, remediation, or learning promotion happened

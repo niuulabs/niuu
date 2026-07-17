@@ -36,6 +36,7 @@ def _build_tools(
     discovery: Any | None = None,
     mimir_event_emitter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     session_join_manager: Any | None = None,
+    permission: Any | None = None,
 ) -> list[Any]:
     """Build the tool list from the built-in registry, filtered by profile.
 
@@ -79,8 +80,20 @@ def _build_tools(
         "iteration_budget": iteration_budget,
         "persona_prefix": persona_prefix,
         "discovery": discovery,
+        "permission": permission,
     }
     runtime_ctx["capability_tools_provider"] = lambda: runtime_ctx.get("capability_tools", [])
+
+    # Learned tools: 'dispatch' (default) keeps them out of the per-turn tool
+    # schema — capability_list enumerates the artifact catalog and the single
+    # learned_tool_run tool executes by name. 'bulk' is the legacy path that
+    # loads every artifact as a native callable (NIU-1118).
+    dispatch_learned_tools = settings.resident_evolution.learned_tool_injection_mode == "dispatch"
+    if dispatch_learned_tools:
+        resolver = _build_learned_tool_resolver(settings, workspace)
+        if resolver is not None:
+            runtime_ctx["learned_tool_resolver"] = resolver
+            runtime_ctx["learned_tools_provider"] = resolver.list_artifacts
 
     # Pre-build shared skill port so both skill_list and skill_run reuse one instance
     if "skill" in include_groups and settings.skill.enabled:
@@ -150,7 +163,8 @@ def _build_tools(
         except Exception as exc:
             logger.warning("Failed to load custom tool %r: %s", ct.adapter, exc)
 
-    tools.extend(_load_resident_learned_tools(settings, workspace, tools))
+    if not dispatch_learned_tools:
+        tools.extend(_load_resident_learned_tools(settings, workspace, tools))
 
     # -- Apply enabled/disabled filters --
     tools = _filter_tools(tools, settings, persona_config)
@@ -163,61 +177,51 @@ def _build_tools(
     return tools
 
 
+def _build_learned_tool_resolver(settings: Settings, workspace: Path) -> Any | None:
+    """Construct the on-demand learned-tool resolver, sweeping stale venvs."""
+    from ravn.valkyrie_evolution.learned_tools import (  # noqa: PLC0415
+        LearnedToolError,
+        LearnedToolResolver,
+    )
+
+    try:
+        resolver = LearnedToolResolver(
+            state_dir=_resident_ravn_state_dir(workspace, settings),
+            execution_backend=settings.resident_evolution.learned_tool_execution_backend,
+            workspace_root=workspace,
+            timeout_seconds=settings.resident_evolution.tool_timeout_seconds,
+        )
+    except LearnedToolError as exc:
+        logger.warning("Skipping learned tools: %s", exc)
+        return None
+    resolver.sweep_orphaned_venvs()
+    return resolver
+
+
 def _load_resident_learned_tools(
     settings: Settings,
     workspace: Path,
     existing_tools: list[Any],
 ) -> list[Any]:
-    """Load approved resident-authored learned tools from local state."""
-    from ravn.valkyrie_evolution.learned_tools import (  # noqa: PLC0415
-        ForgeSandboxLearnedToolRunner,
-        learned_tool_storage,
-        learned_tool_venvs_dir,
-        load_learned_tool,
-        read_learned_tool_artifact,
-    )
-    from ravn.valkyrie_evolution.tool_runtime import prune_orphaned_tool_venvs  # noqa: PLC0415
+    """Legacy bulk mode: load every learned tool as a native callable.
 
-    state_dir = _resident_ravn_state_dir(workspace, settings)
-    backend = settings.resident_evolution.learned_tool_execution_backend
-    if backend not in {"", "local", "forge", "devrunner"}:
-        logger.warning("Skipping learned tools: unknown execution backend %s", backend)
-        return []
-    runner = (
-        ForgeSandboxLearnedToolRunner(workspace_root=workspace)
-        if backend in {"forge", "devrunner"}
-        else None
-    )
-
-    code_dir, artifacts_dir = learned_tool_storage(state_dir)
-    venvs_dir = learned_tool_venvs_dir(state_dir)
-    try:
-        pruned = prune_orphaned_tool_venvs(venvs_dir=venvs_dir, tools_dir=code_dir)
-        if pruned:
-            logger.info("Pruned %d orphaned learned-tool venv(s): %s", len(pruned), pruned)
-    except Exception as exc:  # noqa: BLE001 — venv GC must never block startup
-        logger.warning("Learned-tool venv sweep failed: %s", exc)
-    if not artifacts_dir.exists():
+    Kept behind ``resident_evolution.learned_tool_injection_mode: bulk`` — the
+    default dispatch mode exposes learned tools through capability_list +
+    learned_tool_run instead, so the prompt does not grow with the catalog.
+    """
+    resolver = _build_learned_tool_resolver(settings, workspace)
+    if resolver is None:
         return []
     seen = {tool.name for tool in existing_tools}
     loaded: list[Any] = []
-    for artifact_file in sorted(artifacts_dir.glob("*.json")):
+    for artifact in resolver.list_artifacts():
+        name = artifact.manifest.name
+        if name in seen:
+            continue
         try:
-            artifact = read_learned_tool_artifact(artifact_file)
-            if artifact.manifest.name in seen:
-                continue
-            tool_path = code_dir / f"{artifact.manifest.name}.py"
-            if not tool_path.exists():
-                continue
-            tool = load_learned_tool(
-                artifact=artifact,
-                tool_path=tool_path,
-                timeout_seconds=settings.resident_evolution.tool_timeout_seconds,
-                runner=runner,
-                venvs_dir=venvs_dir,
-            )
+            tool = resolver.load(name)
         except Exception as exc:
-            logger.warning("Failed to load learned tool artifact %s: %s", artifact_file, exc)
+            logger.warning("Failed to load learned tool %s: %s", name, exc)
             continue
         seen.add(tool.name)
         loaded.append(tool)
@@ -327,6 +331,7 @@ _TOOL_GROUP_ALIASES: dict[str, list[str]] = {
         "skill_run",
         "skill_manage",
         "capability_list",
+        "learned_tool_run",
     ],
 }
 

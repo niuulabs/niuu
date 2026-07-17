@@ -149,6 +149,7 @@ async def _run_daemon(
             session_join_manager=(
                 drive_loop._session_join_manager if drive_loop is not None else None
             ),
+            permission=permission,
         )
         if profile_cfg.include_mcp:
             tools.extend(_filter_tools(mcp_tools, settings, resolved_persona))
@@ -206,6 +207,8 @@ async def _run_daemon(
             # NIU-612: persona config for outcome parsing + early termination
             persona_config=resolved_persona,
             stop_on_outcome=resolved_persona.stop_on_outcome if resolved_persona else False,
+            # NIU-1118: hard per-call prompt budget (0 disables)
+            max_prompt_tokens=settings.context_management.max_prompt_tokens,
             session_join_manager=(
                 drive_loop._session_join_manager if drive_loop is not None else None
             ),

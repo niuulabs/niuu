@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 import logging
 import re
 import time
@@ -23,7 +24,11 @@ from ravn.domain.checkpoint import (
     InterruptReason,
 )
 from ravn.domain.events import RavnEvent
-from ravn.domain.exceptions import MaxIterationsError, PermissionDeniedError
+from ravn.domain.exceptions import (
+    MaxIterationsError,
+    PermissionDeniedError,
+    PromptBudgetExceededError,
+)
 from ravn.domain.models import (
     Episode,
     LLMResponse,
@@ -127,6 +132,8 @@ class RavnAgent:
         persona_config: PersonaConfig | None = None,
         # NIU-612: stop loop early when outcome block detected
         stop_on_outcome: bool = False,
+        # NIU-1118: hard per-call prompt budget; 0 disables
+        max_prompt_tokens: int = 0,
     ) -> None:
         self._llm = llm
         self._tools = {t.name: t for t in tools}
@@ -182,6 +189,8 @@ class RavnAgent:
         self._persona_config = persona_config
         # NIU-612: stop loop early when outcome block detected
         self._stop_on_outcome = stop_on_outcome
+        # NIU-1118: hard per-call prompt budget; 0 disables
+        self._max_prompt_tokens = max_prompt_tokens
 
     @property
     def session(self) -> Session:
@@ -438,6 +447,13 @@ class RavnAgent:
             messages_for_llm = await self._maybe_compress(
                 effective_system, memory_summary=memory_ctx
             )
+
+            # NIU-1118: prompt-composition audit + hard budget. Runs after
+            # compression so the budget judges what would actually be sent.
+            prompt_sections = self._prompt_section_estimates(effective_system, messages_for_llm)
+            if iteration == 0:
+                self._log_prompt_composition(prompt_sections)
+            self._enforce_prompt_budget(prompt_sections)
 
             thinking_param = self._resolve_thinking(
                 user_input=user_input,
@@ -713,6 +729,67 @@ class RavnAgent:
                 self._prompt_builder.set_learnings_context(learnings_text)
         except Exception:
             logger.warning("Learnings injection failed; continuing without.", exc_info=True)
+
+    def _prompt_section_estimates(
+        self,
+        effective_system: SystemPrompt,
+        messages: list[Message],
+    ) -> dict[str, int]:
+        """Estimate this call's prompt tokens, attributed per section.
+
+        Sections: the tool schemas sent with every request, each system-prompt
+        section (per PromptBuilder section when one is configured, flat
+        otherwise), and the message history. This is the prompt-composition
+        audit NIU-1118 asks for — the data that shows WHERE an oversized
+        drive-loop prompt comes from.
+        """
+        sections: dict[str, int] = {}
+        tool_defs = self._tool_defs()
+        sections["tool_schemas"] = TokenEstimator.rough(
+            json.dumps(tool_defs, default=str, sort_keys=True)
+        )
+        if self._prompt_builder is not None:
+            for name, text in self._prompt_builder.section_texts().items():
+                sections[f"system:{name}"] = TokenEstimator.rough(text)
+        elif isinstance(effective_system, str):
+            sections["system"] = TokenEstimator.rough(effective_system)
+        else:
+            sections["system"] = TokenEstimator.rough_blocks(effective_system)
+        sections["history"] = TokenEstimator.rough_messages(messages)
+        return sections
+
+    def _log_prompt_composition(self, sections: dict[str, int]) -> None:
+        total = sum(sections.values())
+        breakdown = ", ".join(f"{name}≈{count}" for name, count in sections.items())
+        logger.info(
+            "prompt_composition: total≈%d tokens (%s; tools=%d, messages=%d)",
+            total,
+            breakdown,
+            len(self._tools),
+            len(self._session.messages),
+        )
+
+    def _enforce_prompt_budget(self, sections: dict[str, int]) -> None:
+        """Refuse an LLM call whose estimated prompt exceeds the hard budget.
+
+        Only active when ``max_prompt_tokens`` is configured (> 0). Runs after
+        context compression had its chance, so hitting it means a genuinely
+        oversized prompt — fail loudly with the per-section breakdown instead
+        of letting the provider reject (or silently accept) an overflowing
+        request.
+        """
+        if self._max_prompt_tokens <= 0:
+            return
+        total = sum(sections.values())
+        if total <= self._max_prompt_tokens:
+            return
+        error = PromptBudgetExceededError(
+            estimated_tokens=total,
+            budget_tokens=self._max_prompt_tokens,
+            sections=sections,
+        )
+        logger.error("%s", error)
+        raise error
 
     async def _maybe_compress(
         self,

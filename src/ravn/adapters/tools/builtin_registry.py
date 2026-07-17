@@ -454,6 +454,19 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "tools_provider": ctx["capability_tools_provider"],
             "skill_port": ctx.get("skill_port"),
             "workflow_sources": ctx.get("workflow_sources") or [],
+            "learned_tools_provider": ctx.get("learned_tools_provider"),
+        },
+    ),
+    # Learned tools are dispatched on demand instead of bulk-loaded into every
+    # prompt (NIU-1118). In the core group so every profile that previously
+    # received bulk-loaded learned tools keeps the same reach through dispatch.
+    "learned_tool_run": BuiltinToolDef(
+        adapter="ravn.adapters.tools.learned_tool_run.LearnedToolRunTool",
+        groups=frozenset({"core", "ravn"}),
+        required_context=frozenset({"learned_tool_resolver", "permission"}),
+        kwargs_fn=lambda _s, ctx: {
+            "resolver": ctx["learned_tool_resolver"],
+            "permission": ctx["permission"],
         },
     ),
 }

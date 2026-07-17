@@ -31,10 +31,14 @@ class CapabilityListTool(ToolPort):
         tools_provider: Callable[[], Sequence[ToolPort]],
         skill_port: SkillPort | None = None,
         workflow_sources: Sequence[WorkflowCapabilityPort] | None = None,
+        learned_tools_provider: Callable[[], Sequence[Any]] | None = None,
     ) -> None:
         self._tools_provider = tools_provider
         self._skill_port = skill_port
         self._workflow_sources = list(workflow_sources or [])
+        # Returns learned-tool artifact envelopes (manifest name/description/
+        # schema) read from disk — never loaded as callables here (NIU-1118).
+        self._learned_tools_provider = learned_tools_provider
 
     @property
     def name(self) -> str:
@@ -44,8 +48,10 @@ class CapabilityListTool(ToolPort):
     def description(self) -> str:
         return (
             "List available capabilities as one portable catalog: native Ravn tools, "
-            "resident skills, and configured remote workflows. Use this before "
-            "building new tools so existing capabilities are not duplicated."
+            "resident learned tools, resident skills, and configured remote "
+            "workflows. Use this before building new tools so existing capabilities "
+            "are not duplicated. Entries tagged 'learned' are not native tools — "
+            "execute them by name with learned_tool_run."
         )
 
     @property
@@ -112,11 +118,13 @@ class CapabilityListTool(ToolPort):
     async def _collect(self) -> tuple[list[Capability], list[dict[str, Any]]]:
         capabilities: list[Capability] = []
         errors: list[dict[str, Any]] = []
+        native_names: set[str] = set()
 
         for tool in self._tools_provider():
             try:
                 if tool.name == self.name:
                     continue
+                native_names.add(tool.name)
                 capabilities.append(
                     capability_from_tool(
                         name=tool.name,
@@ -135,6 +143,27 @@ class CapabilityListTool(ToolPort):
                         "error": str(exc),
                     }
                 )
+
+        if self._learned_tools_provider is not None:
+            try:
+                for artifact in self._learned_tools_provider():
+                    manifest = artifact.manifest
+                    # Skip names already exposed natively (legacy bulk mode, or
+                    # a tool build_tool registered live in this session).
+                    if manifest.name in native_names:
+                        continue
+                    capabilities.append(
+                        capability_from_tool(
+                            name=manifest.name,
+                            description=manifest.description,
+                            input_schema=manifest.input_schema,
+                            required_permission=manifest.required_permission,
+                            tags=["tool", "learned"],
+                            metadata={"invoke_via": "learned_tool_run"},
+                        )
+                    )
+            except Exception as exc:
+                errors.append({"kind": "learned_tool", "error": str(exc)})
 
         if self._skill_port is not None:
             try:

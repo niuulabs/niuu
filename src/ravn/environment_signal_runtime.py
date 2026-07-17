@@ -39,6 +39,12 @@ def _import_class(dotted_path: str) -> type:
     return getattr(module, class_name)
 
 
+def _truncate(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "…"
+
+
 def _inject_secrets(kwargs: dict[str, Any], secret_map: dict[str, str]) -> dict[str, Any]:
     merged = dict(kwargs)
     for kwarg_name, env_var in secret_map.items():
@@ -294,20 +300,34 @@ class EnvironmentSignalRuntime:
 
     def _triage_task(self, batch: list[dict[str, Any]]) -> AgentTask:
         peer_id = self._settings.mesh.own_peer_id or "unknown"
+        env_cfg = self._settings.environment
         severity_counts: dict[str, int] = {}
         source_counts: dict[str, int] = {}
         for entry in batch:
             severity_counts[entry["severity"]] = severity_counts.get(entry["severity"], 0) + 1
             source_counts[entry["source_id"]] = source_counts.get(entry["source_id"], 0) + 1
+        # The prompt stays bounded no matter how large the batch is: a capped
+        # number of truncated sample lines plus an explicit overflow line; the
+        # severity breakdown is what summarizes the whole batch (NIU-1118).
+        sample_count = max(0, env_cfg.idle_triage_sample_signals)
+        summary_max_chars = max(1, env_cfg.idle_triage_sample_summary_max_chars)
         sample_lines = "\n".join(
             f"- `{entry['signal_type']}` ({entry['severity']}, {entry['source_id']}): "
-            f"{entry['summary']}"
-            for entry in batch[:15]
+            f"{_truncate(str(entry['summary']), summary_max_chars)}"
+            for entry in batch[:sample_count]
         )
+        overflow = len(batch) - sample_count
+        if overflow > 0:
+            sample_lines += (
+                f"\n- …and {overflow} more signal(s) not shown; "
+                "the severity breakdown above covers the full batch."
+            )
         severity_lines = "\n".join(
             f"- **{severity}**: {count}" for severity, count in sorted(severity_counts.items())
         )
-        signal_refs = "\n".join(f"  - {entry['signal_ref']}" for entry in batch[:25])
+        signal_refs = "\n".join(
+            f"  - {entry['signal_ref']}" for entry in batch[: env_cfg.idle_triage_max_signal_refs]
+        )
         outcome_template = (
             "---outcome---\n"
             "decision: watch\n"
@@ -458,9 +478,11 @@ class EnvironmentSignalRuntime:
                     "\n## Required before you finish\n\n"
                     f"No installed instrument matches capability `{capability}`. "
                     "Decide for yourself which available skill or tool should handle "
-                    "the signal. If no suitable capability exists, use `build_tool`: "
-                    "author the `tool_code` yourself, or pass your spec as "
-                    "`build_request` so the configured builder can produce it.\n\n"
+                    "the signal: check `capability_list` first — entries tagged "
+                    "`learned` are your own built tools, executed by name with "
+                    "`learned_tool_run`. Only if no suitable capability exists, use "
+                    "`build_tool`: author the `tool_code` yourself, or pass your spec "
+                    "as `build_request` so the configured builder can produce it.\n\n"
                     "Guardrails, not recipes:\n\n"
                     "- Declare the tool's **real reach** — review gates on it, and "
                     "mutating reach is held for an operator.\n"
@@ -549,12 +571,15 @@ class EnvironmentSignalRuntime:
             "## Your task\n\n"
             "Decide whether this is noise, needs a **watching** state, or "
             "**requires action**. Use existing tools, memory, and resident "
-            "skills/runbooks before proposing new tooling; when `skill_list` and "
-            "`skill_run` are available, inspect and load the relevant runbook "
-            "first. If the investigation is blocked because the toolbox lacks a "
-            "reusable instrument, call `build_tool` with a manifest, declared "
-            "reach, and canary input; when a builder backend is configured, pass "
-            "a `build_request` and let that backend produce the tool. Then use "
+            "skills/runbooks before proposing new tooling: `capability_list` "
+            "shows everything available — native tools, your learned tools "
+            "(tagged `learned`, executed by name with `learned_tool_run`), "
+            "skills, and workflows. When `skill_list` and `skill_run` are "
+            "available, inspect and load the relevant runbook first. Only if "
+            "the investigation is blocked because no existing capability fits, "
+            "call `build_tool` with a manifest, declared reach, and canary "
+            "input; when a builder backend is configured, pass a "
+            "`build_request` and let that backend produce the tool. Then use "
             "the newly registered tool before deciding — or note the review item "
             "when the tool requires approval.\n\n"
             "## Required outcome\n\n"

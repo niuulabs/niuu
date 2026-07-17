@@ -130,6 +130,18 @@ class PromptBuilder:
         self._replace_or_add(PromptSection(name="learnings_context", content=text, cacheable=False))
 
     # ------------------------------------------------------------------
+    # Introspection
+    # ------------------------------------------------------------------
+
+    def section_texts(self) -> dict[str, str]:
+        """Return each non-empty section's text keyed by section name.
+
+        Used by the prompt-composition audit to attribute prompt size to the
+        section that produced it (NIU-1118).
+        """
+        return {s.name: s.content for s in self._sections if s.content}
+
+    # ------------------------------------------------------------------
     # Rendering
     # ------------------------------------------------------------------
 

@@ -364,7 +364,9 @@ async def test_defer_to_investigation_appends_the_build_mandate() -> None:
     assert "## Resident learning" in context
     assert "## Required before you finish" in context
     assert "`inspect.host.host.disk-pressure`" in context
-    assert "If no suitable capability exists, use `build_tool`" in context
+    assert "Only if no suitable capability exists, use `build_tool`" in context
+    # Lookup-then-run: learned tools are dispatched by name, not preloaded.
+    assert "`learned_tool_run`" in context
     # It lands after the outcome schema so the model weights it.
     assert context.index("## Required before you finish") > context.index("---end---")
 
@@ -460,6 +462,40 @@ async def test_below_threshold_signals_accumulate_for_idle_triage() -> None:
     assert "(critical, host-events)" in context
     assert "---outcome---" in context and "---end---" in context
     assert "operational_state: watching" in context
+
+
+def test_idle_triage_prompt_is_bounded_regardless_of_batch_size() -> None:
+    """NIU-1118: a huge signal batch must render a bounded triage prompt."""
+    settings = _settings()
+    settings.environment.idle_triage_sample_signals = 4
+    settings.environment.idle_triage_sample_summary_max_chars = 40
+    settings.environment.idle_triage_max_signal_refs = 6
+    runtime = EnvironmentSignalRuntime(settings=settings, publisher=InProcessBus())
+    long_summary = "very long signal summary " * 50
+    batch = [
+        {
+            "signal_ref": f"sig-{index}",
+            "signal_type": "host",
+            "severity": "info",
+            "source_id": "host-events",
+            "summary": long_summary,
+        }
+        for index in range(40)
+    ]
+
+    task = runtime._triage_task(batch)
+    context = task.initiative_context
+
+    assert task.title == "Idle triage: 40 routine signal(s)"
+    # Sample lines are capped and each summary is truncated, never verbatim.
+    assert long_summary not in context
+    assert context.count("(info, host-events)") == 4
+    assert "…and 36 more signal(s) not shown" in context
+    # The outcome template lists a bounded number of refs.
+    assert "  - sig-5" in context
+    assert "  - sig-6" not in context
+    # The severity breakdown still summarizes the whole batch.
+    assert "**info**: 40" in context
 
 
 @pytest.mark.asyncio

@@ -387,6 +387,7 @@ def _build_agent(
         mimir,
         no_tools=no_tools,
         persona_config=persona_config,
+        permission=permission,
     )
     compressor = None if cli_transport_executor else _build_compressor(settings, llm)
     prompt_builder = _build_prompt_builder(settings)
@@ -440,6 +441,7 @@ def _build_agent(
         persona=persona_config.name if persona_config else "",
         persona_config=persona_config,
         stop_on_outcome=persona_config.stop_on_outcome if persona_config else False,
+        max_prompt_tokens=settings.context_management.max_prompt_tokens,
     )
 
     return agent, channel
@@ -771,6 +773,12 @@ def _build_tool_mcp_tools(settings: Settings, *, persona_config: Any | None) -> 
         iteration_budget=_build_iteration_budget(settings, max_iterations),
         mimir=mimir,
         persona_config=persona_config,
+        permission=_build_permission(
+            settings,
+            workspace,
+            no_tools=False,
+            persona_config=persona_config,
+        ),
     )
 
 
@@ -1140,6 +1148,7 @@ async def _run_gateway(
             memory,
             budget,
             persona_config=persona_config,
+            permission=permission,
         )
         # Append shared MCP tools to per-session tool list
         tools.extend(mcp_tools)
@@ -1186,6 +1195,7 @@ async def _run_gateway(
             input_token_cost_per_million=settings.memory.input_token_cost_per_million,
             output_token_cost_per_million=settings.memory.output_token_cost_per_million,
             extended_thinking=extended_thinking,
+            max_prompt_tokens=settings.context_management.max_prompt_tokens,
         )
 
     gw = RavnGateway(settings.gateway, _agent_factory, profile=profile)

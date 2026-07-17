@@ -743,6 +743,110 @@ _REACH_BOUNDARY = {
 }
 
 
+#: Execution backends the resolver accepts; anything else is a config error.
+KNOWN_EXECUTION_BACKENDS = frozenset({"", "local", "forge", "devrunner"})
+
+
+class LearnedToolResolver:
+    """Resolve persisted learned tools from resident state on demand.
+
+    One resolver owns the storage conventions and execution-backend selection
+    for a resident's learned tools, so every consumer — the legacy bulk loader,
+    the ``learned_tool_run`` dispatch tool, and the capability catalog — sees
+    the same tool in the same place with the same runner. Listing reads only
+    the artifact envelopes; a callable :class:`LearnedTool` is constructed
+    per-name in :meth:`load`, never eagerly for the whole catalog (NIU-1118).
+    """
+
+    def __init__(
+        self,
+        *,
+        state_dir: str | Path,
+        execution_backend: str = "local",
+        workspace_root: str | Path | None = None,
+        timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
+    ) -> None:
+        if execution_backend not in KNOWN_EXECUTION_BACKENDS:
+            raise LearnedToolError(f"unknown learned tool execution backend: {execution_backend!r}")
+        self._state_dir = Path(state_dir)
+        self._execution_backend = execution_backend
+        self._workspace_root = Path(workspace_root) if workspace_root else self._state_dir.parent
+        self._timeout_seconds = timeout_seconds
+        self._code_dir, self._artifacts_dir = learned_tool_storage(self._state_dir)
+        self._venvs_dir = learned_tool_venvs_dir(self._state_dir)
+
+    @property
+    def artifacts_dir(self) -> Path:
+        return self._artifacts_dir
+
+    def sweep_orphaned_venvs(self) -> None:
+        """Garbage-collect venvs whose tool code is gone. Never raises."""
+        from ravn.valkyrie_evolution.tool_runtime import prune_orphaned_tool_venvs  # noqa: PLC0415
+
+        try:
+            pruned = prune_orphaned_tool_venvs(venvs_dir=self._venvs_dir, tools_dir=self._code_dir)
+            if pruned:
+                logger.info("Pruned %d orphaned learned-tool venv(s): %s", len(pruned), pruned)
+        except Exception as exc:  # noqa: BLE001 — venv GC must never block startup
+            logger.warning("Learned-tool venv sweep failed: %s", exc)
+
+    def list_artifacts(self) -> list[LearnedToolArtifact]:
+        """Return every loadable artifact envelope, without building callables.
+
+        Envelopes that fail validation or whose code file is missing are
+        skipped with a warning — a broken artifact must not hide the rest of
+        the catalog.
+        """
+        if not self._artifacts_dir.exists():
+            return []
+        artifacts: list[LearnedToolArtifact] = []
+        for artifact_file in sorted(self._artifacts_dir.glob("*.json")):
+            try:
+                artifact = read_learned_tool_artifact(artifact_file)
+            except Exception as exc:
+                logger.warning("Failed to read learned tool artifact %s: %s", artifact_file, exc)
+                continue
+            if not self._tool_path(artifact.manifest.name).exists():
+                logger.warning(
+                    "Learned tool %s has an artifact but no code file; skipping",
+                    artifact.manifest.name,
+                )
+                continue
+            artifacts.append(artifact)
+        return artifacts
+
+    def load(self, name: str) -> LearnedTool:
+        """Load one learned tool as an executable ToolPort, by manifest name.
+
+        Raises :class:`LearnedToolError` when the tool does not exist or its
+        artifact cannot be validated.
+        """
+        if not _TOOL_NAME_RE.fullmatch(name):
+            raise LearnedToolError(f"invalid learned tool name: {name!r}")
+        artifact_path = learned_tool_artifact_path(self._artifacts_dir, name)
+        if not artifact_path.is_file():
+            raise LearnedToolError(f"no learned tool named {name!r} is installed")
+        artifact = read_learned_tool_artifact(artifact_path)
+        tool_path = self._tool_path(artifact.manifest.name)
+        if not tool_path.exists():
+            raise LearnedToolError(f"learned tool {name!r} has no code file at {tool_path}")
+        return load_learned_tool(
+            artifact=artifact,
+            tool_path=tool_path,
+            timeout_seconds=self._timeout_seconds,
+            runner=self._runner(),
+            venvs_dir=self._venvs_dir,
+        )
+
+    def _tool_path(self, name: str) -> Path:
+        return learned_tool_path(self._code_dir, name)
+
+    def _runner(self) -> LearnedToolRunner | None:
+        if self._execution_backend in {"forge", "devrunner"}:
+            return ForgeSandboxLearnedToolRunner(workspace_root=self._workspace_root)
+        return None
+
+
 def learned_tool_storage(state_dir: str | Path) -> tuple[Path, Path]:
     """Return the one canonical (code_dir, artifacts_dir) for learned tools.
 

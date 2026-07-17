@@ -108,3 +108,69 @@ async def test_capability_list_rejects_unknown_kind() -> None:
 
     assert result.is_error
     assert "Unsupported capability kind" in result.content
+
+
+def _learned_artifact(name: str, description: str = "Read a metric window."):
+    from ravn.valkyrie_evolution.models import LearnedToolArtifact, LearnedToolManifest
+
+    return LearnedToolArtifact(
+        artifact_id=f"learned-tool:{name}",
+        manifest=LearnedToolManifest(
+            name=name,
+            description=description,
+            input_schema={"type": "object"},
+            required_permission="mimir:read",
+            declared_reach=[],
+        ),
+        tool_code="def run(input):\n    return {'ok': True}\n",
+    )
+
+
+@pytest.mark.asyncio
+async def test_capability_list_includes_learned_tools_without_loading_them() -> None:
+    tool = CapabilityListTool(
+        tools_provider=lambda: [FakeTool()],
+        learned_tools_provider=lambda: [_learned_artifact("metric_window")],
+    )
+
+    result = await tool.execute({"kind": "tool"})
+
+    assert not result.is_error
+    payload = json.loads(result.content)
+    learned = [item for item in payload["capabilities"] if item["name"] == "metric_window"]
+    assert len(learned) == 1
+    assert learned[0]["tags"] == ["tool", "learned"]
+    assert learned[0]["metadata"]["invoke_via"] == "learned_tool_run"
+
+
+@pytest.mark.asyncio
+async def test_capability_list_dedupes_learned_tools_against_native_names() -> None:
+    # A learned tool already registered natively (legacy bulk mode, or freshly
+    # built in-session) must not appear twice in the catalog.
+    tool = CapabilityListTool(
+        tools_provider=lambda: [FakeTool()],
+        learned_tools_provider=lambda: [_learned_artifact("mimir_search")],
+    )
+
+    result = await tool.execute({"kind": "tool"})
+
+    payload = json.loads(result.content)
+    names = [item["name"] for item in payload["capabilities"]]
+    assert names.count("mimir_search") == 1
+    assert payload["capabilities"][0]["tags"] != ["tool", "learned"]
+
+
+@pytest.mark.asyncio
+async def test_capability_list_records_learned_source_errors() -> None:
+    def _boom():
+        raise RuntimeError("artifact dir unreadable")
+
+    tool = CapabilityListTool(
+        tools_provider=lambda: [FakeTool()],
+        learned_tools_provider=_boom,
+    )
+
+    result = await tool.execute({})
+
+    payload = json.loads(result.content)
+    assert {"kind": "learned_tool", "error": "artifact dir unreadable"} in payload["errors"]

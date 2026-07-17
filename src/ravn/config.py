@@ -790,6 +790,17 @@ class ContextManagementConfig(BaseModel):
         default="~/.ravn/prompt_cache",
         description="Directory for disk-snapshot prompt cache entries.",
     )
+    max_prompt_tokens: int = Field(
+        default=0,
+        description=(
+            "Hard per-call budget for the estimated prompt size (system prompt + "
+            "tool schemas + message history), in tokens. 0 disables the check. "
+            "When a turn's estimated prompt still exceeds this after context "
+            "compression, the LLM call is refused with PromptBudgetExceededError "
+            "and a per-section breakdown — fail loud instead of sending a request "
+            "that overflows the model's context window."
+        ),
+    )
 
     def effective_protect_last(self) -> int:
         """Return the protect_last value to pass to ContextCompressor.
@@ -2697,6 +2708,18 @@ class ResidentEvolutionConfig(BaseModel):
             "inside the workspace-mounted devrunner container path."
         ),
     )
+    learned_tool_injection_mode: Literal["dispatch", "bulk"] = Field(
+        default="dispatch",
+        description=(
+            "How persisted learned tools reach the agent. 'dispatch' (default) keeps "
+            "them out of the per-turn tool schema: they are discovered on demand via "
+            "capability_list and executed by name through the single learned_tool_run "
+            "tool, so prompt size stays independent of how many tools the resident "
+            "has accumulated. 'bulk' restores the legacy behavior of loading every "
+            "artifact as a native callable tool on every turn (unbounded prompt "
+            "growth — NIU-1118)."
+        ),
+    )
     tool_build_adapter: str = Field(
         default="",
         description=(
@@ -3315,6 +3338,22 @@ class EnvironmentConfig(BaseModel):
     idle_triage_max_signals: int = Field(
         default=200,
         description="Maximum below-threshold signals summarized in one idle triage task.",
+    )
+    idle_triage_sample_signals: int = Field(
+        default=15,
+        description=(
+            "Maximum individual signal lines rendered in an idle triage prompt; "
+            "the rest of the batch is summarized by the severity breakdown and "
+            "an explicit overflow line so the prompt stays bounded."
+        ),
+    )
+    idle_triage_sample_summary_max_chars: int = Field(
+        default=300,
+        description="Maximum characters of one signal summary rendered in an idle triage prompt.",
+    )
+    idle_triage_max_signal_refs: int = Field(
+        default=25,
+        description="Maximum signal refs listed in the idle triage outcome template.",
     )
     signal_subjects: list[str] = Field(
         default_factory=list,
