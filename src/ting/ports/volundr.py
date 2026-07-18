@@ -304,6 +304,14 @@ class VolundrFactory(Protocol):
         """Return the primary (first) authenticated adapter, or ``None``."""
         raise NotImplementedError
 
+    async def for_connection(self, owner_id: str, connection_id: str) -> VolundrPort | None:
+        """Return the owner's adapter for a specific connection id or name.
+
+        Campaign-scoped reads must target the Volundr instance the session
+        was launched on; ``None`` when the connection no longer resolves.
+        """
+        raise NotImplementedError
+
     async def for_principal(self, principal: Principal) -> list[VolundrPort]:
         """Return all visible adapters for a fully scoped principal."""
         raise NotImplementedError

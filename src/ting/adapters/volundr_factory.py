@@ -38,6 +38,9 @@ class LocalVolundrAdapterFactory:
     async def primary_for_principal(self, principal: Principal) -> VolundrPort | None:
         return self._adapter
 
+    async def for_connection(self, owner_id: str, connection_id: str) -> VolundrPort | None:
+        return self._adapter
+
 
 class VolundrAdapterFactory:
     """Resolve VolundrHTTPAdapter instances from Guild's shared registry."""
@@ -77,6 +80,21 @@ class VolundrAdapterFactory:
         adapters = await self._resolve_connections(principal.user_id, principal=principal)
         if adapters:
             return adapters[0]
+        return None
+
+    async def for_connection(self, owner_id: str, connection_id: str) -> VolundrPort | None:
+        """Resolve the owner's adapter for a specific connection.
+
+        Matches by target id or name — the same identifiers the launch path
+        accepts — so a campaign resolves to the Volundr instance its session
+        actually lives on. Returns None when the connection is gone.
+        """
+        wanted = str(connection_id or "").strip()
+        if not wanted:
+            return None
+        for adapter in await self._resolve_connections(owner_id):
+            if wanted in {adapter.target_id, adapter.name}:
+                return adapter
         return None
 
     async def _resolve_connections(

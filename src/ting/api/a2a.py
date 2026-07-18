@@ -225,6 +225,7 @@ class WorkflowTaskHandler(RequestHandler):
             created_at=now,
             updated_at=now,
             last_activity_at=now,
+            connection_id=execution.connection_id,
         )
         saved = await self._campaign_repo.save_campaign(campaign)
         await _emit_campaign_event(self._request, "workflow.campaign.created", saved)
@@ -253,7 +254,7 @@ class WorkflowTaskHandler(RequestHandler):
         if campaign.status in _TERMINAL_STATUSES or campaign.metadata.get(_CANCELED_KEY):
             raise TaskNotCancelableError(f"task {params.id} is already in a terminal state")
 
-        adapter = await self._volundr_factory.primary_for_owner(campaign.owner_id)
+        adapter = await self._campaign_adapter(campaign)
         if adapter is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -384,7 +385,7 @@ class WorkflowTaskHandler(RequestHandler):
                 "a text part with review notes is required when requesting changes"
             )
 
-        adapter = await self._volundr_factory.primary_for_owner(campaign.owner_id)
+        adapter = await self._campaign_adapter(campaign)
         if adapter is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -442,7 +443,7 @@ class WorkflowTaskHandler(RequestHandler):
                 "a reply without gateDecision answers a pending question and "
                 "must include a non-empty text part"
             )
-        adapter = await self._volundr_factory.primary_for_owner(campaign.owner_id)
+        adapter = await self._campaign_adapter(campaign)
         if adapter is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -493,7 +494,7 @@ class WorkflowTaskHandler(RequestHandler):
         the remote agent can answer it with a plain reply message (no
         gateDecision) — the answer routes back to the asking peer.
         """
-        adapter = await self._volundr_factory.primary_for_owner(campaign.owner_id)
+        adapter = await self._campaign_adapter(campaign)
         if adapter is None:
             return
         try:
@@ -526,7 +527,7 @@ class WorkflowTaskHandler(RequestHandler):
         authoritatively, so a transient fetch failure only degrades context,
         never correctness.
         """
-        adapter = await self._volundr_factory.primary_for_owner(campaign.owner_id)
+        adapter = await self._campaign_adapter(campaign)
         if adapter is None:
             return
         try:
@@ -621,6 +622,27 @@ class WorkflowTaskHandler(RequestHandler):
         if campaign is None:
             raise TaskNotFoundError(f"no task with id {slug}")
         return campaign
+
+    async def _campaign_adapter(self, campaign: WorkflowCampaign):
+        """Resolve the Volundr adapter for the connection this campaign's
+        session was launched on.
+
+        The owner's primary connection is only a fallback for campaigns
+        persisted before connection affinity existed — a session launched on
+        a non-default cluster does not exist on the primary.
+        """
+        if campaign.connection_id:
+            adapter = await self._volundr_factory.for_connection(
+                campaign.owner_id, campaign.connection_id
+            )
+            if adapter is not None:
+                return adapter
+            logger.warning(
+                "Campaign %s connection %s no longer resolves; falling back to primary",
+                campaign.slug,
+                campaign.connection_id,
+            )
+        return await self._volundr_factory.primary_for_owner(campaign.owner_id)
 
 
 def _merged_metadata(params: SendMessageRequest) -> dict[str, Any]:

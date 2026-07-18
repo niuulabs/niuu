@@ -278,6 +278,10 @@ class WorkflowCampaign:
     updated_at: datetime
     last_activity_at: datetime | None = None
     completed_at: datetime | None = None
+    # Volundr connection the session was launched on. Read paths must resolve
+    # this connection, not the owner's primary — a session launched on a
+    # non-default cluster is invisible to the default one.
+    connection_id: str | None = None
 
 
 @dataclass(frozen=True)

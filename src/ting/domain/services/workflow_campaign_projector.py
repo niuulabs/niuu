@@ -77,7 +77,7 @@ class WorkflowCampaignProjector:
                 )
 
     async def _refresh_campaign(self, campaign: WorkflowCampaign) -> None:
-        adapter = await self._volundr_factory.primary_for_owner(campaign.owner_id)
+        adapter = await self._campaign_adapter(campaign)
         if adapter is None:
             return
         session = await adapter.get_session(campaign.session_id)
@@ -94,6 +94,25 @@ class WorkflowCampaignProjector:
                 next_status = WorkflowCampaignStatus.BLOCKED
 
         await self._apply_status(campaign, session, next_status)
+
+    async def _campaign_adapter(self, campaign: WorkflowCampaign):
+        """Adapter for the connection the campaign's session lives on.
+
+        Owner-primary is only a fallback for pre-affinity campaigns; a
+        session on a non-default cluster does not exist on the primary.
+        """
+        if campaign.connection_id:
+            adapter = await self._volundr_factory.for_connection(
+                campaign.owner_id, campaign.connection_id
+            )
+            if adapter is not None:
+                return adapter
+            logger.warning(
+                "Campaign %s connection %s no longer resolves; falling back to primary",
+                campaign.slug,
+                campaign.connection_id,
+            )
+        return await self._volundr_factory.primary_for_owner(campaign.owner_id)
 
     async def _session_awaits_input(self, adapter, session_id: str) -> bool:
         """True when the session has a pending help question or workflow gate.

@@ -109,6 +109,9 @@ class WorkflowLaunchExecution:
     workflow_snapshot: dict[str, Any]
     slug: str
     session: VolundrSession
+    # Canonical id of the Volundr connection the session was created on;
+    # campaigns persist this so later reads target the same instance.
+    connection_id: str | None = None
 
 
 async def resolve_workflow_repo() -> WorkflowRepository:
@@ -435,6 +438,7 @@ async def launch_workflow_execution(
         workflow_snapshot=workflow_snapshot,
         slug=launch_slug,
         session=session,
+        connection_id=getattr(target_adapter, "target_id", None) or None,
     )
 
 

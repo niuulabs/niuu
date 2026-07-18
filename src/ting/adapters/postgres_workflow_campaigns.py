@@ -97,11 +97,12 @@ class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
                 created_at,
                 updated_at,
                 last_activity_at,
-                completed_at
+                completed_at,
+                connection_id
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13::jsonb, $14::jsonb,
-                $15, $16, $17, $18
+                $15, $16, $17, $18, $19
             )
             ON CONFLICT (id) DO UPDATE SET
                 slug = EXCLUDED.slug,
@@ -119,7 +120,8 @@ class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
                 metadata = EXCLUDED.metadata,
                 updated_at = EXCLUDED.updated_at,
                 last_activity_at = EXCLUDED.last_activity_at,
-                completed_at = EXCLUDED.completed_at
+                completed_at = EXCLUDED.completed_at,
+                connection_id = EXCLUDED.connection_id
             """,
             campaign.id,
             campaign.slug,
@@ -139,6 +141,7 @@ class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
             campaign.updated_at,
             campaign.last_activity_at,
             campaign.completed_at,
+            campaign.connection_id,
         )
         return campaign
 
@@ -184,6 +187,7 @@ class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
             updated_at=row.get("updated_at") or datetime.now(UTC),
             last_activity_at=row.get("last_activity_at"),
             completed_at=row.get("completed_at"),
+            connection_id=row.get("connection_id"),
         )
 
 

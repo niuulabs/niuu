@@ -225,12 +225,23 @@ class RecordingVolundrPort(VolundrPort):
 class RecordingVolundrFactory:
     def __init__(self, adapters: list[VolundrPort]) -> None:
         self._adapters = adapters
+        self.connection_calls: list[str] = []
 
     async def for_owner(self, owner_id: str) -> list[VolundrPort]:
         return list(self._adapters)
 
     async def primary_for_owner(self, owner_id: str) -> VolundrPort | None:
         return self._adapters[0] if self._adapters else None
+
+    async def for_connection(self, owner_id: str, connection_id: str) -> VolundrPort | None:
+        self.connection_calls.append(connection_id)
+        for adapter in self._adapters:
+            if connection_id in {
+                getattr(adapter, "target_id", None),
+                getattr(adapter, "name", None),
+            }:
+                return adapter
+        return None
 
     async def for_principal(self, principal: Principal) -> list[VolundrPort]:
         return list(self._adapters)

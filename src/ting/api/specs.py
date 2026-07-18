@@ -200,6 +200,7 @@ def create_specs_router() -> APIRouter:
             updated_at=now,
             last_activity_at=now,
             completed_at=now if execution.session.status == "stopped" else None,
+            connection_id=execution.connection_id,
         )
         saved = await campaign_repo.save_campaign(campaign)
         await _emit_campaign_event(request, "workflow.campaign.created", saved)

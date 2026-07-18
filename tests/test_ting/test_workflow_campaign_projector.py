@@ -13,7 +13,10 @@ from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 
 
-def _campaign(status: WorkflowCampaignStatus = WorkflowCampaignStatus.RUNNING) -> WorkflowCampaign:
+def _campaign(
+    status: WorkflowCampaignStatus = WorkflowCampaignStatus.RUNNING,
+    connection_id: str | None = None,
+) -> WorkflowCampaign:
     now = datetime.now(UTC)
     return WorkflowCampaign(
         id=uuid4(),
@@ -34,6 +37,7 @@ def _campaign(status: WorkflowCampaignStatus = WorkflowCampaignStatus.RUNNING) -
         updated_at=now,
         last_activity_at=now,
         completed_at=None,
+        connection_id=connection_id,
     )
 
 
@@ -66,11 +70,24 @@ class _Adapter:
 
 
 class _Factory:
-    def __init__(self, adapter: _Adapter) -> None:
+    def __init__(
+        self,
+        adapter: _Adapter,
+        *,
+        connections: dict[str, _Adapter] | None = None,
+    ) -> None:
         self._adapter = adapter
+        self._connections = connections or {}
+        self.primary_calls = 0
+        self.connection_calls: list[str] = []
 
     async def primary_for_owner(self, owner_id: str):
+        self.primary_calls += 1
         return self._adapter
+
+    async def for_connection(self, owner_id: str, connection_id: str):
+        self.connection_calls.append(connection_id)
+        return self._connections.get(connection_id)
 
 
 def _projector(adapter: _Adapter) -> tuple[WorkflowCampaignProjector, AsyncMock, AsyncMock]:
@@ -153,3 +170,54 @@ async def test_stopped_session_completes_without_blocker_checks() -> None:
 
     saved = repo.save_campaign.await_args.args[0]
     assert saved.status == WorkflowCampaignStatus.COMPLETED
+
+
+class TestConnectionAffinity:
+    """Campaign reads must target the connection the session launched on."""
+
+    @staticmethod
+    def _build(factory) -> tuple[WorkflowCampaignProjector, AsyncMock]:
+        repo = AsyncMock()
+        repo.save_campaign = AsyncMock(side_effect=lambda campaign: campaign)
+        return (
+            WorkflowCampaignProjector(repo=repo, volundr_factory=factory, event_bus=AsyncMock()),
+            repo,
+        )
+
+    @pytest.mark.asyncio
+    async def test_campaign_connection_is_preferred_over_primary(self) -> None:
+        valhalla = _Adapter(session_status="running")
+        primary = _Adapter(session_status="stopped")  # would wrongly complete the campaign
+        factory = _Factory(primary, connections={"conn-valhalla": valhalla})
+        projector, repo = self._build(factory)
+
+        await projector._refresh_campaign(
+            _campaign(status=WorkflowCampaignStatus.PENDING, connection_id="conn-valhalla")
+        )
+
+        assert factory.connection_calls == ["conn-valhalla"]
+        assert factory.primary_calls == 0
+        saved = repo.save_campaign.await_args.args[0]
+        assert saved.status == WorkflowCampaignStatus.RUNNING
+
+    @pytest.mark.asyncio
+    async def test_vanished_connection_falls_back_to_primary(self) -> None:
+        primary = _Adapter(session_status="running")
+        factory = _Factory(primary, connections={})
+        projector, _ = self._build(factory)
+
+        await projector._refresh_campaign(_campaign(connection_id="conn-gone"))
+
+        assert factory.connection_calls == ["conn-gone"]
+        assert factory.primary_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_legacy_campaign_without_connection_uses_primary(self) -> None:
+        primary = _Adapter(session_status="running")
+        factory = _Factory(primary)
+        projector, _ = self._build(factory)
+
+        await projector._refresh_campaign(_campaign())
+
+        assert factory.connection_calls == []
+        assert factory.primary_calls == 1
