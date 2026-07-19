@@ -1411,3 +1411,14 @@ class NatsBridgeAdapter(SleipnirPublisher, SleipnirSubscriber):
         local_sub = await self._local_sub.subscribe(event_types, _dedup_handler)
         nats_sub = await self._nats_sub.subscribe(event_types, _dedup_handler)
         return _BridgeSubscription(local_sub, nats_sub)
+
+
+# ---------------------------------------------------------------------------
+# Public connection helpers
+# ---------------------------------------------------------------------------
+
+#: Public aliases so other packages (e.g. Ravn signal transports) reuse the
+#: same proxy-aware connect path and TLS/auth option handling instead of
+#: duplicating them per adapter.
+connect_nats = _connect_nats
+build_connect_options = _connect_options

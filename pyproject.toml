@@ -40,7 +40,7 @@ openshell = [
     "openshell==0.0.82; python_version >= '3.12'",
 ]
 nats = [
-    "nats-py>=2.15.0",
+    "nats-py[nkeys]>=2.15.0",
 ]
 # Semantic search for Mimir (NIU-1056): hybrid retrieval needs an embedding
 # model. FTS-only mode works without this extra.
@@ -98,7 +98,7 @@ dev = [
     "cryptography>=49.0.0",
     "textual>=8.2.8",
     "typer>=0.26.8",
-    "nats-py>=2.15.0",
+    "nats-py[nkeys]>=2.15.0",
     "aiohttp>=3.14.1",
 ]
 

@@ -1,0 +1,238 @@
+"""NATS JetStream transport for domain-neutral Environment signal ingestion.
+
+This adapter is TRANSPORT ONLY: it drains a durable JetStream pull consumer
+and hands each raw message payload to :class:`GenericSignalAdapter`
+normalization unchanged.  No field extraction, no domain schemas, no severity
+heuristics — severity is honored only when the publisher declared one inside
+its own payload (see ``GenericSignalAdapter.normalize_raw``).
+
+The durable consumer is what makes signals survive resident restarts:
+JetStream tracks the consumer position server-side, so a redeployed resident
+resumes exactly where the previous instance stopped instead of losing the
+messages published while it was down.
+
+Configuration example (``signal_sources`` entry)::
+
+    signal_sources:
+      - id: workshop-laevateinn
+        name: Laevateinn workshop events
+        kind: generic
+        adapter: ravn.adapters.environment_signals_nats.NatsJetStreamSignalAdapter
+        enabled: true
+        kwargs:
+          servers: ["tls://nats.example.svc:4222"]
+          stream_name: workshop-laevateinn-events
+          subject: workshop.laevateinn.>
+          durable_name: ivaldi-workshop-laevateinn
+          deliver_policy: all
+          tls_ca_file: /etc/nats-ca/ca.crt
+          nkeys_seed_file: /etc/nats-nkey/nats.nk
+
+The stream itself is expected to exist (GitOps-managed); a missing stream
+fails loudly at bind time instead of being silently created with guessed
+settings.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+
+from ravn.adapters.environment_signals import GenericSignalAdapter
+from ravn.domain.environment import Environment
+from sleipnir.adapters.nats_transport import (
+    DEFAULT_CONNECT_TIMEOUT_S,
+    DEFAULT_MAX_RECONNECT_ATTEMPTS,
+    build_connect_options,
+    connect_nats,
+    nats_available,
+)
+
+try:
+    import nats.js.api as js_api
+except ImportError:  # pragma: no cover - exercised in minimal installs
+    js_api = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
+
+#: Maximum messages pulled from JetStream in one collect pass.
+DEFAULT_BATCH_SIZE = 64
+
+#: Seconds one fetch waits for at least one message before returning empty.
+DEFAULT_FETCH_TIMEOUT_S = 2.0
+
+#: Supported JetStream deliver policies for the durable consumer.
+DELIVER_POLICIES = ("all", "new", "last")
+
+
+def _decode_payload(data: bytes) -> Any:
+    """Decode one message body without imposing any schema.
+
+    JSON passes through untouched (objects stay objects, scalars are wrapped
+    by ``GenericSignalAdapter.normalize_raw``); anything that is not JSON is
+    delivered as raw text so the resident still sees exactly what the source
+    sent.
+    """
+    text = data.decode("utf-8", errors="replace")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
+def _sanitize_durable(name: str) -> str:
+    """Return a JetStream-safe durable name (no dots, wildcards, or spaces)."""
+    safe = "".join(ch if ch.isalnum() or ch in ("_", "-") else "-" for ch in name)
+    return safe.strip("-_") or "signals"
+
+
+class NatsJetStreamSignalAdapter(GenericSignalAdapter):
+    """Durable JetStream pull consumer feeding ``GenericSignalAdapter``.
+
+    Each :meth:`collect` call fetches up to *batch_size* pending messages
+    from the durable consumer, acknowledges them, and returns the decoded
+    payloads for pass-through normalization.  An idle stream yields an empty
+    batch after *fetch_timeout_s* — the surrounding poll loop provides the
+    cadence, the durable consumer provides the no-loss guarantee.
+    """
+
+    def __init__(
+        self,
+        *,
+        environment: Environment,
+        source_id: str,
+        servers: list[str] | str,
+        stream_name: str,
+        subject: str,
+        durable_name: str = "",
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        fetch_timeout_s: float = DEFAULT_FETCH_TIMEOUT_S,
+        deliver_policy: str = "new",
+        jetstream_domain: str = "",
+        connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
+        max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS,
+        proxy_url: str = "",
+        tls_ca_file: str = "",
+        tls_ca_pem: str = "",
+        tls_cert_file: str = "",
+        tls_key_file: str = "",
+        tls_hostname: str = "",
+        tls_handshake_first: bool = False,
+        tls_legacy_ca: bool = False,
+        tls_insecure_skip_verify: bool = False,
+        user: str = "",
+        password: str = "",
+        token: str = "",
+        nkeys_seed_file: str = "",
+        nkeys_seed: str = "",
+        client: Any | None = None,
+    ) -> None:
+        if not nats_available() or js_api is None:
+            raise RuntimeError(
+                "NatsJetStreamSignalAdapter requires nats-py. Install niuu with the nats extra."
+            )
+        if isinstance(servers, str):
+            servers = [entry.strip() for entry in servers.split(",") if entry.strip()]
+        if not servers:
+            raise ValueError("NatsJetStreamSignalAdapter requires at least one NATS server URL")
+        if not stream_name.strip():
+            raise ValueError("NatsJetStreamSignalAdapter requires stream_name")
+        if not subject.strip():
+            raise ValueError("NatsJetStreamSignalAdapter requires subject")
+        if deliver_policy not in DELIVER_POLICIES:
+            raise ValueError(
+                f"Unknown deliver_policy {deliver_policy!r}; use one of {DELIVER_POLICIES}"
+            )
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+        self._servers = list(servers)
+        self._stream_name = stream_name.strip()
+        self._subject = subject.strip()
+        self._durable_name = durable_name.strip() or _sanitize_durable(f"signal-{source_id}")
+        self._batch_size = batch_size
+        self._fetch_timeout_s = fetch_timeout_s
+        self._deliver_policy = deliver_policy
+        self._jetstream_domain = jetstream_domain.strip()
+        self._connect_timeout_s = connect_timeout_s
+        self._max_reconnect_attempts = max_reconnect_attempts
+        self._proxy_url = proxy_url
+        self._connect_options = build_connect_options(
+            tls_ca_file=tls_ca_file,
+            tls_ca_pem=tls_ca_pem,
+            tls_cert_file=tls_cert_file,
+            tls_key_file=tls_key_file,
+            tls_hostname=tls_hostname,
+            tls_handshake_first=tls_handshake_first,
+            tls_legacy_ca=tls_legacy_ca,
+            tls_insecure_skip_verify=tls_insecure_skip_verify,
+            user=user,
+            password=password,
+            token=token,
+            nkeys_seed_file=nkeys_seed_file,
+            nkeys_seed=nkeys_seed,
+        )
+        self._client = client
+        self._psub: Any | None = None
+        super().__init__(
+            environment=environment,
+            source_id=source_id,
+            provider=self._fetch_batch,
+        )
+
+    async def _fetch_batch(self) -> list[Any]:
+        psub = await self._ensure_subscription()
+        try:
+            msgs = await psub.fetch(self._batch_size, timeout=self._fetch_timeout_s)
+        except TimeoutError:
+            # nats.errors.TimeoutError subclasses the builtin on 3.11+; an
+            # idle stream is the normal case, not an error.
+            return []
+        payloads: list[Any] = []
+        for msg in msgs:
+            payloads.append(_decode_payload(msg.data))
+            await msg.ack()
+        return payloads
+
+    async def _ensure_subscription(self) -> Any:
+        if self._psub is not None:
+            return self._psub
+        if self._client is None:
+            self._client = await connect_nats(
+                servers=self._servers,
+                connect_timeout=self._connect_timeout_s,
+                max_reconnect_attempts=self._max_reconnect_attempts,
+                proxy_url=self._proxy_url,
+                options=self._connect_options,
+            )
+        js_kwargs = {"domain": self._jetstream_domain} if self._jetstream_domain else {}
+        js = self._client.jetstream(**js_kwargs)
+        config = js_api.ConsumerConfig(
+            deliver_policy=self._resolve_deliver_policy(),
+            ack_policy=js_api.AckPolicy.EXPLICIT,
+        )
+        self._psub = await js.pull_subscribe(
+            self._subject,
+            durable=self._durable_name,
+            stream=self._stream_name,
+            config=config,
+        )
+        logger.info(
+            "environment_signals: source=%s bound durable=%s stream=%s subject=%s",
+            self.source_id,
+            self._durable_name,
+            self._stream_name,
+            self._subject,
+        )
+        return self._psub
+
+    def _resolve_deliver_policy(self) -> Any:
+        match self._deliver_policy:
+            case "all":
+                return js_api.DeliverPolicy.ALL
+            case "new":
+                return js_api.DeliverPolicy.NEW
+            case "last":
+                return js_api.DeliverPolicy.LAST
+            case _:  # pragma: no cover - rejected in __init__
+                raise ValueError(f"Unknown deliver_policy {self._deliver_policy!r}")

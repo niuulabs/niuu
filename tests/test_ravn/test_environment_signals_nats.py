@@ -1,0 +1,261 @@
+"""Tests for the NATS JetStream Environment signal transport.
+
+The adapter is transport only: everything here exercises the durable pull
+consumer plumbing and the pass-through handoff to ``GenericSignalAdapter``.
+No live NATS — connection, JetStream context, and subscription are faked at
+the same seams the real nats-py client exposes.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import nats.js.api as js_api
+import pytest
+
+import ravn.adapters.environment_signals_nats as signals_nats
+from ravn.adapters.environment_signals_nats import (
+    NatsJetStreamSignalAdapter,
+    _sanitize_durable,
+)
+from ravn.domain.environment import k8s_environment_fixture
+
+
+class _FakeMsg:
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.acked = False
+
+    async def ack(self) -> None:
+        self.acked = True
+
+
+class _FakePullSubscription:
+    def __init__(self, batches: list[list[_FakeMsg]]) -> None:
+        self._batches = list(batches)
+        self.fetch_calls: list[tuple[int, float]] = []
+
+    async def fetch(self, batch: int, timeout: float) -> list[_FakeMsg]:
+        self.fetch_calls.append((batch, timeout))
+        if not self._batches:
+            raise TimeoutError("no messages")
+        return self._batches.pop(0)
+
+
+class _FakeJetStream:
+    def __init__(self, psub: _FakePullSubscription) -> None:
+        self._psub = psub
+        self.pull_subscribe_calls: list[dict[str, Any]] = []
+
+    async def pull_subscribe(
+        self,
+        subject: str,
+        *,
+        durable: str,
+        stream: str,
+        config: Any,
+    ) -> _FakePullSubscription:
+        self.pull_subscribe_calls.append(
+            {"subject": subject, "durable": durable, "stream": stream, "config": config}
+        )
+        return self._psub
+
+
+class _FakeClient:
+    def __init__(self, js: _FakeJetStream) -> None:
+        self._js = js
+        self.jetstream_calls: list[dict[str, Any]] = []
+
+    def jetstream(self, **kwargs: Any) -> _FakeJetStream:
+        self.jetstream_calls.append(kwargs)
+        return self._js
+
+
+def _adapter(
+    batches: list[list[_FakeMsg]],
+    **overrides: Any,
+) -> tuple[NatsJetStreamSignalAdapter, _FakeClient, _FakeJetStream, _FakePullSubscription]:
+    psub = _FakePullSubscription(batches)
+    js = _FakeJetStream(psub)
+    client = _FakeClient(js)
+    kwargs: dict[str, Any] = {
+        "environment": k8s_environment_fixture(),
+        "source_id": "workshop-laevateinn",
+        "servers": ["tls://nats.test:4222"],
+        "stream_name": "workshop-laevateinn-events",
+        "subject": "workshop.laevateinn.>",
+        "client": client,
+    }
+    kwargs.update(overrides)
+    return NatsJetStreamSignalAdapter(**kwargs), client, js, psub
+
+
+def _envelope(**extra: Any) -> dict[str, Any]:
+    envelope = {
+        "type": "status",
+        "ts": 1789000000.0,
+        "origin": {"agent": "laevateinn-01", "mainboardId": "1aeva7e100000001"},
+        "payload": {"CurrentStatus": [1]},
+    }
+    envelope.update(extra)
+    return envelope
+
+
+@pytest.mark.asyncio
+async def test_collect_passes_raw_payload_through_untouched() -> None:
+    envelope = _envelope()
+    adapter, _, _, _ = _adapter([[_FakeMsg(json.dumps(envelope).encode())]])
+
+    signals = await adapter.collect()
+
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.normalized_payload == envelope
+    assert signal.signal_type == "generic"
+    assert signal.severity == "info"
+    assert signal.source_id == "workshop-laevateinn"
+    assert signal.dedupe_key.startswith("workshop-laevateinn:")
+
+
+@pytest.mark.asyncio
+async def test_declared_severity_is_honored_without_heuristics() -> None:
+    envelope = _envelope(severity="critical")
+    adapter, _, _, _ = _adapter([[_FakeMsg(json.dumps(envelope).encode())]])
+
+    signals = await adapter.collect()
+
+    assert signals[0].severity == "critical"
+    assert signals[0].normalized_payload["severity"] == "critical"
+
+
+@pytest.mark.asyncio
+async def test_non_json_payload_is_delivered_as_raw_text() -> None:
+    adapter, _, _, _ = _adapter([[_FakeMsg(b"not json at all")]])
+
+    signals = await adapter.collect()
+
+    assert signals[0].normalized_payload == {"value": "not json at all"}
+
+
+@pytest.mark.asyncio
+async def test_scalar_json_payload_is_wrapped() -> None:
+    adapter, _, _, _ = _adapter([[_FakeMsg(b"42")]])
+
+    signals = await adapter.collect()
+
+    assert signals[0].normalized_payload == {"value": 42}
+
+
+@pytest.mark.asyncio
+async def test_idle_stream_yields_empty_batch() -> None:
+    adapter, _, _, psub = _adapter([])
+
+    assert await adapter.collect() == []
+    assert psub.fetch_calls == [
+        (signals_nats.DEFAULT_BATCH_SIZE, signals_nats.DEFAULT_FETCH_TIMEOUT_S)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_messages_are_acked_after_decode() -> None:
+    msgs = [_FakeMsg(json.dumps(_envelope()).encode()), _FakeMsg(b"plain")]
+    adapter, _, _, _ = _adapter([msgs])
+
+    await adapter.collect()
+
+    assert all(msg.acked for msg in msgs)
+
+
+@pytest.mark.asyncio
+async def test_durable_consumer_is_bound_once_with_configured_names() -> None:
+    adapter, client, js, _ = _adapter(
+        [[_FakeMsg(b"{}")], [_FakeMsg(b"{}")]],
+        durable_name="ivaldi-workshop",
+        deliver_policy="all",
+        jetstream_domain="eitri",
+    )
+
+    await adapter.collect()
+    await adapter.collect()
+
+    assert client.jetstream_calls == [{"domain": "eitri"}]
+    assert len(js.pull_subscribe_calls) == 1
+    call = js.pull_subscribe_calls[0]
+    assert call["subject"] == "workshop.laevateinn.>"
+    assert call["durable"] == "ivaldi-workshop"
+    assert call["stream"] == "workshop-laevateinn-events"
+    assert call["config"].deliver_policy == js_api.DeliverPolicy.ALL
+    assert call["config"].ack_policy == js_api.AckPolicy.EXPLICIT
+
+
+@pytest.mark.asyncio
+async def test_default_durable_name_is_sanitized_from_source_id() -> None:
+    adapter, _, js, _ = _adapter([[]], source_id="workshop.laevateinn/events")
+
+    await adapter.collect()
+
+    assert js.pull_subscribe_calls[0]["durable"] == "signal-workshop-laevateinn-events"
+
+
+@pytest.mark.asyncio
+async def test_connects_via_shared_transport_helper_when_no_client_injected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    psub = _FakePullSubscription([[]])
+    js = _FakeJetStream(psub)
+    client = _FakeClient(js)
+    connect_calls: list[dict[str, Any]] = []
+
+    async def _fake_connect(**kwargs: Any) -> _FakeClient:
+        connect_calls.append(kwargs)
+        return client
+
+    monkeypatch.setattr(signals_nats, "connect_nats", _fake_connect)
+    adapter = NatsJetStreamSignalAdapter(
+        environment=k8s_environment_fixture(),
+        source_id="workshop-laevateinn",
+        servers="tls://nats.test:4222, tls://nats-2.test:4222",
+        stream_name="workshop-laevateinn-events",
+        subject="workshop.laevateinn.>",
+        user="ivaldi",
+        password="secret",
+    )
+
+    await adapter.collect()
+
+    assert connect_calls[0]["servers"] == [
+        "tls://nats.test:4222",
+        "tls://nats-2.test:4222",
+    ]
+    assert connect_calls[0]["options"] == {"user": "ivaldi", "password": "secret"}
+    assert js.pull_subscribe_calls[0]["stream"] == "workshop-laevateinn-events"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        ("stream_name", "  ", "stream_name"),
+        ("subject", "", "subject"),
+        ("deliver_policy", "sideways", "deliver_policy"),
+        ("batch_size", 0, "batch_size"),
+        ("servers", [], "server"),
+    ],
+)
+def test_invalid_configuration_fails_loudly(field: str, value: Any, match: str) -> None:
+    kwargs: dict[str, Any] = {
+        "environment": k8s_environment_fixture(),
+        "source_id": "workshop-laevateinn",
+        "servers": ["tls://nats.test:4222"],
+        "stream_name": "workshop-laevateinn-events",
+        "subject": "workshop.laevateinn.>",
+        "client": object(),
+    }
+    kwargs[field] = value
+    with pytest.raises(ValueError, match=match):
+        NatsJetStreamSignalAdapter(**kwargs)
+
+
+def test_sanitize_durable_strips_wildcards_and_dots() -> None:
+    assert _sanitize_durable("workshop.laevateinn.>") == "workshop-laevateinn"
+    assert _sanitize_durable("...") == "signals"
