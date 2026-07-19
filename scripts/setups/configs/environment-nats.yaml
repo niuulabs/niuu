@@ -63,13 +63,6 @@ environment:
         providers:
           - system
           - process
-    - id: printer-telemetry
-      name: Printer Telemetry
-      kind: printer_telemetry
-      adapter: ravn.adapters.environment_signals.PrinterPiSignalAdapter
-      enabled: false
-      kwargs:
-        moonraker_url_env: MOONRAKER_URL
     - id: operator-events
       name: Operator Events
       kind: host

@@ -23,7 +23,6 @@ OperationalHealth = str
 DEFAULT_ENVIRONMENT_TYPES = (
     "k8s",
     "host.inbox",
-    "printer.pi",
     "host",
     "service",
     "home_lab",
@@ -32,7 +31,6 @@ DEFAULT_ENVIRONMENT_TYPES = (
 DEFAULT_SIGNAL_SOURCE_KINDS = (
     "kubernetes",
     "email",
-    "printer_telemetry",
     "host",
     "webhook",
     "metrics",
@@ -729,77 +727,9 @@ def inbox_environment_fixture() -> Environment:
     )
 
 
-def printer_environment_fixture() -> Environment:
-    """Representative printer/Pi cell Environment."""
-    return Environment(
-        id="printer-cell-basement",
-        name="Basement Printer Cell",
-        type="printer.pi",
-        tenant_id="niuu",
-        realm_id="home",
-        topology=TopologyRef(
-            node_id="printer:basement-cell",
-            type_id="printer",
-            parent_id="realm:home",
-            realm_id="home",
-            host_id="pi:basement-printer",
-            zone="basement",
-        ),
-        resident_valkyrie_ids=["valkyrie:printer-cell-basement"],
-        signal_sources=[
-            SignalSource(
-                id="moonraker-telemetry",
-                name="Printer Telemetry",
-                kind="printer_telemetry",
-                adapter="moonraker",
-                subject_patterns=["signal.printer.*"],
-            ),
-            SignalSource(
-                id="pi-host-events",
-                name="Pi Host Events",
-                kind="host",
-                adapter="ravn.adapters.environment.host",
-                subject_patterns=["signal.host.*"],
-            ),
-        ],
-        operational_state=OperationalState(
-            health="watching",
-            baselines={"resin_low_threshold": 12, "bed_temp_tolerance_c": 3},
-            learned_normal={"print_complete": "notify only if next queued job waits for resin"},
-        ),
-        action_capabilities=[
-            ActionCapability(
-                name="printer.pause_print",
-                authority="autonomous",
-                targets=["printer"],
-                risk="medium",
-            ),
-            ActionCapability(
-                name="printer.notify_operator",
-                authority="autonomous",
-                targets=["surface", "mobile"],
-                risk="low",
-            ),
-        ],
-        autonomy=AutonomyPolicy(
-            mode="autonomous",
-            escalation_surfaces=["surface:workbench-display", "ui:valkyries"],
-        ),
-        wakefulness=WakefulnessState(state="watching", summary="Watching printer telemetry"),
-        flock_memberships=[
-            FlockMembership(
-                flock_id="printer-cell-valkyries",
-                role="device-resident",
-                ting_flow="printer-environment-flock",
-            )
-        ],
-    )
-
-
 def example_environments() -> list[Environment]:
     """Return deterministic Environment fixtures for tests, docs, and UI mocks."""
     return [
         k8s_environment_fixture(),
         inbox_environment_fixture(),
-        printer_environment_fixture(),
     ]

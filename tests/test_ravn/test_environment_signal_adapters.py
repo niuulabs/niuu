@@ -10,14 +10,12 @@ from ravn.adapters.environment_signals import (
     HostSignalAdapter,
     InboxSignalAdapter,
     KubernetesSignalAdapter,
-    PrinterPiSignalAdapter,
     demo_signal_adapters,
     signal_sources_observatory_fragment,
 )
 from ravn.domain.environment import (
     inbox_environment_fixture,
     k8s_environment_fixture,
-    printer_environment_fixture,
 )
 from ravn.ports.signal_adapter import NormalizedSignal
 from sleipnir.adapters.in_process import InProcessBus
@@ -147,48 +145,6 @@ async def test_inbox_and_host_adapters_normalize_to_same_contract() -> None:
         "category": "power",
     }
 
-
-@pytest.mark.asyncio
-async def test_printer_pi_adapter_normalizes_status_low_material_and_faults() -> None:
-    environment = printer_environment_fixture()
-    adapter = PrinterPiSignalAdapter(
-        environment=environment,
-        source_id="moonraker-telemetry",
-        raw_items=[
-            {
-                "id": "print-done",
-                "printer": "saturn-4",
-                "type": "print_done",
-                "status": "complete",
-                "observed_at": "2026-06-03T12:20:00Z",
-            },
-            {
-                "id": "resin-low",
-                "printer": "saturn-4",
-                "type": "resin_low",
-                "resin_percent": 8,
-                "observed_at": "2026-06-03T12:22:00Z",
-            },
-            {
-                "id": "z-axis-fault",
-                "printer": "saturn-4",
-                "type": "error",
-                "message": "Z axis failed homing check",
-                "observed_at": "2026-06-03T12:25:00Z",
-            },
-        ],
-    )
-
-    signals = await adapter.collect()
-
-    assert [signal.severity for signal in signals] == ["info", "warning", "critical"]
-    assert signals[1].dedupe_key == "printer:saturn-4:resin_low:resin-low"
-    assert signals[1].normalized_payload["resin_percent"] == 8
-    assert signals[2].object_ref == {
-        "printer_id": "saturn-4",
-        "event_id": "z-axis-fault",
-        "event_type": "error",
-    }
 
 
 @pytest.mark.asyncio
@@ -326,7 +282,6 @@ async def test_demo_signal_adapters_cover_mvp_environment_fixtures() -> None:
     assert set(events_by_environment) == {
         "cluster-prod-a",
         "host-jozef-mail",
-        "printer-cell-basement",
     }
     assert [event.event_type for event in events_by_environment["cluster-prod-a"]] == [
         "signal.kubernetes.event",
@@ -336,15 +291,6 @@ async def test_demo_signal_adapters_cover_mvp_environment_fixtures() -> None:
         "signal.inbox.message",
         "signal.host.event",
     }
-    printer_event_types = [
-        event.payload["data"]["event_type"]
-        for event in events_by_environment["printer-cell-basement"]
-    ]
-    assert printer_event_types == [
-        "print_done",
-        "resin_low",
-        "error",
-    ]
 
 
 async def _record(events: list[SleipnirEvent], event: SleipnirEvent) -> None:

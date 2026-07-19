@@ -15,7 +15,6 @@ from ravn.domain.environment import (
     Environment,
     inbox_environment_fixture,
     k8s_environment_fixture,
-    printer_environment_fixture,
 )
 from ravn.ports.signal_adapter import NormalizedSignal, NormalizedSignalType, SignalAdapter
 
@@ -431,58 +430,10 @@ class HostSignalAdapter(_IterableSignalAdapter):
         )
 
 
-class PrinterPiSignalAdapter(_IterableSignalAdapter):
-    """Normalize printer/Pi telemetry from webhook, MQTT, file, or mock providers."""
-
-    signal_type: NormalizedSignalType = "printer_telemetry"
-
-    async def collect(self) -> list[NormalizedSignal]:
-        return [self.normalize_telemetry(raw) for raw in await self._raw()]
-
-    def normalize_telemetry(self, raw: Any) -> NormalizedSignal:
-        event_id = _text(_field(raw, "event_id", "id", default="unknown"))
-        printer_id = _text(_field(raw, "printer_id", "printer", default="printer"))
-        event_kind = _text(_field(raw, "event_type", "type", "kind", default="telemetry"))
-        resin_percent = _field(raw, "resin_percent")
-        filament_percent = _field(raw, "filament_percent")
-        severity = "info"
-        if event_kind in {"error", "fault", "sensor_error"}:
-            severity = "critical"
-        elif event_kind in {"resin_low", "filament_low"}:
-            severity = "warning"
-        timestamp = _parse_timestamp(_field(raw, "observed_at", "timestamp"))
-        dedupe_key = f"printer:{printer_id}:{event_kind}:{event_id}"
-        return NormalizedSignal(
-            source_id=self.source_id,
-            environment_id=self.environment.id,
-            environment_type=self.environment.type,
-            signal_type="printer_telemetry",
-            severity=severity,  # type: ignore[arg-type]
-            timestamp=timestamp,
-            raw_payload_ref=f"printer://{printer_id}/events/{event_id}",
-            normalized_payload={
-                "event_id": event_id,
-                "printer_id": printer_id,
-                "event_type": event_kind,
-                "status": _text(_field(raw, "status")),
-                "message": _text(_field(raw, "message")),
-                "resin_percent": resin_percent,
-                "filament_percent": filament_percent,
-            },
-            dedupe_key=dedupe_key,
-            correlation_id=_correlation(self.environment, dedupe_key),
-            provider=_text(_field(raw, "provider", default="printer-pi")),
-            provider_event_id=event_id,
-            object_ref={"printer_id": printer_id, "event_id": event_id, "event_type": event_kind},
-            provenance={"adapter": "printer.telemetry", "source_id": self.source_id},
-        )
-
-
 def demo_signal_adapters() -> list[SignalAdapter]:
     """Return deterministic adapters for the Environment MVP demo."""
     k8s = k8s_environment_fixture()
     inbox = inbox_environment_fixture()
-    printer = printer_environment_fixture()
     return [
         KubernetesSignalAdapter(
             environment=k8s,
@@ -554,33 +505,6 @@ def demo_signal_adapters() -> list[SignalAdapter]:
                     "message": "Host woke from sleep",
                     "observed_at": "2026-06-03T12:14:00Z",
                 }
-            ],
-        ),
-        PrinterPiSignalAdapter(
-            environment=printer,
-            source_id="moonraker-telemetry",
-            raw_items=[
-                {
-                    "id": "print-done",
-                    "printer": "saturn-4",
-                    "type": "print_done",
-                    "status": "complete",
-                    "observed_at": "2026-06-03T12:20:00Z",
-                },
-                {
-                    "id": "resin-low",
-                    "printer": "saturn-4",
-                    "type": "resin_low",
-                    "resin_percent": 8,
-                    "observed_at": "2026-06-03T12:22:00Z",
-                },
-                {
-                    "id": "z-axis-fault",
-                    "printer": "saturn-4",
-                    "type": "error",
-                    "message": "Z axis failed homing check",
-                    "observed_at": "2026-06-03T12:25:00Z",
-                },
             ],
         ),
     ]

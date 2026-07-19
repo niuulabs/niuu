@@ -10,7 +10,6 @@ from ravn.domain.environment import (
     example_environments,
     inbox_environment_fixture,
     k8s_environment_fixture,
-    printer_environment_fixture,
 )
 from sleipnir.domain.catalog import learning_promoted, signal_received
 from sleipnir.domain.events import SleipnirEvent
@@ -22,7 +21,6 @@ def test_environment_examples_share_one_serializable_model() -> None:
     assert {environment.type for environment in environments} == {
         "k8s",
         "host.inbox",
-        "printer.pi",
     }
     for environment in environments:
         dumped = environment.model_dump_json()
@@ -75,18 +73,17 @@ def test_environment_projects_to_existing_ravn_config_and_derived_nats_subjects(
 
 
 def test_environment_projects_to_existing_skuld_participant_metadata() -> None:
-    environment = printer_environment_fixture()
-    participant = environment.to_participant_meta(persona="printer-pi-valkyrie")
+    environment = inbox_environment_fixture()
+    participant = environment.to_participant_meta(persona="inbox-valkyrie")
 
-    assert participant.peer_id == "valkyrie:printer-cell-basement"
+    assert participant.peer_id == "valkyrie:inbox-host"
     assert participant.participant_type == "ravn"
     assert participant.participant_kind == "valkyrie"
-    assert participant.environment_id == "printer-cell-basement"
+    assert participant.environment_id == "host-jozef-mail"
     assert participant.wakefulness == "watching"
-    assert participant.authority_role == "autonomous"
-    assert participant.room_ids == ("environment:printer-cell-basement",)
-    assert "printer.pause_print" in participant.capabilities
-    assert "ravn.environment.signal.printer.*" in participant.subscribes_to
+    assert participant.authority_role == "guarded"
+    assert participant.room_ids == ("environment:host-jozef-mail",)
+    assert "ravn.environment.signal.inbox.*" in participant.subscribes_to
 
 
 def test_environment_projects_to_existing_ting_flock_and_mimir_scopes() -> None:
