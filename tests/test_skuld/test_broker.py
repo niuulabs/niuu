@@ -14,10 +14,16 @@ import pytest
 from fastapi import WebSocketDisconnect
 
 from niuu.domain.models import SecretType
+from niuu.domain.workflow_kickoff import (
+    WORKFLOW_KICKOFF_ACK_EVENT_TYPE,
+    WORKFLOW_KICKOFF_ID_KEY,
+    WORKFLOW_KICKOFF_REDELIVERY_KEY,
+)
 from ravn.feedback import EnvironmentFeedbackRecorder
 from skuld.broker import (
     Broker,
     ConversationTurn,
+    WorkflowKickoffAckTracker,
     _log_buffer,
     _SendMessageRequest,
     _TokenRedactFilter,
@@ -38,6 +44,50 @@ from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain import registry as event_registry
 from sleipnir.domain.catalog import feedback_recorded
 from sleipnir.testing import EventCapture
+
+
+def _kickoff_ack_frame(
+    published_event,
+    *,
+    persona: str = "",
+    duplicate: bool = False,
+) -> dict:
+    """Room outcome frame carrying a workflow kickoff ack for *published_event*."""
+    return {
+        "type": "outcome",
+        "data": {
+            "event_type": WORKFLOW_KICKOFF_ACK_EVENT_TYPE,
+            WORKFLOW_KICKOFF_ID_KEY: published_event.payload.get(WORKFLOW_KICKOFF_ID_KEY, ""),
+            "persona": persona,
+            "duplicate": duplicate,
+            "routing_only": True,
+        },
+        "metadata": {"event_type": WORKFLOW_KICKOFF_ACK_EVENT_TYPE},
+    }
+
+
+def _ack_kickoff(
+    broker_instance: Broker,
+    peer_id: str,
+    *,
+    persona: str = "",
+    after_attempt: int = 0,
+):
+    """Mesh-publish side effect that acknowledges the kickoff like a flock peer.
+
+    ``after_attempt`` delays the ack until the given redelivery counter is
+    reached, simulating a persona whose subscription armed mid-redelivery.
+    """
+
+    async def _side_effect(event, _topic) -> None:
+        if event.payload.get(WORKFLOW_KICKOFF_REDELIVERY_KEY, 0) < after_attempt:
+            return
+        broker_instance._consume_workflow_kickoff_ack(
+            peer_id,
+            _kickoff_ack_frame(event, persona=persona),
+        )
+
+    return _side_effect
 
 
 class TestBroker:
@@ -399,7 +449,10 @@ class TestBroker:
             chronicle_watcher_enabled=False,
         )
         broker = Broker(settings=settings)
-        broker._mesh_adapter = MagicMock(peer_id="skuld-wf", publish=AsyncMock())
+        broker._mesh_adapter = MagicMock(
+            peer_id="skuld-wf",
+            publish=AsyncMock(side_effect=_ack_kickoff(broker, "flock-research-framer")),
+        )
 
         consumer = SimpleNamespace(
             peer_id="flock-research-framer",
@@ -448,7 +501,10 @@ class TestBroker:
             chronicle_watcher_enabled=False,
         )
         broker = Broker(settings=settings)
-        broker._mesh_adapter = MagicMock(peer_id="skuld-wf", publish=AsyncMock())
+        broker._mesh_adapter = MagicMock(
+            peer_id="skuld-wf",
+            publish=AsyncMock(side_effect=_ack_kickoff(broker, "flock-research-framer")),
+        )
 
         consumer = SimpleNamespace(
             peer_id="flock-research-framer",
@@ -509,6 +565,136 @@ class TestBroker:
                 await broker._publish_workflow_trigger()
 
         broker._mesh_adapter.publish.assert_not_awaited()
+
+    @staticmethod
+    def _workflow_kickoff_broker(tmp_path, *, ack_timeout_s: float, ack_max_redeliveries: int):
+        """Broker + room bridge with one ready mesh consumer of the kickoff."""
+        settings = SkuldSettings(
+            session={
+                "id": "wf-session-ack",
+                "workspace_dir": str(tmp_path),
+                "initial_prompt": "Research the topic deeply",
+            },
+            mesh={"enabled": True, "peer_id": "skuld-wf"},
+            workflow_trigger={
+                "enabled": True,
+                "node_id": "trigger-1",
+                "label": "Dispatch",
+                "source": "manual dispatch",
+                "event_type": "research.requested",
+                "startup_delay_s": 0.0,
+                "ack_timeout_s": ack_timeout_s,
+                "ack_max_redeliveries": ack_max_redeliveries,
+            },
+            chronicle_watcher_enabled=False,
+        )
+        broker = Broker(settings=settings)
+        consumer = SimpleNamespace(
+            peer_id="flock-research-framer",
+            persona="research-framer",
+            participant_type="ravn",
+            participant_kind="mesh",
+            subscribes_to=("research.requested",),
+        )
+        room_bridge = MagicMock()
+        room_bridge.participants = {"flock-research-framer": consumer}
+        broker._room_bridge = room_bridge
+        return broker
+
+    @pytest.mark.asyncio
+    async def test_publish_workflow_trigger_redelivers_until_acknowledged(self, tmp_path):
+        broker = self._workflow_kickoff_broker(tmp_path, ack_timeout_s=0.05, ack_max_redeliveries=3)
+        broker._mesh_adapter = MagicMock(
+            peer_id="skuld-wf",
+            publish=AsyncMock(
+                side_effect=_ack_kickoff(broker, "flock-research-framer", after_attempt=1),
+            ),
+        )
+
+        await broker._publish_workflow_trigger()
+
+        assert broker._mesh_adapter.publish.await_count == 2
+        first, second = (call.args[0] for call in broker._mesh_adapter.publish.await_args_list)
+        assert first.payload[WORKFLOW_KICKOFF_REDELIVERY_KEY] == 0
+        assert second.payload[WORKFLOW_KICKOFF_REDELIVERY_KEY] == 1
+        assert first.payload[WORKFLOW_KICKOFF_ID_KEY] == second.payload[WORKFLOW_KICKOFF_ID_KEY]
+
+    @pytest.mark.asyncio
+    async def test_publish_workflow_trigger_fails_after_bounded_unacked_redeliveries(
+        self, tmp_path
+    ):
+        broker = self._workflow_kickoff_broker(tmp_path, ack_timeout_s=0.01, ack_max_redeliveries=2)
+        broker._mesh_adapter = MagicMock(peer_id="skuld-wf", publish=AsyncMock())
+
+        with pytest.raises(RuntimeError, match="never acknowledged"):
+            await broker._publish_workflow_trigger()
+
+        assert broker._mesh_adapter.publish.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_publish_workflow_trigger_accepts_ack_matched_by_persona(self, tmp_path):
+        """An ack whose peer id differs still satisfies the matching persona."""
+        broker = self._workflow_kickoff_broker(tmp_path, ack_timeout_s=0.05, ack_max_redeliveries=1)
+        broker._mesh_adapter = MagicMock(
+            peer_id="skuld-wf",
+            publish=AsyncMock(
+                side_effect=_ack_kickoff(broker, "framer-pod-abc", persona="research-framer"),
+            ),
+        )
+
+        await broker._publish_workflow_trigger()
+
+        broker._mesh_adapter.publish.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_observe_room_peer_event_absorbs_kickoff_acks(self, tmp_path):
+        broker = self._workflow_kickoff_broker(tmp_path, ack_timeout_s=0.05, ack_max_redeliveries=1)
+        tracker = WorkflowKickoffAckTracker(kickoff_id="kick-1")
+        broker._workflow_kickoff_tracker = tracker
+        ack_frame = {
+            "type": "outcome",
+            "data": {
+                "event_type": WORKFLOW_KICKOFF_ACK_EVENT_TYPE,
+                WORKFLOW_KICKOFF_ID_KEY: "kick-1",
+                "persona": "research-framer",
+                "routing_only": True,
+            },
+            "metadata": {"event_type": WORKFLOW_KICKOFF_ACK_EVENT_TYPE},
+        }
+
+        with patch.object(broker, "_emit_peer_outcome_pipeline_event", new=AsyncMock()) as emit:
+            await broker._observe_room_peer_event("flock-research-framer", "outcome", ack_frame)
+
+        emit.assert_not_awaited()
+        assert "flock-research-framer" in tracker.acked_peer_ids
+        assert "research-framer" in tracker.acked_personas
+        assert tracker.ack_received.is_set()
+
+    @pytest.mark.asyncio
+    async def test_stale_or_orphan_kickoff_acks_are_consumed_without_recording(self, tmp_path):
+        broker = self._workflow_kickoff_broker(tmp_path, ack_timeout_s=0.05, ack_max_redeliveries=1)
+        stale_frame = {
+            "type": "outcome",
+            "data": {
+                "event_type": WORKFLOW_KICKOFF_ACK_EVENT_TYPE,
+                WORKFLOW_KICKOFF_ID_KEY: "kick-old",
+                "persona": "research-framer",
+            },
+        }
+
+        # No active kickoff: consumed, nothing to record.
+        assert broker._consume_workflow_kickoff_ack("flock-research-framer", stale_frame) is True
+
+        # Active kickoff with a different id: consumed but not recorded.
+        tracker = WorkflowKickoffAckTracker(kickoff_id="kick-new")
+        broker._workflow_kickoff_tracker = tracker
+        assert broker._consume_workflow_kickoff_ack("flock-research-framer", stale_frame) is True
+        assert tracker.acked_peer_ids == set()
+        assert not tracker.ack_received.is_set()
+
+        # Ordinary outcome frames are left for the pipeline.
+        outcome_frame = {"type": "outcome", "data": {"event_type": "research.completed"}}
+        assert broker._consume_workflow_kickoff_ack("flock-research-framer", outcome_frame) is False
 
     @pytest.mark.asyncio
     async def test_operator_event_uses_existing_mesh_publisher(self, tmp_path):

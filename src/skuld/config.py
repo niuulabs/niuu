@@ -116,6 +116,20 @@ class WorkflowTriggerConfig(BaseModel):
     source: str = Field(default="manual dispatch")
     event_type: str = Field(default="")
     startup_delay_s: float = Field(default=3.0)
+    ack_timeout_s: float = Field(
+        default=20.0,
+        description=(
+            "Seconds to wait for a workflow.kickoff.acknowledged mesh event "
+            "from the flock before republishing the kickoff."
+        ),
+    )
+    ack_max_redeliveries: int = Field(
+        default=5,
+        description=(
+            "How many times an unacknowledged kickoff is republished before "
+            "the session fails loudly. Total attempts = 1 + this value."
+        ),
+    )
 
 
 class WorkflowRuntimeConfig(BaseModel):

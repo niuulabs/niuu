@@ -432,6 +432,14 @@ def _wire_cascade(
 
     # Subscribe to event types this persona consumes
     if mesh is not None and persona_config is not None:
+        from niuu.mesh import resolve_peer_id  # noqa: PLC0415
+        from ravn.workflow_kickoff import WorkflowKickoffAcknowledger  # noqa: PLC0415
+
+        kickoff_acknowledger = WorkflowKickoffAcknowledger(
+            mesh=mesh,
+            peer_id=resolve_peer_id(settings.mesh.own_peer_id),
+            persona=persona_config.name,
+        )
         consumes = getattr(persona_config, "consumes", None)
         event_types = list(getattr(consumes, "event_types", []) if consumes else [])
         workflow_consumer_groups: list[dict[str, Any]] = []
@@ -505,6 +513,20 @@ def _wire_cascade(
                 source_task_id,
                 root_corr,
             )
+
+            # --- Workflow kickoff handshake ---
+            # Ack the kickoff before any LLM work so Skuld stops redelivering;
+            # a redelivery means our previous ack was lost, so re-ack it but
+            # never enqueue the same kickoff twice.
+            if kickoff_acknowledger.is_kickoff(event):
+                first_delivery = await kickoff_acknowledger.acknowledge(event)
+                if not first_delivery:
+                    logger.info(
+                        "mesh: ignoring redelivered workflow kickoff event_type=%s root=%s",
+                        event_type,
+                        root_corr,
+                    )
+                    return
 
             # --- Producer aggregation ---
             # If the source persona contributes_to a target, check if all

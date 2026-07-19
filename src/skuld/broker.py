@@ -11,7 +11,9 @@ import json
 import logging
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import asdict, dataclass
+from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -34,6 +36,11 @@ from niuu.domain.transcript_reducer import (
     result_metadata,
     steering_state_from_frame,
     steering_target_id,
+)
+from niuu.domain.workflow_kickoff import (
+    WORKFLOW_KICKOFF_ID_KEY,
+    WORKFLOW_KICKOFF_REDELIVERY_KEY,
+    is_workflow_kickoff_ack_payload,
 )
 from niuu.mesh.cluster import read_cluster_pub_addresses
 from niuu.mesh.discovery_builder import build_discovery_adapters
@@ -262,6 +269,21 @@ class PeerWatchState:
 
 
 @dataclass
+class WorkflowKickoffAckTracker:
+    """Acks received for one logical workflow kickoff dispatch.
+
+    Populated by :meth:`Broker._consume_workflow_kickoff_ack` as flock peers
+    acknowledge the kickoff over the mesh; awaited by
+    :meth:`Broker._publish_workflow_trigger` between redelivery attempts.
+    """
+
+    kickoff_id: str
+    acked_peer_ids: set[str] = dataclass_field(default_factory=set)
+    acked_personas: set[str] = dataclass_field(default_factory=set)
+    ack_received: asyncio.Event = dataclass_field(default_factory=asyncio.Event)
+
+
+@dataclass
 class PendingHelpRequest:
     """A peer's genuine question, awaiting an answer from the commissioner.
 
@@ -390,6 +412,7 @@ class Broker(
         self._chronicle_watcher: ChronicleWatcher | None = None
         self._peer_watchdog_task: asyncio.Task[None] | None = None
         self._workflow_trigger_task: asyncio.Task[None] | None = None
+        self._workflow_kickoff_tracker: WorkflowKickoffAckTracker | None = None
         self._peer_watches: dict[str, PeerWatchState] = {}
         self._peer_pending_commands: dict[str, list[str]] = {}
         self._git_workspace_checkpoint: GitWorkspaceCheckpoint | None = None
@@ -984,7 +1007,17 @@ class Broker(
         return True
 
     async def _publish_workflow_trigger(self) -> None:
-        """Publish the initial Ting task into the flock as a mesh outcome event."""
+        """Publish the initial Ting task into the flock as a mesh outcome event.
+
+        The mesh retains nothing for late subscribers, so a kickoff published
+        while a cold-starting persona is still arming its subscription simply
+        evaporates — participant registration only proves the peer exists, not
+        that it can receive events yet. Each dispatch therefore carries a
+        kickoff id and is republished until a consuming persona acknowledges
+        it with a ``workflow.kickoff.acknowledged`` mesh event; after the
+        configured redelivery budget the session fails loudly instead of
+        idling forever.
+        """
         if self._mesh_adapter is None or not self._has_workflow_trigger():
             return
 
@@ -997,7 +1030,6 @@ class Broker(
         consumers_ready = await self._wait_for_event_consumers(
             cfg.event_type,
             wait_timeout_s,
-            settle_s=5.0,
         )
         if not consumers_ready:
             raise RuntimeError(f"workflow trigger consumers for {cfg.event_type} did not connect")
@@ -1009,23 +1041,153 @@ class Broker(
                 delay_s,
             )
             await asyncio.sleep(delay_s)
-        await self._publish_mesh_event(
-            cfg.event_type,
-            self._settings.session.initial_prompt,
-            source=cfg.source,
-            correlation_id=self.session_id,
-            extra_payload={
-                "summary": f"Workflow dispatch: {cfg.label or cfg.event_type}",
-                "workflow_trigger_label": cfg.label,
-                "workflow_trigger_node_id": cfg.node_id,
-                "workspace_path": self.workspace_dir,
-            },
+
+        tracker = WorkflowKickoffAckTracker(kickoff_id=str(uuid.uuid4()))
+        self._workflow_kickoff_tracker = tracker
+        attempts = 1 + max(0, int(cfg.ack_max_redeliveries))
+        for attempt in range(attempts):
+            await self._publish_mesh_event(
+                cfg.event_type,
+                self._settings.session.initial_prompt,
+                source=cfg.source,
+                correlation_id=self.session_id,
+                extra_payload={
+                    "summary": f"Workflow dispatch: {cfg.label or cfg.event_type}",
+                    "workflow_trigger_label": cfg.label,
+                    "workflow_trigger_node_id": cfg.node_id,
+                    "workspace_path": self.workspace_dir,
+                    WORKFLOW_KICKOFF_ID_KEY: tracker.kickoff_id,
+                    WORKFLOW_KICKOFF_REDELIVERY_KEY: attempt,
+                },
+            )
+            logger.info(
+                "Workflow trigger dispatched onto mesh event_type=%s node_id=%s attempt=%d/%d",
+                cfg.event_type,
+                cfg.node_id,
+                attempt + 1,
+                attempts,
+            )
+            if self._room_bridge is None:
+                # Kickoff acks travel through the room mesh bridge; without a
+                # room there is no way to observe them, so the legacy
+                # fire-and-forget dispatch is all this session can get.
+                logger.info("Workflow trigger published without ack tracking (room disabled)")
+                return
+            if await self._wait_for_workflow_kickoff_acks(
+                tracker, timeout_s=float(cfg.ack_timeout_s)
+            ):
+                logger.info(
+                    "Workflow kickoff acknowledged event_type=%s peers=%s",
+                    cfg.event_type,
+                    sorted(tracker.acked_peer_ids),
+                )
+                return
+            if attempt + 1 < attempts:
+                logger.warning(
+                    "Workflow kickoff unacknowledged after %.1fs "
+                    "(attempt %d/%d, missing=%s) — republishing",
+                    float(cfg.ack_timeout_s),
+                    attempt + 1,
+                    attempts,
+                    sorted(self._missing_workflow_kickoff_ack_peers(tracker)),
+                )
+
+        missing = sorted(self._missing_workflow_kickoff_ack_peers(tracker))
+        raise RuntimeError(
+            f"workflow kickoff for {cfg.event_type} was never acknowledged by "
+            f"{missing or 'any flock peer'} after {attempts} attempts"
         )
+
+    def _missing_workflow_kickoff_ack_peers(self, tracker: WorkflowKickoffAckTracker) -> set[str]:
+        """Required kickoff consumers that have not acknowledged yet.
+
+        Peers are matched by their room participant id, falling back to the
+        persona name the ack carries — flock personas derive both from the
+        same configuration, but the fallback keeps a cosmetic id mismatch
+        from failing an otherwise healthy session.
+        """
+        cfg = self._settings.workflow_trigger
+        required = self._workflow_trigger_consumer_peer_ids(cfg.event_type)
+        missing: set[str] = set()
+        for peer_id in required:
+            if peer_id in tracker.acked_peer_ids:
+                continue
+            participant = (
+                self._room_bridge.participants.get(peer_id)
+                if self._room_bridge is not None
+                else None
+            )
+            persona = str(getattr(participant, "persona", "") or "").strip()
+            if persona and persona in tracker.acked_personas:
+                continue
+            missing.add(peer_id)
+        return missing
+
+    def _workflow_kickoff_acks_satisfied(self, tracker: WorkflowKickoffAckTracker) -> bool:
+        """True when every required consumer acked (or anyone, if none are known)."""
+        cfg = self._settings.workflow_trigger
+        required = self._workflow_trigger_consumer_peer_ids(cfg.event_type)
+        if not required:
+            return bool(tracker.acked_peer_ids or tracker.acked_personas)
+        return not self._missing_workflow_kickoff_ack_peers(tracker)
+
+    async def _wait_for_workflow_kickoff_acks(
+        self,
+        tracker: WorkflowKickoffAckTracker,
+        *,
+        timeout_s: float,
+    ) -> bool:
+        """Wait until the kickoff is acknowledged or *timeout_s* elapses."""
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while not self._workflow_kickoff_acks_satisfied(tracker):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            tracker.ack_received.clear()
+            with suppress(TimeoutError):
+                await asyncio.wait_for(tracker.ack_received.wait(), timeout=remaining)
+        return True
+
+    def _consume_workflow_kickoff_ack(self, peer_id: str, frame: dict[str, Any]) -> bool:
+        """Absorb a ``workflow.kickoff.acknowledged`` outcome frame from a peer.
+
+        Returns True when the frame was a kickoff ack — acks are handshake
+        signals and must never reach the outcome pipeline or gate machinery.
+        Acks for a stale kickoff id (an earlier dispatch of this session) are
+        consumed without being recorded.
+        """
+        data = frame.get("data")
+        if not isinstance(data, dict) or not is_workflow_kickoff_ack_payload(data):
+            return False
+
+        tracker = self._workflow_kickoff_tracker
+        if tracker is None:
+            logger.info(
+                "Ignoring workflow kickoff ack without an active kickoff peer=%s",
+                peer_id,
+            )
+            return True
+        ack_kickoff_id = str(data.get(WORKFLOW_KICKOFF_ID_KEY) or "").strip()
+        if ack_kickoff_id and ack_kickoff_id != tracker.kickoff_id:
+            logger.info(
+                "Ignoring stale workflow kickoff ack peer=%s kickoff_id=%s",
+                peer_id,
+                ack_kickoff_id,
+            )
+            return True
+
+        tracker.acked_peer_ids.add(peer_id)
+        persona = str(data.get("persona") or "").strip()
+        if persona:
+            tracker.acked_personas.add(persona)
+        tracker.ack_received.set()
         logger.info(
-            "Workflow trigger dispatched onto mesh event_type=%s node_id=%s",
-            cfg.event_type,
-            cfg.node_id,
+            "Workflow kickoff ack received peer=%s persona=%s duplicate=%s",
+            peer_id,
+            persona or "-",
+            bool(data.get("duplicate")),
         )
+        return True
 
     async def _publish_mesh_event(
         self,
@@ -1175,6 +1337,8 @@ class Broker(
             return
         observer_peer_id = self._observer_peer_id()
         if peer_id == observer_peer_id:
+            return
+        if event_type == "outcome" and self._consume_workflow_kickoff_ack(peer_id, frame):
             return
         participant = self._room_bridge.participants.get(peer_id)
         peer_label = (
