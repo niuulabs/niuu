@@ -22,7 +22,6 @@ OperationalHealth = str
 
 DEFAULT_ENVIRONMENT_TYPES = (
     "k8s",
-    "host.inbox",
     "host",
     "service",
     "home_lab",
@@ -30,7 +29,6 @@ DEFAULT_ENVIRONMENT_TYPES = (
 )
 DEFAULT_SIGNAL_SOURCE_KINDS = (
     "kubernetes",
-    "email",
     "host",
     "webhook",
     "metrics",
@@ -660,76 +658,8 @@ def k8s_environment_fixture() -> Environment:
     )
 
 
-def inbox_environment_fixture() -> Environment:
-    """Representative host/inbox Environment."""
-    return Environment(
-        id="host-jozef-mail",
-        name="Jozef Mail Host",
-        type="host.inbox",
-        tenant_id="niuu",
-        realm_id="personal",
-        topology=TopologyRef(
-            node_id="host:jozef-mail",
-            type_id="host",
-            parent_id="realm:personal",
-            realm_id="personal",
-            host_id="jozef-mac",
-            zone="personal",
-        ),
-        resident_valkyrie_ids=["valkyrie:inbox-host"],
-        signal_sources=[
-            SignalSource(
-                id="gmail-inbox",
-                name="Gmail Inbox",
-                kind="email",
-                adapter="gmail.connector",
-                subject_patterns=["signal.inbox.*"],
-            ),
-            SignalSource(
-                id="host-events",
-                name="Host Events",
-                kind="host",
-                adapter="ravn.adapters.environment.host",
-                subject_patterns=["signal.host.*"],
-            ),
-        ],
-        operational_state=OperationalState(
-            health="nominal",
-            baselines={"expected_important_threads_per_day": 6},
-            learned_normal={"newsletters": "suppress unless sender is pinned"},
-        ),
-        action_capabilities=[
-            ActionCapability(
-                name="email.classify",
-                authority="autonomous",
-                targets=["message"],
-                risk="low",
-            ),
-            ActionCapability(
-                name="email.draft_reply",
-                authority="human_review_required",
-                targets=["thread"],
-                risk="medium",
-            ),
-        ],
-        autonomy=AutonomyPolicy(
-            mode="guarded",
-            escalation_surfaces=["ui:valkyries", "email:drafts"],
-        ),
-        wakefulness=WakefulnessState(state="watching", summary="Watching high-signal mail"),
-        flock_memberships=[
-            FlockMembership(
-                flock_id="personal-host-valkyries",
-                role="host-resident",
-                ting_flow="host-environment-flock",
-            )
-        ],
-    )
-
-
 def example_environments() -> list[Environment]:
     """Return deterministic Environment fixtures for tests, docs, and UI mocks."""
     return [
         k8s_environment_fixture(),
-        inbox_environment_fixture(),
     ]

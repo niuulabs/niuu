@@ -7,14 +7,11 @@ from dataclasses import dataclass
 import pytest
 
 from ravn.adapters.environment_signals import (
-    HostSignalAdapter,
-    InboxSignalAdapter,
     KubernetesSignalAdapter,
     demo_signal_adapters,
     signal_sources_observatory_fragment,
 )
 from ravn.domain.environment import (
-    inbox_environment_fixture,
     k8s_environment_fixture,
 )
 from ravn.ports.signal_adapter import NormalizedSignal
@@ -60,6 +57,7 @@ async def test_kubernetes_adapter_normalizes_client_events() -> None:
     adapter = KubernetesSignalAdapter.from_kubernetes_client(
         environment=environment,
         core_v1=_FakeCoreV1([_k8s_warning_event()]),
+        critical_reasons=["oomkilled"],
     )
 
     signals = await adapter.collect()
@@ -96,55 +94,6 @@ async def test_kubernetes_adapter_normalizes_client_events() -> None:
             provenance={"adapter": "kubernetes.events", "source_id": "kubernetes-events"},
         )
     ]
-
-
-@pytest.mark.asyncio
-async def test_inbox_and_host_adapters_normalize_to_same_contract() -> None:
-    environment = inbox_environment_fixture()
-    inbox = InboxSignalAdapter(
-        environment=environment,
-        source_id="gmail-inbox",
-        raw_items=[
-            {
-                "id": "msg-renewal",
-                "thread_id": "thread-renewal",
-                "from": "customer@example.com",
-                "subject": "Renewal question",
-                "importance": "high",
-                "received_at": "2026-06-03T12:12:00Z",
-                "provider": "gmail",
-            }
-        ],
-    )
-    host = HostSignalAdapter(
-        environment=environment,
-        source_id="host-events",
-        raw_items=[
-            {
-                "id": "wake",
-                "host_id": "jozef-mac",
-                "category": "power",
-                "severity": "info",
-                "message": "Host woke from sleep",
-                "observed_at": "2026-06-03T12:14:00Z",
-            }
-        ],
-    )
-
-    message, host_event = [*(await inbox.collect()), *(await host.collect())]
-
-    assert message.signal_type == "email"
-    assert message.severity == "warning"
-    assert message.raw_payload_ref == "email://gmail/threads/thread-renewal/messages/msg-renewal"
-    assert message.normalized_payload["subject"] == "Renewal question"
-    assert host_event.signal_type == "host"
-    assert host_event.raw_payload_ref == "host://jozef-mac/events/wake"
-    assert host_event.object_ref == {
-        "host_id": "jozef-mac",
-        "event_id": "wake",
-        "category": "power",
-    }
-
 
 
 @pytest.mark.asyncio
@@ -281,16 +230,11 @@ async def test_demo_signal_adapters_cover_mvp_environment_fixtures() -> None:
 
     assert set(events_by_environment) == {
         "cluster-prod-a",
-        "host-jozef-mail",
     }
     assert [event.event_type for event in events_by_environment["cluster-prod-a"]] == [
         "signal.kubernetes.event",
         "signal.kubernetes.event",
     ]
-    assert {event.event_type for event in events_by_environment["host-jozef-mail"]} == {
-        "signal.inbox.message",
-        "signal.host.event",
-    }
 
 
 async def _record(events: list[SleipnirEvent], event: SleipnirEvent) -> None:
@@ -308,6 +252,7 @@ async def test_kubernetes_adapter_reads_raw_items_from_file(tmp_path) -> None:
         environment=k8s_environment_fixture(),
         source_id="file-events",
         raw_items_file=str(signal_file),
+        critical_reasons=["oomkilled"],
     )
 
     assert await adapter.collect() == []
@@ -344,6 +289,7 @@ async def test_raw_items_file_rejects_non_array_content(tmp_path) -> None:
         environment=k8s_environment_fixture(),
         source_id="file-events",
         raw_items_file=str(signal_file),
+        critical_reasons=["oomkilled"],
     )
     with _pytest.raises(ValueError, match="JSON array"):
         await adapter.collect()

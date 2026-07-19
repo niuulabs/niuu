@@ -30,18 +30,6 @@ RESIDENT_VALKYRIES = {
         "action": "k8s.inspect_pod",
         "state": "investigating",
     },
-    "inbox-host-valkyrie": {
-        "environment_type": "host",
-        "signal": registry.SIGNAL_INBOX_MESSAGE,
-        "action": "inbox.draft_reply",
-        "state": "drafting",
-    },
-    "printer-pi-valkyrie": {
-        "environment_type": "printer_pi",
-        "signal": registry.SIGNAL_PRINTER_EVENT,
-        "action": "printer.inspect_material",
-        "state": "needs_material",
-    },
 }
 
 
@@ -288,8 +276,6 @@ async def test_valkyrie_outcomes_publish_over_existing_mesh_path() -> None:
 
     for name, decision in [
         ("k8s-valkyrie", "propose_action"),
-        ("inbox-host-valkyrie", "escalate"),
-        ("printer-pi-valkyrie", "watch"),
     ]:
         persona = _load(name)
         event_type = _event_type_for_decision(persona, decision)
@@ -321,9 +307,6 @@ async def test_valkyrie_outcomes_publish_over_existing_mesh_path() -> None:
             topic=event_type,
         )
 
-    assert [event.payload["persona"] for event in received_judgments] == [
-        "inbox-host-valkyrie",
-        "printer-pi-valkyrie",
-    ]
+    assert [event.payload["persona"] for event in received_judgments] == []
     assert [event.payload["persona"] for event in received_actions] == ["k8s-valkyrie"]
     assert received_actions[0].payload["outcome"]["action_capability"] == "k8s.inspect_pod"

@@ -44,8 +44,8 @@ def _settings() -> Settings:
                 SignalSourceConfig(
                     id="host-events",
                     name="Host Events",
-                    kind="host",
-                    adapter="ravn.adapters.environment_signals.HostSignalAdapter",
+                    kind="generic",
+                    adapter="ravn.adapters.environment_signals.GenericSignalAdapter",
                     kwargs={
                         "raw_items": [
                             {
@@ -136,7 +136,7 @@ async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
 
     assert first_count == 1
     assert second_count == 0
-    assert [event.event_type for event in received] == ["signal.host.event"]
+    assert [event.event_type for event in received] == ["signal.received"]
     assert received[0].payload["environment_id"] == "host-jozef"
     assert [event.event_type for event in telemetry] == [
         "valkyrie.signal_poll.completed",
@@ -163,7 +163,7 @@ async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
     assert telemetry[1].payload["published_count"] == 0
     assert telemetry[1].payload["enqueued_task_count"] == 0
     assert len(enqueued) == 1
-    assert enqueued[0].triggered_by == "signal:signal.host.event"
+    assert enqueued[0].triggered_by == "signal:signal.received"
     assert enqueued[0].root_correlation_id == received[0].correlation_id
     # The prompt is structured markdown: a heading, sections, fenced payload +
     # outcome schema. Assert the durable contract, not exact prose.
@@ -212,7 +212,7 @@ async def test_runtime_runs_resident_learning_before_enqueueing_signal_task() ->
 
     assert count == 1
     assert len(processed) == 1
-    assert processed[0].event_type == "signal.host.event"
+    assert processed[0].event_type == "signal.received"
     assert len(enqueued) == 1
     context = enqueued[0].initiative_context
     assert "## Resident learning" in context
@@ -247,7 +247,7 @@ async def test_daemon_environment_signal_is_recorded_into_resident_inbox(
     assert len(rows) == 1
     _path, signal = rows[0]
     assert signal.source == "host-events"
-    assert signal.kind == "signal.host.event"
+    assert signal.kind == "signal.received"
     assert "Disk usage crossed 95%" in signal.summary
 
 
@@ -395,7 +395,7 @@ async def test_runtime_start_publishes_configuration_telemetry() -> None:
         "Quietly skeptical and evidence-first; escalate only with crisp context."
     )
     assert payload["source_count"] == 1
-    assert payload["sources"] == [{"id": "host-events", "signal_type": "host"}]
+    assert payload["sources"] == [{"id": "host-events", "signal_type": "generic"}]
     assert payload["poll_interval_seconds"] == 0.01
     assert payload["signal_task_severities"] == ["warning", "critical"]
     assert payload["drive_loop_enabled"] is False
@@ -475,7 +475,7 @@ def test_idle_triage_prompt_is_bounded_regardless_of_batch_size() -> None:
     batch = [
         {
             "signal_ref": f"sig-{index}",
-            "signal_type": "host",
+            "signal_type": "generic",
             "severity": "info",
             "source_id": "host-events",
             "summary": long_summary,
@@ -535,14 +535,14 @@ def test_untriaged_buffer_is_capped() -> None:
         runtime._untriaged.append(
             {
                 "signal_ref": f"sig-{index}",
-                "signal_type": "host",
+                "signal_type": "generic",
                 "severity": "info",
                 "source_id": "host-events",
                 "summary": f"signal {index}",
             }
         )
     event = SleipnirEvent(
-        event_type="signal.host.event",
+        event_type="signal.received",
         source="test",
         payload={},
         summary="s",

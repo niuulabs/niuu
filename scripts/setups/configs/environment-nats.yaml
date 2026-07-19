@@ -54,23 +54,6 @@ environment:
         exclude_reasons:
           - Pulled
           - Pulling
-    - id: host-events
-      name: Host Events
-      kind: host
-      adapter: ravn.adapters.environment_signals.HostSignalAdapter
-      enabled: true
-      kwargs:
-        providers:
-          - system
-          - process
-    - id: operator-events
-      name: Operator Events
-      kind: host
-      adapter: ravn.adapters.environment_signals.HostSignalAdapter
-      enabled: true
-      kwargs:
-        provider: gateway.http
-        category: operator
 
 llm:
   model: ""                              # set to your model name

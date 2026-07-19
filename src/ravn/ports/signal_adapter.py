@@ -15,18 +15,16 @@ from sleipnir.ports.events import SleipnirPublisher
 
 SignalSeverity = Literal["debug", "info", "warning", "critical"]
 NormalizedSignalType = Literal[
+    "generic",
     "kubernetes",
-    "email",
-    "host",
     "webhook",
     "metrics",
     "logs",
 ]
 
 _CATALOG_SIGNAL_KIND: dict[str, str] = {
+    "generic": "generic",
     "kubernetes": "kubernetes",
-    "email": "inbox",
-    "host": "host",
     "webhook": "received",
     "metrics": "received",
     "logs": "received",

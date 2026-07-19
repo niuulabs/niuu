@@ -8,7 +8,6 @@ from ravn.domain.environment import (
     Environment,
     apply_environment_metadata,
     example_environments,
-    inbox_environment_fixture,
     k8s_environment_fixture,
 )
 from sleipnir.domain.catalog import learning_promoted, signal_received
@@ -20,7 +19,6 @@ def test_environment_examples_share_one_serializable_model() -> None:
 
     assert {environment.type for environment in environments} == {
         "k8s",
-        "host.inbox",
     }
     for environment in environments:
         dumped = environment.model_dump_json()
@@ -73,17 +71,14 @@ def test_environment_projects_to_existing_ravn_config_and_derived_nats_subjects(
 
 
 def test_environment_projects_to_existing_skuld_participant_metadata() -> None:
-    environment = inbox_environment_fixture()
-    participant = environment.to_participant_meta(persona="inbox-valkyrie")
+    environment = k8s_environment_fixture()
+    participant = environment.to_participant_meta(persona="k8s-valkyrie")
 
-    assert participant.peer_id == "valkyrie:inbox-host"
+    assert participant.peer_id == "valkyrie:k8s-prod-a"
     assert participant.participant_type == "ravn"
     assert participant.participant_kind == "valkyrie"
-    assert participant.environment_id == "host-jozef-mail"
-    assert participant.wakefulness == "watching"
-    assert participant.authority_role == "guarded"
-    assert participant.room_ids == ("environment:host-jozef-mail",)
-    assert "ravn.environment.signal.inbox.*" in participant.subscribes_to
+    assert participant.environment_id == "cluster-prod-a"
+    assert "ravn.environment.signal.kubernetes.*" in participant.subscribes_to
 
 
 def test_environment_projects_to_existing_ting_flock_and_mimir_scopes() -> None:
@@ -108,32 +103,32 @@ def test_environment_projects_to_existing_ting_flock_and_mimir_scopes() -> None:
 
 
 def test_environment_metadata_flows_through_sleipnir_event_roundtrip() -> None:
-    environment = inbox_environment_fixture()
+    environment = k8s_environment_fixture()
     event = signal_received(
         environment_id=environment.id,
         environment_type=environment.type,
-        signal_source="gmail.inbox",
-        signal_kind="inbox",
+        signal_source="kubernetes-events",
+        signal_kind="kubernetes",
         severity="info",
-        data={"from": "customer@example.com", "subject": "Renewal"},
-        source="adapter:gmail",
-        correlation_id="corr-inbox-renewal",
+        data={"reason": "Scheduled", "message": "Pod scheduled"},
+        source="adapter:kubernetes-events",
+        correlation_id="corr-k8s-scheduled",
     )
 
     enriched = apply_environment_metadata(
         event,
         environment,
-        root_correlation_id="corr-inbox-renewal",
+        root_correlation_id="corr-k8s-scheduled",
     )
     round_tripped = SleipnirEvent.from_dict(enriched.to_dict())
 
     assert round_tripped.tenant_id == "niuu"
-    assert round_tripped.payload["environment_id"] == "host-jozef-mail"
-    assert round_tripped.payload["environment_type"] == "host.inbox"
-    assert round_tripped.payload["realm_id"] == "personal"
-    assert round_tripped.payload["topology_ref"]["type_id"] == "host"
-    assert round_tripped.payload["nats_subject"] == "ravn.environment.signal.inbox.message"
-    assert round_tripped.payload["root_correlation_id"] == "corr-inbox-renewal"
+    assert round_tripped.payload["environment_id"] == "cluster-prod-a"
+    assert round_tripped.payload["environment_type"] == "k8s"
+    assert round_tripped.payload["realm_id"] == "prod"
+    assert round_tripped.payload["topology_ref"]["type_id"] == "cluster"
+    assert round_tripped.payload["nats_subject"] == "ravn.environment.signal.kubernetes.event"
+    assert round_tripped.payload["root_correlation_id"] == "corr-k8s-scheduled"
 
 
 def test_environment_metadata_covers_learning_provenance() -> None:
