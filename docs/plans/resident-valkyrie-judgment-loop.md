@@ -1,7 +1,7 @@
 # Resident Valkyrie Judgment Loop
 
-**Status:** Proposed  
-**Date:** 2026-07-20  
+**Status:** Implemented
+**Date:** 2026-07-20
 **Scope:** Ravn resident Valkyries, environment signals, resident continuity,
 Mímir, tool evolution, and agent-to-agent work
 
@@ -654,6 +654,47 @@ tool is allowed to touch.
 
 **Phase exit:** A tool cannot exceed its granted reach even if its implementation
 is faulty or adversarial.
+
+#### Implemented containment boundary
+
+The production default is now `learned_tool_execution_backend: container`.
+Each invocation gets a new digest-pinned OCI container with a read-only root,
+no Linux capabilities, `no-new-privileges`, PID/CPU/memory limits, bounded
+scratch space, and a hard timeout. It receives only the tool file (read-only)
+plus exact filesystem and credential grants. Networking is off by default.
+
+The adapter deliberately refuses grants Docker cannot faithfully express:
+target-specific egress, read-only/write-only sockets, filesystem write-only,
+runtime sockets, and host pseudo-filesystems. Broad network access must be
+declared as `network/read_write` and therefore enters the existing mutating
+review path. Dependency provisioning runs separately with only the tool venv
+and package cache mounted; the resulting environment is read-only during tool
+execution. Failure to start the container is an error, never a local fallback.
+
+The previous `local` and workspace-mounted `forge`/`devrunner` runners remain
+explicit compatibility modes. They are no longer the default and make no claim
+to provide this boundary.
+
+The live adversarial proof executes a tool that attempts undeclared host-file
+read, self-modification, and network access, then repeats with exact read,
+read-write, and credential grants. The first three operations are blocked; only
+the explicitly mounted paths and named credential become visible.
+
+## Implementation status
+
+| Phase | Status | Commit |
+| --- | --- | --- |
+| 0 — clean judgment baseline | Complete | `6b34886b` |
+| 1 — durable resident continuity | Complete | `8256b60f` |
+| 2 — general A2A collaboration | Complete | `e27ca3dd` |
+| 3 — evidence-gated learning | Complete | `5a2b9101` |
+| 4 — enforced learned-tool reach | Complete | current phase commit |
+
+Mímir is intentionally outside the automatic judgment path. It remains an
+agent-invoked evidence store/search tool; candidate reflections cannot enter
+trusted retrieval until repeated or externally verified evidence promotes
+them. Reintroduction of automatic recall is an evaluation decision, not a
+runtime default.
 
 ## File-level implementation map
 

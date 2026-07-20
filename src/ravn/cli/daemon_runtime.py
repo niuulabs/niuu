@@ -214,7 +214,6 @@ async def _run_daemon(
             extended_thinking=extended_thinking,
             # NIU-598: session lifecycle events for optional reflection storage
             sleipnir_publisher=daemon_bus,
-            reflection_config=settings.effective_post_session_reflection_config(),
             persona=resolved_persona.name if resolved_persona else "",
             # Persona config drives outcome parsing; stop_on_outcome is retained
             # only for compatibility and cannot suppress tool execution.

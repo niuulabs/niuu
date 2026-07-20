@@ -437,7 +437,6 @@ def _build_agent(
         auto_checkpoint_before_destructive=cp_cfg.auto_before_destructive,
         budget_milestone_fractions=cp_cfg.budget_milestone_fractions,
         sleipnir_publisher=sleipnir_publisher,
-        reflection_config=settings.effective_post_session_reflection_config(),
         persona=persona_config.name if persona_config else "",
         persona_config=persona_config,
         stop_on_outcome=persona_config.stop_on_outcome if persona_config else False,

@@ -2728,12 +2728,14 @@ class ResidentEvolutionConfig(BaseModel):
             "opportunistic snapshots still fire)."
         ),
     )
-    learned_tool_execution_backend: Literal["local", "forge", "devrunner"] = Field(
-        default="local",
+    learned_tool_execution_backend: Literal["container", "local", "forge", "devrunner"] = Field(
+        default="container",
         description=(
             "Execution backend for learned agent tools authored through build_tool. "
-            "'local' uses the resident subprocess sandbox; 'forge'/'devrunner' run "
-            "inside the workspace-mounted devrunner container path."
+            "'container' runs each invocation in a fail-closed, least-reach OCI "
+            "container; 'local' is an explicit compatibility mode without hard "
+            "reach enforcement; 'forge'/'devrunner' select the legacy "
+            "workspace-mounted persistent container path."
         ),
     )
     learned_tool_injection_mode: Literal["dispatch", "bulk"] = Field(

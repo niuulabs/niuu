@@ -1,7 +1,7 @@
 """Unit tests for NIU-598 reflection wiring in cli/commands.py.
 
 Covers the new code paths:
-- _build_agent passes sleipnir_publisher, reflection_config, persona
+- _build_agent passes sleipnir_publisher and persona
 - _run_with_signals creates InProcessBus and wires PostSessionReflectionService
 - _run_daemon creates shared InProcessBus and wires PostSessionReflectionService
 """
@@ -53,15 +53,15 @@ class TestBuildAgentReflectionWiring:
         assert agent._sleipnir_publisher is fake_publisher
 
     @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
-    def test_reflection_config_forwarded_to_agent(self, settings: Settings) -> None:
-        """RavnAgent receives reflection_config from settings."""
+    def test_reflection_config_is_not_retained_by_agent(self, settings: Settings) -> None:
+        """Post-session reflection belongs to its service, not the turn agent."""
         from ravn.cli.commands import _build_agent
 
         settings.reflection.enabled = True
         settings.reflection.learning_token_budget = 999
         agent, _ = _build_agent(settings)
-        assert agent._reflection_config is settings.reflection
-        assert agent._reflection_config.learning_token_budget == 999
+        assert not hasattr(agent, "_reflection_config")
+        assert settings.effective_post_session_reflection_config().learning_token_budget == 999
 
     @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
     def test_reflection_fallbacks_resolve_to_effective_model(self, settings: Settings) -> None:
@@ -75,7 +75,10 @@ class TestBuildAgentReflectionWiring:
         agent, _ = _build_agent(settings)
 
         assert agent._reflection_model == "Qwen/Qwen3.6-35B-A3B-FP8"
-        assert agent._reflection_config.llm_alias == "Qwen/Qwen3.6-35B-A3B-FP8"
+        assert (
+            settings.effective_post_session_reflection_config().llm_alias
+            == "Qwen/Qwen3.6-35B-A3B-FP8"
+        )
         assert settings.reflection.llm_alias == "same-as-agent"
 
     @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
@@ -98,7 +101,8 @@ class TestBuildAgentReflectionWiring:
         agent, _ = _build_agent(settings, persona_config=persona)
         assert agent._persona == "reviewer"
         assert agent._persona_config is persona
-        assert agent._stop_on_outcome is True
+        assert agent._persona_config.stop_on_outcome is True
+        assert not hasattr(agent, "_stop_on_outcome")
 
     @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
     def test_persona_name_empty_when_no_persona_config(self, settings: Settings) -> None:

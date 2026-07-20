@@ -27,6 +27,7 @@ from ravn.odin.review import (
 from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
 from ravn.valkyrie_evolution.learned_tools import (
+    LearnedToolRunner,
     LocalLearnedToolRunner,
     learned_tool_artifact_path,
     learned_tool_path,
@@ -242,6 +243,7 @@ class ResidentLearningRuntime:
         learning_store: FlockLearningStore | None = None,
         review_requester: ReviewRequester | None = None,
         skill_inventory_interval_seconds: float = DEFAULT_SKILL_INVENTORY_INTERVAL_SECONDS,
+        learned_tool_runner: LearnedToolRunner | None = None,
     ) -> None:
         self.identity = identity
         self._skills = skills
@@ -251,13 +253,14 @@ class ResidentLearningRuntime:
         self._policy = policy or ResidentLearningPolicy()
         self._source = source or identity.valkyrie_id
         self._tools_dir = Path(tools_dir) if tools_dir else None
-        self._learned_tool_runner = (
-            LocalLearnedToolRunner(
+        self._learned_tool_runner = learned_tool_runner
+        if self._learned_tool_runner is None and self._tools_dir is not None:
+            # Direct service construction keeps its historical local adapter;
+            # the production composition root always injects the configured
+            # runner (whose default is the contained backend).
+            self._learned_tool_runner = LocalLearnedToolRunner(
                 venvs_dir=learned_tool_venvs_dir(self._tools_dir.parent),
             )
-            if self._tools_dir is not None
-            else None
-        )
         self._tool_timeout_seconds = tool_timeout_seconds
         self._rollback_consecutive_failures = rollback_consecutive_failures
         self._feedback_confidence_bump = feedback_confidence_bump

@@ -16,7 +16,7 @@ from niuu.ports.mimir import MimirPort
 from ravn.adapters.memory.inline_facts import detect_and_write as _detect_and_write_facts
 from ravn.budget import IterationBudget, TokenEstimator
 from ravn.compression import CompressionResult, ContextCompressor
-from ravn.config import ExtendedThinkingConfig, PostSessionReflectionConfig
+from ravn.config import ExtendedThinkingConfig
 from ravn.domain.budget import compute_cost as _compute_cost_usd
 from ravn.domain.checkpoint import (
     DESTRUCTIVE_TOOL_NAMES,
@@ -127,7 +127,6 @@ class RavnAgent:
         repo_slug: str = "",
         # NIU-588: learnings injection at session start
         mimir: MimirPort | None = None,
-        reflection_config: PostSessionReflectionConfig | None = None,
         # NIU-594: persona config for outcome block parsing
         persona_config: PersonaConfig | None = None,
         # Retained for constructor compatibility. A tool-use response is never

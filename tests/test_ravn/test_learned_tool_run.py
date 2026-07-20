@@ -9,6 +9,7 @@ import pytest
 from ravn.adapters.permission.allow_deny import AllowAllPermission, DenyAllPermission
 from ravn.adapters.tools.learned_tool_run import LearnedToolRunTool
 from ravn.valkyrie_evolution.learned_tools import (
+    ContainedLearnedToolRunner,
     LearnedToolError,
     LearnedToolResolver,
     learned_tool_storage,
@@ -48,6 +49,18 @@ class TestLearnedToolResolver:
     def test_rejects_unknown_execution_backend(self, tmp_path: Path) -> None:
         with pytest.raises(LearnedToolError, match="unknown learned tool execution backend"):
             LearnedToolResolver(state_dir=tmp_path, execution_backend="qemu")
+
+    def test_container_backend_resolves_fail_closed_runner(self, tmp_path: Path) -> None:
+        _install_tool(tmp_path, "contained_tool")
+        resolver = LearnedToolResolver(
+            state_dir=tmp_path,
+            execution_backend="container",
+            workspace_root=tmp_path,
+        )
+
+        tool = resolver.load("contained_tool")
+
+        assert isinstance(tool._runner, ContainedLearnedToolRunner)
 
     def test_list_artifacts_empty_when_nothing_installed(self, tmp_path: Path) -> None:
         resolver = LearnedToolResolver(state_dir=tmp_path)

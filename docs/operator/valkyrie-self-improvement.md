@@ -138,16 +138,35 @@ before adopting a flock-shared tool.
 
 ```yaml
 resident_evolution:
-  learned_tool_execution_backend: local   # local | forge | devrunner
+  learned_tool_execution_backend: container   # container | local | forge | devrunner
 ```
 
-- `local` (default, and the correct choice in Kubernetes): subprocess with a
-  scrubbed environment. Per-tool dependencies are provisioned into venvs
-  (uv-first, one shared hardlink cache — N tools sharing a package cost one
-  copy; venvs are garbage-collected with their tools).
-- `forge`/`devrunner`: optional Docker-container execution **only for hosts
-  that run Docker** (adds container isolation + network scoping). Not
-  available in k8s pods — do not configure it there.
+- `container` (default): one fresh OCI container per invocation. The runtime
+  is read-only, capability-free, resource- and time-bounded, and receives no
+  workspace, network, credential, or host path unless the reviewed manifest
+  grants it. Filesystem grants mount only the exact existing target. Credential
+  grants pass only the named environment variable. The default image is pinned
+  by digest and runs with `--pull=never`; preload it on the execution host.
+
+  ```bash
+  docker pull ghcr.io/niuulabs/devrunner@sha256:ec7a32ffd8ca1f3ddb8bd4983198988538ab74804201ce45e14e56241adfc518
+  ```
+- Network containment fails closed. No grant means `--network=none`.
+  Target-specific or read-only/write-only network grants are rejected because
+  an ordinary Docker bridge cannot enforce their target or operation. A tool
+  may request explicit broad `network/read_write` reach, which is treated as
+  mutating by the normal autonomy/review policy.
+- `local`: explicit compatibility mode. It uses a scrubbed subprocess and
+  per-tool venvs, but it is not a security boundary and does not enforce
+  declared reach.
+- `forge`/`devrunner`: legacy workspace-mounted persistent-container path.
+  It scopes networking but exposes the workspace, so use `container` for
+  autonomous generated code.
+
+The `container` adapter currently requires a Docker-compatible daemon. If one
+is unavailable (for example, inside a Kubernetes pod without an execution
+service), learned-tool invocation fails loudly; it never falls back to local
+execution. Configure `local` only as a conscious risk acceptance.
 
 ### 5b. Injection mode — HOW installed tools reach the prompt
 

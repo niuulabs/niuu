@@ -199,6 +199,10 @@ def _build_resident_learning_runtime(
         ResidentLearningIdentity,
         ResidentLearningRuntime,
     )
+    from ravn.valkyrie_evolution.learned_tools import (  # noqa: PLC0415
+        learned_tool_runner_for_backend,
+        learned_tool_venvs_dir,
+    )
 
     resident_id = settings.mesh.own_peer_id or f"valkyrie:{settings.environment.id}"
     local_ravn_dir = _resident_ravn_state_dir(workspace, settings)
@@ -259,6 +263,11 @@ def _build_resident_learning_runtime(
         ),
         learning_store=FlockLearningStore(local_ravn_dir / "flock_learning.json"),
         review_requester=review_requester,
+        learned_tool_runner=learned_tool_runner_for_backend(
+            settings.resident_evolution.learned_tool_execution_backend,
+            workspace_root=workspace,
+            venvs_dir=learned_tool_venvs_dir(local_ravn_dir),
+        ),
     )
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -23,9 +24,11 @@ from ravn.valkyrie_evolution.learned_tools import (
     NETWORK_DENIED_DOCKER_NETWORK,
     REACH_ENFORCEMENT_ENFORCED,
     REACH_ENFORCEMENT_UNAVAILABLE,
+    ContainedLearnedToolRunner,
     ForgeSandboxLearnedToolRunner,
     LearnedToolError,
     LocalLearnedToolRunner,
+    _ContainerProcessResult,
     learned_tool_artifact_path,
     learned_tool_path,
     learned_tool_venvs_dir,
@@ -952,6 +955,299 @@ def test_reach_allows_network_derivation() -> None:
     assert reach_allows_network(compute_only) is False
     assert reach_allows_network(filesystem) is False
     assert reach_allows_network([]) is False
+
+
+async def test_contained_runner_defaults_to_no_network_and_no_workspace_mount(tmp_path) -> None:
+    calls: list[tuple[list[str], bytes, float, str]] = []
+
+    async def record(argv, stdin, timeout, name):
+        calls.append((list(argv), stdin, timeout, name))
+        return _ContainerProcessResult(returncode=0, stdout=b'{"ok": true}')
+
+    tool_path = write_tool(
+        tools_dir=tmp_path / "state" / "tools",
+        skill_name="probe",
+        tool_code="def run(signal):\n    return {'ok': True}\n",
+    )
+    runner = ContainedLearnedToolRunner(
+        workspace_root=tmp_path,
+        venvs_dir=tmp_path / "venvs",
+        command_runner=record,
+    )
+
+    result = await runner.run(tool_path, {"signal": 1}, entry_point="run", timeout_seconds=7)
+
+    assert result.ok
+    assert result.enforcement == REACH_ENFORCEMENT_ENFORCED
+    argv, stdin, timeout, name = calls[0]
+    assert "--network=none" in argv
+    assert "--read-only" in argv
+    assert "--cap-drop=ALL" in argv
+    assert "--security-opt=no-new-privileges" in argv
+    assert any(arg.startswith("--memory=") for arg in argv)
+    assert any(arg.startswith("--cpus=") for arg in argv)
+    assert not any(f"src={tmp_path}," in arg for arg in argv)
+    tool_mount = next(arg for arg in argv if f"src={tool_path.resolve()}," in arg)
+    assert "dst=/opt/ravn/tool/tool.py,readonly" in tool_mount
+    assert stdin == b'{"signal": 1}'
+    assert timeout == 7
+    assert name.startswith("ravn-tool-")
+
+
+async def test_contained_runner_mounts_only_exact_declared_paths_and_credentials(
+    tmp_path, monkeypatch
+) -> None:
+    calls: list[list[str]] = []
+
+    async def record(argv, stdin, timeout, name):
+        calls.append(list(argv))
+        return _ContainerProcessResult(returncode=0, stdout=b'{"ok": true}')
+
+    readable = tmp_path / "readable"
+    writable = tmp_path / "writable"
+    readable.mkdir()
+    writable.mkdir()
+    tool_path = write_tool(
+        tools_dir=tmp_path / "tools",
+        skill_name="probe",
+        tool_code="def run(signal):\n    return {'ok': True}\n",
+    )
+    monkeypatch.setenv("SCOPED_TOOL_TOKEN", "secret")
+    runner = ContainedLearnedToolRunner(
+        workspace_root=tmp_path,
+        command_runner=record,
+    )
+
+    result = await runner.run(
+        tool_path,
+        {},
+        entry_point="run",
+        timeout_seconds=5,
+        declared_reach=[
+            ToolReachGrant(kind="filesystem", target=str(readable), access="read"),
+            ToolReachGrant(kind="filesystem", target=str(writable), access="read_write"),
+            ToolReachGrant(kind="credential", target="SCOPED_TOOL_TOKEN", access="read"),
+            ToolReachGrant(kind="network", access="read_write"),
+        ],
+    )
+
+    assert result.ok
+    argv = calls[0]
+    assert "--network=bridge" in argv
+    read_mount = next(arg for arg in argv if f"src={readable.resolve()}," in arg)
+    write_mount = next(arg for arg in argv if f"src={writable.resolve()}," in arg)
+    assert read_mount.endswith(",readonly")
+    assert not write_mount.endswith(",readonly")
+    token_index = argv.index("SCOPED_TOOL_TOKEN")
+    assert argv[token_index - 1] == "--env"
+    assert "secret" not in argv
+
+
+async def test_contained_runner_fails_closed_for_unenforceable_reach(tmp_path) -> None:
+    calls = 0
+
+    async def record(argv, stdin, timeout, name):
+        nonlocal calls
+        calls += 1
+        return _ContainerProcessResult(returncode=0, stdout=b'{}')
+
+    tool_path = write_tool(
+        tools_dir=tmp_path / "tools",
+        skill_name="probe",
+        tool_code="def run(signal):\n    return {}\n",
+    )
+    runner = ContainedLearnedToolRunner(workspace_root=tmp_path, command_runner=record)
+
+    targeted_network = await runner.run(
+        tool_path,
+        {},
+        entry_point="run",
+        timeout_seconds=5,
+        declared_reach=[
+            ToolReachGrant(kind="network", target="https://mimir.internal", access="read")
+        ],
+    )
+    read_only_network = await runner.run(
+        tool_path,
+        {},
+        entry_point="run",
+        timeout_seconds=5,
+        declared_reach=[ToolReachGrant(kind="network", access="read")],
+    )
+    runtime_socket = await runner.run(
+        tool_path,
+        {},
+        entry_point="run",
+        timeout_seconds=5,
+        declared_reach=[
+            ToolReachGrant(kind="filesystem", target="/var/run", access="read_write")
+        ],
+    )
+
+    assert not targeted_network.ok
+    assert "target-specific network reach" in targeted_network.error
+    assert not read_only_network.ok
+    assert "refusing to treat unrestricted sockets as read-only" in read_only_network.error
+    assert not runtime_socket.ok
+    assert "container escape boundary" in runtime_socket.error
+    assert calls == 0
+
+
+async def test_contained_runner_provisions_dependencies_in_separate_bounded_runs(tmp_path) -> None:
+    calls: list[list[str]] = []
+
+    async def record(argv, stdin, timeout, name):
+        calls.append(list(argv))
+        return _ContainerProcessResult(returncode=0, stdout=b'{"ok": true}')
+
+    tool_path = write_tool(
+        tools_dir=tmp_path / "tools",
+        skill_name="probe",
+        tool_code="def run(signal):\n    return {'ok': True}\n",
+    )
+    runner = ContainedLearnedToolRunner(
+        workspace_root=tmp_path,
+        venvs_dir=tmp_path / "venvs",
+        command_runner=record,
+    )
+
+    result = await runner.run(
+        tool_path,
+        {},
+        entry_point="run",
+        timeout_seconds=5,
+        requirements=["httpx==0.28.1"],
+    )
+
+    assert result.ok
+    assert len(calls) == 3
+    create, install, execute = calls
+    assert "--network=none" in create
+    assert ["python", "-m", "venv"] == create[-4:-1]
+    assert "--network=bridge" in install
+    assert "httpx==0.28.1" in install
+    assert "--network=none" in execute
+    assert "/opt/ravn/venv/bin/python" in execute
+    assert any("dst=/opt/ravn/venv,readonly" in arg for arg in execute)
+
+
+async def test_contained_runner_marks_output_ceiling_as_enforced_failure(tmp_path) -> None:
+    async def overflow(argv, stdin, timeout, name):
+        return _ContainerProcessResult(returncode=-9, output_exceeded=True)
+
+    tool_path = write_tool(
+        tools_dir=tmp_path / "tools",
+        skill_name="noisy",
+        tool_code="def run(signal):\n    return {}\n",
+    )
+    runner = ContainedLearnedToolRunner(
+        workspace_root=tmp_path,
+        command_runner=overflow,
+        output_limit_bytes=64,
+    )
+
+    result = await runner.run(tool_path, {}, entry_point="run", timeout_seconds=5)
+
+    assert not result.ok
+    assert "output exceeded 64 bytes" in result.error
+    assert result.enforcement == REACH_ENFORCEMENT_ENFORCED
+
+
+@pytest.mark.skipif(
+    os.environ.get("RAVN_RUN_DOCKER_TESTS") != "1",
+    reason="set RAVN_RUN_DOCKER_TESTS=1 for the live OCI containment proof",
+)
+async def test_contained_runner_live_prevents_undeclared_reach(tmp_path, monkeypatch) -> None:
+    sentinel = tmp_path / "host-secret.txt"
+    sentinel.write_text("must-not-be-readable", encoding="utf-8")
+    writable = tmp_path / "explicit-write.txt"
+    writable.write_text("before", encoding="utf-8")
+    tool_path = write_tool(
+        tools_dir=tmp_path / "tools",
+        skill_name="adversarial_probe",
+        tool_code=(
+            "import os\n"
+            "import pathlib\n"
+            "import socket\n"
+            "def run(payload):\n"
+            "    secret = pathlib.Path(payload['sentinel'])\n"
+            "    try:\n"
+            "        secret_value = secret.read_text()\n"
+            "    except Exception:\n"
+            "        secret_value = ''\n"
+            "    try:\n"
+            "        pathlib.Path(__file__).write_text('replaced')\n"
+            "        rewrote_tool = True\n"
+            "    except Exception:\n"
+            "        rewrote_tool = False\n"
+            "    try:\n"
+            "        connection = socket.create_connection(('1.1.1.1', 53), timeout=.2)\n"
+            "        connection.close()\n"
+            "        network = True\n"
+            "    except Exception:\n"
+            "        network = False\n"
+            "    wrote = False\n"
+            "    if payload.get('write_path'):\n"
+            "        try:\n"
+            "            pathlib.Path(payload['write_path']).write_text('after')\n"
+            "            wrote = True\n"
+            "        except Exception:\n"
+            "            pass\n"
+            "    return {'secret': secret_value, 'rewrote_tool': rewrote_tool, "
+            "'network': network, 'wrote': wrote, "
+            "'credential': os.environ.get(payload.get('env_name', ''), '')}\n"
+        ),
+    )
+    runner = ContainedLearnedToolRunner(workspace_root=tmp_path)
+
+    result = await runner.run(
+        tool_path,
+        {"sentinel": str(sentinel)},
+        entry_point="run",
+        timeout_seconds=10,
+    )
+
+    assert result.ok, result.error or result.stderr
+    assert result.enforcement == REACH_ENFORCEMENT_ENFORCED
+    assert result.result == {
+        "secret": "",
+        "rewrote_tool": False,
+        "network": False,
+        "wrote": False,
+        "credential": "",
+    }
+    assert sentinel.read_text(encoding="utf-8") == "must-not-be-readable"
+
+    monkeypatch.setenv("RAVN_TEST_SCOPED_CREDENTIAL", "granted-value")
+    granted = await runner.run(
+        tool_path,
+        {
+            "sentinel": str(sentinel),
+            "write_path": str(writable),
+            "env_name": "RAVN_TEST_SCOPED_CREDENTIAL",
+        },
+        entry_point="run",
+        timeout_seconds=10,
+        declared_reach=[
+            ToolReachGrant(kind="filesystem", target=str(sentinel), access="read"),
+            ToolReachGrant(kind="filesystem", target=str(writable), access="read_write"),
+            ToolReachGrant(
+                kind="credential",
+                target="RAVN_TEST_SCOPED_CREDENTIAL",
+                access="read",
+            ),
+        ],
+    )
+
+    assert granted.ok, granted.error or granted.stderr
+    assert granted.result == {
+        "secret": "must-not-be-readable",
+        "rewrote_tool": False,
+        "network": False,
+        "wrote": True,
+        "credential": "granted-value",
+    }
+    assert writable.read_text(encoding="utf-8") == "after"
 
 
 async def test_local_runner_is_honest_about_reach_and_warns_once(tmp_path, caplog) -> None:

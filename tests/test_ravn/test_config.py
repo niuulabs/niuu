@@ -337,7 +337,7 @@ class TestResidentEvolutionConfig:
         # inline unless a Forge/Ting build backend is configured.
         c = ResidentEvolutionConfig()
         assert c.tool_build_adapter == ""
-        assert c.learned_tool_execution_backend == "local"
+        assert c.learned_tool_execution_backend == "container"
         assert c.tool_builder_workflow.names == []
         assert c.tool_builder_workflow.tags == []
 

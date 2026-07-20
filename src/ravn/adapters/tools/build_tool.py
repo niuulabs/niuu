@@ -15,8 +15,8 @@ from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
 from ravn.ports.tool import ToolPort
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
 from ravn.valkyrie_evolution.learned_tools import (
-    ForgeSandboxLearnedToolRunner,
     LearnedToolError,
+    learned_tool_runner_for_backend,
     learned_tool_venvs_dir,
     load_learned_tool,
     manifest_safety_class,
@@ -532,15 +532,13 @@ class BuildTool(ToolPort):
         )
 
     def _runner_for_backend(self) -> Any | None:
-        if self._execution_backend in {"", "local"}:
-            return None
-        if self._execution_backend in {"forge", "devrunner"}:
-            workspace_root = self._workspace_root or self._tools_dir.parent
-            return ForgeSandboxLearnedToolRunner(
-                workspace_root=workspace_root,
-                shell=self._sandbox_shell,
-            )
-        raise ValueError(f"unknown learned tool execution backend: {self._execution_backend}")
+        workspace_root = self._workspace_root or self._tools_dir.parent
+        return learned_tool_runner_for_backend(
+            self._execution_backend,
+            workspace_root=workspace_root,
+            venvs_dir=learned_tool_venvs_dir(self._tools_dir.parent),
+            sandbox_shell=self._sandbox_shell,
+        )
 
 
 def attach_build_tool(

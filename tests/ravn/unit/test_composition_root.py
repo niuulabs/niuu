@@ -396,6 +396,9 @@ class TestBuildTools:
         from ravn.cli.commands import _build_tools
         from ravn.domain.models import Session
 
+        # This unit exercises discovery/dispatch, not the OCI boundary. The
+        # contained default is covered by the learned-tool runtime tests.
+        settings.resident_evolution.learned_tool_execution_backend = "local"
         self._write_learned_artifact(tmp_path, "persisted_metric_window")
 
         tools = _build_tools(
