@@ -211,7 +211,7 @@
       "options": {},
       "targets": [{"query": "{ resource.service.name = \"$job\" && span.ravn.task.id != nil }", "queryType": "traceql", "refId": "A"}],
       "title": "Recent resident task traces",
-      "type": "traces"
+      "type": "table"
     },
     {
       "gridPos": {"h": 7, "w": 24, "x": 0, "y": 67},

@@ -25,7 +25,9 @@ def test_runtime_dashboard_covers_judgment_and_causal_dependencies() -> None:
 
     assert dashboard["uid"] == "valkyrie-runtime-judgment"
     assert len(panel_ids) == len(set(panel_ids))
-    assert {panel.get("type") for panel in panels} >= {"stat", "timeseries", "traces"}
+    assert {panel.get("type") for panel in panels} >= {"stat", "timeseries", "table"}
+    trace_search_panel = next(panel for panel in panels if panel["id"] == 50)
+    assert trace_search_panel["type"] == "table"
     assert "ravn_valkyrie_judgments" in queries
     assert "ravn_signal_transport_messages" in queries
     assert "ravn_agent_tool_calls" in queries
