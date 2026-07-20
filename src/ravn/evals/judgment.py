@@ -102,11 +102,15 @@ def _tool(name: str, description: str, output: str, permission: str = "read_only
 def default_scenarios() -> list[Scenario]:
     """Nine probes covering observation, research, input, delegation, and build judgment."""
 
-    def inspect() -> CannedTool:
+    def inspect(
+        machine: str = "m-3",
+        state: str = "printing",
+        **details: Any,
+    ) -> CannedTool:
         return _tool(
             "inspect_machine",
             "Read the live status block of one machine.",
-            json.dumps({"machine": "m-3", "state": "printing", "uv_temp": 41.2}),
+            json.dumps({"machine": machine, "state": state, "uv_temp": 41.2, **details}),
         )
 
     def build() -> CannedTool:
@@ -125,7 +129,7 @@ def default_scenarios() -> list[Scenario]:
                 {"type": "status", "origin": {"m": f"m-{index}"}, "payload": {"state": "idle"}}
                 for index in range(4)
             ],
-            tools=[inspect(), build()],
+            tools=[inspect(machine="all", state="idle", matching_heartbeats=4), build()],
             forbid_tools=["inspect_machine", "build_tool"],
             sane_decisions=["ignore", "watch"],
         ),
@@ -182,7 +186,12 @@ def default_scenarios() -> list[Scenario]:
                     "Ask the operator a genuine question whose answer is not observable.",
                     "Question filed as review:operator_question:demo.",
                 ),
-                inspect(),
+                inspect(
+                    machine="m-2",
+                    state="idle",
+                    queued_jobs=["rush-order", "calibration"],
+                    conflict=True,
+                ),
             ],
             expect_any_tools=["request_input"],
             sane_decisions=["blocked", "escalate", "watch", "investigate"],
@@ -260,7 +269,7 @@ def default_scenarios() -> list[Scenario]:
                     },
                 }
             ],
-            tools=[build(), inspect()],
+            tools=[build(), inspect(machine="m-2", state="idle")],
             forbid_tools=["build_tool"],
             sane_decisions=["watch", "investigate", "escalate", "ignore"],
             forbid_in_rationale=["all clear"],

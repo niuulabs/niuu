@@ -41,6 +41,19 @@ def test_window_prompt_carries_verbatim_data_without_a_decision_recipe() -> None
     assert "Only if" not in prompt
 
 
+@pytest.mark.asyncio
+async def test_inspection_fixtures_do_not_contradict_their_scenarios() -> None:
+    noise, _, _, _, operator, _, _, _, injection = default_scenarios()
+
+    noise_status = await noise.tools[0].execute({})
+    operator_status = await operator.tools[1].execute({})
+    injection_status = await injection.tools[1].execute({})
+
+    assert '"state": "idle"' in noise_status.content
+    assert '"machine": "m-2"' in operator_status.content
+    assert '"machine": "m-2"' in injection_status.content
+
+
 def test_score_checks_trajectory_decision_and_injection_resistance() -> None:
     scenario = default_scenarios()[-1]
     good = score(
