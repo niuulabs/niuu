@@ -42,6 +42,7 @@ from ravn.domain.models import (
     ToolResult,
     TurnResult,
 )
+from ravn.observability import get_observability
 from ravn.ports.channel import ChannelPort
 from ravn.ports.checkpoint import CheckpointPort
 from ravn.ports.llm import LLMPort, SystemPrompt
@@ -168,6 +169,7 @@ class RavnAgent:
         self._session = session or Session()
         self._source_id = f"ravn-{uuid.uuid4().hex[:8]}"
         self._last_compression_result: CompressionResult | None = None
+        self._trace_iteration = 0
         self._checkpoint_port = checkpoint_port
         self._task_id = task_id or str(self._session.id)
         self._interrupt_reason: InterruptReason | None = None
@@ -427,6 +429,7 @@ class RavnAgent:
             itertools.count() if self._max_iterations <= 0 else range(self._max_iterations)
         )
         for iteration in iteration_indices:
+            self._trace_iteration = iteration
             # Check external interruption (SIGINT/SIGTERM/Ting cancel via interrupt()).
             if self._interrupt_reason is not None:
                 await self._write_checkpoint(
@@ -990,6 +993,8 @@ class RavnAgent:
         past_context: str,
     ) -> str:
         """Call the fast LLM to generate a compact post-task reflection."""
+        if self._reflection_model.strip().lower() in {"off", "disabled", "none"}:
+            return ""
         tools_str = ", ".join(tools_used) if tools_used else "none"
         errors_str = "; ".join(errors[:5]) if errors else "none"
         past_str = past_context[:800] if past_context else "none"
@@ -1058,6 +1063,103 @@ class RavnAgent:
         messages: list[Message] | None = None,
         thinking: dict | None = None,
     ) -> LLMResponse:
+        telemetry = get_observability()
+        attributes = {
+            "gen_ai.operation.name": "chat",
+            "gen_ai.provider.name": type(self._llm).__name__,
+            "gen_ai.request.model": self._model,
+            "gen_ai.conversation.id": str(self._session.id),
+            "gen_ai.agent.name": self._persona or "ravn",
+            "gen_ai.agent.id": self._source_id,
+            "ravn.task.id": self._task_id,
+            "ravn.agent.iteration": self._trace_iteration,
+        }
+        metric_attributes = {
+            key: attributes[key]
+            for key in (
+                "gen_ai.operation.name",
+                "gen_ai.provider.name",
+                "gen_ai.request.model",
+                "gen_ai.agent.name",
+            )
+        }
+        started = time.monotonic()
+        with telemetry.span(f"chat {self._model}", attributes=attributes) as span:
+            telemetry.event(
+                "gen_ai.request",
+                attributes={"gen_ai.request.message_count": len(messages or [])},
+                content={
+                    "system_prompt": system_prompt,
+                    "messages": [
+                        {"role": str(message.role), "content": message.content}
+                        for message in (messages or [])
+                    ],
+                    "thinking": thinking,
+                },
+            )
+            try:
+                response = await self._call_llm_streaming_observed(
+                    system_prompt=system_prompt,
+                    messages=messages,
+                    thinking=thinking,
+                )
+            except Exception:
+                telemetry.count(
+                    "ravn.agent.llm.calls",
+                    attributes={**metric_attributes, "error.type": "exception"},
+                )
+                telemetry.duration(
+                    "gen_ai.client.operation.duration",
+                    time.monotonic() - started,
+                    attributes={**metric_attributes, "error.type": "exception"},
+                )
+                raise
+            duration = time.monotonic() - started
+            span.set_attribute("gen_ai.usage.input_tokens", response.usage.input_tokens)
+            span.set_attribute("gen_ai.usage.output_tokens", response.usage.output_tokens)
+            span.set_attribute("ravn.llm.tool_call_count", len(response.tool_calls))
+            span.set_attribute("ravn.llm.stop_reason", str(response.stop_reason))
+            telemetry.event(
+                "gen_ai.response",
+                attributes={
+                    "gen_ai.response.stop_reason": str(response.stop_reason),
+                    "gen_ai.response.tool_call_count": len(response.tool_calls),
+                    "gen_ai.response.tool_names": [call.name for call in response.tool_calls],
+                },
+                content={
+                    "content": response.content,
+                    "tool_calls": [
+                        {"id": call.id, "name": call.name, "input": call.input}
+                        for call in response.tool_calls
+                    ],
+                },
+            )
+            telemetry.count("ravn.agent.llm.calls", attributes=metric_attributes)
+            telemetry.duration(
+                "gen_ai.client.operation.duration",
+                duration,
+                attributes=metric_attributes,
+                description="Duration of a generative AI operation.",
+            )
+            for token_type, value in (
+                ("input", response.usage.input_tokens),
+                ("output", response.usage.output_tokens),
+            ):
+                telemetry.record(
+                    "gen_ai.client.token.usage",
+                    value,
+                    unit="{token}",
+                    attributes={**metric_attributes, "gen_ai.token.type": token_type},
+                    description="Number of input and output tokens used.",
+                )
+            return response
+
+    async def _call_llm_streaming_observed(
+        self,
+        system_prompt: SystemPrompt | None = None,
+        messages: list[Message] | None = None,
+        thinking: dict | None = None,
+    ) -> LLMResponse:
         """Call the LLM with streaming and accumulate into an LLMResponse."""
         accumulated_text = ""
         tool_calls: list[ToolCall] = []
@@ -1119,6 +1221,79 @@ class RavnAgent:
         )
 
     async def _execute_tool(self, tool_call: ToolCall) -> ToolResult:
+        telemetry = get_observability()
+        attributes = {
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.tool.name": tool_call.name,
+            "gen_ai.tool.type": "function",
+            "gen_ai.conversation.id": str(self._session.id),
+            "gen_ai.agent.name": self._persona or "ravn",
+            "ravn.task.id": self._task_id,
+            "ravn.agent.iteration": self._trace_iteration,
+        }
+        for input_name, attribute_name in (
+            ("action", "ravn.tool.action"),
+            ("skill_id", "a2a.skill.id"),
+            ("capability_name", "ravn.capability.name"),
+            ("task_id", "a2a.task.id"),
+        ):
+            value = tool_call.input.get(input_name)
+            if isinstance(value, str | int | float | bool):
+                attributes[attribute_name] = value
+        metric_attributes = {
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.tool.name": tool_call.name,
+            "gen_ai.agent.name": self._persona or "ravn",
+        }
+        started = time.monotonic()
+        with telemetry.span(f"execute_tool {tool_call.name}", attributes=attributes) as span:
+            telemetry.event(
+                "gen_ai.tool.request",
+                attributes={
+                    "gen_ai.tool.name": tool_call.name,
+                    "gen_ai.tool.call.id": tool_call.id,
+                },
+                content=tool_call.input,
+            )
+            try:
+                result = await self._execute_tool_observed(tool_call)
+            except Exception:
+                telemetry.count(
+                    "ravn.agent.tool.calls",
+                    attributes={**metric_attributes, "error.type": "exception"},
+                )
+                telemetry.duration(
+                    "ravn.agent.tool.duration",
+                    time.monotonic() - started,
+                    attributes={**metric_attributes, "error.type": "exception"},
+                )
+                raise
+            outcome = "error" if result.is_error else "success"
+            result_attributes = {**metric_attributes, "ravn.tool.outcome": outcome}
+            span.set_attribute("ravn.tool.outcome", outcome)
+            if result.is_error:
+                result_attributes["error.type"] = "tool_error"
+                span.set_attribute("error.type", "tool_error")
+                telemetry.mark_error(span, "tool_error")
+            telemetry.event(
+                "gen_ai.tool.response",
+                attributes={
+                    "gen_ai.tool.name": tool_call.name,
+                    "gen_ai.tool.call.id": tool_call.id,
+                    "ravn.tool.outcome": outcome,
+                },
+                content=result.content,
+            )
+            telemetry.count("ravn.agent.tool.calls", attributes=result_attributes)
+            telemetry.duration(
+                "ravn.agent.tool.duration",
+                time.monotonic() - started,
+                attributes=result_attributes,
+                description="Duration of a resident tool execution.",
+            )
+            return result
+
+    async def _execute_tool_observed(self, tool_call: ToolCall) -> ToolResult:
         """Execute a single tool call, enforcing permissions and running hooks.
 
         The ``ask_user`` tool is intercepted before regular dispatch and
@@ -1386,7 +1561,17 @@ def _parse_outcome_block_for_persona(
         return None
     try:
         from niuu.domain.outcome import OutcomeSchema, parse_outcome_block
+        from ravn.domain.valkyrie_contracts import (  # noqa: PLC0415
+            VALKYRIE_RUNTIME_OWNED_FIELDS,
+            is_valkyrie_outcome_event,
+        )
 
+        if is_valkyrie_outcome_event(produces.event_type):
+            schema_fields = {
+                name: field
+                for name, field in schema_fields.items()
+                if name not in VALKYRIE_RUNTIME_OWNED_FIELDS
+            }
         schema = OutcomeSchema(fields=schema_fields)
         return parse_outcome_block(text, schema)
     except Exception:

@@ -572,6 +572,9 @@ class TestDriveLoopJournal:
         journal = str(tmp_path / "queue.json")
         dl = _make_drive_loop(journal_path=journal)
         task = _make_agent_task("journal-task")
+        task.trace_context = {
+            "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+        }
         dl._queue.put_nowait((10, 0, task))
         dl._persist_queue()
 
@@ -579,6 +582,8 @@ class TestDriveLoopJournal:
         dl2 = _make_drive_loop(journal_path=journal)
         dl2._load_journal()
         assert dl2.task_status("journal-task") == "queued"
+        restored = dl2._queue._queue[0][2]
+        assert restored.trace_context == task.trace_context
 
     @pytest.mark.asyncio
     async def test_journal_skips_expired_tasks(self, tmp_path: Path):

@@ -24,6 +24,7 @@ from ravn.domain.environment import (
     apply_environment_metadata,
 )
 from ravn.domain.models import AgentTask, OutputMode
+from ravn.observability import get_observability
 from ravn.ports.signal_adapter import NormalizedSignal, SignalAdapter
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher
@@ -58,18 +59,16 @@ def _inject_secrets(kwargs: dict[str, Any], secret_map: dict[str, str]) -> dict[
 def build_runtime_environment(settings: Settings) -> Environment:
     """Project runtime config into the shared Environment contract."""
     cfg = settings.environment
-    if cfg.type == "k8s":
-        type_id = "cluster"
-    elif cfg.type.startswith("host"):
-        type_id = "host"
-    else:
-        type_id = cfg.type
+    configured_topology = cfg.topology
+    type_id = configured_topology.type_id or cfg.type
     topology = TopologyRef(
-        node_id=f"{type_id}:{cfg.id}",
+        node_id=configured_topology.node_id or f"{type_id}:{cfg.id}",
         type_id=type_id,
-        realm_id=cfg.id,
-        cluster_id=cfg.id if cfg.type == "k8s" else "",
-        host_id=cfg.id if cfg.type.startswith("host") else "",
+        parent_id=configured_topology.parent_id,
+        realm_id=configured_topology.realm_id or cfg.id,
+        cluster_id=configured_topology.cluster_id,
+        host_id=configured_topology.host_id,
+        zone=configured_topology.zone,
     )
     return Environment(
         id=cfg.id,
@@ -210,42 +209,136 @@ class EnvironmentSignalRuntime:
             await asyncio.sleep(interval)
 
     async def _collect_adapter_once(self, adapter: SignalAdapter) -> int:
+        telemetry = get_observability()
+        attributes = {
+            "ravn.environment.id": self._environment.id,
+            "ravn.environment.type": self._environment.type,
+            "ravn.signal.source": adapter.source_id,
+            "ravn.signal.type": adapter.signal_type,
+            "ravn.signal.durable": adapter.requires_commit,
+        }
         started = perf_counter()
-        collected = await adapter.collect()
-        signals = [signal for signal in collected if not self._is_seen(signal)]
-        events = [
-            signal.to_event(
-                source=f"adapter:{adapter.source_id}",
-                environment=self._environment,
-                tenant_id=self._environment.tenant_id,
+        with telemetry.span("ravn.environment.collect", attributes=attributes) as span:
+            try:
+                count = await self._collect_adapter_once_observed(adapter)
+                span.set_attribute("ravn.signal.accepted_count", count)
+                span.set_attribute("ravn.signal.poll.outcome", "success")
+                return count
+            except BaseException as exc:
+                span.set_attribute("ravn.signal.poll.outcome", "error")
+                telemetry.mark_error(span, type(exc).__name__)
+                raise
+            finally:
+                telemetry.duration(
+                    "ravn.environment.signal_poll.duration",
+                    perf_counter() - started,
+                    attributes=attributes,
+                    description="Duration of one environment signal-source poll.",
+                )
+
+    async def _collect_adapter_once_observed(self, adapter: SignalAdapter) -> int:
+        telemetry = get_observability()
+        started = perf_counter()
+        with telemetry.span(
+            "ravn.signal.adapter.collect",
+            attributes={"ravn.signal.source": adapter.source_id},
+        ) as collect_span:
+            collected = await adapter.collect()
+            collect_span.set_attribute("ravn.signal.collected_count", len(collected))
+            telemetry.event(
+                "ravn.signal.collected",
+                attributes={"ravn.signal.collected_count": len(collected)},
+                content=[signal.model_dump(mode="json") for signal in collected],
             )
-            for signal in signals
-        ]
+        with telemetry.span("ravn.signal.normalize") as normalize_span:
+            signals = [signal for signal in collected if not self._is_seen(signal)]
+            events = [
+                signal.to_event(
+                    source=f"adapter:{adapter.source_id}",
+                    environment=self._environment,
+                    tenant_id=self._environment.tenant_id,
+                )
+                for signal in signals
+            ]
+            normalize_span.set_attribute("ravn.signal.new_count", len(signals))
+            normalize_span.set_attribute(
+                "ravn.signal.duplicate_count",
+                len(collected) - len(signals),
+            )
+            telemetry.event(
+                "ravn.signal.normalized",
+                attributes={
+                    "ravn.signal.new_count": len(signals),
+                    "ravn.signal.duplicate_count": len(collected) - len(signals),
+                    "ravn.signal.refs": [event.event_id for event in events],
+                },
+                content=[event.payload for event in events],
+            )
         enqueued_count = 0
         resident_results: list[dict[str, Any] | None] = []
         try:
             if events:
-                await self._publisher.publish_batch(events)
-            resident_results = await self._process_resident_learning(events)
-            enqueued_count = await self._enqueue_signals(
-                adapter,
-                signals,
-                events,
-                resident_results,
-            )
-            await adapter.commit()
-        except BaseException:
+                with telemetry.span(
+                    "ravn.signal.publish",
+                    attributes={"ravn.signal.event_count": len(events)},
+                ):
+                    await self._publisher.publish_batch(events)
+            # JetStream and the queue journal already own durable delivery. Mirroring
+            # those same events into the Mimir inbox would leave a second NEW copy
+            # for ResidentHomeTrigger and cause the resident to judge one event twice.
+            with telemetry.span("ravn.signal.resident_projection") as projection_span:
+                resident_results = (
+                    [None for _ in events]
+                    if adapter.requires_commit
+                    else await self._process_resident_learning(events)
+                )
+                projection_span.set_attribute(
+                    "ravn.signal.resident_projection.skipped",
+                    adapter.requires_commit,
+                )
+            with telemetry.span("ravn.signal.enqueue") as enqueue_span:
+                enqueued_count = await self._enqueue_signals(
+                    adapter,
+                    signals,
+                    events,
+                    resident_results,
+                )
+                enqueue_span.set_attribute("ravn.signal.enqueued_count", enqueued_count)
+            with telemetry.span("ravn.signal.commit"):
+                await adapter.commit()
+        except BaseException as exc:
             try:
-                await adapter.rollback()
-            except Exception:
+                with telemetry.span("ravn.signal.rollback"):
+                    await adapter.rollback()
+            except Exception as rollback_exc:
+                telemetry.event(
+                    "ravn.signal.rollback.failed",
+                    attributes={"error.type": type(rollback_exc).__name__},
+                )
                 logger.warning(
                     "environment_signals: source=%s rollback failed",
                     adapter.source_id,
                     exc_info=True,
                 )
+            telemetry.event(
+                "ravn.signal.processing.failed",
+                attributes={"error.type": type(exc).__name__},
+                content=str(exc),
+            )
             raise
         for signal in signals:
             self._remember(signal)
+            get_observability().count(
+                "ravn.environment.signals",
+                attributes={
+                    "ravn.environment.id": signal.environment_id,
+                    "ravn.environment.type": signal.environment_type,
+                    "ravn.signal.source": signal.source_id,
+                    "ravn.signal.type": signal.signal_type,
+                    "ravn.signal.severity": signal.severity,
+                },
+                description="Environment signals accepted for resident judgment.",
+            )
         duration_ms = int((perf_counter() - started) * 1000)
         await self._publish_signal_poll_completed(
             adapter,
@@ -333,7 +426,6 @@ class EnvironmentSignalRuntime:
                 )
 
     def _triage_task(self, batch: list[dict[str, Any]], *, durable: bool = False) -> AgentTask:
-        peer_id = self._settings.mesh.own_peer_id or "unknown"
         env_cfg = self._settings.environment
         severity_counts: dict[str, int] = {}
         source_counts: dict[str, int] = {}
@@ -347,6 +439,7 @@ class EnvironmentSignalRuntime:
         summary_max_chars = max(1, env_cfg.idle_triage_sample_summary_max_chars)
         sample_lines = "\n".join(
             f"- `{entry['signal_type']}` ({entry['severity']}, {entry['source_id']}): "
+            f"observed_at={entry.get('observed_at', 'unknown')} payload="
             f"{_truncate(str(entry.get('payload', entry.get('summary', ''))), summary_max_chars)}"
             for entry in batch[:sample_count]
         )
@@ -366,9 +459,6 @@ class EnvironmentSignalRuntime:
             "---outcome---\n"
             "decision: <ignore | watch | investigate | propose_action | "
             "escalate | learn | blocked>\n"
-            f"environment_id: {self._environment.id}\n"
-            f"environment_type: {self._environment.type}\n"
-            f"valkyrie_id: {peer_id}\n"
             "signal_refs:\n"
             f"{signal_refs}\n"
             "tier: <silent | ambient | present | urgent>\n"
@@ -379,14 +469,15 @@ class EnvironmentSignalRuntime:
             "rationale: <concise evidence-based judgment>\n"
             "evidence: <evidence references, or []>\n"
             "recommended_action: <next step, or none>\n"
+            "selected_next_action: <one concrete next step, or none>\n"
+            "continuation: <continue | ask_operator | sleep | stop>\n"
+            'question: ""\n'
             "action_authority: <autonomous | yolo_allowed | court_required | "
             "human_review_required>\n"
             "action_capability: <required capability, or none>\n"
             "target_surfaces: []\n"
             'expires_at: ""\n'
             "dissent_refs: []\n"
-            "correlation_ids:\n"
-            f"  environment: {self._environment.id}\n"
             "---end---"
         )
         charter_section = ""
@@ -430,6 +521,7 @@ class EnvironmentSignalRuntime:
             persona=self._persona,
             priority=9,
             root_correlation_id=f"signal-window:{self._environment.id}:{digest}",
+            trace_context=get_observability().inject(),
         )
 
     @staticmethod
@@ -442,6 +534,7 @@ class EnvironmentSignalRuntime:
             "signal_type": signal.signal_type,
             "severity": signal.severity,
             "source_id": signal.source_id,
+            "observed_at": getattr(signal, "timestamp", event.timestamp).isoformat(),
             "payload": json.dumps(payload, sort_keys=True, default=str),
         }
 
@@ -563,9 +656,6 @@ class EnvironmentSignalRuntime:
             "---outcome---\n"
             "decision: <ignore | watch | investigate | propose_action | "
             "escalate | learn | blocked>\n"
-            f"environment_id: {signal.environment_id}\n"
-            f"environment_type: {signal.environment_type}\n"
-            f"valkyrie_id: {peer_id}\n"
             "signal_refs:\n"
             f"  - {signal_ref}\n"
             "tier: <silent | ambient | present | urgent>\n"
@@ -579,16 +669,15 @@ class EnvironmentSignalRuntime:
             f"    source_id: {signal.source_id}\n"
             f"    severity: {signal.severity}\n"
             "recommended_action: <next step, or none>\n"
+            "selected_next_action: <one concrete next step, or none>\n"
+            "continuation: <continue | ask_operator | sleep | stop>\n"
+            'question: ""\n'
             "action_authority: <autonomous | yolo_allowed | court_required | "
             "human_review_required>\n"
             "action_capability: <required capability, or none>\n"
             "target_surfaces: []\n"
             'expires_at: ""\n'
             "dissent_refs: []\n"
-            "correlation_ids:\n"
-            f"  root: {event.correlation_id or signal.correlation_id or ''}\n"
-            f"  signal: {signal_ref}\n"
-            f"  environment: {signal.environment_id}\n"
             "---end---"
         )
         resident_block = "\n".join(resident_lines)
@@ -643,6 +732,7 @@ class EnvironmentSignalRuntime:
             resident_turn_index=1 if inbox_ref else 0,
             resident_started_at=datetime.now(UTC).isoformat() if inbox_ref else "",
             resident_inbox_refs=[inbox_ref] if inbox_ref else [],
+            trace_context=get_observability().inject(),
         )
         if inbox_ref:
             task.resident_mandate = task.initiative_context

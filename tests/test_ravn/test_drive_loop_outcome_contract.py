@@ -367,6 +367,9 @@ files_changed: 2
         dl._skuld_channel = None
         dl._sleipnir_publisher = SimpleNamespace(publish=AsyncMock(side_effect=published.append))
         dl._source_id = "drive_loop"
+        dl._settings.environment.id = "cluster-runtime"
+        dl._settings.environment.type = "k8s"
+        dl._settings.mesh.own_peer_id = "runtime-valkyrie"
         dl._persona_config = SimpleNamespace(
             name="k8s-valkyrie",
             produces=_valkyrie_judgment_produces(),
@@ -374,6 +377,8 @@ files_changed: 2
 
         task = _make_agent_task(task_id="task-k8s-1")
         task.session_id = "sess-k8s-1"
+        task.root_correlation_id = "corr-runtime"
+        task.workflow_parent_event_id = "evt-runtime"
 
         await dl._emit_mesh_outcome_event(
             task,
@@ -392,7 +397,16 @@ files_changed: 2
             {"event_id": "evt-k8s-1", "kind": "kubernetes"}
         ]
         assert canonical_event.payload["outcome"]["target_surfaces"] == ["surface:ops"]
-        assert canonical_event.payload["outcome"]["correlation_ids"]["root"] == "corr-k8s-1"
+        outcome = canonical_event.payload["outcome"]
+        assert outcome["environment_id"] == "cluster-runtime"
+        assert outcome["environment_type"] == "k8s"
+        assert outcome["valkyrie_id"] == "runtime-valkyrie"
+        assert outcome["correlation_ids"] == {
+            "root": "corr-runtime",
+            "task": "task-k8s-1",
+            "environment": "cluster-runtime",
+            "signal": "evt-runtime",
+        }
 
         alias_topic = mesh.publish.await_args_list[1].kwargs["topic"]
         alias_event = mesh.publish.await_args_list[1].args[0]
@@ -401,8 +415,60 @@ files_changed: 2
         assert alias_event.payload["routing_only"] is True
         assert [event.event_type for event in published] == [registry.VALKYRIE_JUDGMENT_PROPOSED]
         assert published[0].payload["task_id"] == "task-k8s-1"
-        assert published[0].payload["environment_id"] == "cluster-a"
+        assert published[0].payload["environment_id"] == "cluster-runtime"
         assert published[0].payload["valid"] is True
+
+    def test_runtime_identity_overrides_model_environment_claim(self) -> None:
+        produces = _valkyrie_judgment_produces()
+        produces.schema["environment_type"] = OutcomeField(
+            type="string",
+            description="runtime environment type",
+        )
+        response = _valid_valkyrie_judgment_text().replace(
+            "environment_id: cluster-a",
+            "environment_id: claimed-environment\nenvironment_type: k8s",
+        )
+
+        _, fields, errors = _resident_valkyrie_validation_result(
+            response,
+            SimpleNamespace(produces=produces),
+            authoritative_fields={
+                "environment_id": "workshop",
+                "environment_type": "workshop",
+                "valkyrie_id": "ivaldi-local",
+                "correlation_ids": {
+                    "root": "runtime-root",
+                    "task": "runtime-task",
+                    "environment": "workshop",
+                },
+            },
+        )
+
+        assert errors == []
+        assert fields["environment_id"] == "workshop"
+        assert fields["environment_type"] == "workshop"
+        assert fields["valkyrie_id"] == "ivaldi-local"
+        assert fields["correlation_ids"]["root"] == "runtime-root"
+
+    def test_optional_null_outcome_field_is_omitted_without_repair(self) -> None:
+        produces = _valkyrie_judgment_produces()
+        produces.schema["question"] = OutcomeField(
+            type="string",
+            description="operator question",
+            required=False,
+        )
+        response = _valid_valkyrie_judgment_text().replace(
+            "---end---",
+            "question: null\n---end---",
+        )
+
+        _, fields, errors = _resident_valkyrie_validation_result(
+            response,
+            SimpleNamespace(produces=produces),
+        )
+
+        assert errors == []
+        assert "question" not in fields
 
     @pytest.mark.asyncio
     async def test_resident_valkyrie_judgment_normalizes_local_model_yaml_drift(self) -> None:

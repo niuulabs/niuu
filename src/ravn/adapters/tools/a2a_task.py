@@ -9,6 +9,7 @@ from uuid import uuid4
 from niuu.domain.agent_directory import AgentDirectoryEntry
 from ravn.adapters.tool_build.http import AsyncJsonHttpClient, normalize_http_origin
 from ravn.domain.models import ToolResult
+from ravn.observability import get_observability
 from ravn.ports.agent_directory import PeerAgentDirectoryPort
 from ravn.ports.tool import ToolPort
 
@@ -99,6 +100,7 @@ class A2ATaskTool(ToolPort):
         return "a2a:task"
 
     async def execute(self, input: dict) -> ToolResult:
+        telemetry = get_observability()
         operation = str(input.get("operation") or "").strip().lower()
         if operation not in {"start", "get", "reply", "cancel"}:
             return _error("operation must be start, get, reply, or cancel")
@@ -116,6 +118,15 @@ class A2ATaskTool(ToolPort):
             return _error(f"Agent Directory lookup failed: {exc}")
         if agent is None:
             return _error(f"Agent {agent_id!r} is not visible in the Guild directory")
+        telemetry.event(
+            "ravn.a2a.agent.resolved",
+            attributes={
+                "a2a.agent.id": agent.id,
+                "a2a.operation": operation,
+                "a2a.agent.signature_verified": agent.signature_verified,
+            },
+            content=agent.model_dump(by_alias=True),
+        )
 
         endpoint = _jsonrpc_endpoint(agent)
         if not endpoint:
@@ -134,6 +145,31 @@ class A2ATaskTool(ToolPort):
             result = await self._execute_operation(operation, input, agent, endpoint)
         except _A2ATaskError as exc:
             return _error(str(exc))
+        embedded = result.get("task")
+        task = embedded if isinstance(embedded, dict) else result
+        status = task.get("status") if isinstance(task, dict) else {}
+        status = status if isinstance(status, dict) else {}
+        task_id = str(
+            (task.get("id") if isinstance(task, dict) else "")
+            or input.get("task_id")
+            or ""
+        )
+        state = str(status.get("state") or "")
+        result_attributes = {
+            "a2a.agent.id": agent.id,
+            "a2a.operation": operation,
+            "a2a.task.id": task_id,
+            "a2a.task.state": state,
+        }
+        telemetry.set_attributes(result_attributes)
+        telemetry.event("ravn.a2a.operation.result", attributes=result_attributes, content=result)
+        telemetry.count(
+            "ravn.a2a.operations",
+            attributes={
+                "a2a.operation": operation,
+                "a2a.task.state": state or "unknown",
+            },
+        )
         return ToolResult(
             tool_call_id="",
             content=_render_response_payload(

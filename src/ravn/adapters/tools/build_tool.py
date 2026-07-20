@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from ravn.domain.models import ToolResult
+from ravn.observability import get_observability
 from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
 from ravn.ports.tool import ToolPort
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
@@ -213,9 +214,80 @@ class BuildTool(ToolPort):
         return False
 
     async def execute(self, input: dict) -> ToolResult:  # noqa: A002
+        telemetry = get_observability()
+        commissioned = bool(str(input.get("build_request") or "").strip()) and not bool(
+            str(input.get("tool_code") or "").strip()
+        )
+        attributes = {
+            "ravn.tool_build.mode": "commissioned" if commissioned else "inline",
+            "ravn.tool_build.backend": (
+                str(getattr(self._build_backend, "name", "unconfigured"))
+                if commissioned
+                else "inline"
+            ),
+            "ravn.autonomy.mode": self._autonomy_mode,
+        }
+        manifest = input.get("manifest")
+        if isinstance(manifest, dict):
+            attributes["ravn.tool_build.name"] = str(manifest.get("name") or "")
+        with telemetry.span("ravn.tool_build.lifecycle", attributes=attributes) as span:
+            telemetry.event("ravn.tool_build.requested", attributes=attributes, content=input)
+            try:
+                result = await self._execute_pipeline(input)
+            except Exception as exc:
+                telemetry.mark_error(span, type(exc).__name__)
+                telemetry.count(
+                    "ravn.tool_build.lifecycle.operations",
+                    attributes={
+                        "ravn.tool_build.mode": attributes["ravn.tool_build.mode"],
+                        "ravn.tool_build.backend": attributes["ravn.tool_build.backend"],
+                        "ravn.tool_build.outcome": "exception",
+                        "error.type": type(exc).__name__,
+                    },
+                )
+                raise
+            outcome = _build_result_outcome(result)
+            span.set_attribute("ravn.tool_build.outcome", outcome)
+            telemetry.event(
+                "ravn.tool_build.finished",
+                attributes={**attributes, "ravn.tool_build.outcome": outcome},
+                content={"is_error": result.is_error, "result": result.content},
+            )
+            telemetry.count(
+                "ravn.tool_build.lifecycle.operations",
+                attributes={
+                    "ravn.tool_build.mode": attributes["ravn.tool_build.mode"],
+                    "ravn.tool_build.backend": attributes["ravn.tool_build.backend"],
+                    "ravn.tool_build.outcome": outcome,
+                },
+            )
+            return result
+
+    async def _execute_pipeline(self, input: dict) -> ToolResult:  # noqa: A002
+        telemetry = get_observability()
         try:
             input = await self._maybe_commission(input)
             artifact = _artifact_from_input(input)
+            telemetry.set_attributes(
+                {
+                    "ravn.tool_build.artifact.id": artifact.artifact_id,
+                    "ravn.tool_build.name": artifact.manifest.name,
+                }
+            )
+            telemetry.event(
+                "ravn.tool_build.artifact.materialized",
+                attributes={
+                    "ravn.tool_build.artifact.id": artifact.artifact_id,
+                    "ravn.tool_build.name": artifact.manifest.name,
+                    "ravn.tool_build.requirements.count": len(artifact.requirements),
+                    "ravn.tool_build.has.tests": bool(artifact.test_code),
+                },
+                content={
+                    "manifest": artifact.manifest.to_dict(),
+                    "requirements": artifact.requirements,
+                    "provenance": artifact.provenance,
+                },
+            )
 
             # Never trust the builder's own "it works": independently verify the
             # returned code in a throwaway venv, repairing on failure, BEFORE the
@@ -229,6 +301,13 @@ class BuildTool(ToolPort):
             artifact_path = write_learned_tool_artifact(
                 artifacts_dir=self._artifacts_dir,
                 artifact=artifact,
+            )
+            telemetry.event(
+                "ravn.tool_build.artifact.persisted",
+                attributes={
+                    "ravn.tool_build.artifact.id": artifact.artifact_id,
+                    "ravn.tool_build.artifact.path": str(artifact_path),
+                },
             )
             if verify_error is not None:
                 return verify_error
@@ -252,6 +331,14 @@ class BuildTool(ToolPort):
             )
             review = await self._review(resident_artifact)
             if review.blocking_findings:
+                telemetry.event(
+                    "ravn.tool_build.review.blocked",
+                    attributes={"ravn.review.outcome": review.outcome},
+                    content={
+                        "rationale": review.rationale,
+                        "findings": review.findings,
+                    },
+                )
                 return ToolResult(
                     tool_call_id="",
                     content="build_tool rejected by review: " + "; ".join(review.blocking_findings),
@@ -259,6 +346,13 @@ class BuildTool(ToolPort):
                 )
             if not review_allows_install(review, self._autonomy_mode):
                 review_filed = await self._file_install_review(resident_artifact, artifact, review)
+                telemetry.event(
+                    "ravn.tool_build.review.held",
+                    attributes={
+                        "ravn.review.outcome": review.outcome,
+                        "ravn.review.filed": review_filed,
+                    },
+                )
                 return ToolResult(
                     tool_call_id="",
                     content=_review_summary(artifact, artifact_path, review_filed=review_filed),
@@ -266,6 +360,13 @@ class BuildTool(ToolPort):
                 )
 
             tool_path = write_learned_tool(tools_dir=self._tools_dir, artifact=artifact)
+            telemetry.event(
+                "ravn.tool_build.tool.persisted",
+                attributes={
+                    "ravn.tool_build.artifact.id": artifact.artifact_id,
+                    "ravn.tool_build.tool.path": str(tool_path),
+                },
+            )
             learned_tool = load_learned_tool(
                 artifact=artifact,
                 tool_path=tool_path,
@@ -278,7 +379,22 @@ class BuildTool(ToolPort):
             )
 
             if isinstance(canary_input, dict):
-                canary = await learned_tool.execute(canary_input)
+                with telemetry.span(
+                    "ravn.tool_build.canary",
+                    attributes={"ravn.tool_build.name": artifact.manifest.name},
+                ) as canary_span:
+                    canary = await learned_tool.execute(canary_input)
+                    canary_outcome = "error" if canary.is_error else "passed"
+                    canary_span.set_attribute("ravn.tool_build.canary.outcome", canary_outcome)
+                    telemetry.event(
+                        "ravn.tool_build.canary.finished",
+                        attributes={"ravn.tool_build.canary.outcome": canary_outcome},
+                        content={"input": canary_input, "result": canary.content},
+                    )
+                    telemetry.count(
+                        "ravn.tool_build.canary.operations",
+                        attributes={"ravn.tool_build.canary.outcome": canary_outcome},
+                    )
                 if canary.is_error:
                     return ToolResult(
                         tool_call_id="",
@@ -301,6 +417,13 @@ class BuildTool(ToolPort):
 
             replace = bool(input.get("replace"))
             self._register_tool(learned_tool, replace=replace)  # type: ignore[call-arg]
+            telemetry.event(
+                "ravn.tool_build.registered",
+                attributes={
+                    "ravn.tool_build.name": artifact.manifest.name,
+                    "ravn.tool_build.replaced": replace,
+                },
+            )
             await self._publish_flock_proposal(artifact)
         except (LearnedToolError, TypeError, ValueError) as exc:
             return ToolResult(tool_call_id="", content=f"build_tool failed: {exc}", is_error=True)
@@ -393,12 +516,19 @@ class BuildTool(ToolPort):
         """
         attempts = 0
         result = self._verify(artifact)
+        self._record_verification_telemetry(artifact, result, attempt=0, repair="none")
         while not result.ok and attempts < self._max_repair_attempts:
             attempts += 1
             repaired, input = self._repair_dependency(input, artifact, result)
             if repaired is not None:
                 artifact = repaired
                 result = self._verify(artifact)
+                self._record_verification_telemetry(
+                    artifact,
+                    result,
+                    attempt=attempts,
+                    repair="dependency",
+                )
                 continue
             if self._build_backend is not None:
                 input = await self._commission_and_merge(
@@ -407,6 +537,12 @@ class BuildTool(ToolPort):
                 )
                 artifact = _artifact_from_input(input)
                 result = self._verify(artifact)
+                self._record_verification_telemetry(
+                    artifact,
+                    result,
+                    attempt=attempts,
+                    repair="recommission",
+                )
                 continue
             # Inline tool, no backend, no deterministic dependency heal: stop.
             break
@@ -425,12 +561,54 @@ class BuildTool(ToolPort):
         return artifact, None
 
     def _verify(self, artifact: LearnedToolArtifact) -> VerificationResult:
-        return verify_learned_tool_in_ephemeral_venv(
-            tool_name=artifact.manifest.name,
-            tool_code=artifact.tool_code,
-            test_code=artifact.test_code,
-            requirements=list(artifact.requirements),
-            entry_point=artifact.manifest.entry_point,
+        telemetry = get_observability()
+        attributes = {
+            "ravn.tool_build.name": artifact.manifest.name,
+            "ravn.tool_build.requirements.count": len(artifact.requirements),
+            "ravn.tool_build.has.tests": bool(artifact.test_code),
+        }
+        with telemetry.span("ravn.tool_build.verify", attributes=attributes) as span:
+            result = verify_learned_tool_in_ephemeral_venv(
+                tool_name=artifact.manifest.name,
+                tool_code=artifact.tool_code,
+                test_code=artifact.test_code,
+                requirements=list(artifact.requirements),
+                entry_point=artifact.manifest.entry_point,
+            )
+            span.set_attribute(
+                "ravn.tool_build.verify.outcome",
+                "passed" if result.ok else "failed",
+            )
+            return result
+
+    def _record_verification_telemetry(
+        self,
+        artifact: LearnedToolArtifact,
+        result: VerificationResult,
+        *,
+        attempt: int,
+        repair: str,
+    ) -> None:
+        telemetry = get_observability()
+        outcome = "passed" if result.ok else "failed"
+        attributes = {
+            "ravn.tool_build.name": artifact.manifest.name,
+            "ravn.tool_build.verify.outcome": outcome,
+            "ravn.tool_build.verify.attempt": attempt,
+            "ravn.tool_build.repair.kind": repair,
+            "ravn.tool_build.missing_module": result.missing_module or "",
+        }
+        telemetry.event(
+            "ravn.tool_build.verification",
+            attributes=attributes,
+            content={"logs": result.logs},
+        )
+        telemetry.count(
+            "ravn.tool_build.verifications",
+            attributes={
+                "ravn.tool_build.verify.outcome": outcome,
+                "ravn.tool_build.repair.kind": repair,
+            },
         )
 
     def _repair_dependency(
@@ -462,11 +640,35 @@ class BuildTool(ToolPort):
             autonomy_mode=self._autonomy_mode,
         )
         request, build = review_inputs(resident_artifact, identity)
-        return await self._reviewer.review(
-            request=request,
-            build=build,
-            autonomy_mode=self._autonomy_mode,
-        )
+        telemetry = get_observability()
+        attributes = {
+            "ravn.tool_build.name": resident_artifact.title,
+            "ravn.autonomy.mode": self._autonomy_mode,
+        }
+        with telemetry.span("ravn.tool_build.review", attributes=attributes) as span:
+            result = await self._reviewer.review(
+                request=request,
+                build=build,
+                autonomy_mode=self._autonomy_mode,
+            )
+            span.set_attribute("ravn.review.outcome", result.outcome)
+            telemetry.event(
+                "ravn.tool_build.reviewed",
+                attributes={
+                    **attributes,
+                    "ravn.review.outcome": result.outcome,
+                    "ravn.review.findings.count": len(result.findings),
+                },
+                content={
+                    "rationale": result.rationale,
+                    "findings": result.findings,
+                },
+            )
+            telemetry.count(
+                "ravn.tool_build.reviews",
+                attributes={"ravn.review.outcome": result.outcome},
+            )
+            return result
 
     async def _file_install_review(
         self,
@@ -508,30 +710,49 @@ class BuildTool(ToolPort):
 
     async def _publish_flock_proposal(self, artifact: LearnedToolArtifact) -> None:
         if self._publisher is None or not self._flock_id:
-            return
-        await self._publisher.publish(
-            flock_learning_proposed_event(
-                source=self._valkyrie_id or "build_tool",
-                learning_id=artifact.artifact_id,
-                title=artifact.manifest.name,
-                summary=artifact.manifest.description,
-                flock_id=self._flock_id,
-                artifact_type=artifact.artifact_type,
-                content="",
-                domain=self._domain,
-                environment_id=self._environment_id,
-                source_valkyrie_id=self._valkyrie_id,
-                confidence=self._flock_confidence,
-                redaction_status="redacted",
-                promotion_id=artifact.artifact_id,
-                tool_code=artifact.tool_code,
-                tool_entry_point=artifact.manifest.entry_point,
-                learned_tool_manifest=artifact.manifest.to_dict(),
-                review_outcome="self_registered",
-                builder_evidence=artifact.provenance,
-                correlation_id=artifact.artifact_id,
+            get_observability().event(
+                "ravn.tool_build.flock.skipped",
+                attributes={
+                    "ravn.tool_build.name": artifact.manifest.name,
+                    "ravn.tool_build.flock.reason": (
+                        "publisher_unavailable" if self._publisher is None else "flock_unconfigured"
+                    ),
+                },
             )
-        )
+            return
+        telemetry = get_observability()
+        with telemetry.span(
+            "ravn.tool_build.flock.publish",
+            attributes={"ravn.tool_build.name": artifact.manifest.name},
+        ):
+            await self._publisher.publish(
+                flock_learning_proposed_event(
+                    source=self._valkyrie_id or "build_tool",
+                    learning_id=artifact.artifact_id,
+                    title=artifact.manifest.name,
+                    summary=artifact.manifest.description,
+                    flock_id=self._flock_id,
+                    artifact_type=artifact.artifact_type,
+                    content="",
+                    domain=self._domain,
+                    environment_id=self._environment_id,
+                    source_valkyrie_id=self._valkyrie_id,
+                    confidence=self._flock_confidence,
+                    redaction_status="redacted",
+                    promotion_id=artifact.artifact_id,
+                    tool_code=artifact.tool_code,
+                    tool_entry_point=artifact.manifest.entry_point,
+                    learned_tool_manifest=artifact.manifest.to_dict(),
+                    review_outcome="self_registered",
+                    builder_evidence=artifact.provenance,
+                    correlation_id=artifact.artifact_id,
+                )
+            )
+            telemetry.event(
+                "ravn.tool_build.flock.proposed",
+                attributes={"ravn.tool_build.name": artifact.manifest.name},
+            )
+            telemetry.count("ravn.tool_build.flock.proposals")
 
     def _runner_for_backend(self) -> Any | None:
         workspace_root = self._workspace_root or self._tools_dir.parent
@@ -734,3 +955,20 @@ def _review_summary(
     if not review_filed:
         payload["reason"] = "operator review is required but no review requester is configured"
     return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _build_result_outcome(result: ToolResult) -> str:
+    """Classify the lifecycle without treating a filed review as installation."""
+    if result.is_error:
+        return "error"
+    try:
+        payload = json.loads(result.content)
+    except (TypeError, ValueError):
+        return "completed"
+    if not isinstance(payload, dict):
+        return "completed"
+    if payload.get("registered") is True:
+        return "registered"
+    if payload.get("review_required") is True and payload.get("review_filed") is True:
+        return "review_pending"
+    return "completed"

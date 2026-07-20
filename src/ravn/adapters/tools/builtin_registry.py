@@ -324,10 +324,12 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
     "kubernetes_inspect": BuiltinToolDef(
         adapter="ravn.adapters.tools.kubernetes.KubernetesInspectTool",
         groups=frozenset({"kubernetes"}),
-        condition=lambda s: s.environment.type == "k8s",
+        condition=lambda s: s.tools.kubernetes.enabled,
         kwargs_fn=lambda s, _ctx: {
-            "in_cluster": True,
-            "max_log_lines": 120,
+            "in_cluster": s.tools.kubernetes.in_cluster,
+            "kubeconfig_env": s.tools.kubernetes.kubeconfig_env,
+            "kubeconfig_path": s.tools.kubernetes.kubeconfig_path,
+            "max_log_lines": s.tools.kubernetes.max_log_lines,
         },
     ),
     # =========================================================================

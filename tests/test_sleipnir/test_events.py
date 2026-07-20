@@ -138,7 +138,12 @@ def test_event_unknown_namespace_emits_warning(caplog):
 
 
 def test_to_dict_contains_all_fields():
-    evt = make_event(correlation_id="corr-1", tenant_id="t-1", ttl=60)
+    evt = make_event(
+        correlation_id="corr-1",
+        tenant_id="t-1",
+        ttl=60,
+        trace_context={"traceparent": "00-abc-def-01"},
+    )
     d = evt.to_dict()
     assert d["event_id"] == "evt-001"
     assert d["event_type"] == "ravn.tool.complete"
@@ -150,6 +155,7 @@ def test_to_dict_contains_all_fields():
     assert d["causation_id"] is None
     assert d["tenant_id"] == "t-1"
     assert d["ttl"] == 60
+    assert d["trace_context"] == {"traceparent": "00-abc-def-01"}
     assert isinstance(d["timestamp"], str)
 
 
@@ -159,6 +165,7 @@ def test_round_trip_from_dict():
         causation_id="c2",
         tenant_id="t1",
         ttl=120,
+        trace_context={"traceparent": "00-abc-def-01"},
     )
     restored = SleipnirEvent.from_dict(original.to_dict())
     assert restored.event_id == original.event_id
@@ -172,6 +179,7 @@ def test_round_trip_from_dict():
     assert restored.causation_id == original.causation_id
     assert restored.tenant_id == original.tenant_id
     assert restored.ttl == original.ttl
+    assert restored.trace_context == original.trace_context
 
 
 def test_from_dict_parses_iso_timestamp():

@@ -200,6 +200,145 @@ async def test_drive_loop_enqueue_respects_queue_max(tmp_path: Path) -> None:
     assert loop._queue.qsize() == 2
 
 
+@pytest.mark.asyncio
+async def test_executor_leaves_waiting_task_in_durable_journal(tmp_path: Path) -> None:
+    journal = tmp_path / "queue.json"
+    config = _make_initiative_config(
+        max_concurrent_tasks=1,
+        queue_journal_path=str(journal),
+    )
+    loop = DriveLoop(agent_factory=MagicMock(), config=config, settings=Settings())
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def _hold_first(_task: AgentTask) -> None:
+        first_started.set()
+        await release_first.wait()
+
+    loop._run_task = _hold_first  # type: ignore[method-assign]
+    first = _make_task()
+    first.task_id = "task-first"
+    second = _make_task()
+    second.task_id = "task-second"
+    await loop.enqueue(first)
+    await loop.enqueue(second)
+
+    executor = asyncio.create_task(loop._task_executor())
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    await asyncio.sleep(0)
+
+    assert loop.queued_task_ids() == ["task-second"]
+    assert [record["task_id"] for record in json.loads(journal.read_text())["queue"]] == [
+        "task-second"
+    ]
+    assert [record["task_id"] for record in json.loads(journal.read_text())["inflight"]] == [
+        "task-first"
+    ]
+
+    resumed = DriveLoop(agent_factory=MagicMock(), config=config, settings=Settings())
+    resumed._load_journal()
+    assert set(resumed.queued_task_ids()) == {"task-first", "task-second"}
+
+    executor.cancel()
+    with suppress(asyncio.CancelledError):
+        await executor
+    release_first.set()
+    await asyncio.gather(*loop._active_tasks.values())
+
+
+@pytest.mark.asyncio
+async def test_shutdown_interruption_remains_in_journal(tmp_path: Path) -> None:
+    loop, _ = _make_drive_loop(tmp_path)
+    task = _make_task()
+    task.task_id = "task-interrupted"
+    loop._inflight_tasks[task.task_id] = task
+    loop._shutting_down = True
+
+    async def _interrupted() -> str:
+        return "interrupted"
+
+    finished = asyncio.create_task(_interrupted())
+    await finished
+    loop._on_task_done(task.task_id, finished)
+
+    journal = json.loads(loop._journal_path.read_text())
+    assert [record["task_id"] for record in journal["inflight"]] == ["task-interrupted"]
+
+
+@pytest.mark.asyncio
+async def test_run_waits_for_active_task_cancellation_before_returning(tmp_path: Path) -> None:
+    loop, _ = _make_drive_loop(tmp_path)
+    task = _make_task()
+    task.task_id = "task-active-at-shutdown"
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def _run_until_cancelled(_task: AgentTask) -> str:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            return "interrupted"
+
+    loop._run_task = _run_until_cancelled  # type: ignore[method-assign]
+    await loop.enqueue(task)
+    run_task = asyncio.create_task(loop.run())
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    run_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await run_task
+
+    assert cancelled.is_set()
+    assert loop._active_tasks == {}
+    journal = json.loads(loop._journal_path.read_text())
+    assert [record["task_id"] for record in journal["inflight"]] == [
+        "task-active-at-shutdown"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_executor_removes_expired_task_from_inflight_journal(tmp_path: Path) -> None:
+    loop, _ = _make_drive_loop(tmp_path)
+    task = _make_task(deadline=datetime.now(UTC) + timedelta(seconds=1))
+    task.task_id = "task-expires-in-queue"
+    await loop.enqueue(task)
+    task.deadline = datetime.now(UTC) - timedelta(seconds=1)
+
+    executor = asyncio.create_task(loop._task_executor())
+    await asyncio.wait_for(loop._queue.join(), timeout=1)
+    executor.cancel()
+    with suppress(asyncio.CancelledError):
+        await executor
+
+    journal = json.loads(loop._journal_path.read_text())
+    assert journal["queue"] == []
+    assert journal["inflight"] == []
+
+
+@pytest.mark.asyncio
+async def test_task_telemetry_uses_runtime_outcome_without_cascade_store(
+    tmp_path: Path,
+) -> None:
+    loop, _ = _make_drive_loop(tmp_path)
+    loop._run_task_observed = AsyncMock(return_value="success")  # type: ignore[method-assign]
+    telemetry = MagicMock()
+    span = MagicMock()
+    telemetry.span.return_value.__enter__.return_value = span
+    telemetry.span.return_value.__exit__.return_value = False
+
+    with patch("ravn.drive_loop.get_observability", return_value=telemetry):
+        outcome = await loop._run_task(_make_task())
+
+    assert outcome == "success"
+    span.set_attribute.assert_called_once_with("ravn.task.outcome", "success")
+    task_metric = next(
+        call for call in telemetry.count.call_args_list if call.args == ("ravn.agent.tasks",)
+    )
+    assert task_metric.kwargs["attributes"]["ravn.task.outcome"] == "success"
+
+
 # ---------------------------------------------------------------------------
 # DriveLoop — queue journal round-trip
 # ---------------------------------------------------------------------------

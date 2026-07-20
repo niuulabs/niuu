@@ -532,6 +532,14 @@ class TestQueryEpisodes:
 
 
 class TestPrefetch:
+    async def test_zero_prefetch_limit_disables_automatic_episode_query(self) -> None:
+        adapter = _make_adapter()
+        adapter._prefetch_limit = 0
+        adapter.query_episodes = AsyncMock(side_effect=AssertionError("must not query"))
+
+        assert await adapter.prefetch("a later resident turn") == ""
+        adapter.query_episodes.assert_not_awaited()
+
     async def test_empty_when_no_matches(self) -> None:
         adapter = _make_adapter(search_results=[])
         result = await adapter.prefetch("python crash")

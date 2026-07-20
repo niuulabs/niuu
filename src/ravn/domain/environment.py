@@ -20,13 +20,6 @@ EnvironmentType = str
 SignalSourceKind = str
 OperationalHealth = str
 
-DEFAULT_ENVIRONMENT_TYPES = (
-    "k8s",
-    "host",
-    "service",
-    "home_lab",
-    "local",
-)
 DEFAULT_SIGNAL_SOURCE_KINDS = (
     "kubernetes",
     "host",
@@ -64,21 +57,17 @@ _VALID_EVENT_METADATA_PREFIXES = (
 
 
 class EnvironmentVocabulary:
-    """Extensible vocabulary for deployment-defined Environment values.
+    """Extensible vocabulary for deployment-defined signal and health values.
 
     The canonical defaults ship with the platform; deployments register extra
-    values through ``EnvironmentConfig.vocabulary`` (or directly via
-    :func:`extend_environment_vocabulary`) instead of editing domain code.
+    values through ``EnvironmentConfig.vocabulary`` instead of editing domain
+    code. Environment types are deliberately not a vocabulary: configuration
+    supplies an opaque, non-empty provenance label.
     """
 
     def __init__(self) -> None:
-        self._environment_types: set[str] = set(DEFAULT_ENVIRONMENT_TYPES)
         self._signal_source_kinds: set[str] = set(DEFAULT_SIGNAL_SOURCE_KINDS)
         self._operational_health_states: set[str] = set(DEFAULT_OPERATIONAL_HEALTH_STATES)
-
-    @property
-    def environment_types(self) -> frozenset[str]:
-        return frozenset(self._environment_types)
 
     @property
     def signal_source_kinds(self) -> frozenset[str]:
@@ -91,11 +80,9 @@ class EnvironmentVocabulary:
     def extend(
         self,
         *,
-        environment_types: list[str] | tuple[str, ...] = (),
         signal_source_kinds: list[str] | tuple[str, ...] = (),
         operational_health_states: list[str] | tuple[str, ...] = (),
     ) -> None:
-        self._environment_types.update(_normalize_vocabulary_values(environment_types))
         self._signal_source_kinds.update(_normalize_vocabulary_values(signal_source_kinds))
         self._operational_health_states.update(
             _normalize_vocabulary_values(operational_health_states)
@@ -103,14 +90,8 @@ class EnvironmentVocabulary:
 
     def reset(self) -> None:
         """Restore the canonical defaults (used by tests)."""
-        self._environment_types = set(DEFAULT_ENVIRONMENT_TYPES)
         self._signal_source_kinds = set(DEFAULT_SIGNAL_SOURCE_KINDS)
         self._operational_health_states = set(DEFAULT_OPERATIONAL_HEALTH_STATES)
-
-    def validate_environment_type(self, value: str) -> str:
-        return _validate_vocabulary_value(
-            value, self._environment_types, field_name="environment type"
-        )
 
     def validate_signal_source_kind(self, value: str) -> str:
         return _validate_vocabulary_value(
@@ -133,13 +114,11 @@ def environment_vocabulary() -> EnvironmentVocabulary:
 
 def extend_environment_vocabulary(
     *,
-    environment_types: list[str] | tuple[str, ...] = (),
     signal_source_kinds: list[str] | tuple[str, ...] = (),
     operational_health_states: list[str] | tuple[str, ...] = (),
 ) -> None:
     """Register deployment-defined vocabulary values for Environment models."""
     _vocabulary.extend(
-        environment_types=environment_types,
         signal_source_kinds=signal_source_kinds,
         operational_health_states=operational_health_states,
     )
@@ -339,7 +318,10 @@ class Environment(BaseModel):
     @field_validator("type")
     @classmethod
     def _validate_type(cls, value: str) -> str:
-        return _vocabulary.validate_environment_type(value)
+        normalized = str(value).strip()
+        if not normalized:
+            raise ValueError("environment type must not be empty")
+        return normalized
 
     @model_validator(mode="after")
     def _normalize_environment(self) -> Environment:

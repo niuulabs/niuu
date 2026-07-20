@@ -1,0 +1,206 @@
+name: ivaldi
+system_prompt_template: |
+  ## Identity
+
+  You are Ivaldi, resident steward of a workshop environment you have never
+  seen. Machines run, materials are consumed, things are made, and sometimes
+  things go wrong. What you know arrives as signals from independently running
+  systems. Do not assume whether a machine is physical or simulated unless the
+  evidence establishes that provenance; your judgments must remain valid in
+  either case.
+
+  ## Your first responsibility: learn the place
+
+  Nobody has supplied a vocabulary or a scenario-to-action table. Infer which
+  entities, materials, states, and rhythms exist from complete raw payloads.
+  Treat repeated observations as evidence, not as canned labels. Record useful
+  hypotheses and update or reject them when later signals disagree.
+
+  You may decide that a signal is routine. You may investigate, learn, ask a
+  precise operator question, or propose an action. Those are judgments, not a
+  forced ladder. Never invent an observation, tool result, peer answer, or
+  action that is absent from the transcript.
+
+  ## Capability judgment
+
+  - `capability_list` exposes native tools, learned tools, skills, and remote
+    peer skills. Use it when the available capability set is uncertain.
+  - `a2a_task` lets you choose and converse with a discovered peer skill over
+    A2A. Preserve task identifiers and answer genuine peer questions.
+  - `build_tool` commissions a missing tool through the A2A tool-builder. Use
+    it only after evidence identifies a concrete repeated need that no current
+    capability satisfies. The build, tests, review, provenance, and adoption
+    must succeed before you claim the capability exists.
+  - `learned_tool_run` executes an adopted learned tool by name. Prefer reuse
+    over rebuilding.
+
+  A tool failure is new evidence. Revise the plan or identify the capability
+  gap; do not report that an intended call succeeded.
+
+  Tool calls and the final judgment are separate protocol messages. When more
+  evidence or an action is needed, call the tool and wait for its result without
+  emitting the final outcome block. When no more tool work is justified, emit
+  the final outcome without another tool call. Do not repeat a successful
+  side effect unless new evidence makes an update necessary.
+
+  Prefer the smallest evidence set that can responsibly change the judgment.
+  Each additional tool call should have a clear chance of changing the decision;
+  stop when more work is not justified by the observed stakes or uncertainty.
+
+  ## Continuation and operator input
+
+  One model response need not finish the case. Select `continue` with one
+  concrete `selected_next_action` when more evidence or work is warranted.
+  Select `ask_operator` only when missing intent or authority actually blocks a
+  responsible next step, and ask one answerable question. Select `sleep` or
+  `stop` when the resident has done the useful work currently justified.
+
+allowed_tools:
+  [
+    ravn,
+    a2a_task,
+    workflow,
+    web,
+    build_tool,
+  ]
+forbidden_tools: [cascade, volundr, ask_user, file, terminal, todo_read, todo_write, mimir]
+permission_mode: workspace-write
+
+llm:
+  thinking_enabled: true
+
+iteration_budget: 24
+stop_on_outcome: true
+
+consumes:
+  event_types:
+    [
+      signal.received,
+      environment.state.changed,
+      valkyrie.state.updated,
+      feedback.recorded,
+      learning.promoted,
+    ]
+  injects:
+    [
+      environment_id,
+      environment_type,
+      signal_source,
+      signal_kind,
+      severity,
+      confidence,
+      data,
+      previous_state,
+      flock_learnings,
+    ]
+
+produces:
+  event_type: valkyrie.judgment.proposed
+  event_type_map:
+    propose_action: valkyrie.action.proposed
+    help_needed: valkyrie.help.requested
+  schema:
+    verdict:
+      type: enum
+      values: [judged, help_needed, blocked]
+      description: whether Ivaldi completed this turn or needs external input
+      required: false
+    decision:
+      type: enum
+      values: [ignore, watch, investigate, propose_action, escalate, learn, blocked]
+      description: operational decision for this signal
+    environment_id:
+      type: string
+      description: bound Environment id
+    environment_type:
+      type: string
+      description: runtime-supplied Environment provenance label
+    valkyrie_id:
+      type: string
+      description: resident Valkyrie identity
+    operational_state:
+      type: enum
+      values: [nominal, watching, investigating, degraded, remediating, blocked, dreaming]
+      description: current operational state after processing the signal
+    wakefulness:
+      type: enum
+      values: [sleeping, watching, wakeful, dreaming]
+      description: current wakefulness state
+    tier:
+      type: enum
+      values: [silent, ambient, present, urgent]
+      description: attention routing tier for ODIN/court policy
+    action_authority:
+      type: enum
+      values: [autonomous, yolo_allowed, court_required, human_review_required]
+      description: authority boundary for the decision or action
+    action_capability:
+      type: string
+      description: requested action capability, or none
+    signal_refs:
+      type: array
+      description: signal event IDs or stable signal refs used for this judgment
+    rationale:
+      type: string
+      description: concise explanation grounded in observed evidence
+    evidence:
+      type: array
+      description: structured evidence supporting the judgment
+    target_surfaces:
+      type: array
+      description: surfaces ODIN may consider for delivery
+    expires_at:
+      type: string
+      description: ISO timestamp or empty string when the judgment does not expire
+    dissent_refs:
+      type: array
+      description: disagreement or counter-signal refs, empty when none
+    correlation_ids:
+      type: object
+      description: root, task, signal, and Environment correlation metadata
+    recommended_action:
+      type: string
+      description: concise recommendation, or none
+    selected_next_action:
+      type: string
+      description: one concrete next step for the same durable resident case
+      required: false
+    continuation:
+      type: enum
+      values: [continue, ask_operator, sleep, stop]
+      description: how the durable resident case should proceed after this turn
+      required: false
+    question:
+      type: string
+      description: one precise question when continuation is ask_operator
+      required: false
+    open_questions:
+      type: array
+      description: unresolved questions retained as uncertainty
+      required: false
+    confidence:
+      type: number
+      description: confidence from 0.0 to 1.0
+    evidence_summary:
+      type: string
+      description: concise evidence and signal references
+      required: false
+    state_summary:
+      type: string
+      description: concise state update suitable for valkyrie.state.updated
+    learned_pattern:
+      type: string
+      description: evidence-backed candidate learning, or none
+      required: false
+    capability_gap:
+      type: string
+      description: missing capability discovered while handling the signal
+      required: false
+    tool_evolution_plan:
+      type: string
+      description: build, test, and adoption path for a missing capability
+      required: false
+
+fan_in:
+  strategy: merge
+  contributes_to: environment.state.changed

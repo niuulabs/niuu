@@ -14,12 +14,14 @@ from ravn.config import (
     ContextConfig,
     HookConfig,
     HooksConfig,
+    KubernetesToolsConfig,
     LLMAdapterConfig,
     LLMConfig,
     LLMProviderConfig,
     LoggingConfig,
     MCPServerConfig,
     MemoryConfig,
+    ObservabilityConfig,
     PermissionConfig,
     PermissionRuleConfig,
     ResidentEvolutionConfig,
@@ -87,6 +89,44 @@ class TestLLMConfig:
         )
         assert len(c.fallbacks) == 2
         assert c.fallbacks[0].adapter == "pkg.FallbackA"
+
+
+class TestObservabilityConfig:
+    def test_disabled_by_default(self) -> None:
+        config = Settings().observability
+
+        assert config.enabled is False
+        assert config.capture_content is False
+
+    def test_enabled_requires_separate_trace_and_metric_endpoints(self) -> None:
+        with pytest.raises(ValueError, match="trace_endpoint and metric_endpoint"):
+            ObservabilityConfig(enabled=True, trace_endpoint="https://tempo:4317")
+
+    def test_enabled_accepts_glitnir_style_endpoints(self) -> None:
+        config = ObservabilityConfig(
+            enabled=True,
+            trace_endpoint="https://eitri.grpc-tempo.example:443",
+            metric_endpoint="https://mimir.example/eitri/otlp/v1/metrics",
+            capture_content=True,
+            content_max_chars=20_000,
+        )
+
+        assert config.enabled is True
+        assert config.capture_content is True
+        assert config.content_max_chars == 20_000
+
+
+def test_kubernetes_tool_can_use_local_kubeconfig() -> None:
+    config = KubernetesToolsConfig(
+        enabled=True,
+        in_cluster=False,
+        kubeconfig_env="EITRI_KUBECONFIG",
+        max_log_lines=80,
+    )
+
+    assert config.enabled is True
+    assert config.in_cluster is False
+    assert config.kubeconfig_env == "EITRI_KUBECONFIG"
 
 
 class TestReflectionModelFallbacks:

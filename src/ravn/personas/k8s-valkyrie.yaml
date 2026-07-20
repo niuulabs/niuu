@@ -150,9 +150,8 @@ produces:
       type: string
       description: bound Kubernetes Environment id
     environment_type:
-      type: enum
-      values: [k8s]
-      description: Environment type
+      type: string
+      description: runtime-supplied Environment provenance label
     valkyrie_id:
       type: string
       description: resident Valkyrie identity

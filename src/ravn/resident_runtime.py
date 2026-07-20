@@ -21,6 +21,7 @@ from ravn.domain.resident_continuation import (
     selected_action_from_outcome,
 )
 from ravn.domain.resident_state import ResidentStatePort
+from ravn.observability import get_observability
 from ravn.ports.trigger import TriggerPort
 from ravn.resident_inbox import ResidentInboxBackend, ResidentInboxStatus
 from ravn.resident_text import compact_line
@@ -86,13 +87,55 @@ class ResidentRuntime:
         result: TurnResult,
         response_text: str,
     ) -> ResidentTurnDisposition:
+        telemetry = get_observability()
+        attributes = {
+            "ravn.task.id": task.task_id,
+            "ravn.resident.case_id": task.resident_case_id
+            or task.root_correlation_id
+            or task.task_id,
+            "ravn.resident.turn": task.resident_turn_index or 1,
+        }
+        with telemetry.span("ravn.resident.complete_turn", attributes=attributes) as span:
+            disposition = await self._handle_completed_turn_observed(
+                task=task,
+                prompt=prompt,
+                result=result,
+                response_text=response_text,
+            )
+            kind = str(disposition.kind)
+            span.set_attribute("ravn.resident.disposition", kind)
+            telemetry.count(
+                "ravn.resident.turns",
+                attributes={"ravn.resident.disposition": kind},
+                description="Completed durable resident turns by disposition.",
+            )
+            return disposition
+
+    async def _handle_completed_turn_observed(
+        self,
+        *,
+        task: AgentTask,
+        prompt: str,
+        result: TurnResult,
+        response_text: str,
+    ) -> ResidentTurnDisposition:
         """Persist one turn, acknowledge its observations, then decide transport."""
+        telemetry = get_observability()
         case_id = task.resident_case_id or task.root_correlation_id or task.task_id
         root_id = task.root_correlation_id or case_id
         turn_index = task.resident_turn_index or 1
         mandate = task.resident_mandate or task.initiative_context
         fields = dict(getattr(getattr(result, "episode", None), "structured_outcome", None) or {})
         action = selected_action_from_outcome(fields)
+        telemetry.event(
+            "ravn.resident.outcome_interpreted",
+            attributes={
+                "ravn.resident.case_id": case_id,
+                "ravn.resident.continuation": str(fields.get("continuation") or ""),
+                "ravn.resident.has_selected_action": action is not None,
+            },
+            content=fields,
+        )
         evidence_refs = _evidence_refs(fields, task)
         cumulative = TokenUsage(
             input_tokens=task.resident_input_tokens + result.usage.input_tokens,
@@ -119,8 +162,11 @@ class ResidentRuntime:
             evidence_refs=evidence_refs,
             inbox_refs=tuple(task.resident_inbox_refs),
         )
-        turn_ref = await self._state.write_turn(record)
-        durable_turn = await self._state.read(turn_ref)
+        with telemetry.span("ravn.port.resident_state.write_turn") as state_span:
+            turn_ref = await self._state.write_turn(record)
+            state_span.set_attribute("ravn.resident.turn_ref", turn_ref)
+        with telemetry.span("ravn.port.resident_state.read_turn"):
+            durable_turn = await self._state.read(turn_ref)
         if durable_turn is None:
             raise RuntimeError(f"resident turn was not readable after write: {turn_ref}")
 
@@ -131,17 +177,23 @@ class ResidentRuntime:
             case_id=case_id,
             root_correlation_id=root_id,
         )
-        budget_ref = await self._state.write_budget(snapshot)
+        with telemetry.span("ravn.port.resident_state.write_budget") as budget_span:
+            budget_ref = await self._state.write_budget(snapshot)
+            budget_span.set_attribute("ravn.resident.budget_ref", budget_ref)
 
         # A signal is no longer NEW only after both durable turn and budget
         # records exist.  Replayed signals therefore cannot disappear on a
         # failed model turn or failed state write.
         if self._inbox is not None and task.resident_inbox_refs:
-            await self._inbox.acknowledge(
-                tuple(task.resident_inbox_refs),
-                status=ResidentInboxStatus.REMEMBERED.value,
-                reason=f"recorded by resident case {case_id} turn {turn_index}",
-            )
+            with telemetry.span(
+                "ravn.port.resident_inbox.acknowledge",
+                attributes={"ravn.resident.inbox_ref_count": len(task.resident_inbox_refs)},
+            ):
+                await self._inbox.acknowledge(
+                    tuple(task.resident_inbox_refs),
+                    status=ResidentInboxStatus.REMEMBERED.value,
+                    reason=f"recorded by resident case {case_id} turn {turn_index}",
+                )
         if task.resident_answer_ref:
             answer = await self._state.read_operator_answer(case_id)
             if answer is not None and answer.path == task.resident_answer_ref:
@@ -183,23 +235,30 @@ class ResidentRuntime:
             )
 
         policy = _assess_authority(fields, action.risk_boundaries)
-        await self._state.write_policy_decision(
-            ResidentPolicyDecisionRecord(
-                turn_index=turn_index,
-                action_title=action.title,
-                action=action.action,
-                decision_kind=(
-                    ContinuationDecisionKind.ASK_OPERATOR.value
-                    if policy[0]
-                    else ContinuationDecisionKind.CONTINUE.value
-                ),
-                allowed=not policy[0],
-                needs_approval=policy[0],
-                reason=policy[1],
-                risk_boundaries=action.risk_boundaries,
-                question=(f"May I proceed with: {action.action}?" if policy[0] else ""),
+        with telemetry.span(
+            "ravn.port.resident_state.write_policy",
+            attributes={
+                "ravn.resident.policy.allowed": not policy[0],
+                "ravn.resident.policy.needs_approval": policy[0],
+            },
+        ):
+            await self._state.write_policy_decision(
+                ResidentPolicyDecisionRecord(
+                    turn_index=turn_index,
+                    action_title=action.title,
+                    action=action.action,
+                    decision_kind=(
+                        ContinuationDecisionKind.ASK_OPERATOR.value
+                        if policy[0]
+                        else ContinuationDecisionKind.CONTINUE.value
+                    ),
+                    allowed=not policy[0],
+                    needs_approval=policy[0],
+                    reason=policy[1],
+                    risk_boundaries=action.risk_boundaries,
+                    question=(f"May I proceed with: {action.action}?" if policy[0] else ""),
+                )
             )
-        )
         if policy[0]:
             return await self._ask_operator(
                 task=task,
@@ -237,7 +296,9 @@ class ResidentRuntime:
             mandate=mandate,
             prior_turn=_bounded(durable_turn.content, self._context_max_chars),
         )
-        accepted = await self._enqueue_task(continuation)
+        with telemetry.span("ravn.port.task_queue.enqueue_continuation") as enqueue_span:
+            accepted = await self._enqueue_task(continuation)
+            enqueue_span.set_attribute("ravn.queue.accepted", accepted)
         if not accepted:
             return ResidentTurnDisposition(
                 kind=ContinuationDecisionKind.STOP,
@@ -267,13 +328,21 @@ class ResidentRuntime:
         reason: str,
     ) -> ResidentTurnDisposition:
         question = _operator_question(fields, record)
-        operator_ref = await self._state.write_operator_needed(
-            question=question,
-            reason=reason,
-            turn=record,
-            case_id=record.case_id,
-            turn_ref=turn_ref,
-        )
+        telemetry = get_observability()
+        with telemetry.span("ravn.port.resident_state.write_operator_needed") as span:
+            operator_ref = await self._state.write_operator_needed(
+                question=question,
+                reason=reason,
+                turn=record,
+                case_id=record.case_id,
+                turn_ref=turn_ref,
+            )
+            span.set_attribute("ravn.resident.operator_ref", operator_ref)
+            telemetry.event(
+                "ravn.resident.operator_question",
+                attributes={"ravn.resident.case_id": record.case_id},
+                content={"question": question, "reason": reason},
+            )
         task.resident_case_id = record.case_id
         return ResidentTurnDisposition(
             kind=ContinuationDecisionKind.ASK_OPERATOR,
@@ -532,6 +601,7 @@ def _continuation_task(
         resident_output_tokens=cumulative.output_tokens,
         resident_started_at=task.resident_started_at or task.created_at.isoformat(),
         resident_parent_turn_ref=turn_ref,
+        trace_context=get_observability().inject(),
     )
 
 

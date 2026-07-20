@@ -460,6 +460,11 @@ def _build_environment_signal_publisher(settings: Settings) -> Any | None:
     publisher = build_transport(adapter, **kwargs)
     if publisher is None:
         logger.warning("environment_signals: failed to build %s transport", adapter)
+        return None
+    if settings.observability.enabled:
+        from ravn.adapters.observability import ObservedSleipnirBus  # noqa: PLC0415
+
+        return ObservedSleipnirBus(publisher)
     return publisher
 
 

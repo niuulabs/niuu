@@ -30,6 +30,7 @@ from ravn.domain.capability_catalog import (
     WorkflowSelector,
     select_workflow,
 )
+from ravn.observability import get_observability
 from ravn.ports.tool_build_backend import (
     ToolBuildBackend,
     ToolBuildError,
@@ -142,6 +143,51 @@ class A2AToolBuildBackend(ToolBuildBackend):
         return self._workflow_selector
 
     async def build(self, request: ToolBuildRequest) -> ToolBuildResult:
+        telemetry = get_observability()
+        attributes = {
+            "ravn.tool_build.backend": self.name,
+            "ravn.tool_build.name": request.name,
+            "a2a.card.url": self._card_url,
+        }
+        with telemetry.span("ravn.a2a.tool_build", attributes=attributes) as span:
+            telemetry.event("ravn.tool_build.requested", attributes=attributes, content=request)
+            try:
+                result = await self._build_observed(request)
+            except Exception as exc:
+                telemetry.mark_error(span, type(exc).__name__)
+                telemetry.count(
+                    "ravn.tool_build.operations",
+                    attributes={
+                        "ravn.tool_build.backend": self.name,
+                        "ravn.tool_build.outcome": "error",
+                        "error.type": type(exc).__name__,
+                    },
+                )
+                raise
+            span.set_attribute("ravn.tool_build.outcome", "completed")
+            telemetry.event(
+                "ravn.tool_build.completed",
+                attributes={
+                    **attributes,
+                    "ravn.tool_build.outcome": "completed",
+                    "ravn.tool_build.manifest.name": str(result.manifest.get("name") or ""),
+                },
+                content={
+                    "manifest": result.manifest,
+                    "build_evidence": result.build_evidence,
+                    "provenance": result.provenance,
+                },
+            )
+            telemetry.count(
+                "ravn.tool_build.operations",
+                attributes={
+                    "ravn.tool_build.backend": self.name,
+                    "ravn.tool_build.outcome": "completed",
+                },
+            )
+            return result
+
+    async def _build_observed(self, request: ToolBuildRequest) -> ToolBuildResult:
         endpoint, workflow_id = await self._resolve_endpoint_and_workflow()
         _system, initial_prompt = build_prompts(request)
 
@@ -154,6 +200,19 @@ class A2AToolBuildBackend(ToolBuildBackend):
         task_id = str(task.get("id") or "")
         if not task_id:
             raise ToolBuildError("A2A SendMessage returned no task id")
+        telemetry = get_observability()
+        telemetry.set_attributes(
+            {
+                "a2a.task.id": task_id,
+                "a2a.skill.id": workflow_id,
+                "a2a.endpoint": endpoint,
+            }
+        )
+        telemetry.event(
+            "ravn.a2a.task.started",
+            attributes={"a2a.task.id": task_id, "a2a.skill.id": workflow_id},
+            content=task,
+        )
 
         final, gate_exchanges = await self._poll_answering_gates(endpoint, task_id, request)
         state = _task_state(final)
@@ -207,9 +266,23 @@ class A2AToolBuildBackend(ToolBuildBackend):
         exchanges: list[dict[str, Any]] = []
         rounds = 0
         task: dict[str, Any] = {}
-        for _attempt in range(self._max_poll_attempts):
+        telemetry = get_observability()
+        for attempt in range(self._max_poll_attempts):
             task = await self._get_task(endpoint, task_id)
             state = _task_state(task)
+            telemetry.event(
+                "ravn.a2a.task.state",
+                attributes={
+                    "a2a.task.id": task_id,
+                    "a2a.task.state": state,
+                    "a2a.task.poll_attempt": attempt + 1,
+                },
+                content=task,
+            )
+            telemetry.count(
+                "ravn.a2a.task.polls",
+                attributes={"a2a.task.state": state},
+            )
             if state in _TERMINAL_STATES:
                 return task, exchanges
             if state == _INPUT_REQUIRED_STATE:
@@ -359,6 +432,7 @@ class A2AToolBuildBackend(ToolBuildBackend):
     # -- Card & skill resolution ---------------------------------------- #
 
     async def _resolve_endpoint_and_workflow(self) -> tuple[str, str]:
+        telemetry = get_observability()
         resp = await self._client.get(self._card_url, headers=_A2A_HEADERS)
         if resp.status_code != 200 or not isinstance(resp.body, dict):
             raise ToolBuildError(f"A2A agent card fetch returned HTTP {resp.status_code}")
@@ -371,6 +445,14 @@ class A2AToolBuildBackend(ToolBuildBackend):
             raise ToolBuildError("A2A JSONRPC interface must share the configured card origin")
 
         if self._workflow_id:
+            telemetry.event(
+                "ravn.a2a.skill.selected",
+                attributes={
+                    "a2a.skill.id": self._workflow_id,
+                    "a2a.endpoint": endpoint,
+                    "ravn.a2a.selection": "configured",
+                },
+            )
             return endpoint, self._workflow_id
         if not self._workflow_selector.configured:
             raise ToolBuildError("a2a backend requires workflow_id or workflow_selector")
@@ -379,6 +461,15 @@ class A2AToolBuildBackend(ToolBuildBackend):
         if workflow is None:
             raise ToolBuildError("A2A agent card lists no skill matching the tool-builder selector")
         self._workflow_id = workflow.workflow_id
+        telemetry.event(
+            "ravn.a2a.skill.selected",
+            attributes={
+                "a2a.skill.id": workflow.workflow_id,
+                "a2a.endpoint": endpoint,
+                "ravn.a2a.selection": "agent_card",
+            },
+            content=card,
+        )
         return endpoint, workflow.workflow_id
 
     # -- JSON-RPC calls --------------------------------------------------- #

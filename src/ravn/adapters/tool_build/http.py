@@ -8,6 +8,7 @@ identity inside the cluster.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import monotonic
 from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
@@ -18,6 +19,7 @@ from niuu.adapters.outbound.http_auth import (
     WorkloadIdentityBearerTokenAuthAdapter,
 )
 from niuu.ports.http_auth import HttpAuthPort
+from ravn.observability import get_observability
 
 
 @dataclass(frozen=True)
@@ -127,18 +129,74 @@ class HttpxJsonClient:
         """
         import asyncio  # noqa: PLC0415
 
-        return await asyncio.to_thread(self._headers)
+        telemetry = get_observability()
+        cached_before = bool(getattr(self._auth, "_token", "")) and float(
+            getattr(self._auth, "_expires_at", 0.0) or 0.0
+        ) > monotonic()
+        attributes = {
+            "ravn.http.auth.adapter": (
+                type(self._auth).__name__ if self._auth is not None else "none"
+            ),
+            "ravn.http.auth.cached": cached_before,
+        }
+        exchange_url_fn = getattr(self._auth, "_resolved_exchange_url", None)
+        if callable(exchange_url_fn):
+            attributes["ravn.http.auth.exchange_url"] = str(exchange_url_fn() or "")
+        audiences = getattr(self._auth, "_audiences", None)
+        if isinstance(audiences, list):
+            attributes["ravn.http.auth.audiences"] = [str(item) for item in audiences]
+        scopes = getattr(self._auth, "_scopes", None)
+        if isinstance(scopes, list):
+            attributes["ravn.http.auth.scopes"] = [str(item) for item in scopes]
+        with telemetry.span("ravn.http.resolve_auth", attributes=attributes) as span:
+            headers = await asyncio.to_thread(self._headers)
+            exchanged = (
+                type(self._auth).__name__ == "WorkloadIdentityBearerTokenAuthAdapter"
+                and not cached_before
+                and "Authorization" in headers
+            )
+            span.set_attribute("ravn.http.auth.exchange_performed", exchanged)
+            telemetry.event(
+                "ravn.http.auth.resolved",
+                attributes={
+                    **attributes,
+                    "ravn.http.auth.header_count": len(headers),
+                    "ravn.http.auth.exchange_performed": exchanged,
+                },
+            )
+            return headers
 
     async def get(self, url: str, *, headers: dict[str, str] | None = None) -> HttpResponse:
         import httpx  # noqa: PLC0415
 
         self._assert_allowed_origin(url)
-        merged = await self._resolve_headers()
-        if headers:
-            merged.update(headers)
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.get(url, headers=merged)
-            return HttpResponse(status_code=resp.status_code, body=_safe_json(resp))
+        telemetry = get_observability()
+        attributes = _http_attributes("GET", url)
+        started = monotonic()
+        with telemetry.span("GET " + attributes["url.template"], attributes=attributes) as span:
+            merged = await self._resolve_headers()
+            if headers:
+                merged.update(headers)
+            try:
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    resp = await client.get(url, headers=merged)
+            except Exception as exc:
+                telemetry.mark_error(span, type(exc).__name__)
+                _record_http_metrics(
+                    telemetry,
+                    attributes={**attributes, "error.type": type(exc).__name__},
+                    started=started,
+                )
+                raise
+            body = _safe_json(resp)
+            span.set_attribute("http.response.status_code", resp.status_code)
+            response_attributes = {**attributes, "http.response.status_code": resp.status_code}
+            if resp.status_code >= 400:
+                telemetry.mark_error(span, f"HTTP {resp.status_code}")
+                response_attributes["error.type"] = "http_error"
+            telemetry.event("http.response", attributes=response_attributes, content=body)
+            _record_http_metrics(telemetry, attributes=response_attributes, started=started)
+            return HttpResponse(status_code=resp.status_code, body=body)
 
     async def post(
         self,
@@ -150,12 +208,34 @@ class HttpxJsonClient:
         import httpx  # noqa: PLC0415
 
         self._assert_allowed_origin(url)
-        merged = await self._resolve_headers()
-        if headers:
-            merged.update(headers)
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(url, headers=merged, json=json_body)
-            return HttpResponse(status_code=resp.status_code, body=_safe_json(resp))
+        telemetry = get_observability()
+        attributes = _http_attributes("POST", url)
+        started = monotonic()
+        with telemetry.span("POST " + attributes["url.template"], attributes=attributes) as span:
+            telemetry.event("http.request", attributes=attributes, content=json_body)
+            merged = await self._resolve_headers()
+            if headers:
+                merged.update(headers)
+            try:
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    resp = await client.post(url, headers=merged, json=json_body)
+            except Exception as exc:
+                telemetry.mark_error(span, type(exc).__name__)
+                _record_http_metrics(
+                    telemetry,
+                    attributes={**attributes, "error.type": type(exc).__name__},
+                    started=started,
+                )
+                raise
+            body = _safe_json(resp)
+            span.set_attribute("http.response.status_code", resp.status_code)
+            response_attributes = {**attributes, "http.response.status_code": resp.status_code}
+            if resp.status_code >= 400:
+                telemetry.mark_error(span, f"HTTP {resp.status_code}")
+                response_attributes["error.type"] = "http_error"
+            telemetry.event("http.response", attributes=response_attributes, content=body)
+            _record_http_metrics(telemetry, attributes=response_attributes, started=started)
+            return HttpResponse(status_code=resp.status_code, body=body)
 
     def _assert_allowed_origin(self, url: str) -> None:
         if not self._allowed_origins:
@@ -193,3 +273,41 @@ def _safe_json(resp: Any) -> Any:
         return resp.json()
     except Exception:  # noqa: BLE001 — non-JSON error bodies become text
         return getattr(resp, "text", "")
+
+
+def _http_attributes(method: str, url: str) -> dict[str, Any]:
+    parsed = urlsplit(url)
+    return {
+        "http.request.method": method,
+        "server.address": parsed.hostname or "",
+        "server.port": parsed.port or (443 if parsed.scheme == "https" else 80),
+        "url.scheme": parsed.scheme,
+        "url.template": parsed.path or "/",
+    }
+
+
+def _record_http_metrics(
+    telemetry: Any,
+    *,
+    attributes: dict[str, Any],
+    started: float,
+) -> None:
+    metric_attributes = {
+        key: value
+        for key, value in attributes.items()
+        if key
+        in {
+            "http.request.method",
+            "http.response.status_code",
+            "server.address",
+            "url.template",
+            "error.type",
+        }
+    }
+    telemetry.count("ravn.http.client.requests", attributes=metric_attributes)
+    telemetry.duration(
+        "http.client.request.duration",
+        monotonic() - started,
+        attributes=metric_attributes,
+        description="Duration of an outbound authenticated HTTP request.",
+    )

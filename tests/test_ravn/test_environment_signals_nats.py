@@ -214,6 +214,36 @@ async def test_runtime_commits_only_after_durable_window_is_enqueued() -> None:
 
 
 @pytest.mark.asyncio
+async def test_durable_transport_does_not_duplicate_delivery_into_resident_inbox() -> None:
+    message = _FakeMsg(json.dumps(_envelope()).encode())
+    adapter, _, _, _ = _adapter([[message]])
+    enqueued: list[AgentTask] = []
+    processed: list[Any] = []
+
+    async def process(event: Any) -> dict[str, str]:
+        processed.append(event)
+        return {"residentAutonomySignalRef": "resident/inbox/signals/duplicate.md"}
+
+    async def enqueue(task: AgentTask) -> None:
+        enqueued.append(task)
+
+    runtime = EnvironmentSignalRuntime(
+        settings=Settings(),
+        publisher=InProcessBus(),
+        enqueue=enqueue,
+        resident_signal_processor=process,
+        durable_home_enabled=True,
+    )
+    runtime._adapters = [adapter]
+
+    assert await runtime.collect_once() == 1
+    assert message.acked is True
+    assert processed == []
+    assert len(enqueued) == 1
+    assert enqueued[0].resident_inbox_refs == []
+
+
+@pytest.mark.asyncio
 async def test_runtime_rolls_back_durable_delivery_without_resident_queue() -> None:
     message = _FakeMsg(json.dumps(_envelope()).encode())
     adapter, _, _, _ = _adapter([[message]])

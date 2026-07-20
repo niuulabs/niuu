@@ -20,7 +20,18 @@ async def _run_daemon(
     from ravn.adapters.channels.gateway_http import HttpGateway
     from ravn.adapters.channels.gateway_telegram import TelegramGateway
     from ravn.drive_loop import DriveLoop
+    from ravn.observability import configure_observability, shutdown_observability
     from ravn.ports.channel import ChannelPort
+
+    configure_observability(
+        settings.observability,
+        resource_attributes={
+            "service.instance.id": settings.mesh.own_peer_id or settings.environment.id,
+            "deployment.environment.name": settings.environment.id,
+            "ravn.environment.id": settings.environment.id,
+            "ravn.environment.type": settings.environment.type,
+        },
+    )
 
     if profile is not None:
         system_prompt, max_iterations, _max_tokens_d = _apply_profile(
@@ -82,6 +93,10 @@ async def _run_daemon(
         from sleipnir.adapters.in_process import InProcessBus
 
         daemon_bus = InProcessBus()
+        if settings.observability.enabled:
+            from ravn.adapters.observability import ObservedSleipnirBus  # noqa: PLC0415
+
+            daemon_bus = ObservedSleipnirBus(daemon_bus)
 
     def _agent_factory(
         channel: ChannelPort,
@@ -313,6 +328,14 @@ async def _run_daemon(
                         url=amqp_url,
                         exchange_name=settings.sleipnir.exchange,
                     )
+                    if settings.observability.enabled:
+                        from ravn.adapters.observability import (  # noqa: PLC0415
+                            ObservedSleipnirBus,
+                        )
+
+                        sleipnir_catalog_publisher = ObservedSleipnirBus(
+                            sleipnir_catalog_publisher
+                        )
                     await sleipnir_catalog_publisher.start()
                 except Exception as exc:
                     logger.warning(
@@ -605,6 +628,7 @@ async def _run_daemon(
             await resident_learning_runtime.stop()
         if environment_signal_publisher_started and environment_signal_publisher is not None:
             await environment_signal_publisher.stop()
+        shutdown_observability()
         return
 
     try:
@@ -643,3 +667,4 @@ async def _run_daemon(
             await daemon_reflection_svc.stop()
         if sleipnir_catalog_publisher is not None:
             await sleipnir_catalog_publisher.stop()
+        shutdown_observability()

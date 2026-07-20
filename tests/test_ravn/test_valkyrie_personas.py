@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from niuu.domain.outcome import OutcomeSchema, parse_outcome_block
 from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter, PersonaConfig
+from ravn.agent import _parse_outcome_block_for_persona
 from ravn.api.personas import create_personas_router
 from ravn.domain.events import RavnEvent, RavnEventType
 from sleipnir.domain import registry
@@ -141,6 +142,10 @@ def test_resident_valkyrie_contracts_load_and_inject_outcome(name: str) -> None:
     assert persona.produces.schema["evidence"].type == "array"
     assert persona.produces.schema["correlation_ids"].type == "object"
     assert "---outcome---" in persona.system_prompt_template
+    assert "\nenvironment_id:" not in persona.system_prompt_template
+    assert "\nenvironment_type:" not in persona.system_prompt_template
+    assert "\nvalkyrie_id:" not in persona.system_prompt_template
+    assert "\ncorrelation_ids:" not in persona.system_prompt_template
     assert "Environment binding" in persona.system_prompt_template
     assert "ODIN/court" in persona.system_prompt_template
     assert "Flock/NATS mesh" in persona.system_prompt_template
@@ -154,6 +159,60 @@ def test_resident_valkyrie_contracts_load_and_inject_outcome(name: str) -> None:
     assert "cron_list" in persona.allowed_tools
     assert "cron_delete" in persona.allowed_tools
     assert "build_tool" in persona.allowed_tools
+
+
+def test_ivaldi_model_contract_excludes_runtime_owned_event_envelope() -> None:
+    persona = _load("ivaldi")
+    prompt = persona.system_prompt_template
+
+    assert "\nenvironment_id:" not in prompt
+    assert "\nenvironment_type:" not in prompt
+    assert "\nvalkyrie_id:" not in prompt
+    assert "\ncorrelation_ids:" not in prompt
+
+    response = """---outcome---
+decision: watch
+operational_state: watching
+wakefulness: wakeful
+tier: silent
+action_authority: autonomous
+action_capability: none
+signal_refs: [evt-real]
+rationale: One observation is insufficient to infer a stable pattern.
+evidence: [{event_id: evt-real}]
+target_surfaces: []
+expires_at: ""
+dissent_refs: []
+recommended_action: Observe another event.
+selected_next_action: Observe another event.
+continuation: sleep
+question: ""
+open_questions: []
+confidence: 0.5
+evidence_summary: One observation.
+state_summary: Watching for repetition.
+learned_pattern: none
+capability_gap: none
+tool_evolution_plan: none
+---end---"""
+
+    parsed = _parse_outcome_block_for_persona(response, persona)
+
+    assert parsed is not None
+    assert parsed.valid is True
+    assert "environment_type" not in parsed.fields
+
+
+def test_ivaldi_uses_environment_capabilities_not_the_source_checkout() -> None:
+    persona = _load("ivaldi")
+
+    assert "build_tool" in persona.allowed_tools
+    assert {"a2a_task", "workflow", "web"}.issubset(persona.allowed_tools)
+    assert "file" not in persona.allowed_tools
+    assert "terminal" not in persona.allowed_tools
+    assert {"file", "terminal", "todo_read", "todo_write", "mimir"}.issubset(
+        persona.forbidden_tools
+    )
 
 
 @pytest.mark.parametrize("name", sorted(RESIDENT_VALKYRIES))

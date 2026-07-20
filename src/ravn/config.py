@@ -238,6 +238,16 @@ class WebToolsConfig(BaseModel):
     search: WebSearchConfig = Field(default_factory=WebSearchConfig)
 
 
+class KubernetesToolsConfig(BaseModel):
+    """Connection settings for the read-only Kubernetes inspection tool."""
+
+    enabled: bool = Field(default=False)
+    in_cluster: bool = Field(default=True)
+    kubeconfig_env: str = Field(default="KUBECONFIG")
+    kubeconfig_path: str = Field(default="")
+    max_log_lines: int = Field(default=120, ge=1)
+
+
 class BashToolConfig(BaseModel):
     """Bash tool configuration (non-persistent, validation-gated execution)."""
 
@@ -345,6 +355,10 @@ class ToolsConfig(BaseModel):
         default_factory=WebToolsConfig,
         description="Configuration for the built-in web tools (web_fetch, web_search).",
     )
+    kubernetes: KubernetesToolsConfig = Field(
+        default_factory=KubernetesToolsConfig,
+        description="Connection settings for the built-in Kubernetes inspection tool.",
+    )
     bash: BashToolConfig = Field(
         default_factory=BashToolConfig,
         description="Configuration for the bash tool (non-persistent, validation-gated).",
@@ -445,7 +459,8 @@ class MemoryConfig(BaseModel):
     )
     prefetch_limit: int = Field(
         default=5,
-        description="Maximum number of episodes retrieved during prefetch.",
+        ge=0,
+        description="Maximum number of episodes retrieved during prefetch; 0 disables it.",
     )
     prefetch_min_relevance: float = Field(
         default=0.3,
@@ -480,7 +495,9 @@ class MemoryConfig(BaseModel):
         default="claude-haiku-4-5-20251001",
         description=(
             "Model alias used for the compact post-task reflection call. Use empty, "
-            "'default', 'agent', or 'same-as-agent' to reuse the effective agent model."
+            "'default', 'agent', or 'same-as-agent' to reuse the effective agent model; "
+            "use 'off', 'disabled', or 'none' to retain raw episodes without generated "
+            "reflection."
         ),
     )
     reflection_max_tokens: int = Field(
@@ -1423,6 +1440,51 @@ class LoggingConfig(BaseModel):
 
     level: str = Field(default="warning")
     format: str = Field(default="text")
+
+
+class ObservabilityConfig(BaseModel):
+    """OpenTelemetry export for resident execution traces and metrics."""
+
+    enabled: bool = Field(default=False)
+    service_name: str = Field(default="ravn")
+    trace_endpoint: str = Field(
+        default="",
+        description="OTLP/gRPC endpoint for traces, including scheme and port.",
+    )
+    metric_endpoint: str = Field(
+        default="",
+        description="OTLP/HTTP metrics endpoint, including the /v1/metrics path.",
+    )
+    insecure: bool = Field(
+        default=False,
+        description="Disable TLS for the OTLP/gRPC trace exporter.",
+    )
+    metric_export_interval_milliseconds: int = Field(default=10_000, ge=1_000)
+    capture_content: bool = Field(
+        default=False,
+        description=(
+            "Include redacted, size-bounded signal, model, tool, and event content "
+            "in trace events. Disabled by default because payloads may be sensitive."
+        ),
+    )
+    content_max_chars: int = Field(
+        default=8_192,
+        ge=256,
+        le=100_000,
+        description="Maximum serialized characters attached to one trace event.",
+    )
+    headers: dict[str, str] = Field(
+        default_factory=dict,
+        description="Optional OTLP headers for both exporters.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_enabled_endpoints(self) -> ObservabilityConfig:
+        if self.enabled and (not self.trace_endpoint or not self.metric_endpoint):
+            raise ValueError(
+                "observability requires trace_endpoint and metric_endpoint when enabled"
+            )
+        return self
 
 
 class MimirSearchConfig(BaseModel):
@@ -3405,17 +3467,13 @@ class SignalSourceConfig(BaseModel):
 
 
 class EnvironmentVocabularyConfig(BaseModel):
-    """Deployment-defined vocabulary extensions for Environment models.
+    """Deployment-defined signal and health vocabulary extensions.
 
     Values listed here are registered into the domain vocabulary registry on
-    settings load, so new environment types, signal kinds, and health states
-    are a config change, not a code change.
+    settings load. Environment ``type`` is an opaque configuration value and
+    therefore needs no registration.
     """
 
-    environment_types: list[str] = Field(
-        default_factory=list,
-        description="Extra environment types beyond the platform defaults.",
-    )
     signal_source_kinds: list[str] = Field(
         default_factory=list,
         description="Extra signal source kinds beyond the platform defaults.",
@@ -3424,6 +3482,18 @@ class EnvironmentVocabularyConfig(BaseModel):
         default_factory=list,
         description="Extra operational health states beyond the platform defaults.",
     )
+
+
+class EnvironmentTopologyConfig(BaseModel):
+    """Explicit Observatory topology projection for an Environment."""
+
+    node_id: str = ""
+    type_id: str = ""
+    parent_id: str | None = None
+    realm_id: str = ""
+    cluster_id: str = ""
+    host_id: str = ""
+    zone: str = ""
 
 
 class EnvironmentConfig(BaseModel):
@@ -3457,6 +3527,13 @@ class EnvironmentConfig(BaseModel):
             "The human seed for this resident: a few sentences describing what the "
             "Valkyrie stewards and what 'better' means for its environment. Injected "
             "into every autonomous task and surfaced on the dashboard."
+        ),
+    )
+    topology: EnvironmentTopologyConfig = Field(
+        default_factory=EnvironmentTopologyConfig,
+        description=(
+            "Optional explicit Observatory topology metadata. type_id defaults to the "
+            "configured Environment type without interpreting it."
         ),
     )
     flocks: list[str] = Field(
@@ -3529,7 +3606,6 @@ class EnvironmentConfig(BaseModel):
         from ravn.domain.environment import extend_environment_vocabulary  # noqa: PLC0415
 
         extend_environment_vocabulary(
-            environment_types=self.vocabulary.environment_types,
             signal_source_kinds=self.vocabulary.signal_source_kinds,
             operational_health_states=self.vocabulary.operational_health_states,
         )
@@ -4301,6 +4377,7 @@ class Settings(BaseSettings):
     # Legacy — kept so existing CLI wiring (NIU-426) continues to work
     llm_adapter: LLMAdapterConfig = Field(default_factory=LLMAdapterConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
 
     @classmethod
     def settings_customise_sources(

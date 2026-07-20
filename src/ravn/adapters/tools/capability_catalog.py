@@ -17,6 +17,7 @@ from ravn.domain.capability_catalog import (
     filter_capabilities,
 )
 from ravn.domain.models import ToolResult
+from ravn.observability import get_observability
 from ravn.ports.agent_directory import PeerAgentDirectoryPort
 from ravn.ports.capability import WorkflowCapabilityPort
 from ravn.ports.skill import SkillPort
@@ -118,9 +119,40 @@ class CapabilityListTool(ToolPort):
             "total": len(filtered),
             "errors": errors,
         }
+        telemetry = get_observability()
+        counts: dict[str, int] = {}
+        for capability in capabilities:
+            counts[capability.kind.value] = counts.get(capability.kind.value, 0) + 1
+        telemetry.set_attributes(
+            {
+                "ravn.capability.catalog.total": len(capabilities),
+                "ravn.capability.catalog.returned": payload["count"],
+                "ravn.capability.catalog.error_count": len(errors),
+            }
+        )
+        telemetry.event(
+            "ravn.capability.catalog.result",
+            attributes={
+                "ravn.capability.catalog.total": len(capabilities),
+                "ravn.capability.catalog.returned": payload["count"],
+                "ravn.capability.catalog.error_count": len(errors),
+                "ravn.capability.catalog.kinds": [
+                    f"{kind}:{count}" for kind, count in sorted(counts.items())
+                ],
+            },
+            content=payload,
+        )
+        for kind, count in counts.items():
+            telemetry.gauge(
+                "ravn.capabilities.available",
+                count,
+                attributes={"ravn.capability.kind": kind},
+                description="Capabilities visible to the resident by kind.",
+            )
         return ToolResult(tool_call_id="", content=json.dumps(payload, indent=2))
 
     async def _collect(self) -> tuple[list[Capability], list[dict[str, Any]]]:
+        telemetry = get_observability()
         capabilities: list[Capability] = []
         errors: list[dict[str, Any]] = []
         native_names: set[str] = set()
@@ -148,8 +180,16 @@ class CapabilityListTool(ToolPort):
                         "error": str(exc),
                     }
                 )
+        telemetry.event(
+            "ravn.capability.source",
+            attributes={
+                "ravn.capability.source": "native_tools",
+                "ravn.capability.count": len(capabilities),
+            },
+        )
 
         if self._learned_tools_provider is not None:
+            before = len(capabilities)
             try:
                 for artifact in self._learned_tools_provider():
                     manifest = artifact.manifest
@@ -169,8 +209,16 @@ class CapabilityListTool(ToolPort):
                     )
             except Exception as exc:
                 errors.append({"kind": "learned_tool", "error": str(exc)})
+            telemetry.event(
+                "ravn.capability.source",
+                attributes={
+                    "ravn.capability.source": "learned_tools",
+                    "ravn.capability.count": len(capabilities) - before,
+                },
+            )
 
         if self._skill_port is not None:
+            before = len(capabilities)
             try:
                 for skill in await self._skill_port.list_skills():
                     capabilities.append(
@@ -184,8 +232,16 @@ class CapabilityListTool(ToolPort):
                     )
             except Exception as exc:
                 errors.append({"kind": "skill", "error": str(exc)})
+            telemetry.event(
+                "ravn.capability.source",
+                attributes={
+                    "ravn.capability.source": "skills",
+                    "ravn.capability.count": len(capabilities) - before,
+                },
+            )
 
         for source_index, source in enumerate(self._workflow_sources):
+            before = len(capabilities)
             try:
                 for workflow in await source.list_workflows():
                     capabilities.append(
@@ -197,10 +253,20 @@ class CapabilityListTool(ToolPort):
                     )
             except Exception as exc:
                 errors.append({"kind": "workflow", "source_index": source_index, "error": str(exc)})
+            telemetry.event(
+                "ravn.capability.source",
+                attributes={
+                    "ravn.capability.source": f"workflow:{source_index}",
+                    "ravn.capability.count": len(capabilities) - before,
+                },
+            )
 
         if self._agent_directory is not None:
+            before = len(capabilities)
+            agent_count = 0
             try:
                 page = await self._agent_directory.list_agents()
+                agent_count = len(page.items)
                 for agent in page.items:
                     details = list(agent.skills)
                     known_ids = {skill.id for skill in details}
@@ -228,6 +294,14 @@ class CapabilityListTool(ToolPort):
                 )
             except Exception as exc:
                 errors.append({"kind": "agent_skill", "error": str(exc)})
+            telemetry.event(
+                "ravn.capability.source",
+                attributes={
+                    "ravn.capability.source": "agent_directory",
+                    "ravn.capability.agent_count": agent_count,
+                    "ravn.capability.count": len(capabilities) - before,
+                },
+            )
 
         return capabilities, errors
 

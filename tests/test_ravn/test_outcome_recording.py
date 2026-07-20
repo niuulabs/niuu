@@ -169,6 +169,20 @@ class TestAgentEpisodeEnrichment:
         call_kwargs = llm.generate.call_args.kwargs
         assert call_kwargs["model"] == reflection_model
 
+    @pytest.mark.parametrize("disabled_value", ["off", "disabled", "none"])
+    async def test_disabled_reflection_records_raw_episode_without_llm_narrative(
+        self,
+        disabled_value: str,
+    ) -> None:
+        mem = RecordingMemory()
+        llm = make_simple_llm()
+        agent, _ = make_agent(llm, memory=mem, reflection_model=disabled_value)
+
+        await agent.run_turn("observe one signal")
+
+        llm.generate.assert_not_called()
+        assert mem.recorded[0].reflection == ""
+
     async def test_no_memory_works_normally(self) -> None:
         agent, _ = make_agent(make_simple_llm(), memory=None)
         result = await agent.run_turn("hello")

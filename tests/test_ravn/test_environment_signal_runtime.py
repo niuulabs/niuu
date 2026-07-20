@@ -115,6 +115,35 @@ def test_build_runtime_environment_reuses_configured_flocks_and_sources() -> Non
     assert [source.id for source in environment.signal_sources] == ["host-events"]
 
 
+def test_build_runtime_environment_does_not_interpret_environment_type() -> None:
+    settings = Settings(
+        environment={
+            "id": "cell-7",
+            "type": "vendor.example/cnc-v9",
+            "topology": {
+                "node_id": "machine:cell-7",
+                "type_id": "printer",
+                "parent_id": "room:workshop",
+                "realm_id": "factory",
+                "zone": "west",
+            },
+        }
+    )
+
+    environment = build_runtime_environment(settings)
+
+    assert environment.type == "vendor.example/cnc-v9"
+    assert environment.topology.model_dump() == {
+        "node_id": "machine:cell-7",
+        "type_id": "printer",
+        "parent_id": "room:workshop",
+        "realm_id": "factory",
+        "cluster_id": "",
+        "host_id": "",
+        "zone": "west",
+    }
+
+
 @pytest.mark.asyncio
 async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
     bus = InProcessBus()
@@ -181,9 +210,9 @@ async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
     assert "## Required outcome" in context
     assert "```json" in context  # the signal payload is a fenced code block
     assert "---outcome---" in context and "---end---" in context  # response contract
-    assert "environment_id: host-jozef" in context
-    assert "valkyrie_id: valkyrie-host-jozef" in context
-    assert "correlation_ids:" in context
+    assert "environment_id: host-jozef" not in context
+    assert "valkyrie_id: valkyrie-host-jozef" not in context
+    assert "correlation_ids:" not in context
 
 
 @pytest.mark.asyncio
@@ -500,6 +529,8 @@ async def test_below_threshold_signals_accumulate_for_idle_triage() -> None:
     assert "decision: watch" not in context
     assert "operational_state: watching" not in context
     assert "decision: <ignore | watch | investigate" in context
+    assert "selected_next_action: <one concrete next step, or none>" in context
+    assert "continuation: <continue | ask_operator | sleep | stop>" in context
 
 
 def test_idle_triage_prompt_is_bounded_regardless_of_batch_size() -> None:

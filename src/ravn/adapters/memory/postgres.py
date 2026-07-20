@@ -306,6 +306,8 @@ class PostgresMemoryAdapter(MemoryPort):
         return matches[:limit]
 
     async def prefetch(self, context: str) -> str:
+        if self._prefetch_limit == 0:
+            return ""
         matches = await self.query_episodes(
             context,
             limit=self._prefetch_limit,

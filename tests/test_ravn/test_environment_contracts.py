@@ -189,18 +189,25 @@ def test_environment_projects_into_existing_observatory_topology_types() -> None
         ]
 
 
-def test_environment_vocabulary_rejects_unknown_values_with_known_list() -> None:
+def test_environment_type_is_an_open_configured_label() -> None:
     import pytest
 
     from ravn.domain.environment import environment_vocabulary
 
     vocabulary = environment_vocabulary()
     try:
-        with pytest.raises(ValueError, match="unknown environment type 'submarine'"):
+        environment = Environment(
+            id="env-x",
+            name="X",
+            type="vendor.example/submarine-v9",
+            topology=k8s_environment_fixture().topology,
+        )
+        assert environment.type == "vendor.example/submarine-v9"
+        with pytest.raises(ValueError, match="environment type must not be empty"):
             Environment(
                 id="env-x",
                 name="X",
-                type="submarine",
+                type=" ",
                 topology=k8s_environment_fixture().topology,
             )
         with pytest.raises(ValueError, match="must not be empty"):
@@ -217,9 +224,8 @@ def test_environment_vocabulary_extends_from_config() -> None:
         EnvironmentConfig(
             id="cnc-cell-1",
             name="CNC Cell",
-            type="local",
+            type="CNC.Cell",
             vocabulary={
-                "environment_types": ["cnc.cell"],
                 "signal_source_kinds": ["cnc_telemetry"],
                 "operational_health_states": ["calibrating"],
             },
@@ -231,7 +237,7 @@ def test_environment_vocabulary_extends_from_config() -> None:
             topology=k8s_environment_fixture().topology,
             signal_sources=[SignalSource(id="cnc", name="CNC Telemetry", kind="cnc_telemetry")],
         )
-        assert environment.type == "cnc.cell"
+        assert environment.type == "CNC.Cell"
         assert environment.signal_sources[0].kind == "cnc_telemetry"
         assert "calibrating" in vocabulary.operational_health_states
     finally:

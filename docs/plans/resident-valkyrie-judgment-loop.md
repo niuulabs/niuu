@@ -1,7 +1,7 @@
 # Resident Valkyrie Judgment Loop
 
-**Status:** Runtime mechanisms implemented on this branch; autonomous behavior
-not yet proven end to end
+**Status:** Runtime mechanisms and a local real-dependency signal path are
+proven; repeated behavioral quality and tool-build reuse are not yet proven
 **Date:** 2026-07-20
 **Scope:** Ravn resident Valkyries, environment signals, resident continuity,
 Mímir, tool evolution, and agent-to-agent work
@@ -19,13 +19,17 @@ judgment-capable resident agent:
 - resident continuation and state types
 - long-term knowledge storage
 
-This branch connects several previously open runtime paths, but that is not yet
-evidence that a deployed resident behaves like this agent. The checked-in
-Ivaldi deployment does not run this branch, and its persona/configuration does
-not expose the continuation or operator-question contracts that the new runtime
-expects. The existing deployment does include the earlier A2A tool-build
-stack. No real signal has yet been observed traversing the complete
-perceive/research/ask-or-build/verify/remember loop on this branch.
+This branch connects several previously open runtime paths. A local Ivaldi
+process running this branch has consumed real retained Laevateinn events from
+the deployed JetStream stream, called the configured Nemotron model, used real
+tools, published real runtime-owned outcome provenance, and exported causal
+traces and metrics to Glitnir. Earlier diagnostic runs also exercised Mímir;
+the current clean baseline removes knowledge Mímir from Ivaldi's capability
+surface entirely. That proves an end-to-end local signal and judgment path; it
+does not prove good repeated judgment, operator
+question/resume, or autonomous tool construction and later reuse. The
+checked-in cluster Ivaldi deployment still does not run this branch. The
+existing platform deployment does include the earlier A2A tool-build stack.
 
 The required change is not a new planner, classifier, memory service, objective
 engine, or agent framework. It is a re-stitch:
@@ -77,10 +81,93 @@ Claims in this document use the following evidence levels:
 5. **Behaviorally demonstrated:** repeated, non-canned runs show the model
    choosing when to research, ask, delegate, build, verify, and remember.
 
-The branch currently reaches levels 1 and 2 for most new mechanisms, and level
-3 for isolated dependencies such as the Nemotron tool-call probe and container
-containment proof. It has not reached levels 4 or 5. Therefore this work cannot
-yet support a claim of AGI-like operation or autonomous self-evolution.
+The branch reaches levels 1 and 2 for its deterministic mechanisms and level 4
+for the local Laevateinn-to-Ivaldi judgment path. The accumulated live runs
+reach level 3 for Nemotron, JetStream, Mímir, Yggdrasil directory/token
+exchange, and Glitnir telemetry. The clean current run does not depend on
+knowledge Mímir. It has not reached level 5, and the A2A build/adopt/reuse
+trajectory has not been observed. Therefore this work cannot support a claim
+of AGI-like operation or autonomous self-evolution.
+
+### Local live proof on this branch
+
+The local proof used `scripts/setups/configs/ivaldi-local-workshop.yaml` with a
+local Ivaldi process and deployed dependencies. Laevateinn's machinery was
+simulated, while its emitted events, broker retention and delivery, model
+requests, tool calls, earlier diagnostic knowledge writes, authentication
+exchanges, and telemetry were real. `environment.type: workshop` was used only
+as an opaque configured
+provenance label. It was absent from the model-owned judgment prompt/schema and
+did not select an adapter, handler, tool, or decision path.
+
+Observed evidence includes:
+
+- The `workshop-laevateinn-events` JetStream stream delivered retained raw
+  connection, printer-status, connection-loss, error, and reconnection events
+  through the configured generic NATS adapter and durable consumer.
+- Nemotron produced the actual tool choices. No evaluator supplied canned tool
+  results or expected scenario actions.
+- The runtime attached authoritative Environment identity and correlation data
+  after model output. A clean successful trace omitted those fields from the
+  model prompt and outcome but retained them on the published judgment.
+- Queue saturation rejected durable intake, causing the adapter to NAK and
+  retry rather than ACK or forget the event. Shutdown retained the active task
+  in the journal; restart resumed that exact task before pending work.
+- Tempo contains the model and tool spans under the same trace, including trace
+  `3c61ef9757fa395aab7d3c9e944ad01a` for a completed clean-contract judgment
+  and `7eefd0e598dc21f2594700f115e4d934` for an interrupted task whose span closed
+  with `ravn.task.outcome=interrupted`. Mimir accepted the corresponding Ravn
+  metrics, grouped by task outcome and signal/tool dimensions.
+- A repeated status case in the earlier diagnostic configuration explicitly
+  searched and read a prior Mímir page before judging the observation. This
+  proves retrieval and use, not that the stored conclusion was correct or
+  broadly reusable. The clean configuration now sets `mimir.enabled: false`
+  and exposes no Mímir tools to Ivaldi.
+- Trace `5cd44ef60861372fa135416d665abd29` now contains redacted, bounded prompt,
+  model-response, tool-request/result, judgment, resident-state, and Sleipnir
+  event content. It shows Nemotron selecting a generic web search and then a
+  `watch` judgment; no evaluator chose the tool or supplied its result.
+- Trace `77e58033290d865b891a22d033bbaef8` captures an entire failed intake
+  transaction: JetStream receive, neutral normalization, event publication,
+  queue rejection with `queue_full`, error status, and JetStream NAK. The
+  retained source event was not falsely acknowledged.
+- Glitnir accepted the new runtime, queue, judgment, LLM/token, tool, signal,
+  HTTP, resident, ODIN, and event-bus series. Every PromQL expression in the
+  importable Valkyrie dashboard was executed against that live tenant without
+  a query error, and its Tempo TraceQL query returned the resident traces.
+
+The run also exposed failures that remain part of the evidence:
+
+- One Mímir write first failed because the model supplied a path outside the
+  required Markdown contract. A later write succeeded but included an unknown
+  date marker, so the note is weak evidence rather than trusted learning.
+- Automatic episode reflection promoted unwarranted confidence from a single
+  event. Local proof configuration now retains raw episodes but disables
+  automatic reflection and automatic episode prefetch. Knowledge Mímir is
+  absent from the clean Ivaldi baseline, not merely made explicit.
+- A broader earlier persona wrote an empty `dummy.txt` while investigating. The
+  local Ivaldi persona now exposes neither the source checkout nor direct file,
+  shell, or todo tools. Environment access must come from configured real
+  capabilities or the governed build path.
+- A connection-loss case performed excessive Mímir, workspace, todo, and
+  capability work and repeatedly updated one page instead of stopping. The
+  task was interrupted, durably retained, and resumed after clarifying the
+  generic tool-call/final-response protocol. It still wandered into tools that
+  observed the source checkout rather than the workshop, so those misleading
+  capabilities were removed from the configured persona and its turn budget
+  was bounded.
+- The clean resumed connection-loss trajectory terminated after one web search,
+  but the search was generic and did not establish workshop-specific evidence.
+  The model returned `signal_refs: []` despite the supplied required reference,
+  and the parser still marked the judgment valid. It selected `continue`, but
+  the continuation enqueue was rejected because the queue was full, so the
+  resident disposition became `stop` while the task was recorded as success.
+  The new trace makes those contradictions visible; they remain behavioral and
+  contract/admission defects, not proof of a successful resident loop.
+
+No `build_tool` call, completed A2A build, installed learned tool, or later
+learned-tool reuse has yet occurred in an uncued real signal trajectory. That
+claim remains deliberately open.
 
 ## Desired behavior
 
@@ -717,12 +804,12 @@ the explicitly mounted paths and named credential become visible.
 
 | Phase | Code/test status | Live status |
 | --- | --- | --- |
-| 0 — clean judgment baseline | Mechanically tested | Not deployed or behaviorally demonstrated |
-| 1 — durable resident continuity | Mechanically tested | Ivaldi outcome schema cannot select continuation or ask an operator |
-| 2 — general A2A collaboration | Mechanically tested against protocol fixtures | A2A workflow/tool-build stack is deployed; the new general `a2a_task` client is not in Ivaldi's image |
-| 3 — evidence-gated learning | Mechanically tested | No real later behavior change demonstrated |
+| 0 — clean judgment baseline | Mechanically tested | Locally exercised with real retained events and Nemotron; one clean judgment completed, while other trajectories showed unnecessary work and repetition |
+| 1 — durable resident continuity | Mechanically tested | Local shutdown/restart retained and resumed the active case; operator question/answer has not been live-proven |
+| 2 — general A2A collaboration | Mechanically tested against protocol fixtures | Live Agent Card, token exchange, directory, and tool-builder exist; no uncued complete A2A task/build trajectory has occurred |
+| 3 — evidence-gated learning | Mechanically tested | Earlier explicit Mímir write/read occurred, but quality was weak; clean Ivaldi now disables knowledge Mímir and no reliable behavior improvement is established |
 | 4 — enforced learned-tool reach | Container and optional Kubernetes mechanisms tested | Ivaldi is configured for the unenforced `local` backend |
-| 5 — delivery and trust hardening | Mechanically tested | No deployed end-to-end run |
+| 5 — delivery and trust hardening | Mechanically tested | Local authenticated platform exchange and Glitnir export exercised; cluster deployment of this branch remains pending |
 
 ### Final integration hardening
 
@@ -751,23 +838,41 @@ The final stitch deliberately adds no planner or objective service:
   no service-account token, denied ingress, non-root/seccomp/capability
   restrictions, resource and output bounds, and fail closed for reach the
   backend cannot enforce.
+- OpenTelemetry now follows the causal path through signal adapters, JetStream
+  receive/ACK/NAK, queue admission, model turns, tool calls, capability
+  discovery, authenticated HTTP and workload exchange, A2A tasks, build/
+  verify/review/canary/register phases, resident-state ports, Sleipnir
+  publishers/subscribers and operator handlers, and ODIN. Content capture is
+  explicit, redacted, and bounded. Per-task identifiers stay in traces and are
+  excluded from metric labels.
+- An importable Grafana dashboard covers liveness, queues, task outcomes,
+  judgments, LLM/token use, tools, capabilities, durable signal handoff,
+  external dependencies, A2A/tool evolution, resident/ODIN decisions,
+  operator activity, and direct Tempo trace search. Its PromQL and TraceQL were
+  executed against the live Glitnir tenant; deployment into the separately
+  managed Grafana release remains a GitOps step.
 
-Mímir is intentionally outside the automatic judgment path. It remains an
-agent-invoked evidence store/search tool; candidate reflections cannot enter
-trusted retrieval until repeated or externally verified evidence promotes
-them. Reintroduction of automatic recall is an evaluation decision, not a
-runtime default.
+Mímir is intentionally outside the automatic judgment path. Configurations may
+expose it as an agent-invoked evidence store/search tool, but clean Ivaldi
+baseline disables it entirely. Candidate reflections cannot enter trusted
+retrieval until repeated or externally verified evidence promotes them.
+Reintroduction of either explicit or automatic recall is an evaluation
+decision, not a runtime default.
 
 ## Final validation record
 
 Validation on 2026-07-20 covered the integrated implementation across Ravn,
 legacy Ravn units, Niuu/Guild, Observatory, Sleipnir, Ting, Skuld, charts, and
-the wider repository:
+the wider repository. The final repository-wide run after the local proof and
+telemetry/dashboard hardening reported:
 
-- `17288 passed, 27 skipped, 129 deselected, 1 xfailed` in the repository-wide
-  pytest run.
+- `17339 passed, 26 skipped, 129 deselected, 1 xfailed` in `326.36s` in the
+  repository-wide pytest run.
 - Ruff passed repository-wide; the agent chart passed Helm lint and rendered
   the matching runtime configuration, RBAC, and NetworkPolicies.
+- The dashboard JSON parsed successfully. Every dashboard PromQL expression
+  returned a successful response from the live Glitnir Mimir tenant, and its
+  TraceQL expression returned the live Ivaldi traces from Tempo.
 - The live Docker containment proof passed against the pinned multi-architecture
   devrunner digest. An adversarial learned tool could not read an undeclared
   host file, modify its own code, or open an undeclared network connection;

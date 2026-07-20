@@ -375,6 +375,7 @@ class AgentTask:
     resident_inbox_refs: list[str] = field(default_factory=list)
     resident_answer_ref: str = ""
     resident_help_published: bool = False
+    trace_context: dict[str, str] = field(default_factory=dict)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     session_id: str = field(init=False)
 

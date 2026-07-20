@@ -17,11 +17,12 @@ import contextvars
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING, Any
 
 from niuu.domain.mimir import ThreadState
@@ -42,10 +43,12 @@ from ravn.domain.help_needed import build_help_needed_event
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_JUDGMENT_REJECTED,
+    VALKYRIE_RUNTIME_OWNED_FIELDS,
     is_valkyrie_outcome_event,
     normalize_valkyrie_outcome,
     validate_valkyrie_outcome,
 )
+from ravn.observability import get_observability
 from ravn.ports.channel import ChannelPort
 from ravn.ports.event_publisher import EventPublisherPort
 from ravn.ports.trigger import TriggerPort
@@ -208,6 +211,13 @@ def _parse_outcome_for_persona(
     schema_fields = getattr(produces, "schema", None)
     if schema_fields:
         try:
+            event_type = str(getattr(produces, "event_type", "") or "")
+            if is_valkyrie_outcome_event(event_type):
+                schema_fields = {
+                    name: field
+                    for name, field in schema_fields.items()
+                    if name not in VALKYRIE_RUNTIME_OWNED_FIELDS
+                }
             return parse_outcome_block(response_text, OutcomeSchema(fields=schema_fields))
         except Exception:
             logger.warning(
@@ -281,9 +291,54 @@ def _validate_normalized_persona_schema(
     return errors
 
 
+def _omit_optional_null_persona_fields(
+    fields: dict[str, object],
+    persona_config: PersonaConfig | None,
+) -> dict[str, object]:
+    """Treat YAML null for optional fields as omission at the contract boundary."""
+    produces = getattr(persona_config, "produces", None)
+    schema_fields = getattr(produces, "schema", None)
+    if not isinstance(schema_fields, dict):
+        return fields
+
+    normalized = dict(fields)
+    for name, field_def in schema_fields.items():
+        value = normalized.get(name)
+        is_null = value is None or (
+            isinstance(value, str) and value.strip().lower() in {"null", "none"}
+        )
+        if not bool(getattr(field_def, "required", True)) and is_null:
+            normalized.pop(name, None)
+    return normalized
+
+
+def _apply_authoritative_valkyrie_fields(
+    fields: dict[str, object],
+    authoritative_fields: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Attach runtime-owned identity and routing fields to a model judgment."""
+    if not authoritative_fields:
+        return fields
+    merged = dict(fields)
+    for key in ("environment_id", "environment_type", "valkyrie_id"):
+        value = authoritative_fields.get(key)
+        if str(value or "").strip():
+            merged[key] = value
+    correlations = merged.get("correlation_ids")
+    correlation_ids = dict(correlations) if isinstance(correlations, Mapping) else {}
+    authoritative_correlations = authoritative_fields.get("correlation_ids")
+    if isinstance(authoritative_correlations, Mapping):
+        correlation_ids.update(authoritative_correlations)
+    if correlation_ids:
+        merged["correlation_ids"] = correlation_ids
+    return merged
+
+
 def _resident_valkyrie_validation_result(
     response_text: str,
     persona_config: PersonaConfig | None,
+    *,
+    authoritative_fields: Mapping[str, object] | None = None,
 ) -> tuple[str, dict[str, object], list[str]]:
     """Parse and validate a resident Valkyrie response against its canonical contract."""
     produces = getattr(persona_config, "produces", None)
@@ -294,6 +349,11 @@ def _resident_valkyrie_validation_result(
     parsed = _parse_outcome_for_persona(response_text, persona_config)
     outcome_fields = dict(parsed.fields) if parsed is not None else {}
     outcome_fields = normalize_valkyrie_outcome(canonical_event_type, outcome_fields)
+    outcome_fields = _omit_optional_null_persona_fields(outcome_fields, persona_config)
+    outcome_fields = _apply_authoritative_valkyrie_fields(
+        outcome_fields,
+        authoritative_fields,
+    )
 
     validation_errors: list[str] = []
     if parsed is None:
@@ -332,9 +392,6 @@ def _build_resident_valkyrie_schema_repair_prompt(
         "Required block shape:\n"
         "---outcome---\n"
         "decision: ignore | watch | investigate | propose_action | escalate | learn | blocked\n"
-        "environment_id: <environment id from the task context>\n"
-        "environment_type: k8s\n"
-        "valkyrie_id: <resident peer id from the task context>\n"
         "signal_refs: [<signal event id or stable ref>]\n"
         "tier: silent | ambient | present | urgent\n"
         "confidence: <number from 0.0 to 1.0>\n"
@@ -349,7 +406,6 @@ def _build_resident_valkyrie_schema_repair_prompt(
         "target_surfaces: []\n"
         'expires_at: ""\n'
         "dissent_refs: []\n"
-        "correlation_ids: {root: <root correlation id>, signal: <signal id>}\n"
         "---end---"
     )
 
@@ -795,8 +851,12 @@ class DriveLoop:
         self._sleipnir_publisher = sleipnir_publisher
         self._triggers: list[TriggerPort] = []
         # (priority, counter, AgentTask)
-        self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue(maxsize=config.task_queue_max)
+        # Capacity is enforced in enqueue(). The queue itself stays unbounded so
+        # in-flight records restored after a crash can temporarily coexist with
+        # a previously full pending queue without dropping either class of work.
+        self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         self._active_tasks: dict[str, asyncio.Task] = {}
+        self._inflight_tasks: dict[str, AgentTask] = {}
         self._active_task_contexts: dict[str, AgentTask] = {}
         self._active_agents: dict[str, object] = {}
         self._semaphore = asyncio.Semaphore(config.max_concurrent_tasks)
@@ -818,6 +878,7 @@ class DriveLoop:
         self._reflex_injector: ReflexInjector | None = None
         self._reflex_initialised = False
         self._resident_runtime: object | None = None
+        self._shutting_down = False
         self._current_task_var: contextvars.ContextVar[AgentTask | None] = contextvars.ContextVar(
             "ravn_current_task",
             default=None,
@@ -885,6 +946,43 @@ class DriveLoop:
 
     async def enqueue(self, task: AgentTask) -> bool:
         """Add a task to the priority queue, honouring deadline and capacity."""
+        telemetry = get_observability()
+        attributes = {
+            "ravn.task.id": task.task_id,
+            "ravn.task.trigger": task.triggered_by,
+            "ravn.task.persona": task.persona or "ravn",
+            "ravn.queue.max": self._config.task_queue_max,
+        }
+        with telemetry.span(
+            "ravn.queue.enqueue",
+            attributes=attributes,
+            carrier=task.trace_context,
+        ) as span:
+            accepted, reason = await self._enqueue_observed(task)
+            outcome_attributes = {
+                **attributes,
+                "ravn.queue.outcome": "accepted" if accepted else "rejected",
+                "ravn.queue.reason": reason,
+            }
+            telemetry.set_attributes(outcome_attributes)
+            telemetry.event("ravn.queue.admission", attributes=outcome_attributes)
+            telemetry.count(
+                "ravn.queue.admissions",
+                attributes={
+                    "ravn.task.trigger": task.triggered_by,
+                    "ravn.task.persona": task.persona or "ravn",
+                    "ravn.queue.outcome": outcome_attributes["ravn.queue.outcome"],
+                    "ravn.queue.reason": reason,
+                    "ravn.environment.id": self._settings.environment.id,
+                },
+            )
+            if not accepted:
+                telemetry.mark_error(span, reason)
+            self._record_queue_state()
+            return accepted
+
+    async def _enqueue_observed(self, task: AgentTask) -> tuple[bool, str]:
+        """Perform queue admission and return the decision with its reason."""
         if task.deadline is not None and datetime.now(UTC) > task.deadline:
             logger.info(
                 "drive_loop: task %s (%r) deadline exceeded before enqueue — discarding",
@@ -892,16 +990,16 @@ class DriveLoop:
                 task.title,
             )
             await self._emit_sleipnir_task_dropped(task, reason="deadline_exceeded")
-            return False
+            return False, "deadline_exceeded"
 
-        if self._queue.full():
+        if self._queue.qsize() >= self._config.task_queue_max:
             logger.info(
                 "drive_loop: queue full (max=%d) — discarding task %s",
                 self._config.task_queue_max,
                 task.task_id,
             )
             await self._emit_sleipnir_task_dropped(task, reason="queue_full")
-            return False
+            return False, "queue_full"
 
         counter = self._next_counter()
         await self._queue.put((task.priority, counter, task))
@@ -916,7 +1014,32 @@ class DriveLoop:
             self._queue.qsize(),
             len(self._active_tasks),
         )
-        return True
+        return True, "accepted"
+
+    def _record_queue_state(self) -> None:
+        telemetry = get_observability()
+        attributes = {
+            "ravn.environment.id": self._settings.environment.id,
+            "gen_ai.agent.id": self._settings.mesh.own_peer_id or self._source_id,
+        }
+        telemetry.gauge(
+            "ravn.queue.depth",
+            self._queue.qsize(),
+            attributes=attributes,
+            description="Current pending resident task count.",
+        )
+        telemetry.gauge(
+            "ravn.agent.active_tasks",
+            len(self._active_tasks),
+            attributes=attributes,
+            description="Current executing resident task count.",
+        )
+        telemetry.gauge(
+            "ravn.runtime.up",
+            1,
+            attributes=attributes,
+            description="Resident runtime liveness heartbeat.",
+        )
 
     async def cancel(self, task_id: str) -> None:
         """Request cancellation of a running task by ID."""
@@ -1085,6 +1208,55 @@ class DriveLoop:
         merged = dict(existing)
         merged.update(fields)
         task.tool_outcomes[event_type] = merged
+
+    def _authoritative_valkyrie_fields(self, task: AgentTask) -> dict[str, object]:
+        """Return identity/correlation data owned by runtime configuration."""
+        environment = getattr(self._settings, "environment", None)
+        mesh = getattr(self._settings, "mesh", None)
+        environment_id = _clean_string(getattr(environment, "id", None))
+        environment_type = _clean_string(getattr(environment, "type", None))
+        valkyrie_id = _clean_string(getattr(mesh, "own_peer_id", None), default=self._source_id)
+        correlations: dict[str, str] = {
+            "root": task.root_correlation_id or task.task_id,
+            "task": task.task_id,
+        }
+        trace_id = get_observability().trace_id()
+        if trace_id:
+            correlations["trace"] = trace_id
+        if environment_id:
+            correlations["environment"] = environment_id
+        if task.workflow_parent_event_id:
+            correlations["signal"] = task.workflow_parent_event_id
+        fields: dict[str, object] = {
+            "valkyrie_id": valkyrie_id,
+            "correlation_ids": correlations,
+        }
+        if environment_id:
+            fields["environment_id"] = environment_id
+        if environment_type:
+            fields["environment_type"] = environment_type
+        return fields
+
+    def _decorate_turn_result_outcome(
+        self,
+        task: AgentTask,
+        turn_result: object,
+        response_text: str,
+    ) -> None:
+        """Persist the same runtime-owned metadata later published on the event."""
+        episode = getattr(turn_result, "episode", None)
+        if episode is None:
+            return
+        canonical_event_type, outcome_fields, validation_errors = (
+            _resident_valkyrie_validation_result(
+                response_text,
+                self._persona_config,
+                authoritative_fields=self._authoritative_valkyrie_fields(task),
+            )
+        )
+        if canonical_event_type and outcome_fields:
+            episode.structured_outcome = outcome_fields
+            episode.outcome_valid = not validation_errors
 
     def _default_mimir_mount_fields(self) -> dict[str, object]:
         """Infer the active Mimir mount names from runtime config when unambiguous."""
@@ -1425,6 +1597,13 @@ class DriveLoop:
             await asyncio.gather(*coros)
         except asyncio.CancelledError:
             logger.info("drive_loop: shutting down")
+            self._shutting_down = True
+            self._persist_queue()
+            active_tasks = list(self._active_tasks.values())
+            for task in active_tasks:
+                task.cancel()
+            if active_tasks:
+                await asyncio.gather(*active_tasks, return_exceptions=True)
             self._persist_queue()
             if self._session_join_manager is not None:
                 await self._session_join_manager.close()
@@ -1448,8 +1627,18 @@ class DriveLoop:
         """Drain the priority queue and execute tasks with the semaphore cap."""
         logger.info("drive_loop: task executor started")
         while True:
-            _, _, task = await self._queue.get()
+            # Reserve execution capacity before removing a durable journal entry.
+            # Otherwise one extra task lives only in this coroutine while waiting
+            # on the semaphore and disappears if the daemon stops in that window.
+            await self._semaphore.acquire()
+            try:
+                _, _, task = await self._queue.get()
+            except BaseException:
+                self._semaphore.release()
+                raise
+            self._inflight_tasks[task.task_id] = task
             self._persist_queue()
+            self._record_queue_state()
             logger.info(
                 "drive_loop: dequeued task %s (%r) queue_size=%d active=%d",
                 task.task_id,
@@ -1465,11 +1654,12 @@ class DriveLoop:
                     task.task_id,
                     task.title,
                 )
+                self._inflight_tasks.pop(task.task_id, None)
+                self._persist_queue()
                 self._queue.task_done()
+                self._semaphore.release()
                 continue
 
-            # Acquire semaphore slot before spawning the task
-            await self._semaphore.acquire()
             asyncio_task = asyncio.create_task(
                 self._run_task(task),
                 name=f"initiative:{task.task_id}",
@@ -1479,14 +1669,19 @@ class DriveLoop:
             self._queue.task_done()
 
     def _on_task_done(self, task_id: str, finished_task: asyncio.Task[Any]) -> None:
+        outcome = "exception"
         try:
-            exc = finished_task.exception()
+            outcome = str(finished_task.result())
         except asyncio.CancelledError:
-            exc = None
-        if exc is not None:
+            outcome = "interrupted"
+        except Exception as exc:
             logger.error("drive_loop: task %s crashed before completion handling: %s", task_id, exc)
+        if not (self._shutting_down and outcome == "interrupted"):
+            self._inflight_tasks.pop(task_id, None)
+        self._persist_queue()
         self._active_tasks.pop(task_id, None)
         self._semaphore.release()
+        self._record_queue_state()
         # Signal any waiters that this task is complete
         event = self._completion_events.get(task_id)
         if event is not None:
@@ -1530,8 +1725,74 @@ class DriveLoop:
             )
             return prompt
 
-    async def _run_task(self, task: AgentTask) -> None:
+    async def _run_task(self, task: AgentTask) -> str:
+        telemetry = get_observability()
+        attributes = {
+            "gen_ai.operation.name": "invoke_agent",
+            "gen_ai.agent.name": task.persona or "ravn",
+            "gen_ai.agent.id": self._settings.mesh.own_peer_id or self._source_id,
+            "ravn.task.id": task.task_id,
+            "ravn.task.trigger": task.triggered_by,
+            "ravn.task.root_correlation_id": task.root_correlation_id,
+            "ravn.environment.id": self._settings.environment.id,
+            "ravn.environment.type": self._settings.environment.type,
+        }
+        metric_attributes = {
+            key: attributes[key]
+            for key in (
+                "gen_ai.agent.name",
+                "ravn.task.trigger",
+                "ravn.environment.id",
+                "ravn.environment.type",
+            )
+        }
+        started = monotonic()
+        with telemetry.span(
+            f"invoke_agent {task.persona or 'ravn'}",
+            attributes=attributes,
+            carrier=task.trace_context,
+        ) as span:
+            try:
+                outcome = await self._run_task_observed(task)
+            except Exception:
+                telemetry.count(
+                    "ravn.agent.tasks",
+                    attributes={**metric_attributes, "ravn.task.outcome": "exception"},
+                )
+                telemetry.duration(
+                    "ravn.agent.task.duration",
+                    monotonic() - started,
+                    attributes={**metric_attributes, "ravn.task.outcome": "exception"},
+                )
+                raise
+            span.set_attribute("ravn.task.outcome", outcome)
+            telemetry.count(
+                "ravn.agent.tasks",
+                attributes={**metric_attributes, "ravn.task.outcome": outcome},
+            )
+            telemetry.duration(
+                "ravn.agent.task.duration",
+                monotonic() - started,
+                attributes={**metric_attributes, "ravn.task.outcome": outcome},
+                description="Duration of a resident agent task.",
+            )
+            return outcome
+
+    async def _run_task_observed(self, task: AgentTask) -> str:
         """Execute a single initiative task."""
+        telemetry = get_observability()
+        telemetry.event(
+            "ravn.task.lifecycle",
+            attributes={"ravn.task.phase": "admitted"},
+            content={
+                "task_id": task.task_id,
+                "title": task.title,
+                "triggered_by": task.triggered_by,
+                "root_correlation_id": task.root_correlation_id,
+                "resident_case_id": task.resident_case_id,
+                "resident_turn_index": task.resident_turn_index,
+            },
+        )
         # Budget pre-check: skip when daily cap is reached.
         # The task is already persisted in the journal and will be retried
         # after the UTC day rolls over and the budget resets.
@@ -1545,9 +1806,13 @@ class DriveLoop:
                 self._budget.remaining_usd,
             )
             await self._emit_sleipnir_task_dropped(task, reason="budget_cap_reached")
-            return
+            return "budget_dropped"
 
         try:
+            telemetry.event(
+                "ravn.task.lifecycle",
+                attributes={"ravn.task.phase": "setup_started"},
+            )
             # Track the capture channel separately for response_text access
             capture_channel: CaptureChannel | None = None
             peer_id = self._settings.mesh.own_peer_id if self._settings.mesh.enabled else ""
@@ -1582,9 +1847,25 @@ class DriveLoop:
                     channel = SilentChannel()
             logger.info("drive_loop: task %s building agent", task.task_id)
             agent = self._agent_factory(channel, task.task_id, task.persona, task.triggered_by)
+            telemetry.event(
+                "ravn.task.lifecycle",
+                attributes={
+                    "ravn.task.phase": "agent_built",
+                    "ravn.task.persona": task.persona or "ravn",
+                    "ravn.agent.tool_count": len(getattr(agent, "_tools", {}) or {}),
+                },
+            )
             logger.info("drive_loop: task %s building prompt", task.task_id)
             prompt = build_initiative_prompt(task)
             prompt = await self._apply_retrieval_reflex(prompt, task)
+            telemetry.event(
+                "ravn.task.prompt",
+                attributes={
+                    "ravn.task.phase": "prompt_built",
+                    "ravn.prompt.characters": len(prompt),
+                },
+                content=prompt,
+            )
             logger.info("drive_loop: task %s setup complete", task.task_id)
         except Exception as exc:
             logger.error("drive_loop: task %s failed during setup: %s", task.task_id, exc)
@@ -1597,6 +1878,10 @@ class DriveLoop:
             task.triggered_by,
         )
         await self._emit_sleipnir_task_started(task)
+        telemetry.event(
+            "ravn.task.lifecycle",
+            attributes={"ravn.task.phase": "model_turn_started"},
+        )
 
         await channel.emit(
             RavnEvent.task_started(
@@ -1636,6 +1921,16 @@ class DriveLoop:
             try:
                 turn_result = await agent.run_turn(prompt)  # type: ignore[attr-defined]
                 success = True
+                telemetry.event(
+                    "ravn.task.lifecycle",
+                    attributes={
+                        "ravn.task.phase": "model_turn_completed",
+                        "ravn.agent.tool_call_count": len(
+                            getattr(turn_result, "tool_calls", []) or []
+                        ),
+                    },
+                    content=getattr(turn_result, "response", ""),
+                )
                 cost_usd = self._record_task_cost(task, turn_result)
                 await self._emit_task_usage(channel, task, turn_result, cost_usd, agent)
                 response_text = (
@@ -1655,6 +1950,50 @@ class DriveLoop:
                     )
                     turn_result = repair_result
                     response_text = repair_result.response
+                self._decorate_turn_result_outcome(task, turn_result, response_text)
+                episode = getattr(turn_result, "episode", None)
+                structured_outcome = getattr(episode, "structured_outcome", {}) or {}
+                if isinstance(structured_outcome, Mapping):
+                    judgment_attributes = {
+                        "ravn.valkyrie.decision": _clean_string(
+                            structured_outcome.get("decision")
+                        ),
+                        "ravn.valkyrie.continuation": _clean_string(
+                            structured_outcome.get("continuation")
+                        ),
+                        "ravn.valkyrie.selected_next_action": _clean_string(
+                            structured_outcome.get("selected_next_action")
+                        ),
+                        "ravn.valkyrie.tier": _clean_string(structured_outcome.get("tier")),
+                        "ravn.valkyrie.action_authority": _clean_string(
+                            structured_outcome.get("action_authority")
+                        ),
+                        "ravn.valkyrie.outcome_valid": bool(
+                            getattr(episode, "outcome_valid", False)
+                        ),
+                    }
+                    confidence = structured_outcome.get("confidence")
+                    if isinstance(confidence, int | float):
+                        judgment_attributes["ravn.valkyrie.confidence"] = confidence
+                    telemetry.set_attributes(judgment_attributes)
+                    telemetry.event(
+                        "ravn.valkyrie.judgment",
+                        attributes=judgment_attributes,
+                        content=dict(structured_outcome),
+                    )
+                    telemetry.count(
+                        "ravn.valkyrie.judgments",
+                        attributes={
+                            key: judgment_attributes[key]
+                            for key in (
+                                "ravn.valkyrie.decision",
+                                "ravn.valkyrie.continuation",
+                                "ravn.valkyrie.tier",
+                                "ravn.valkyrie.action_authority",
+                                "ravn.valkyrie.outcome_valid",
+                            )
+                        },
+                    )
                 if self._resident_runtime is not None:
                     resident_disposition = await self._resident_runtime.handle_completed_turn(
                         task=task,
@@ -1664,6 +2003,17 @@ class DriveLoop:
                     )
                     if str(getattr(resident_disposition, "kind", "")) == "ask_operator":
                         await self._emit_resident_help_needed(task, resident_disposition)
+                    telemetry.event(
+                        "ravn.resident.disposition",
+                        attributes={
+                            "ravn.resident.disposition": str(
+                                getattr(resident_disposition, "kind", "")
+                            ),
+                            "ravn.resident.case_id": task.resident_case_id
+                            or task.root_correlation_id
+                            or task.task_id,
+                        },
+                    )
                 await self._maybe_publish_budget_warning(task)
                 self._save_task_output(task, capture_channel or channel)
                 if response_text:
@@ -1673,6 +2023,10 @@ class DriveLoop:
                         response_text[:500],
                     )
             except asyncio.CancelledError:
+                telemetry.event(
+                    "ravn.task.lifecycle",
+                    attributes={"ravn.task.phase": "interrupted"},
+                )
                 logger.info("drive_loop: task %s cancelled mid-turn", task.task_id)
                 self._result_store.set_status(task.task_id, "cancelled")
                 await self._event_publisher.publish(
@@ -1697,9 +2051,17 @@ class DriveLoop:
                 if task.triggered_by and task.triggered_by.startswith("thread:"):
                     thread_path = task.triggered_by.removeprefix("thread:")
                     await self._finalise_thread(thread_path, False)
-                return
+                return "interrupted"
             except Exception as exc:
                 success = False
+                telemetry.event(
+                    "ravn.task.lifecycle",
+                    attributes={
+                        "ravn.task.phase": "failed",
+                        "error.type": type(exc).__name__,
+                    },
+                    content=str(exc),
+                )
                 logger.error("drive_loop: task %s failed: %s", task.task_id, exc)
                 self._result_store.set_status(task.task_id, "failed")
                 await channel.emit(
@@ -1713,6 +2075,13 @@ class DriveLoop:
                 )
 
             outcome = "success" if success else "error"
+            telemetry.event(
+                "ravn.task.lifecycle",
+                attributes={
+                    "ravn.task.phase": "completed",
+                    "ravn.task.outcome": outcome,
+                },
+            )
             emit_fn = getattr(agent, "emit_session_ended", None)
             if emit_fn is not None and asyncio.iscoroutinefunction(emit_fn):
                 try:
@@ -1762,6 +2131,7 @@ class DriveLoop:
             if task.triggered_by and task.triggered_by.startswith("thread:"):
                 thread_path = task.triggered_by.removeprefix("thread:")
                 await self._finalise_thread(thread_path, success)
+            return outcome
         finally:
             if not success and self._resident_runtime is not None:
                 release = getattr(self._resident_runtime, "release_failed_task", None)
@@ -1823,7 +2193,11 @@ class DriveLoop:
         if task.triggered_by == _RESIDENT_VALKYRIE_SCHEMA_REPAIR_TRIGGER:
             return None
         canonical_event_type, outcome_fields, validation_errors = (
-            _resident_valkyrie_validation_result(response_text, self._persona_config)
+            _resident_valkyrie_validation_result(
+                response_text,
+                self._persona_config,
+                authoritative_fields=self._authoritative_valkyrie_fields(task),
+            )
         )
         if not canonical_event_type or not validation_errors:
             return None
@@ -1858,6 +2232,7 @@ class DriveLoop:
         _, _, repaired_errors = _resident_valkyrie_validation_result(
             repaired_text,
             self._persona_config,
+            authoritative_fields=self._authoritative_valkyrie_fields(task),
         )
         if repaired_errors:
             logger.warning(
@@ -1898,8 +2273,22 @@ class DriveLoop:
 
             parsed = _parse_outcome_for_persona(response_text, self._persona_config)
             if parsed is not None:
-                event.payload["structured_outcome"] = _json_safe(parsed.fields)
-                event.payload["outcome_valid"] = parsed.valid
+                fields = dict(parsed.fields)
+                canonical_event_type = str(
+                    getattr(getattr(self._persona_config, "produces", None), "event_type", "")
+                    or ""
+                )
+                if is_valkyrie_outcome_event(canonical_event_type):
+                    _, fields, validation_errors = _resident_valkyrie_validation_result(
+                        response_text,
+                        self._persona_config,
+                        authoritative_fields=self._authoritative_valkyrie_fields(task),
+                    )
+                    outcome_valid = not validation_errors
+                else:
+                    outcome_valid = parsed.valid
+                event.payload["structured_outcome"] = _json_safe(fields)
+                event.payload["outcome_valid"] = outcome_valid
                 for key in (
                     "verdict",
                     "tests_passing",
@@ -2131,6 +2520,10 @@ class DriveLoop:
                 outcome_fields.setdefault(key, value)
         if is_valkyrie_outcome_event(canonical_event_type):
             outcome_fields = normalize_valkyrie_outcome(canonical_event_type, outcome_fields)
+            outcome_fields = _apply_authoritative_valkyrie_fields(
+                outcome_fields,
+                self._authoritative_valkyrie_fields(task),
+            )
 
         event_type_map = self._persona_config.produces.event_type_map
         success_verdict = _default_success_verdict(self._persona_config.produces)
@@ -2181,6 +2574,7 @@ class DriveLoop:
             _, outcome_fields, validation_errors = _resident_valkyrie_validation_result(
                 response_text,
                 self._persona_config,
+                authoritative_fields=self._authoritative_valkyrie_fields(task),
             )
             if validation_errors:
                 reject_payload: dict[str, object] = {
@@ -2722,6 +3116,7 @@ class DriveLoop:
                 task_id=None,
             )
             await self._event_publisher.publish(event)
+            self._record_queue_state()
             logger.debug(
                 "drive_loop: heartbeat — active=%d queued=%d triggers=%d",
                 active,
@@ -2739,47 +3134,53 @@ class DriveLoop:
     # ------------------------------------------------------------------
 
     def _persist_queue(self) -> None:
-        """Snapshot all pending tasks to the journal file."""
+        """Snapshot pending and in-flight tasks to the journal file."""
         try:
             self._journal_path.parent.mkdir(parents=True, exist_ok=True)
             items = list(self._queue._queue)  # type: ignore[attr-defined]
-            records = []
-            for _prio, _counter, task in items:
-                records.append(
-                    {
-                        "task_id": task.task_id,
-                        "title": task.title,
-                        "initiative_context": task.initiative_context,
-                        "triggered_by": task.triggered_by,
-                        "output_mode": str(task.output_mode),
-                        "persona": task.persona,
-                        "priority": task.priority,
-                        "max_tokens": task.max_tokens,
-                        "deadline": task.deadline.isoformat() if task.deadline else None,
-                        "output_path": str(task.output_path) if task.output_path else None,
-                        "root_correlation_id": task.root_correlation_id,
-                        "workflow_parent_event_id": task.workflow_parent_event_id,
-                        "workflow_node_id": task.workflow_node_id,
-                        "tool_outcomes": task.tool_outcomes,
-                        "resident_case_id": task.resident_case_id,
-                        "resident_mandate": task.resident_mandate,
-                        "resident_turn_index": task.resident_turn_index,
-                        "resident_input_tokens": task.resident_input_tokens,
-                        "resident_output_tokens": task.resident_output_tokens,
-                        "resident_started_at": task.resident_started_at,
-                        "resident_parent_turn_ref": task.resident_parent_turn_ref,
-                        "resident_inbox_refs": task.resident_inbox_refs,
-                        "resident_answer_ref": task.resident_answer_ref,
-                        "resident_help_published": task.resident_help_published,
-                        "created_at": task.created_at.isoformat(),
-                    }
-                )
-            journal = {"queue": records}
+            records = [self._task_journal_record(task) for _prio, _counter, task in items]
+            inflight = [
+                self._task_journal_record(task) for task in self._inflight_tasks.values()
+            ]
+            journal = {"queue": records, "inflight": inflight}
             if self._fan_in.pending_count > 0:
                 journal["fan_in_pending"] = self._fan_in.to_dict()
-            self._journal_path.write_text(json.dumps(journal, indent=2))
+            temporary_path = self._journal_path.with_suffix(f"{self._journal_path.suffix}.tmp")
+            temporary_path.write_text(json.dumps(journal, indent=2))
+            temporary_path.replace(self._journal_path)
         except Exception as exc:
             logger.warning("drive_loop: failed to persist queue journal: %s", exc)
+
+    @staticmethod
+    def _task_journal_record(task: AgentTask) -> dict[str, object]:
+        return {
+            "task_id": task.task_id,
+            "title": task.title,
+            "initiative_context": task.initiative_context,
+            "triggered_by": task.triggered_by,
+            "output_mode": str(task.output_mode),
+            "persona": task.persona,
+            "priority": task.priority,
+            "max_tokens": task.max_tokens,
+            "deadline": task.deadline.isoformat() if task.deadline else None,
+            "output_path": str(task.output_path) if task.output_path else None,
+            "root_correlation_id": task.root_correlation_id,
+            "workflow_parent_event_id": task.workflow_parent_event_id,
+            "workflow_node_id": task.workflow_node_id,
+            "tool_outcomes": task.tool_outcomes,
+            "resident_case_id": task.resident_case_id,
+            "resident_mandate": task.resident_mandate,
+            "resident_turn_index": task.resident_turn_index,
+            "resident_input_tokens": task.resident_input_tokens,
+            "resident_output_tokens": task.resident_output_tokens,
+            "resident_started_at": task.resident_started_at,
+            "resident_parent_turn_ref": task.resident_parent_turn_ref,
+            "resident_inbox_refs": task.resident_inbox_refs,
+            "resident_answer_ref": task.resident_answer_ref,
+            "resident_help_published": task.resident_help_published,
+            "trace_context": task.trace_context,
+            "created_at": task.created_at.isoformat(),
+        }
 
     def _load_journal(self) -> None:
         """Restore pending tasks and fan-in state from the journal file."""
@@ -2796,7 +3197,7 @@ class DriveLoop:
             records = raw
             fan_in_data: dict = {}
         else:
-            records = raw.get("queue", [])
+            records = [*raw.get("inflight", []), *raw.get("queue", [])]
             fan_in_data = raw.get("fan_in_pending", {})
 
         restored = 0
@@ -2834,6 +3235,7 @@ class DriveLoop:
                     resident_inbox_refs=rec.get("resident_inbox_refs", []) or [],
                     resident_answer_ref=rec.get("resident_answer_ref", ""),
                     resident_help_published=rec.get("resident_help_published", False),
+                    trace_context=rec.get("trace_context", {}) or {},
                     created_at=created_at,
                 )
                 if deadline is not None and datetime.now(UTC) > deadline:
