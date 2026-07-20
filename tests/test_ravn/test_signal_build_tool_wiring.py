@@ -1,4 +1,4 @@
-"""Daemon wiring that attaches build_tool to signal investigations (NIU-1051)."""
+"""Daemon wiring that exposes build_tool through the persona capability surface."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import ravn.cli.commands as commands_mod
 from ravn.adapters.realm.client import BuildGrant
 from ravn.adapters.tools.build_tool import attach_build_tool
 from ravn.cli.commands import (
-    _attach_signal_build_tool,
+    _attach_agent_build_tool,
     _build_tool_build_backend,
     _resolve_realm_build_config,
 )
@@ -36,21 +36,21 @@ class _FakeAgent:
         self.registered.append((tool, replace))
 
 
-def test_attach_signal_build_tool_skips_non_signal_tasks(tmp_path) -> None:
+def test_attach_agent_build_tool_skips_when_persona_disallows_it(tmp_path) -> None:
     agent = _FakeAgent()
-    out = _attach_signal_build_tool(
-        agent, tmp_path, triggered_by="thread:abc", settings=Settings(), publisher=None
+    out = _attach_agent_build_tool(
+        agent, tmp_path, enabled=False, settings=Settings(), publisher=None
     )
     assert out is agent
     assert agent.registered == []
 
 
-def test_attach_signal_build_tool_registers_build_tool_for_signals(tmp_path) -> None:
+def test_attach_agent_build_tool_registers_for_allowed_persona(tmp_path) -> None:
     agent = _FakeAgent()
-    out = _attach_signal_build_tool(
+    out = _attach_agent_build_tool(
         agent,
         tmp_path,
-        triggered_by="signal:signal.host.event",
+        enabled=True,
         settings=Settings(),
         publisher=None,
     )
@@ -62,14 +62,14 @@ def _registered_build_tool(agent: _FakeAgent) -> Any:
     return next(tool for tool, _ in agent.registered if getattr(tool, "name", "") == "build_tool")
 
 
-def test_attach_signal_build_tool_defaults_preserve_previous_policy_constants(tmp_path) -> None:
+def test_attach_agent_build_tool_defaults_preserve_previous_policy_constants(tmp_path) -> None:
     # P5a: a config-less Settings() must wire the exact old constants —
     # 3 repair attempts and 0.74 flock confidence.
     agent = _FakeAgent()
-    _attach_signal_build_tool(
+    _attach_agent_build_tool(
         agent,
         tmp_path,
-        triggered_by="signal:signal.host.event",
+        enabled=True,
         settings=Settings(),
         publisher=None,
     )
@@ -79,7 +79,7 @@ def test_attach_signal_build_tool_defaults_preserve_previous_policy_constants(tm
     assert tool._flock_confidence == 0.74
 
 
-def test_attach_signal_build_tool_threads_configured_policy_values(tmp_path) -> None:
+def test_attach_agent_build_tool_threads_configured_policy_values(tmp_path) -> None:
     agent = _FakeAgent()
     settings = Settings(
         resident_evolution={
@@ -87,10 +87,10 @@ def test_attach_signal_build_tool_threads_configured_policy_values(tmp_path) -> 
             "self_registered_tool_confidence": 0.9,
         }
     )
-    _attach_signal_build_tool(
+    _attach_agent_build_tool(
         agent,
         tmp_path,
-        triggered_by="signal:signal.host.event",
+        enabled=True,
         settings=settings,
         publisher=None,
     )

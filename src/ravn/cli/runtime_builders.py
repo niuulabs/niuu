@@ -51,17 +51,17 @@ def _resident_ravn_state_dir(workspace: Path, settings: Settings | None = None) 
     return Path.home() / ".ravn"
 
 
-def _attach_signal_build_tool(
+def _attach_agent_build_tool(
     agent: Any,
     workspace: Path,
     *,
-    triggered_by: str | None,
+    enabled: bool,
     settings: Settings,
     publisher: Any | None = None,
     drive_loop: Any | None = None,
 ) -> Any:
-    """Attach build_tool to RavnAgent signal investigations when supported."""
-    if not triggered_by or not triggered_by.startswith("signal:"):
+    """Attach build_tool when the active persona explicitly allows it."""
+    if not enabled:
         return agent
 
     def _investigation_context() -> str:

@@ -131,7 +131,7 @@ class PersonaConfig:
     produces: PersonaProduces = field(default_factory=PersonaProduces)
     consumes: PersonaConsumes = field(default_factory=PersonaConsumes)
     fan_in: PersonaFanIn = field(default_factory=PersonaFanIn)
-    # NIU-612: Stop agent loop early when outcome block detected
+    # Legacy compatibility field. Outcomes never suppress requested tool calls.
     stop_on_outcome: bool = False
 
     def to_dict(self) -> dict:

@@ -41,7 +41,6 @@ async def _run_daemon(
     llm = None if cli_transport_executor else _build_llm(settings)
     memory = _build_memory(settings)
     compressor = None if cli_transport_executor else _build_compressor(settings, llm)
-    prompt_builder = _build_prompt_builder(settings)
     pre_hooks, post_hooks = _build_hooks(settings)
 
     extended_thinking = (
@@ -161,12 +160,10 @@ async def _run_daemon(
             cascade_tools = getattr(drive_loop, "_cascade_tools", [])
             tools.extend(_filter_tools(cascade_tools, settings, resolved_persona))
 
-            # Add cron scheduling tools (also filtered by persona)
-            if cron_tools:
-                tools.extend(_filter_tools(cron_tools, settings, resolved_persona))
-
-        # NIU-571: Apply trust gradient constraints for thread-triggered tasks
-        tools = _apply_trust_filter(tools, settings, triggered_by)
+        # Cron is temporal agency, not a cascade capability. Exact persona tool
+        # names still control which scheduler operations enter this task.
+        if cron_tools:
+            tools.extend(_filter_tools(cron_tools, settings, resolved_persona))
 
         # NIU-571: Apply trust gradient constraints for thread-triggered tasks
         tools = _apply_trust_filter(tools, settings, triggered_by)
@@ -193,18 +190,19 @@ async def _run_daemon(
             episode_task_max_chars=settings.agent.episode_task_max_chars,
             iteration_budget=budget,
             compressor=compressor,
-            prompt_builder=prompt_builder,
+            prompt_builder=_build_prompt_builder(settings),
             reflection_model=settings.effective_memory_reflection_model(),
             reflection_max_tokens=settings.memory.reflection_max_tokens,
             task_summary_max_chars=settings.memory.task_summary_max_chars,
             input_token_cost_per_million=settings.memory.input_token_cost_per_million,
             output_token_cost_per_million=settings.memory.output_token_cost_per_million,
             extended_thinking=extended_thinking,
-            # NIU-598: session lifecycle events + learnings injection
+            # NIU-598: session lifecycle events for optional reflection storage
             sleipnir_publisher=daemon_bus,
             reflection_config=settings.effective_post_session_reflection_config(),
             persona=resolved_persona.name if resolved_persona else "",
-            # NIU-612: persona config for outcome parsing + early termination
+            # Persona config drives outcome parsing; stop_on_outcome is retained
+            # only for compatibility and cannot suppress tool execution.
             persona_config=resolved_persona,
             stop_on_outcome=resolved_persona.stop_on_outcome if resolved_persona else False,
             # NIU-1118: hard per-call prompt budget (0 disables)
@@ -219,10 +217,13 @@ async def _run_daemon(
         # daemon's in-process reflection bus — same precedence as the drive
         # loop's sleipnir publisher (closure binds late; the signal publisher
         # is built during daemon boot, before any task runs).
-        return _attach_signal_build_tool(
+        allowed_tools = _expand_allowed_tools(
+            set(resolved_persona.allowed_tools or []) if resolved_persona else set()
+        )
+        return _attach_agent_build_tool(
             agent,
             workspace,
-            triggered_by=triggered_by,
+            enabled="build_tool" in allowed_tools,
             settings=settings,
             publisher=environment_signal_publisher or sleipnir_catalog_publisher or daemon_bus,
             drive_loop=drive_loop,

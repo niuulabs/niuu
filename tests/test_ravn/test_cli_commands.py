@@ -1384,17 +1384,18 @@ class TestDaemonAgentFactory:
             }
         ]
 
-        recorded: dict[str, object] = {}
+        recorded: list[dict[str, object]] = []
 
         class _FakeExecutor:
             def build(self, **kwargs):  # noqa: ANN003
-                recorded.update(kwargs)
+                recorded.append(kwargs)
                 return MagicMock()
 
         class _FakeDriveLoop:
             def __init__(self, *, agent_factory, **kwargs):  # noqa: ANN003
                 self._triggers: list[object] = []
                 agent_factory(MagicMock(), task_id="task-1", triggered_by="mesh:outcome:test")
+                agent_factory(MagicMock(), task_id="task-2", triggered_by="mesh:outcome:test")
 
             async def run(self) -> None:
                 return None
@@ -1406,7 +1407,10 @@ class TestDaemonAgentFactory:
             patch("ravn.cli.commands._build_llm", return_value=MagicMock()),
             patch("ravn.cli.commands._build_memory", return_value=MagicMock()),
             patch("ravn.cli.commands._build_compressor", return_value=MagicMock()),
-            patch("ravn.cli.commands._build_prompt_builder", return_value=MagicMock()),
+            patch(
+                "ravn.cli.commands._build_prompt_builder",
+                side_effect=lambda *_args: MagicMock(),
+            ),
             patch("ravn.cli.commands._build_hooks", return_value=([], [])),
             patch("ravn.cli.commands._start_mcp_shared", new=AsyncMock(return_value=(None, []))),
             patch("ravn.cli.commands._build_mimir", return_value=None),
@@ -1425,8 +1429,12 @@ class TestDaemonAgentFactory:
         ):
             await _run_daemon(settings, persona_config=persona)
 
-        assert recorded["workspace_dir"] == "/tmp/workspace"
-        assert recorded["mcp_servers"] == [
+        assert [call["workspace_dir"] for call in recorded] == [
+            "/tmp/workspace",
+            "/tmp/workspace",
+        ]
+        assert recorded[0]["prompt_builder"] is not recorded[1]["prompt_builder"]
+        assert recorded[0]["mcp_servers"] == [
             {
                 "name": "mimir-local",
                 "type": "stdio",

@@ -172,9 +172,11 @@ async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
     assert "**Valkyrie:** Sigrun" in context
     assert "**Peer id:** `valkyrie-host-jozef`" in context
     assert "Quietly skeptical and evidence-first" in context
-    assert "skill_list" in context and "skill_run" in context
+    assert "`capability_list`" in context
     assert "`build_tool`" in context
-    assert "use the newly registered tool" in context
+    assert "whatever order the situation requires" in context
+    assert "decision: watch" not in context
+    assert "operational_state: watching" not in context
     assert "## Required outcome" in context
     assert "```json" in context  # the signal payload is a fenced code block
     assert "---outcome---" in context and "---end---" in context  # response contract
@@ -461,7 +463,9 @@ async def test_below_threshold_signals_accumulate_for_idle_triage() -> None:
     assert "## Sample signals" in context
     assert "(critical, host-events)" in context
     assert "---outcome---" in context and "---end---" in context
-    assert "operational_state: watching" in context
+    assert "decision: watch" not in context
+    assert "operational_state: watching" not in context
+    assert "decision: <ignore | watch | investigate" in context
 
 
 def test_idle_triage_prompt_is_bounded_regardless_of_batch_size() -> None:

@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from niuu.domain.outcome import OutcomeField
+from ravn.adapters.personas.loader import PersonaConfig, PersonaProduces
 from ravn.adapters.tools.build_tool import attach_build_tool
 from ravn.agent import RavnAgent, _build_assistant_content
 from ravn.domain.events import RavnEventType
@@ -23,6 +25,7 @@ from ravn.domain.models import (
 )
 from ravn.odin.review import JsonReviewStore, ReviewRequester
 from ravn.ports.llm import LLMPort
+from ravn.prompt_builder import PromptBuilder
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain import registry
 from sleipnir.domain.events import SleipnirEvent
@@ -43,6 +46,7 @@ def make_agent(
     channel: InMemoryChannel | None = None,
     permission=None,
     max_iterations: int = 10,
+    **agent_kwargs,
 ) -> tuple[RavnAgent, InMemoryChannel]:
     ch = channel or InMemoryChannel()
     perm = permission or AllowAllPermission()
@@ -55,6 +59,7 @@ def make_agent(
         model="claude-sonnet-4-6",
         max_tokens=1024,
         max_iterations=max_iterations,
+        **agent_kwargs,
     )
     return agent, ch
 
@@ -116,6 +121,20 @@ class TestRavnAgentSimpleTurn:
         assert agent.session.turn_count == 2
         assert agent.session.total_usage.input_tokens == 20
 
+    async def test_mimir_learnings_are_not_injected_automatically(self) -> None:
+        mimir = AsyncMock()
+        prompt_builder = PromptBuilder()
+        agent, _ = make_agent(
+            make_simple_llm("done"),
+            mimir=mimir,
+            prompt_builder=prompt_builder,
+        )
+
+        await agent.run_turn("judge current evidence")
+
+        mimir.list_pages.assert_not_called()
+        assert "learnings_context" not in prompt_builder.section_texts()
+
 
 class TestRavnAgentToolUse:
     async def test_tool_executed_and_result_fed_back(self) -> None:
@@ -154,6 +173,59 @@ class TestRavnAgentToolUse:
         assert result.tool_calls[0].name == "echo"
         assert len(result.tool_results) == 1
         assert result.tool_results[0].content == "ping"
+
+    async def test_tool_executes_before_draft_outcome_can_finish_turn(self) -> None:
+        tool = EchoTool()
+        tool_call = ToolCall(id="tc1", name="echo", input={"message": "evidence"})
+        draft = "---outcome---\nverdict: watch\n---end---\n"
+        final = "Evidence received.\n---outcome---\nverdict: act\n---end---\n"
+        calls = 0
+
+        async def _stream(*args, **kwargs) -> AsyncIterator[StreamEvent]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                yield StreamEvent(type=StreamEventType.TEXT_DELTA, text=draft)
+                yield StreamEvent(type=StreamEventType.TOOL_CALL, tool_call=tool_call)
+                yield StreamEvent(
+                    type=StreamEventType.MESSAGE_DONE,
+                    usage=TokenUsage(input_tokens=5, output_tokens=2),
+                )
+                return
+            yield StreamEvent(type=StreamEventType.TEXT_DELTA, text=final)
+            yield StreamEvent(
+                type=StreamEventType.MESSAGE_DONE,
+                usage=TokenUsage(input_tokens=8, output_tokens=3),
+            )
+
+        persona = PersonaConfig(
+            name="resident",
+            produces=PersonaProduces(
+                event_type="resident.judged",
+                schema={
+                    "verdict": OutcomeField(
+                        type="string",
+                        description="judgment",
+                        enum_values=["watch", "act"],
+                    )
+                },
+            ),
+        )
+        llm = AsyncMock(spec=LLMPort)
+        llm.stream = _stream
+        agent, _ = make_agent(
+            llm,
+            tools=[tool],
+            persona_config=persona,
+            stop_on_outcome=True,
+        )
+
+        result = await agent.run_turn("judge this signal")
+
+        assert calls == 2
+        assert result.response == final
+        assert [call.name for call in result.tool_calls] == ["echo"]
+        assert result.tool_results[0].content == "evidence"
 
     async def test_build_tool_commissions_via_build_backend_and_installs(self, tmp_path) -> None:
         """A build_request with no inline code is developed by the build backend,

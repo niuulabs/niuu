@@ -427,7 +427,7 @@ def build_reflex_injector(host_cfg: object) -> ReflexInjector | None:
         # HTTP endpoint — a normal state, not an error. Configure
         # reflex.base_url (or an HTTP mimir instance) to activate.
         logger.warning(
-            "mimir.reflex: enabled (default) but no Mimir HTTP endpoint is "
+            "mimir.reflex: enabled but no Mimir HTTP endpoint is "
             "configured — set reflex.base_url or disable reflex.enabled"
         )
         return None

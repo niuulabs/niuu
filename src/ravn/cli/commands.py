@@ -94,7 +94,7 @@ def approvals_main() -> None:
 from ravn.cli.runtime_builders import (  # noqa: E402, F401
     _REALM_CLIENT_CACHE,
     _RealmBuildConfig,
-    _attach_signal_build_tool,
+    _attach_agent_build_tool,
     _build_executor,
     _build_llm,
     _build_memory,

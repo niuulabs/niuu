@@ -147,6 +147,13 @@ def test_resident_valkyrie_contracts_load_and_inject_outcome(name: str) -> None:
     assert spec["action"] in persona.system_prompt_template
     assert "ravn" in persona.allowed_tools
     assert "workflow" in persona.allowed_tools
+    assert "web" in persona.allowed_tools
+    assert "todo_read" in persona.allowed_tools
+    assert "todo_write" in persona.allowed_tools
+    assert "cron_create" in persona.allowed_tools
+    assert "cron_list" in persona.allowed_tools
+    assert "cron_delete" in persona.allowed_tools
+    assert "build_tool" in persona.allowed_tools
 
 
 @pytest.mark.parametrize("name", sorted(RESIDENT_VALKYRIES))
