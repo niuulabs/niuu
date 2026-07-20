@@ -10,6 +10,7 @@ from ravn.domain.resident_continuation import (
     ResidentPolicyDecisionRecord,
     ResidentPolicyObservation,
     ResidentTurnRecord,
+    ResidentWorkingStateRecord,
 )
 
 
@@ -32,7 +33,11 @@ class ResidentStatePort(Protocol):
 
     async def read(self, ref: str) -> ResidentMemoryEntry | None: ...
 
+    async def read_working_state(self, resident_id: str) -> ResidentMemoryEntry | None: ...
+
     async def write_turn(self, record: ResidentTurnRecord) -> str: ...
+
+    async def write_working_state(self, record: ResidentWorkingStateRecord) -> str: ...
 
     async def write_budget(self, snapshot: ResidentBudgetSnapshot) -> str: ...
 

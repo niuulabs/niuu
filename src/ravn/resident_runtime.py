@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -18,6 +18,7 @@ from ravn.domain.resident_continuation import (
     ResidentMemoryEntry,
     ResidentPolicyDecisionRecord,
     ResidentTurnRecord,
+    ResidentWorkingStateRecord,
     selected_action_from_outcome,
 )
 from ravn.domain.resident_state import ResidentStatePort
@@ -27,6 +28,23 @@ from ravn.resident_inbox import ResidentInboxBackend, ResidentInboxStatus
 from ravn.resident_text import compact_line
 
 EnqueueResidentTask = Callable[[AgentTask], Awaitable[bool | None]]
+
+_WORKING_STATE_PROTOCOL = """## Resident working-state protocol
+
+When present, the durable state above was authored by an earlier resident turn. It is
+not an authoritative fact store. Re-evaluate it against the new observations and evidence.
+
+In the final structured outcome, include a `working_state` mapping with these lists:
+
+- `observations`: evidence-grounded observations with their authoritative references
+- `hypotheses`: revisable interpretations, preserving uncertainty and supporting references
+- `unknowns`: unresolved questions that could change a judgment
+- `capability_gaps`: missing access or abilities that prevent useful investigation or action
+- `attempts`: relevant research, delegation, operator outreach, or tool attempts and results
+
+Keep entries concise. Do not invent evidence, convert hypotheses into observations, or copy
+prior entries that new evidence no longer supports. The runtime persists this mapping exactly;
+it does not interpret the environment or manufacture state on your behalf."""
 
 
 @dataclass(frozen=True)
@@ -51,6 +69,7 @@ class ResidentRuntime:
         *,
         state: ResidentStatePort,
         inbox: ResidentInboxBackend | None = None,
+        resident_id: str = "resident",
         max_turns: int = 3,
         max_tokens: int = 0,
         context_max_chars: int = 12000,
@@ -58,6 +77,7 @@ class ResidentRuntime:
     ) -> None:
         self._state = state
         self._inbox = inbox
+        self._resident_id = resident_id.strip() or "resident"
         self._max_turns = max(1, int(max_turns))
         self._max_tokens = max(0, int(max_tokens))
         self._context_max_chars = max(1000, int(context_max_chars))
@@ -72,6 +92,51 @@ class ResidentRuntime:
 
     def bind_enqueue(self, enqueue: EnqueueResidentTask) -> None:
         self._enqueue = enqueue
+
+    async def prepare_context(self, task: AgentTask) -> str:
+        """Present the resident's exact prior working state to a new model turn."""
+        telemetry = get_observability()
+        attributes = {
+            "ravn.task.id": task.task_id,
+            "ravn.resident.id": self._resident_id,
+        }
+        with telemetry.span(
+            "ravn.port.resident_state.read_working_state",
+            attributes=attributes,
+        ) as span:
+            prior = await self._state.read_working_state(self._resident_id)
+            span.set_attribute("ravn.resident.working_state.available", prior is not None)
+            if prior is not None:
+                span.set_attribute("ravn.resident.working_state.ref", prior.path)
+        telemetry.count(
+            "ravn.resident.working_context",
+            attributes={
+                "ravn.resident.id": self._resident_id,
+                "ravn.resident.working_state.available": prior is not None,
+            },
+            description="Resident turns prepared with or without prior working state.",
+        )
+        if prior is None:
+            state_block = "(No prior resident working state exists yet.)"
+            state_ref = "none"
+        else:
+            state_block = _bounded(prior.content, self._context_max_chars)
+            state_ref = prior.path
+            telemetry.event(
+                "ravn.resident.working_state_recalled",
+                attributes={
+                    "ravn.resident.id": self._resident_id,
+                    "ravn.resident.working_state.ref": state_ref,
+                },
+                content=prior.content,
+            )
+        return (
+            f"{task.initiative_context.rstrip()}\n\n"
+            "## Durable resident working state\n\n"
+            f"Reference: `{state_ref}`\n\n"
+            f"{state_block}\n\n"
+            f"{_WORKING_STATE_PROTOCOL}\n"
+        )
 
     def track_task(self, task: AgentTask) -> None:
         """Suppress duplicate home/resume work while a durable task is queued or running."""
@@ -169,6 +234,46 @@ class ResidentRuntime:
             durable_turn = await self._state.read(turn_ref)
         if durable_turn is None:
             raise RuntimeError(f"resident turn was not readable after write: {turn_ref}")
+
+        working_state = _working_state_from_outcome(fields)
+        if working_state is not None:
+            with telemetry.span(
+                "ravn.port.resident_state.write_working_state",
+                attributes={"ravn.resident.id": self._resident_id},
+            ) as state_span:
+                working_state_ref = await self._state.write_working_state(
+                    ResidentWorkingStateRecord(
+                        resident_id=self._resident_id,
+                        state=working_state,
+                        source_turn_ref=turn_ref,
+                        source_case_id=case_id,
+                        source_task_id=task.task_id,
+                        signal_refs=_string_refs(fields.get("signal_refs")),
+                        evidence_refs=evidence_refs,
+                    )
+                )
+                state_span.set_attribute(
+                    "ravn.resident.working_state.ref",
+                    working_state_ref,
+                )
+                durable_working_state = await self._state.read_working_state(self._resident_id)
+                if durable_working_state is None:
+                    raise RuntimeError(
+                        f"resident working state was not readable after write: {working_state_ref}"
+                    )
+                telemetry.event(
+                    "ravn.resident.working_state_updated",
+                    attributes={
+                        "ravn.resident.id": self._resident_id,
+                        "ravn.resident.working_state.ref": working_state_ref,
+                        "ravn.resident.source_turn_ref": turn_ref,
+                    },
+                    content=working_state,
+                )
+                telemetry.count(
+                    "ravn.resident.working_state_updates",
+                    attributes={"ravn.resident.id": self._resident_id},
+                )
 
         snapshot = ResidentBudgetSnapshot(
             turns_used=turn_index,
@@ -699,6 +804,19 @@ def _tool_result_summaries(result: TurnResult, *, max_chars: int) -> tuple[str, 
         )
         for item in result.tool_results
     )
+
+
+def _working_state_from_outcome(fields: Mapping[str, Any]) -> dict[str, Any] | None:
+    state = fields.get("working_state")
+    if not isinstance(state, Mapping):
+        return None
+    return {str(key): value for key, value in state.items() if str(key).strip()}
+
+
+def _string_refs(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list | tuple):
+        return ()
+    return tuple(str(item).strip() for item in value if str(item).strip())
 
 
 def _bounded(value: Any, max_chars: int) -> str:

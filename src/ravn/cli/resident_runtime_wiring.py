@@ -169,6 +169,12 @@ def _build_resident_runtime(
     return ResidentRuntime(
         state=state,
         inbox=inbox,
+        resident_id=(
+            settings.mesh.own_peer_id
+            or settings.environment.resident_name
+            or settings.initiative.default_persona
+            or "resident"
+        ),
         max_turns=cfg.continuation_max_turns,
         max_tokens=cfg.continuation_max_tokens,
         context_max_chars=cfg.continuation_context_max_chars,

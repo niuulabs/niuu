@@ -8,7 +8,10 @@ from mimir.adapters.markdown import MarkdownMimirAdapter
 from ravn.adapters.resident_state.mimir import LocalResidentState
 from ravn.config import InitiativeConfig, Settings
 from ravn.domain.models import AgentTask, OutputMode, TokenUsage, ToolCall, ToolResult, TurnResult
-from ravn.domain.resident_continuation import ContinuationDecisionKind
+from ravn.domain.resident_continuation import (
+    ContinuationDecisionKind,
+    ResidentWorkingStateRecord,
+)
 from ravn.drive_loop import DriveLoop
 from ravn.resident_inbox import MimirResidentInbox, ResidentInboxStatus
 from ravn.resident_runtime import ResidentRuntime
@@ -113,6 +116,81 @@ async def test_continuation_rehydrates_exact_durable_turn_and_tool_state(tmp_pat
     assert "## Durable prior turn" in continuation.initiative_context
     assert "inspect the peer before choosing" in continuation.initiative_context
     assert '"task_id":"peer-42"' in continuation.initiative_context
+
+
+@pytest.mark.asyncio
+async def test_working_state_is_reused_by_a_new_runtime_after_restart(tmp_path) -> None:
+    first_state = LocalResidentState(tmp_path)
+    first_runtime = ResidentRuntime(state=first_state, resident_id="resident-alpha")
+    first_task = _task(root_correlation_id="event-a")
+
+    initial_context = await first_runtime.prepare_context(first_task)
+    assert "No prior resident working state exists yet" in initial_context
+
+    await first_runtime.handle_completed_turn(
+        task=first_task,
+        prompt=initial_context,
+        result=_result(
+            {
+                "continuation": "stop",
+                "signal_refs": ["signal-a"],
+                "working_state": {
+                    "observations": ["signal-a introduced device Raven"],
+                    "hypotheses": ["Raven may expose a control surface"],
+                    "unknowns": ["how Raven can be inspected"],
+                    "capability_gaps": ["no addressable source capability"],
+                    "attempts": ["capability discovery returned no matching peer"],
+                },
+            }
+        ),
+        response_text="record a revisable model",
+    )
+
+    restarted_runtime = ResidentRuntime(
+        state=LocalResidentState(tmp_path),
+        resident_id="resident-alpha",
+    )
+    second_context = await restarted_runtime.prepare_context(
+        _task(
+            task_id="task-second",
+            root_correlation_id="event-b",
+            initiative_context="A different generic event arrived.",
+        )
+    )
+
+    assert "A different generic event arrived." in second_context
+    assert "resident/continuation/working-state/resident-alpha.md" in second_context
+    assert "signal-a introduced device Raven" in second_context
+    assert "Raven may expose a control surface" in second_context
+    assert "no addressable source capability" in second_context
+    assert "Re-evaluate it against the new observations" in second_context
+
+
+@pytest.mark.asyncio
+async def test_missing_working_state_does_not_erase_prior_state(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    await state.write_working_state(
+        ResidentWorkingStateRecord(
+            resident_id="resident-alpha",
+            state={"unknowns": ["operator intent is unknown"]},
+            source_turn_ref="turn-a",
+            source_case_id="case-a",
+            source_task_id="task-a",
+        )
+    )
+    runtime = ResidentRuntime(state=state, resident_id="resident-alpha")
+
+    await runtime.handle_completed_turn(
+        task=_task(root_correlation_id="event-b"),
+        prompt="new event",
+        result=_result({"continuation": "stop"}),
+        response_text="no explicit working-state update",
+    )
+
+    context = await runtime.prepare_context(
+        _task(task_id="task-third", root_correlation_id="event-c")
+    )
+    assert "operator intent is unknown" in context
 
 
 @pytest.mark.asyncio
@@ -245,10 +323,21 @@ async def test_home_turn_reads_new_records_and_acknowledges_only_after_record(tm
 @pytest.mark.asyncio
 async def test_drive_loop_sends_completed_turn_to_resident_runtime(tmp_path) -> None:
     state = LocalResidentState(tmp_path / "state")
-    runtime = ResidentRuntime(state=state)
+    await state.write_working_state(
+        ResidentWorkingStateRecord(
+            resident_id="resident",
+            state={"hypotheses": ["prior state reaches the execution prompt"]},
+            source_turn_ref="turn-before-restart",
+            source_case_id="case-before-restart",
+            source_task_id="task-before-restart",
+        )
+    )
+    runtime = ResidentRuntime(state=state, resident_id="resident")
+    prompts: list[str] = []
 
     class Agent:
-        async def run_turn(self, _prompt: str) -> TurnResult:
+        async def run_turn(self, prompt: str) -> TurnResult:
+            prompts.append(prompt)
             return _result({"continuation": "stop"}, tools=("file_read",))
 
     settings = Settings(
@@ -270,3 +359,4 @@ async def test_drive_loop_sends_completed_turn_to_resident_runtime(tmp_path) -> 
     refs = await state.list_refs("resident/continuation/cases/root-1")
     assert any("/turns/" in ref for ref in refs)
     assert any(ref.endswith("/budget/latest.md") for ref in refs)
+    assert "prior state reaches the execution prompt" in prompts[0]

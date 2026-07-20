@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from ravn.domain.resident_continuation import (
     ResidentPolicyDecisionRecord,
     ResidentPolicyObservation,
     ResidentTurnRecord,
+    ResidentWorkingStateRecord,
 )
 from ravn.resident_text import (
     compact_line as _compact_line,
@@ -110,7 +112,13 @@ class NullResidentMemory(ResidentMemoryPort):
     async def read(self, ref: str) -> ResidentMemoryEntry | None:
         return None
 
+    async def read_working_state(self, resident_id: str) -> ResidentMemoryEntry | None:
+        return None
+
     async def write_turn(self, record: ResidentTurnRecord) -> str:
+        return ""
+
+    async def write_working_state(self, record: ResidentWorkingStateRecord) -> str:
         return ""
 
     async def write_budget(self, snapshot: ResidentBudgetSnapshot) -> str:
@@ -190,6 +198,9 @@ class LocalResidentMemory(ResidentMemoryPort):
             content=content,
         )
 
+    async def read_working_state(self, resident_id: str) -> ResidentMemoryEntry | None:
+        return await self.read(str(self._working_state_path(resident_id)))
+
     async def write_turn(self, record: ResidentTurnRecord) -> str:
         stamp = record.created_at.strftime("%Y%m%dT%H%M%SZ")
         rel = self._prefix / _case_path(
@@ -197,6 +208,11 @@ class LocalResidentMemory(ResidentMemoryPort):
             f"turns/{stamp}-{record.turn_index}.md",
         )
         return self._write(rel, _render_turn_record(record))
+
+    async def write_working_state(self, record: ResidentWorkingStateRecord) -> str:
+        return self._write(
+            self._working_state_path(record.resident_id), _render_working_state(record)
+        )
 
     async def write_budget(self, snapshot: ResidentBudgetSnapshot) -> str:
         rel = self._prefix / _case_path(snapshot.case_id, "budget/latest.md")
@@ -350,6 +366,10 @@ class LocalResidentMemory(ResidentMemoryPort):
         path.write_text(content, encoding="utf-8")
         return str(rel)
 
+    def _working_state_path(self, resident_id: str) -> Path:
+        resident_slug = _slug(resident_id) or "resident"
+        return self._prefix / "working-state" / f"{resident_slug}.md"
+
 
 def _render_turn_record(record: ResidentTurnRecord) -> str:
     action = record.selected_next_action
@@ -389,6 +409,28 @@ def _render_turn_record(record: ResidentTurnRecord) -> str:
         f"{evidence}\n\n"
         "## Inbox References\n\n"
         f"{inbox}\n"
+    )
+
+
+def _render_working_state(record: ResidentWorkingStateRecord) -> str:
+    state_json = json.dumps(record.state, indent=2, sort_keys=True, ensure_ascii=False, default=str)
+    signal_refs = "\n".join(f"- {ref}" for ref in record.signal_refs) or "- none"
+    evidence_refs = "\n".join(f"- {ref}" for ref in record.evidence_refs) or "- none"
+    return (
+        "# Resident Working State\n\n"
+        f"- resident_id: {record.resident_id}\n"
+        f"- updated_at: {record.updated_at.isoformat()}\n"
+        f"- source_turn_ref: {record.source_turn_ref}\n"
+        f"- source_case_id: {record.source_case_id}\n"
+        f"- source_task_id: {record.source_task_id}\n\n"
+        "## State\n\n"
+        "```json\n"
+        f"{state_json}\n"
+        "```\n\n"
+        "## Source Signal References\n\n"
+        f"{signal_refs}\n\n"
+        "## Evidence References\n\n"
+        f"{evidence_refs}\n"
     )
 
 

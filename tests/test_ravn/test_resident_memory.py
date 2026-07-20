@@ -12,6 +12,7 @@ from ravn.domain.resident_continuation import (
     ResidentPolicyDecisionRecord,
     ResidentPolicyObservation,
     ResidentTurnRecord,
+    ResidentWorkingStateRecord,
 )
 from ravn.resident_continuation import (
     LocalResidentMemory,
@@ -44,6 +45,33 @@ async def test_local_memory_turn_round_trip_and_recall(tmp_path) -> None:
     assert recalled
     assert all(isinstance(e, ResidentMemoryEntry) for e in recalled)
     assert any("response" in e.content for e in recalled)
+
+
+@pytest.mark.asyncio
+async def test_local_memory_working_state_round_trip(tmp_path) -> None:
+    mem = LocalResidentMemory(tmp_path)
+    record = ResidentWorkingStateRecord(
+        resident_id="resident-alpha",
+        state={
+            "observations": ["source-1 reports an unfamiliar object"],
+            "hypotheses": [],
+            "unknowns": ["what the object controls"],
+            "capability_gaps": ["no source inspection capability"],
+            "attempts": [],
+        },
+        source_turn_ref="resident/continuation/cases/case-1/turns/turn-1.md",
+        source_case_id="case-1",
+        source_task_id="task-1",
+        signal_refs=("source-1",),
+    )
+
+    ref = await mem.write_working_state(record)
+    loaded = await mem.read_working_state("resident-alpha")
+
+    assert ref == "resident/continuation/working-state/resident-alpha.md"
+    assert loaded is not None
+    assert '"capability_gaps"' in loaded.content
+    assert "source-1" in loaded.content
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ from ravn.domain.resident_continuation import (
     ResidentPolicyDecisionRecord,
     ResidentPolicyObservation,
     ResidentTurnRecord,
+    ResidentWorkingStateRecord,
 )
 from ravn.domain.resident_state import ResidentStatePort
 from ravn.ports.mimir import MimirPort
@@ -33,6 +34,7 @@ from ravn.resident_continuation import (
     _render_policy_decision,
     _render_policy_observation,
     _render_turn_record,
+    _render_working_state,
     _slug,
     _timestamp_slug,
 )
@@ -78,12 +80,20 @@ class MimirResidentState(ResidentStatePort):
             content=content,
         )
 
+    async def read_working_state(self, resident_id: str) -> ResidentMemoryEntry | None:
+        return await self.read(self._working_state_path(resident_id))
+
     async def write_turn(self, record: ResidentTurnRecord) -> str:
         stamp = record.created_at.strftime("%Y%m%dT%H%M%SZ")
         path = str(
             Path(self._prefix) / _case_path(record.case_id, f"turns/{stamp}-{record.turn_index}.md")
         )
         await self._mimir.upsert_page(path, _render_turn_record(record))
+        return path
+
+    async def write_working_state(self, record: ResidentWorkingStateRecord) -> str:
+        path = self._working_state_path(record.resident_id)
+        await self._mimir.upsert_page(path, _render_working_state(record))
         return path
 
     async def write_budget(self, snapshot: ResidentBudgetSnapshot) -> str:
@@ -248,6 +258,10 @@ class MimirResidentState(ResidentStatePort):
     async def list_refs(self, prefix: str = "") -> list[str]:
         pages = await self._mimir.list_pages(prefix=prefix or self._prefix)
         return sorted(str(getattr(page, "path", "")) for page in pages if getattr(page, "path", ""))
+
+    def _working_state_path(self, resident_id: str) -> str:
+        resident_slug = _slug(resident_id) or "resident"
+        return f"{self._prefix}/working-state/{resident_slug}.md"
 
 
 class LocalResidentState(LocalResidentMemory, ResidentStatePort):

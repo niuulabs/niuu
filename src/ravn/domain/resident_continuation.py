@@ -142,6 +142,20 @@ class ResidentTurnRecord:
 
 
 @dataclass(frozen=True)
+class ResidentWorkingStateRecord:
+    """The resident's explicit, revisable model of its current reality."""
+
+    resident_id: str
+    state: dict[str, Any]
+    source_turn_ref: str
+    source_case_id: str
+    source_task_id: str
+    signal_refs: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass(frozen=True)
 class ResidentContinuationContext:
     """Inputs used to decide whether/how a resident should continue."""
 

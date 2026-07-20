@@ -19,7 +19,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
@@ -1856,7 +1856,11 @@ class DriveLoop:
                 },
             )
             logger.info("drive_loop: task %s building prompt", task.task_id)
-            prompt = build_initiative_prompt(task)
+            prompt_task = task
+            if self._resident_runtime is not None:
+                resident_context = await self._resident_runtime.prepare_context(task)
+                prompt_task = replace(task, initiative_context=resident_context)
+            prompt = build_initiative_prompt(prompt_task)
             prompt = await self._apply_retrieval_reflex(prompt, task)
             telemetry.event(
                 "ravn.task.prompt",
