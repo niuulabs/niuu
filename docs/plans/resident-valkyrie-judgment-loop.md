@@ -22,9 +22,10 @@ judgment-capable resident agent:
 This branch connects several previously open runtime paths, but that is not yet
 evidence that a deployed resident behaves like this agent. The checked-in
 Ivaldi deployment does not run this branch, and its persona/configuration does
-not expose the continuation, operator-question, or tool-build contracts that
-the new runtime expects. No real signal has yet been observed traversing the
-complete perceive/research/ask-or-build/verify/remember loop.
+not expose the continuation or operator-question contracts that the new runtime
+expects. The existing deployment does include the earlier A2A tool-build
+stack. No real signal has yet been observed traversing the complete
+perceive/research/ask-or-build/verify/remember loop on this branch.
 
 The required change is not a new planner, classifier, memory service, objective
 engine, or agent framework. It is a re-stitch:
@@ -718,7 +719,7 @@ the explicitly mounted paths and named credential become visible.
 | --- | --- | --- |
 | 0 — clean judgment baseline | Mechanically tested | Not deployed or behaviorally demonstrated |
 | 1 — durable resident continuity | Mechanically tested | Ivaldi outcome schema cannot select continuation or ask an operator |
-| 2 — general A2A collaboration | Mechanically tested against protocol fixtures | No real peer task observed from Ivaldi |
+| 2 — general A2A collaboration | Mechanically tested against protocol fixtures | A2A workflow/tool-build stack is deployed; the new general `a2a_task` client is not in Ivaldi's image |
 | 3 — evidence-gated learning | Mechanically tested | No real later behavior change demonstrated |
 | 4 — enforced learned-tool reach | Container and optional Kubernetes mechanisms tested | Ivaldi is configured for the unenforced `local` backend |
 | 5 — delivery and trust hardening | Mechanically tested | No deployed end-to-end run |
@@ -793,6 +794,28 @@ under `src/ravn/evals` also violated the repository rule against demo-only or
 fake runtime paths outside tests. The evaluator and its claims have been
 removed.
 
+### A2A deployment already present
+
+The A2A platform is not hypothetical. A live request to
+`https://yggdrasil.niuu.world/.well-known/agent-card.json` returned the dynamic
+Ting Agent Card with seven workflow skills, including **Tool & Skill Builder**,
+and advertised the authenticated JSON-RPC endpoint
+`https://yggdrasil.niuu.world/api/v1/ting/a2a`. The endpoint and the Guild and
+Observatory directory routes are live behind workload/JWT authentication.
+
+The checked-in Ymir deployment runs the A2A workflow surface with Ting, Guild,
+and Observatory. Ivaldi's `8ef150ed` image contains the real
+`A2AToolBuildBackend`, gate/question reviewer, and `build_tool`. Its runtime
+attaches `build_tool` automatically to `signal:*` tasks and the Ivaldi config
+points that backend at Yggdrasil's live Agent Card and the Valhalla connection.
+Therefore a running Ivaldi on that image can commission a real A2A tool-builder
+workflow from a signal turn.
+
+What is new and still undeployed on this branch is **general** model-selected
+A2A collaboration: the `a2a_task` tool and Guild-backed directory client used
+for arbitrary peer discovery, start/follow/reply/cancel behavior. That is
+separate from the already deployed vertical A2A tool-build path.
+
 ### Deployment gap found during the audit
 
 The checked-in Ivaldi manifest currently has `replicas: 0` and references image
@@ -804,14 +827,16 @@ the central loop open:
 - The outcome schema has no `selected_next_action`, `continuation`, `question`,
   or `verdict: help_needed`. `ResidentRuntime` therefore sees no action to
   continue and no operator request to persist.
-- The persona text advertises `build_tool`, but `allowed_tools` does not contain
-  it and the `ravn` alias does not expand to it. The daemon consequently does
-  not attach the build tool.
+- The deployed `8ef150ed` runtime attaches `build_tool` to signal tasks even
+  though the persona does not allow it explicitly. This branch deliberately
+  replaces that trigger-name special case with ordinary persona permission.
+  Deploying this branch without adding `build_tool` to Ivaldi's allowed tools
+  would therefore regress access to the already deployed A2A build backend.
 - Direct web research and self-scheduling are also absent: the persona allows
   neither `web_search`/`web_fetch` nor `cron_create`/`cron_list`/`cron_delete`.
   A remote workflow may provide research, but no such use has been observed.
-- The persona does expose `a2a_task` indirectly through the `ravn` alias on this
-  branch, but no real task to a discovered peer has been observed.
+- The persona exposes `a2a_task` indirectly through the `ravn` alias on this
+  branch, but Ivaldi's current image predates that general client.
 - `resident_inbox.environment_signals_enabled` remains at its default `false`,
   so the durable resident home turn has no environmental inbox to consume.
 - Learned tools are configured to run with the `local` compatibility backend,
