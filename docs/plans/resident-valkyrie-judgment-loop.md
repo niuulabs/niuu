@@ -696,6 +696,27 @@ trusted retrieval until repeated or externally verified evidence promotes
 them. Reintroduction of automatic recall is an evaluation decision, not a
 runtime default.
 
+## Final validation record
+
+Validation on 2026-07-20 covered the committed implementation across Ravn,
+legacy Ravn units, Niuu/Guild, Observatory, and Sleipnir:
+
+- `8156 passed, 3 skipped` in the combined cross-package pytest matrix.
+- Ruff passed over `src/ravn`, both Ravn test trees, and the changed shared
+  packages.
+- The live Docker containment proof passed against the pinned multi-architecture
+  devrunner digest. An adversarial learned tool could not read an undeclared
+  host file, modify its own code, or open an undeclared network connection;
+  exact read, read-write, and named credential grants remained usable.
+- Deterministic end-to-end cases cover durable continuation, operator
+  question/resume, budgets, A2A discovery and `INPUT_REQUIRED` continuation,
+  evidence-gated learning promotion, and deliberate trusted retrieval.
+
+This validates the runtime mechanisms, not model quality. Promotion of a
+particular resident model/configuration still requires the live trajectory
+scenario set below. That evaluation is deliberately not replaced by scripted
+LLM tests or claimed as an architectural property.
+
 ## File-level implementation map
 
 | Area | Likely files | Intended change |
