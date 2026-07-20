@@ -48,6 +48,7 @@ class AsyncJsonHttpClient(Protocol):
 def client_from_workload_identity(
     *,
     base_url: str,
+    external_token: str = "",
     external_token_env: str = "",
     workload_token_file: str = "",
     workload_exchange_url: str = "",
@@ -66,6 +67,11 @@ def client_from_workload_identity(
     exchange — a build backend passes exactly the scope its launch endpoint
     enforces, so a leaked build token cannot do anything else.
     """
+    if external_token:
+        return HttpxJsonClient(
+            auth=StaticBearerTokenAuthAdapter(token=external_token),
+            timeout_seconds=timeout_seconds,
+        )
     if external_token_env:
         return HttpxJsonClient(
             auth=StaticBearerTokenAuthAdapter(token_env=external_token_env),

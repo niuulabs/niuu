@@ -460,52 +460,24 @@ class EnvironmentSignalRuntime:
         if charter:
             resident_lines.append(f"- **Charter:** {charter}")
 
-        # Markdown section the agent reads about what resident learning already found.
+        # Cheap deterministic lookup is retrieval evidence for the model, never
+        # a judgment or a mandatory route.
         learning_section = ""
-        closing_section = ""
         if resident_learning_result:
-            decision = resident_learning_result.get("decision")
-            capability = resident_learning_result.get("capabilityName")
-            if resident_learning_result.get("usedAdoptedLearning"):
+            lookup_hint = {
+                key: value
+                for key, value in resident_learning_result.items()
+                if not key.startswith("residentAutonomy")
+            }
+            if lookup_hint:
                 learning_section = (
-                    "\n## Resident learning\n\n"
-                    f"- **Decision:** `{decision}`\n"
-                    f"- **Skill:** `{resident_learning_result.get('skillName')}`\n"
-                    f"- **Capability:** `{capability}`\n\n"
-                    "Use the adopted skill context before proposing new tooling.\n"
-                )
-            elif decision == "defer_to_investigation_with_build_tool":
-                learning_section = (
-                    "\n## Resident learning\n\n"
-                    f"- **Decision:** `{decision}`\n"
-                    f"- **Capability:** `{capability}`\n"
-                )
-                closing_section = (
-                    "\n## Required before you finish\n\n"
-                    f"No installed instrument matches capability `{capability}`. "
-                    "Decide for yourself which available skill or tool should handle "
-                    "the signal: check `capability_list` first — entries tagged "
-                    "`learned` are your own built tools, executed by name with "
-                    "`learned_tool_run`. Only if no suitable capability exists, use "
-                    "`build_tool`: author the `tool_code` yourself, or pass your spec "
-                    "as `build_request` so the configured builder can produce it.\n\n"
-                    "Guardrails, not recipes:\n\n"
-                    "- Declare the tool's **real reach** — review gates on it, and "
-                    "mutating reach is held for an operator.\n"
-                    "- Never hardcode environment values or thresholds; take them "
-                    "as `input_schema` parameters and fetch live state.\n"
-                    "- When access is missing, return a clear error object instead "
-                    "of raising, so the canary still passes in restricted "
-                    "environments.\n\n"
-                    "When you build or use a capability, cite the result in the "
-                    "outcome. If the tool is held for operator review, say so in "
-                    "the rationale.\n"
-                )
-            elif decision:
-                learning_section = (
-                    "\n## Resident learning\n\n"
-                    f"- **Decision:** `{decision}`\n"
-                    f"- **Capability:** `{capability}`\n"
+                    "\n## Capability lookup hints\n\n"
+                    "```json\n"
+                    f"{json.dumps(lookup_hint, indent=2, sort_keys=True, default=str)}\n"
+                    "```\n\n"
+                    "This is a cheap catalog hint, not a prior judgment and not evidence "
+                    "that a capability was executed. Compare it with the signal and the "
+                    "live catalog before choosing what to do.\n"
                 )
 
         workflow_section = ""
@@ -520,6 +492,9 @@ class EnvironmentSignalRuntime:
                 "do not treat the launch receipt as the outcome; use `workflow_status` "
                 "and then `workflow_events`, `workflow_artifacts`, or "
                 "`workflow_artifact_read` to inspect what Ting reports.\n"
+                "Peer Agent Card skills appear in `capability_list` as `agent_skill` "
+                "entries and are invoked through `a2a_task`; preserve the returned "
+                "agent and task ids when a peer requests input or continues later.\n"
             )
 
         payload_json = json.dumps(signal.normalized_payload, indent=2, sort_keys=True, default=str)
@@ -591,7 +566,6 @@ class EnvironmentSignalRuntime:
             "```text\n"
             f"{outcome_template}\n"
             "```\n"
-            f"{closing_section}"
         )
         task_id = f"task_{int(datetime.now(UTC).timestamp() * 1000):x}_{uuid.uuid4().hex[:8]}"
         root_id = event.correlation_id or signal.correlation_id or task_id

@@ -6,15 +6,18 @@ import json
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from niuu.domain.agent_directory import AgentSkill
 from ravn.domain.capability_catalog import (
     Capability,
     CapabilityKind,
+    capability_from_agent_skill,
     capability_from_skill,
     capability_from_tool,
     capability_from_workflow,
     filter_capabilities,
 )
 from ravn.domain.models import ToolResult
+from ravn.ports.agent_directory import PeerAgentDirectoryPort
 from ravn.ports.capability import WorkflowCapabilityPort
 from ravn.ports.skill import SkillPort
 from ravn.ports.tool import ToolPort
@@ -32,6 +35,7 @@ class CapabilityListTool(ToolPort):
         skill_port: SkillPort | None = None,
         workflow_sources: Sequence[WorkflowCapabilityPort] | None = None,
         learned_tools_provider: Callable[[], Sequence[Any]] | None = None,
+        agent_directory: PeerAgentDirectoryPort | None = None,
     ) -> None:
         self._tools_provider = tools_provider
         self._skill_port = skill_port
@@ -39,6 +43,7 @@ class CapabilityListTool(ToolPort):
         # Returns learned-tool artifact envelopes (manifest name/description/
         # schema) read from disk — never loaded as callables here (NIU-1118).
         self._learned_tools_provider = learned_tools_provider
+        self._agent_directory = agent_directory
 
     @property
     def name(self) -> str:
@@ -48,10 +53,10 @@ class CapabilityListTool(ToolPort):
     def description(self) -> str:
         return (
             "List available capabilities as one portable catalog: native Ravn tools, "
-            "resident learned tools, resident skills, and configured remote "
-            "workflows. Use this before building new tools so existing capabilities "
-            "are not duplicated. Entries tagged 'learned' are not native tools — "
-            "execute them by name with learned_tool_run."
+            "resident learned tools, resident skills, configured remote workflows, "
+            "and peer Agent Card skills. Use this before building new tools so existing "
+            "capabilities are not duplicated. Entries tagged 'learned' are not native "
+            "tools — execute them by name with learned_tool_run."
         )
 
     @property
@@ -192,6 +197,37 @@ class CapabilityListTool(ToolPort):
                     )
             except Exception as exc:
                 errors.append({"kind": "workflow", "source_index": source_index, "error": str(exc)})
+
+        if self._agent_directory is not None:
+            try:
+                page = await self._agent_directory.list_agents()
+                for agent in page.items:
+                    details = list(agent.skills)
+                    known_ids = {skill.id for skill in details}
+                    details.extend(
+                        AgentSkill(
+                            id=skill_id,
+                            name=skill_id,
+                            description=agent.description,
+                            tags=list(agent.tags),
+                        )
+                        for skill_id in agent.skill_ids
+                        if skill_id not in known_ids
+                    )
+                    capabilities.extend(
+                        capability_from_agent_skill(agent, skill) for skill in details
+                    )
+                errors.extend(
+                    {
+                        "kind": "agent_directory_warning",
+                        "source_instance_id": warning.source_instance_id,
+                        "code": warning.code,
+                        "error": warning.message,
+                    }
+                    for warning in page.warnings
+                )
+            except Exception as exc:
+                errors.append({"kind": "agent_skill", "error": str(exc)})
 
         return capabilities, errors
 

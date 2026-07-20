@@ -95,13 +95,16 @@ async def test_regressing_tool_is_rolled_back_after_threshold(tmp_path) -> None:
     decision = await peer.evaluate_and_apply(_artifact(FLAKY_TOOL))
     assert decision.action == "adopted"
 
-    results = [await peer.process_signal(_signal(n)) for n in range(1, 4)]
+    results = [
+        await peer.execute_selected_capability(_signal(n), skill_name=SKILL_NAME)
+        for n in range(1, 4)
+    ]
     assert [r["decision"] for r in results[:2]] == ["adopted_learning_failed"] * 2
     assert results[2]["decision"] == "adopted_learning_rolled_back"
     assert results[2]["consecutiveFailures"] == 3
 
     # Archived: the skill no longer resolves for the capability.
-    follow_up = await peer.process_signal(_signal(99))
+    follow_up = await peer.execute_selected_capability(_signal(99), skill_name=SKILL_NAME)
     assert follow_up["decision"] != "adopted_learning_failed"
 
     rollbacks = await recorder.of_type("valkyrie.evolution.rolled_back")
@@ -129,10 +132,10 @@ async def test_transient_failures_do_not_roll_back(tmp_path) -> None:
     await peer.evaluate_and_apply(_artifact(FLAKY_TOOL))
 
     # Two failures, then repair the tool in place: success resets the streak.
-    await peer.process_signal(_signal(1))
-    await peer.process_signal(_signal(2))
+    await peer.execute_selected_capability(_signal(1), skill_name=SKILL_NAME)
+    await peer.execute_selected_capability(_signal(2), skill_name=SKILL_NAME)
     tool_path_for_skill(tmp_path / "tools", SKILL_NAME).write_text(HEALTHY_TOOL)
-    recovered = await peer.process_signal(_signal(3))
+    recovered = await peer.execute_selected_capability(_signal(3), skill_name=SKILL_NAME)
     assert recovered["decision"] == "inspect_with_adopted_learning"
 
     lifecycle = (await peer._skills.show(SKILL_NAME))["metadata"]
@@ -145,21 +148,21 @@ async def test_capability_defers_to_investigation_after_rollback(tmp_path) -> No
     peer, recorder = await _peer(tmp_path, threshold=2)
     await peer.evaluate_and_apply(_artifact(FLAKY_TOOL))
 
-    await peer.process_signal(_signal(1))
-    rolled = await peer.process_signal(_signal(2))
+    await peer.execute_selected_capability(_signal(1), skill_name=SKILL_NAME)
+    rolled = await peer.execute_selected_capability(_signal(2), skill_name=SKILL_NAME)
     assert rolled["decision"] == "adopted_learning_rolled_back"
 
     # The skill is archived: the next signal finds no installed capability and
     # defers to the build_tool investigation loop instead of running the
     # rolled-back tool again.
-    after = await peer.process_signal(_signal(3))
-    assert after["decision"] == "defer_to_investigation_with_build_tool"
+    after = await peer.execute_selected_capability(_signal(3), skill_name=SKILL_NAME)
+    assert after["decision"] == "selected_capability_unavailable"
 
 
 async def test_rollback_judgment_escalates_with_evidence(tmp_path) -> None:
     peer, recorder = await _peer(tmp_path, threshold=1)
     await peer.evaluate_and_apply(_artifact(FLAKY_TOOL))
-    result = await peer.process_signal(_signal(1))
+    result = await peer.execute_selected_capability(_signal(1), skill_name=SKILL_NAME)
     assert result["decision"] == "adopted_learning_rolled_back"
 
     judgments = await recorder.of_type(registry.VALKYRIE_JUDGMENT_PROPOSED)

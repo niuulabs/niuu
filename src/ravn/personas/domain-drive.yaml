@@ -41,6 +41,7 @@ system_prompt_template: |
 allowed_tools:
   [
     ravn,
+    a2a_task,
     file,
     web,
     todo_read,

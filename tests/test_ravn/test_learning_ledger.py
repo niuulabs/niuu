@@ -339,7 +339,7 @@ async def _regress_installed_skill(runtime: ResidentLearningRuntime, tmp_path) -
     tool_path.write_text("def run(signal):\n    raise RuntimeError('regression')\n")
     result: dict[str, Any] = {}
     for _ in range(3):
-        result = await runtime.process_signal(_signal())
+        result = await runtime.execute_selected_capability(_signal(), skill_name=SKILL)
     assert result["decision"] == "adopted_learning_rolled_back"
     return result
 

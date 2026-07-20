@@ -22,7 +22,7 @@ from google.protobuf.json_format import MessageToDict, ParseError
 from jwt.api_jwk import PyJWK
 from jwt.utils import base64url_decode
 
-from niuu.domain.agent_directory import AgentInterface
+from niuu.domain.agent_directory import AgentInterface, AgentSkill
 from niuu.ports.agent_cards import (
     AgentCardResolutionError,
     AgentCardResolverPort,
@@ -376,6 +376,50 @@ class HttpAgentCardResolver(AgentCardResolverPort):
         capabilities = card_payload.get("capabilities", {})
         security_schemes = card_payload.get("securitySchemes", {})
         security_requirements = card_payload.get("securityRequirements", [])
+        raw_skills = card_payload.get("skills", [])
+        skill_payloads = raw_skills if isinstance(raw_skills, list) else []
+        skill_details: list[AgentSkill] = []
+        for skill in card.skills:
+            raw = next(
+                (
+                    item
+                    for item in skill_payloads
+                    if isinstance(item, dict) and str(item.get("id") or "") == skill.id
+                ),
+                {},
+            )
+            examples = raw.get("examples") if isinstance(raw, dict) else []
+            input_modes = raw.get("inputModes") if isinstance(raw, dict) else []
+            output_modes = raw.get("outputModes") if isinstance(raw, dict) else []
+            requirements = raw.get("securityRequirements") if isinstance(raw, dict) else []
+            skill_details.append(
+                AgentSkill(
+                    id=skill.id,
+                    name=skill.name,
+                    description=skill.description,
+                    tags=list(skill.tags),
+                    examples=(
+                        [str(item) for item in examples if str(item).strip()]
+                        if isinstance(examples, list)
+                        else []
+                    ),
+                    inputModes=(
+                        [str(item) for item in input_modes if str(item).strip()]
+                        if isinstance(input_modes, list)
+                        else []
+                    ),
+                    outputModes=(
+                        [str(item) for item in output_modes if str(item).strip()]
+                        if isinstance(output_modes, list)
+                        else []
+                    ),
+                    securityRequirements=(
+                        [item for item in requirements if isinstance(item, dict)]
+                        if isinstance(requirements, list)
+                        else []
+                    ),
+                )
+            )
         return ResolvedAgentCard(
             name=card.name,
             description=card.description,
@@ -393,6 +437,7 @@ class HttpAgentCardResolver(AgentCardResolverPort):
                 )
                 for interface in card.supported_interfaces
             ),
+            skill_details=tuple(skill_details),
             capabilities=capabilities if isinstance(capabilities, dict) else {},
             security_schemes=(security_schemes if isinstance(security_schemes, dict) else {}),
             security_requirements=(

@@ -358,12 +358,12 @@ def _runtime(
     )
 
 
-async def test_missing_capability_defers_to_the_investigation_loop(tmp_path) -> None:
+async def test_missing_capability_returns_a_catalog_hint_without_routing(tmp_path) -> None:
     runtime = _runtime(tmp_path, "k8s-investigate")
 
     result = await runtime.process_signal(_signal())
 
-    assert result["decision"] == "defer_to_investigation_with_build_tool"
+    assert result["decision"] == "capability_lookup_miss"
     assert result["usedAdoptedLearning"] is False
     assert not (tmp_path / "k8s-investigate" / "tools").exists()
 
@@ -395,8 +395,9 @@ async def test_peer_adoption_installs_proposed_tool_implementation(tmp_path) -> 
     peer_tool = tool_path_for_skill(tmp_path / "k8s-b" / "tools", skill_name)
     assert peer_tool.is_file()
 
-    replay = await peer.process_signal(_signal())
+    replay = await peer.execute_selected_capability(_signal(), skill_name=skill_name)
     assert replay["usedAdoptedLearning"] is True
+    assert replay["executionSelected"] is True
     assert replay["toolResult"]["matches"] is True
 
 
@@ -438,7 +439,7 @@ async def test_peer_adoption_reviews_canaries_and_installs_agent_tool(tmp_path) 
     assert "capability: mimir_metric_window" in registered["skill"]["content"]
 
 
-async def test_existing_agent_tool_is_registered_and_used_on_matching_signal(tmp_path) -> None:
+async def test_existing_agent_tool_is_registered_and_returned_as_a_hint(tmp_path) -> None:
     peer = _runtime(tmp_path, "k8s-existing-agent-tool")
     capability = "inspect.pod.oomkilled"
     learned = LearnedToolArtifact(
@@ -473,11 +474,11 @@ async def test_existing_agent_tool_is_registered_and_used_on_matching_signal(tmp
 
     result = await peer.process_signal(_signal())
 
-    assert result["usedAdoptedLearning"] is True
+    assert result["usedAdoptedLearning"] is False
     assert result["skillName"] == capability
-    assert result["toolResult"] == {"inspected": True, "namespace": "payments"}
+    assert result["decision"] == "capability_hint_available"
     registered = await peer.skills.show(capability)
-    assert registered["metadata"]["run_count"] == 1
+    assert registered["metadata"]["run_count"] == 0
     assert registered["metadata"]["source_environment_id"] == "env-k8s-teacher"
 
 
@@ -566,7 +567,7 @@ async def test_review_approval_installs_self_authored_agent_tool(tmp_path) -> No
     assert read_learned_tool_artifact(artifact_path).manifest.name == "mimir_metric_window"
 
 
-async def test_failing_tool_surfaces_failure_judgment(tmp_path) -> None:
+async def test_signal_lookup_does_not_execute_a_regressed_tool(tmp_path) -> None:
     runtime = _runtime(tmp_path, "k8s-c")
     skill_name = "valkyrie-inspect-kubernetes-pod-oomkilled"
     artifact = ResidentLearningArtifact(
@@ -594,8 +595,9 @@ async def test_failing_tool_surfaces_failure_judgment(tmp_path) -> None:
     tool_path = tool_path_for_skill(tmp_path / "k8s-c" / "tools", skill_name)
     tool_path.write_text("def run(signal):\n    raise RuntimeError('regression')\n")
 
-    replay = await runtime.process_signal(_signal())
+    replay = await runtime.execute_selected_capability(_signal(), skill_name=skill_name)
     assert replay["decision"] == "adopted_learning_failed"
+    assert replay["executionSelected"] is True
     assert "error" in replay["toolResult"]
 
 

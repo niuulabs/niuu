@@ -217,9 +217,9 @@ async def test_runtime_runs_resident_learning_before_enqueueing_signal_task() ->
     assert processed[0].event_type == "signal.received"
     assert len(enqueued) == 1
     context = enqueued[0].initiative_context
-    assert "## Resident learning" in context
-    assert "Use the adopted skill context before proposing new tooling" in context
-    assert "**Skill:** `valkyrie-inspect-host-host-disk-pressure`" in context
+    assert "## Capability lookup hints" in context
+    assert "cheap catalog hint, not a prior judgment" in context
+    assert '"skillName": "valkyrie-inspect-host-host-disk-pressure"' in context
     assert telemetry[0].payload["resident_learning_checked_count"] == 1
     assert telemetry[0].payload["resident_learning_used_count"] == 1
 
@@ -373,14 +373,14 @@ async def test_resident_learning_failure_is_published_and_recovered() -> None:
 
 
 @pytest.mark.asyncio
-async def test_defer_to_investigation_appends_the_build_mandate() -> None:
+async def test_capability_lookup_miss_is_only_a_hint_not_a_build_mandate() -> None:
     bus = InProcessBus()
     enqueued: list[AgentTask] = []
 
     async def _resident_process(event: SleipnirEvent) -> dict:
         return {
             "usedAdoptedLearning": False,
-            "decision": "defer_to_investigation_with_build_tool",
+            "decision": "capability_lookup_miss",
             "capabilityName": "inspect.host.host.disk-pressure",
             "skillName": "",
         }
@@ -396,15 +396,11 @@ async def test_defer_to_investigation_appends_the_build_mandate() -> None:
 
     assert len(enqueued) == 1
     context = enqueued[0].initiative_context
-    # The capability-gap mandate is the prompt's closing directive.
-    assert "## Resident learning" in context
-    assert "## Required before you finish" in context
-    assert "`inspect.host.host.disk-pressure`" in context
-    assert "Only if no suitable capability exists, use `build_tool`" in context
-    # Lookup-then-run: learned tools are dispatched by name, not preloaded.
-    assert "`learned_tool_run`" in context
-    # It lands after the outcome schema so the model weights it.
-    assert context.index("## Required before you finish") > context.index("---end---")
+    assert "## Capability lookup hints" in context
+    assert '"capabilityName": "inspect.host.host.disk-pressure"' in context
+    assert "not a prior judgment" in context
+    assert "## Required before you finish" not in context
+    assert "Only if no suitable capability exists" not in context
 
 
 @pytest.mark.asyncio

@@ -545,21 +545,66 @@ class ResidentLearningRuntime:
         return f"{ReviewKind.EVOLUTION_BUILD.value}:{self.identity.environment_id}:{capability}"
 
     async def process_signal(self, signal: OperationalSignal | SleipnirEvent) -> dict[str, Any]:
-        """Use an installed adopted skill when a later signal matches its capability."""
+        """Return a cheap capability hint without making or executing a judgment.
+
+        Exact capability-name matching is useful retrieval evidence, but it is
+        not enough context to decide that a skill is appropriate, execute its
+        implementation, or publish a Valkyrie judgment. The resident LLM sees
+        this hint alongside the live signal and the complete capability catalog.
+        """
 
         operational_signal = _to_operational_signal(signal, self.identity)
         capability = _derive_capability_name(operational_signal)
         skill = await self._find_installed_skill_by_capability(capability)
         if skill is None:
-            # No installed skill resolves this capability: the signal escalates
-            # to an investigation session, which authors the instrument it needs
-            # with build_tool. The resident does not build classifiers itself.
             return {
                 "signalId": operational_signal.signal_id,
                 "capabilityName": capability,
-                "decision": "defer_to_investigation_with_build_tool",
+                "decision": "capability_lookup_miss",
                 "usedAdoptedLearning": False,
                 "skillName": "",
+                "capabilityCandidates": [],
+            }
+        return {
+            "signalId": operational_signal.signal_id,
+            "capabilityName": capability,
+            "decision": "capability_hint_available",
+            "usedAdoptedLearning": False,
+            "skillName": skill.name,
+            "capabilityCandidates": [
+                {
+                    "kind": "skill",
+                    "name": skill.name,
+                    "description": skill.description,
+                    "source": "resident_skill_registry",
+                    "match": "exact_capability_name",
+                }
+            ],
+        }
+
+    async def execute_selected_capability(
+        self,
+        signal: OperationalSignal | SleipnirEvent,
+        *,
+        skill_name: str,
+    ) -> dict[str, Any]:
+        """Execute a capability explicitly selected by the agent/tool loop.
+
+        This is deliberately separate from :meth:`process_signal`: retrieval
+        does not imply execution. The caller must retain the selected skill
+        name in the transcript, after which this method supplies auditable
+        execution evidence and lifecycle/rollback bookkeeping.
+        """
+        operational_signal = _to_operational_signal(signal, self.identity)
+        capability = _derive_capability_name(operational_signal)
+        skill = await self._skills.get_runnable_skill(str(skill_name or "").strip())
+        if skill is None:
+            return {
+                "signalId": operational_signal.signal_id,
+                "capabilityName": capability,
+                "decision": "selected_capability_unavailable",
+                "usedAdoptedLearning": False,
+                "skillName": str(skill_name or "").strip(),
             }
 
         tool_run = await self._run_skill_tool(skill, operational_signal)
@@ -582,61 +627,24 @@ class ResidentLearningRuntime:
                 tool_run,
                 operational_signal,
             )
-        evidence: list[dict[str, Any]] = [
-            {
-                "skill_name": skill.name,
-                "capability_name": capability,
-                "learning_source": "resident_skill_registry",
-            }
-        ]
-        if tool_run is not None:
-            evidence.append(
-                {
-                    "tool_executed": True,
-                    "tool_ok": tool_run.ok,
-                    "tool_result": tool_run.result,
-                    "tool_error": tool_run.error,
-                }
-            )
-        if tool_succeeded:
-            attention_tier = "ambient"
-            recommended_action = "inspect_with_adopted_learning"
-            rationale = f"Installed learning skill {skill.name} matches capability {capability}."
-            decision_name = "inspect_with_adopted_learning"
-        else:
-            attention_tier = "present"
-            recommended_action = "review_adopted_learning_failure"
-            rationale = (
-                f"Installed learning skill {skill.name} failed its implementation run: "
-                f"{tool_run.error}"
-            )
-            decision_name = "adopted_learning_failed"
-        judgment = valkyrie_judgment_proposed(
-            environment_id=self.identity.environment_id,
-            valkyrie_id=self.identity.valkyrie_id,
-            attention_tier=attention_tier,
-            recommended_action=recommended_action,
-            authority_boundary=_authority_boundary(self.identity.autonomy_mode),
-            confidence=0.86 if tool_succeeded else 0.4,
-            operational_state="using_adopted_learning",
-            rationale=rationale,
-            signal_refs=[operational_signal.signal_id],
-            evidence=evidence,
-            correlation_ids={"root": operational_signal.signal_id},
-            source=self._source,
-            correlation_id=operational_signal.signal_id,
-        )
-        await self._publisher.publish(judgment)
+
         result: dict[str, Any] = {
             "signalId": operational_signal.signal_id,
             "capabilityName": capability,
-            "decision": decision_name,
+            "decision": (
+                "inspect_with_adopted_learning"
+                if tool_succeeded
+                else "adopted_learning_failed"
+            ),
             "usedAdoptedLearning": True,
             "skillName": skill.name,
-            "judgmentEventId": judgment.event_id,
+            "executionSelected": True,
+            "consecutiveFailures": lifecycle.consecutive_failures,
         }
         if tool_run is not None:
-            result["toolResult"] = tool_run.result if tool_run.ok else {"error": tool_run.error}
+            result["toolResult"] = (
+                tool_run.result if tool_run.ok else {"error": tool_run.error}
+            )
         return result
 
     async def _rollback_regressed_skill(

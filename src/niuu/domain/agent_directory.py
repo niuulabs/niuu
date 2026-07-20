@@ -29,6 +29,19 @@ class AgentInterface(_AgentDirectoryModel):
     tenant: str = ""
 
 
+class AgentSkill(_AgentDirectoryModel):
+    """One callable skill published by an A2A Agent Card."""
+
+    id: str
+    name: str
+    description: str = ""
+    tags: list[str] = Field(default_factory=list)
+    examples: list[str] = Field(default_factory=list)
+    input_modes: list[str] = Field(default_factory=list)
+    output_modes: list[str] = Field(default_factory=list)
+    security_requirements: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class AgentProvenance(_AgentDirectoryModel):
     """Source coordinates retained while aggregating equivalent agents."""
 
@@ -59,6 +72,7 @@ class AgentDirectoryEntry(_AgentDirectoryModel):
     signature_key_ids: list[str] = Field(default_factory=list)
     signature_key_fingerprints: list[str] = Field(default_factory=list)
     skill_ids: list[str] = Field(default_factory=list)
+    skills: list[AgentSkill] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     default_input_modes: list[str] = Field(default_factory=list)
     default_output_modes: list[str] = Field(default_factory=list)

@@ -378,6 +378,16 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         required_context=frozenset({"session_join_manager"}),
         kwargs_fn=lambda s, ctx: {"manager": ctx["session_join_manager"]},
     ),
+    "a2a_task": BuiltinToolDef(
+        adapter="ravn.adapters.tools.a2a_task.A2ATaskTool",
+        groups=frozenset({"a2a", "ravn"}),
+        condition=lambda s: s.gateway.platform.enabled,
+        required_context=frozenset({"agent_directory", "a2a_client"}),
+        kwargs_fn=lambda _s, ctx: {
+            "agent_directory": ctx["agent_directory"],
+            "client": ctx["a2a_client"],
+        },
+    ),
     "ting_plan": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.TingPlanTool",
         groups=frozenset({"platform"}),
@@ -455,6 +465,7 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "skill_port": ctx.get("skill_port"),
             "workflow_sources": ctx.get("workflow_sources") or [],
             "learned_tools_provider": ctx.get("learned_tools_provider"),
+            "agent_directory": ctx.get("agent_directory"),
         },
     ),
     # Learned tools are dispatched on demand instead of bulk-loaded into every

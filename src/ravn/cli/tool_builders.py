@@ -106,6 +106,29 @@ def _build_tools(
         if workflow_sources:
             runtime_ctx["workflow_sources"] = workflow_sources
 
+    if settings.gateway.platform.enabled and include_groups & {"ravn", "a2a"}:
+        from ravn.adapters.agent_directory import (  # noqa: PLC0415
+            GuildAgentDirectoryAdapter,
+        )
+        from ravn.adapters.tool_build.http import (  # noqa: PLC0415
+            client_from_workload_identity,
+        )
+
+        platform = settings.gateway.platform
+        peer_client = client_from_workload_identity(
+            base_url=platform.base_url,
+            external_token=platform.pat_token,
+            workload_token_file=platform.workload_token_file,
+            workload_exchange_url=platform.workload_exchange_url,
+            workload_audiences=platform.workload_audiences,
+            timeout_seconds=platform.timeout,
+        )
+        runtime_ctx["agent_directory"] = GuildAgentDirectoryAdapter(
+            base_url=platform.base_url,
+            client=peer_client,
+        )
+        runtime_ctx["a2a_client"] = peer_client
+
     # The session_join tool only makes sense for a resident daemon, which owns
     # the manager and injects it here; when absent (CLI single-shot) the tool
     # is filtered out via its required_context.
@@ -322,6 +345,7 @@ _TOOL_GROUP_ALIASES: dict[str, list[str]] = {
     "terminal": ["terminal", "bash"],
     "mimir": _MIMIR_TOOL_NAMES,
     "workflow": _WORKFLOW_TOOL_NAMES,
+    "a2a": ["a2a_task"],
     "cascade": ["cascade_delegate", "cascade_broadcast"],
     "volundr": ["volundr_session", "volundr_git"],
     "ravn": [
@@ -331,6 +355,7 @@ _TOOL_GROUP_ALIASES: dict[str, list[str]] = {
         "skill_run",
         "skill_manage",
         "capability_list",
+        "a2a_task",
         "learned_tool_run",
     ],
 }
