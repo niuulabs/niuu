@@ -312,6 +312,24 @@ async def test_upsert_page_without_search_port_still_works(tmp_path: Path) -> No
     assert "Page" in page
 
 
+@pytest.mark.asyncio
+async def test_delete_page_removes_file_catalog_and_search_chunks(tmp_path: Path) -> None:
+    port = _make_mock_search_port()
+    adapter = _make_adapter(tmp_path, search_port=port)
+    path = "technical/delete-me.md"
+
+    await adapter.upsert_page(path, "# Delete Me\n\nIndexed content.")
+    indexed_ids = [call.args[0] for call in port.index.call_args_list]
+    adapter._link_graph()
+
+    assert await adapter.delete_page(path) is True
+    assert not (tmp_path / "mimir" / "wiki" / path).exists()
+    assert f"]({path})" not in (tmp_path / "mimir" / "wiki" / "index.md").read_text()
+    assert adapter._graph_cache is None
+    assert [call.args[0] for call in port.remove.call_args_list] == indexed_ids
+    assert await adapter.delete_page(path) is False
+
+
 # ---------------------------------------------------------------------------
 # ingest() — indexes raw source
 # ---------------------------------------------------------------------------

@@ -56,6 +56,7 @@ class MimirResidentInbox(ResidentInboxBackend):
         self._retention_max_age_days = retention_max_age_days
         self._retention_sweep_interval_seconds = retention_sweep_interval_seconds
         self._last_retention_sweep: float | None = None
+        self._retention_sweep_task: asyncio.Task[None] | None = None
         self._warned_no_filesystem = False
 
     async def write_event(self, event: Any) -> str:
@@ -129,10 +130,27 @@ class MimirResidentInbox(ResidentInboxBackend):
             self._last_retention_sweep is not None
             and now - self._last_retention_sweep < self._retention_sweep_interval_seconds
         ):
+            if self._retention_sweep_task is None or self._retention_sweep_task.done():
+                delay = self._retention_sweep_interval_seconds - (
+                    now - self._last_retention_sweep
+                )
+                self._retention_sweep_task = asyncio.create_task(
+                    self._delayed_retention_sweep(delay)
+                )
             return
-        self._last_retention_sweep = now
+        await self._run_retention_sweep()
+
+    async def _delayed_retention_sweep(self, delay: float) -> None:
         try:
-            pruned = await asyncio.to_thread(self.prune_signals)
+            await asyncio.sleep(max(0.0, delay))
+            await self._run_retention_sweep()
+        finally:
+            self._retention_sweep_task = None
+
+    async def _run_retention_sweep(self) -> None:
+        self._last_retention_sweep = time.monotonic()
+        try:
+            pruned = await self.prune_signals()
         except Exception:
             logger.warning("resident inbox: retention sweep failed", exc_info=True)
             return
@@ -144,14 +162,12 @@ class MimirResidentInbox(ResidentInboxBackend):
                 self._retention_max_age_days,
             )
 
-    def prune_signals(self) -> int:
+    async def prune_signals(self) -> int:
         """Delete signal pages beyond the retention policy; return the count.
 
-        Retention only works on filesystem-backed Mimir stores: the port has
-        no delete operation, but ``filesystem_root()`` is part of its contract
-        and the markdown adapter keeps pages as plain files under ``wiki/``
-        with no index to invalidate. Non-filesystem backends log one warning
-        and skip.
+        The filesystem root is used only to identify the oldest pages. Actual
+        deletion goes through Mimir so its catalog, graph, and search indexes
+        stay consistent.
         """
         root = self._mimir.filesystem_root()
         if root is None:
@@ -162,18 +178,37 @@ class MimirResidentInbox(ResidentInboxBackend):
                     "signal retention cannot run and the inbox will grow unbounded"
                 )
             return 0
-        signals_dir = root / "wiki" / self._signal_prefix
-        if not signals_dir.is_dir():
-            return 0
+        doomed = await asyncio.to_thread(self._prunable_signal_paths, root)
+        pruned = 0
+        for path in doomed:
+            try:
+                if await self._mimir.delete_page(path):
+                    pruned += 1
+            except Exception as exc:
+                logger.warning("resident inbox: failed to prune %s: %s", path, exc)
+        return pruned
 
-        entries: list[tuple[float, Path]] = []
+    def _prunable_signal_paths(self, root: Path) -> list[str]:
+        wiki_dir = (root / "wiki").resolve()
+        signals_dir = (wiki_dir / self._signal_prefix).resolve()
+        try:
+            signals_dir.relative_to(wiki_dir)
+        except ValueError:
+            logger.warning("resident inbox: signal prefix escapes the Mimir wiki root")
+            return []
+        if not signals_dir.is_dir():
+            return []
+
+        entries: list[tuple[float, str]] = []
         for page in signals_dir.glob("*.md"):
             try:
-                entries.append((page.stat().st_mtime, page))
-            except OSError:
+                resolved = page.resolve()
+                relative = str(resolved.relative_to(wiki_dir))
+                entries.append((resolved.stat().st_mtime, relative))
+            except (OSError, ValueError):
                 continue
 
-        doomed: list[Path] = []
+        doomed: list[str] = []
         if self._retention_max_age_days > 0:
             cutoff = time.time() - self._retention_max_age_days * 86400
             doomed.extend(page for mtime, page in entries if mtime < cutoff)
@@ -181,15 +216,7 @@ class MimirResidentInbox(ResidentInboxBackend):
         if self._retention_max_pages > 0 and len(entries) > self._retention_max_pages:
             entries.sort(key=lambda item: item[0], reverse=True)
             doomed.extend(page for _, page in entries[self._retention_max_pages :])
-
-        pruned = 0
-        for page in doomed:
-            try:
-                page.unlink()
-                pruned += 1
-            except OSError as exc:
-                logger.warning("resident inbox: failed to prune %s: %s", page, exc)
-        return pruned
+        return doomed
 
     async def write_triage(self, triage: ResidentInboxTriage) -> str:
         stamp = timestamp_slug(triage.created_at)

@@ -201,7 +201,7 @@ class TestConnectionAffinity:
         assert saved.status == WorkflowCampaignStatus.RUNNING
 
     @pytest.mark.asyncio
-    async def test_vanished_connection_falls_back_to_primary(self) -> None:
+    async def test_vanished_connection_does_not_retarget_primary(self) -> None:
         primary = _Adapter(session_status="running")
         factory = _Factory(primary, connections={})
         projector, _ = self._build(factory)
@@ -209,7 +209,7 @@ class TestConnectionAffinity:
         await projector._refresh_campaign(_campaign(connection_id="conn-gone"))
 
         assert factory.connection_calls == ["conn-gone"]
-        assert factory.primary_calls == 1
+        assert factory.primary_calls == 0
 
     @pytest.mark.asyncio
     async def test_legacy_campaign_without_connection_uses_primary(self) -> None:

@@ -195,11 +195,12 @@ class WorkflowTaskHandler(RequestHandler):
             bearer_token=self._bearer_token,
         )
 
-        slug = await _reserve_task_slug(self._campaign_repo, execution.slug)
+        campaign_id = uuid4()
+        slug = f"{execution.slug or 'workflow'}-{campaign_id.hex[:12]}"
         now = datetime.now(UTC)
         stage_state = _initial_stage_state(execution.workflow_snapshot, now)
         campaign = WorkflowCampaign(
-            id=uuid4(),
+            id=campaign_id,
             slug=slug,
             name=execution.session.name,
             owner_id=self._principal.user_id,
@@ -227,7 +228,21 @@ class WorkflowTaskHandler(RequestHandler):
             last_activity_at=now,
             connection_id=execution.connection_id,
         )
-        saved = await self._campaign_repo.save_campaign(campaign)
+        try:
+            saved = await self._campaign_repo.save_campaign(campaign)
+        except Exception:
+            try:
+                await execution.adapter.stop_session(
+                    execution.session.id,
+                    auth_token=self._bearer_token,
+                    principal=self._principal,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to stop orphaned session %s after campaign persistence failed",
+                    execution.session.id,
+                )
+            raise
         await _emit_campaign_event(self._request, "workflow.campaign.created", saved)
         return campaign_to_task(saved)
 
@@ -638,10 +653,11 @@ class WorkflowTaskHandler(RequestHandler):
             if adapter is not None:
                 return adapter
             logger.warning(
-                "Campaign %s connection %s no longer resolves; falling back to primary",
+                "Campaign %s connection %s no longer resolves; refusing to retarget",
                 campaign.slug,
                 campaign.connection_id,
             )
+            return None
         return await self._volundr_factory.primary_for_owner(campaign.owner_id)
 
 
@@ -739,16 +755,6 @@ def _prompt_from_message(message: Message) -> str:
 def _optional_str(metadata: dict[str, Any], key: str) -> str | None:
     value = str(metadata.get(key) or "").strip()
     return value or None
-
-
-async def _reserve_task_slug(repo: WorkflowCampaignRepository, base_slug: str) -> str:
-    base = base_slug or "workflow"
-    slug = base
-    suffix = 2
-    while await repo.get_campaign_by_slug(slug) is not None:
-        slug = f"{base}-{suffix}"
-        suffix += 1
-    return slug
 
 
 def create_a2a_router() -> APIRouter:

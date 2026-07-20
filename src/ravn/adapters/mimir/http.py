@@ -181,6 +181,17 @@ class HttpMimirAdapter(MimirPort):
         )
         response.raise_for_status()
 
+    async def delete_page(self, path: str, mimir: str | None = None) -> bool:
+        """DELETE /mimir/page — remove a wiki page and its indexes."""
+        params = {"path": path}
+        if mimir is not None:
+            params["mount"] = mimir
+        response = await self._request("DELETE", "/mimir/page", params=params)
+        if response.status_code == 404:
+            return False
+        response.raise_for_status()
+        return True
+
     async def get_page(self, path: str) -> MimirPage:
         """GET /mimir/page?path=... — return full page with metadata."""
         response = await self._request("GET", "/mimir/page", params={"path": path})

@@ -367,6 +367,8 @@ class A2AToolBuildBackend(ToolBuildBackend):
         endpoint = _jsonrpc_endpoint(card)
         if not endpoint:
             raise ToolBuildError("A2A agent card declares no JSONRPC interface")
+        if not _same_origin(endpoint, self._card_url):
+            raise ToolBuildError("A2A JSONRPC interface must share the configured card origin")
 
         if self._workflow_id:
             return endpoint, self._workflow_id
@@ -496,6 +498,9 @@ class A2AToolBuildBackend(ToolBuildBackend):
         return None
 
     async def _fetch_url_part(self, url: str) -> str | None:
+        if not _same_origin(url, self._card_url):
+            logger.warning("Refusing cross-origin A2A artifact URL: %s", url)
+            return None
         resp = await self._client.get(url)
         if resp.status_code != 200:
             return None
@@ -508,6 +513,26 @@ class A2AToolBuildBackend(ToolBuildBackend):
 def _origin(url: str) -> str:
     parts = urlsplit(url)
     return urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+
+
+def _same_origin(left: str, right: str) -> bool:
+    try:
+        left_parts = urlsplit(left)
+        right_parts = urlsplit(right)
+        default_ports = {"http": 80, "https": 443}
+        left_origin = (
+            left_parts.scheme.lower(),
+            (left_parts.hostname or "").lower(),
+            left_parts.port or default_ports.get(left_parts.scheme.lower()),
+        )
+        right_origin = (
+            right_parts.scheme.lower(),
+            (right_parts.hostname or "").lower(),
+            right_parts.port or default_ports.get(right_parts.scheme.lower()),
+        )
+    except ValueError:
+        return False
+    return bool(left_origin[0] and left_origin[1] and left_origin == right_origin)
 
 
 def _jsonrpc_endpoint(card: dict[str, Any]) -> str:

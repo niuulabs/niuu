@@ -473,3 +473,25 @@ class CompositeMimirAdapter(MimirPort):
                     _sanitize_log(name),
                     _sanitize_log(exc),
                 )
+
+    async def delete_page(self, path: str, mimir: str | None = None) -> bool:
+        """Delete *path* from the mounts selected by normal write routing."""
+        deleted = False
+        for name in self._write_routing.resolve(path, explicit=mimir):
+            mount = self._mount_map.get(name)
+            if mount is None:
+                logger.warning(
+                    "composite mimir: delete routing named unknown mount %s for path %s",
+                    _sanitize_log(name),
+                    _sanitize_log(path),
+                )
+                continue
+            try:
+                deleted = await mount.port.delete_page(path) or deleted
+            except Exception as exc:
+                logger.warning(
+                    "composite mimir: delete_page failed on %s: %s",
+                    _sanitize_log(name),
+                    _sanitize_log(exc),
+                )
+        return deleted

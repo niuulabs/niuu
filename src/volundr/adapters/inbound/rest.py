@@ -3295,6 +3295,14 @@ def create_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
             )
+        principal = await _optional_principal(request)
+        try:
+            await forge.ensure_access(session, principal, "view")
+        except SessionAccessDeniedError:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied to session {session_id}",
+            )
         if not session.chat_endpoint:
             return {"requests": []}
         try:

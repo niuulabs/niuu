@@ -32,6 +32,7 @@ from volundr.adapters.inbound.rest import (
 from volundr.config import LocalMountsConfig
 from volundr.domain.models import GitProviderType, GitSource, RepoInfo, Session, SessionStatus
 from volundr.domain.services import RepoService, SessionService, StatsService
+from volundr.domain.services.session import SessionAccessDeniedError
 
 _SIGNING_KEY = "test-only-signing-key-32-bytes-long!"
 
@@ -1491,6 +1492,26 @@ class TestHelpRequestProxy:
             "/api/v1/forge/sessions/00000000-0000-0000-0000-000000000000/help/requests"
         )
         assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_get_help_requests_enforces_session_access(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        session = await service.create_session(
+            "private",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        with patch.object(
+            service,
+            "_check_access",
+            new=AsyncMock(side_effect=SessionAccessDeniedError(session.id, "other-user")),
+        ):
+            response = client.get(f"/api/v1/forge/sessions/{session.id}/help/requests")
+
+        assert response.status_code == 403
 
     @pytest.mark.asyncio
     async def test_answer_help_request_proxies_post(

@@ -213,7 +213,11 @@ class TransportLifecycleMixin:
         if self._settings.mesh.enabled:
             await self._start_mesh_adapter()
             if self._has_workflow_trigger():
-                self._workflow_trigger_task = asyncio.create_task(self._run_workflow_trigger_task())
+                # A workflow session is not ready until its kickoff has an
+                # acknowledged consumer. Propagate terminal dispatch failure
+                # through the ASGI lifespan instead of losing it in a detached
+                # task while the session appears healthy.
+                await self._run_workflow_trigger_task()
         elif self._has_workflow_trigger():
             logger.warning("Workflow trigger configured but mesh is disabled — skipping dispatch")
 

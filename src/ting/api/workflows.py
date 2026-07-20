@@ -25,7 +25,7 @@ from ting.domain.services.dispatch_service import (
 )
 from ting.domain.utils import _session_name, _slugify
 from ting.domain.workflow_snapshot import build_workflow_snapshot, workflow_mimir_from_snapshot
-from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrSession
+from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrPort, VolundrSession
 from ting.ports.workflow_repository import WorkflowRepository
 
 _DEFAULT_WORKFLOW_LAUNCH_DEFINITION = "skuldCodex"
@@ -109,6 +109,7 @@ class WorkflowLaunchExecution:
     workflow_snapshot: dict[str, Any]
     slug: str
     session: VolundrSession
+    adapter: VolundrPort
     # Canonical id of the Volundr connection the session was created on;
     # campaigns persist this so later reads target the same instance.
     connection_id: str | None = None
@@ -438,6 +439,7 @@ async def launch_workflow_execution(
         workflow_snapshot=workflow_snapshot,
         slug=launch_slug,
         session=session,
+        adapter=target_adapter,
         connection_id=getattr(target_adapter, "target_id", None) or None,
     )
 

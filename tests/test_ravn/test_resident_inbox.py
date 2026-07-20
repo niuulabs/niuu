@@ -188,6 +188,8 @@ async def test_retention_prunes_pages_beyond_the_count_cap(tmp_path) -> None:
         )
 
     assert len(list(_signals_dir(tmp_path).glob("*.md"))) == 3
+    index = (tmp_path / "mimir" / "wiki" / "index.md").read_text(encoding="utf-8")
+    assert index.count("resident/inbox/signals/") == 3
 
 
 @pytest.mark.asyncio
@@ -209,7 +211,7 @@ async def test_retention_prunes_pages_older_than_max_age(tmp_path) -> None:
     two_days_ago = time.time() - 2 * 86400
     os.utime(stale, (two_days_ago, two_days_ago))
 
-    pruned = inbox.prune_signals()
+    pruned = await inbox.prune_signals()
 
     assert pruned == 1
     assert not stale.exists()
@@ -238,7 +240,7 @@ async def test_retention_sweeps_are_throttled(tmp_path) -> None:
         tmp_path,
         retention_max_pages=1,
         retention_max_age_days=0,
-        retention_sweep_interval_seconds=3600.0,
+        retention_sweep_interval_seconds=0.01,
     )
     for index in range(4):
         await inbox.write_directed_message(
@@ -246,12 +248,17 @@ async def test_retention_sweeps_are_throttled(tmp_path) -> None:
             metadata={"telegram_message_id": str(index)},
         )
 
-    # The first write swept (nothing to prune yet); later writes are inside
-    # the throttle window, so the surplus pages are still on disk.
+    # The immediate write path remains throttled, but a deferred sweep makes
+    # the configured cap true even if no later signal arrives.
     assert len(list(_signals_dir(tmp_path).glob("*.md"))) > 1
+    import asyncio
+
+    await asyncio.sleep(0.03)
+    assert len(list(_signals_dir(tmp_path).glob("*.md"))) == 1
 
 
-def test_retention_without_filesystem_root_warns_and_skips(caplog) -> None:
+@pytest.mark.asyncio
+async def test_retention_without_filesystem_root_warns_and_skips(caplog) -> None:
     import logging
 
     class NoFsMimir:
@@ -260,8 +267,8 @@ def test_retention_without_filesystem_root_warns_and_skips(caplog) -> None:
 
     inbox = MimirResidentInbox(NoFsMimir())
     with caplog.at_level(logging.WARNING, logger="ravn.resident_inbox.backend"):
-        assert inbox.prune_signals() == 0
-        assert inbox.prune_signals() == 0
+        assert await inbox.prune_signals() == 0
+        assert await inbox.prune_signals() == 0
 
     warnings = [r for r in caplog.records if "not filesystem-backed" in r.message]
     assert len(warnings) == 1

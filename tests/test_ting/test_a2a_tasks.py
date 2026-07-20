@@ -108,6 +108,11 @@ class InMemoryCampaignRepository(WorkflowCampaignRepository):
         return self._campaigns.pop(campaign_id, None) is not None
 
 
+class FailingCampaignRepository(InMemoryCampaignRepository):
+    async def save_campaign(self, campaign: WorkflowCampaign) -> WorkflowCampaign:
+        raise RuntimeError("campaign persistence failed")
+
+
 class RecordingVolundrPort(VolundrPort):
     def __init__(self, *, session_status: str = "starting") -> None:
         self._session_status = session_status
@@ -280,6 +285,7 @@ def _make_campaign(
     status: WorkflowCampaignStatus = WorkflowCampaignStatus.RUNNING,
     metadata: dict[str, Any] | None = None,
     workflow_snapshot: dict[str, Any] | None = None,
+    connection_id: str | None = None,
 ) -> WorkflowCampaign:
     now = datetime.now(UTC)
     return WorkflowCampaign(
@@ -300,6 +306,7 @@ def _make_campaign(
         created_at=now,
         updated_at=now,
         last_activity_at=now,
+        connection_id=connection_id,
     )
 
 
@@ -478,6 +485,18 @@ class TestSendMessage:
 
         assert response.status_code == 200
         assert "result" in response.json()
+
+    def test_persistence_failure_stops_launched_session(self) -> None:
+        workflow = _make_workflow()
+        client, _, port = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+            campaign_repo=FailingCampaignRepository(),
+        )
+
+        response = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
+
+        assert "error" in response.json()
+        assert port.stopped == ["session-123"]
 
 
 class TestGateContinuation:
@@ -721,6 +740,17 @@ class TestCancelTask:
         error = response.json()["error"]
         assert "terminal" in error["message"]
         assert port.stopped == []
+
+    def test_cancel_does_not_retarget_a_vanished_connection(self) -> None:
+        campaign = _make_campaign(connection_id="connection-gone")
+        client, _, primary = _make_client(
+            campaign_repo=InMemoryCampaignRepository([campaign]),
+        )
+
+        response = _rpc(client, "CancelTask", {"id": campaign.slug})
+
+        assert response.status_code == 503
+        assert primary.stopped == []
 
 
 class TestProtocolSurface:

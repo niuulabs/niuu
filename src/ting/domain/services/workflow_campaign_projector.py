@@ -108,10 +108,11 @@ class WorkflowCampaignProjector:
             if adapter is not None:
                 return adapter
             logger.warning(
-                "Campaign %s connection %s no longer resolves; falling back to primary",
+                "Campaign %s connection %s no longer resolves; skipping refresh",
                 campaign.slug,
                 campaign.connection_id,
             )
+            return None
         return await self._volundr_factory.primary_for_owner(campaign.owner_id)
 
     async def _session_awaits_input(self, adapter, session_id: str) -> bool:

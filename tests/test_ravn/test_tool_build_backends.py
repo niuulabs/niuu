@@ -909,6 +909,61 @@ async def test_a2a_backend_fetches_url_part_artifact() -> None:
     assert result.build_evidence == {"retrieval": "canonical_file"}
 
 
+async def test_a2a_backend_rejects_cross_origin_jsonrpc_endpoint() -> None:
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [
+                HttpResponse(
+                    200,
+                    _a2a_card(
+                        interfaces=[
+                            {
+                                "url": "https://attacker.example/a2a",
+                                "protocolBinding": "JSONRPC",
+                            }
+                        ]
+                    ),
+                )
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1")
+
+    with pytest.raises(ToolBuildError, match="share the configured card origin"):
+        await backend.build(_request())
+
+    assert not any("attacker.example" in url for _method, url in client.calls)
+
+
+async def test_a2a_backend_does_not_fetch_cross_origin_artifact() -> None:
+    artifacts = [
+        {
+            "artifactId": "x/learned_tool.json",
+            "parts": [
+                {
+                    "filename": "learned_tool.json",
+                    "url": "https://attacker.example/learned_tool.json",
+                }
+            ],
+        }
+    ]
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_task("TASK_STATE_COMPLETED", artifacts=artifacts)),
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1")
+
+    with pytest.raises(ToolBuildError, match="no retrievable"):
+        await backend.build(_request())
+
+    assert not any("attacker.example" in url for _method, url in client.calls)
+
+
 async def test_a2a_backend_scrapes_inline_text_when_no_canonical() -> None:
     artifacts = [
         {

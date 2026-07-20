@@ -92,6 +92,21 @@ async def test_round_trip_read_page_raises_not_found(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_round_trip_delete_page(tmp_path: Path) -> None:
+    """Delete flows through HTTP and reports whether the page existed."""
+    app = _make_mimir_app(tmp_path / "hosted")
+    adapter = _http_adapter_over_asgi(app)
+    path = "technical/delete-me.md"
+
+    await adapter.upsert_page(path, "# Delete Me\nNo longer needed.")
+
+    assert await adapter.delete_page(path) is True
+    with pytest.raises(FileNotFoundError):
+        await adapter.read_page(path)
+    assert await adapter.delete_page(path) is False
+
+
+@pytest.mark.asyncio
 async def test_round_trip_list_pages(tmp_path: Path) -> None:
     """list_pages returns the upserted page."""
     app = _make_mimir_app(tmp_path / "hosted")
@@ -155,6 +170,29 @@ async def test_composite_project_routes_to_hosted(tmp_path: Path) -> None:
     local_pages = await local_adapter.list_pages()
     local_paths = [m.path for m in local_pages]
     assert "project/decisions/arch.md" not in local_paths
+
+
+@pytest.mark.asyncio
+async def test_composite_delete_uses_write_routing(tmp_path: Path) -> None:
+    """Delete targets the same mount that receives a routed write."""
+    app = _make_mimir_app(tmp_path / "hosted")
+    hosted_adapter = _http_adapter_over_asgi(app)
+    local_adapter = MarkdownMimirAdapter(root=tmp_path / "local")
+    path = "project/decisions/delete-me.md"
+    composite = CompositeMimirAdapter(
+        mounts=[
+            MimirMount(name="local", port=local_adapter, role="local", read_priority=0),
+            MimirMount(name="hosted", port=hosted_adapter, role="shared", read_priority=1),
+        ],
+        write_routing=WriteRouting(rules=[("project/", ["hosted"])], default=["local"]),
+    )
+
+    await composite.upsert_page(path, "# Delete Me\nHosted only.")
+
+    assert await composite.delete_page(path) is True
+    with pytest.raises(FileNotFoundError):
+        await hosted_adapter.read_page(path)
+    assert await composite.delete_page(path) is False
 
 
 @pytest.mark.asyncio

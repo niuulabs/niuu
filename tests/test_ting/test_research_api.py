@@ -453,6 +453,10 @@ def test_create_campaign_uses_selected_volundr_target(tmp_path: Path) -> None:
     assert valhalla.requests[0].workload_type == "ravn_flock"
     assert body["metadata"]["connection_id"] == "volundr-valhalla"
     assert body["metadata"]["cluster_name"] == "valhalla"
+    import asyncio
+
+    campaigns = asyncio.run(campaign_repo.list_campaigns(owner_id="user-1"))
+    assert campaigns[0].connection_id == "volundr-valhalla"
 
 
 def test_create_campaign_rejects_unknown_volundr_target(tmp_path: Path) -> None:

@@ -411,8 +411,6 @@ class TestBroker:
             mock_service_manager = AsyncMock()
             mock_service_manager_cls.return_value = mock_service_manager
             await broker.startup()
-            if broker._workflow_trigger_task is not None:
-                await broker._workflow_trigger_task
 
         mock_transport.start.assert_not_called()
         mock_adapter.publish.assert_awaited_once()
@@ -428,6 +426,40 @@ class TestBroker:
             and call.args[0].get("content") == "Implement the requested change"
             for call in mock_channel.send_event.await_args_list
         )
+
+    @pytest.mark.asyncio
+    async def test_startup_propagates_workflow_trigger_failure(self, tmp_path):
+        settings = SkuldSettings(
+            session={
+                "id": "wf-session-failed",
+                "workspace_dir": str(tmp_path),
+                "initial_prompt": "Implement the requested change",
+            },
+            mesh={"enabled": True, "peer_id": "skuld-wf"},
+            workflow_trigger={
+                "enabled": True,
+                "event_type": "code.requested",
+                "startup_delay_s": 0.0,
+            },
+            chronicle_watcher_enabled=False,
+        )
+        broker = Broker(settings=settings)
+        mock_transport = AsyncMock()
+        mock_transport.on_event = MagicMock()
+
+        with (
+            patch.object(broker, "_create_transport", return_value=mock_transport),
+            patch("skuld.broker.ServiceManager") as mock_service_manager_cls,
+            patch.object(broker, "_start_mesh_adapter", new=AsyncMock()),
+            patch.object(
+                broker,
+                "_run_workflow_trigger_task",
+                new=AsyncMock(side_effect=RuntimeError("kickoff was never acknowledged")),
+            ),
+        ):
+            mock_service_manager_cls.return_value = AsyncMock()
+            with pytest.raises(RuntimeError, match="never acknowledged"):
+                await broker.startup()
 
     @pytest.mark.asyncio
     async def test_publish_workflow_trigger_waits_for_connected_consumers(self, tmp_path):

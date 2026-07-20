@@ -98,6 +98,15 @@ class MimirPort(ABC):
         """
         raise NotImplementedError
 
+    async def delete_page(self, path: str, mimir: str | None = None) -> bool:
+        """Delete a wiki page and its derived indexes.
+
+        Returns ``True`` when a page was removed and ``False`` when it did not
+        exist. Adapters that cannot delete pages should raise
+        ``NotImplementedError``.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     async def read_page(self, path: str) -> str:
         """Return the raw Markdown content of the wiki page at *path*.
