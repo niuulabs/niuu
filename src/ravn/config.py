@@ -2416,6 +2416,14 @@ class PostSessionReflectionConfig(BaseModel):
         default=5,
         description="Maximum number of learning pages injected at session start.",
     )
+    candidate_min_repetitions: int = Field(
+        default=3,
+        ge=2,
+        description=(
+            "Distinct session observations required before a reflection candidate "
+            "may be promoted to a reusable learning without stronger evidence."
+        ),
+    )
 
 
 class RecapConfig(BaseModel):
