@@ -5,6 +5,15 @@ Expand the name of the chart.
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+{{/* Learned-tool NetworkPolicy names, shared with the rendered Ravn config. */}}
+{{- define "agent.learnedToolDenyPolicyName" -}}
+{{- printf "%s-tool-net-deny" (include "agent.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "agent.learnedToolAllowPolicyName" -}}
+{{- printf "%s-tool-net-allow" (include "agent.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
 {{/*
 Create a default fully qualified app name.
 */}}

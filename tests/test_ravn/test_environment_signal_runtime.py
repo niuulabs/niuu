@@ -168,13 +168,14 @@ async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
     # The prompt is structured markdown: a heading, sections, fenced payload +
     # outcome schema. Assert the durable contract, not exact prose.
     context = enqueued[0].initiative_context
-    assert context.startswith("# Signal investigation")
+    assert context.startswith("# Environment signal")
+    assert "not a predetermined conclusion or action" in context
     assert "**Valkyrie:** Sigrun" in context
     assert "**Peer id:** `valkyrie-host-jozef`" in context
     assert "Quietly skeptical and evidence-first" in context
     assert "`capability_list`" in context
     assert "`build_tool`" in context
-    assert "whatever order the situation requires" in context
+    assert "options, not a prescribed route" in context
     assert "decision: watch" not in context
     assert "operational_state: watching" not in context
     assert "## Required outcome" in context
@@ -263,6 +264,7 @@ async def test_daemon_environment_signal_is_recorded_into_resident_inbox(
     tmp_path,
 ) -> None:
     settings = _settings()
+    settings.resident_inbox.environment_signals_enabled = True
     mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
     bus = InProcessBus()
     runtime = _build_environment_signal_runtime(
@@ -292,6 +294,7 @@ async def test_daemon_environment_signal_recording_notifies_wakefulness(
     tmp_path,
 ) -> None:
     settings = _settings()
+    settings.resident_inbox.environment_signals_enabled = True
     mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
     bus = InProcessBus()
     wakefulness = WakefulnessProbe()
@@ -485,12 +488,13 @@ async def test_below_threshold_signals_accumulate_for_idle_triage() -> None:
     assert enqueued == []
     task = runtime._triage_task(runtime._untriaged)
     assert task.triggered_by == "signal:idle_triage"
-    assert task.title == "Idle triage: 1 routine signal(s)"
+    assert task.title == "Signal window: 1 observation(s)"
     context = task.initiative_context
-    assert "# Idle triage" in context
-    assert "signal_task_severities" in context
+    assert "# Signals since your last look" in context
+    assert "without a predetermined interpretation" in context
+    assert "signal_task_severities" not in context
     assert "**critical**: 1" in context
-    assert "## Sample signals" in context
+    assert "## Observed signals" in context
     assert "(critical, host-events)" in context
     assert "---outcome---" in context and "---end---" in context
     assert "decision: watch" not in context
@@ -520,7 +524,7 @@ def test_idle_triage_prompt_is_bounded_regardless_of_batch_size() -> None:
     task = runtime._triage_task(batch)
     context = task.initiative_context
 
-    assert task.title == "Idle triage: 40 routine signal(s)"
+    assert task.title == "Signal window: 40 observation(s)"
     # Sample lines are capped and each summary is truncated, never verbatim.
     assert long_summary not in context
     assert context.count("(info, host-events)") == 4

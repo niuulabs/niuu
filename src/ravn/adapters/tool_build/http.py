@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Protocol
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -56,6 +57,7 @@ def client_from_workload_identity(
     workload_scopes: list[str] | None = None,
     timeout_seconds: float = 30.0,
     transport: httpx.BaseTransport | None = None,
+    allowed_origins: list[str] | None = None,
 ) -> HttpxJsonClient:
     """Build the real client for dynamic tool-build adapters.
 
@@ -71,11 +73,13 @@ def client_from_workload_identity(
         return HttpxJsonClient(
             auth=StaticBearerTokenAuthAdapter(token=external_token),
             timeout_seconds=timeout_seconds,
+            allowed_origins=allowed_origins or [base_url],
         )
     if external_token_env:
         return HttpxJsonClient(
             auth=StaticBearerTokenAuthAdapter(token_env=external_token_env),
             timeout_seconds=timeout_seconds,
+            allowed_origins=allowed_origins or [base_url],
         )
     return HttpxJsonClient(
         auth=WorkloadIdentityBearerTokenAuthAdapter(
@@ -88,6 +92,7 @@ def client_from_workload_identity(
             transport=transport,
         ),
         timeout_seconds=timeout_seconds,
+        allowed_origins=allowed_origins or [base_url],
     )
 
 
@@ -99,9 +104,13 @@ class HttpxJsonClient:
         *,
         auth: HttpAuthPort | None = None,
         timeout_seconds: float = 30.0,
+        allowed_origins: list[str] | None = None,
     ) -> None:
         self._auth = auth
         self._timeout = timeout_seconds
+        self._allowed_origins = frozenset(
+            normalize_http_origin(origin) for origin in (allowed_origins or [])
+        )
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -123,6 +132,7 @@ class HttpxJsonClient:
     async def get(self, url: str, *, headers: dict[str, str] | None = None) -> HttpResponse:
         import httpx  # noqa: PLC0415
 
+        self._assert_allowed_origin(url)
         merged = await self._resolve_headers()
         if headers:
             merged.update(headers)
@@ -139,12 +149,43 @@ class HttpxJsonClient:
     ) -> HttpResponse:
         import httpx  # noqa: PLC0415
 
+        self._assert_allowed_origin(url)
         merged = await self._resolve_headers()
         if headers:
             merged.update(headers)
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(url, headers=merged, json=json_body)
             return HttpResponse(status_code=resp.status_code, body=_safe_json(resp))
+
+    def _assert_allowed_origin(self, url: str) -> None:
+        if not self._allowed_origins:
+            return
+        try:
+            origin = normalize_http_origin(url)
+        except ValueError as exc:
+            raise ValueError("HTTP client target must be an absolute http(s) URL") from exc
+        if origin not in self._allowed_origins:
+            raise ValueError(f"refusing authenticated request to untrusted origin {origin}")
+
+
+def normalize_http_origin(url: str) -> str:
+    """Return a canonical HTTP origin, rejecting credentials and malformed URLs."""
+    try:
+        parsed = urlsplit(str(url or "").strip())
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("invalid HTTP URL") from exc
+    scheme = parsed.scheme.casefold()
+    if scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("URL must use http or https and include a host")
+    if parsed.username or parsed.password:
+        raise ValueError("URL must not embed credentials")
+    default_port = 80 if scheme == "http" else 443
+    host = parsed.hostname.casefold()
+    if ":" in host:
+        host = f"[{host}]"
+    netloc = host if port in {None, default_port} else f"{host}:{port}"
+    return urlunsplit((scheme, netloc, "", "", ""))
 
 
 def _safe_json(resp: Any) -> Any:

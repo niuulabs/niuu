@@ -11,7 +11,7 @@ import re
 import shlex
 import shutil
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
@@ -341,10 +341,7 @@ class ContainedLearnedToolRunner:
         network_grants = [
             grant
             for grant in declared_reach
-            if (
-                grant.kind.lower() in NETWORK_REACH_KINDS
-                or grant.kind.lower().startswith("http")
-            )
+            if (grant.kind.lower() in NETWORK_REACH_KINDS or grant.kind.lower().startswith("http"))
             and grant.access != "none"
         ]
         targeted_network = [grant.target for grant in network_grants if grant.target.strip()]
@@ -360,9 +357,7 @@ class ContainedLearnedToolRunner:
                 "grant; refusing to treat unrestricted sockets as read-only or write-only"
             )
         network = (
-            NETWORK_ALLOWED_DOCKER_NETWORK
-            if network_grants
-            else NETWORK_DENIED_DOCKER_NETWORK
+            NETWORK_ALLOWED_DOCKER_NETWORK if network_grants else NETWORK_DENIED_DOCKER_NETWORK
         )
         args.append(f"--network={network}")
 
@@ -391,9 +386,7 @@ class ContainedLearnedToolRunner:
                 if grant.access == "none":
                     continue
                 if grant.access != "read":
-                    raise LearnedToolError(
-                        f"credential reach {grant.target!r} must be read-only"
-                    )
+                    raise LearnedToolError(f"credential reach {grant.target!r} must be read-only")
                 name = grant.target.strip()
                 if not _ENV_NAME_RE.fullmatch(name):
                     raise LearnedToolError(
@@ -431,9 +424,7 @@ class ContainedLearnedToolRunner:
             Path("/var/run/docker.sock").resolve(),
         )
         if target == Path("/") or any(
-            blocked == target
-            or blocked.is_relative_to(target)
-            or target.is_relative_to(blocked)
+            blocked == target or blocked.is_relative_to(target) or target.is_relative_to(blocked)
             for blocked in forbidden
         ):
             raise LearnedToolError(
@@ -504,9 +495,7 @@ class ContainedLearnedToolRunner:
             return None
         for requirement in requirements:
             if not requirement.strip() or requirement.lstrip().startswith("-"):
-                raise LearnedToolError(
-                    f"unsafe learned-tool requirement argument: {requirement!r}"
-                )
+                raise LearnedToolError(f"unsafe learned-tool requirement argument: {requirement!r}")
         safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", tool_name.strip())
         if not safe_name:
             raise LearnedToolError("cannot provision a venv for an empty tool name")
@@ -531,8 +520,7 @@ class ContainedLearnedToolRunner:
             if created.returncode != 0 or created.error or created.timed_out:
                 shutil.rmtree(venv_dir, ignore_errors=True)
                 raise LearnedToolError(
-                    "contained learned-tool venv creation failed: "
-                    + self._process_error(created)
+                    "contained learned-tool venv creation failed: " + self._process_error(created)
                 )
             installed = await self._run_provision_step(
                 venv_dir,
@@ -1332,7 +1320,7 @@ _REACH_BOUNDARY = {
 
 
 #: Execution backends the resolver accepts; anything else is a config error.
-KNOWN_EXECUTION_BACKENDS = frozenset({"", "container", "local", "forge", "devrunner"})
+KNOWN_EXECUTION_BACKENDS = frozenset({"", "container", "local", "forge", "devrunner", "k8s_job"})
 
 
 def learned_tool_runner_for_backend(
@@ -1341,6 +1329,7 @@ def learned_tool_runner_for_backend(
     workspace_root: str | Path,
     venvs_dir: str | Path,
     sandbox_shell: Any | None = None,
+    backend_kwargs: Mapping[str, Any] | None = None,
 ) -> LearnedToolRunner:
     """Build the configured runner at the composition boundary.
 
@@ -1359,6 +1348,18 @@ def learned_tool_runner_for_backend(
         return ForgeSandboxLearnedToolRunner(
             workspace_root=workspace_root,
             shell=sandbox_shell,
+        )
+    if execution_backend == "k8s_job":
+        from ravn.valkyrie_evolution.k8s_tool_runner import (  # noqa: PLC0415
+            KubernetesJobExecutor,
+            KubernetesJobLearnedToolRunner,
+        )
+
+        kwargs = dict(backend_kwargs or {})
+        executor = KubernetesJobExecutor(**kwargs)
+        return KubernetesJobLearnedToolRunner(
+            executor=executor,
+            image=str(kwargs.get("image") or DEFAULT_CONTAINED_TOOL_IMAGE),
         )
     raise LearnedToolError(f"unknown learned tool execution backend: {execution_backend!r}")
 
@@ -1381,6 +1382,7 @@ class LearnedToolResolver:
         execution_backend: str = "local",
         workspace_root: str | Path | None = None,
         timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
+        execution_backend_kwargs: Mapping[str, Any] | None = None,
     ) -> None:
         if execution_backend not in KNOWN_EXECUTION_BACKENDS:
             raise LearnedToolError(f"unknown learned tool execution backend: {execution_backend!r}")
@@ -1388,6 +1390,7 @@ class LearnedToolResolver:
         self._execution_backend = execution_backend
         self._workspace_root = Path(workspace_root) if workspace_root else self._state_dir.parent
         self._timeout_seconds = timeout_seconds
+        self._execution_backend_kwargs = dict(execution_backend_kwargs or {})
         self._code_dir, self._artifacts_dir = learned_tool_storage(self._state_dir)
         self._venvs_dir = learned_tool_venvs_dir(self._state_dir)
 
@@ -1462,6 +1465,7 @@ class LearnedToolResolver:
             self._execution_backend,
             workspace_root=self._workspace_root,
             venvs_dir=self._venvs_dir,
+            backend_kwargs=self._execution_backend_kwargs,
         )
 
 

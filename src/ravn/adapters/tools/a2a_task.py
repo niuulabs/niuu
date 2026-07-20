@@ -7,7 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from niuu.domain.agent_directory import AgentDirectoryEntry
-from ravn.adapters.tool_build.http import AsyncJsonHttpClient
+from ravn.adapters.tool_build.http import AsyncJsonHttpClient, normalize_http_origin
 from ravn.domain.models import ToolResult
 from ravn.ports.agent_directory import PeerAgentDirectoryPort
 from ravn.ports.tool import ToolPort
@@ -15,6 +15,8 @@ from ravn.ports.tool import ToolPort
 _A2A_HEADERS = {"A2A-Version": "1.0"}
 _JSONRPC_BINDING = "jsonrpc"
 _INPUT_REQUIRED_STATE = "TASK_STATE_INPUT_REQUIRED"
+_DEFAULT_RESULT_MAX_CHARS = 12_000
+_DEFAULT_MESSAGE_MAX_CHARS = 12_000
 
 
 class A2ATaskTool(ToolPort):
@@ -25,9 +27,17 @@ class A2ATaskTool(ToolPort):
         *,
         agent_directory: PeerAgentDirectoryPort,
         client: AsyncJsonHttpClient,
+        trusted_origins: list[str] | None = None,
+        result_max_chars: int = _DEFAULT_RESULT_MAX_CHARS,
+        message_max_chars: int = _DEFAULT_MESSAGE_MAX_CHARS,
     ) -> None:
         self._directory = agent_directory
         self._client = client
+        self._trusted_origins = frozenset(
+            normalize_http_origin(origin) for origin in (trusted_origins or [])
+        )
+        self._result_max_chars = max(1_000, result_max_chars)
+        self._message_max_chars = max(1_000, message_max_chars)
 
     @property
     def name(self) -> str:
@@ -73,7 +83,12 @@ class A2ATaskTool(ToolPort):
                 },
                 "metadata": {
                     "type": "object",
-                    "description": "Optional A2A message metadata.",
+                    "description": (
+                        "Optional continuation metadata returned by the peer. For a "
+                        "pending question, preserve requestId. For a pending gate, send "
+                        "gateId plus gateDecision=approve or request_changes; include "
+                        "review notes in answer when requesting changes."
+                    ),
                 },
             },
             "required": ["operation", "agent_id"],
@@ -91,6 +106,10 @@ class A2ATaskTool(ToolPort):
         agent_id = str(input.get("agent_id") or "").strip()
         if not agent_id:
             return _error("agent_id is required")
+        if len(agent_id) > self._message_max_chars:
+            return _error(
+                f"agent_id exceeds a2a message limit of {self._message_max_chars} characters"
+            )
         try:
             agent = await self._directory.get_agent(agent_id)
         except Exception as exc:
@@ -101,6 +120,15 @@ class A2ATaskTool(ToolPort):
         endpoint = _jsonrpc_endpoint(agent)
         if not endpoint:
             return _error(f"Agent {agent_id!r} declares no JSONRPC interface")
+        try:
+            card_origin = normalize_http_origin(agent.card_url)
+            endpoint_origin = normalize_http_origin(endpoint)
+        except ValueError as exc:
+            return _error(f"Agent {agent_id!r} declares an invalid A2A URL: {exc}")
+        if endpoint_origin != card_origin:
+            return _error(f"Agent {agent_id!r} JSONRPC interface must share its Agent Card origin")
+        if self._trusted_origins and endpoint_origin not in self._trusted_origins:
+            return _error(f"Agent {agent_id!r} uses untrusted origin {endpoint_origin}")
 
         try:
             result = await self._execute_operation(operation, input, agent, endpoint)
@@ -108,15 +136,12 @@ class A2ATaskTool(ToolPort):
             return _error(str(exc))
         return ToolResult(
             tool_call_id="",
-            content=json.dumps(
-                _response_payload(
-                    operation=operation,
-                    agent=agent,
-                    result=result,
-                    requested_task_id=str(input.get("task_id") or "").strip(),
-                ),
-                indent=2,
-                default=str,
+            content=_render_response_payload(
+                operation=operation,
+                agent=agent,
+                result=result,
+                requested_task_id=str(input.get("task_id") or "").strip(),
+                max_chars=self._result_max_chars,
             ),
         )
 
@@ -133,12 +158,13 @@ class A2ATaskTool(ToolPort):
             prompt = str(input.get("prompt") or "").strip()
             if not skill_id or not prompt:
                 raise _A2ATaskError("start requires skill_id and prompt")
+            self._validate_message(skill_id, "skill_id")
+            self._validate_message(prompt, "prompt")
             if skill_id not in agent.skill_ids:
-                raise _A2ATaskError(
-                    f"Agent {agent.id!r} does not publish skill {skill_id!r}"
-                )
+                raise _A2ATaskError(f"Agent {agent.id!r} does not publish skill {skill_id!r}")
             supplied_metadata = input.get("metadata")
             metadata = dict(supplied_metadata) if isinstance(supplied_metadata, dict) else {}
+            self._validate_metadata(metadata)
             metadata.update({"skillId": skill_id, "workflowId": skill_id})
             return await self._rpc(
                 endpoint,
@@ -155,6 +181,7 @@ class A2ATaskTool(ToolPort):
 
         if not task_id:
             raise _A2ATaskError(f"{operation} requires task_id")
+        self._validate_message(task_id, "task_id")
         if operation == "get":
             return await self._rpc(endpoint, "GetTask", {"id": task_id})
         if operation == "cancel":
@@ -163,8 +190,10 @@ class A2ATaskTool(ToolPort):
         answer = str(input.get("answer") or "").strip()
         if not answer:
             raise _A2ATaskError("reply requires answer")
+        self._validate_message(answer, "answer")
         supplied_metadata = input.get("metadata")
         metadata = dict(supplied_metadata) if isinstance(supplied_metadata, dict) else {}
+        self._validate_metadata(metadata)
         return await self._rpc(
             endpoint,
             "SendMessage",
@@ -179,22 +208,38 @@ class A2ATaskTool(ToolPort):
             },
         )
 
+    def _validate_message(self, value: str, field: str) -> None:
+        if len(value) > self._message_max_chars:
+            raise _A2ATaskError(
+                f"{field} exceeds a2a message limit of {self._message_max_chars} characters"
+            )
+
+    def _validate_metadata(self, metadata: dict[str, Any]) -> None:
+        rendered = json.dumps(metadata, sort_keys=True, default=str)
+        if len(rendered) > self._message_max_chars:
+            raise _A2ATaskError(
+                f"metadata exceeds a2a message limit of {self._message_max_chars} characters"
+            )
+
     async def _rpc(
         self,
         endpoint: str,
         method: str,
         params: dict[str, Any],
     ) -> dict[str, Any]:
-        response = await self._client.post(
-            endpoint,
-            {
-                "jsonrpc": "2.0",
-                "id": str(uuid4()),
-                "method": method,
-                "params": params,
-            },
-            headers=_A2A_HEADERS,
-        )
+        try:
+            response = await self._client.post(
+                endpoint,
+                {
+                    "jsonrpc": "2.0",
+                    "id": str(uuid4()),
+                    "method": method,
+                    "params": params,
+                },
+                headers=_A2A_HEADERS,
+            )
+        except Exception as exc:
+            raise _A2ATaskError(f"A2A {method} transport failed: {exc}") from exc
         if response.status_code != 200 or not isinstance(response.body, dict):
             raise _A2ATaskError(f"A2A {method} returned HTTP {response.status_code}")
         error = response.body.get("error")
@@ -219,22 +264,21 @@ def _jsonrpc_endpoint(agent: AgentDirectoryEntry) -> str:
     return ""
 
 
-def _response_payload(
+def _render_response_payload(
     *,
     operation: str,
     agent: AgentDirectoryEntry,
     result: dict[str, Any],
     requested_task_id: str,
-) -> dict[str, Any]:
+    max_chars: int,
+) -> str:
     embedded = result.get("task")
     task = embedded if isinstance(embedded, dict) else result
     status = task.get("status") if isinstance(task, dict) else {}
     status = status if isinstance(status, dict) else {}
     state = str(status.get("state") or "")
     task_id = (
-        str(task.get("id") or requested_task_id)
-        if isinstance(task, dict)
-        else requested_task_id
+        str(task.get("id") or requested_task_id) if isinstance(task, dict) else requested_task_id
     )
     metadata = task.get("metadata") if isinstance(task, dict) else {}
     metadata = metadata if isinstance(metadata, dict) else {}
@@ -244,25 +288,96 @@ def _response_payload(
     pending_questions = pending_questions if isinstance(pending_questions, list) else []
     pending_gates = metadata.get("pendingGates")
     pending_gates = pending_gates if isinstance(pending_gates, list) else []
-    return {
+    payload: dict[str, Any] = {
         "operation": operation,
         "agent_id": agent.id,
         "task_id": task_id,
         "state": state,
         "input_required": state == _INPUT_REQUIRED_STATE,
-        "pending_questions": pending_questions,
-        "pending_gates": pending_gates,
-        "artifacts": artifacts,
-        "result": result,
+        "pending_questions": [],
+        "pending_gates": [],
+        "artifacts": [],
         "provenance": {
             "source": "guild-agent-directory",
             "source_agent_id": agent.source_agent_id,
             "card_url": agent.card_url,
             "card_hash": agent.card_hash,
             "signature_verified": agent.signature_verified,
-            "directory": [item.model_dump(by_alias=True) for item in agent.provenance],
+            "directory": [item.model_dump(by_alias=True) for item in agent.provenance[:8]],
         },
     }
+    message = status.get("message") or status.get("update")
+    if message:
+        payload["status_message"] = _truncate(str(message), 2_000)
+
+    _append_while_fits(payload, "pending_questions", pending_questions, max_chars)
+    _append_while_fits(payload, "pending_gates", pending_gates, max_chars)
+    _append_while_fits(payload, "artifacts", artifacts, max_chars)
+    rendered = json.dumps(payload, indent=2, default=str)
+    if len(rendered) <= max_chars:
+        return rendered
+    # The fixed envelope can only exceed the configured limit through unusual
+    # directory metadata. Keep the continuation identifiers and state intact.
+    payload["provenance"] = {
+        "source": "guild-agent-directory",
+        "card_hash": agent.card_hash,
+        "signature_verified": agent.signature_verified,
+    }
+    rendered = json.dumps(payload, indent=2, default=str)
+    if len(rendered) <= max_chars:
+        return rendered
+    # A malformed directory entry or peer task can make even the fixed
+    # envelope enormous. Return a final valid, bounded envelope rather than
+    # violating the advertised context limit.
+    return json.dumps(
+        {
+            "operation": operation,
+            "agent_id": _truncate(str(agent.id), 128),
+            "task_id": _truncate(task_id, 512),
+            "state": _truncate(state, 64),
+            "input_required": state == _INPUT_REQUIRED_STATE,
+            "truncated": "peer identifiers or provenance exceeded the result limit",
+        },
+        indent=2,
+    )
+
+
+def _append_while_fits(
+    payload: dict[str, Any],
+    key: str,
+    values: list[Any],
+    max_chars: int,
+) -> None:
+    target = payload[key]
+    assert isinstance(target, list)
+    for value in values[:16]:
+        bounded = _bounded_item(value, max_chars=max(256, max_chars // 3))
+        target.append(bounded)
+        if len(json.dumps(payload, indent=2, default=str)) > max_chars:
+            target.pop()
+            target.append({"truncated": f"additional {key} omitted"})
+            if len(json.dumps(payload, indent=2, default=str)) > max_chars:
+                target.pop()
+            break
+
+
+def _bounded_item(value: Any, *, max_chars: int) -> Any:
+    rendered = json.dumps(value, sort_keys=True, default=str)
+    if len(rendered) <= max_chars:
+        return value
+    if isinstance(value, dict):
+        identity = {
+            key: value[key]
+            for key in ("artifactId", "artifact_id", "requestId", "gateId", "id", "name")
+            if key in value
+        }
+        identity["content_excerpt"] = _truncate(rendered, max(64, max_chars - 160))
+        return identity
+    return _truncate(rendered, max_chars)
+
+
+def _truncate(value: str, max_chars: int) -> str:
+    return value if len(value) <= max_chars else f"{value[: max_chars - 1]}…"
 
 
 def _error(message: str) -> ToolResult:

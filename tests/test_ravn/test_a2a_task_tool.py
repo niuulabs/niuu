@@ -202,6 +202,97 @@ async def test_a2a_task_rejects_unknown_agent_and_unpublished_skill() -> None:
     assert client.posts == []
 
 
+@pytest.mark.asyncio
+async def test_a2a_task_rejects_cross_origin_and_untrusted_peer_endpoints() -> None:
+    cross_origin = _agent().model_copy(deep=True)
+    cross_origin.supported_interfaces[0].url = "https://attacker.example/a2a"
+    client = _Client([])
+    tool = A2ATaskTool(
+        agent_directory=_Directory(cross_origin),
+        client=client,
+        trusted_origins=["https://peer.example"],
+    )
+
+    result = await tool.execute(
+        {"operation": "get", "agent_id": cross_origin.id, "task_id": "task-1"}
+    )
+
+    assert result.is_error
+    assert "must share its Agent Card origin" in result.content
+    assert client.posts == []
+
+    untrusted = A2ATaskTool(
+        agent_directory=_Directory(_agent()),
+        client=client,
+        trusted_origins=["https://platform.example"],
+    )
+    result = await untrusted.execute(
+        {"operation": "get", "agent_id": _agent().id, "task_id": "task-1"}
+    )
+    assert result.is_error
+    assert "uses untrusted origin https://peer.example" in result.content
+    assert client.posts == []
+
+
+@pytest.mark.asyncio
+async def test_a2a_task_bounds_outbound_messages_and_model_facing_results() -> None:
+    client = _Client(
+        [
+            {
+                "id": "task-large",
+                "status": {"state": "TASK_STATE_COMPLETED"},
+                "artifacts": [
+                    {
+                        "artifactId": "large-artifact",
+                        "parts": [{"text": "result " * 10_000}],
+                    }
+                ],
+            }
+        ]
+    )
+    tool = A2ATaskTool(
+        agent_directory=_Directory(_agent()),
+        client=client,
+        trusted_origins=["https://peer.example"],
+        message_max_chars=1_000,
+        result_max_chars=1_000,
+    )
+
+    oversized = await tool.execute(
+        {
+            "operation": "start",
+            "agent_id": _agent().id,
+            "skill_id": "review",
+            "prompt": "x" * 1_001,
+        }
+    )
+    assert oversized.is_error
+    assert "prompt exceeds a2a message limit" in oversized.content
+    assert client.posts == []
+
+    bounded = await tool.execute(
+        {"operation": "get", "agent_id": _agent().id, "task_id": "task-large"}
+    )
+    payload = json.loads(bounded.content)
+    assert len(bounded.content) <= 1_000
+    assert payload["task_id"] == "task-large"
+    assert payload["state"] == "TASK_STATE_COMPLETED"
+    assert payload["artifacts"][0]["artifactId"] == "large-artifact"
+
+    client.results.append(
+        {
+            "id": "peer-task-" + "x" * 10_000,
+            "status": {"state": "TASK_STATE_WORKING"},
+        }
+    )
+    malformed = await tool.execute(
+        {"operation": "get", "agent_id": _agent().id, "task_id": "requested-task"}
+    )
+    malformed_payload = json.loads(malformed.content)
+    assert len(malformed.content) <= 1_000
+    assert malformed_payload["truncated"].startswith("peer identifiers")
+
+
 class _ScriptedLLM:
     def __init__(self, calls: list[ToolCall], final: str) -> None:
         self._calls = iter(calls)

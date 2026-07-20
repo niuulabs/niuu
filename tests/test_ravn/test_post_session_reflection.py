@@ -245,6 +245,78 @@ async def test_process_skips_on_null_learning():
 
 
 @pytest.mark.asyncio
+async def test_non_repo_reflection_prompt_is_session_neutral_and_evidence_bounded():
+    bus = InProcessBus()
+    mimir = AsyncMock()
+    llm = AsyncMock()
+    llm.generate.return_value = _make_llm_response("null")
+    svc = PostSessionReflectionService(bus, mimir, llm, _make_config())
+
+    await svc._run_reflection(
+        {
+            "persona": "workshop-steward",
+            "outcome": "watch",
+            "token_count": 400,
+            "duration_s": 2.0,
+            "repo_slug": "",
+        }
+    )
+
+    prompt = llm.generate.await_args.kwargs["messages"][0]["content"]
+    assert "coding session" not in prompt
+    assert "repository" not in prompt
+    assert "environment or subject" in prompt
+    assert "no subject-matter context was recorded" in prompt
+    assert "Do not infer facts absent from the record" in prompt
+
+
+@pytest.mark.asyncio
+async def test_reflection_prompt_includes_recorded_outcome_context():
+    bus = InProcessBus()
+    mimir = AsyncMock()
+    llm = AsyncMock()
+    llm.generate.return_value = _make_llm_response("null")
+    svc = PostSessionReflectionService(bus, mimir, llm, _make_config())
+
+    await svc._run_reflection(
+        {
+            "persona": "k8s-valkyrie",
+            "outcome": "success",
+            "token_count": 400,
+            "duration_s": 2.0,
+            "repo_slug": "niuulabs/volundr",
+            "outcome_event_type": "valkyrie.judgment.proposed",
+            "structured_outcome": {"decision": "watch", "rationale": "pod recovered"},
+        }
+    )
+
+    prompt = llm.generate.await_args.kwargs["messages"][0]["content"]
+    assert "repo_slug:   niuulabs/volundr" in prompt
+    assert '"decision": "watch"' in prompt
+    assert "future decision in this repository" in prompt
+
+
+@pytest.mark.asyncio
+async def test_reflection_prompt_bounds_recorded_outcome_context():
+    bus = InProcessBus()
+    mimir = AsyncMock()
+    llm = AsyncMock()
+    llm.generate.return_value = _make_llm_response("null")
+    svc = PostSessionReflectionService(bus, mimir, llm, _make_config())
+
+    await svc._run_reflection(
+        {
+            "structured_outcome": {"evidence": "x" * 20_000},
+            "outcome": "success",
+        }
+    )
+
+    prompt = llm.generate.await_args.kwargs["messages"][0]["content"]
+    assert "recorded context truncated" in prompt
+    assert "x" * 13_000 not in prompt
+
+
+@pytest.mark.asyncio
 async def test_process_skips_on_fenced_null_learning():
     bus = InProcessBus()
     mimir = AsyncMock()
@@ -499,7 +571,7 @@ async def test_third_distinct_candidate_observation_promotes_to_learning():
 
     writes = mimir.upsert_page.await_args_list
     promoted = next(call for call in writes if call.args[0].startswith("learnings/"))
-    assert "promotion_reason: \"repeated_evidence:3\"" in promoted.args[1]
+    assert 'promotion_reason: "repeated_evidence:3"' in promoted.args[1]
     assert "category: learnings" in promoted.args[1]
     assert "confidence: high" in promoted.args[1]
 
@@ -528,7 +600,7 @@ async def test_verified_outcome_can_promote_first_candidate_with_reference():
 
     writes = mimir.upsert_page.await_args_list
     promoted = next(call for call in writes if call.args[0].startswith("learnings/"))
-    assert "promotion_reason: \"verified_outcome\"" in promoted.args[1]
+    assert 'promotion_reason: "verified_outcome"' in promoted.args[1]
 
 
 @pytest.mark.asyncio

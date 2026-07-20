@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
@@ -69,6 +69,7 @@ class BuildTool(ToolPort):
         flock_id: str = "",
         domain: str = "",
         execution_backend: str = "local",
+        execution_backend_kwargs: Mapping[str, Any] | None = None,
         workspace_root: str | Path | None = None,
         sandbox_shell: Any | None = None,
         reviewer: Any | None = None,
@@ -91,6 +92,7 @@ class BuildTool(ToolPort):
         self._flock_id = flock_id
         self._domain = domain
         self._execution_backend = execution_backend
+        self._execution_backend_kwargs = dict(execution_backend_kwargs or {})
         self._workspace_root = Path(workspace_root).resolve() if workspace_root else None
         self._sandbox_shell = sandbox_shell
         self._reviewer = reviewer or PolicyCourtReviewer(reviewer="odin:build-tool")
@@ -538,6 +540,7 @@ class BuildTool(ToolPort):
             workspace_root=workspace_root,
             venvs_dir=learned_tool_venvs_dir(self._tools_dir.parent),
             sandbox_shell=self._sandbox_shell,
+            backend_kwargs=self._execution_backend_kwargs,
         )
 
 
@@ -556,6 +559,7 @@ def attach_build_tool(
     flock_id: str = "",
     domain: str = "",
     execution_backend: str = "local",
+    execution_backend_kwargs: Mapping[str, Any] | None = None,
     workspace_root: str | Path | None = None,
     sandbox_shell: Any | None = None,
     build_backend: Any | None = None,
@@ -580,6 +584,7 @@ def attach_build_tool(
         flock_id=flock_id,
         domain=domain,
         execution_backend=execution_backend,
+        execution_backend_kwargs=execution_backend_kwargs,
         workspace_root=workspace_root,
         sandbox_shell=sandbox_shell,
         build_backend=build_backend,

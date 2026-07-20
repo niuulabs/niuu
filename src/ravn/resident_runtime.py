@@ -52,11 +52,15 @@ class ResidentRuntime:
         inbox: ResidentInboxBackend | None = None,
         max_turns: int = 3,
         max_tokens: int = 0,
+        context_max_chars: int = 12000,
+        tool_result_max_chars: int = 2000,
     ) -> None:
         self._state = state
         self._inbox = inbox
         self._max_turns = max(1, int(max_turns))
         self._max_tokens = max(0, int(max_tokens))
+        self._context_max_chars = max(1000, int(context_max_chars))
+        self._tool_result_max_chars = max(100, int(tool_result_max_chars))
         self._enqueue: EnqueueResidentTask | None = None
         self._inflight_cases: set[str] = set()
         self._inflight_refs: set[str] = set()
@@ -87,9 +91,7 @@ class ResidentRuntime:
         root_id = task.root_correlation_id or case_id
         turn_index = task.resident_turn_index or 1
         mandate = task.resident_mandate or task.initiative_context
-        fields = dict(
-            getattr(getattr(result, "episode", None), "structured_outcome", None) or {}
-        )
+        fields = dict(getattr(getattr(result, "episode", None), "structured_outcome", None) or {})
         action = selected_action_from_outcome(fields)
         evidence_refs = _evidence_refs(fields, task)
         cumulative = TokenUsage(
@@ -103,6 +105,10 @@ class ResidentRuntime:
             response=response_text or result.response,
             outcome_fields=fields,
             tool_names=tuple(dict.fromkeys(call.name for call in result.tool_calls)),
+            tool_results=_tool_result_summaries(
+                result,
+                max_chars=self._tool_result_max_chars,
+            ),
             usage=result.usage,
             cumulative_usage=cumulative,
             selected_next_action=action,
@@ -114,6 +120,9 @@ class ResidentRuntime:
             inbox_refs=tuple(task.resident_inbox_refs),
         )
         turn_ref = await self._state.write_turn(record)
+        durable_turn = await self._state.read(turn_ref)
+        if durable_turn is None:
+            raise RuntimeError(f"resident turn was not readable after write: {turn_ref}")
 
         snapshot = ResidentBudgetSnapshot(
             turns_used=turn_index,
@@ -226,6 +235,7 @@ class ResidentRuntime:
             next_turn=turn_index + 1,
             cumulative=cumulative,
             mandate=mandate,
+            prior_turn=_bounded(durable_turn.content, self._context_max_chars),
         )
         accepted = await self._enqueue_task(continuation)
         if not accepted:
@@ -262,6 +272,7 @@ class ResidentRuntime:
             reason=reason,
             turn=record,
             case_id=record.case_id,
+            turn_ref=turn_ref,
         )
         task.resident_case_id = record.case_id
         return ResidentTurnDisposition(
@@ -285,8 +296,14 @@ class ResidentRuntime:
         pending = await self._state.read_operator_needed(case_id)
         if pending is None:
             raise LookupError(f"no pending operator question for case {case_id}")
+        prior_turn = await self._read_parent_turn(pending)
         answer_ref = await self._state.write_operator_answer(answer, case_id=case_id)
-        task = _operator_resume_task(pending, answer=answer, answer_ref=answer_ref)
+        task = _operator_resume_task(
+            pending,
+            answer=answer,
+            answer_ref=answer_ref,
+            prior_turn_content=prior_turn,
+        )
         accepted = await self._enqueue_task(task)
         if accepted:
             self._inflight_cases.add(case_id)
@@ -397,6 +414,7 @@ class ResidentRuntime:
                 ),
                 answer=_section(answer.content, "Answer") or _body(answer.content),
                 answer_ref=answer.path,
+                prior_turn_content=await self._read_parent_turn(answer),
             )
             if await self._enqueue_task(task):
                 self._inflight_cases.add(case_id)
@@ -413,6 +431,15 @@ class ResidentRuntime:
             return False
         result = await self._enqueue(task)
         return result is not False
+
+    async def _read_parent_turn(self, entry: ResidentMemoryEntry) -> str:
+        turn_ref = _metadata(entry.content, "turn_ref")
+        if not turn_ref:
+            return ""
+        turn = await self._state.read(turn_ref)
+        if turn is None:
+            raise RuntimeError(f"resident parent turn is not readable: {turn_ref}")
+        return _bounded(turn.content, self._context_max_chars)
 
     def _inflight_inbox_refs(self) -> set[str]:
         return set(self._inflight_refs)
@@ -476,12 +503,15 @@ def _continuation_task(
     next_turn: int,
     cumulative: TokenUsage,
     mandate: str,
+    prior_turn: str,
 ) -> AgentTask:
     context = (
         f"Continue resident case {case_id}.\n"
         f"Durable prior turn: {turn_ref}\n"
         f"Selected next action: {action}\n"
         f"Reason: {reason or 'selected by the prior resident turn'}\n\n"
+        "## Durable prior turn\n\n"
+        f"{prior_turn}\n\n"
         "Carry out or investigate the selected action using the capabilities actually "
         "available. Revise it if new evidence disagrees. End with the normal structured "
         "outcome and either another selected next action or an explicit stop/sleep/ask."
@@ -510,10 +540,11 @@ def _operator_resume_task(
     *,
     answer: str,
     answer_ref: str,
+    prior_turn_content: str = "",
 ) -> AgentTask:
     case_id = _metadata(pending.content, "case_id") or _case_from_path(pending.path)
     root_id = _metadata(pending.content, "root_correlation_id") or case_id
-    prior_turn = _int_metadata(pending.content, "turn", 0)
+    prior_turn_index = _int_metadata(pending.content, "turn", 0)
     mandate = _section(pending.content, "Mandate") or pending.content
     question = _metadata(pending.content, "question")
     context = (
@@ -521,6 +552,8 @@ def _operator_resume_task(
         f"Pending question: {question}\n"
         f"Operator answer: {answer}\n"
         f"Durable answer reference: {answer_ref}\n\n"
+        "## Durable prior turn\n\n"
+        f"{prior_turn_content or '(prior turn unavailable)'}\n\n"
         "Treat the answer as a new observation, not as proof of unrelated facts. Continue "
         "the same case and produce the normal structured outcome."
     )
@@ -535,7 +568,7 @@ def _operator_resume_task(
         root_correlation_id=root_id,
         resident_case_id=case_id,
         resident_mandate=mandate,
-        resident_turn_index=prior_turn + 1,
+        resident_turn_index=prior_turn_index + 1,
         resident_input_tokens=_int_metadata(pending.content, "case_input_tokens", 0),
         resident_output_tokens=_int_metadata(pending.content, "case_output_tokens", 0),
         resident_started_at=_metadata(pending.content, "created_at"),
@@ -584,6 +617,25 @@ def _budget_stop_reason(
     if max_tokens > 0 and total_tokens >= max_tokens:
         return f"resident continuation token budget reached: {max_tokens}"
     return ""
+
+
+def _tool_result_summaries(result: TurnResult, *, max_chars: int) -> tuple[str, ...]:
+    names = {call.id: call.name for call in result.tool_calls}
+    return tuple(
+        (
+            f"### {names.get(item.tool_call_id, item.tool_call_id or 'tool')} "
+            f"({'error' if item.is_error else 'ok'})\n\n"
+            f"{_bounded(item.content, max_chars)}"
+        )
+        for item in result.tool_results
+    )
+
+
+def _bounded(value: Any, max_chars: int) -> str:
+    text = str(value or "")
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "\n… (truncated)"
 
 
 def _evidence_refs(fields: dict[str, Any], task: AgentTask) -> tuple[str, ...]:

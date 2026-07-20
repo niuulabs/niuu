@@ -90,11 +90,10 @@ def _sanitize_durable(name: str) -> str:
 class NatsJetStreamSignalAdapter(GenericSignalAdapter):
     """Durable JetStream pull consumer feeding ``GenericSignalAdapter``.
 
-    Each :meth:`collect` call fetches up to *batch_size* pending messages
-    from the durable consumer, acknowledges them, and returns the decoded
-    payloads for pass-through normalization.  An idle stream yields an empty
-    batch after *fetch_timeout_s* — the surrounding poll loop provides the
-    cadence, the durable consumer provides the no-loss guarantee.
+    Each :meth:`collect` call fetches up to *batch_size* pending messages and
+    returns decoded payloads for pass-through normalization. The surrounding
+    runtime calls :meth:`commit` only after publishing and durably enqueueing
+    resident work; failures call :meth:`rollback` so JetStream redelivers.
     """
 
     def __init__(
@@ -174,6 +173,7 @@ class NatsJetStreamSignalAdapter(GenericSignalAdapter):
         )
         self._client = client
         self._psub: Any | None = None
+        self._pending: list[Any] = []
         super().__init__(
             environment=environment,
             source_id=source_id,
@@ -181,6 +181,8 @@ class NatsJetStreamSignalAdapter(GenericSignalAdapter):
         )
 
     async def _fetch_batch(self) -> list[Any]:
+        if self._pending:
+            raise RuntimeError("previous JetStream signal batch is still pending")
         psub = await self._ensure_subscription()
         try:
             msgs = await psub.fetch(self._batch_size, timeout=self._fetch_timeout_s)
@@ -188,11 +190,25 @@ class NatsJetStreamSignalAdapter(GenericSignalAdapter):
             # nats.errors.TimeoutError subclasses the builtin on 3.11+; an
             # idle stream is the normal case, not an error.
             return []
-        payloads: list[Any] = []
-        for msg in msgs:
-            payloads.append(_decode_payload(msg.data))
-            await msg.ack()
-        return payloads
+        self._pending = list(msgs)
+        return [_decode_payload(msg.data) for msg in msgs]
+
+    @property
+    def requires_commit(self) -> bool:
+        return True
+
+    async def commit(self) -> None:
+        while self._pending:
+            message = self._pending[0]
+            await message.ack()
+            self._pending.pop(0)
+
+    async def rollback(self) -> None:
+        pending, self._pending = self._pending, []
+        for message in pending:
+            nak = getattr(message, "nak", None)
+            if nak is not None:
+                await nak()
 
     async def _ensure_subscription(self) -> Any:
         if self._psub is not None:

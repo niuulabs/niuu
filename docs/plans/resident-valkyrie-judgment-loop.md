@@ -1,6 +1,6 @@
 # Resident Valkyrie Judgment Loop
 
-**Status:** Implemented
+**Status:** Implemented and integration-hardened
 **Date:** 2026-07-20
 **Scope:** Ravn resident Valkyries, environment signals, resident continuity,
 Mímir, tool evolution, and agent-to-agent work
@@ -53,6 +53,10 @@ This document combines three evidence sources:
 
 The live observations should remain labelled as deployment evidence; the code
 findings below are directly verifiable in this repository.
+
+The root-cause sections describe the baseline that motivated the work. The
+implemented behavior and final integration hardening are recorded below; they
+should not be read as claims that those defects remain on this branch.
 
 ## Desired behavior
 
@@ -688,7 +692,40 @@ the explicitly mounted paths and named credential become visible.
 | 1 — durable resident continuity | Complete | `8256b60f` |
 | 2 — general A2A collaboration | Complete | `e27ca3dd` |
 | 3 — evidence-gated learning | Complete | `5a2b9101` |
-| 4 — enforced learned-tool reach | Complete | current phase commit |
+| 4 — enforced learned-tool reach | Complete | `2aff1370` |
+| 5 — delivery, trust, and evaluation hardening | Complete | this integration commit |
+
+### Final integration hardening
+
+The final stitch deliberately adds no planner or objective service:
+
+- Resident continuation now rehydrates the exact durable parent turn by
+  reference, including bounded tool results, rather than reconstructing case
+  state through search. Operator-needed markers retain that turn reference, so
+  answer/retry resumes the same evidence-bearing case.
+- JetStream messages remain pending until raw publication, resident processing,
+  and durable task-window enqueue all succeed. Success ACKs the batch; any
+  failure NAKs it and does not poison the process-local dedupe cache.
+- Durable transports create one neutral observation window for the model to
+  judge. Severity remains source metadata and wake/admission information, not
+  the resident's semantic decision.
+- Automatic Mímir signal mirroring is now opt-in. Post-session reflection is
+  session-neutral, includes structured work context when present, refuses to
+  infer subject-matter learning from bookkeeping, and still writes only
+  evidence-gated candidates.
+- General A2A calls validate the Agent Card/interface origin, bind bearer
+  clients to configured trusted origins, bound inbound/outbound model context,
+  and preserve task, question, gate, artifact, and provenance identifiers.
+- The optional `k8s_job` learned-tool backend verifies the live deny and allow
+  NetworkPolicy specifications before every Job. The agent chart installs the
+  matching least-privilege RBAC and policies. Jobs use a digest-pinned image,
+  no service-account token, denied ingress, non-root/seccomp/capability
+  restrictions, resource and output bounds, and fail closed for reach the
+  backend cannot enforce.
+- `python -m ravn.evals.judgment` runs nine isolated behavioral probes through
+  the real agent loop. It passes the requested model correctly, records ordered
+  tool trajectories, emits optional JSON, supports targeted reruns, and exits
+  nonzero when the candidate configuration fails.
 
 Mímir is intentionally outside the automatic judgment path. It remains an
 agent-invoked evidence store/search tool; candidate reflections cannot enter
@@ -698,24 +735,28 @@ runtime default.
 
 ## Final validation record
 
-Validation on 2026-07-20 covered the committed implementation across Ravn,
-legacy Ravn units, Niuu/Guild, Observatory, and Sleipnir:
+Validation on 2026-07-20 covered the integrated implementation across Ravn,
+legacy Ravn units, Niuu/Guild, Observatory, Sleipnir, Ting, Skuld, charts, and
+the wider repository:
 
-- `8156 passed, 3 skipped` in the combined cross-package pytest matrix.
-- Ruff passed over `src/ravn`, both Ravn test trees, and the changed shared
-  packages.
+- `17296 passed, 27 skipped, 129 deselected, 1 xfailed` in the repository-wide
+  pytest run.
+- Ruff passed repository-wide; the agent chart passed Helm lint and rendered
+  the matching runtime configuration, RBAC, and NetworkPolicies.
 - The live Docker containment proof passed against the pinned multi-architecture
   devrunner digest. An adversarial learned tool could not read an undeclared
   host file, modify its own code, or open an undeclared network connection;
   exact read, read-write, and named credential grants remained usable.
 - Deterministic end-to-end cases cover durable continuation, operator
   question/resume, budgets, A2A discovery and `INPUT_REQUIRED` continuation,
-  evidence-gated learning promotion, and deliberate trusted retrieval.
+  JetStream ACK/NAK handoff, evidence-gated learning promotion, Kubernetes
+  policy verification, and deliberate trusted retrieval.
 
 This validates the runtime mechanisms, not model quality. Promotion of a
 particular resident model/configuration still requires the live trajectory
-scenario set below. That evaluation is deliberately not replaced by scripted
-LLM tests or claimed as an architectural property.
+scenario set below. The harness is now executable and acceptance-gated, but no
+live model endpoint was supplied for this validation. Scripted tests therefore
+do not become a claim about model judgment quality.
 
 ## File-level implementation map
 

@@ -1,4 +1,4 @@
-{{- if .Values.rbac.create -}}
+{{- if or .Values.rbac.create .Values.learnedToolRunner.enabled -}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -6,7 +6,26 @@ metadata:
   labels:
     {{- include "agent.labels" . | nindent 4 }}
 rules:
+  {{- if .Values.learnedToolRunner.enabled }}
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get"]
+  {{- end }}
+  {{- if .Values.rbac.rules }}
   {{- toYaml .Values.rbac.rules | nindent 2 }}
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

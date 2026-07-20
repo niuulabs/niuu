@@ -1049,6 +1049,23 @@ class PlatformToolsConfig(BaseModel):
         default_factory=lambda: ["volundr-api", "forge", "ting", "mimir", "guild"],
         description="Target service audiences requested from workload token exchange.",
     )
+    a2a_trusted_origins: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Additional peer Agent Card origins allowed to receive platform A2A "
+            "credentials. The platform base URL is always trusted."
+        ),
+    )
+    a2a_message_max_chars: int = Field(
+        default=12_000,
+        ge=1_000,
+        description="Maximum A2A prompt, answer, or metadata payload size.",
+    )
+    a2a_result_max_chars: int = Field(
+        default=12_000,
+        ge=1_000,
+        description="Maximum model-facing A2A task snapshot size.",
+    )
     workflow_aliases: dict[str, PlatformWorkflowAliasConfig] = Field(
         default_factory=dict,
         description=(
@@ -2669,6 +2686,34 @@ class TrustLevelAutonomyTable(BaseModel):
         return self
 
 
+class LearnedToolKubernetesConfig(BaseModel):
+    """Deployment contract for pod-per-run learned tools."""
+
+    namespace: str = Field(
+        default="",
+        description="Explicit namespace in which learned-tool Jobs are created.",
+    )
+    image: str = Field(
+        default=(
+            "ghcr.io/niuulabs/devrunner@"
+            "sha256:ec7a32ffd8ca1f3ddb8bd4983198988538ab74804201ce45e14e56241adfc518"
+        ),
+        description="Reviewed learned-tool runner image pinned by sha256 digest.",
+    )
+    deny_policy_name: str = Field(
+        default="",
+        description="NetworkPolicy that selects denied learned-tool pods and denies egress.",
+    )
+    allow_policy_name: str = Field(
+        default="",
+        description="NetworkPolicy that selects network-enabled learned-tool pods.",
+    )
+    network_policy_label_key: str = Field(
+        default="niuu.world/tool-network",
+        description="Pod label selected by both verified learned-tool NetworkPolicies.",
+    )
+
+
 class ResidentEvolutionConfig(BaseModel):
     """Resident Valkyrie self-evolution: builder, reviewer, rollback, autonomy.
 
@@ -2728,15 +2773,22 @@ class ResidentEvolutionConfig(BaseModel):
             "opportunistic snapshots still fire)."
         ),
     )
-    learned_tool_execution_backend: Literal["container", "local", "forge", "devrunner"] = Field(
+    learned_tool_execution_backend: Literal[
+        "container", "local", "forge", "devrunner", "k8s_job"
+    ] = Field(
         default="container",
         description=(
             "Execution backend for learned agent tools authored through build_tool. "
             "'container' runs each invocation in a fail-closed, least-reach OCI "
             "container; 'local' is an explicit compatibility mode without hard "
-            "reach enforcement; 'forge'/'devrunner' select the legacy "
-            "workspace-mounted persistent container path."
+            "reach enforcement; 'k8s_job' creates one locked-down Job per invocation "
+            "after verifying its NetworkPolicies; 'forge'/'devrunner' select the "
+            "legacy workspace-mounted persistent container path."
         ),
+    )
+    learned_tool_k8s: LearnedToolKubernetesConfig = Field(
+        default_factory=LearnedToolKubernetesConfig,
+        description="Pod-per-run Kubernetes execution and policy coordinates.",
     )
     learned_tool_injection_mode: Literal["dispatch", "bulk"] = Field(
         default="dispatch",
@@ -2845,6 +2897,27 @@ class ResidentEvolutionConfig(BaseModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def _validate_k8s_job_contract(self) -> ResidentEvolutionConfig:
+        if self.learned_tool_execution_backend != "k8s_job":
+            return self
+        missing = [
+            name
+            for name, value in (
+                ("namespace", self.learned_tool_k8s.namespace),
+                ("deny_policy_name", self.learned_tool_k8s.deny_policy_name),
+                ("allow_policy_name", self.learned_tool_k8s.allow_policy_name),
+            )
+            if not value.strip()
+        ]
+        if missing:
+            raise ValueError(
+                f"k8s_job learned-tool execution requires learned_tool_k8s {', '.join(missing)}"
+            )
+        if "@sha256:" not in self.learned_tool_k8s.image:
+            raise ValueError("learned_tool_k8s.image must be pinned by sha256 digest")
+        return self
+
 
 class ResidentInboxConfig(BaseModel):
     """Resident inbox intake and triage configuration."""
@@ -2854,8 +2927,11 @@ class ResidentInboxConfig(BaseModel):
         description="Persist and triage resident inbox signals when resident autonomy is enabled.",
     )
     environment_signals_enabled: bool = Field(
-        default=True,
-        description="Record configured Environment signals into resident/inbox/signals.",
+        default=False,
+        description=(
+            "Mirror configured Environment signals into Mimir resident/inbox/signals. "
+            "Disabled by default; durable transports and the resident task queue own delivery."
+        ),
     )
     directed_messages_enabled: bool = Field(
         default=True,
@@ -2951,6 +3027,16 @@ class ResidentStateConfig(BaseModel):
         default=0,
         ge=0,
         description="Cumulative resident-case token cap; 0 leaves the token cap disabled.",
+    )
+    continuation_context_max_chars: int = Field(
+        default=12000,
+        ge=1000,
+        description="Maximum durable prior-turn characters restored into a continuation.",
+    )
+    continuation_tool_result_max_chars: int = Field(
+        default=2000,
+        ge=100,
+        description="Maximum characters persisted from each resident tool result.",
     )
     home_wake_interval_seconds: float = Field(
         default=300.0,

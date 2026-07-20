@@ -47,6 +47,16 @@ config:
       state_dir: /home/agent/.ravn/daemon/state
     mimir:
       enabled: false
+    {{- if .Values.learnedToolRunner.enabled }}
+    resident_evolution:
+      learned_tool_execution_backend: k8s_job
+      learned_tool_k8s:
+        namespace: {{ .Release.Namespace | quote }}
+        image: {{ .Values.learnedToolRunner.image | quote }}
+        deny_policy_name: {{ include "agent.learnedToolDenyPolicyName" . | quote }}
+        allow_policy_name: {{ include "agent.learnedToolAllowPolicyName" . | quote }}
+        network_policy_label_key: {{ .Values.learnedToolRunner.networkPolicyLabelKey | quote }}
+    {{- end }}
 
 serviceAccount:
   create: true
@@ -65,6 +75,15 @@ rbac:
   #   - apiGroups: ["apps"]
   #     resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
   #     verbs: ["get", "list", "watch"]
+
+learnedToolRunner:
+  # Creates the verified NetworkPolicies/RBAC contract and selects k8s_job in
+  # the chart's default Ravn config. Custom config maps must set the matching
+  # resident_evolution.learned_tool_k8s coordinates themselves.
+  enabled: false
+  image: >-
+    ghcr.io/niuulabs/devrunner@sha256:ec7a32ffd8ca1f3ddb8bd4983198988538ab74804201ce45e14e56241adfc518
+  networkPolicyLabelKey: niuu.world/tool-network
 
 service:
   enabled: false

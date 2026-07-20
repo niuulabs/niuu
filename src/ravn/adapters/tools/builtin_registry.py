@@ -382,10 +382,13 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         adapter="ravn.adapters.tools.a2a_task.A2ATaskTool",
         groups=frozenset({"a2a", "ravn"}),
         condition=lambda s: s.gateway.platform.enabled,
-        required_context=frozenset({"agent_directory", "a2a_client"}),
-        kwargs_fn=lambda _s, ctx: {
+        required_context=frozenset({"agent_directory", "a2a_client", "a2a_trusted_origins"}),
+        kwargs_fn=lambda s, ctx: {
             "agent_directory": ctx["agent_directory"],
             "client": ctx["a2a_client"],
+            "trusted_origins": ctx["a2a_trusted_origins"],
+            "message_max_chars": s.gateway.platform.a2a_message_max_chars,
+            "result_max_chars": s.gateway.platform.a2a_result_max_chars,
         },
     ),
     "ting_plan": BuiltinToolDef(

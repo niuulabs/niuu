@@ -117,6 +117,14 @@ async def test_signal_adapter_publishes_standard_sleipnir_events() -> None:
     assert received[0].payload["data"]["dedupe_key"] == "k8s:shop:Pod:api-7d9:OOMKilled"
     assert received[0].tenant_id == "niuu"
 
+    replay = KubernetesSignalAdapter(
+        environment=environment,
+        source_id="kubernetes-events",
+        raw_items=[_k8s_warning_event()],
+    )
+    replay_events = await replay.publish(InProcessBus())
+    assert replay_events[0].event_id == events[0].event_id
+
 
 @pytest.mark.asyncio
 async def test_signal_to_valkyrie_judgment_path_over_in_process_sleipnir() -> None:

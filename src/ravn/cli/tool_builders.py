@@ -122,12 +122,17 @@ def _build_tools(
             workload_exchange_url=platform.workload_exchange_url,
             workload_audiences=platform.workload_audiences,
             timeout_seconds=platform.timeout,
+            allowed_origins=[platform.base_url, *platform.a2a_trusted_origins],
         )
         runtime_ctx["agent_directory"] = GuildAgentDirectoryAdapter(
             base_url=platform.base_url,
             client=peer_client,
         )
         runtime_ctx["a2a_client"] = peer_client
+        runtime_ctx["a2a_trusted_origins"] = [
+            platform.base_url,
+            *platform.a2a_trusted_origins,
+        ]
 
     # The session_join tool only makes sense for a resident daemon, which owns
     # the manager and injects it here; when absent (CLI single-shot) the tool
@@ -211,6 +216,11 @@ def _build_learned_tool_resolver(settings: Settings, workspace: Path) -> Any | N
         resolver = LearnedToolResolver(
             state_dir=_resident_ravn_state_dir(workspace, settings),
             execution_backend=settings.resident_evolution.learned_tool_execution_backend,
+            execution_backend_kwargs=(
+                settings.resident_evolution.learned_tool_k8s.model_dump()
+                if settings.resident_evolution.learned_tool_execution_backend == "k8s_job"
+                else None
+            ),
             workspace_root=workspace,
             timeout_seconds=settings.resident_evolution.tool_timeout_seconds,
         )

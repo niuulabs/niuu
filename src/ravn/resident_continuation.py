@@ -107,6 +107,9 @@ class NullResidentMemory(ResidentMemoryPort):
     async def recall(self, mandate: str, *, limit: int = 5) -> list[ResidentMemoryEntry]:
         return []
 
+    async def read(self, ref: str) -> ResidentMemoryEntry | None:
+        return None
+
     async def write_turn(self, record: ResidentTurnRecord) -> str:
         return ""
 
@@ -129,6 +132,7 @@ class NullResidentMemory(ResidentMemoryPort):
         reason: str,
         turn: ResidentTurnRecord,
         case_id: str = "",
+        turn_ref: str = "",
     ) -> str:
         return ""
 
@@ -175,6 +179,17 @@ class LocalResidentMemory(ResidentMemoryPort):
             )
         return entries
 
+    async def read(self, ref: str) -> ResidentMemoryEntry | None:
+        path = self._root / ref
+        if not path.is_file():
+            return None
+        content = path.read_text(encoding="utf-8")
+        return ResidentMemoryEntry(
+            path=ref,
+            summary=_first_heading_or_line(content),
+            content=content,
+        )
+
     async def write_turn(self, record: ResidentTurnRecord) -> str:
         stamp = record.created_at.strftime("%Y%m%dT%H%M%SZ")
         rel = self._prefix / _case_path(
@@ -215,6 +230,7 @@ class LocalResidentMemory(ResidentMemoryPort):
         reason: str,
         turn: ResidentTurnRecord,
         case_id: str = "",
+        turn_ref: str = "",
     ) -> str:
         resolved_case = case_id or turn.case_id
         rel = self._prefix / _case_path(resolved_case, _OPERATOR_NEEDED_PATH)
@@ -225,6 +241,7 @@ class LocalResidentMemory(ResidentMemoryPort):
                 reason=reason,
                 turn=turn,
                 status="pending",
+                turn_ref=turn_ref,
             ),
         )
 
@@ -341,6 +358,7 @@ def _render_turn_record(record: ResidentTurnRecord) -> str:
         f"- {key}: {value!r}" for key, value in sorted(record.outcome_fields.items())
     )
     tools = ", ".join(record.tool_names) if record.tool_names else "none"
+    tool_results = "\n\n".join(record.tool_results) or "none"
     evidence = "\n".join(f"- {ref}" for ref in record.evidence_refs) or "- none"
     inbox = "\n".join(f"- {ref}" for ref in record.inbox_refs) or "- none"
     return (
@@ -355,8 +373,12 @@ def _render_turn_record(record: ResidentTurnRecord) -> str:
         f"- output_tokens: {record.usage.output_tokens}\n\n"
         f"- case_input_tokens: {record.cumulative_usage.input_tokens}\n"
         f"- case_output_tokens: {record.cumulative_usage.output_tokens}\n\n"
-        "## Summary\n\n"
-        f"{_compact_line(record.response, limit=700)}\n\n"
+        "## Prompt\n\n"
+        f"{record.prompt}\n\n"
+        "## Response\n\n"
+        f"{record.response}\n\n"
+        "## Tool Results\n\n"
+        f"{tool_results}\n\n"
         "## Mandate\n\n"
         f"{record.mandate[:4000]}\n\n"
         "## Outcome Fields\n\n"
@@ -376,6 +398,7 @@ def _render_operator_needed(
     reason: str,
     turn: ResidentTurnRecord,
     status: str,
+    turn_ref: str = "",
 ) -> str:
     return (
         "# Operator Input Needed\n\n"
@@ -385,6 +408,7 @@ def _render_operator_needed(
         f"- task_id: {turn.task_id}\n"
         f"- persona: {turn.persona}\n"
         f"- turn: {turn.turn_index}\n"
+        f"- turn_ref: {turn_ref}\n"
         f"- input_tokens: {turn.usage.input_tokens}\n"
         f"- output_tokens: {turn.usage.output_tokens}\n"
         f"- case_input_tokens: {turn.cumulative_usage.input_tokens}\n"

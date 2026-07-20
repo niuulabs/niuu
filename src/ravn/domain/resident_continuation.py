@@ -126,6 +126,7 @@ class ResidentTurnRecord:
     outcome_fields: dict[str, Any]
     tool_names: tuple[str, ...]
     usage: TokenUsage
+    tool_results: tuple[str, ...] = ()
     mandate: str = ""
     cumulative_usage: TokenUsage = field(
         default_factory=lambda: TokenUsage(input_tokens=0, output_tokens=0)
@@ -194,6 +195,9 @@ class ResidentMemoryPort(Protocol):
     async def recall(self, mandate: str, *, limit: int = 5) -> list[ResidentMemoryEntry]:
         """Return recent relevant resident memory."""
 
+    async def read(self, ref: str) -> ResidentMemoryEntry | None:
+        """Read one exact durable resident record by reference."""
+
     async def write_turn(self, record: ResidentTurnRecord) -> str:
         """Persist one compact turn record and return its reference."""
 
@@ -216,6 +220,7 @@ class ResidentMemoryPort(Protocol):
         reason: str,
         turn: ResidentTurnRecord,
         case_id: str = "",
+        turn_ref: str = "",
     ) -> str:
         """Persist the latest pending operator question."""
 

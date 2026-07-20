@@ -126,6 +126,11 @@ def _attach_agent_build_tool(
             flock_id=settings.environment.flocks[0] if settings.environment.flocks else "",
             domain=settings.environment.type,
             execution_backend=settings.resident_evolution.learned_tool_execution_backend,
+            execution_backend_kwargs=(
+                settings.resident_evolution.learned_tool_k8s.model_dump()
+                if settings.resident_evolution.learned_tool_execution_backend == "k8s_job"
+                else None
+            ),
             workspace_root=workspace,
             build_backend=_build_tool_build_backend(
                 settings,

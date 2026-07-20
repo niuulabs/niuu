@@ -171,6 +171,8 @@ def _build_resident_runtime(
         inbox=inbox,
         max_turns=cfg.continuation_max_turns,
         max_tokens=cfg.continuation_max_tokens,
+        context_max_chars=cfg.continuation_context_max_chars,
+        tool_result_max_chars=cfg.continuation_tool_result_max_chars,
     )
 
 
@@ -267,6 +269,11 @@ def _build_resident_learning_runtime(
             settings.resident_evolution.learned_tool_execution_backend,
             workspace_root=workspace,
             venvs_dir=learned_tool_venvs_dir(local_ravn_dir),
+            backend_kwargs=(
+                settings.resident_evolution.learned_tool_k8s.model_dump()
+                if settings.resident_evolution.learned_tool_execution_backend == "k8s_job"
+                else None
+            ),
         ),
     )
 

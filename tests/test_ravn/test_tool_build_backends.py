@@ -21,7 +21,7 @@ from ravn.adapters.tool_build._contract import (
     poll_until,
 )
 from ravn.adapters.tool_build.forge_session import _decode_canonical_body
-from ravn.adapters.tool_build.http import client_from_workload_identity
+from ravn.adapters.tool_build.http import client_from_workload_identity, normalize_http_origin
 from ravn.adapters.tool_build.ting_workflow import _decode_canonical_content
 from ravn.ports.tool_build_backend import ToolBuildError, ToolBuildRequest
 
@@ -585,6 +585,35 @@ def test_client_external_token_env_is_explicit(monkeypatch: pytest.MonkeyPatch) 
     )
 
     assert client._headers()["Authorization"] == "Bearer external-123"
+
+
+def test_authenticated_http_client_is_bound_to_configured_origins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EXTERNAL_TOOL_BUILD_TOKEN", "external-123")
+    client = client_from_workload_identity(
+        base_url="https://forge.example/api",
+        external_token_env="EXTERNAL_TOOL_BUILD_TOKEN",
+        allowed_origins=["https://forge.example", "https://peer.example:443/a2a"],
+    )
+
+    client._assert_allowed_origin("https://forge.example/launch")
+    client._assert_allowed_origin("https://peer.example/task")
+    with pytest.raises(ValueError, match="untrusted origin"):
+        client._assert_allowed_origin("https://attacker.example/collect")
+    with pytest.raises(ValueError, match="absolute http"):
+        client._assert_allowed_origin("file:///tmp/token")
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://[2001:db8::1]/a2a", "https://[2001:db8::1]"),
+        ("https://[2001:db8::1]:8443/a2a", "https://[2001:db8::1]:8443"),
+    ],
+)
+def test_http_origin_normalization_preserves_ipv6_authority(url: str, expected: str) -> None:
+    assert normalize_http_origin(url) == expected
 
 
 async def test_ting_workflow_backend_raises_without_artifact() -> None:

@@ -345,6 +345,20 @@ class TestResidentEvolutionConfig:
         c = ResidentEvolutionConfig(learned_tool_execution_backend="forge")
         assert c.learned_tool_execution_backend == "forge"
 
+    def test_k8s_job_backend_requires_verified_policy_coordinates(self) -> None:
+        with pytest.raises(ValueError, match="requires learned_tool_k8s"):
+            ResidentEvolutionConfig(learned_tool_execution_backend="k8s_job")
+
+        c = ResidentEvolutionConfig(
+            learned_tool_execution_backend="k8s_job",
+            learned_tool_k8s={
+                "namespace": "ravn",
+                "deny_policy_name": "tool-deny",
+                "allow_policy_name": "tool-allow",
+            },
+        )
+        assert c.learned_tool_k8s.namespace == "ravn"
+
     def test_tool_builder_workflow_selector_is_configurable(self) -> None:
         c = ResidentEvolutionConfig(
             tool_builder_workflow={

@@ -67,11 +67,21 @@ class MimirResidentState(ResidentStatePort):
                 break
         return entries
 
+    async def read(self, ref: str) -> ResidentMemoryEntry | None:
+        try:
+            content = await self._mimir.read_page(ref)
+        except FileNotFoundError:
+            return None
+        return ResidentMemoryEntry(
+            path=ref,
+            summary=_first_heading_or_line(content),
+            content=content,
+        )
+
     async def write_turn(self, record: ResidentTurnRecord) -> str:
         stamp = record.created_at.strftime("%Y%m%dT%H%M%SZ")
         path = str(
-            Path(self._prefix)
-            / _case_path(record.case_id, f"turns/{stamp}-{record.turn_index}.md")
+            Path(self._prefix) / _case_path(record.case_id, f"turns/{stamp}-{record.turn_index}.md")
         )
         await self._mimir.upsert_page(path, _render_turn_record(record))
         return path
@@ -107,10 +117,9 @@ class MimirResidentState(ResidentStatePort):
         reason: str,
         turn: ResidentTurnRecord,
         case_id: str = "",
+        turn_ref: str = "",
     ) -> str:
-        path = str(
-            Path(self._prefix) / _case_path(case_id or turn.case_id, _OPERATOR_NEEDED_PATH)
-        )
+        path = str(Path(self._prefix) / _case_path(case_id or turn.case_id, _OPERATOR_NEEDED_PATH))
         await self._mimir.upsert_page(
             path,
             _render_operator_needed(
@@ -118,6 +127,7 @@ class MimirResidentState(ResidentStatePort):
                 reason=reason,
                 turn=turn,
                 status="pending",
+                turn_ref=turn_ref,
             ),
         )
         return path
@@ -154,8 +164,7 @@ class MimirResidentState(ResidentStatePort):
             ),
         )
         history_path = str(
-            Path(self._prefix)
-            / _case_path(case_id, f"operator-answers/{_timestamp_slug(now)}.md")
+            Path(self._prefix) / _case_path(case_id, f"operator-answers/{_timestamp_slug(now)}.md")
         )
         await self._mimir.upsert_page(
             history_path,

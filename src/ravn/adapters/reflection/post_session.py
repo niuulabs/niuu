@@ -46,32 +46,34 @@ _POSITIVE_FEEDBACK = frozenset({"useful", "good_action", "draft_accepted"})
 
 # Approximate chars-per-token ratio used for rough budget enforcement.
 _CHARS_PER_TOKEN = 4
+_REFLECTION_CONTEXT_MAX_CHARS = 12_000
 
 # Number of timeline entries that trigger each confidence level.
 _CONFIDENCE_MEDIUM_THRESHOLD = 2
 _CONFIDENCE_HIGH_THRESHOLD = 3
 
 _REFLECTION_SYSTEM = (
-    "You extract possible operational learning candidates from software engineering sessions. "
+    "You extract possible operational learning candidates from AI agent sessions. "
     "Respond only with valid JSON or the literal null. No markdown fences, no commentary."
 )
 
 _REFLECTION_PROMPT = """\
-A Ravn AI agent just completed a coding session. Analyse the session metadata \
-below and extract ONE possible actionable learning candidate that might help future sessions in \
-the same repository avoid mistakes or work more efficiently.
+A Ravn AI agent just completed a session. Analyse the record below and extract \
+ONE possible actionable learning candidate that might help this agent make a \
+better future judgment in the same kind of environment.
 
 Session metadata:
   persona:     {persona}
   outcome:     {outcome}
   token_count: {token_count}
   duration_s:  {duration_s}
-  repo_slug:   {repo_slug}
+{repo_line}
+
+Recorded work context:
+{work_context}
 
 Questions to consider:
-1. Was the session unusually expensive or slow? (high token_count or duration)
-2. Did the outcome suggest a failure or partial result? (outcome != success)
-3. What project-specific quirk might a future session benefit from knowing?
+{questions}
 
 Respond with a single JSON object:
 {{
@@ -82,10 +84,24 @@ Respond with a single JSON object:
   "evidence": "one sentence describing what this session revealed"
 }}
 
-If the session was unremarkable and no useful learning can be extracted, \
-respond with exactly: null
+A learning must concern the work or its subject matter. Token counts, duration, \
+outcome bookkeeping, missing fields, and other session mechanics are not \
+learnings. Do not infer facts absent from the record. If the record contains \
+insufficient evidence for a useful learning, respond with exactly: null
 
 Do not explain why there is no learning. Do not wrap the response in markdown.\
+"""
+
+_REPO_QUESTIONS = """\
+1. What concrete project behavior, constraint, or successful approach is supported by the record?
+2. Would remembering it change a future decision in this repository?
+3. Is the evidence specific enough to avoid turning a one-off event into a general rule?
+"""
+
+_GENERIC_QUESTIONS = """\
+1. What did the session reveal about the environment or subject the agent works in?
+2. Did an approach succeed or fail in a way worth remembering next time?
+3. Is the evidence specific enough to avoid turning a one-off event into a general rule?
 """
 
 
@@ -247,12 +263,30 @@ class PostSessionReflectionService:
 
     async def _run_reflection(self, payload: dict) -> dict | None:
         """Call the LLM and parse the structured learning JSON."""
+        repo_slug = str(payload.get("repo_slug") or "").strip()
+        work_context = {
+            key: payload[key]
+            for key in ("structured_outcome", "outcome_event_type")
+            if payload.get(key) not in (None, "", {}, [])
+        }
+        rendered_context = (
+            json.dumps(work_context, indent=2, sort_keys=True, default=str)
+            if work_context
+            else "(no subject-matter context was recorded)"
+        )
+        if len(rendered_context) > _REFLECTION_CONTEXT_MAX_CHARS:
+            rendered_context = (
+                rendered_context[:_REFLECTION_CONTEXT_MAX_CHARS].rstrip()
+                + "\n… (recorded context truncated)"
+            )
         prompt = _REFLECTION_PROMPT.format(
             persona=payload.get("persona", ""),
             outcome=payload.get("outcome", ""),
             token_count=payload.get("token_count", 0),
             duration_s=payload.get("duration_s", 0.0),
-            repo_slug=payload.get("repo_slug", ""),
+            repo_line=f"  repo_slug:   {repo_slug}" if repo_slug else "",
+            work_context=rendered_context,
+            questions=_REPO_QUESTIONS if repo_slug else _GENERIC_QUESTIONS,
         )
 
         attempts = 2
