@@ -105,6 +105,14 @@ class ResidentInboxBackend(Protocol):
 
     async def append_decision(self, entry: str) -> str: ...
 
+    async def acknowledge(
+        self,
+        refs: tuple[str, ...],
+        *,
+        status: str = ResidentInboxStatus.REMEMBERED.value,
+        reason: str = "resident turn recorded",
+    ) -> tuple[str, ...]: ...
+
 
 @dataclass(frozen=True)
 class ResidentInboxConfig:

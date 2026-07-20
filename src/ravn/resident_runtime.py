@@ -1,0 +1,667 @@
+"""Durable resident turn, continuation, inbox, and operator coordination."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import re
+import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
+
+from ravn.domain.models import AgentTask, OutputMode, TokenUsage, TurnResult
+from ravn.domain.resident_continuation import (
+    ContinuationDecisionKind,
+    ResidentBudgetSnapshot,
+    ResidentMemoryEntry,
+    ResidentPolicyDecisionRecord,
+    ResidentTurnRecord,
+    selected_action_from_outcome,
+)
+from ravn.domain.resident_state import ResidentStatePort
+from ravn.ports.trigger import TriggerPort
+from ravn.resident_inbox import ResidentInboxBackend, ResidentInboxStatus
+from ravn.resident_text import compact_line
+
+EnqueueResidentTask = Callable[[AgentTask], Awaitable[bool | None]]
+
+
+@dataclass(frozen=True)
+class ResidentTurnDisposition:
+    """Observable decision made after one durable resident turn."""
+
+    kind: ContinuationDecisionKind
+    case_id: str
+    turn_ref: str
+    budget_ref: str
+    reason: str
+    continuation_task_id: str = ""
+    operator_ref: str = ""
+    question: str = ""
+
+
+class ResidentRuntime:
+    """Connect completed agent turns to the existing durable resident state."""
+
+    def __init__(
+        self,
+        *,
+        state: ResidentStatePort,
+        inbox: ResidentInboxBackend | None = None,
+        max_turns: int = 3,
+        max_tokens: int = 0,
+    ) -> None:
+        self._state = state
+        self._inbox = inbox
+        self._max_turns = max(1, int(max_turns))
+        self._max_tokens = max(0, int(max_tokens))
+        self._enqueue: EnqueueResidentTask | None = None
+        self._inflight_cases: set[str] = set()
+        self._inflight_refs: set[str] = set()
+
+    @property
+    def state(self) -> ResidentStatePort:
+        return self._state
+
+    def bind_enqueue(self, enqueue: EnqueueResidentTask) -> None:
+        self._enqueue = enqueue
+
+    def track_task(self, task: AgentTask) -> None:
+        """Suppress duplicate home/resume work while a durable task is queued or running."""
+        if task.resident_case_id:
+            self._inflight_cases.add(task.resident_case_id)
+        self._inflight_refs.update(task.resident_inbox_refs)
+
+    async def handle_completed_turn(
+        self,
+        *,
+        task: AgentTask,
+        prompt: str,
+        result: TurnResult,
+        response_text: str,
+    ) -> ResidentTurnDisposition:
+        """Persist one turn, acknowledge its observations, then decide transport."""
+        case_id = task.resident_case_id or task.root_correlation_id or task.task_id
+        root_id = task.root_correlation_id or case_id
+        turn_index = task.resident_turn_index or 1
+        mandate = task.resident_mandate or task.initiative_context
+        fields = dict(
+            getattr(getattr(result, "episode", None), "structured_outcome", None) or {}
+        )
+        action = selected_action_from_outcome(fields)
+        evidence_refs = _evidence_refs(fields, task)
+        cumulative = TokenUsage(
+            input_tokens=task.resident_input_tokens + result.usage.input_tokens,
+            output_tokens=task.resident_output_tokens + result.usage.output_tokens,
+        )
+        record = ResidentTurnRecord(
+            turn_index=turn_index,
+            mandate=mandate,
+            prompt=prompt,
+            response=response_text or result.response,
+            outcome_fields=fields,
+            tool_names=tuple(dict.fromkeys(call.name for call in result.tool_calls)),
+            usage=result.usage,
+            cumulative_usage=cumulative,
+            selected_next_action=action,
+            case_id=case_id,
+            root_correlation_id=root_id,
+            task_id=task.task_id,
+            persona=task.persona or "",
+            evidence_refs=evidence_refs,
+            inbox_refs=tuple(task.resident_inbox_refs),
+        )
+        turn_ref = await self._state.write_turn(record)
+
+        snapshot = ResidentBudgetSnapshot(
+            turns_used=turn_index,
+            elapsed_seconds=_elapsed(task.resident_started_at or task.created_at.isoformat()),
+            usage=cumulative,
+            case_id=case_id,
+            root_correlation_id=root_id,
+        )
+        budget_ref = await self._state.write_budget(snapshot)
+
+        # A signal is no longer NEW only after both durable turn and budget
+        # records exist.  Replayed signals therefore cannot disappear on a
+        # failed model turn or failed state write.
+        if self._inbox is not None and task.resident_inbox_refs:
+            await self._inbox.acknowledge(
+                tuple(task.resident_inbox_refs),
+                status=ResidentInboxStatus.REMEMBERED.value,
+                reason=f"recorded by resident case {case_id} turn {turn_index}",
+            )
+        if task.resident_answer_ref:
+            answer = await self._state.read_operator_answer(case_id)
+            if answer is not None and answer.path == task.resident_answer_ref:
+                await self._state.consume_operator_answer(answer)
+
+        self._inflight_cases.discard(case_id)
+        self._inflight_refs.difference_update(task.resident_inbox_refs)
+        control = str(fields.get("continuation") or "").strip().casefold()
+        if control in {"sleep", "stop"}:
+            return ResidentTurnDisposition(
+                kind=(
+                    ContinuationDecisionKind.SLEEP
+                    if control == "sleep"
+                    else ContinuationDecisionKind.STOP
+                ),
+                case_id=case_id,
+                turn_ref=turn_ref,
+                budget_ref=budget_ref,
+                reason=f"model selected {control}",
+            )
+
+        if _asks_operator(fields, control):
+            return await self._ask_operator(
+                task=task,
+                record=record,
+                fields=fields,
+                turn_ref=turn_ref,
+                budget_ref=budget_ref,
+                reason=str(fields.get("reason") or "operator input required"),
+            )
+
+        if action is None:
+            return ResidentTurnDisposition(
+                kind=ContinuationDecisionKind.STOP,
+                case_id=case_id,
+                turn_ref=turn_ref,
+                budget_ref=budget_ref,
+                reason="no selected next action",
+            )
+
+        policy = _assess_authority(fields, action.risk_boundaries)
+        await self._state.write_policy_decision(
+            ResidentPolicyDecisionRecord(
+                turn_index=turn_index,
+                action_title=action.title,
+                action=action.action,
+                decision_kind=(
+                    ContinuationDecisionKind.ASK_OPERATOR.value
+                    if policy[0]
+                    else ContinuationDecisionKind.CONTINUE.value
+                ),
+                allowed=not policy[0],
+                needs_approval=policy[0],
+                reason=policy[1],
+                risk_boundaries=action.risk_boundaries,
+                question=(f"May I proceed with: {action.action}?" if policy[0] else ""),
+            )
+        )
+        if policy[0]:
+            return await self._ask_operator(
+                task=task,
+                record=record,
+                fields=fields,
+                turn_ref=turn_ref,
+                budget_ref=budget_ref,
+                reason=policy[1],
+            )
+
+        budget_reason = _budget_stop_reason(
+            turn_index=turn_index,
+            total_tokens=cumulative.total_tokens,
+            max_turns=self._max_turns,
+            max_tokens=self._max_tokens,
+        )
+        if budget_reason:
+            return ResidentTurnDisposition(
+                kind=ContinuationDecisionKind.STOP,
+                case_id=case_id,
+                turn_ref=turn_ref,
+                budget_ref=budget_ref,
+                reason=budget_reason,
+            )
+
+        continuation = _continuation_task(
+            task=task,
+            case_id=case_id,
+            root_id=root_id,
+            turn_ref=turn_ref,
+            action=action.action,
+            reason=action.reason,
+            next_turn=turn_index + 1,
+            cumulative=cumulative,
+            mandate=mandate,
+        )
+        accepted = await self._enqueue_task(continuation)
+        if not accepted:
+            return ResidentTurnDisposition(
+                kind=ContinuationDecisionKind.STOP,
+                case_id=case_id,
+                turn_ref=turn_ref,
+                budget_ref=budget_ref,
+                reason="continuation queue unavailable",
+            )
+        self._inflight_cases.add(case_id)
+        return ResidentTurnDisposition(
+            kind=ContinuationDecisionKind.CONTINUE,
+            case_id=case_id,
+            turn_ref=turn_ref,
+            budget_ref=budget_ref,
+            reason="selected next action queued",
+            continuation_task_id=continuation.task_id,
+        )
+
+    async def _ask_operator(
+        self,
+        *,
+        task: AgentTask,
+        record: ResidentTurnRecord,
+        fields: dict[str, Any],
+        turn_ref: str,
+        budget_ref: str,
+        reason: str,
+    ) -> ResidentTurnDisposition:
+        question = _operator_question(fields, record)
+        operator_ref = await self._state.write_operator_needed(
+            question=question,
+            reason=reason,
+            turn=record,
+            case_id=record.case_id,
+        )
+        task.resident_case_id = record.case_id
+        return ResidentTurnDisposition(
+            kind=ContinuationDecisionKind.ASK_OPERATOR,
+            case_id=record.case_id,
+            turn_ref=turn_ref,
+            budget_ref=budget_ref,
+            reason=reason,
+            operator_ref=operator_ref,
+            question=question,
+        )
+
+    async def pending_questions(self) -> list[dict[str, str]]:
+        return [_pending_view(item) for item in await self._state.list_operator_needed()]
+
+    async def submit_operator_answer(self, *, case_id: str, answer: str) -> dict[str, Any]:
+        case_id = case_id.strip()
+        answer = answer.strip()
+        if not case_id or not answer:
+            raise ValueError("case_id and answer are required")
+        pending = await self._state.read_operator_needed(case_id)
+        if pending is None:
+            raise LookupError(f"no pending operator question for case {case_id}")
+        answer_ref = await self._state.write_operator_answer(answer, case_id=case_id)
+        task = _operator_resume_task(pending, answer=answer, answer_ref=answer_ref)
+        accepted = await self._enqueue_task(task)
+        if accepted:
+            self._inflight_cases.add(case_id)
+        return {
+            "case_id": case_id,
+            "answer_ref": answer_ref,
+            "continuation_task_id": task.task_id if accepted else "",
+            "queued": accepted,
+        }
+
+    async def consume_directed_message(
+        self,
+        content: str,
+        metadata: dict[str, Any] | None,
+    ) -> bool:
+        metadata = metadata or {}
+        context = metadata.get("help_context")
+        if not isinstance(context, dict):
+            context = {}
+        case_id = str(
+            metadata.get("resident_case_id")
+            or metadata.get("case_id")
+            or context.get("resident_case_id")
+            or context.get("case_id")
+            or ""
+        ).strip()
+        if not case_id:
+            pending = await self._state.list_operator_needed()
+            if len(pending) != 1:
+                return False
+            case_id = _metadata(pending[0].content, "case_id")
+        if not case_id or await self._state.read_operator_needed(case_id) is None:
+            return False
+        await self.submit_operator_answer(case_id=case_id, answer=content)
+        return True
+
+    async def next_home_task(
+        self,
+        *,
+        limit: int,
+        persona: str | None,
+        output_mode: OutputMode,
+    ) -> AgentTask | None:
+        if self._inbox is None:
+            return None
+        rows = await self._inbox.list_signals(
+            status=ResidentInboxStatus.NEW.value,
+            limit=max(1, limit),
+        )
+        rows = [(ref, signal) for ref, signal in rows if ref not in self._inflight_inbox_refs()]
+        if not rows:
+            return None
+        refs = [ref for ref, _signal in rows]
+        digest = hashlib.sha256("\n".join(sorted(refs)).encode()).hexdigest()[:16]
+        case_id = f"resident-home-{digest}"
+        if case_id in self._inflight_cases:
+            return None
+        now = datetime.now(UTC)
+        context_lines = [
+            "Resident home turn over durable, unconsumed observations.",
+            "Judge what these observations mean. Retrieve full evidence only when it can "
+            "change the decision. Select a next action, ask for operator intent, schedule a "
+            "recheck, or stop as appropriate.",
+            "",
+            "Observations:",
+        ]
+        for ref, signal in rows:
+            evidence = signal.raw_ref or ", ".join(signal.evidence_refs) or "none"
+            context_lines.append(
+                f"- inbox_ref={ref}; source={signal.source}; kind={signal.kind}; "
+                f"observed_at={signal.observed_at}; evidence_ref={evidence}; "
+                f"summary={compact_line(signal.summary, limit=280)}"
+            )
+        task = AgentTask(
+            task_id=_task_id("resident_home"),
+            title=f"Resident home turn ({len(rows)} observations)",
+            initiative_context="\n".join(context_lines),
+            triggered_by="resident:home",
+            output_mode=output_mode,
+            persona=persona,
+            root_correlation_id=case_id,
+            resident_case_id=case_id,
+            resident_turn_index=1,
+            resident_started_at=now.isoformat(),
+            resident_inbox_refs=refs,
+        )
+        task.resident_mandate = task.initiative_context
+        self._inflight_cases.add(case_id)
+        self._inflight_refs.update(refs)
+        return task
+
+    async def retry_unconsumed_answers(self) -> int:
+        queued = 0
+        for answer in await self._state.list_operator_answers():
+            case_id = _metadata(answer.content, "case_id") or _case_from_path(answer.path)
+            if not case_id or case_id in self._inflight_cases:
+                continue
+            pending = await self._state.read_operator_needed(case_id)
+            if pending is not None:
+                # The pending marker is changed to answered when the answer is
+                # written.  A still-pending question has no accepted answer yet.
+                continue
+            task = _operator_resume_task(
+                ResidentMemoryEntry(
+                    path=answer.path,
+                    summary=answer.summary,
+                    content=answer.content,
+                ),
+                answer=_section(answer.content, "Answer") or _body(answer.content),
+                answer_ref=answer.path,
+            )
+            if await self._enqueue_task(task):
+                self._inflight_cases.add(case_id)
+                queued += 1
+        return queued
+
+    def release_failed_task(self, task: AgentTask) -> None:
+        if task.resident_case_id:
+            self._inflight_cases.discard(task.resident_case_id)
+        self._inflight_refs.difference_update(task.resident_inbox_refs)
+
+    async def _enqueue_task(self, task: AgentTask) -> bool:
+        if self._enqueue is None:
+            return False
+        result = await self._enqueue(task)
+        return result is not False
+
+    def _inflight_inbox_refs(self) -> set[str]:
+        return set(self._inflight_refs)
+
+
+class ResidentHomeTrigger(TriggerPort):
+    """Periodic home wake over durable inbox records and resumable answers."""
+
+    def __init__(
+        self,
+        runtime: ResidentRuntime,
+        *,
+        interval_seconds: float,
+        max_signals: int,
+        persona: str | None,
+        output_mode: OutputMode,
+    ) -> None:
+        self._runtime = runtime
+        self._interval = max(0.1, float(interval_seconds))
+        self._max_signals = max(1, int(max_signals))
+        self._persona = persona
+        self._output_mode = output_mode
+
+    @property
+    def name(self) -> str:
+        return "resident:home"
+
+    async def run(self, enqueue: EnqueueResidentTask) -> None:
+        # Give queue-journal restoration a chance to run before considering
+        # the same durable records after a restart.
+        await asyncio.sleep(self._interval)
+        while True:
+            await self.run_once(enqueue)
+            await asyncio.sleep(self._interval)
+
+    async def run_once(self, enqueue: EnqueueResidentTask) -> bool:
+        self._runtime.bind_enqueue(enqueue)
+        await self._runtime.retry_unconsumed_answers()
+        task = await self._runtime.next_home_task(
+            limit=self._max_signals,
+            persona=self._persona,
+            output_mode=self._output_mode,
+        )
+        if task is None:
+            return False
+        accepted = await enqueue(task)
+        if accepted is False:
+            self._runtime.release_failed_task(task)
+            return False
+        return True
+
+
+def _continuation_task(
+    *,
+    task: AgentTask,
+    case_id: str,
+    root_id: str,
+    turn_ref: str,
+    action: str,
+    reason: str,
+    next_turn: int,
+    cumulative: TokenUsage,
+    mandate: str,
+) -> AgentTask:
+    context = (
+        f"Continue resident case {case_id}.\n"
+        f"Durable prior turn: {turn_ref}\n"
+        f"Selected next action: {action}\n"
+        f"Reason: {reason or 'selected by the prior resident turn'}\n\n"
+        "Carry out or investigate the selected action using the capabilities actually "
+        "available. Revise it if new evidence disagrees. End with the normal structured "
+        "outcome and either another selected next action or an explicit stop/sleep/ask."
+    )
+    return AgentTask(
+        task_id=_task_id("resident_continue"),
+        title=f"Continue resident case: {compact_line(action, limit=90)}",
+        initiative_context=context,
+        triggered_by="resident:continuation",
+        output_mode=task.output_mode,
+        persona=task.persona,
+        priority=task.priority,
+        root_correlation_id=root_id,
+        resident_case_id=case_id,
+        resident_mandate=mandate,
+        resident_turn_index=next_turn,
+        resident_input_tokens=cumulative.input_tokens,
+        resident_output_tokens=cumulative.output_tokens,
+        resident_started_at=task.resident_started_at or task.created_at.isoformat(),
+        resident_parent_turn_ref=turn_ref,
+    )
+
+
+def _operator_resume_task(
+    pending: ResidentMemoryEntry,
+    *,
+    answer: str,
+    answer_ref: str,
+) -> AgentTask:
+    case_id = _metadata(pending.content, "case_id") or _case_from_path(pending.path)
+    root_id = _metadata(pending.content, "root_correlation_id") or case_id
+    prior_turn = _int_metadata(pending.content, "turn", 0)
+    mandate = _section(pending.content, "Mandate") or pending.content
+    question = _metadata(pending.content, "question")
+    context = (
+        f"Resume resident case {case_id} after operator input.\n"
+        f"Pending question: {question}\n"
+        f"Operator answer: {answer}\n"
+        f"Durable answer reference: {answer_ref}\n\n"
+        "Treat the answer as a new observation, not as proof of unrelated facts. Continue "
+        "the same case and produce the normal structured outcome."
+    )
+    return AgentTask(
+        task_id=_task_id("resident_answer"),
+        title=f"Resume resident case {case_id}",
+        initiative_context=context,
+        triggered_by="resident:operator_answer",
+        output_mode=OutputMode.SURFACE,
+        persona=_metadata(pending.content, "persona") or None,
+        priority=1,
+        root_correlation_id=root_id,
+        resident_case_id=case_id,
+        resident_mandate=mandate,
+        resident_turn_index=prior_turn + 1,
+        resident_input_tokens=_int_metadata(pending.content, "case_input_tokens", 0),
+        resident_output_tokens=_int_metadata(pending.content, "case_output_tokens", 0),
+        resident_started_at=_metadata(pending.content, "created_at"),
+        resident_answer_ref=answer_ref,
+    )
+
+
+def _asks_operator(fields: dict[str, Any], control: str) -> bool:
+    verdict = str(fields.get("verdict") or "").strip().casefold()
+    return control == "ask_operator" or verdict == "help_needed"
+
+
+def _assess_authority(fields: dict[str, Any], boundaries: tuple[str, ...]) -> tuple[bool, str]:
+    authority = str(fields.get("action_authority") or "").strip().casefold()
+    if authority in {"court_required", "human_review_required"}:
+        return True, f"selected action requires {authority}"
+    if boundaries and authority != "yolo_allowed":
+        return True, f"selected action crosses declared boundaries: {', '.join(boundaries)}"
+    return False, "selected action remains inside declared authority"
+
+
+def _operator_question(fields: dict[str, Any], record: ResidentTurnRecord) -> str:
+    direct = str(fields.get("question") or "").strip()
+    if direct:
+        return direct
+    questions = fields.get("open_questions")
+    if isinstance(questions, list):
+        for item in questions:
+            text = str(item).strip()
+            if text:
+                return text
+    if record.selected_next_action is not None:
+        return f"May I proceed with: {record.selected_next_action.action}?"
+    return str(fields.get("recommendation") or "What information should I use to continue?")
+
+
+def _budget_stop_reason(
+    *,
+    turn_index: int,
+    total_tokens: int,
+    max_turns: int,
+    max_tokens: int,
+) -> str:
+    if turn_index >= max_turns:
+        return f"resident continuation turn budget reached: {max_turns}"
+    if max_tokens > 0 and total_tokens >= max_tokens:
+        return f"resident continuation token budget reached: {max_tokens}"
+    return ""
+
+
+def _evidence_refs(fields: dict[str, Any], task: AgentTask) -> tuple[str, ...]:
+    refs: list[str] = list(task.resident_inbox_refs)
+    for key in ("signal_refs", "evidence_refs", "dissent_refs"):
+        value = fields.get(key)
+        if isinstance(value, list):
+            refs.extend(str(item).strip() for item in value if str(item).strip())
+    evidence = fields.get("evidence")
+    if isinstance(evidence, list):
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            for key in ("ref", "path", "url", "event_id", "source_id"):
+                value = str(item.get(key) or "").strip()
+                if value:
+                    refs.append(value)
+    for fields_by_event in task.tool_outcomes.values():
+        for key in ("ref", "path", "url", "artifact_ref", "page_path"):
+            value = str(fields_by_event.get(key) or "").strip()
+            if value:
+                refs.append(value)
+    return tuple(dict.fromkeys(refs))
+
+
+def _pending_view(entry: ResidentMemoryEntry) -> dict[str, str]:
+    return {
+        "case_id": _metadata(entry.content, "case_id") or _case_from_path(entry.path),
+        "question": _metadata(entry.content, "question"),
+        "reason": _metadata(entry.content, "reason"),
+        "root_correlation_id": _metadata(entry.content, "root_correlation_id"),
+        "operator_ref": entry.path,
+    }
+
+
+def _metadata(content: str, key: str) -> str:
+    match = re.search(rf"^- {re.escape(key)}:\s*(.*?)\s*$", content, flags=re.MULTILINE)
+    return match.group(1).strip().strip("'\"") if match else ""
+
+
+def _int_metadata(content: str, key: str, default: int) -> int:
+    try:
+        return int(_metadata(content, key))
+    except ValueError:
+        return default
+
+
+def _section(content: str, heading: str) -> str:
+    match = re.search(
+        rf"^## {re.escape(heading)}\s*$\n+(.*?)(?=^## |\Z)",
+        content,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _body(content: str) -> str:
+    parts = re.split(r"\n\n", content, maxsplit=2)
+    return parts[-1].strip() if parts else content.strip()
+
+
+def _case_from_path(path: str) -> str:
+    match = re.search(r"/cases/([^/]+)/", f"/{path.lstrip('/')}")
+    return match.group(1) if match else ""
+
+
+def _task_id(prefix: str) -> str:
+    return f"task_{prefix}_{time.time_ns():x}"
+
+
+def _elapsed(started_at: str) -> float:
+    try:
+        started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+        return max(0.0, (datetime.now(UTC) - started).total_seconds())
+    except (TypeError, ValueError):
+        return 0.0
+
+
+__all__ = ["ResidentHomeTrigger", "ResidentRuntime", "ResidentTurnDisposition"]

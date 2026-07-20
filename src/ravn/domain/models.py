@@ -362,6 +362,19 @@ class AgentTask:
     workflow_parent_event_id: str = ""  # Direct upstream event task_id for per-cycle joins
     workflow_node_id: str = ""  # Active workflow graph node for node-scoped contracts
     tool_outcomes: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Durable resident continuation metadata.  These fields are transport
+    # state, not a semantic task taxonomy: the model still selects the action
+    # described by ``initiative_context``.
+    resident_case_id: str = ""
+    resident_mandate: str = ""
+    resident_turn_index: int = 0
+    resident_input_tokens: int = 0
+    resident_output_tokens: int = 0
+    resident_started_at: str = ""
+    resident_parent_turn_ref: str = ""
+    resident_inbox_refs: list[str] = field(default_factory=list)
+    resident_answer_ref: str = ""
+    resident_help_published: bool = False
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     session_id: str = field(init=False)
 

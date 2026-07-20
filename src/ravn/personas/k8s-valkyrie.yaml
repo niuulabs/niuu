@@ -198,6 +198,15 @@ produces:
     recommended_action:
       type: string
       description: concise action or next step
+    selected_next_action:
+      type: string
+      description: next evidence-gathering or acting step for the same resident case
+      required: false
+    continuation:
+      type: enum
+      values: [continue, ask_operator, sleep, stop]
+      description: how the durable resident case should proceed after this turn
+      required: false
     confidence:
       type: number
       description: confidence from 0.0 to 1.0

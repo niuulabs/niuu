@@ -107,6 +107,7 @@ class EnvironmentSignalRuntime:
         persona: str | None = None,
         output_mode: OutputMode = OutputMode.AMBIENT,
         owns_publisher: bool = False,
+        durable_home_enabled: bool = False,
     ) -> None:
         self._settings = settings
         self._publisher = publisher
@@ -115,6 +116,7 @@ class EnvironmentSignalRuntime:
         self._persona = persona
         self._output_mode = output_mode
         self._owns_publisher = owns_publisher
+        self._durable_home_enabled = durable_home_enabled
         self._environment = build_runtime_environment(settings)
         self._adapters: list[SignalAdapter] = []
         self._seen: OrderedDict[str, None] = OrderedDict()
@@ -140,7 +142,7 @@ class EnvironmentSignalRuntime:
                 )
             )
         triage_interval = self._settings.environment.idle_triage_interval_seconds
-        if self._enqueue is not None and triage_interval > 0:
+        if self._enqueue is not None and triage_interval > 0 and not self._durable_home_enabled:
             self._tasks.append(
                 asyncio.create_task(
                     self._idle_triage_loop(triage_interval),
@@ -240,7 +242,8 @@ class EnvironmentSignalRuntime:
                     )
                     enqueued_count += 1
                 else:
-                    self._remember_untriaged(signal, event)
+                    if not self._durable_home_enabled:
+                        self._remember_untriaged(signal, event)
         duration_ms = int((perf_counter() - started) * 1000)
         await self._publish_signal_poll_completed(
             adapter,
@@ -590,17 +593,29 @@ class EnvironmentSignalRuntime:
             "```\n"
             f"{closing_section}"
         )
-        return AgentTask(
-            task_id=f"task_{int(datetime.now(UTC).timestamp() * 1000):x}_{uuid.uuid4().hex[:8]}",
+        task_id = f"task_{int(datetime.now(UTC).timestamp() * 1000):x}_{uuid.uuid4().hex[:8]}"
+        root_id = event.correlation_id or signal.correlation_id or task_id
+        inbox_ref = str(
+            (resident_learning_result or {}).get("residentAutonomySignalRef") or ""
+        ).strip()
+        task = AgentTask(
+            task_id=task_id,
             title=title,
             initiative_context=context,
             triggered_by=f"signal:{event.event_type}",
             output_mode=self._output_mode,
             persona=self._persona,
             priority=3 if signal.severity == "critical" else 8,
-            root_correlation_id=event.correlation_id or signal.correlation_id,
+            root_correlation_id=root_id,
             workflow_parent_event_id=event.event_id,
+            resident_case_id=root_id if inbox_ref else "",
+            resident_turn_index=1 if inbox_ref else 0,
+            resident_started_at=datetime.now(UTC).isoformat() if inbox_ref else "",
+            resident_inbox_refs=[inbox_ref] if inbox_ref else [],
         )
+        if inbox_ref:
+            task.resident_mandate = task.initiative_context
+        return task
 
     def _resident_name(self) -> str:
         return (

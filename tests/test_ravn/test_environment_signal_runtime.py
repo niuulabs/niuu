@@ -225,6 +225,40 @@ async def test_runtime_runs_resident_learning_before_enqueueing_signal_task() ->
 
 
 @pytest.mark.asyncio
+async def test_durable_home_holds_routine_signals_but_keeps_urgent_wakes() -> None:
+    settings = _settings()
+    settings.environment.signal_sources[0].kwargs["raw_items"][0]["severity"] = "info"
+    bus = InProcessBus()
+    enqueued: list[AgentTask] = []
+
+    async def persisted(_event: SleipnirEvent) -> dict:
+        return {"residentAutonomySignalRef": "resident/inbox/signals/info.md"}
+
+    routine = EnvironmentSignalRuntime(
+        settings=settings,
+        publisher=bus,
+        enqueue=lambda task: _enqueue(enqueued, task),
+        resident_signal_processor=persisted,
+        durable_home_enabled=True,
+    )
+    await routine.collect_once()
+    assert enqueued == []
+    assert routine._untriaged == []
+
+    urgent_settings = _settings()
+    urgent = EnvironmentSignalRuntime(
+        settings=urgent_settings,
+        publisher=bus,
+        enqueue=lambda task: _enqueue(enqueued, task),
+        resident_signal_processor=persisted,
+        durable_home_enabled=True,
+    )
+    await urgent.collect_once()
+    assert len(enqueued) == 1
+    assert enqueued[0].resident_inbox_refs == ["resident/inbox/signals/info.md"]
+
+
+@pytest.mark.asyncio
 async def test_daemon_environment_signal_is_recorded_into_resident_inbox(
     tmp_path,
 ) -> None:

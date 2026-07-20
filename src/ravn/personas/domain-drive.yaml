@@ -91,6 +91,12 @@ produces:
     selected_next_action:
       type: string
       description: one safe next action the resident can take
+      required: false
+    continuation:
+      type: enum
+      values: [continue, ask_operator, sleep, stop]
+      description: how the durable resident case should proceed after this turn
+      required: false
     rationale:
       type: string
       description: why the selected next action is appropriate

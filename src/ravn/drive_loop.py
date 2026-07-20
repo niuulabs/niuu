@@ -817,6 +817,7 @@ class DriveLoop:
         self._fan_in = FanInBuffer()
         self._reflex_injector: ReflexInjector | None = None
         self._reflex_initialised = False
+        self._resident_runtime: object | None = None
         self._current_task_var: contextvars.ContextVar[AgentTask | None] = contextvars.ContextVar(
             "ravn_current_task",
             default=None,
@@ -882,7 +883,7 @@ class DriveLoop:
         """Register a handler that may consume directed user messages before enqueue."""
         self._directed_message_interceptors.append(handler)
 
-    async def enqueue(self, task: AgentTask) -> None:
+    async def enqueue(self, task: AgentTask) -> bool:
         """Add a task to the priority queue, honouring deadline and capacity."""
         if task.deadline is not None and datetime.now(UTC) > task.deadline:
             logger.info(
@@ -891,7 +892,7 @@ class DriveLoop:
                 task.title,
             )
             await self._emit_sleipnir_task_dropped(task, reason="deadline_exceeded")
-            return
+            return False
 
         if self._queue.full():
             logger.info(
@@ -900,10 +901,13 @@ class DriveLoop:
                 task.task_id,
             )
             await self._emit_sleipnir_task_dropped(task, reason="queue_full")
-            return
+            return False
 
         counter = self._next_counter()
         await self._queue.put((task.priority, counter, task))
+        track = getattr(self._resident_runtime, "track_task", None)
+        if track is not None:
+            track(task)
         self._persist_queue()
         logger.info(
             "drive_loop: enqueued task %s (%r) queue_size=%d active=%d",
@@ -912,6 +916,7 @@ class DriveLoop:
             self._queue.qsize(),
             len(self._active_tasks),
         )
+        return True
 
     async def cancel(self, task_id: str) -> None:
         """Request cancellation of a running task by ID."""
@@ -1034,6 +1039,13 @@ class DriveLoop:
             self._skuld_channel._tools = persona_config.allowed_tools
         if self._session_join_manager is not None and persona_config is not None:
             self._session_join_manager.set_subscribes_to(persona_config.consumes.event_types)
+
+    def set_resident_runtime(self, runtime: object | None) -> None:
+        """Attach the application service that persists/resumes resident cases."""
+        self._resident_runtime = runtime
+        bind = getattr(runtime, "bind_enqueue", None)
+        if bind is not None:
+            bind(self.enqueue)
 
     def set_workflow_allowed_outcomes_resolver(
         self,
@@ -1615,6 +1627,8 @@ class DriveLoop:
 
         success = False
         response_text = ""
+        turn_result = None
+        resident_disposition = None
         token = self._current_task_var.set(task)
         self._active_task_contexts[task.task_id] = task
         self._active_agents[task.task_id] = agent
@@ -1625,7 +1639,9 @@ class DriveLoop:
                 cost_usd = self._record_task_cost(task, turn_result)
                 await self._emit_task_usage(channel, task, turn_result, cost_usd, agent)
                 response_text = (
-                    capture_channel.response_text if capture_channel else turn_result.response
+                    capture_channel.response_text
+                    if capture_channel
+                    else str(getattr(turn_result, "response", "") or "")
                 )
                 repair_result = await self._maybe_repair_resident_valkyrie_outcome(
                     agent=agent,
@@ -1637,7 +1653,17 @@ class DriveLoop:
                     await self._emit_task_usage(
                         channel, task, repair_result, repair_cost_usd, agent
                     )
+                    turn_result = repair_result
                     response_text = repair_result.response
+                if self._resident_runtime is not None:
+                    resident_disposition = await self._resident_runtime.handle_completed_turn(
+                        task=task,
+                        prompt=prompt,
+                        result=turn_result,
+                        response_text=response_text,
+                    )
+                    if str(getattr(resident_disposition, "kind", "")) == "ask_operator":
+                        await self._emit_resident_help_needed(task, resident_disposition)
                 await self._maybe_publish_budget_warning(task)
                 self._save_task_output(task, capture_channel or channel)
                 if response_text:
@@ -1673,6 +1699,7 @@ class DriveLoop:
                     await self._finalise_thread(thread_path, False)
                 return
             except Exception as exc:
+                success = False
                 logger.error("drive_loop: task %s failed: %s", task.task_id, exc)
                 self._result_store.set_status(task.task_id, "failed")
                 await channel.emit(
@@ -1736,6 +1763,10 @@ class DriveLoop:
                 thread_path = task.triggered_by.removeprefix("thread:")
                 await self._finalise_thread(thread_path, success)
         finally:
+            if not success and self._resident_runtime is not None:
+                release = getattr(self._resident_runtime, "release_failed_task", None)
+                if release is not None:
+                    release(task)
             self._active_agents.pop(task.task_id, None)
             self._active_task_contexts.pop(task.task_id, None)
             self._current_task_var.reset(token)
@@ -1748,6 +1779,38 @@ class DriveLoop:
                 "The task will not make progress until the upstream model/service recovers."
             )
         return f"{type(exc).__name__}: {exc}"
+
+    async def _emit_resident_help_needed(self, task: AgentTask, disposition: object) -> None:
+        """Surface one persisted resident question through existing transports."""
+        case_id = str(getattr(disposition, "case_id", "") or task.task_id)
+        event = build_help_needed_event(
+            source=self._source_id,
+            persona=task.persona or (self._persona_config.name if self._persona_config else ""),
+            reason=str(getattr(disposition, "reason", "") or "operator input required"),
+            summary=str(getattr(disposition, "question", "") or "Operator input required"),
+            recommendation="Answer this resident continuation with the requested guidance.",
+            correlation_id=task.task_id,
+            session_id=task.session_id,
+            task_id=task.task_id,
+            context={
+                "resident_case_id": case_id,
+                "continuation_id": case_id,
+                "root_correlation_id": task.root_correlation_id or case_id,
+                "operator_ref": str(getattr(disposition, "operator_ref", "")),
+            },
+        )
+        if self._mesh is not None:
+            try:
+                await self._mesh.publish(event, topic=str(RavnEventType.HELP_NEEDED))
+            except Exception:
+                logger.warning("Failed to publish resident help_needed; continuing.", exc_info=True)
+        if self._skuld_channel is not None:
+            try:
+                await self._skuld_channel.emit(event)
+            except Exception:
+                logger.warning("Failed to emit resident help_needed to skuld.", exc_info=True)
+        await self._event_publisher.publish(event)
+        task.resident_help_published = True
 
     async def _maybe_repair_resident_valkyrie_outcome(
         self,
@@ -2277,7 +2340,7 @@ class DriveLoop:
         else:
             mesh_available = True
 
-        if verdict == "help_needed":
+        if verdict == "help_needed" and not task.resident_help_published:
             attempted = outcome_fields.get("attempted")
             if not isinstance(attempted, list):
                 attempted = []
@@ -2698,6 +2761,16 @@ class DriveLoop:
                         "workflow_parent_event_id": task.workflow_parent_event_id,
                         "workflow_node_id": task.workflow_node_id,
                         "tool_outcomes": task.tool_outcomes,
+                        "resident_case_id": task.resident_case_id,
+                        "resident_mandate": task.resident_mandate,
+                        "resident_turn_index": task.resident_turn_index,
+                        "resident_input_tokens": task.resident_input_tokens,
+                        "resident_output_tokens": task.resident_output_tokens,
+                        "resident_started_at": task.resident_started_at,
+                        "resident_parent_turn_ref": task.resident_parent_turn_ref,
+                        "resident_inbox_refs": task.resident_inbox_refs,
+                        "resident_answer_ref": task.resident_answer_ref,
+                        "resident_help_published": task.resident_help_published,
                         "created_at": task.created_at.isoformat(),
                     }
                 )
@@ -2751,6 +2824,16 @@ class DriveLoop:
                     workflow_parent_event_id=rec.get("workflow_parent_event_id", ""),
                     workflow_node_id=rec.get("workflow_node_id", ""),
                     tool_outcomes=rec.get("tool_outcomes", {}) or {},
+                    resident_case_id=rec.get("resident_case_id", ""),
+                    resident_mandate=rec.get("resident_mandate", ""),
+                    resident_turn_index=rec.get("resident_turn_index", 0),
+                    resident_input_tokens=rec.get("resident_input_tokens", 0),
+                    resident_output_tokens=rec.get("resident_output_tokens", 0),
+                    resident_started_at=rec.get("resident_started_at", ""),
+                    resident_parent_turn_ref=rec.get("resident_parent_turn_ref", ""),
+                    resident_inbox_refs=rec.get("resident_inbox_refs", []) or [],
+                    resident_answer_ref=rec.get("resident_answer_ref", ""),
+                    resident_help_published=rec.get("resident_help_published", False),
                     created_at=created_at,
                 )
                 if deadline is not None and datetime.now(UTC) > deadline:
@@ -2761,6 +2844,9 @@ class DriveLoop:
                     continue
                 counter = self._next_counter()
                 self._queue.put_nowait((task.priority, counter, task))
+                track = getattr(self._resident_runtime, "track_task", None)
+                if track is not None:
+                    track(task)
                 restored += 1
             except Exception as exc:
                 logger.warning("drive_loop: failed to restore journal entry: %s", exc)

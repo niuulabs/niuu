@@ -19,6 +19,7 @@ from ravn.resident_continuation import (
     _OPERATOR_ANSWER_PATH,
     _OPERATOR_NEEDED_PATH,
     LocalResidentMemory,
+    _case_path,
     _compact_line,
     _first_heading_or_line,
     _operator_answer_is_consumed,
@@ -68,12 +69,15 @@ class MimirResidentState(ResidentStatePort):
 
     async def write_turn(self, record: ResidentTurnRecord) -> str:
         stamp = record.created_at.strftime("%Y%m%dT%H%M%SZ")
-        path = f"{self._prefix}/turns/{stamp}-{record.turn_index}.md"
+        path = str(
+            Path(self._prefix)
+            / _case_path(record.case_id, f"turns/{stamp}-{record.turn_index}.md")
+        )
         await self._mimir.upsert_page(path, _render_turn_record(record))
         return path
 
     async def write_budget(self, snapshot: ResidentBudgetSnapshot) -> str:
-        path = f"{self._prefix}/budget/latest.md"
+        path = str(Path(self._prefix) / _case_path(snapshot.case_id, "budget/latest.md"))
         await self._mimir.upsert_page(
             path,
             _render_budget_snapshot(snapshot, updated_at=datetime.now(UTC)),
@@ -102,8 +106,11 @@ class MimirResidentState(ResidentStatePort):
         question: str,
         reason: str,
         turn: ResidentTurnRecord,
+        case_id: str = "",
     ) -> str:
-        path = f"{self._prefix}/{_OPERATOR_NEEDED_PATH}"
+        path = str(
+            Path(self._prefix) / _case_path(case_id or turn.case_id, _OPERATOR_NEEDED_PATH)
+        )
         await self._mimir.upsert_page(
             path,
             _render_operator_needed(
@@ -115,8 +122,8 @@ class MimirResidentState(ResidentStatePort):
         )
         return path
 
-    async def read_operator_needed(self) -> ResidentMemoryEntry | None:
-        path = f"{self._prefix}/{_OPERATOR_NEEDED_PATH}"
+    async def read_operator_needed(self, case_id: str = "") -> ResidentMemoryEntry | None:
+        path = str(Path(self._prefix) / _case_path(case_id, _OPERATOR_NEEDED_PATH))
         try:
             content = await self._mimir.read_page(path)
         except FileNotFoundError:
@@ -129,27 +136,44 @@ class MimirResidentState(ResidentStatePort):
             content=content,
         )
 
-    async def write_operator_answer(self, answer: str) -> str:
+    async def write_operator_answer(self, answer: str, *, case_id: str = "") -> str:
         now = datetime.now(UTC)
-        answer_path = f"{self._prefix}/{_OPERATOR_ANSWER_PATH}"
-        await self._mimir.upsert_page(answer_path, _render_operator_answer(answer, answered_at=now))
-        history_path = f"{self._prefix}/operator-answers/{_timestamp_slug(now)}.md"
-        await self._mimir.upsert_page(
-            history_path, _render_operator_answer(answer, answered_at=now)
-        )
-        marker_path = f"{self._prefix}/{_OPERATOR_NEEDED_PATH}"
+        marker_path = str(Path(self._prefix) / _case_path(case_id, _OPERATOR_NEEDED_PATH))
         try:
             prior = await self._mimir.read_page(marker_path)
         except FileNotFoundError:
             prior = ""
+        answer_path = str(Path(self._prefix) / _case_path(case_id, _OPERATOR_ANSWER_PATH))
+        await self._mimir.upsert_page(
+            answer_path,
+            _render_operator_answer(
+                answer,
+                answered_at=now,
+                case_id=case_id,
+                pending_context=prior,
+            ),
+        )
+        history_path = str(
+            Path(self._prefix)
+            / _case_path(case_id, f"operator-answers/{_timestamp_slug(now)}.md")
+        )
+        await self._mimir.upsert_page(
+            history_path,
+            _render_operator_answer(
+                answer,
+                answered_at=now,
+                case_id=case_id,
+                pending_context=prior,
+            ),
+        )
         await self._mimir.upsert_page(
             marker_path,
             _render_answered_operator_needed(prior, answer_path=answer_path, answered_at=now),
         )
         return answer_path
 
-    async def read_operator_answer(self) -> ResidentMemoryEntry | None:
-        path = f"{self._prefix}/{_OPERATOR_ANSWER_PATH}"
+    async def read_operator_answer(self, case_id: str = "") -> ResidentMemoryEntry | None:
+        path = str(Path(self._prefix) / _case_path(case_id, _OPERATOR_ANSWER_PATH))
         try:
             content = await self._mimir.read_page(path)
         except FileNotFoundError:
@@ -173,6 +197,44 @@ class MimirResidentState(ResidentStatePort):
             _render_consumed_operator_answer(prior, consumed_at=datetime.now(UTC)),
         )
         return path
+
+    async def list_operator_needed(self) -> list[ResidentMemoryEntry]:
+        return await self._list_case_entries(_OPERATOR_NEEDED_PATH, pending=True)
+
+    async def list_operator_answers(self) -> list[ResidentMemoryEntry]:
+        return await self._list_case_entries(_OPERATOR_ANSWER_PATH, pending=False)
+
+    async def _list_case_entries(
+        self,
+        leaf: str,
+        *,
+        pending: bool,
+    ) -> list[ResidentMemoryEntry]:
+        prefix = f"{self._prefix}/cases"
+        pages = await self._mimir.list_pages(prefix=prefix)
+        entries: list[ResidentMemoryEntry] = []
+        for page in pages:
+            path = str(getattr(page, "path", "") or "")
+            if not path.endswith(leaf):
+                continue
+            try:
+                content = await self._mimir.read_page(path)
+            except FileNotFoundError:
+                continue
+            available = (
+                _operator_marker_is_pending(content)
+                if pending
+                else not _operator_answer_is_consumed(content)
+            )
+            if available:
+                entries.append(
+                    ResidentMemoryEntry(
+                        path=path,
+                        summary=_first_heading_or_line(content),
+                        content=content,
+                    )
+                )
+        return sorted(entries, key=lambda item: item.path)
 
     async def list_refs(self, prefix: str = "") -> list[str]:
         pages = await self._mimir.list_pages(prefix=prefix or self._prefix)

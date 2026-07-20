@@ -102,6 +102,8 @@ class ResidentBudgetSnapshot:
     elapsed_seconds: float = 0.0
     usage: TokenUsage = field(default_factory=lambda: TokenUsage(input_tokens=0, output_tokens=0))
     cost_usd: float = 0.0
+    case_id: str = ""
+    root_correlation_id: str = ""
 
     @property
     def total_tokens(self) -> int:
@@ -124,7 +126,17 @@ class ResidentTurnRecord:
     outcome_fields: dict[str, Any]
     tool_names: tuple[str, ...]
     usage: TokenUsage
+    mandate: str = ""
+    cumulative_usage: TokenUsage = field(
+        default_factory=lambda: TokenUsage(input_tokens=0, output_tokens=0)
+    )
     selected_next_action: ResidentActionCandidate | None = None
+    case_id: str = ""
+    root_correlation_id: str = ""
+    task_id: str = ""
+    persona: str = ""
+    evidence_refs: tuple[str, ...] = ()
+    inbox_refs: tuple[str, ...] = ()
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -203,20 +215,27 @@ class ResidentMemoryPort(Protocol):
         question: str,
         reason: str,
         turn: ResidentTurnRecord,
+        case_id: str = "",
     ) -> str:
         """Persist the latest pending operator question."""
 
-    async def read_operator_needed(self) -> ResidentMemoryEntry | None:
+    async def read_operator_needed(self, case_id: str = "") -> ResidentMemoryEntry | None:
         """Return the latest pending operator question when one exists."""
 
-    async def write_operator_answer(self, answer: str) -> str:
+    async def write_operator_answer(self, answer: str, *, case_id: str = "") -> str:
         """Persist the latest operator answer and mark the pending question answered."""
 
-    async def read_operator_answer(self) -> ResidentMemoryEntry | None:
+    async def read_operator_answer(self, case_id: str = "") -> ResidentMemoryEntry | None:
         """Return the latest operator answer when one exists."""
 
     async def consume_operator_answer(self, answer: ResidentMemoryEntry) -> str:
         """Mark an operator answer as consumed after it has resumed resident work."""
+
+    async def list_operator_needed(self) -> list[ResidentMemoryEntry]:
+        """Return every pending operator question."""
+
+    async def list_operator_answers(self) -> list[ResidentMemoryEntry]:
+        """Return every unconsumed operator answer."""
 
 
 class ResidentPolicyPort(Protocol):
@@ -272,7 +291,7 @@ def selected_action_from_outcome(fields: dict[str, Any]) -> ResidentActionCandid
         )
 
     text = str(raw).strip()
-    if not text:
+    if not text or text.casefold() in {"none", "n/a", "no action", "stop"}:
         return None
     return ResidentActionCandidate(
         title=text[:80],

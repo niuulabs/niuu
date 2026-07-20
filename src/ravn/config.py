@@ -944,6 +944,13 @@ class HttpChannelConfig(BaseModel):
         default="ravn.adapters.events.cli_translator.CliFormatTranslator",
         description="Fully-qualified class path for the EventTranslatorPort implementation.",
     )
+    operator_token_env: str = Field(
+        default="RAVN_OPERATOR_TOKEN",
+        description=(
+            "Environment variable containing the bearer token required by resident "
+            "operator-question and answer endpoints. Missing tokens disable those endpoints."
+        ),
+    )
 
 
 class SkuldChannelConfig(BaseModel):
@@ -2924,6 +2931,21 @@ class ResidentStateConfig(BaseModel):
     fallback_secret_kwargs_env: dict[str, str] = Field(
         default_factory=dict,
         description="Maps fallback adapter kwarg names to env var names for secret injection.",
+    )
+    continuation_max_turns: int = Field(
+        default=3,
+        ge=1,
+        description="Maximum model turns in one automatically continued resident case.",
+    )
+    continuation_max_tokens: int = Field(
+        default=0,
+        ge=0,
+        description="Cumulative resident-case token cap; 0 leaves the token cap disabled.",
+    )
+    home_wake_interval_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description="Seconds between routine resident home turns over the durable inbox.",
     )
 
 

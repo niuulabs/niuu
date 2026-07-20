@@ -203,3 +203,31 @@ class MimirResidentInbox(ResidentInboxBackend):
         path = f"{self._decision_prefix}/{stamp}.md"
         await self._mimir.upsert_page(path, f"# Resident Inbox Decision\n\n{entry}\n")
         return path
+
+    async def acknowledge(
+        self,
+        refs: tuple[str, ...],
+        *,
+        status: str = ResidentInboxStatus.REMEMBERED.value,
+        reason: str = "resident turn recorded",
+    ) -> tuple[str, ...]:
+        """Mark exact inbox pages consumed after their resident turn is durable."""
+        acknowledged: list[str] = []
+        processed_at = datetime.now(UTC)
+        for path in refs:
+            if not path.startswith(f"{self._signal_prefix}/"):
+                continue
+            try:
+                signal = parse_inbox_signal(await self._mimir.read_page(path))
+            except FileNotFoundError:
+                continue
+            if signal is None:
+                continue
+            updated = signal.with_updates(
+                status=status,
+                reason=reason or signal.reason,
+                processed_at=processed_at,
+            )
+            await self._mimir.upsert_page(path, render_inbox_signal(updated))
+            acknowledged.append(path)
+        return tuple(acknowledged)

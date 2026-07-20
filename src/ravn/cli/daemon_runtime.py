@@ -55,6 +55,21 @@ async def _run_daemon(
     # Build Mímir adapter early so _agent_factory closure can capture it.
     daemon_mimir = _build_mimir(settings)
     drive_loop: Any | None = None
+    resident_inbox: Any | None = None
+    resident_state: Any | None = None
+    resident_runtime: Any | None = None
+    if settings.initiative.enabled or task_dispatch:
+        resident_inbox = _build_resident_inbox(settings, mimir=daemon_mimir)
+        resident_state = await _build_resident_state(
+            settings,
+            workspace=workspace,
+            mimir=daemon_mimir,
+        )
+        resident_runtime = _build_resident_runtime(
+            settings,
+            state=resident_state,
+            inbox=resident_inbox,
+        )
 
     # Populated by _wire_cron after drive_loop is created; captured by _agent_factory.
     cron_tools: list[Any] = []
@@ -262,7 +277,7 @@ async def _run_daemon(
             gw_tasks.append("telegram")
 
         if channels_cfg.http.enabled:
-            ht = HttpGateway(channels_cfg.http, gw)
+            ht = HttpGateway(channels_cfg.http, gw, resident_runtime=resident_runtime)
             tasks.append(asyncio.create_task(ht.run(), name="http"))
             gw_tasks.append("http")
 
@@ -324,6 +339,35 @@ async def _run_daemon(
             or sleipnir_catalog_publisher
             or daemon_bus,
         )
+        if hasattr(drive_loop, "set_persona_config"):
+            drive_loop.set_persona_config(persona_config)
+        if resident_runtime is not None:
+            from ravn.resident_runtime import ResidentHomeTrigger  # noqa: PLC0415
+
+            if hasattr(drive_loop, "set_resident_runtime"):
+                drive_loop.set_resident_runtime(resident_runtime)
+            if hasattr(drive_loop, "register_directed_message_interceptor"):
+                drive_loop.register_directed_message_interceptor(
+                    resident_runtime.consume_directed_message
+                )
+            if resident_inbox is not None and hasattr(drive_loop, "register_trigger"):
+                try:
+                    resident_output_mode = OutputMode(settings.initiative.default_output_mode)
+                except ValueError:
+                    resident_output_mode = OutputMode.AMBIENT
+                drive_loop.register_trigger(
+                    ResidentHomeTrigger(
+                        resident_runtime,
+                        interval_seconds=settings.resident_state.home_wake_interval_seconds,
+                        max_signals=settings.resident_inbox.max_signals_per_wake,
+                        persona=(
+                            persona_config.name
+                            if persona_config is not None
+                            else settings.initiative.default_persona or None
+                        ),
+                        output_mode=resident_output_mode,
+                    )
+                )
         _cron_jobs = _wire_triggers(drive_loop, settings.initiative)
         cron_tools[:] = _wire_cron(drive_loop, _cron_jobs, settings.initiative)
 
@@ -455,6 +499,7 @@ async def _run_daemon(
         mimir=daemon_mimir,
         resident_learning_runtime=resident_learning_runtime,
         resident_wakefulness=resident_wakefulness,
+        resident_inbox=resident_inbox,
         owns_publisher=not environment_signal_publisher_started,
     )
     if environment_signal_runtime is not None:

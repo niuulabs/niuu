@@ -16,6 +16,7 @@ def _build_environment_signal_runtime(
     mimir: Any | None = None,
     resident_learning_runtime: Any | None = None,
     resident_wakefulness: Any | None = None,
+    resident_inbox: Any | None = None,
     owns_publisher: bool = True,
 ) -> Any | None:
     """Build the resident Environment signal runtime when sources are configured."""
@@ -45,21 +46,11 @@ def _build_environment_signal_runtime(
         persona = settings.initiative.default_persona or None
 
     resident_signal_processor = None
-    resident_signal_recorder = None
-    if (
-        mimir is not None
-        and settings.resident_inbox.enabled
-        and settings.resident_inbox.environment_signals_enabled
-    ):
-        from ravn.resident_inbox import MimirResidentInbox  # noqa: PLC0415
-
-        inbox_cfg = settings.resident_inbox
-        resident_signal_recorder = MimirResidentInbox(
-            mimir,
-            retention_max_pages=inbox_cfg.signal_retention_max_pages,
-            retention_max_age_days=inbox_cfg.signal_retention_max_age_days,
-            retention_sweep_interval_seconds=inbox_cfg.signal_retention_sweep_interval_seconds,
-        )
+    if resident_inbox is None:
+        resident_inbox = _build_resident_inbox(settings, mimir=mimir)
+    resident_signal_recorder = (
+        resident_inbox if settings.resident_inbox.environment_signals_enabled else None
+    )
 
     async def _process_resident_signal(event: Any) -> Any:
         result: dict[str, Any] = {}
@@ -96,6 +87,90 @@ def _build_environment_signal_runtime(
         persona=persona,
         output_mode=output_mode,
         owns_publisher=owns_publisher,
+        durable_home_enabled=resident_signal_recorder is not None,
+    )
+
+
+def _build_resident_inbox(settings: Settings, *, mimir: Any | None) -> Any | None:
+    """Build the one durable inbox shared by signal recording and home turns."""
+    if mimir is None or not settings.resident_inbox.enabled:
+        return None
+    from ravn.resident_inbox import MimirResidentInbox  # noqa: PLC0415
+
+    cfg = settings.resident_inbox
+    return MimirResidentInbox(
+        mimir,
+        retention_max_pages=cfg.signal_retention_max_pages,
+        retention_max_age_days=cfg.signal_retention_max_age_days,
+        retention_sweep_interval_seconds=cfg.signal_retention_sweep_interval_seconds,
+    )
+
+
+async def _build_resident_state(
+    settings: Settings,
+    *,
+    workspace: Path,
+    mimir: Any | None,
+) -> Any:
+    """Select the configured preferred/fallback ResidentStatePort adapters."""
+    import inspect  # noqa: PLC0415
+
+    from ravn.adapters.resident_state import select_resident_state  # noqa: PLC0415
+
+    cfg = settings.resident_state
+    state_root = _resident_ravn_state_dir(workspace, settings) / "resident-state"
+
+    def _candidate(
+        adapter_path: str,
+        kwargs: dict[str, Any],
+        secret_kwargs_env: dict[str, str],
+    ) -> Any | None:
+        try:
+            cls = _import_class(adapter_path)
+            resolved = _inject_secrets(dict(kwargs), secret_kwargs_env)
+            params = inspect.signature(cls.__init__).parameters
+            if "root" in params and "root" not in resolved:
+                resolved["root"] = state_root
+            if "mimir" in params and "mimir" not in resolved:
+                if mimir is None:
+                    raise RuntimeError("adapter requires Mimir but no Mimir backend is configured")
+                resolved["mimir"] = mimir
+            return cls(**resolved)
+        except Exception as exc:
+            logger.warning("resident state adapter %s unavailable: %s", adapter_path, exc)
+            return None
+
+    candidates = [
+        candidate
+        for candidate in (
+            _candidate(cfg.adapter, cfg.kwargs, cfg.secret_kwargs_env),
+            _candidate(
+                cfg.fallback_adapter,
+                cfg.fallback_kwargs,
+                cfg.fallback_secret_kwargs_env,
+            ),
+        )
+        if candidate is not None
+    ]
+    if not candidates:
+        raise RuntimeError("no resident-state adapters could be constructed")
+    return await select_resident_state(*candidates)
+
+
+def _build_resident_runtime(
+    settings: Settings,
+    *,
+    state: Any,
+    inbox: Any | None,
+) -> Any:
+    from ravn.resident_runtime import ResidentRuntime  # noqa: PLC0415
+
+    cfg = settings.resident_state
+    return ResidentRuntime(
+        state=state,
+        inbox=inbox,
+        max_turns=cfg.continuation_max_turns,
+        max_tokens=cfg.continuation_max_tokens,
     )
 
 

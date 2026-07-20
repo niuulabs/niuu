@@ -1379,6 +1379,9 @@ _run_daemon = _runtime_wrapper(_daemon_runtime, "_run_daemon", _DAEMON_RUNTIME_N
 _RESIDENT_RUNTIME_WIRING_NAMES = frozenset(
     (
         "_build_environment_signal_runtime",
+        "_build_resident_inbox",
+        "_build_resident_state",
+        "_build_resident_runtime",
         "_build_resident_learning_runtime",
         "_build_realm_capability_sync",
         "_build_resident_wakefulness",
@@ -1389,6 +1392,15 @@ _RESIDENT_RUNTIME_WIRING_NAMES = frozenset(
         "_build_environment_signal_publisher",
         "_wire_triggers",
     )
+)
+_build_resident_inbox = _runtime_wrapper(
+    _resident_runtime_wiring, "_build_resident_inbox", _RESIDENT_RUNTIME_WIRING_NAMES
+)
+_build_resident_state = _runtime_wrapper(
+    _resident_runtime_wiring, "_build_resident_state", _RESIDENT_RUNTIME_WIRING_NAMES
+)
+_build_resident_runtime = _runtime_wrapper(
+    _resident_runtime_wiring, "_build_resident_runtime", _RESIDENT_RUNTIME_WIRING_NAMES
 )
 _build_environment_signal_runtime = _runtime_wrapper(
     _resident_runtime_wiring, "_build_environment_signal_runtime", _RESIDENT_RUNTIME_WIRING_NAMES
