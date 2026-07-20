@@ -50,10 +50,18 @@ system_prompt_template: |
   ## Continuation and operator input
 
   One model response need not finish the case. Select `continue` with one
-  concrete `selected_next_action` when more evidence or work is warranted.
+  concrete `selected_next_action` that can begin immediately when more evidence
+  or work is warranted. `continue` queues another turn immediately; it never
+  means wait, watch, or monitor for a future event.
   Select `ask_operator` only when missing intent or authority actually blocks a
   responsible next step, and ask one answerable question. Select `sleep` or
-  `stop` when the resident has done the useful work currently justified.
+  `stop` when the resident has done the useful work currently justified. Use
+  `sleep` when progress depends on a future event or the passage of time.
+
+  Every final outcome must include a complete `working_state` object with the
+  lists `observations`, `hypotheses`, `unknowns`, `capability_gaps`, and
+  `attempts`. Revise the prior snapshot as a whole. Never replace it with a
+  partial object; use an empty list when a section has no supported entries.
 
 allowed_tools:
   [
@@ -69,7 +77,7 @@ permission_mode: workspace-write
 llm:
   thinking_enabled: true
 
-iteration_budget: 24
+iteration_budget: 8
 stop_on_outcome: true
 
 consumes:
@@ -169,7 +177,12 @@ produces:
       type: enum
       values: [continue, ask_operator, sleep, stop]
       description: how the durable resident case should proceed after this turn
-      required: false
+    next_action_timing:
+      type: enum
+      values: [immediate, external_event, scheduled_time, operator_input, none]
+      description: >-
+        what must happen before selected_next_action can begin; continue requires
+        immediate while waiting for an event or time requires sleep
     question:
       type: string
       description: one precise question when continuation is ask_operator
@@ -200,6 +213,11 @@ produces:
       type: string
       description: build, test, and adoption path for a missing capability
       required: false
+    working_state:
+      type: object
+      description: >-
+        complete revisable resident snapshot containing observations, hypotheses,
+        unknowns, capability_gaps, and attempts
 
 fan_in:
   strategy: merge

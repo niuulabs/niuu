@@ -471,6 +471,8 @@ class EnvironmentSignalRuntime:
             "recommended_action: <next step, or none>\n"
             "selected_next_action: <one concrete next step, or none>\n"
             "continuation: <continue | ask_operator | sleep | stop>\n"
+            "next_action_timing: <immediate | external_event | scheduled_time | "
+            "operator_input | none>\n"
             'question: ""\n'
             "action_authority: <autonomous | yolo_allowed | court_required | "
             "human_review_required>\n"
@@ -671,6 +673,8 @@ class EnvironmentSignalRuntime:
             "recommended_action: <next step, or none>\n"
             "selected_next_action: <one concrete next step, or none>\n"
             "continuation: <continue | ask_operator | sleep | stop>\n"
+            "next_action_timing: <immediate | external_event | scheduled_time | "
+            "operator_input | none>\n"
             'question: ""\n'
             "action_authority: <autonomous | yolo_allowed | court_required | "
             "human_review_required>\n"

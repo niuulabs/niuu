@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import re
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -19,7 +19,9 @@ from ravn.domain.resident_continuation import (
     ResidentPolicyDecisionRecord,
     ResidentTurnRecord,
     ResidentWorkingStateRecord,
+    resident_working_state_from_outcome,
     selected_action_from_outcome,
+    validate_resident_working_state,
 )
 from ravn.domain.resident_state import ResidentStatePort
 from ravn.observability import get_observability
@@ -44,7 +46,14 @@ In the final structured outcome, include a `working_state` mapping with these li
 
 Keep entries concise. Do not invent evidence, convert hypotheses into observations, or copy
 prior entries that new evidence no longer supports. The runtime persists this mapping exactly;
-it does not interpret the environment or manufacture state on your behalf."""
+it does not interpret the environment or manufacture state on your behalf.
+
+`continue` immediately queues another resident turn. Use it only for a concrete next action
+that can begin with the capabilities and evidence already available. If useful progress requires
+a future external event or the passage of time, use `sleep`; a new observation will wake the
+resident. Never use `continue` merely to watch, wait, or monitor. Declare this explicitly with
+`next_action_timing`: `immediate` for continue, `external_event` or `scheduled_time` for sleep,
+`operator_input` for ask_operator, and `none` for stop."""
 
 
 @dataclass(frozen=True)
@@ -190,7 +199,9 @@ class ResidentRuntime:
         root_id = task.root_correlation_id or case_id
         turn_index = task.resident_turn_index or 1
         mandate = task.resident_mandate or task.initiative_context
-        fields = dict(getattr(getattr(result, "episode", None), "structured_outcome", None) or {})
+        episode = getattr(result, "episode", None)
+        fields = dict(getattr(episode, "structured_outcome", None) or {})
+        outcome_valid = getattr(episode, "outcome_valid", None) is not False
         action = selected_action_from_outcome(fields)
         telemetry.event(
             "ravn.resident.outcome_interpreted",
@@ -235,7 +246,17 @@ class ResidentRuntime:
         if durable_turn is None:
             raise RuntimeError(f"resident turn was not readable after write: {turn_ref}")
 
-        working_state = _working_state_from_outcome(fields)
+        working_state = resident_working_state_from_outcome(fields) if outcome_valid else None
+        if outcome_valid and "working_state" in fields and working_state is None:
+            working_state_errors = validate_resident_working_state(fields.get("working_state"))
+            telemetry.event(
+                "ravn.resident.working_state_rejected",
+                attributes={
+                    "ravn.resident.id": self._resident_id,
+                    "ravn.resident.working_state.error_count": len(working_state_errors),
+                },
+                content={"errors": working_state_errors},
+            )
         if working_state is not None:
             with telemetry.span(
                 "ravn.port.resident_state.write_working_state",
@@ -286,6 +307,17 @@ class ResidentRuntime:
             budget_ref = await self._state.write_budget(snapshot)
             budget_span.set_attribute("ravn.resident.budget_ref", budget_ref)
 
+        if not outcome_valid:
+            self._inflight_cases.discard(case_id)
+            self._inflight_refs.difference_update(task.resident_inbox_refs)
+            return ResidentTurnDisposition(
+                kind=ContinuationDecisionKind.STOP,
+                case_id=case_id,
+                turn_ref=turn_ref,
+                budget_ref=budget_ref,
+                reason="resident outcome contract was invalid",
+            )
+
         # A signal is no longer NEW only after both durable turn and budget
         # records exist.  Replayed signals therefore cannot disappear on a
         # failed model turn or failed state write.
@@ -330,6 +362,15 @@ class ResidentRuntime:
                 reason=str(fields.get("reason") or "operator input required"),
             )
 
+        if control != "continue" and action is not None:
+            return ResidentTurnDisposition(
+                kind=ContinuationDecisionKind.STOP,
+                case_id=case_id,
+                turn_ref=turn_ref,
+                budget_ref=budget_ref,
+                reason="selected next action did not declare continuation control",
+            )
+
         if action is None:
             return ResidentTurnDisposition(
                 kind=ContinuationDecisionKind.STOP,
@@ -337,6 +378,29 @@ class ResidentRuntime:
                 turn_ref=turn_ref,
                 budget_ref=budget_ref,
                 reason="no selected next action",
+            )
+
+        if action.action.casefold().rstrip(".!") == "continue":
+            return ResidentTurnDisposition(
+                kind=ContinuationDecisionKind.STOP,
+                case_id=case_id,
+                turn_ref=turn_ref,
+                budget_ref=budget_ref,
+                reason="selected next action repeated transport control instead of an action",
+            )
+
+        timing = str(fields.get("next_action_timing") or "").strip().casefold()
+        if timing != "immediate":
+            return ResidentTurnDisposition(
+                kind=ContinuationDecisionKind.STOP,
+                case_id=case_id,
+                turn_ref=turn_ref,
+                budget_ref=budget_ref,
+                reason=(
+                    f"continuation timing {timing!r} is not immediately executable"
+                    if timing
+                    else "continuation did not declare immediate action timing"
+                ),
             )
 
         policy = _assess_authority(fields, action.risk_boundaries)
@@ -399,7 +463,10 @@ class ResidentRuntime:
             next_turn=turn_index + 1,
             cumulative=cumulative,
             mandate=mandate,
-            prior_turn=_bounded(durable_turn.content, self._context_max_chars),
+            prior_tool_results=_bounded(
+                "\n\n".join(record.tool_results) or "(none)",
+                self._context_max_chars,
+            ),
         )
         with telemetry.span("ravn.port.task_queue.enqueue_continuation") as enqueue_span:
             accepted = await self._enqueue_task(continuation)
@@ -470,13 +537,13 @@ class ResidentRuntime:
         pending = await self._state.read_operator_needed(case_id)
         if pending is None:
             raise LookupError(f"no pending operator question for case {case_id}")
-        prior_turn = await self._read_parent_turn(pending)
+        prior_turn_handoff = await self._read_parent_handoff(pending)
         answer_ref = await self._state.write_operator_answer(answer, case_id=case_id)
         task = _operator_resume_task(
             pending,
             answer=answer,
             answer_ref=answer_ref,
-            prior_turn_content=prior_turn,
+            prior_turn_handoff=prior_turn_handoff,
         )
         accepted = await self._enqueue_task(task)
         if accepted:
@@ -588,7 +655,7 @@ class ResidentRuntime:
                 ),
                 answer=_section(answer.content, "Answer") or _body(answer.content),
                 answer_ref=answer.path,
-                prior_turn_content=await self._read_parent_turn(answer),
+                prior_turn_handoff=await self._read_parent_handoff(answer),
             )
             if await self._enqueue_task(task):
                 self._inflight_cases.add(case_id)
@@ -606,14 +673,14 @@ class ResidentRuntime:
         result = await self._enqueue(task)
         return result is not False
 
-    async def _read_parent_turn(self, entry: ResidentMemoryEntry) -> str:
+    async def _read_parent_handoff(self, entry: ResidentMemoryEntry) -> str:
         turn_ref = _metadata(entry.content, "turn_ref")
         if not turn_ref:
             return ""
         turn = await self._state.read(turn_ref)
         if turn is None:
             raise RuntimeError(f"resident parent turn is not readable: {turn_ref}")
-        return _bounded(turn.content, self._context_max_chars)
+        return _bounded(_resident_turn_handoff(turn.content), self._context_max_chars)
 
     def _inflight_inbox_refs(self) -> set[str]:
         return set(self._inflight_refs)
@@ -677,18 +744,20 @@ def _continuation_task(
     next_turn: int,
     cumulative: TokenUsage,
     mandate: str,
-    prior_turn: str,
+    prior_tool_results: str,
 ) -> AgentTask:
     context = (
         f"Continue resident case {case_id}.\n"
         f"Durable prior turn: {turn_ref}\n"
         f"Selected next action: {action}\n"
         f"Reason: {reason or 'selected by the prior resident turn'}\n\n"
-        "## Durable prior turn\n\n"
-        f"{prior_turn}\n\n"
+        "## Relevant prior tool results\n\n"
+        f"{prior_tool_results}\n\n"
         "Carry out or investigate the selected action using the capabilities actually "
-        "available. Revise it if new evidence disagrees. End with the normal structured "
-        "outcome and either another selected next action or an explicit stop/sleep/ask."
+        "available. The current working-state snapshot is supplied separately; retrieve the "
+        "durable turn by reference only if more historical detail can change the decision. "
+        "Revise the action if new evidence disagrees. End with the normal structured outcome "
+        "and either an immediately executable next action or an explicit stop/sleep/ask."
     )
     return AgentTask(
         task_id=_task_id("resident_continue"),
@@ -715,7 +784,7 @@ def _operator_resume_task(
     *,
     answer: str,
     answer_ref: str,
-    prior_turn_content: str = "",
+    prior_turn_handoff: str = "",
 ) -> AgentTask:
     case_id = _metadata(pending.content, "case_id") or _case_from_path(pending.path)
     root_id = _metadata(pending.content, "root_correlation_id") or case_id
@@ -727,8 +796,8 @@ def _operator_resume_task(
         f"Pending question: {question}\n"
         f"Operator answer: {answer}\n"
         f"Durable answer reference: {answer_ref}\n\n"
-        "## Durable prior turn\n\n"
-        f"{prior_turn_content or '(prior turn unavailable)'}\n\n"
+        "## Prior-turn handoff\n\n"
+        f"{prior_turn_handoff or '(no relevant prior-turn details)'}\n\n"
         "Treat the answer as a new observation, not as proof of unrelated facts. Continue "
         "the same case and produce the normal structured outcome."
     )
@@ -806,13 +875,6 @@ def _tool_result_summaries(result: TurnResult, *, max_chars: int) -> tuple[str, 
     )
 
 
-def _working_state_from_outcome(fields: Mapping[str, Any]) -> dict[str, Any] | None:
-    state = fields.get("working_state")
-    if not isinstance(state, Mapping):
-        return None
-    return {str(key): value for key, value in state.items() if str(key).strip()}
-
-
 def _string_refs(value: Any) -> tuple[str, ...]:
     if not isinstance(value, list | tuple):
         return ()
@@ -878,6 +940,20 @@ def _section(content: str, heading: str) -> str:
         flags=re.MULTILINE | re.DOTALL,
     )
     return match.group(1).strip() if match else ""
+
+
+def _resident_turn_handoff(content: str) -> str:
+    """Project a durable turn into the non-duplicative context needed to resume it."""
+    selected_action = _section(content, "Selected Next Action") or "none"
+    tool_results = _section(content, "Tool Results") or "none"
+    evidence_refs = _section(content, "Evidence References") or "- none"
+    return (
+        f"Selected next action: {selected_action}\n\n"
+        "### Relevant tool results\n\n"
+        f"{tool_results}\n\n"
+        "### Evidence references\n\n"
+        f"{evidence_refs}"
+    )
 
 
 def _body(content: str) -> str:

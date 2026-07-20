@@ -7,6 +7,7 @@ behind ``ExecutionAgentPort``.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -153,6 +154,46 @@ class ResidentWorkingStateRecord:
     signal_refs: tuple[str, ...] = ()
     evidence_refs: tuple[str, ...] = ()
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+RESIDENT_WORKING_STATE_FIELDS = (
+    "observations",
+    "hypotheses",
+    "unknowns",
+    "capability_gaps",
+    "attempts",
+)
+
+
+def validate_resident_working_state(value: Any) -> list[str]:
+    """Validate snapshot structure without judging or rewriting model-authored content."""
+    if not isinstance(value, Mapping):
+        return ["working_state must be a mapping"]
+    errors: list[str] = []
+    for field_name in RESIDENT_WORKING_STATE_FIELDS:
+        entries = value.get(field_name)
+        if not isinstance(entries, list):
+            errors.append(f"working_state.{field_name} must be a list")
+            continue
+        for index, entry in enumerate(entries):
+            if isinstance(entry, str):
+                valid = bool(entry.strip())
+            else:
+                valid = isinstance(entry, Mapping) and bool(entry)
+            if not valid:
+                errors.append(
+                    f"working_state.{field_name}[{index}] must be a non-empty string or mapping"
+                )
+    return errors
+
+
+def resident_working_state_from_outcome(fields: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return a complete model-authored snapshot, or None when absent/invalid."""
+    state = fields.get("working_state")
+    if validate_resident_working_state(state):
+        return None
+    assert isinstance(state, Mapping)
+    return {str(key): value for key, value in state.items() if str(key).strip()}
 
 
 @dataclass(frozen=True)

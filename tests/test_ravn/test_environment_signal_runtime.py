@@ -531,6 +531,7 @@ async def test_below_threshold_signals_accumulate_for_idle_triage() -> None:
     assert "decision: <ignore | watch | investigate" in context
     assert "selected_next_action: <one concrete next step, or none>" in context
     assert "continuation: <continue | ask_operator | sleep | stop>" in context
+    assert "next_action_timing: <immediate | external_event" in context
 
 
 def test_idle_triage_prompt_is_bounded_regardless_of_batch_size() -> None:

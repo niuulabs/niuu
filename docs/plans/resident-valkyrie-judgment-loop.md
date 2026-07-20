@@ -135,6 +135,19 @@ Observed evidence includes:
   HTTP, resident, ODIN, and event-bus series. Every PromQL expression in the
   importable Valkyrie dashboard was executed against that live tenant without
   a query error, and its Tempo TraceQL query returned the resident traces.
+- The local workload credential was verified as a real Eitri service-account
+  token and rotated after its signing key/expiry made workload exchange fail.
+  The replacement exchanged successfully at Yggdrasil, resolved the workshop
+  build grant, and the read-only tool-build doctor passed configuration,
+  backend, authentication, reachability, and live workflow discovery against
+  the deployed **Tool & Skill Builder** Agent Card skill.
+- Trace `9c0f7edcbb923abaeb5bf80d14ab13b4` records Nemotron independently choosing
+  capability discovery, skill discovery, web research, and another capability
+  lookup. The authenticated Observatory requests returned HTTP 200. The trace
+  also records the interrupted process, durable restart, completed judgment,
+  full working-state write, `sleep` disposition, publication, and ODIN handling.
+  No `build_tool` call occurred, so this is evidence of model-directed research
+  and restart continuity, not autonomous tool construction.
 
 The run also exposed failures that remain part of the evidence:
 
@@ -815,10 +828,33 @@ the explicitly mounted paths and named credential become visible.
 
 The final stitch deliberately adds no planner or objective service:
 
-- Resident continuation now rehydrates the exact durable parent turn by
-  reference, including bounded tool results, rather than reconstructing case
-  state through search. Operator-needed markers retain that turn reference, so
-  answer/retry resumes the same evidence-bearing case.
+- Resident continuation persists the exact durable turn, but supplies later
+  model turns with the current complete working-state snapshot plus a bounded
+  handoff of the selected action, relevant tool results, and evidence
+  references. It no longer nests the full prior prompt and response on every
+  cycle. The durable turn remains retrievable by reference when its detail can
+  change the decision. Operator-needed markers retain the reference and resume
+  through the same bounded handoff.
+- The model owns `observations`, `hypotheses`, `unknowns`, `capability_gaps`,
+  and `attempts`. Runtime code validates only that all five sections form a
+  complete snapshot; malformed or truncated state cannot replace the last
+  valid snapshot, and the runtime does not synthesize missing content.
+- Generic outcome parsing retains a structurally valid YAML mapping when the
+  lossy soft-wrap fallback has an equal validation error count. Missing
+  optional fields no longer make that fallback look preferable. This prevents
+  a complete object such as working state from being silently flattened into
+  a string before resident validation.
+- Continuation timing is explicit model output. `continue/immediate` is the
+  only self-queuing combination; waiting for an external event or scheduled
+  time sleeps, operator input suspends, and stop declares no prerequisite.
+  Missing or incoherent timing fails closed instead of producing an immediate
+  wait/monitor loop. This is control-plane validation, not environment-specific
+  decision logic.
+- An outcome that remains schema-invalid after the single repair attempt is
+  retained as a diagnostic turn and published only as a rejection. It cannot
+  replace working state or enqueue a continuation. This closes a live-observed
+  fail-open path where publication was rejected but transport had still acted
+  on the malformed model fields.
 - JetStream messages remain pending until raw publication, resident processing,
   and durable task-window enqueue all succeed. Success ACKs the batch; any
   failure NAKs it and does not poison the process-local dedupe cache.
@@ -885,6 +921,23 @@ telemetry/dashboard hardening reported:
 This validates runtime mechanisms, not model judgment or deployed integration.
 Scripted model output remains appropriate for mechanism tests, but it is not
 evidence that a model will select those mechanisms.
+
+The bounded-continuation follow-up passed the combined `tests/test_niuu` and
+`tests/test_ravn` suites on the same date (`5353 passed, 1 skipped`). A real
+resumed online event produced a
+complete five-section state and chose `sleep / external_event`, reducing the
+durable queue without creating another continuation. The same turn still
+returned an empty `signal_refs` list despite the supplied event reference; that
+provenance/contract defect remains open and is visible in the trace and turn
+record.
+
+A later real event selected capability discovery followed by an immediate
+diagnostic fetch. Its first state encoded empty sections as nested empty lists,
+and its repair remained invalid. The run exposed that the rejected outcome was
+still able to enqueue transport work. The invalid continuation was removed from
+the proof queue, and the runtime now fails closed as described above. The
+original journal was retained as
+`queue-evolution-proof-4.before-invalid-continuation-removal.json` for audit.
 
 ### Invalidated behavioral evaluation
 

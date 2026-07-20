@@ -41,6 +41,7 @@ from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.exceptions import LLMError
 from ravn.domain.help_needed import build_help_needed_event
 from ravn.domain.models import AgentTask, OutputMode
+from ravn.domain.resident_continuation import validate_resident_working_state
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_JUDGMENT_REJECTED,
     VALKYRIE_RUNTIME_OWNED_FIELDS,
@@ -362,7 +363,48 @@ def _resident_valkyrie_validation_result(
         validation_errors.extend(_outcome_parse_errors(parsed.errors))
     validation_errors.extend(_validate_normalized_persona_schema(outcome_fields, persona_config))
     validation_errors.extend(validate_valkyrie_outcome(canonical_event_type, outcome_fields))
+    validation_errors.extend(_validate_resident_continuation_contract(outcome_fields))
+    if "working_state" in outcome_fields:
+        validation_errors.extend(validate_resident_working_state(outcome_fields["working_state"]))
     return canonical_event_type, outcome_fields, _dedupe_errors(validation_errors)
+
+
+def _validate_resident_continuation_contract(fields: Mapping[str, object]) -> list[str]:
+    """Validate control-plane coherence without deciding the resident's next action."""
+    continuation = str(fields.get("continuation") or "").strip().casefold()
+    timing = str(fields.get("next_action_timing") or "").strip().casefold()
+    selected = fields.get("selected_next_action")
+    if isinstance(selected, Mapping):
+        action = str(
+            selected.get("action")
+            or selected.get("next_step")
+            or selected.get("description")
+            or ""
+        ).strip()
+    else:
+        action = str(selected or "").strip()
+    if not continuation and action and action.casefold().rstrip(".!") != "none":
+        return ["selected_next_action requires explicit continuation control"]
+    expected_timing = {
+        "continue": {"immediate"},
+        "ask_operator": {"operator_input"},
+        "sleep": {"external_event", "scheduled_time"},
+        "stop": {"none"},
+    }
+    if continuation in expected_timing:
+        allowed = expected_timing[continuation]
+        if timing not in allowed:
+            return [
+                f"continuation {continuation!r} requires next_action_timing in "
+                f"{sorted(allowed)!r}, got {timing!r}"
+            ]
+    if continuation != "continue":
+        return []
+    if not action:
+        return ["continuation 'continue' requires one concrete selected_next_action"]
+    if action.casefold().rstrip(".!") == "continue":
+        return ["selected_next_action must name an action; 'continue' is transport control"]
+    return []
 
 
 def _build_resident_valkyrie_schema_repair_prompt(
@@ -373,10 +415,26 @@ def _build_resident_valkyrie_schema_repair_prompt(
     outcome_fields: dict[str, object],
 ) -> str:
     """Build a narrow repair instruction for malformed resident Valkyrie outcomes."""
+    working_state_shape = ""
+    if "working_state" in outcome_fields or any(
+        "working_state" in error for error in validation_errors
+    ):
+        working_state_shape = (
+            "working_state:\n"
+            "  observations: []\n"
+            "  hypotheses: []\n"
+            "  unknowns: []\n"
+            "  capability_gaps: []\n"
+            "  attempts: []\n"
+            "# preserve valid prior entries and revise them with current evidence\n"
+        )
     return (
         "[SCHEMA REPAIR - resident Valkyrie outcome]\n"
         "Your previous answer did not satisfy the resident Valkyrie outcome contract.\n"
         "Do not call tools. Do not explain. Return exactly one valid YAML outcome block.\n\n"
+        "Use YAML block mappings/sequences. Represent an empty list as `field: []`, never "
+        "as a list containing an empty list. Double-quote scalar text containing `:`, `#`, "
+        "brackets, or braces. `working_state` must be a mapping, never a quoted string.\n\n"
         "Validation errors:\n"
         f"{json.dumps(validation_errors, indent=2)}\n\n"
         "Fields parsed from the invalid attempt, if any:\n"
@@ -406,6 +464,12 @@ def _build_resident_valkyrie_schema_repair_prompt(
         "target_surfaces: []\n"
         'expires_at: ""\n'
         "dissent_refs: []\n"
+        "selected_next_action: <one concrete action that can begin immediately, or none>\n"
+        "continuation: continue | ask_operator | sleep | stop\n"
+        "next_action_timing: immediate | external_event | scheduled_time | operator_input | none\n"
+        'question: ""\n'
+        "# continue immediately queues another turn; use sleep when waiting for an event/time\n"
+        f"{working_state_shape}"
         "---end---"
     )
 

@@ -384,15 +384,33 @@ def parse_outcome_block(text: str, schema: OutcomeSchema | None = None) -> Parse
     errors = list(parse_errors or validation_errors)
 
     expected_keys = set(schema.fields) if schema is not None else None
+    required_keys = (
+        {name for name, field in schema.fields.items() if field.required}
+        if schema is not None
+        else None
+    )
     salvaged = _parse_soft_wrapped_mapping(clean, expected_keys=expected_keys)
     if salvaged is not None:
         salvage_errors = _validate_against_schema(salvaged, schema)
+        parsed_missing_required_keys = (
+            required_keys.difference(parsed_fields) if required_keys is not None else set()
+        )
+        salvaged_missing_required_keys = (
+            required_keys.difference(salvaged) if required_keys is not None else set()
+        )
+        salvage_recovers_required_keys = len(salvaged_missing_required_keys) < len(
+            parsed_missing_required_keys
+        )
         if (
             parse_errors
             or validation_errors
-            or (expected_keys is not None and not expected_keys.issubset(parsed_fields))
+            or parsed_missing_required_keys
             or len(salvage_errors) < len(validation_errors)
-        ) and (parse_errors or len(salvage_errors) <= len(errors)):
+        ) and (
+            parse_errors
+            or len(salvage_errors) < len(errors)
+            or (salvage_recovers_required_keys and len(salvage_errors) <= len(errors))
+        ):
             parsed_fields = salvaged
             errors = salvage_errors
 

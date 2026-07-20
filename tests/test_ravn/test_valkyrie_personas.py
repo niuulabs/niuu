@@ -186,6 +186,7 @@ dissent_refs: []
 recommended_action: Observe another event.
 selected_next_action: Observe another event.
 continuation: sleep
+next_action_timing: external_event
 question: ""
 open_questions: []
 confidence: 0.5
@@ -194,6 +195,12 @@ state_summary: Watching for repetition.
 learned_pattern: none
 capability_gap: none
 tool_evolution_plan: none
+working_state:
+  observations: ["evt-real: one observation"]
+  hypotheses: []
+  unknowns: ["whether the observation repeats"]
+  capability_gaps: []
+  attempts: []
 ---end---"""
 
     parsed = _parse_outcome_block_for_persona(response, persona)

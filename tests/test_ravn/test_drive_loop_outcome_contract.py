@@ -22,6 +22,7 @@ from ravn.drive_loop import (
     _normalize_outcome_verdict,
     _parse_outcome_for_persona,
     _resident_valkyrie_validation_result,
+    _validate_resident_continuation_contract,
 )
 from sleipnir.domain import registry
 from tests.test_ravn.conftest import _make_agent_task, _make_drive_loop
@@ -253,6 +254,58 @@ class TestDriveLoopOutcomeContract:
         assert "decision: ignore | watch | investigate" in prompt
         assert "confidence: <number from 0.0 to 1.0>" in prompt
         assert "action_authority: autonomous | yolo_allowed" in prompt
+        assert "continue immediately queues another turn" in prompt
+        assert "working_state` must be a mapping" in prompt
+        assert "empty list as `field: []`" in prompt
+
+        working_state_prompt = _build_resident_valkyrie_schema_repair_prompt(
+            task=task,
+            original_response="partial state",
+            validation_errors=["working_state.hypotheses must be a list"],
+            outcome_fields={"working_state": {"observations": ["signal-a"]}},
+        )
+        assert "working_state:\n  observations: []\n  hypotheses: []" in working_state_prompt
+        assert "preserve valid prior entries" in working_state_prompt
+
+    def test_continue_requires_an_action_instead_of_repeating_transport_control(self) -> None:
+        assert _validate_resident_continuation_contract(
+            {
+                "continuation": "continue",
+                "selected_next_action": "continue",
+                "next_action_timing": "immediate",
+            }
+        ) == ["selected_next_action must name an action; 'continue' is transport control"]
+        assert _validate_resident_continuation_contract(
+            {
+                "continuation": "sleep",
+                "selected_next_action": "continue",
+                "next_action_timing": "external_event",
+            }
+        ) == []
+        assert _validate_resident_continuation_contract(
+            {
+                "continuation": "continue",
+                "selected_next_action": "inspect the source",
+                "next_action_timing": "external_event",
+            }
+        ) == [
+            "continuation 'continue' requires next_action_timing in ['immediate'], "
+            "got 'external_event'"
+        ]
+        assert _validate_resident_continuation_contract(
+            {
+                "continuation": "continue",
+                "selected_next_action": "inspect the source",
+            }
+        ) == [
+            "continuation 'continue' requires next_action_timing in ['immediate'], got ''"
+        ]
+        assert _validate_resident_continuation_contract(
+            {
+                "selected_next_action": "inspect the source",
+                "next_action_timing": "immediate",
+            }
+        ) == ["selected_next_action requires explicit continuation control"]
 
     @pytest.mark.asyncio
     async def test_canonical_and_alias_outcomes_are_split(self) -> None:
