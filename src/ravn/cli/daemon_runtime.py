@@ -70,7 +70,11 @@ async def _run_daemon(
     resident_state: Any | None = None
     resident_runtime: Any | None = None
     if settings.initiative.enabled or task_dispatch:
-        resident_inbox = _build_resident_inbox(settings, mimir=daemon_mimir)
+        resident_inbox = _build_resident_inbox(
+            settings,
+            workspace=workspace,
+            mimir=daemon_mimir,
+        )
         resident_state = await _build_resident_state(
             settings,
             workspace=workspace,

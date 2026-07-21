@@ -7,6 +7,7 @@ behind ``ExecutionAgentPort``.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -163,6 +164,8 @@ RESIDENT_WORKING_STATE_FIELDS = (
     "capability_gaps",
     "attempts",
 )
+RESIDENT_WORKING_STATE_MAX_ENTRIES = 5
+RESIDENT_WORKING_STATE_MAX_ENTRY_CHARS = 500
 
 
 def validate_resident_working_state(value: Any) -> list[str]:
@@ -184,6 +187,22 @@ def validate_resident_working_state(value: Any) -> list[str]:
                 errors.append(
                     f"working_state.{field_name}[{index}] must be a non-empty string or mapping"
                 )
+                continue
+            rendered = (
+                entry
+                if isinstance(entry, str)
+                else json.dumps(entry, ensure_ascii=False, sort_keys=True, default=str)
+            )
+            if len(rendered) > RESIDENT_WORKING_STATE_MAX_ENTRY_CHARS:
+                errors.append(
+                    f"working_state.{field_name}[{index}] exceeds "
+                    f"{RESIDENT_WORKING_STATE_MAX_ENTRY_CHARS} characters"
+                )
+        if len(entries) > RESIDENT_WORKING_STATE_MAX_ENTRIES:
+            errors.append(
+                f"working_state.{field_name} has {len(entries)} entries; "
+                f"maximum is {RESIDENT_WORKING_STATE_MAX_ENTRIES}"
+            )
     return errors
 
 

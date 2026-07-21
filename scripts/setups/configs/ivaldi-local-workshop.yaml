@@ -132,15 +132,19 @@ initiative:
   enabled: true
   max_concurrent_tasks: 1
   task_queue_max: 20
-  queue_journal_path: ~/.ravn/ivaldi-local/queue.json
+  # Keep the saturated pre-inbox journal as evidence; this clean journal proves
+  # the coalesced intake behavior without replaying obsolete continuation tasks.
+  queue_journal_path: ~/.ravn/ivaldi-local/queue-coalesced-proof.json
   default_output_mode: ambient
   default_persona: ivaldi
   heartbeat_interval_seconds: 30
 
 resident_inbox:
   enabled: true
-  # JetStream and the queue journal are the two explicit durability owners.
-  environment_signals_enabled: false
+  # JetStream owns upstream redelivery. The local inbox owns accepted
+  # observations; ResidentHomeTrigger coalesces them into one model wake.
+  adapter: ravn.resident_inbox.backend.LocalResidentInbox
+  environment_signals_enabled: true
 
 resident_state:
   continuation_max_turns: 8

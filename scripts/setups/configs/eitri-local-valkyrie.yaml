@@ -152,8 +152,10 @@ initiative:
 
 resident_inbox:
   enabled: true
-  # The local Kubernetes adapter and queue journal already own delivery.
-  environment_signals_enabled: false
+  # The local inbox owns accepted observations and the home trigger coalesces
+  # them independently of model latency.
+  adapter: ravn.resident_inbox.backend.LocalResidentInbox
+  environment_signals_enabled: true
 
 resident_state:
   continuation_max_turns: 6

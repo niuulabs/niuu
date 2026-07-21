@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -16,7 +17,6 @@ from ravn.domain.resident_continuation import (
     ContinuationDecisionKind,
     ResidentBudgetSnapshot,
     ResidentMemoryEntry,
-    ResidentPolicyDecisionRecord,
     ResidentTurnRecord,
     ResidentWorkingStateRecord,
     resident_working_state_from_outcome,
@@ -44,16 +44,17 @@ In the final structured outcome, include a `working_state` mapping with these li
 - `capability_gaps`: missing access or abilities that prevent useful investigation or action
 - `attempts`: relevant research, delegation, operator outreach, or tool attempts and results
 
-Keep entries concise. Do not invent evidence, convert hypotheses into observations, or copy
-prior entries that new evidence no longer supports. The runtime persists this mapping exactly;
-it does not interpret the environment or manufacture state on your behalf.
+This is a current model, not an event log: replace superseded entries and keep at most five
+entries per list, each no longer than 500 characters. Do not invent evidence or convert
+hypotheses into observations. The runtime persists this mapping exactly; it does not interpret
+the environment or manufacture state on your behalf.
 
-`continue` immediately queues another resident turn. Use it only for a concrete next action
-that can begin with the capabilities and evidence already available. If useful progress requires
-a future external event or the passage of time, use `sleep`; a new observation will wake the
-resident. Never use `continue` merely to watch, wait, or monitor. Declare this explicitly with
-`next_action_timing`: `immediate` for continue, `external_event` or `scheduled_time` for sleep,
-`operator_input` for ask_operator, and `none` for stop."""
+Use available tools before producing the final outcome. The runtime will not turn a prose
+`selected_next_action` into another immediate model turn. If useful progress requires a future
+external event or passage of time, use `sleep`; a new observation or configured schedule will
+wake the resident. Use `ask_operator` when missing intent blocks progress and `stop` when no
+wake is required. Declare `next_action_timing` as `external_event` or `scheduled_time` for
+sleep, `operator_input` for ask_operator, and `none` for stop."""
 
 
 @dataclass(frozen=True)
@@ -353,6 +354,20 @@ class ResidentRuntime:
             )
 
         if _asks_operator(fields, control):
+            budget_reason = _budget_stop_reason(
+                turn_index=turn_index,
+                total_tokens=cumulative.total_tokens,
+                max_turns=self._max_turns,
+                max_tokens=self._max_tokens,
+            )
+            if budget_reason:
+                return ResidentTurnDisposition(
+                    kind=ContinuationDecisionKind.STOP,
+                    case_id=case_id,
+                    turn_ref=turn_ref,
+                    budget_ref=budget_ref,
+                    reason=budget_reason,
+                )
             return await self._ask_operator(
                 task=task,
                 record=record,
@@ -362,131 +377,28 @@ class ResidentRuntime:
                 reason=str(fields.get("reason") or "operator input required"),
             )
 
-        if control != "continue" and action is not None:
-            return ResidentTurnDisposition(
-                kind=ContinuationDecisionKind.STOP,
-                case_id=case_id,
-                turn_ref=turn_ref,
-                budget_ref=budget_ref,
-                reason="selected next action did not declare continuation control",
-            )
-
-        if action is None:
-            return ResidentTurnDisposition(
-                kind=ContinuationDecisionKind.STOP,
-                case_id=case_id,
-                turn_ref=turn_ref,
-                budget_ref=budget_ref,
-                reason="no selected next action",
-            )
-
-        if action.action.casefold().rstrip(".!") == "continue":
-            return ResidentTurnDisposition(
-                kind=ContinuationDecisionKind.STOP,
-                case_id=case_id,
-                turn_ref=turn_ref,
-                budget_ref=budget_ref,
-                reason="selected next action repeated transport control instead of an action",
-            )
-
-        timing = str(fields.get("next_action_timing") or "").strip().casefold()
-        if timing != "immediate":
+        if control == "continue":
             return ResidentTurnDisposition(
                 kind=ContinuationDecisionKind.STOP,
                 case_id=case_id,
                 turn_ref=turn_ref,
                 budget_ref=budget_ref,
                 reason=(
-                    f"continuation timing {timing!r} is not immediately executable"
-                    if timing
-                    else "continuation did not declare immediate action timing"
+                    "free-text immediate continuation is unsupported; execute available "
+                    "tools in the current turn or wait for a real wake source"
                 ),
             )
 
-        policy = _assess_authority(fields, action.risk_boundaries)
-        with telemetry.span(
-            "ravn.port.resident_state.write_policy",
-            attributes={
-                "ravn.resident.policy.allowed": not policy[0],
-                "ravn.resident.policy.needs_approval": policy[0],
-            },
-        ):
-            await self._state.write_policy_decision(
-                ResidentPolicyDecisionRecord(
-                    turn_index=turn_index,
-                    action_title=action.title,
-                    action=action.action,
-                    decision_kind=(
-                        ContinuationDecisionKind.ASK_OPERATOR.value
-                        if policy[0]
-                        else ContinuationDecisionKind.CONTINUE.value
-                    ),
-                    allowed=not policy[0],
-                    needs_approval=policy[0],
-                    reason=policy[1],
-                    risk_boundaries=action.risk_boundaries,
-                    question=(f"May I proceed with: {action.action}?" if policy[0] else ""),
-                )
-            )
-        if policy[0]:
-            return await self._ask_operator(
-                task=task,
-                record=record,
-                fields=fields,
-                turn_ref=turn_ref,
-                budget_ref=budget_ref,
-                reason=policy[1],
-            )
-
-        budget_reason = _budget_stop_reason(
-            turn_index=turn_index,
-            total_tokens=cumulative.total_tokens,
-            max_turns=self._max_turns,
-            max_tokens=self._max_tokens,
-        )
-        if budget_reason:
-            return ResidentTurnDisposition(
-                kind=ContinuationDecisionKind.STOP,
-                case_id=case_id,
-                turn_ref=turn_ref,
-                budget_ref=budget_ref,
-                reason=budget_reason,
-            )
-
-        continuation = _continuation_task(
-            task=task,
-            case_id=case_id,
-            root_id=root_id,
-            turn_ref=turn_ref,
-            action=action.action,
-            reason=action.reason,
-            next_turn=turn_index + 1,
-            cumulative=cumulative,
-            mandate=mandate,
-            prior_tool_results=_bounded(
-                "\n\n".join(record.tool_results) or "(none)",
-                self._context_max_chars,
-            ),
-        )
-        with telemetry.span("ravn.port.task_queue.enqueue_continuation") as enqueue_span:
-            accepted = await self._enqueue_task(continuation)
-            enqueue_span.set_attribute("ravn.queue.accepted", accepted)
-        if not accepted:
-            return ResidentTurnDisposition(
-                kind=ContinuationDecisionKind.STOP,
-                case_id=case_id,
-                turn_ref=turn_ref,
-                budget_ref=budget_ref,
-                reason="continuation queue unavailable",
-            )
-        self._inflight_cases.add(case_id)
         return ResidentTurnDisposition(
-            kind=ContinuationDecisionKind.CONTINUE,
+            kind=ContinuationDecisionKind.STOP,
             case_id=case_id,
             turn_ref=turn_ref,
             budget_ref=budget_ref,
-            reason="selected next action queued",
-            continuation_task_id=continuation.task_id,
+            reason=(
+                "selected next action recorded without a wake request"
+                if action is not None
+                else "no selected next action"
+            ),
         )
 
     async def _ask_operator(
@@ -590,6 +502,8 @@ class ResidentRuntime:
     ) -> AgentTask | None:
         if self._inbox is None:
             return None
+        if any(case_id.startswith("resident-home-") for case_id in self._inflight_cases):
+            return None
         rows = await self._inbox.list_signals(
             status=ResidentInboxStatus.NEW.value,
             limit=max(1, limit),
@@ -611,12 +525,37 @@ class ResidentRuntime:
             "",
             "Observations:",
         ]
+        payload_budget = max(
+            200,
+            min(4000, self._context_max_chars // (2 * max(1, len(rows)))),
+        )
         for ref, signal in rows:
             evidence = signal.raw_ref or ", ".join(signal.evidence_refs) or "none"
             context_lines.append(
                 f"- inbox_ref={ref}; source={signal.source}; kind={signal.kind}; "
                 f"observed_at={signal.observed_at}; evidence_ref={evidence}; "
                 f"summary={compact_line(signal.summary, limit=280)}"
+            )
+            raw_payload = signal.payload.get("payload", signal.payload)
+            context_lines.extend(
+                (
+                    "  Bounded raw payload:",
+                    "  ```json",
+                    _indent(
+                        _bounded(
+                            json.dumps(
+                                raw_payload,
+                                indent=2,
+                                sort_keys=True,
+                                ensure_ascii=False,
+                                default=str,
+                            ),
+                            payload_budget,
+                        ),
+                        "  ",
+                    ),
+                    "  ```",
+                )
             )
         task = AgentTask(
             task_id=_task_id("resident_home"),
@@ -630,6 +569,10 @@ class ResidentRuntime:
             resident_turn_index=1,
             resident_started_at=now.isoformat(),
             resident_inbox_refs=refs,
+            trace_context=next(
+                (dict(signal.trace_context) for _ref, signal in rows if signal.trace_context),
+                {},
+            ),
         )
         task.resident_mandate = task.initiative_context
         self._inflight_cases.add(case_id)
@@ -733,52 +676,6 @@ class ResidentHomeTrigger(TriggerPort):
         return True
 
 
-def _continuation_task(
-    *,
-    task: AgentTask,
-    case_id: str,
-    root_id: str,
-    turn_ref: str,
-    action: str,
-    reason: str,
-    next_turn: int,
-    cumulative: TokenUsage,
-    mandate: str,
-    prior_tool_results: str,
-) -> AgentTask:
-    context = (
-        f"Continue resident case {case_id}.\n"
-        f"Durable prior turn: {turn_ref}\n"
-        f"Selected next action: {action}\n"
-        f"Reason: {reason or 'selected by the prior resident turn'}\n\n"
-        "## Relevant prior tool results\n\n"
-        f"{prior_tool_results}\n\n"
-        "Carry out or investigate the selected action using the capabilities actually "
-        "available. The current working-state snapshot is supplied separately; retrieve the "
-        "durable turn by reference only if more historical detail can change the decision. "
-        "Revise the action if new evidence disagrees. End with the normal structured outcome "
-        "and either an immediately executable next action or an explicit stop/sleep/ask."
-    )
-    return AgentTask(
-        task_id=_task_id("resident_continue"),
-        title=f"Continue resident case: {compact_line(action, limit=90)}",
-        initiative_context=context,
-        triggered_by="resident:continuation",
-        output_mode=task.output_mode,
-        persona=task.persona,
-        priority=task.priority,
-        root_correlation_id=root_id,
-        resident_case_id=case_id,
-        resident_mandate=mandate,
-        resident_turn_index=next_turn,
-        resident_input_tokens=cumulative.input_tokens,
-        resident_output_tokens=cumulative.output_tokens,
-        resident_started_at=task.resident_started_at or task.created_at.isoformat(),
-        resident_parent_turn_ref=turn_ref,
-        trace_context=get_observability().inject(),
-    )
-
-
 def _operator_resume_task(
     pending: ResidentMemoryEntry,
     *,
@@ -823,15 +720,6 @@ def _operator_resume_task(
 def _asks_operator(fields: dict[str, Any], control: str) -> bool:
     verdict = str(fields.get("verdict") or "").strip().casefold()
     return control == "ask_operator" or verdict == "help_needed"
-
-
-def _assess_authority(fields: dict[str, Any], boundaries: tuple[str, ...]) -> tuple[bool, str]:
-    authority = str(fields.get("action_authority") or "").strip().casefold()
-    if authority in {"court_required", "human_review_required"}:
-        return True, f"selected action requires {authority}"
-    if boundaries and authority != "yolo_allowed":
-        return True, f"selected action crosses declared boundaries: {', '.join(boundaries)}"
-    return False, "selected action remains inside declared authority"
 
 
 def _operator_question(fields: dict[str, Any], record: ResidentTurnRecord) -> str:
@@ -886,6 +774,10 @@ def _bounded(value: Any, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars].rstrip() + "\n… (truncated)"
+
+
+def _indent(value: str, prefix: str) -> str:
+    return "\n".join(f"{prefix}{line}" for line in value.splitlines())
 
 
 def _evidence_refs(fields: dict[str, Any], task: AgentTask) -> tuple[str, ...]:

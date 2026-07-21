@@ -1579,6 +1579,57 @@ class TestApprovals:
         assert sent["result"]["decision"] == "accept"
 
     @pytest.mark.asyncio
+    async def test_mcp_elicitation_is_auto_accepted_with_protocol_shape(self, tmp_path):
+        t = _make_transport(tmp_path, approval_policy="never")
+        t._ws = FakeWebSocket()
+        _collect_emits(t)
+
+        await t._handle_server_request(
+            {
+                "id": 78,
+                "method": "mcpServer/elicitation/request",
+                "params": {
+                    "serverName": "ravn-tools",
+                    "threadId": "thread-1",
+                    "mode": "form",
+                    "message": "Approve capability_list",
+                    "requestedSchema": {"type": "object", "properties": {}},
+                },
+            }
+        )
+
+        sent = json.loads(t._ws.sent[0])
+        assert sent["id"] == 78
+        assert sent["result"] == {"action": "accept", "content": {}}
+
+    @pytest.mark.asyncio
+    async def test_mcp_elicitation_uses_control_channel_when_approval_is_required(self, tmp_path):
+        t = _make_transport(tmp_path, approval_policy="on-request")
+        t._ws = FakeWebSocket()
+        emit = _collect_emits(t)
+
+        await t._handle_server_request(
+            {
+                "id": 79,
+                "method": "mcpServer/elicitation/request",
+                "params": {
+                    "serverName": "ravn-tools",
+                    "threadId": "thread-1",
+                    "mode": "form",
+                    "message": "Approve capability_list",
+                    "requestedSchema": {"type": "object", "properties": {}},
+                },
+            }
+        )
+
+        event = emit.call_args[0][0]
+        assert event["type"] == "control_request"
+        assert event["tool"] == "MCP"
+        await t.send_control_response("79", {"behavior": "allow"})
+        sent = json.loads(t._ws.sent[0])
+        assert sent["result"] == {"action": "accept", "content": {}}
+
+    @pytest.mark.asyncio
     async def test_dynamic_shell_command_call_executes_via_command_exec(self, tmp_path):
         t = _make_transport(tmp_path)
         t._ws = FakeWebSocket()

@@ -6,10 +6,70 @@ import pytest
 
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from ravn.resident_inbox import (
+    LocalResidentInbox,
     MimirResidentInbox,
     ResidentInboxClassification,
     ResidentInboxStatus,
 )
+
+
+@pytest.mark.asyncio
+async def test_local_inbox_is_durable_and_preserves_acknowledged_replays(tmp_path) -> None:
+    first = LocalResidentInbox(tmp_path / "inbox")
+    ref = await first.write_directed_message(
+        content="Please inspect the current machine state",
+        metadata={"message_id": "local-1", "telegram_date": "2026-07-21T12:00:00Z"},
+    )
+
+    restarted = LocalResidentInbox(tmp_path / "inbox")
+    assert [row[0] for row in await restarted.list_signals()] == [ref]
+    assert await restarted.acknowledge((ref,)) == (ref,)
+
+    replay_ref = await restarted.write_directed_message(
+        content="Please inspect the current machine state",
+        metadata={"message_id": "local-1", "telegram_date": "2026-07-21T12:00:00Z"},
+    )
+    assert replay_ref == ref
+    assert await restarted.list_signals(status=ResidentInboxStatus.NEW.value) == []
+    assert len(await restarted.list_signals(status=ResidentInboxStatus.REMEMBERED.value)) == 1
+
+
+@pytest.mark.asyncio
+async def test_local_inbox_rejects_refs_outside_its_root(tmp_path) -> None:
+    inbox = LocalResidentInbox(tmp_path / "inbox")
+
+    with pytest.raises(ValueError, match="escapes its root"):
+        await inbox.acknowledge(("resident/inbox/signals/../../../../outside.md",))
+
+
+@pytest.mark.asyncio
+async def test_local_inbox_retention_never_prunes_unconsumed_signals(tmp_path) -> None:
+    import os
+    import time
+
+    inbox = LocalResidentInbox(
+        tmp_path / "inbox",
+        retention_max_pages=1,
+        retention_max_age_days=1,
+    )
+    refs = []
+    for index in range(2):
+        refs.append(
+            await inbox.write_directed_message(
+                content=f"unconsumed signal {index}",
+                metadata={"message_id": str(index)},
+            )
+        )
+
+    assert len(await inbox.list_signals(status="", limit=10)) == 2
+    stale = tmp_path / "inbox" / refs[0]
+    two_days_ago = time.time() - 2 * 86400
+    os.utime(stale, (two_days_ago, two_days_ago))
+    assert await inbox.prune_signals() == 0
+
+    await inbox.acknowledge(tuple(refs))
+    assert await inbox.prune_signals() == 1
+    assert len(await inbox.list_signals(status="", limit=10)) == 1
 
 
 @pytest.mark.asyncio
@@ -55,6 +115,9 @@ async def test_environment_event_becomes_resident_inbox_signal(tmp_path) -> None
         event_id="evt-1",
         event_type="environment.signal",
         correlation_id="corr-1",
+        trace_context={
+            "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+        },
         timestamp="2026-06-22T12:33:00Z",
         summary="Printer queue stalled",
         payload={
@@ -79,6 +142,7 @@ async def test_environment_event_becomes_resident_inbox_signal(tmp_path) -> None
     assert "Printer queue stalled" in signal.summary
     assert signal.raw_ref == "raw/evt-1"
     assert signal.observed_at == "2026-06-22T12:33:00Z"
+    assert signal.trace_context == event.trace_context
     assert signal.status == ResidentInboxStatus.NEW.value
 
 
@@ -181,11 +245,16 @@ async def test_retention_prunes_pages_beyond_the_count_cap(tmp_path) -> None:
         retention_max_age_days=0,
         retention_sweep_interval_seconds=0.0,
     )
-    for index in range(6):
+    refs = [
         await inbox.write_directed_message(
-            content=f"signal number {index}",
-            metadata={"telegram_message_id": str(index)},
+            content=f"signal number {index}", metadata={"telegram_message_id": str(index)}
         )
+        for index in range(6)
+    ]
+
+    assert len(list(_signals_dir(tmp_path).glob("*.md"))) == 6
+    await inbox.acknowledge(tuple(refs))
+    assert await inbox.prune_signals() == 3
 
     assert len(list(_signals_dir(tmp_path).glob("*.md"))) == 3
     index = (tmp_path / "mimir" / "wiki" / "index.md").read_text(encoding="utf-8")
@@ -208,6 +277,8 @@ async def test_retention_prunes_pages_older_than_max_age(tmp_path) -> None:
         metadata={"telegram_message_id": "old"},
     )
     stale = next(iter(_signals_dir(tmp_path).glob("*.md")))
+    ref = str(stale.relative_to(tmp_path / "mimir" / "wiki"))
+    await inbox.acknowledge((ref,))
     two_days_ago = time.time() - 2 * 86400
     os.utime(stale, (two_days_ago, two_days_ago))
 
@@ -235,25 +306,48 @@ async def test_retention_disabled_keeps_everything(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_mimir_retention_never_prunes_unconsumed_signals(tmp_path) -> None:
+    inbox, _ = _make_inbox(
+        tmp_path,
+        retention_max_pages=1,
+        retention_max_age_days=0,
+        retention_sweep_interval_seconds=0.0,
+    )
+    for index in range(4):
+        await inbox.write_directed_message(
+            content=f"unconsumed signal {index}",
+            metadata={"telegram_message_id": str(index)},
+        )
+
+    assert await inbox.prune_signals() == 0
+    assert len(list(_signals_dir(tmp_path).glob("*.md"))) == 4
+
+
+@pytest.mark.asyncio
 async def test_retention_sweeps_are_throttled(tmp_path) -> None:
     inbox, _ = _make_inbox(
         tmp_path,
         retention_max_pages=1,
         retention_max_age_days=0,
-        retention_sweep_interval_seconds=0.01,
+        retention_sweep_interval_seconds=0.05,
     )
+    refs = []
     for index in range(4):
-        await inbox.write_directed_message(
-            content=f"signal number {index}",
-            metadata={"telegram_message_id": str(index)},
+        refs.append(
+            await inbox.write_directed_message(
+                content=f"signal number {index}",
+                metadata={"telegram_message_id": str(index)},
+            )
         )
 
     # The immediate write path remains throttled, but a deferred sweep makes
-    # the configured cap true even if no later signal arrives.
+    # the configured cap true after the records become processed, even if no
+    # later signal arrives.
     assert len(list(_signals_dir(tmp_path).glob("*.md"))) > 1
+    await inbox.acknowledge(tuple(refs))
     import asyncio
 
-    await asyncio.sleep(0.03)
+    await asyncio.sleep(0.08)
     assert len(list(_signals_dir(tmp_path).glob("*.md"))) == 1
 
 

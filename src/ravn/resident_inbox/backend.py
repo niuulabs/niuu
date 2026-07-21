@@ -1,9 +1,10 @@
-"""Mimir-backed resident inbox storage adapter."""
+"""Resident inbox storage adapters."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,6 +33,218 @@ from .serialization import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class LocalResidentInbox(ResidentInboxBackend):
+    """Durable filesystem inbox for residents that do not use Mimir.
+
+    References deliberately use the same ``resident/inbox/...`` namespace as
+    the Mimir adapter.  The runtime therefore depends only on
+    :class:`ResidentInboxBackend`; choosing local files or Mimir is composition
+    configuration, not resident behavior.
+    """
+
+    def __init__(
+        self,
+        root: Path | str,
+        *,
+        signal_prefix: str = _INBOX_SIGNAL_PREFIX,
+        triage_prefix: str = _INBOX_TRIAGE_PREFIX,
+        decision_prefix: str = _INBOX_DECISION_PREFIX,
+        retention_max_pages: int = 500,
+        retention_max_age_days: float = 7.0,
+    ) -> None:
+        self._root = Path(root).expanduser().resolve()
+        self._signal_prefix = signal_prefix.strip("/").strip() or _INBOX_SIGNAL_PREFIX
+        self._triage_prefix = triage_prefix.strip("/").strip() or _INBOX_TRIAGE_PREFIX
+        self._decision_prefix = decision_prefix.strip("/").strip() or _INBOX_DECISION_PREFIX
+        self._retention_max_pages = max(0, int(retention_max_pages))
+        self._retention_max_age_days = max(0.0, float(retention_max_age_days))
+        self._lock = asyncio.Lock()
+
+    async def write_event(self, event: Any) -> str:
+        return await self.write_signal(signal_from_event(event))
+
+    async def write_directed_message(
+        self,
+        *,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+        source: str = "skuld:directed_message",
+    ) -> str:
+        return await self.write_signal(
+            signal_from_directed_message(content, metadata=metadata, source=source)
+        )
+
+    async def write_signal(self, signal: ResidentInboxSignal) -> str:
+        ref = f"{self._signal_prefix}/{_signal_filename(signal)}"
+        async with self._lock:
+            await asyncio.to_thread(self._write_signal_sync, ref, signal)
+            await asyncio.to_thread(self._prune_signals_sync)
+        return ref
+
+    def _write_signal_sync(self, ref: str, signal: ResidentInboxSignal) -> None:
+        path = self._path(ref)
+        if path.exists():
+            existing = parse_inbox_signal(path.read_text(encoding="utf-8"))
+            if (
+                existing is not None
+                and existing.status != ResidentInboxStatus.NEW.value
+                and signal.status == ResidentInboxStatus.NEW.value
+            ):
+                return
+        self._atomic_write(path, render_inbox_signal(signal))
+
+    async def list_signals(
+        self,
+        *,
+        status: str = ResidentInboxStatus.NEW.value,
+        limit: int = 10,
+    ) -> list[tuple[str, ResidentInboxSignal]]:
+        async with self._lock:
+            return await asyncio.to_thread(self._list_signals_sync, status, max(0, limit))
+
+    def _list_signals_sync(
+        self,
+        status: str,
+        limit: int,
+    ) -> list[tuple[str, ResidentInboxSignal]]:
+        if limit == 0:
+            return []
+        directory = self._path(self._signal_prefix)
+        if not directory.is_dir():
+            return []
+        items: list[tuple[str, ResidentInboxSignal]] = []
+        for path in sorted(directory.glob("*.md"), reverse=True):
+            signal = parse_inbox_signal(path.read_text(encoding="utf-8"))
+            if signal is None or (status and signal.status != status):
+                continue
+            items.append((str(path.relative_to(self._root)), signal))
+            if len(items) >= limit:
+                break
+        return items
+
+    async def write_triage(self, triage: ResidentInboxTriage) -> str:
+        stamp = timestamp_slug(triage.created_at)
+        ref = f"{self._triage_prefix}/{stamp}-{_slug(triage.signal_id) or 'signal'}.md"
+        async with self._lock:
+            await asyncio.to_thread(
+                self._atomic_write,
+                self._path(ref),
+                render_inbox_triage(triage),
+            )
+        return ref
+
+    async def append_decision(self, entry: str) -> str:
+        stamp = timestamp_slug(datetime.now(UTC))
+        ref = f"{self._decision_prefix}/{stamp}.md"
+        async with self._lock:
+            await asyncio.to_thread(
+                self._atomic_write,
+                self._path(ref),
+                f"# Resident Inbox Decision\n\n{entry}\n",
+            )
+        return ref
+
+    async def acknowledge(
+        self,
+        refs: tuple[str, ...],
+        *,
+        status: str = ResidentInboxStatus.REMEMBERED.value,
+        reason: str = "resident turn recorded",
+    ) -> tuple[str, ...]:
+        async with self._lock:
+            return await asyncio.to_thread(self._acknowledge_sync, refs, status, reason)
+
+    def _acknowledge_sync(
+        self,
+        refs: tuple[str, ...],
+        status: str,
+        reason: str,
+    ) -> tuple[str, ...]:
+        acknowledged: list[str] = []
+        processed_at = datetime.now(UTC)
+        for ref in refs:
+            if not ref.startswith(f"{self._signal_prefix}/"):
+                continue
+            path = self._path(ref)
+            if not path.is_file():
+                continue
+            signal = parse_inbox_signal(path.read_text(encoding="utf-8"))
+            if signal is None:
+                continue
+            self._atomic_write(
+                path,
+                render_inbox_signal(
+                    signal.with_updates(
+                        status=status,
+                        reason=reason or signal.reason,
+                        processed_at=processed_at,
+                    )
+                ),
+            )
+            acknowledged.append(ref)
+        return tuple(acknowledged)
+
+    async def prune_signals(self) -> int:
+        async with self._lock:
+            return await asyncio.to_thread(self._prune_signals_sync)
+
+    def _prune_signals_sync(self) -> int:
+        directory = self._path(self._signal_prefix)
+        if not directory.is_dir():
+            return 0
+        protected: list[tuple[float, Path]] = []
+        processed: list[tuple[float, Path]] = []
+        for path in directory.glob("*.md"):
+            try:
+                entry = (path.stat().st_mtime, path)
+                signal = parse_inbox_signal(path.read_text(encoding="utf-8"))
+            except OSError:
+                continue
+            if signal is None or signal.status == ResidentInboxStatus.NEW.value:
+                protected.append(entry)
+            else:
+                processed.append(entry)
+        doomed: set[Path] = set()
+        if self._retention_max_age_days > 0:
+            cutoff = time.time() - self._retention_max_age_days * 86400
+            doomed.update(path for mtime, path in processed if mtime < cutoff)
+        retained = [(mtime, path) for mtime, path in processed if path not in doomed]
+        if self._retention_max_pages > 0:
+            # The cap is best-effort while NEW or unreadable records exist. They
+            # are delivery state, not history, and must never disappear merely
+            # because a resident is slow or unavailable.
+            processed_budget = max(0, self._retention_max_pages - len(protected))
+            if len(retained) > processed_budget:
+                retained.sort(key=lambda item: item[0], reverse=True)
+                doomed.update(path for _mtime, path in retained[processed_budget:])
+        pruned = 0
+        for path in doomed:
+            try:
+                path.unlink()
+                pruned += 1
+            except FileNotFoundError:
+                continue
+        return pruned
+
+    def _path(self, ref: str) -> Path:
+        path = (self._root / ref).resolve()
+        try:
+            path.relative_to(self._root)
+        except ValueError as exc:
+            raise ValueError(f"resident inbox reference escapes its root: {ref!r}") from exc
+        return path
+
+    @staticmethod
+    def _atomic_write(path: Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+        try:
+            temporary.write_text(content, encoding="utf-8")
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 class MimirResidentInbox(ResidentInboxBackend):
@@ -199,23 +412,32 @@ class MimirResidentInbox(ResidentInboxBackend):
         if not signals_dir.is_dir():
             return []
 
-        entries: list[tuple[float, str]] = []
+        protected_count = 0
+        processed: list[tuple[float, str]] = []
         for page in signals_dir.glob("*.md"):
             try:
                 resolved = page.resolve()
                 relative = str(resolved.relative_to(wiki_dir))
-                entries.append((resolved.stat().st_mtime, relative))
-            except (OSError, ValueError):
+                signal = parse_inbox_signal(resolved.read_text(encoding="utf-8"))
+                entry = (resolved.stat().st_mtime, relative)
+            except (OSError, UnicodeError, ValueError):
+                protected_count += 1
                 continue
+            if signal is None or signal.status == ResidentInboxStatus.NEW.value:
+                protected_count += 1
+            else:
+                processed.append(entry)
 
         doomed: list[str] = []
         if self._retention_max_age_days > 0:
             cutoff = time.time() - self._retention_max_age_days * 86400
-            doomed.extend(page for mtime, page in entries if mtime < cutoff)
-            entries = [(mtime, page) for mtime, page in entries if mtime >= cutoff]
-        if self._retention_max_pages > 0 and len(entries) > self._retention_max_pages:
-            entries.sort(key=lambda item: item[0], reverse=True)
-            doomed.extend(page for _, page in entries[self._retention_max_pages :])
+            doomed.extend(page for mtime, page in processed if mtime < cutoff)
+            processed = [(mtime, page) for mtime, page in processed if mtime >= cutoff]
+        if self._retention_max_pages > 0:
+            processed_budget = max(0, self._retention_max_pages - protected_count)
+            if len(processed) > processed_budget:
+                processed.sort(key=lambda item: item[0], reverse=True)
+                doomed.extend(page for _, page in processed[processed_budget:])
         return doomed
 
     async def write_triage(self, triage: ResidentInboxTriage) -> str:

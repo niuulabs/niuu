@@ -47,7 +47,11 @@ def _build_environment_signal_runtime(
 
     resident_signal_processor = None
     if resident_inbox is None:
-        resident_inbox = _build_resident_inbox(settings, mimir=mimir)
+        resident_inbox = _build_resident_inbox(
+            settings,
+            workspace=_resolve_workspace(settings),
+            mimir=mimir,
+        )
     resident_signal_recorder = (
         resident_inbox if settings.resident_inbox.environment_signals_enabled else None
     )
@@ -91,19 +95,40 @@ def _build_environment_signal_runtime(
     )
 
 
-def _build_resident_inbox(settings: Settings, *, mimir: Any | None) -> Any | None:
-    """Build the one durable inbox shared by signal recording and home turns."""
-    if mimir is None or not settings.resident_inbox.enabled:
+def _build_resident_inbox(
+    settings: Settings,
+    *,
+    workspace: Path,
+    mimir: Any | None,
+) -> Any | None:
+    """Build the configured durable inbox shared by intake and home turns."""
+    if not settings.resident_inbox.enabled:
         return None
-    from ravn.resident_inbox import MimirResidentInbox  # noqa: PLC0415
+
+    import inspect  # noqa: PLC0415
 
     cfg = settings.resident_inbox
-    return MimirResidentInbox(
-        mimir,
-        retention_max_pages=cfg.signal_retention_max_pages,
-        retention_max_age_days=cfg.signal_retention_max_age_days,
-        retention_sweep_interval_seconds=cfg.signal_retention_sweep_interval_seconds,
-    )
+    cls = _import_class(cfg.adapter)
+    kwargs = _inject_secrets(dict(cfg.kwargs), cfg.secret_kwargs_env)
+    params = inspect.signature(cls.__init__).parameters
+    if "root" in params and "root" not in kwargs:
+        kwargs["root"] = _resident_ravn_state_dir(workspace, settings) / "resident-inbox"
+    if "mimir" in params and "mimir" not in kwargs:
+        if mimir is None:
+            raise RuntimeError(
+                f"resident inbox adapter {cfg.adapter} requires Mimir, but Mimir is disabled"
+            )
+        kwargs["mimir"] = mimir
+    if "retention_max_pages" in params:
+        kwargs.setdefault("retention_max_pages", cfg.signal_retention_max_pages)
+    if "retention_max_age_days" in params:
+        kwargs.setdefault("retention_max_age_days", cfg.signal_retention_max_age_days)
+    if "retention_sweep_interval_seconds" in params:
+        kwargs.setdefault(
+            "retention_sweep_interval_seconds",
+            cfg.signal_retention_sweep_interval_seconds,
+        )
+    return cls(**kwargs)
 
 
 async def _build_resident_state(

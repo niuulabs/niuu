@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from mimir.adapters.markdown import MarkdownMimirAdapter
 from ravn.cli.commands import _build_environment_signal_runtime
 from ravn.config import (
     CapabilitySourceConfig,
@@ -23,7 +22,7 @@ from ravn.ports.capability import (
     WorkflowLaunchRequest,
     WorkflowLaunchResult,
 )
-from ravn.resident_inbox import MimirResidentInbox
+from ravn.resident_inbox import LocalResidentInbox
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.events import SleipnirEvent
 
@@ -293,24 +292,21 @@ async def test_daemon_environment_signal_is_recorded_into_resident_inbox(
     tmp_path,
 ) -> None:
     settings = _settings()
+    settings.state_dir = str(tmp_path / "state")
     settings.resident_inbox.environment_signals_enabled = True
-    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
     bus = InProcessBus()
     runtime = _build_environment_signal_runtime(
         settings,
         publisher=bus,
-        mimir=mimir,
         owns_publisher=False,
     )
 
     assert runtime is not None
     count = await runtime.collect_once()
-    source = MimirResidentInbox(mimir)
+    source = LocalResidentInbox(tmp_path / "state" / "resident-inbox")
     rows = await source.list_signals(status="", limit=5)
-    pages = await mimir.list_pages(prefix="resident/inbox/signals")
 
     assert count == 1
-    assert len(pages) == 1
     assert len(rows) == 1
     _path, signal = rows[0]
     assert signal.source == "host-events"
@@ -323,14 +319,13 @@ async def test_daemon_environment_signal_recording_notifies_wakefulness(
     tmp_path,
 ) -> None:
     settings = _settings()
+    settings.state_dir = str(tmp_path / "state")
     settings.resident_inbox.environment_signals_enabled = True
-    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
     bus = InProcessBus()
     wakefulness = WakefulnessProbe()
     runtime = _build_environment_signal_runtime(
         settings,
         publisher=bus,
-        mimir=mimir,
         resident_wakefulness=wakefulness,
         owns_publisher=False,
     )
@@ -530,8 +525,8 @@ async def test_below_threshold_signals_accumulate_for_idle_triage() -> None:
     assert "operational_state: watching" not in context
     assert "decision: <ignore | watch | investigate" in context
     assert "selected_next_action: <one concrete next step, or none>" in context
-    assert "continuation: <continue | ask_operator | sleep | stop>" in context
-    assert "next_action_timing: <immediate | external_event" in context
+    assert "continuation: <ask_operator | sleep | stop>" in context
+    assert "next_action_timing: <external_event | scheduled_time" in context
 
 
 def test_idle_triage_prompt_is_bounded_regardless_of_batch_size() -> None:

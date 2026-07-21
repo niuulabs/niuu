@@ -283,18 +283,14 @@ class EnvironmentSignalRuntime:
                     attributes={"ravn.signal.event_count": len(events)},
                 ):
                     await self._publisher.publish_batch(events)
-            # JetStream and the queue journal already own durable delivery. Mirroring
-            # those same events into the Mimir inbox would leave a second NEW copy
-            # for ResidentHomeTrigger and cause the resident to judge one event twice.
             with telemetry.span("ravn.signal.resident_projection") as projection_span:
-                resident_results = (
-                    [None for _ in events]
-                    if adapter.requires_commit
-                    else await self._process_resident_learning(events)
+                resident_results = await self._process_resident_learning(
+                    events,
+                    fail_on_error=adapter.requires_commit and self._durable_home_enabled,
                 )
                 projection_span.set_attribute(
-                    "ravn.signal.resident_projection.skipped",
-                    adapter.requires_commit,
+                    "ravn.signal.resident_projection.required",
+                    adapter.requires_commit and self._durable_home_enabled,
                 )
             with telemetry.span("ravn.signal.enqueue") as enqueue_span:
                 enqueued_count = await self._enqueue_signals(
@@ -368,6 +364,20 @@ class EnvironmentSignalRuntime:
         if not signals:
             return 0
         if adapter.requires_commit:
+            if self._durable_home_enabled:
+                if len(resident_results) != len(events) or any(
+                    not result
+                    or result.get("residentAutonomySignalPersisted") is not True
+                    or not str(result.get("residentAutonomySignalRef") or "").strip()
+                    for result in resident_results
+                ):
+                    raise RuntimeError(
+                        "durable signal transport requires every event in the resident inbox"
+                    )
+                # ResidentHomeTrigger is the sole queue producer for durable inbox
+                # observations. It coalesces NEW records and keeps intake independent
+                # of model latency.
+                return 0
             if self._enqueue is None:
                 raise RuntimeError("durable signal transport requires a resident task queue")
             batch = [
@@ -470,8 +480,8 @@ class EnvironmentSignalRuntime:
             "evidence: <evidence references, or []>\n"
             "recommended_action: <next step, or none>\n"
             "selected_next_action: <one concrete next step, or none>\n"
-            "continuation: <continue | ask_operator | sleep | stop>\n"
-            "next_action_timing: <immediate | external_event | scheduled_time | "
+            "continuation: <ask_operator | sleep | stop>\n"
+            "next_action_timing: <external_event | scheduled_time | "
             "operator_input | none>\n"
             'question: ""\n'
             "action_authority: <autonomous | yolo_allowed | court_required | "
@@ -561,6 +571,8 @@ class EnvironmentSignalRuntime:
     async def _process_resident_learning(
         self,
         events: list[SleipnirEvent],
+        *,
+        fail_on_error: bool = False,
     ) -> list[dict[str, Any] | None]:
         if self._resident_signal_processor is None:
             return [None for _ in events]
@@ -575,6 +587,8 @@ class EnvironmentSignalRuntime:
                     exc,
                 )
                 await self._publish_resident_learning_failed(event, exc)
+                if fail_on_error:
+                    raise
                 results.append(
                     {
                         "usedAdoptedLearning": False,
@@ -672,8 +686,8 @@ class EnvironmentSignalRuntime:
             f"    severity: {signal.severity}\n"
             "recommended_action: <next step, or none>\n"
             "selected_next_action: <one concrete next step, or none>\n"
-            "continuation: <continue | ask_operator | sleep | stop>\n"
-            "next_action_timing: <immediate | external_event | scheduled_time | "
+            "continuation: <ask_operator | sleep | stop>\n"
+            "next_action_timing: <external_event | scheduled_time | "
             "operator_input | none>\n"
             'question: ""\n'
             "action_authority: <autonomous | yolo_allowed | court_required | "

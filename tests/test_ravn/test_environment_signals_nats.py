@@ -214,7 +214,7 @@ async def test_runtime_commits_only_after_durable_window_is_enqueued() -> None:
 
 
 @pytest.mark.asyncio
-async def test_durable_transport_does_not_duplicate_delivery_into_resident_inbox() -> None:
+async def test_durable_transport_persists_to_inbox_without_queueing_each_poll() -> None:
     message = _FakeMsg(json.dumps(_envelope()).encode())
     adapter, _, _, _ = _adapter([[message]])
     enqueued: list[AgentTask] = []
@@ -222,7 +222,10 @@ async def test_durable_transport_does_not_duplicate_delivery_into_resident_inbox
 
     async def process(event: Any) -> dict[str, str]:
         processed.append(event)
-        return {"residentAutonomySignalRef": "resident/inbox/signals/duplicate.md"}
+        return {
+            "residentAutonomySignalPersisted": True,
+            "residentAutonomySignalRef": "resident/inbox/signals/event.md",
+        }
 
     async def enqueue(task: AgentTask) -> None:
         enqueued.append(task)
@@ -238,9 +241,31 @@ async def test_durable_transport_does_not_duplicate_delivery_into_resident_inbox
 
     assert await runtime.collect_once() == 1
     assert message.acked is True
-    assert processed == []
-    assert len(enqueued) == 1
-    assert enqueued[0].resident_inbox_refs == []
+    assert len(processed) == 1
+    assert enqueued == []
+
+
+@pytest.mark.asyncio
+async def test_durable_transport_rolls_back_when_inbox_persistence_fails() -> None:
+    message = _FakeMsg(json.dumps(_envelope()).encode())
+    adapter, _, _, _ = _adapter([[message]])
+
+    async def fail(_event: Any) -> dict[str, str]:
+        raise RuntimeError("inbox unavailable")
+
+    runtime = EnvironmentSignalRuntime(
+        settings=Settings(),
+        publisher=InProcessBus(),
+        resident_signal_processor=fail,
+        durable_home_enabled=True,
+    )
+    runtime._adapters = [adapter]
+
+    with pytest.raises(RuntimeError, match="inbox unavailable"):
+        await runtime.collect_once()
+
+    assert message.acked is False
+    assert message.nacked is True
 
 
 @pytest.mark.asyncio

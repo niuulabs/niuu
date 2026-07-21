@@ -88,6 +88,41 @@ data:
                                 - header_name: {{ .headerName | quote }}
                                   claim_name: {{ .claimName | quote }}
                                 {{- end }}
+                            {{- if .Values.envoy.jwt.workload.enabled }}
+                            workload:
+                              issuer: {{ .Values.envoy.jwt.workload.issuer | quote }}
+                              {{- if .Values.envoy.jwt.workload.audiences }}
+                              audiences:
+                                {{- range .Values.envoy.jwt.workload.audiences }}
+                                - {{ . | quote }}
+                                {{- end }}
+                              {{- end }}
+                              from_headers:
+                                - name: Authorization
+                                  value_prefix: "Bearer "
+                              remote_jwks:
+                                http_uri:
+                                  uri: {{ .Values.envoy.jwt.workload.jwksUri | quote }}
+                                  cluster: workload_jwks
+                                  timeout: {{ .Values.envoy.jwt.workload.jwksTimeout | default "5s" }}
+                                cache_duration:
+                                  seconds: {{ .Values.envoy.jwt.workload.jwksCacheDurationSeconds | default 300 }}
+                              forward: true
+                              payload_in_metadata: jwt_payload
+                              claim_to_headers:
+                                - header_name: {{ .Values.envoy.headerNames.userId }}
+                                  claim_name: sub
+                                - header_name: {{ .Values.envoy.headerNames.email }}
+                                  claim_name: email
+                                - header_name: {{ .Values.envoy.headerNames.tenant }}
+                                  claim_name: {{ .Values.envoy.jwt.workload.tenantClaim | default "tenant_id" }}
+                                - header_name: {{ .Values.envoy.headerNames.roles }}
+                                  claim_name: {{ .Values.envoy.jwt.workload.rolesClaim | default "resource_access.volundr-api.roles" }}
+                                {{- range .Values.envoy.jwt.workload.extraClaimHeaders }}
+                                - header_name: {{ .headerName | quote }}
+                                  claim_name: {{ .claimName | quote }}
+                                {{- end }}
+                            {{- end }}
                           rules:
                             - match:
                                 prefix: "/"
@@ -101,7 +136,14 @@ data:
                             - match:
                                 prefix: "/"
                               requires:
+                                {{- if .Values.envoy.jwt.workload.enabled }}
+                                requires_any:
+                                  requirements:
+                                    - provider_name: keycloak
+                                    - provider_name: workload
+                                {{- else }}
                                 provider_name: keycloak
+                                {{- end }}
                       {{- end }}
                       {{- with .Values.envoy.extraHttpFilters }}
                       {{- toYaml . | nindent 22 }}
@@ -145,6 +187,28 @@ data:
               "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
               sni: {{ .Values.envoy.jwt.keycloakHost | quote }}
           {{- end }}
+        {{- if .Values.envoy.jwt.workload.enabled }}
+        - name: workload_jwks
+          connect_timeout: {{ .Values.envoy.connectTimeout }}
+          type: STRICT_DNS
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: workload_jwks
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: {{ .Values.envoy.jwt.workload.jwksHost | quote }}
+                          port_value: {{ .Values.envoy.jwt.workload.jwksPort | default 443 }}
+          {{- if .Values.envoy.jwt.workload.jwksTls }}
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              sni: {{ .Values.envoy.jwt.workload.jwksHost | quote }}
+          {{- end }}
+        {{- end }}
         {{- end }}
         {{- with .Values.envoy.extraClusters }}
         {{- toYaml . | nindent 8 }}

@@ -2988,11 +2988,23 @@ class ResidentInboxConfig(BaseModel):
         default=True,
         description="Persist and triage resident inbox signals when resident autonomy is enabled.",
     )
+    adapter: str = Field(
+        default="ravn.resident_inbox.backend.LocalResidentInbox",
+        description="Fully-qualified ResidentInboxBackend adapter class.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs passed to the resident inbox adapter.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps resident inbox adapter kwargs to secret environment variables.",
+    )
     environment_signals_enabled: bool = Field(
         default=False,
         description=(
-            "Mirror configured Environment signals into Mimir resident/inbox/signals. "
-            "Disabled by default; durable transports and the resident task queue own delivery."
+            "Persist configured Environment signals through the resident inbox adapter. "
+            "Disabled by default so existing deployments opt into this delivery owner explicitly."
         ),
     )
     directed_messages_enabled: bool = Field(
@@ -3021,11 +3033,12 @@ class ResidentInboxConfig(BaseModel):
     signal_retention_max_pages: int = Field(
         default=500,
         description=(
-            "Maximum resident inbox signal pages kept in Mimir. The inbox is a "
+            "Target maximum resident inbox signal records kept by supporting adapters. "
+            "Only processed records are eligible, so an unconsumed backlog may exceed the cap. "
+            "The inbox is a "
             "rolling working set, not an archive — signal pages are write-only "
             "records that otherwise accumulate without bound and poison "
-            "mimir search/list over the wiki (observed: 104k pages / 440MB, "
-            "NIU-1118). Oldest pages beyond the cap are pruned. 0 disables "
+            "backing-store queries. Oldest records beyond the cap are pruned. 0 disables "
             "count-based pruning."
         ),
     )

@@ -913,6 +913,23 @@ class CodexWebSocketTransport(CLITransport):
             task.add_done_callback(self._log_dynamic_tool_task_result)
             return
 
+        if method == "mcpServer/elicitation/request":
+            if self._skip_permissions or self._approval_policy == "never":
+                await self._send_rpc_response(rid, {"action": "accept", "content": {}})
+                return
+            request_id = str(rid)
+            await self._emit(
+                {
+                    "type": "control_request",
+                    "subtype": "can_use_tool",
+                    "request_id": request_id,
+                    "tool": "MCP",
+                    "input": params,
+                }
+            )
+            self._pending_approvals[request_id] = (rid, "mcp_elicitation")
+            return
+
         # Default: auto-approve unknown requests
         logger.debug("Auto-approving Codex server request: %s", method)
         await self._send_rpc_response(rid, {"decision": "accept"})
@@ -1561,9 +1578,18 @@ class CodexWebSocketTransport(CLITransport):
             decision = "approved_for_session" if behavior == "allowForever" else "approved"
             if behavior not in ("allow", "allowForever"):
                 decision = "denied"
+            result = {"decision": decision}
+        elif approval_kind == "mcp_elicitation":
+            result = {
+                "action": "accept" if behavior in ("allow", "allowForever") else "decline"
+            }
+            if result["action"] == "accept":
+                content = response.get("content")
+                result["content"] = content if isinstance(content, dict) else {}
         else:
             decision = "accept" if behavior in ("allow", "allowForever") else "decline"
-        await self._send_rpc_response(rid, {"decision": decision})
+            result = {"decision": decision}
+        await self._send_rpc_response(rid, result)
 
     async def send_control(self, subtype: str, **kwargs: object) -> None:
         if self._fallback_transport is not None:

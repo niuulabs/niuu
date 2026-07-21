@@ -55,8 +55,36 @@ def _task(**overrides) -> AgentTask:
     return AgentTask(**values)
 
 
+def test_working_state_rejects_an_unbounded_event_log() -> None:
+    state = {
+        "observations": [f"observation {index}" for index in range(6)],
+        "hypotheses": [],
+        "unknowns": [],
+        "capability_gaps": [],
+        "attempts": [],
+    }
+
+    assert validate_resident_working_state(state) == [
+        "working_state.observations has 6 entries; maximum is 5"
+    ]
+
+
+def test_working_state_rejects_oversized_entries() -> None:
+    state = {
+        "observations": ["x" * 501],
+        "hypotheses": [],
+        "unknowns": [],
+        "capability_gaps": [],
+        "attempts": [],
+    }
+
+    assert validate_resident_working_state(state) == [
+        "working_state.observations[0] exceeds 500 characters"
+    ]
+
+
 @pytest.mark.asyncio
-async def test_selected_action_is_persisted_and_queued_with_same_case(tmp_path) -> None:
+async def test_selected_action_is_persisted_without_queueing_prose_as_work(tmp_path) -> None:
     state = LocalResidentState(tmp_path)
     queued: list[AgentTask] = []
 
@@ -81,18 +109,14 @@ async def test_selected_action_is_persisted_and_queued_with_same_case(tmp_path) 
         response_text="resident response",
     )
 
-    assert disposition.kind is ContinuationDecisionKind.CONTINUE
+    assert disposition.kind is ContinuationDecisionKind.STOP
     assert disposition.case_id == "root-1"
-    assert len(queued) == 1
-    continuation = queued[0]
-    assert continuation.resident_case_id == "root-1"
-    assert continuation.root_correlation_id == "root-1"
-    assert continuation.resident_turn_index == 2
-    assert continuation.resident_input_tokens == 10
-    assert "inspect the deployment configuration" in continuation.initiative_context
+    assert "free-text immediate continuation is unsupported" in disposition.reason
+    assert queued == []
     turn_text = (tmp_path / disposition.turn_ref).read_text()
     assert "root_correlation_id: root-1" in turn_text
     assert "tools_used: file_read" in turn_text
+    assert "inspect the deployment configuration" in turn_text
 
 
 @pytest.mark.asyncio
@@ -120,12 +144,12 @@ async def test_transport_control_is_not_queued_as_a_resident_action(tmp_path) ->
     )
 
     assert disposition.kind is ContinuationDecisionKind.STOP
-    assert "transport control" in disposition.reason
+    assert "free-text immediate continuation is unsupported" in disposition.reason
     assert queued == []
 
 
 @pytest.mark.asyncio
-async def test_non_immediate_action_timing_is_not_queued_as_a_continuation(tmp_path) -> None:
+async def test_sleep_waits_for_an_external_wake_without_queueing(tmp_path) -> None:
     state = LocalResidentState(tmp_path)
     queued: list[AgentTask] = []
     runtime = ResidentRuntime(state=state)
@@ -140,7 +164,7 @@ async def test_non_immediate_action_timing_is_not_queued_as_a_continuation(tmp_p
         prompt="wait for another event",
         result=_result(
             {
-                "continuation": "continue",
+                "continuation": "sleep",
                 "selected_next_action": "await the next observation",
                 "next_action_timing": "external_event",
             }
@@ -148,8 +172,8 @@ async def test_non_immediate_action_timing_is_not_queued_as_a_continuation(tmp_p
         response_text="future evidence is required",
     )
 
-    assert disposition.kind is ContinuationDecisionKind.STOP
-    assert "not immediately executable" in disposition.reason
+    assert disposition.kind is ContinuationDecisionKind.SLEEP
+    assert disposition.reason == "model selected sleep"
     assert queued == []
 
 
@@ -177,7 +201,7 @@ async def test_missing_action_timing_is_not_queued_as_a_continuation(tmp_path) -
     )
 
     assert disposition.kind is ContinuationDecisionKind.STOP
-    assert disposition.reason == "continuation did not declare immediate action timing"
+    assert "free-text immediate continuation is unsupported" in disposition.reason
     assert queued == []
 
 
@@ -205,12 +229,12 @@ async def test_selected_action_without_continuation_control_is_not_queued(tmp_pa
     )
 
     assert disposition.kind is ContinuationDecisionKind.STOP
-    assert disposition.reason == "selected next action did not declare continuation control"
+    assert disposition.reason == "selected next action recorded without a wake request"
     assert queued == []
 
 
 @pytest.mark.asyncio
-async def test_continuation_uses_tool_handoff_without_nesting_prior_prompt(tmp_path) -> None:
+async def test_tool_result_is_durable_without_creating_a_followup_task(tmp_path) -> None:
     state = LocalResidentState(tmp_path)
     queued: list[AgentTask] = []
 
@@ -245,12 +269,9 @@ async def test_continuation_uses_tool_handoff_without_nesting_prior_prompt(tmp_p
 
     durable = await state.read(disposition.turn_ref)
     assert durable is not None
-    continuation = queued[0]
-    assert "## Relevant prior tool results" in continuation.initiative_context
-    assert "inspect the peer before choosing" not in continuation.initiative_context
-    assert '"task_id":"peer-42"' in continuation.initiative_context
-    assert "… (truncated)" in continuation.initiative_context
-    assert len(continuation.initiative_context) < 2500
+    assert queued == []
+    assert '"task_id":"peer-42"' in durable.content
+    assert "… (truncated)" in durable.content
 
 
 @pytest.mark.asyncio
@@ -299,7 +320,8 @@ async def test_working_state_is_reused_by_a_new_runtime_after_restart(tmp_path) 
     assert "Raven may expose a control surface" in second_context
     assert "no addressable source capability" in second_context
     assert "Re-evaluate it against the new observations" in second_context
-    assert "Never use `continue` merely to watch, wait, or monitor" in second_context
+    assert "will not turn a prose" in second_context
+    assert "Use available tools before producing the final outcome" in second_context
 
 
 @pytest.mark.asyncio
@@ -427,7 +449,7 @@ async def test_invalid_outcome_cannot_replace_state_or_queue_a_continuation(tmp_
 
 
 @pytest.mark.asyncio
-async def test_budget_stops_selected_action_without_enqueuing(tmp_path) -> None:
+async def test_budget_stops_another_operator_round_trip(tmp_path) -> None:
     state = LocalResidentState(tmp_path)
     queued: list[AgentTask] = []
 
@@ -442,9 +464,9 @@ async def test_budget_stops_selected_action_without_enqueuing(tmp_path) -> None:
         prompt="prompt",
         result=_result(
             {
-                "continuation": "continue",
-                "selected_next_action": "inspect more evidence",
-                "next_action_timing": "immediate",
+                "continuation": "ask_operator",
+                "question": "Which environment is in scope?",
+                "next_action_timing": "operator_input",
             }
         ),
         response_text="response",
@@ -453,6 +475,52 @@ async def test_budget_stops_selected_action_without_enqueuing(tmp_path) -> None:
     assert disposition.kind is ContinuationDecisionKind.STOP
     assert "turn budget" in disposition.reason
     assert queued == []
+
+
+@pytest.mark.asyncio
+async def test_home_trigger_keeps_only_one_wake_inflight(tmp_path) -> None:
+    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    inbox = MimirResidentInbox(mimir)
+    state = LocalResidentState(tmp_path / "state")
+    runtime = ResidentRuntime(state=state, inbox=inbox)
+    await inbox.write_directed_message(
+        content="First observation",
+        metadata={"message_id": "home-1"},
+    )
+    first = await runtime.next_home_task(
+        limit=5,
+        persona="domain-drive",
+        output_mode=OutputMode.AMBIENT,
+    )
+    assert first is not None
+
+    await inbox.write_directed_message(
+        content="Second observation while the first wake is active",
+        metadata={"message_id": "home-2"},
+    )
+    assert (
+        await runtime.next_home_task(
+            limit=5,
+            persona="domain-drive",
+            output_mode=OutputMode.AMBIENT,
+        )
+        is None
+    )
+
+    await runtime.handle_completed_turn(
+        task=first,
+        prompt="home prompt",
+        result=_result({"continuation": "stop"}),
+        response_text="first home turn complete",
+    )
+    second = await runtime.next_home_task(
+        limit=5,
+        persona="domain-drive",
+        output_mode=OutputMode.AMBIENT,
+    )
+    assert second is not None
+    assert len(second.resident_inbox_refs) == 1
+    assert second.resident_inbox_refs != first.resident_inbox_refs
 
 
 @pytest.mark.asyncio
@@ -535,7 +603,10 @@ async def test_home_turn_reads_new_records_and_acknowledges_only_after_record(tm
     state = LocalResidentState(tmp_path / "state")
     await inbox.write_directed_message(
         content="Please investigate the staging rollout",
-        metadata={"telegram_message_id": "501"},
+        metadata={
+            "telegram_message_id": "501",
+            "source_context": {"service": "deployer", "state": "stalled"},
+        },
     )
     runtime = ResidentRuntime(state=state, inbox=inbox)
 
@@ -547,6 +618,9 @@ async def test_home_turn_reads_new_records_and_acknowledges_only_after_record(tm
     assert task is not None
     assert task.resident_inbox_refs
     assert "inbox_ref=resident/inbox/signals/" in task.initiative_context
+    assert "Bounded raw payload:" in task.initiative_context
+    assert '"service": "deployer"' in task.initiative_context
+    assert '"state": "stalled"' in task.initiative_context
     assert len(await inbox.list_signals(status=ResidentInboxStatus.NEW.value)) == 1
 
     await runtime.handle_completed_turn(
@@ -558,6 +632,36 @@ async def test_home_turn_reads_new_records_and_acknowledges_only_after_record(tm
     assert await inbox.list_signals(status=ResidentInboxStatus.NEW.value) == []
     remembered = await inbox.list_signals(status=ResidentInboxStatus.REMEMBERED.value)
     assert len(remembered) == 1
+
+
+@pytest.mark.asyncio
+async def test_home_turn_continues_the_source_signal_trace(tmp_path) -> None:
+    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    inbox = MimirResidentInbox(mimir)
+    state = LocalResidentState(tmp_path / "state")
+    trace_context = {
+        "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+    }
+    await inbox.write_event(
+        SimpleNamespace(
+            event_id="evt-traced",
+            event_type="environment.signal",
+            correlation_id="corr-traced",
+            trace_context=trace_context,
+            timestamp="2026-07-21T12:33:00Z",
+            summary="Printer disconnected",
+            payload={"data": {"source_id": "workshop"}},
+        )
+    )
+
+    task = await ResidentRuntime(state=state, inbox=inbox).next_home_task(
+        limit=5,
+        persona="domain-drive",
+        output_mode=OutputMode.AMBIENT,
+    )
+
+    assert task is not None
+    assert task.trace_context == trace_context
 
 
 @pytest.mark.asyncio

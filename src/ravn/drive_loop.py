@@ -385,8 +385,12 @@ def _validate_resident_continuation_contract(fields: Mapping[str, object]) -> li
         action = str(selected or "").strip()
     if not continuation and action and action.casefold().rstrip(".!") != "none":
         return ["selected_next_action requires explicit continuation control"]
+    if continuation == "continue":
+        return [
+            "continuation 'continue' is unsupported; call available tools before the final "
+            "outcome, or use sleep/ask_operator for a real wake source"
+        ]
     expected_timing = {
-        "continue": {"immediate"},
         "ask_operator": {"operator_input"},
         "sleep": {"external_event", "scheduled_time"},
         "stop": {"none"},
@@ -398,12 +402,6 @@ def _validate_resident_continuation_contract(fields: Mapping[str, object]) -> li
                 f"continuation {continuation!r} requires next_action_timing in "
                 f"{sorted(allowed)!r}, got {timing!r}"
             ]
-    if continuation != "continue":
-        return []
-    if not action:
-        return ["continuation 'continue' requires one concrete selected_next_action"]
-    if action.casefold().rstrip(".!") == "continue":
-        return ["selected_next_action must name an action; 'continue' is transport control"]
     return []
 
 
@@ -434,7 +432,9 @@ def _build_resident_valkyrie_schema_repair_prompt(
         "Do not call tools. Do not explain. Return exactly one valid YAML outcome block.\n\n"
         "Use YAML block mappings/sequences. Represent an empty list as `field: []`, never "
         "as a list containing an empty list. Double-quote scalar text containing `:`, `#`, "
-        "brackets, or braces. `working_state` must be a mapping, never a quoted string.\n\n"
+        "brackets, or braces. `working_state` must be a mapping, never a quoted string. "
+        "It is a compact current model, not a history: use at most five entries per list and "
+        "500 characters per entry.\n\n"
         "Validation errors:\n"
         f"{json.dumps(validation_errors, indent=2)}\n\n"
         "Fields parsed from the invalid attempt, if any:\n"
@@ -464,11 +464,11 @@ def _build_resident_valkyrie_schema_repair_prompt(
         "target_surfaces: []\n"
         'expires_at: ""\n'
         "dissent_refs: []\n"
-        "selected_next_action: <one concrete action that can begin immediately, or none>\n"
-        "continuation: continue | ask_operator | sleep | stop\n"
-        "next_action_timing: immediate | external_event | scheduled_time | operator_input | none\n"
+        "selected_next_action: <one concrete future action, or none>\n"
+        "continuation: ask_operator | sleep | stop\n"
+        "next_action_timing: external_event | scheduled_time | operator_input | none\n"
         'question: ""\n'
-        "# continue immediately queues another turn; use sleep when waiting for an event/time\n"
+        "# call tools before this outcome; only a real event/time/operator answer wakes a turn\n"
         f"{working_state_shape}"
         "---end---"
     )

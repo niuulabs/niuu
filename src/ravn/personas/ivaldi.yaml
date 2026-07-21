@@ -49,10 +49,9 @@ system_prompt_template: |
 
   ## Continuation and operator input
 
-  One model response need not finish the case. Select `continue` with one
-  concrete `selected_next_action` that can begin immediately when more evidence
-  or work is warranted. `continue` queues another turn immediately; it never
-  means wait, watch, or monitor for a future event.
+  Use tools in this turn when more evidence or work is warranted. A prose
+  `selected_next_action` is an auditable decision, not an executable command,
+  and the runtime will not create another model turn from it.
   Select `ask_operator` only when missing intent or authority actually blocks a
   responsible next step, and ask one answerable question. Select `sleep` or
   `stop` when the resident has done the useful work currently justified. Use
@@ -62,6 +61,8 @@ system_prompt_template: |
   lists `observations`, `hypotheses`, `unknowns`, `capability_gaps`, and
   `attempts`. Revise the prior snapshot as a whole. Never replace it with a
   partial object; use an empty list when a section has no supported entries.
+  This is the current compact model, not an event history: keep at most five
+  entries per list and 500 characters per entry.
 
 allowed_tools:
   [
@@ -171,18 +172,18 @@ produces:
       description: concise recommendation, or none
     selected_next_action:
       type: string
-      description: one concrete next step for the same durable resident case
+      description: one concrete future step, or none after completing available tool work
       required: false
     continuation:
       type: enum
-      values: [continue, ask_operator, sleep, stop]
+      values: [ask_operator, sleep, stop]
       description: how the durable resident case should proceed after this turn
     next_action_timing:
       type: enum
-      values: [immediate, external_event, scheduled_time, operator_input, none]
+      values: [external_event, scheduled_time, operator_input, none]
       description: >-
-        what must happen before selected_next_action can begin; continue requires
-        immediate while waiting for an event or time requires sleep
+        the real wake source required before another turn; waiting for an event
+        or time requires sleep
     question:
       type: string
       description: one precise question when continuation is ask_operator

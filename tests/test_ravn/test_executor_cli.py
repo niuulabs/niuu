@@ -216,6 +216,9 @@ async def test_cli_executor_runs_turn_and_emits_ravn_events() -> None:
     assert result.usage.cache_write_tokens == 1
     assert [call.name for call in result.tool_calls] == ["Bash"]
     assert [tool.content for tool in result.tool_results] == ["ok"]
+    assert result.episode is not None
+    assert result.episode.tools_used == ["Bash"]
+    assert result.episode.outcome.value == "success"
 
     assert [event.type.value for event in channel.events] == [
         "thought",

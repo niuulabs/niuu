@@ -1,8 +1,9 @@
 # Resident Valkyrie Judgment Loop
 
-**Status:** Runtime mechanisms and a local real-dependency signal path are
-proven; repeated behavioral quality and tool-build reuse are not yet proven
-**Date:** 2026-07-20
+**Status:** Durable external-event judgment and model-runtime interchange are
+locally proven against real dependencies; operator resume, completed A2A work,
+tool construction/reuse, and repeated behavioral quality are not yet proven
+**Date:** 2026-07-21
 **Scope:** Ravn resident Valkyries, environment signals, resident continuity,
 Mímir, tool evolution, and agent-to-agent work
 
@@ -96,9 +97,10 @@ local Ivaldi process and deployed dependencies. Laevateinn's machinery was
 simulated, while its emitted events, broker retention and delivery, model
 requests, tool calls, earlier diagnostic knowledge writes, authentication
 exchanges, and telemetry were real. `environment.type: workshop` was used only
-as an opaque configured
-provenance label. It was absent from the model-owned judgment prompt/schema and
-did not select an adapter, handler, tool, or decision path.
+as an opaque configured provenance label. It can appear in raw source metadata
+and runtime-owned outcome provenance, but does not select an adapter, handler,
+tool, or decision path. It remains a configured string, never a closed runtime
+enum.
 
 Observed evidence includes:
 
@@ -182,6 +184,113 @@ No `build_tool` call, completed A2A build, installed learned tool, or later
 learned-tool reuse has yet occurred in an uncued real signal trajectory. That
 claim remains deliberately open.
 
+### 2026-07-21 durable-home and model-runtime comparison
+
+The follow-up deliberately reused the existing ports and executor seam rather
+than adding a planner, objectives service, or second resident framework.
+
+Implemented runtime changes:
+
+- `LocalResidentInbox` is a durable filesystem adapter behind the existing
+  `ResidentInboxBackend`. Mímir is not required for resident continuity and is
+  not replaced as a general knowledge system; inbox and resident-state storage
+  remain separately configurable adapters.
+- A JetStream observation is written to the resident inbox before source ACK.
+  Persistence failure NAKs the message. The home trigger permits only one
+  active/pending home wake, while later observations accumulate durably. Local
+  retention prunes only processed history; it never drops an unconsumed
+  observation to satisfy a count or age limit.
+- A home turn receives bounded raw payload excerpts in addition to summaries
+  and stable references. This closed a live failure where the model saw only a
+  generic summary and searched an event UUID on the public web.
+- Free-text `selected_next_action` is audit data, not executable work. The
+  runtime no longer creates another model turn from prose such as "continue
+  monitoring". Tool work must happen in the current turn; a later turn needs a
+  real event, operator answer, or configured scheduled wake.
+- Working state is a complete current snapshot with five named lists, bounded
+  to five entries per list and 500 characters per entry. Invalid state cannot
+  replace the last valid snapshot.
+- Source trace context is persisted with inbox observations and carried into
+  the coalesced home task. This is mechanically proven; the retained live event
+  used for the runtime comparison predated that field, so the next newly
+  ingested event remains the live proof of signal-to-home trace continuity.
+- CLI-backed executors now create the same episode envelope used by resident
+  completion. A valid Codex response can therefore update working state before
+  inbox acknowledgement instead of being accepted only by the outer drive-loop
+  parser.
+- Codex app-server MCP elicitations now use the protocol's
+  `{action, content}` response rather than an unrelated approval shape. With
+  approval policy `never`, the configured Ravn MCP tool executes; interactive
+  policies still surface the request through the existing control channel.
+- CLI executor turns emit a real `chat <model>` span containing the exact
+  bounded/redacted request, response, tool requests/results, token usage, and
+  elapsed time. It does not invent stop reasons, private Codex reasoning
+  iterations, or per-tool timing that app-server does not expose.
+
+Live Nemotron evidence:
+
+- Trace `78aa1ddee008d06143ad6cf3fb83af81` is a completed 222-second home turn
+  over two real workshop observations. Once raw payloads were present, Nemotron
+  correctly identified Sindri as connected and idle under a flaky simulator
+  scenario, chose `watch`, persisted a complete working state, acknowledged
+  both inbox records, and selected `sleep / external_event`. No synthetic
+  continuation was queued; the next wake came only when another real
+  JetStream event arrived.
+- For the exact retained `connection lost` snapshot, trace
+  `368838c0b26ad64b99b356ab9994d013` ran for 790 seconds. Nemotron made seven
+  model calls, two capability-list calls, two skill-list calls, and one web
+  fetch. Its initial outcome and one repair both encoded required arrays and
+  working state as strings. The runtime rejected the judgment, retained the
+  diagnostic turn, and left the observation unacknowledged. This is a model/
+  runtime consistency failure caught by the harness, not a successful case.
+
+Live Codex evidence:
+
+- The comparison cloned the same queue journal, resident state, inbox record,
+  and mandate, then disabled external intake in both clones. The Ravn case and
+  Ravn capability surface were therefore identical. Codex app-server still
+  adds its own native instructions, tools, and installed skill catalog, so the
+  complete model-visible contexts are not byte-identical; this is a runtime
+  comparison, not a controlled model benchmark.
+- The first requested model name (`gpt-5.6`) was unsupported by the local
+  ChatGPT-authenticated Codex account and was rejected. It is excluded from the
+  behavioral comparison. The account's configured `gpt-5.6-sol` model was used
+  for subsequent runs.
+- The first successful model answer exposed the two harness defects described
+  above: MCP approval was rejected by the wrong response shape, and the valid
+  YAML was not attached to the resident episode. Both were fixed and the same
+  untouched snapshot was replayed.
+- Final trace `72fce3c8c07b5e74eb0fed4aa4097c9c` completed in 31.7 seconds. It
+  includes the outer resident trace plus `chat gpt-5.6-sol`, exact
+  `capability_list` request/result, final response, working-state write, inbox
+  acknowledgement, judgment publication, and ODIN. Guild returned a real empty
+  catalog with seven `observatory-unavailable` warnings. Codex recorded that as
+  a capability gap, chose `watch / degraded / sleep / external_event`, and did
+  not claim a diagnostic or reconnection action.
+
+Live A2A discovery diagnosis:
+
+- `ravn tool-build doctor` passes configuration, backend, authentication,
+  reachability, and workflow discovery against the deployed Tool & Skill
+  Builder. This confirms the vertical A2A build stack is real.
+- General Guild discovery authenticates but currently returns zero agents.
+  Noatun's Observatory directory answers and is empty; seven other
+  Observatories are unavailable through Guild. The cluster ingresses showed
+  that forwarded workload JWTs were rejected because Observatory Envoy
+  accepted only the Keycloak provider.
+- The Observatory chart now optionally accepts the configured workload issuer/
+  JWKS and allows either identity provider. Helm lint and the chart test pass.
+  This chart change has not been deployed, so the live empty peer catalog is
+  still the truthful result and no general A2A trajectory is claimed.
+
+The comparison supports a narrow conclusion: the durable/event harness can
+carry the same real case through different model runtimes, and the tested Codex
+runtime was much more consistent on this observation. It does not establish
+that Codex is always better, that Nemotron cannot perform the role, or that the
+resident is self-evolving. Those claims require distributions of uncued real
+trajectories, including operator input, A2A delegation, a justified tool build,
+verification, later reuse, and revision after feedback.
+
 ## Desired behavior
 
 Given a mandate and an environment, the resident should be able to:
@@ -218,9 +327,9 @@ Given a mandate and an environment, the resident should be able to:
 | Tool construction | `src/ravn/adapters/tools/build_tool.py` | Can author or commission, independently verify, review, canary, install, register, and propose a tool to a flock. |
 | A2A workflow tasks | `src/ravn/adapters/tool_build/a2a.py` and Ting's A2A facade | Supports Agent Card discovery, stateful tasks, `INPUT_REQUIRED`, artifacts, and provenance for tool-building workflows. |
 | Governance | permissions, ODIN, review items, trust modes, budgets, rollback | Correct place for deterministic authority and safety boundaries. |
-| Human-help transport | `help_needed`, Skuld pending help requests, and directed replies | Functional when the resident has the required Skuld path, but not a general resident continuation. |
-| Resident state | `src/ravn/domain/resident_continuation.py` and `src/ravn/adapters/resident_state/` | The required models and storage adapters largely exist but are not composed into the daemon. |
-| Long-term storage | Mímir pages, resident inbox, learning pages, and evidence artifacts | Useful as durable storage when accessed deliberately. Harmful when treated as automatic cognition. |
+| Human-help transport | `help_needed`, resident operator state, Skuld pending requests, and directed replies | Persist-and-resume is composed and mechanically tested; a live operator question/answer trajectory remains unproven. |
+| Resident state | `src/ravn/domain/resident_continuation.py`, `src/ravn/adapters/resident_state/`, and daemon wiring | Dynamically selected adapters now persist cases, working state, operator waits, answers, and bounded handoffs. |
+| Long-term storage | Mímir pages, the local resident inbox, resident state, learning pages, and evidence artifacts | Continuity no longer depends on Mímir. Knowledge remains useful only when deliberately accessed and evidence-qualified. |
 
 ## Root causes
 
@@ -818,8 +927,8 @@ the explicitly mounted paths and named credential become visible.
 | Phase | Code/test status | Live status |
 | --- | --- | --- |
 | 0 — clean judgment baseline | Mechanically tested | Locally exercised with real retained events and Nemotron; one clean judgment completed, while other trajectories showed unnecessary work and repetition |
-| 1 — durable resident continuity | Mechanically tested | Local shutdown/restart retained and resumed the active case; operator question/answer has not been live-proven |
-| 2 — general A2A collaboration | Mechanically tested against protocol fixtures | Live Agent Card, token exchange, directory, and tool-builder exist; no uncued complete A2A task/build trajectory has occurred |
+| 1 — durable resident continuity | Mechanically tested, including persist-before-ACK, coalesced wakes, trace propagation, and operator resume | Local shutdown/restart retained and resumed the active case; real observations accumulated behind one wake and were acknowledged only after valid state; operator question/answer has not been live-proven |
+| 2 — general A2A collaboration | Mechanically tested against protocol fixtures; Observatory workload-identity chart fix is linted but undeployed | Live Agent Card, token exchange, and tool-builder discovery work; general Guild discovery returns an empty catalog plus seven unavailable peers, and no uncued complete A2A task/build trajectory has occurred |
 | 3 — evidence-gated learning | Mechanically tested | Earlier explicit Mímir write/read occurred, but quality was weak; clean Ivaldi now disables knowledge Mímir and no reliable behavior improvement is established |
 | 4 — enforced learned-tool reach | Container and optional Kubernetes mechanisms tested | Ivaldi is configured for the unenforced `local` backend |
 | 5 — delivery and trust hardening | Mechanically tested | Local authenticated platform exchange and Glitnir export exercised; cluster deployment of this branch remains pending |
@@ -844,12 +953,12 @@ The final stitch deliberately adds no planner or objective service:
   optional fields no longer make that fallback look preferable. This prevents
   a complete object such as working state from being silently flattened into
   a string before resident validation.
-- Continuation timing is explicit model output. `continue/immediate` is the
-  only self-queuing combination; waiting for an external event or scheduled
-  time sleeps, operator input suspends, and stop declares no prerequisite.
-  Missing or incoherent timing fails closed instead of producing an immediate
-  wait/monitor loop. This is control-plane validation, not environment-specific
-  decision logic.
+- Continuation timing is explicit model output, but free-text model intent never
+  self-queues work. Tools execute in the current bounded turn; external events,
+  configured scheduled wakes, and operator answers are the only sources of a
+  later turn. `sleep`, `ask_operator`, and `stop` determine disposition, while
+  missing or incoherent timing fails closed. This is control-plane validation,
+  not environment-specific decision logic.
 - An outcome that remains schema-invalid after the single repair attempt is
   retained as a diagnostic turn and published only as a rejection. It cannot
   replace working state or enqueue a continuation. This closes a live-observed
@@ -917,6 +1026,13 @@ telemetry/dashboard hardening reported:
   question/resume, budgets, A2A discovery and `INPUT_REQUIRED` continuation,
   JetStream ACK/NAK handoff, evidence-gated learning promotion, Kubernetes
   policy verification, and deliberate trusted retrieval.
+
+The 2026-07-21 durable-home/runtime-neutral follow-up completed a fresh
+repository-wide run: `17363 passed, 26 skipped, 129 deselected, 1 xfailed` in
+`348.84s`. The changed Python surface passed Ruff, the Observatory chart passed
+Helm lint, and focused resident/Codex/workload-identity verification passed
+`310` tests. Inbox retention tests now also prove that neither the local nor
+Mímir adapter prunes an unconsumed observation to satisfy count or age limits.
 
 This validates runtime mechanisms, not model judgment or deployed integration.
 Scripted model output remains appropriate for mechanism tests, but it is not

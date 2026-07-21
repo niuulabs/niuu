@@ -254,9 +254,10 @@ class TestDriveLoopOutcomeContract:
         assert "decision: ignore | watch | investigate" in prompt
         assert "confidence: <number from 0.0 to 1.0>" in prompt
         assert "action_authority: autonomous | yolo_allowed" in prompt
-        assert "continue immediately queues another turn" in prompt
+        assert "only a real event/time/operator answer wakes a turn" in prompt
         assert "working_state` must be a mapping" in prompt
         assert "empty list as `field: []`" in prompt
+        assert "at most five entries per list" in prompt
 
         working_state_prompt = _build_resident_valkyrie_schema_repair_prompt(
             task=task,
@@ -267,14 +268,18 @@ class TestDriveLoopOutcomeContract:
         assert "working_state:\n  observations: []\n  hypotheses: []" in working_state_prompt
         assert "preserve valid prior entries" in working_state_prompt
 
-    def test_continue_requires_an_action_instead_of_repeating_transport_control(self) -> None:
+    def test_free_text_continue_is_not_a_supported_wake_source(self) -> None:
+        unsupported = (
+            "continuation 'continue' is unsupported; call available tools before the final "
+            "outcome, or use sleep/ask_operator for a real wake source"
+        )
         assert _validate_resident_continuation_contract(
             {
                 "continuation": "continue",
                 "selected_next_action": "continue",
                 "next_action_timing": "immediate",
             }
-        ) == ["selected_next_action must name an action; 'continue' is transport control"]
+        ) == [unsupported]
         assert _validate_resident_continuation_contract(
             {
                 "continuation": "sleep",
@@ -288,18 +293,13 @@ class TestDriveLoopOutcomeContract:
                 "selected_next_action": "inspect the source",
                 "next_action_timing": "external_event",
             }
-        ) == [
-            "continuation 'continue' requires next_action_timing in ['immediate'], "
-            "got 'external_event'"
-        ]
+        ) == [unsupported]
         assert _validate_resident_continuation_contract(
             {
                 "continuation": "continue",
                 "selected_next_action": "inspect the source",
             }
-        ) == [
-            "continuation 'continue' requires next_action_timing in ['immediate'], got ''"
-        ]
+        ) == [unsupported]
         assert _validate_resident_continuation_contract(
             {
                 "selected_next_action": "inspect the source",
