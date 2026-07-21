@@ -15,13 +15,13 @@ from skuld.config import SkuldSettings
 settings = SkuldSettings(workspace_path={str(tmp_path)!r})
 broker = Broker(settings)
 assert broker._room_bridge is None
-assert broker._room_mesh_bridge is None
+assert broker._collaboration_mesh_bridge is None
 assert broker._observation_relay is None
 for module in (
     "niuu.collaboration.room",
+    "niuu.collaboration.mesh",
     "niuu.collaboration.observation_relay",
     "skuld.collaboration_adapter",
-    "skuld.room_mesh_bridge",
 ):
     assert module not in sys.modules, module
 """

@@ -168,7 +168,6 @@ class RoomConfig(BaseModel):
         default="local",
         description="Environment whose participants are represented in this room.",
     )
-    max_participants: int = Field(default=8)
     participant_colors: list[str] = Field(default_factory=lambda: list(_DEFAULT_PARTICIPANT_COLORS))
     activity_detail_max_length: int = Field(default=200)
     default_target_peer_id: str = Field(

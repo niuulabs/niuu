@@ -29,6 +29,87 @@ PresencePublisher = Callable[[Any], Awaitable[None]]
 UsageReporter = Callable[[dict[str, Any]], Awaitable[None]]
 
 
+def _peer_observation(event: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    """Translate a collaboration event into Skuld's peer-observation contract."""
+    kind = str(event.get("kind") or "")
+    base = {
+        "task_id": event.get("taskId") or "",
+        "session_id": event.get("sessionId") or "",
+        "root_correlation_id": event.get("rootCorrelationId") or "",
+    }
+
+    if kind == "agent_event":
+        agent_event = event.get("event")
+        if not isinstance(agent_event, dict):
+            return None
+        payload = agent_event.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        event_type = str(agent_event.get("type") or event.get("sourceEventType") or "")
+        if not event_type:
+            return None
+        metadata = dict(payload)
+        metadata["task_id"] = str(agent_event.get("taskId") or base["task_id"])
+        metadata["urgency"] = agent_event.get("urgency", 0.5)
+        return event_type, {**base, "data": dict(payload), "metadata": metadata}
+
+    if kind == "outcome":
+        fields = event.get("fields")
+        if not isinstance(fields, dict):
+            fields = {}
+        context = event.get("context")
+        if not isinstance(context, dict):
+            context = {}
+        event_type = str(event.get("eventType") or "")
+        data = {
+            **fields,
+            **context,
+            "event_type": event_type,
+            "fields": dict(fields),
+            "valid": bool(event.get("valid", True)),
+        }
+        for key in ("summary", "verdict"):
+            if event.get(key) is not None:
+                data[key] = event[key]
+        if event.get("routingOnly"):
+            data["routing_only"] = True
+        return "outcome", {
+            **base,
+            "data": data,
+            "metadata": {"event_type": event_type, "task_id": base["task_id"]},
+        }
+
+    if kind == "notification" and event.get("notificationType") == "help_needed":
+        data = {
+            key: event[key]
+            for key in (
+                "persona",
+                "reason",
+                "summary",
+                "attempted",
+                "recommendation",
+                "context",
+            )
+            if key in event
+        }
+        return "help_needed", {
+            **base,
+            "data": data,
+            "metadata": {"urgency": event.get("urgency", 0.85)},
+        }
+
+    if kind == "message":
+        metadata = event.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        event_type = str(event.get("sourceEventType") or "")
+        if event_type not in {"response", "error"}:
+            event_type = "error" if event.get("error") else "response"
+        return event_type, {**base, "data": str(event.get("content") or ""), "metadata": metadata}
+
+    return None
+
+
 class SkuldCollaborationAdapter(CollaborationRoom):
     """Expose a shared room through Skuld channels and WebSockets.
 
@@ -153,9 +234,10 @@ class SkuldCollaborationAdapter(CollaborationRoom):
                     )
                     return
 
-                source_event_type = str(event.get("sourceEventType") or kind)
-                if self._observe_peer_event is not None:
-                    await self._observe_peer_event(participant.peer_id, source_event_type, event)
+                observation = _peer_observation(event)
+                if self._observe_peer_event is not None and observation is not None:
+                    event_type, payload = observation
+                    await self._observe_peer_event(participant.peer_id, event_type, payload)
                 telemetry.count(
                     "skuld.collaboration.events",
                     attributes={"kind": kind, "outcome": "handled"},
@@ -474,17 +556,6 @@ class SkuldCollaborationAdapter(CollaborationRoom):
                 heartbeat_ttl_s=payload["heartbeat_ttl_s"],
                 **common,
             )
-        elif event.event_type == "participant.capabilities_changed":
-            adapted = catalog.participant_capabilities_changed(
-                environment_id=payload["environment_id"],
-                participant_id=payload["participant_id"],
-                participant_type=payload["participant_type"],
-                display_name=payload["display_name"],
-                capabilities=payload["capabilities"],
-                surfaces=payload["surfaces"],
-                tools=payload["tools"],
-                **common,
-            )
         elif event.event_type == "room.transcript.recorded":
             transcript_content = str(payload.pop("transcript_content", ""))
             adapted = catalog.room_transcript_recorded(**payload, **common)
@@ -526,7 +597,4 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         return f"{participant.persona}: {label}" if label else participant.persona
 
 
-# The concise public name used by composition roots.
-RoomAdapter = SkuldCollaborationAdapter
-
-__all__ = ["RoomAdapter", "SkuldCollaborationAdapter"]
+__all__ = ["SkuldCollaborationAdapter"]

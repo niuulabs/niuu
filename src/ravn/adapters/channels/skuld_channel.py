@@ -25,6 +25,7 @@ import websockets
 import websockets.exceptions
 from websockets.protocol import State as WsState
 
+from niuu.collaboration.room import matches_subscription
 from niuu.observability import get_observability
 from ravn.adapters.collaboration import project_ravn_event
 from ravn.domain.events import RavnEvent
@@ -38,17 +39,6 @@ _DEFAULT_MAX_RECONNECT_ATTEMPTS = 5
 
 DirectedMessageHandler = Callable[[str, dict[str, Any] | None], Awaitable[None]]
 AuthTokenProvider = Callable[[], Awaitable[str]]
-
-
-def _matches_subscription(event_type: str, subscriptions: list[str]) -> bool:
-    for pattern in subscriptions:
-        if pattern == event_type:
-            return True
-        if pattern.endswith(".*") and event_type.startswith(pattern[:-1]):
-            return True
-        if pattern.endswith("*") and event_type.startswith(pattern[:-1]):
-            return True
-    return False
 
 
 def _render_collaboration_observation(frame: dict[str, Any], event_type: str) -> str:
@@ -233,7 +223,7 @@ class SkuldChannel(ChannelPort):
                             await self._on_directed_message(content, metadata)
                 elif frame.get("type") == "collaboration.outcome" and self._on_directed_message:
                     event_type = str(frame.get("eventType") or "").strip()
-                    if event_type and _matches_subscription(event_type, self._subscribes_to):
+                    if event_type and matches_subscription(event_type, self._subscribes_to):
                         metadata = {
                             "room_outcome": True,
                             "event_type": event_type,

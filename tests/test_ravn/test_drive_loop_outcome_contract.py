@@ -280,13 +280,16 @@ class TestDriveLoopOutcomeContract:
                 "next_action_timing": "immediate",
             }
         ) == [unsupported]
-        assert _validate_resident_continuation_contract(
-            {
-                "continuation": "sleep",
-                "selected_next_action": "continue",
-                "next_action_timing": "external_event",
-            }
-        ) == []
+        assert (
+            _validate_resident_continuation_contract(
+                {
+                    "continuation": "sleep",
+                    "selected_next_action": "continue",
+                    "next_action_timing": "external_event",
+                }
+            )
+            == []
+        )
         assert _validate_resident_continuation_contract(
             {
                 "continuation": "continue",
@@ -347,7 +350,7 @@ comments: fix the null branch
         assert canonical_topic == "review.completed"
         assert canonical_event.payload["event_type"] == "review.completed"
         assert canonical_event.payload["bubble_up"] is True
-        assert canonical_event.payload["room_bridge_skip"] is True
+        assert canonical_event.payload["collaboration_routing_only"] is True
         assert canonical_event.payload["verdict"] == "needs_changes"
         assert canonical_event.payload["workflow_parent_event_id"] == "code-task-123"
 
@@ -358,7 +361,7 @@ comments: fix the null branch
         assert alias_event.payload["canonical_event_type"] == "review.completed"
         assert alias_event.payload["routing_only"] is True
         assert alias_event.payload["bubble_up"] is False
-        assert "room_bridge_skip" not in alias_event.payload
+        assert "collaboration_routing_only" not in alias_event.payload
 
         assert skuld_channel.emit.await_count == 2
         emitted = skuld_channel.emit.await_args_list[0].args[0]
@@ -402,7 +405,7 @@ files_changed: 2
         assert canonical_topic == "code.completed"
         assert canonical_event.payload["event_type"] == "code.completed"
         assert canonical_event.payload["bubble_up"] is True
-        assert canonical_event.payload["room_bridge_skip"] is False
+        assert "collaboration_routing_only" not in canonical_event.payload
 
         alias_event = mesh.publish.await_args_list[1].args[0]
         alias_topic = mesh.publish.await_args_list[1].kwargs["topic"]
@@ -1475,7 +1478,7 @@ summary: post-mortem source captured
         published = dl._mesh.publish.await_args.args[0]
         assert published.payload["summary"] == "page written"
         assert published.payload["workflow_parent_event_id"] == "parent-tool-event"
-        assert published.payload["room_bridge_skip"] is True
+        assert published.payload["collaboration_routing_only"] is True
 
     @pytest.mark.asyncio
     async def test_emit_tool_outcome_event_respects_workflow_allowed_topics(self) -> None:

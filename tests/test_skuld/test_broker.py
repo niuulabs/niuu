@@ -1450,7 +1450,6 @@ class TestBroker:
                     "verdict": "needs_changes",
                     "summary": "Needs another pass",
                     "fields": {"comments": "Fix the edge case"},
-                    "room_bridge_skip": True,
                 },
             },
         )
@@ -1729,7 +1728,6 @@ class TestBroker:
                     "verdict": "pass",
                     "summary": "Looks good",
                     "fields": {"verdict": "pass", "summary": "Looks good"},
-                    "room_bridge_skip": True,
                 },
             },
         )
@@ -1747,7 +1745,6 @@ class TestBroker:
                     "verdict": "pass",
                     "summary": "No security issues",
                     "fields": {"verdict": "pass", "summary": "No security issues"},
-                    "room_bridge_skip": True,
                 },
             },
         )
@@ -1822,7 +1819,6 @@ class TestBroker:
                     "verdict": "published",
                     "summary": "Delivery artifacts published",
                     "fields": {"verdict": "published", "summary": "Delivery artifacts published"},
-                    "room_bridge_skip": True,
                 },
             },
         )
@@ -1907,7 +1903,6 @@ class TestBroker:
                     "verdict": "pass",
                     "summary": "Looks good",
                     "fields": {"verdict": "pass", "summary": "Looks good"},
-                    "room_bridge_skip": True,
                 },
             },
         )
@@ -1922,7 +1917,6 @@ class TestBroker:
                     "verdict": "pass",
                     "summary": "No security issues",
                     "fields": {"verdict": "pass", "summary": "No security issues"},
-                    "room_bridge_skip": True,
                 },
             },
         )
@@ -2000,7 +1994,6 @@ class TestBroker:
                         "verdict": "pass",
                         "summary": "Looks good",
                         "fields": {"verdict": "pass", "summary": "Looks good"},
-                        "room_bridge_skip": True,
                     },
                 },
             )
@@ -2018,7 +2011,6 @@ class TestBroker:
                         "verdict": "pass",
                         "summary": "No security issues",
                         "fields": {"verdict": "pass", "summary": "No security issues"},
-                        "room_bridge_skip": True,
                     },
                 },
             )
@@ -5238,11 +5230,11 @@ class TestBrokerRoomAdapter:
         )
 
     def test_room_bridge_created_when_enabled(self, room_settings):
-        from skuld.collaboration_adapter import RoomAdapter
+        from skuld.collaboration_adapter import SkuldCollaborationAdapter
 
         b = Broker(settings=room_settings)
         assert b._room_bridge is not None
-        assert isinstance(b._room_bridge, RoomAdapter)
+        assert isinstance(b._room_bridge, SkuldCollaborationAdapter)
 
     def test_room_bridge_none_when_disabled(self, no_room_settings):
         b = Broker(settings=no_room_settings)
@@ -6006,7 +5998,6 @@ class TestBrokerRoomAdapter:
             return_value=MagicMock(peer_id="agent-1", persona="agent-1")
         )
         b._room_bridge = mock_bridge
-        b._room_mesh_bridge = AsyncMock()
         usage = {
             "model": "gpt-5.6-sol",
             "inputTokens": 10,

@@ -32,7 +32,7 @@ async def test_room_owns_membership_presence_and_wire_state() -> None:
     )
 
     assert participant.environment_id == "cluster-a"
-    assert room.participant_count == 1
+    assert len(room.participants) == 1
     assert room.get_room_state_event()["participants"][0]["peer_id"] == "ravn-1"
     assert broadcast.await_args.args[0]["type"] == "participant_joined"
     assert publish.await_args.args[0].event_type == "participant.joined"

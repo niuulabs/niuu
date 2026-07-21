@@ -20,6 +20,7 @@ DirectedSend = Callable[[str, str, dict[str, Any]], Awaitable[str]]
 NotificationSend = Callable[[dict[str, Any]], Awaitable[None]]
 
 _ORIGIN_TOKEN_SPLIT = re.compile(r"[\s:/,]+")
+_IGNORED_EVENT_PREFIXES = ("ravn.mesh.",)
 
 
 def render_observation(event: SleipnirEvent, payload_preview_chars: int) -> str:
@@ -48,7 +49,6 @@ class ObservationRelay:
         send_directed: DirectedSend,
         broadcast_notification: NotificationSend,
         payload_preview_chars: int,
-        ignored_prefixes: tuple[str, ...] = ("ravn.mesh.",),
     ) -> None:
         self._subscriber = subscriber
         self._participant = participant
@@ -56,7 +56,6 @@ class ObservationRelay:
         self._send_directed = send_directed
         self._broadcast_notification = broadcast_notification
         self._payload_preview_chars = payload_preview_chars
-        self._ignored_prefixes = ignored_prefixes
         self._subscription: Subscription | None = None
 
     async def start(self) -> None:
@@ -71,7 +70,7 @@ class ObservationRelay:
         self._subscription = None
 
     async def _handle_event(self, event: SleipnirEvent) -> None:
-        if event.event_type.startswith(self._ignored_prefixes):
+        if event.event_type.startswith(_IGNORED_EVENT_PREFIXES):
             return
         participant = self._participant()
         if participant is None:

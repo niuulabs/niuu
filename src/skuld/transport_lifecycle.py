@@ -323,9 +323,9 @@ class TransportLifecycleMixin:
             await self._observation_relay.stop()
             self._observation_relay = None
 
-        if self._room_mesh_bridge is not None:
-            await self._room_mesh_bridge.stop()
-            self._room_mesh_bridge = None
+        if self._collaboration_mesh_bridge is not None:
+            await self._collaboration_mesh_bridge.stop()
+            self._collaboration_mesh_bridge = None
 
         # Stop mesh adapter before transport (deregister from discovery)
         if self._mesh_adapter is not None:

@@ -141,7 +141,7 @@ sending a response, it stays in thinking. Check its log for exceptions.
 ### Directed Messages (@-mentions) Not Working
 
 The browser sends `targetPeerId` (camelCase) to the broker, which routes via
-`RoomBridge.route_directed_message()` to the ravn's WebSocket. The ravn's
+`SkuldCollaborationAdapter.route_directed_message()` to the ravn's WebSocket. The ravn's
 `SkuldChannel` receive loop picks it up and enqueues it as a high-priority
 `AgentTask` in the drive loop.
 
@@ -151,7 +151,8 @@ The browser sends `targetPeerId` (camelCase) to the broker, which routes via
 - `/tmp/ravn-mesh/cluster.yaml` — static peer definitions with display names
 - `/tmp/ravn-mesh/ravn-mesh-{1,2,3}.yaml` — per-node config (generated)
 - `/tmp/ravn-mesh/ravn-mesh-{1,2,3}.log` — per-node logs
-- `src/skuld/room_bridge.py` — Ravn→browser event translation
+- `src/ravn/adapters/collaboration/projection.py` — Ravn→neutral collaboration projection
+- `src/skuld/collaboration_adapter.py` — collaboration→browser/channel adaptation
 - `src/skuld/broker.py` — WebSocket broker, ravn registration, directed messages
 - `src/ravn/adapters/channels/skuld_channel.py` — ravn→Skuld WebSocket channel
 - `src/ravn/drive_loop.py` — task execution, Skuld eager connect

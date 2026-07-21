@@ -7,7 +7,7 @@ import pytest
 
 from ravn.adapters.channels.skuld_channel import SkuldChannel
 from ravn.domain.events import RavnEvent
-from skuld.collaboration_adapter import RoomAdapter
+from skuld.collaboration_adapter import SkuldCollaborationAdapter
 from skuld.config import RoomConfig
 
 
@@ -35,7 +35,9 @@ async def test_help_trace_and_exact_case_context_round_trip_to_operator_reply() 
 
     channels = MagicMock()
     channels.broadcast = AsyncMock()
-    room = RoomAdapter(RoomConfig(enabled=True, presence_sweep_interval_s=0), channels)
+    room = SkuldCollaborationAdapter(
+        RoomConfig(enabled=True, presence_sweep_interval_s=0), channels
+    )
     resident_socket = MagicMock()
     resident_socket.send_text = AsyncMock()
     await room.register("resident-1", "Resident", resident_socket)
@@ -108,7 +110,9 @@ async def test_resident_help_and_operator_delivery_share_one_trace(monkeypatch) 
 
     channels = MagicMock()
     channels.broadcast = AsyncMock()
-    room = RoomAdapter(RoomConfig(enabled=True, presence_sweep_interval_s=0), channels)
+    room = SkuldCollaborationAdapter(
+        RoomConfig(enabled=True, presence_sweep_interval_s=0), channels
+    )
     resident_socket = MagicMock()
     resident_socket.send_text = AsyncMock()
     await room.register("resident-1", "Resident", resident_socket)

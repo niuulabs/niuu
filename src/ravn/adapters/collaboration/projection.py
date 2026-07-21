@@ -127,13 +127,15 @@ def _help_notification(event: RavnEvent, persona: str) -> dict[str, Any]:
 
 def _outcome(event: RavnEvent, persona: str) -> dict[str, Any]:
     payload = event.payload
-    fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else payload
+    explicit_fields = payload.get("fields")
+    fields = dict(explicit_fields) if isinstance(explicit_fields, dict) else dict(payload)
+    fields.pop("collaboration_routing_only", None)
     projected = _base(event, "outcome")
     projected.update(
         {
             "persona": persona or event.source,
             "eventType": str(payload.get("event_type") or ""),
-            "fields": dict(fields),
+            "fields": fields,
             "valid": bool(payload.get("valid", True)),
         }
     )
@@ -143,8 +145,25 @@ def _outcome(event: RavnEvent, persona: str) -> dict[str, Any]:
         projected["summary"] = summary
     if verdict:
         projected["verdict"] = verdict
-    if payload.get("routing_only") or payload.get("room_bridge_skip"):
+    if payload.get("routing_only"):
         projected["routingOnly"] = True
+    if isinstance(explicit_fields, dict):
+        context = {
+            key: value
+            for key, value in payload.items()
+            if key
+            not in {
+                "fields",
+                "event_type",
+                "valid",
+                "summary",
+                "verdict",
+                "routing_only",
+                "collaboration_routing_only",
+            }
+        }
+        if context:
+            projected["context"] = context
     return projected
 
 

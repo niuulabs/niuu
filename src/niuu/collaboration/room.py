@@ -413,58 +413,6 @@ class CollaborationRoom:
         await self._publish_event("participant.heartbeat", updated, status=updated.status)
         return updated
 
-    async def update_participant_capabilities(
-        self,
-        peer_id: str,
-        *,
-        capabilities: Iterable[str] | None = None,
-        surfaces: Iterable[str] | None = None,
-        tools: Iterable[str] | None = None,
-    ) -> Participant | None:
-        """Update the advertised capabilities of a participant."""
-        participant = self._participants.get(peer_id)
-        if participant is None:
-            return None
-        updated = replace(
-            participant,
-            capabilities=(
-                tuple(capabilities) if capabilities is not None else participant.capabilities
-            ),
-            surfaces=tuple(surfaces) if surfaces is not None else participant.surfaces,
-            tools=tuple(tools) if tools is not None else participant.tools,
-            last_heartbeat_at=self._clock(),
-        )
-        self._participants[peer_id] = updated
-        await self._broadcast(
-            {
-                "type": "participant_capabilities_changed",
-                "participantId": peer_id,
-                "participant": asdict(updated),
-            }
-        )
-        await self._publish_event("participant.capabilities_changed", updated)
-        return updated
-
-    async def expire_heartbeats(self, *, now: float | None = None) -> list[Participant]:
-        """Mark participants with elapsed heartbeat TTLs as expired."""
-        now_ts = self._clock() if now is None else now
-        expired: list[Participant] = []
-        for peer_id, participant in list(self._participants.items()):
-            if participant.status == "expired" or not self._heartbeat_expired(participant, now_ts):
-                continue
-            updated = replace(participant, status="expired", attention_state="offline")
-            self._participants[peer_id] = updated
-            expired.append(updated)
-            await self._broadcast(
-                {
-                    "type": "participant_heartbeat_expired",
-                    "participantId": peer_id,
-                    "participant": asdict(updated),
-                }
-            )
-            await self._publish_event("participant.heartbeat", updated, status="expired")
-        return expired
-
     def require_participant_capability(self, participant_id: str, capability: str) -> None:
         """Require a declared participant capability."""
         participant = self._participants.get(participant_id)
@@ -763,10 +711,6 @@ class CollaborationRoom:
     def environment_roster(self, *, environment_id: str | None = None) -> list[dict[str, Any]]:
         """Return participants, optionally filtered by environment."""
         return self.get_room_state_event(environment_id=environment_id)["participants"]
-
-    @property
-    def participant_count(self) -> int:
-        return len(self._participants)
 
     @property
     def participants(self) -> dict[str, Participant]:

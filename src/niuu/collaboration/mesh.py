@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 FrameSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 PeerRegistrar = Callable[..., Awaitable[Any]]
 ParticipantCheck = Callable[[str], bool]
-UsageSink = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 def mesh_peer_id(event: SleipnirEvent) -> str:
@@ -40,8 +39,6 @@ class MeshCollaborationBridge:
         has_participant: ParticipantCheck,
         session_id: str | None = None,
         environment_id: str = "",
-        patterns: list[str] | None = None,
-        report_usage: UsageSink | None = None,
     ) -> None:
         self._subscriber = subscriber
         self._handle_frame = handle_frame
@@ -49,14 +46,14 @@ class MeshCollaborationBridge:
         self._has_participant = has_participant
         self._session_id = session_id
         self._event_prefix = mesh_event_prefix(environment_id)
-        self._patterns = patterns or [f"{self._event_prefix}.*"]
-        self._report_usage = report_usage
         self._subscription: Subscription | None = None
 
     async def start(self) -> None:
         if self._subscription is not None:
             return
-        self._subscription = await self._subscriber.subscribe(self._patterns, self._handle_event)
+        self._subscription = await self._subscriber.subscribe(
+            [f"{self._event_prefix}.*"], self._handle_event
+        )
 
     async def stop(self) -> None:
         if self._subscription is None:
@@ -64,15 +61,11 @@ class MeshCollaborationBridge:
         await self._subscription.unsubscribe()
         self._subscription = None
 
-    async def __aenter__(self) -> MeshCollaborationBridge:
-        await self.start()
-        return self
-
-    async def __aexit__(self, *_args: object) -> None:
-        await self.stop()
-
     async def _handle_event(self, event: SleipnirEvent) -> None:
         if not self._matches_session(event):
+            return
+        ravn_event = event.payload.get("ravn_event")
+        if isinstance(ravn_event, dict) and ravn_event.get("collaboration_routing_only"):
             return
         peer_id = mesh_peer_id(event)
         if not peer_id:
@@ -90,16 +83,12 @@ class MeshCollaborationBridge:
                 display_name=persona,
             )
 
-        visible: list[dict[str, Any]] = []
-        for projected in events:
-            if not isinstance(projected, dict):
-                continue
-            if projected.get("kind") == "usage":
-                await self._report_projected_usage(projected)
-                continue
-            visible.append(projected)
-        if visible:
-            await self._handle_frame(peer_id, {"type": "collaboration.events", "events": visible})
+        projected_events = [event for event in events if isinstance(event, dict)]
+        if projected_events:
+            await self._handle_frame(
+                peer_id,
+                {"type": "collaboration.events", "events": projected_events},
+            )
 
     def _matches_session(self, event: SleipnirEvent) -> bool:
         if self._session_id is None:
@@ -116,10 +105,3 @@ class MeshCollaborationBridge:
             if isinstance(event, dict) and event.get("persona"):
                 return str(event["persona"])
         return ""
-
-    async def _report_projected_usage(self, event: dict[str, Any]) -> None:
-        if self._report_usage is None:
-            return
-        usage = event.get("usage")
-        if isinstance(usage, dict):
-            await self._report_usage(usage)

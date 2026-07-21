@@ -26,7 +26,7 @@ class MeshActivityChannel(ChannelPort):
 
     Used alongside SkuldChannel in a CompositeChannel so that activity events
     are delivered via Sleipnir mesh in addition to (or instead of) WebSocket.
-    RoomMeshBridge picks them up and translates them to room wire events.
+    The collaboration mesh bridge forwards their Ravn-projected room events.
     """
 
     def __init__(self, mesh: MeshPort, peer_id: str) -> None:

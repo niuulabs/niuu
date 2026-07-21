@@ -7,15 +7,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from skuld.collaboration_adapter import RoomAdapter
+from skuld.collaboration_adapter import SkuldCollaborationAdapter
 from skuld.config import RoomConfig
 from sleipnir.domain import registry
 
 
-def _adapter(**kwargs) -> tuple[RoomAdapter, MagicMock]:
+def _adapter(**kwargs) -> tuple[SkuldCollaborationAdapter, MagicMock]:
     channels = MagicMock()
     channels.broadcast = AsyncMock()
-    adapter = RoomAdapter(
+    adapter = SkuldCollaborationAdapter(
         RoomConfig(
             enabled=True,
             environment_id="cluster-a",
@@ -95,7 +95,8 @@ async def test_message_event_renders_persists_and_reports_timeline() -> None:
 @pytest.mark.asyncio
 async def test_activity_and_agent_event_are_surface_projections_only() -> None:
     timeline = AsyncMock()
-    adapter, channels = _adapter(report_timeline_event=timeline)
+    observe = AsyncMock()
+    adapter, channels = _adapter(report_timeline_event=timeline, observe_peer_event=observe)
     await adapter.register("ravn-1", "Resident", _websocket())
     channels.broadcast.reset_mock()
 
@@ -112,7 +113,15 @@ async def test_activity_and_agent_event_are_surface_projections_only() -> None:
                 {
                     "kind": "agent_event",
                     "sourceEventType": "tool_start",
-                    "event": {"type": "tool_start", "payload": {}},
+                    "taskId": "task-1",
+                    "event": {
+                        "type": "tool_start",
+                        "payload": {
+                            "tool_name": "BashTool",
+                            "input": {"command": "kubectl get pods"},
+                        },
+                        "urgency": 0.7,
+                    },
                     "timeline": {"type": "terminal", "label": "kubectl get pods"},
                 },
             ]
@@ -124,11 +133,17 @@ async def test_activity_and_agent_event_are_surface_projections_only() -> None:
     assert json.loads(activity["detail"]) == {"tool": "shell"}
     assert agent_event["type"] == "room_agent_event"
     assert timeline.await_args.args[0]["label"] == "Resident: kubectl get pods"
+    observe.assert_awaited_once()
+    peer_id, event_type, observation = observe.await_args.args
+    assert (peer_id, event_type) == ("ravn-1", "tool_start")
+    assert observation["metadata"]["input"] == {"command": "kubectl get pods"}
+    assert observation["task_id"] == "task-1"
 
 
 @pytest.mark.asyncio
 async def test_help_notification_preserves_ravn_reply_context_for_operator_resume() -> None:
-    adapter, channels = _adapter()
+    observe = AsyncMock()
+    adapter, channels = _adapter(observe_peer_event=observe)
     websocket = _websocket()
     await adapter.register("ravn-1", "Resident", websocket)
     channels.broadcast.reset_mock()
@@ -154,6 +169,8 @@ async def test_help_notification_preserves_ravn_reply_context_for_operator_resum
     assert notification["notificationType"] == "help_needed"
     assert notification["trace_context"] == {"traceparent": "trace-1"}
     assert adapter.pending_help_peer_ids() == ("ravn-1",)
+    assert observe.await_args.args[1] == "help_needed"
+    assert observe.await_args.args[2]["data"]["reason"] == "missing_authority"
 
     assert await adapter.route_directed_message("ravn-1", "Approved") is True
     payload = json.loads(websocket.send_text.await_args.args[0])
@@ -163,7 +180,8 @@ async def test_help_notification_preserves_ravn_reply_context_for_operator_resum
 
 @pytest.mark.asyncio
 async def test_outcome_is_visible_and_delivered_to_declared_subscribers() -> None:
-    adapter, channels = _adapter()
+    observe = AsyncMock()
+    adapter, channels = _adapter(observe_peer_event=observe)
     producer = _websocket()
     subscriber = _websocket()
     await adapter.register("producer", "Producer", producer)
@@ -184,6 +202,7 @@ async def test_outcome_is_visible_and_delivered_to_declared_subscribers() -> Non
                     "sourceEventType": "outcome",
                     "eventType": "research.completed",
                     "fields": {"artifact": "result.md"},
+                    "context": {"workflow_parent_event_id": "activation-1"},
                     "valid": True,
                 }
             ]
@@ -196,6 +215,10 @@ async def test_outcome_is_visible_and_delivered_to_declared_subscribers() -> Non
     assert delivered["type"] == "collaboration.outcome"
     assert delivered["fields"] == {"artifact": "result.md"}
     producer.send_text.assert_not_awaited()
+    peer_id, event_type, observation = observe.await_args.args
+    assert (peer_id, event_type) == ("producer", "outcome")
+    assert observation["data"]["workflow_parent_event_id"] == "activation-1"
+    assert observation["data"]["fields"] == {"artifact": "result.md"}
 
 
 @pytest.mark.asyncio

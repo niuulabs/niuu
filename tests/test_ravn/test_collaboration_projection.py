@@ -80,6 +80,7 @@ def test_outcome_projection_is_structured_and_instruction_free() -> None:
             {
                 "event_type": "printer.release_overcount",
                 "fields": {"observed": 4, "expected": 3},
+                "workflow_parent_event_id": "activation-1",
             },
         )
     )[0]
@@ -87,17 +88,34 @@ def test_outcome_projection_is_structured_and_instruction_free() -> None:
     assert projected["kind"] == "outcome"
     assert projected["eventType"] == "printer.release_overcount"
     assert projected["fields"] == {"observed": 4, "expected": 3}
+    assert projected["context"] == {"workflow_parent_event_id": "activation-1"}
     assert "instruction" not in projected
 
 
-def test_outcome_already_sent_to_skuld_is_routing_only_on_mesh() -> None:
+def test_collaboration_delivery_marker_does_not_hide_direct_outcome() -> None:
     projected = project_ravn_event(
         _event(
             RavnEventType.OUTCOME,
             {
                 "event_type": "review.completed",
                 "verdict": "approved",
-                "room_bridge_skip": True,
+                "collaboration_routing_only": True,
+            },
+        )
+    )[0]
+
+    assert "routingOnly" not in projected
+    assert "context" not in projected
+    assert "collaboration_routing_only" not in projected["fields"]
+
+
+def test_routing_only_outcome_is_explicit_in_collaboration_contract() -> None:
+    projected = project_ravn_event(
+        _event(
+            RavnEventType.OUTCOME,
+            {
+                "event_type": "review.changes_requested",
+                "routing_only": True,
             },
         )
     )[0]

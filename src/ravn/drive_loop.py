@@ -2533,8 +2533,9 @@ class DriveLoop:
             "workflow_node_id": task.workflow_node_id,
             "event_type": event_type,
             "bubble_up": True,
-            "room_bridge_skip": self._skuld_channel is not None,
         }
+        if self._skuld_channel is not None:
+            payload["collaboration_routing_only"] = True
         if task.workflow_parent_event_id:
             payload["workflow_parent_event_id"] = task.workflow_parent_event_id
         summary = fields.get("summary")
@@ -2683,8 +2684,9 @@ class DriveLoop:
                     "task_id": task.task_id,
                     "workflow_node_id": task.workflow_node_id,
                     "bubble_up": True,
-                    "room_bridge_skip": self._skuld_channel is not None,
                 }
+                if self._skuld_channel is not None:
+                    reject_payload["collaboration_routing_only"] = True
                 if task.workflow_parent_event_id:
                     reject_payload["workflow_parent_event_id"] = task.workflow_parent_event_id
                 reject_event = RavnEvent(
@@ -2777,7 +2779,8 @@ class DriveLoop:
         canonical_payload = dict(base_payload)
         canonical_payload["event_type"] = canonical_event_type
         canonical_payload["bubble_up"] = True
-        canonical_payload["room_bridge_skip"] = self._skuld_channel is not None
+        if self._skuld_channel is not None:
+            canonical_payload["collaboration_routing_only"] = True
 
         canonical_event = RavnEvent(
             type=RavnEventType.OUTCOME,

@@ -483,18 +483,19 @@ class Broker(
         # Mesh adapter — only active when mesh.enabled is True
         self._mesh_adapter: Any = None
 
-        # Room mesh bridge — translates ravn.mesh.* Sleipnir events to room wire events.
-        # Active when both mesh.enabled and room.enabled are True.
-        self._room_mesh_bridge: Any = None
+        # Optional mesh-to-collaboration bridge.
+        self._collaboration_mesh_bridge: Any = None
         self._observation_relay: Any = None
 
         # Collaboration is an optional surface. Keep its implementation out of
         # the ordinary ephemeral-session import path.
         self._room_bridge: Any = None
         if self._settings.room.enabled:
-            from skuld.collaboration_adapter import RoomAdapter  # noqa: PLC0415
+            from skuld.collaboration_adapter import (  # noqa: PLC0415
+                SkuldCollaborationAdapter,
+            )
 
-            self._room_bridge = RoomAdapter(
+            self._room_bridge = SkuldCollaborationAdapter(
                 config=self._settings.room,
                 channels=self._channels,
                 append_turn=self._append_turn,
@@ -845,8 +846,8 @@ class Broker(
                 for peer in discovery.peers().values():
                     await _register_discovered_peer(peer)
 
-            # Start room mesh bridge so outcomes from any mesh peer flow to the
-            # room UI via Sleipnir — eliminates the dual-publish pattern.
+            # Forward already-projected collaboration events from mesh peers
+            # through the one configured Skuld surface adapter.
             if self._room_bridge is not None:
                 from sleipnir.ports.events import SleipnirSubscriber
 
@@ -859,20 +860,26 @@ class Broker(
                     else:
                         logger.warning(
                             "Sleipnir publisher does not implement SleipnirSubscriber"
-                            " — RoomMeshBridge disabled"
+                            " — collaboration mesh bridge disabled"
                         )
                 if sleipnir_subscriber is not None:
-                    from skuld.room_mesh_bridge import RoomMeshBridge  # noqa: PLC0415
+                    from niuu.collaboration.mesh import (  # noqa: PLC0415
+                        MeshCollaborationBridge,
+                    )
 
-                    self._room_mesh_bridge = RoomMeshBridge(
-                        subscriber=sleipnir_subscriber,
-                        room_bridge=self._room_bridge,
+                    self._collaboration_mesh_bridge = MeshCollaborationBridge(
+                        sleipnir_subscriber,
+                        handle_frame=self._room_bridge.handle_collaboration_frame,
+                        register_peer=self._room_bridge.register_mesh_peer,
+                        has_participant=self._room_bridge.has_participant,
                         session_id=self.session_id,
                         environment_id=mesh_cfg.realm_id,
-                        report_usage=self._report_usage,
                     )
-                    await self._room_mesh_bridge.start()
-                    logger.info("RoomMeshBridge started (session_id=%s)", self.session_id)
+                    await self._collaboration_mesh_bridge.start()
+                    logger.info(
+                        "Collaboration mesh bridge started (session_id=%s)",
+                        self.session_id,
+                    )
 
                     # Resident sessions: relay platform events (research/spec/
                     # plan completions, gates) to the resident so the chat

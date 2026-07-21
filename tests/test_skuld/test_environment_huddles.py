@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-from skuld.collaboration_adapter import RoomAdapter
+from skuld.collaboration_adapter import SkuldCollaborationAdapter
 from skuld.config import RoomConfig
 from sleipnir.domain import registry as event_registry
 
@@ -17,7 +17,7 @@ def _make_bridge(publish_presence_event=None):
     async def publish(event):
         published.append(event)
 
-    bridge = RoomAdapter(
+    bridge = SkuldCollaborationAdapter(
         config=RoomConfig(enabled=True, participant_colors=["p1", "p2", "p3"]),
         channels=channels,
         publish_presence_event=publish_presence_event or publish,

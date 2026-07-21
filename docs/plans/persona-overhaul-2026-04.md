@@ -178,31 +178,18 @@ class HelpNeededPayload:
    - Routes to user notification system
 
 4. **Notification delivery options** (pick one or more):
-   - **Skuld WebSocket** → Push to browser via RoomBridge (room_message with type "help_needed")
+   - **Skuld WebSocket** → Ravn projects `help_needed`; the Skuld collaboration adapter surfaces it
    - **Sleipnir webhook** → HTTP POST to user's notification endpoint
    - **Desktop notification** → If running locally, trigger system notification
    - **Slack/Discord** → Webhook to chat channel (configurable)
 
-### RoomBridge Integration
+### Collaboration Integration
 
-Extend `RoomBridge` to handle help_needed events:
-
-```python
-async def handle_help_needed(self, event: SleipnirEvent) -> None:
-    """Translate help.needed event into a room notification."""
-    payload = event.payload
-    room_event = {
-        "type": "room_notification",
-        "notificationType": "help_needed",
-        "participantId": payload.get("peer_id"),
-        "persona": payload.get("persona"),
-        "reason": payload.get("reason"),
-        "summary": payload.get("summary"),
-        "recommendation": payload.get("recommendation"),
-        "urgency": event.urgency,
-    }
-    await self._channels.broadcast(room_event)
-```
+This work now follows the shared collaboration boundary: Ravn projects
+`help_needed` into a neutral notification with opaque reply context,
+`niuu.collaboration` owns routing mechanics, and
+`SkuldCollaborationAdapter` exposes the notification to channels. Skuld does
+not interpret Ravn event types.
 
 ---
 
@@ -215,7 +202,7 @@ async def handle_help_needed(self, event: SleipnirEvent) -> None:
 
 ### Current State
 
-`RoomBridge` already exists with:
+`SkuldCollaborationAdapter` provides:
 - `participant_joined` / `participant_left` events
 - `room_message` — agent responses
 - `room_activity` — thinking, tool_executing, idle
@@ -231,7 +218,7 @@ async def handle_help_needed(self, event: SleipnirEvent) -> None:
 
 ### Implementation Steps
 
-1. **Add `mesh_message` event type to RoomBridge**
+1. **Project mesh delegation into a neutral collaboration event in Ravn**
    - When an agent publishes to mesh, also emit to room
    - Shows as "Agent X → Agent Y: [summary]"
 
@@ -303,13 +290,13 @@ type RoomOutcome = {
 
 ### Phase 2: Event Routing
 7. Add mesh event handler for `help.needed`
-8. Extend RoomBridge with `handle_help_needed`
+8. Project `help_needed` in Ravn and surface the neutral notification in Skuld
 9. Wire help_needed to browser notification
 10. Test end-to-end: persona escalates → user sees notification
 
 ### Phase 3: Chat Visibility
 11. Add `room_mesh_message` event type
-12. Wire mesh publish to RoomBridge
+12. Carry Ravn collaboration projections over the shared mesh bridge
 13. Add `room_outcome` event type
 14. Update Skuld web UI to render mesh messages
 15. Add thread grouping by correlation_id
@@ -332,8 +319,9 @@ type RoomOutcome = {
 ### Modified Files
 - `src/sleipnir/domain/events.py` — Register help.needed
 - `src/ravn/adapters/personas/loader.py` — Improved persona definitions
-- `src/skuld/room_bridge.py` — Handle mesh events + help_needed
-- `src/skuld/broker.py` — Wire mesh events to RoomBridge
+- `src/ravn/adapters/collaboration/projection.py` — Own Ravn event meaning
+- `src/skuld/collaboration_adapter.py` — Adapt neutral events to channels
+- `src/skuld/broker.py` — Compose shared collaboration and mesh mechanics
 - `web/src/components/Room/` — UI for mesh messages + notifications
 
 ---
