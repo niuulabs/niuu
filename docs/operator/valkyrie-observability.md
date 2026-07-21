@@ -93,7 +93,7 @@ Import
 it through the existing dashboard sidecar with label `grafana_dashboard: "1"`
 and folder annotation `grafana_folder: Valkyries`. The dashboard uses selectable
 Prometheus/Mimir and Tempo data sources, so it is not tied to a tenant-specific
-UID.
+UID; the provisioned instance defaults to the Eitri tenant.
 
 The dashboard covers current resident/queue state, task outcomes and latency,
 judgment choices, signals, tool behavior, capability visibility, model usage,
@@ -159,6 +159,8 @@ building instruction was supplied to the resident.
   the MCP subprocess's internal Guild HTTP spans. Cross-process trace-context
   propagation remains required for a fully causal HUD.
 
-The JSON is checked in and importable but is not silently installed into the
-separately managed Glitnir Grafana release. Provision it through that release's
-existing dashboard sidecar/GitOps configuration.
+The dashboard is provisioned in the separately managed Glitnir Grafana release
+through its existing dashboard sidecar and GitOps configuration. Open the live
+[`Valkyrie Runtime and Judgment`](https://grafana.glitnir.alfheim.niuu.world/d/valkyrie-runtime-judgment/valkyrie-runtime-and-judgment)
+dashboard, select a resident service, and click a Trace ID in **Recent resident
+task traces** to inspect its complete Tempo span timeline.
