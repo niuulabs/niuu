@@ -32,7 +32,6 @@ ALLOWLIST = {
     ("ravn/cli/mimir_bridge.py", "RAVN_WORKSPACE_DIR"): "CLI workspace bootstrap",
     ("ravn/main.py", "LOG_LEVEL"): "entrypoint logging bootstrap",
     ("ravn/warden/store.py", "RAVN_WARDENS_DIR"): "standalone local store bootstrap",
-    ("skuld/room_bridge.py", "RAVN_ENVIRONMENT_ID"): "supervisor-injected sidecar identity",
     ("skuld/transports/claude_env.py", "SKULD__CLAUDE_AUTH"): "child auth environment filtering",
     ("skuld/transports/tmux_interactive.py", "SKULD__CLAUDE_AUTH"): "tmux child auth filtering",
     (

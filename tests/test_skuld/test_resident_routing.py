@@ -101,7 +101,7 @@ class TestPlainMessageRouting:
         )
         broker._room_bridge.participants = {participant.peer_id: participant}
         broker._room_bridge.route_directed_message = AsyncMock(return_value=False)
-        broker._room_bridge.handle_ravn_frame = AsyncMock()
+        broker._room_bridge.handle_collaboration_frame = AsyncMock()
         broker.handle_human_room_message = AsyncMock(return_value="message-1")
         broker._mesh_adapter = MagicMock()
         broker._mesh_adapter.request_work = AsyncMock(
@@ -120,11 +120,13 @@ class TestPlainMessageRouting:
             "Review this",
             request_id="request-1",
         )
-        broker._room_bridge.handle_ravn_frame.assert_awaited_once_with(
+        broker._room_bridge.handle_collaboration_frame.assert_awaited_once_with(
             participant.peer_id,
             {
-                "type": "response",
-                "data": "Hermes reply",
+                "kind": "message",
+                "sourceEventType": "response",
+                "content": "Hermes reply",
+                "error": False,
                 "metadata": {
                     "session_id": "resident-session",
                     "root_correlation_id": "resident-session",

@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
+from niuu.observability import get_observability
 from ravn.adapters.tool_build._contract import (
     CANONICAL_ARTIFACT_FILENAME,
     build_prompts,
@@ -30,7 +31,6 @@ from ravn.domain.capability_catalog import (
     WorkflowSelector,
     select_workflow,
 )
-from ravn.observability import get_observability
 from ravn.ports.tool_build_backend import (
     ToolBuildBackend,
     ToolBuildError,

@@ -18,8 +18,8 @@ from niuu.adapters.outbound.http_auth import (
     StaticBearerTokenAuthAdapter,
     WorkloadIdentityBearerTokenAuthAdapter,
 )
+from niuu.observability import get_observability
 from niuu.ports.http_auth import HttpAuthPort
-from ravn.observability import get_observability
 
 
 @dataclass(frozen=True)
@@ -130,9 +130,10 @@ class HttpxJsonClient:
         import asyncio  # noqa: PLC0415
 
         telemetry = get_observability()
-        cached_before = bool(getattr(self._auth, "_token", "")) and float(
-            getattr(self._auth, "_expires_at", 0.0) or 0.0
-        ) > monotonic()
+        cached_before = (
+            bool(getattr(self._auth, "_token", ""))
+            and float(getattr(self._auth, "_expires_at", 0.0) or 0.0) > monotonic()
+        )
         attributes = {
             "ravn.http.auth.adapter": (
                 type(self._auth).__name__ if self._auth is not None else "none"

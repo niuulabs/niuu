@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from niuu.mesh import mesh_event_prefix
+from ravn.adapters.collaboration import project_ravn_event
 from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.ports.mesh import PeerNotFoundError
 from sleipnir.ports.events import SleipnirPublisher, SleipnirSubscriber, Subscription
@@ -70,6 +71,7 @@ def _ravn_to_sleipnir(
             "ravn_task_id": event.task_id,
             "ravn_root_correlation_id": event.root_correlation_id,
             "ravn_environment_id": environment_id,
+            "collaboration_events": project_ravn_event(event),
         },
         summary=f"Mesh event: {topic}",
         urgency=event.urgency,

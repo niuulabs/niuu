@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from niuu.observability import Observability
 from ravn.adapters.observability import ObservedSleipnirBus
-from ravn.observability import RavnObservability
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.events import SleipnirEvent
 
@@ -23,7 +23,7 @@ async def test_publish_and_consume_share_trace_context(monkeypatch: pytest.Monke
     tracer_provider = TracerProvider()
     tracer_provider.add_span_processor(SimpleSpanProcessor(span_exporter))
     metric_reader = InMemoryMetricReader()
-    telemetry = RavnObservability(
+    telemetry = Observability(
         tracer_provider=tracer_provider,
         meter_provider=MeterProvider(metric_readers=[metric_reader]),
         capture_content=True,

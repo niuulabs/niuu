@@ -40,9 +40,9 @@ import logging
 from time import monotonic
 from typing import Any
 
+from niuu.observability import get_observability
 from ravn.adapters.environment_signals import GenericSignalAdapter
 from ravn.domain.environment import Environment
-from ravn.observability import get_observability
 from sleipnir.adapters.nats_transport import (
     DEFAULT_CONNECT_TIMEOUT_S,
     DEFAULT_MAX_RECONNECT_ATTEMPTS,

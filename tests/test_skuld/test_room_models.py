@@ -1,13 +1,14 @@
-"""Unit tests for skuld.room_models and related ConversationTurn extensions."""
+"""Unit tests for shared collaboration models and Skuld conversation turns."""
 
 import json
 from dataclasses import asdict
 
 import pytest
 
+from niuu.collaboration import Participant as ParticipantMeta
+from niuu.collaboration import RoomState
 from skuld.broker import ConversationTurn
 from skuld.config import RoomConfig, SkuldSettings
-from skuld.room_models import ParticipantMeta, RoomState
 
 
 class TestParticipantMeta:

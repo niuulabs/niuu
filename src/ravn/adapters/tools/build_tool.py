@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from niuu.observability import get_observability
 from ravn.domain.models import ToolResult
-from ravn.observability import get_observability
 from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
 from ravn.ports.tool import ToolPort
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer

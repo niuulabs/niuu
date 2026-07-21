@@ -31,17 +31,19 @@ import os
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     EnvSettingsSource,
-    NoDecode,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
     YamlConfigSettingsSource,
 )
+
+from niuu.domain.observability import ObservabilityConfig
+from niuu.mesh.config import MeshNatsConfig
 
 # ---------------------------------------------------------------------------
 # Config file resolution
@@ -1442,51 +1444,6 @@ class LoggingConfig(BaseModel):
     format: str = Field(default="text")
 
 
-class ObservabilityConfig(BaseModel):
-    """OpenTelemetry export for resident execution traces and metrics."""
-
-    enabled: bool = Field(default=False)
-    service_name: str = Field(default="ravn")
-    trace_endpoint: str = Field(
-        default="",
-        description="OTLP/gRPC endpoint for traces, including scheme and port.",
-    )
-    metric_endpoint: str = Field(
-        default="",
-        description="OTLP/HTTP metrics endpoint, including the /v1/metrics path.",
-    )
-    insecure: bool = Field(
-        default=False,
-        description="Disable TLS for the OTLP/gRPC trace exporter.",
-    )
-    metric_export_interval_milliseconds: int = Field(default=10_000, ge=1_000)
-    capture_content: bool = Field(
-        default=False,
-        description=(
-            "Include redacted, size-bounded signal, model, tool, and event content "
-            "in trace events. Disabled by default because payloads may be sensitive."
-        ),
-    )
-    content_max_chars: int = Field(
-        default=8_192,
-        ge=256,
-        le=100_000,
-        description="Maximum serialized characters attached to one trace event.",
-    )
-    headers: dict[str, str] = Field(
-        default_factory=dict,
-        description="Optional OTLP headers for both exporters.",
-    )
-
-    @model_validator(mode="after")
-    def _validate_enabled_endpoints(self) -> ObservabilityConfig:
-        if self.enabled and (not self.trace_endpoint or not self.metric_endpoint):
-            raise ValueError(
-                "observability requires trace_endpoint and metric_endpoint when enabled"
-            )
-        return self
-
-
 class MimirSearchConfig(BaseModel):
     """Mímir search backend configuration."""
 
@@ -1816,196 +1773,6 @@ class MeshSleipnirConfig(BaseModel):
     rpc_timeout_s: float = Field(
         default=10.0,
         description="Default RPC reply timeout in seconds.",
-    )
-
-
-class MeshNatsExtraSubscriptionConfig(BaseModel):
-    """Additional NATS JetStream filter subject for an existing stream."""
-
-    subject: str = Field(
-        default="",
-        description="Raw NATS filter subject to subscribe to in addition to the prefixed subject.",
-    )
-    stream_name: str = Field(
-        default="",
-        description="JetStream stream that owns the raw filter subject.",
-    )
-    event_types: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Logical Sleipnir event types allowed to attach this raw NATS subject. "
-            "When empty, the raw subject is attached to every logical subscription."
-        ),
-    )
-
-
-class MeshNatsCoreSubscriptionConfig(BaseModel):
-    """Additional core NATS filter subject for live control messages."""
-
-    subject: str = Field(
-        default="",
-        description="Core NATS filter subject to subscribe to in addition to JetStream.",
-    )
-
-
-class MeshNatsConfig(BaseSettings):
-    """NATS JetStream mesh settings for environment-resident Valkyries."""
-
-    model_config = SettingsConfigDict(env_prefix="", extra="ignore", case_sensitive=True)
-
-    @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        del cls, settings_cls, dotenv_settings
-        return env_settings, init_settings, file_secret_settings
-
-    servers: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: ["nats://localhost:4222"],
-        validation_alias=AliasChoices(
-            "servers",
-            "NATS_URL",
-        ),
-        description="One or more NATS server URLs.",
-    )
-
-    @field_validator("servers", mode="before")
-    @classmethod
-    def _parse_servers(cls, value: object) -> object:
-        del cls
-        if not isinstance(value, str):
-            return value
-        return [entry.strip() for entry in value.split(",") if entry.strip()]
-
-    stream_name: str = Field(
-        default="ravn_environment",
-        description="JetStream stream used for Ravn environment/flock events.",
-    )
-    jetstream_domain: str = Field(
-        default="",
-        description=(
-            "Optional JetStream domain to use when the connected NATS account exposes "
-            "JetStream through a domain. Empty uses the server/account default."
-        ),
-    )
-    subject_prefix: str = Field(
-        default="ravn.environment",
-        description="NATS subject prefix for Ravn environment signals and mesh traffic.",
-    )
-    consumer_group: str = Field(
-        default="",
-        description="Optional durable consumer group for load-sharing resident agents.",
-    )
-    publish_timeout_s: float = Field(
-        default=10.0,
-        description="Hard deadline for one JetStream publish before raising.",
-    )
-    replay_from_sequence: int | None = Field(
-        default=None,
-        description="Optional JetStream sequence to replay from on startup.",
-    )
-    retention: str = Field(
-        default="limits",
-        description="JetStream retention policy: limits, interest, or workqueue.",
-    )
-    max_age_seconds: int = Field(
-        default=7 * 24 * 3600,
-        description="Maximum age of retained environment events.",
-    )
-    max_bytes: int = Field(
-        default=1024 * 1024 * 1024,
-        description="Maximum bytes retained by the environment stream.",
-    )
-    ring_buffer_depth: int = Field(
-        default=1000,
-        description="Per-subscriber in-process event buffer depth.",
-    )
-    connect_timeout_s: float = Field(
-        default=10.0,
-        description="NATS connection timeout in seconds.",
-    )
-    max_reconnect_attempts: int = Field(
-        default=60,
-        description="Maximum reconnect attempts before the NATS client gives up.",
-    )
-    ensure_stream: bool = Field(
-        default=True,
-        description="Create/ensure the JetStream stream on startup. Disable for GitOps streams.",
-    )
-    tls_ca_file: str = Field(
-        default="",
-        description="Optional CA bundle path for TLS-secured NATS servers.",
-    )
-    tls_ca_pem: str = Field(
-        default="",
-        description="Optional inline CA bundle for TLS-secured NATS servers.",
-    )
-    tls_cert_file: str = Field(
-        default="",
-        description="Optional client TLS certificate path.",
-    )
-    tls_key_file: str = Field(
-        default="",
-        description="Optional client TLS private key path.",
-    )
-    tls_hostname: str = Field(
-        default="",
-        description="Optional TLS server name override.",
-    )
-    tls_handshake_first: bool = Field(
-        default=False,
-        description="Use TLS-first handshakes for NATS servers that require it.",
-    )
-    tls_legacy_ca: bool = Field(
-        default=False,
-        description="Allow private CAs without modern X.509 key-usage extensions.",
-    )
-    tls_insecure_skip_verify: bool = Field(
-        default=False,
-        description="Disable NATS TLS certificate verification for internal/self-signed endpoints.",
-    )
-    user: str = Field(
-        default="",
-        description="Optional NATS username.",
-    )
-    user_env: str = Field(
-        default="",
-        description="Optional env var containing the NATS username.",
-    )
-    password_env: str = Field(
-        default="",
-        description="Optional env var containing the NATS password.",
-    )
-    token_env: str = Field(
-        default="",
-        description="Optional env var containing the NATS token.",
-    )
-    nkeys_seed_file: str = Field(
-        default="",
-        description="Optional mounted NKey seed file path.",
-    )
-    nkeys_seed_env: str = Field(
-        default="",
-        description="Optional env var containing an NKey seed string.",
-    )
-    extra_subscriptions: list[MeshNatsExtraSubscriptionConfig] = Field(
-        default_factory=list,
-        description=(
-            "Optional raw NATS subject filters, with stream names, consumed in addition "
-            "to subject_prefix-derived Sleipnir subjects."
-        ),
-    )
-    core_subscriptions: list[MeshNatsCoreSubscriptionConfig] = Field(
-        default_factory=list,
-        description=(
-            "Optional core NATS subject filters for live controls such as resident "
-            "Valkyrie commands routed over leafnodes."
-        ),
     )
 
 

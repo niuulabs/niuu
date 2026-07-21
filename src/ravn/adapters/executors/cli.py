@@ -16,6 +16,7 @@ from time import monotonic
 from typing import Any
 
 from niuu.adapters.cli import CliTurnRunner
+from niuu.observability import get_observability
 from niuu.ports.cli import CLITransport
 from niuu.utils import import_class
 from ravn.domain.checkpoint import InterruptReason
@@ -30,7 +31,6 @@ from ravn.domain.models import (
     ToolResult,
     TurnResult,
 )
-from ravn.observability import get_observability
 from ravn.ports.channel import ChannelPort
 from ravn.ports.checkpoint import CheckpointPort
 from ravn.ports.executor import ExecutionAgentPort, ExecutorPort

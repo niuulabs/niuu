@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from niuu.domain.mimir import ThreadState
 from niuu.domain.outcome import OutcomeSchema, parse_outcome_block
+from niuu.observability import get_observability
 from niuu.ports.mimir import MimirPort
 from ravn.adapters.channels.capture import CaptureChannel, TaskResult, TaskResultStore
 from ravn.adapters.channels.composite import CompositeChannel
@@ -50,7 +51,6 @@ from ravn.domain.valkyrie_contracts import (
     normalize_valkyrie_outcome,
     validate_valkyrie_outcome,
 )
-from ravn.observability import get_observability
 from ravn.ports.channel import ChannelPort
 from ravn.ports.event_publisher import EventPublisherPort
 from ravn.ports.trigger import TriggerPort
@@ -2273,9 +2273,7 @@ class DriveLoop:
                     await self._skuld_channel.emit(event)
                     telemetry.event("ravn.operator.help.skuld_published")
                 except Exception:
-                    logger.warning(
-                        "Failed to emit resident help_needed to skuld.", exc_info=True
-                    )
+                    logger.warning("Failed to emit resident help_needed to skuld.", exc_info=True)
             await self._event_publisher.publish(event)
             task.resident_help_published = True
 

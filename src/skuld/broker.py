@@ -5,6 +5,8 @@ Supports two transport modes (selected via config):
 - "subprocess": spawns claude -p per message, reads stdout (legacy fallback)
 """
 
+from __future__ import annotations
+
 import asyncio
 import collections
 import json
@@ -45,9 +47,9 @@ from niuu.domain.workflow_kickoff import (
 from niuu.mesh.cluster import read_cluster_pub_addresses
 from niuu.mesh.discovery_builder import build_discovery_adapters
 from niuu.mesh.identity import MeshIdentity
+from niuu.observability import get_observability
 from niuu.ports.cli import CLITransport
 from niuu.utils import import_class
-from ravn.observability import get_observability
 from skuld.activity_reporting import ActivityReportingMixin
 from skuld.channels import (
     ChannelRegistry,
@@ -79,9 +81,6 @@ from skuld.file_routes import (  # noqa: F401
     upload_file_raw,
     upload_files,
 )
-from skuld.resident_relay import ResidentRelay
-from skuld.room_bridge import RoomBridge
-from skuld.room_mesh_bridge import RoomMeshBridge
 from skuld.service_manager import (  # noqa: F401
     ServiceCreateRequest,
     ServiceManager,
@@ -486,22 +485,24 @@ class Broker(
 
         # Room mesh bridge — translates ravn.mesh.* Sleipnir events to room wire events.
         # Active when both mesh.enabled and room.enabled are True.
-        self._room_mesh_bridge: RoomMeshBridge | None = None
-        self._resident_relay: ResidentRelay | None = None
+        self._room_mesh_bridge: Any = None
+        self._observation_relay: Any = None
 
-        # Room bridge — only active when room.enabled is True
-        self._room_bridge: RoomBridge | None = (
-            RoomBridge(
+        # Collaboration is an optional surface. Keep its implementation out of
+        # the ordinary ephemeral-session import path.
+        self._room_bridge: Any = None
+        if self._settings.room.enabled:
+            from skuld.collaboration_adapter import RoomAdapter  # noqa: PLC0415
+
+            self._room_bridge = RoomAdapter(
                 config=self._settings.room,
                 channels=self._channels,
                 append_turn=self._append_turn,
                 report_timeline_event=self._report_timeline_event,
                 observe_peer_event=self._observe_room_peer_event,
                 publish_presence_event=self._publish_room_presence_event,
+                report_usage=self._report_usage,
             )
-            if self._settings.room.enabled
-            else None
-        )
 
         # Retrieval reflex (NIU-1059) — lazily built from settings.reflex on
         # first forwarded user message; None when disabled.
@@ -861,6 +862,8 @@ class Broker(
                             " — RoomMeshBridge disabled"
                         )
                 if sleipnir_subscriber is not None:
+                    from skuld.room_mesh_bridge import RoomMeshBridge  # noqa: PLC0415
+
                     self._room_mesh_bridge = RoomMeshBridge(
                         subscriber=sleipnir_subscriber,
                         room_bridge=self._room_bridge,
@@ -875,7 +878,10 @@ class Broker(
                     # plan completions, gates) to the resident so the chat
                     # resumes itself when its launched work lands.
                     resident_peer = self._room_default_target_peer_id()
-                    if resident_peer and self._settings.resident_relay.enabled:
+                    if resident_peer and self._settings.observation_relay.enabled:
+                        from niuu.collaboration.observation_relay import (  # noqa: PLC0415
+                            ObservationRelay,
+                        )
 
                         async def _relay_directed(
                             target: str,
@@ -889,18 +895,17 @@ class Broker(
                                 metadata=metadata,
                             )
 
-                        self._resident_relay = ResidentRelay(
+                        self._observation_relay = ObservationRelay(
                             sleipnir_subscriber,
-                            self._room_bridge,
-                            resident_peer_id=resident_peer,
-                            patterns=self._settings.resident_relay.event_patterns,
+                            participant=lambda: self._room_bridge.participant(resident_peer),
+                            patterns=self._settings.observation_relay.event_patterns,
                             send_directed=_relay_directed,
                             broadcast_notification=self._emit_broker_frame,
                             payload_preview_chars=(
-                                self._settings.resident_relay.payload_preview_chars
+                                self._settings.observation_relay.payload_preview_chars
                             ),
                         )
-                        await self._resident_relay.start()
+                        await self._observation_relay.start()
 
         except Exception as exc:
             logger.error("Mesh adapter start failed: %r", exc, exc_info=True)
@@ -2171,7 +2176,18 @@ class Broker(
                 participant_kind="workflow",
                 heartbeat_ttl_s=0.0,
             )
-            await self._room_bridge.handle_ravn_frame(terminal_peer_id, frame)
+            await self._room_bridge.handle_collaboration_frame(
+                terminal_peer_id,
+                {
+                    "kind": "outcome",
+                    "sourceEventType": "outcome",
+                    "eventType": node.completion_event_type,
+                    "fields": fields,
+                    "valid": True,
+                    "verdict": payload.get("verdict"),
+                    "summary": payload.get("summary"),
+                },
+            )
         await self._maybe_report_flock_completion(terminal_peer_id, frame)
 
     async def _maybe_report_flock_completion(
@@ -4051,11 +4067,13 @@ class Broker(
                 )
                 status = str(response.get("status") or "error")
                 output = str(response.get("output") or response.get("error") or status)
-                await self._room_bridge.handle_ravn_frame(
+                await self._room_bridge.handle_collaboration_frame(
                     target_peer_id,
                     {
-                        "type": "response" if status == "complete" else "error",
-                        "data": output,
+                        "kind": "message",
+                        "sourceEventType": ("response" if status == "complete" else "error"),
+                        "content": output,
+                        "error": status != "complete",
                         "metadata": routing_metadata,
                     },
                 )

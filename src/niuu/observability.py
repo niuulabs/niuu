@@ -1,6 +1,6 @@
-"""OpenTelemetry runtime owned by the Ravn composition root.
+"""Shared OpenTelemetry runtime for Niuu processes and Ravn.
 
-The rest of Ravn only sees this small facade. OpenTelemetry stays optional when
+Consumers only see this small facade. OpenTelemetry stays optional when
 disabled, while an enabled configuration fails loudly if its SDK/exporters are
 not installed.
 """
@@ -15,7 +15,7 @@ from contextlib import nullcontext
 from threading import Lock
 from typing import Any
 
-from ravn.config import ObservabilityConfig
+from niuu.domain.observability import ObservabilityConfig
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class _NullSpan:
         return None
 
 
-class RavnObservability:
+class Observability:
     """Trace and metric facade with explicit provider ownership."""
 
     def __init__(
@@ -73,6 +73,8 @@ class RavnObservability:
             return
         from opentelemetry import metrics, trace
 
+        # Retain the established instrumentation scope while moving ownership
+        # of the facade; existing Tempo/Grafana queries depend on these names.
         self._tracer = trace.get_tracer("ravn.runtime", tracer_provider=tracer_provider)
         self._meter = metrics.get_meter("ravn.runtime", meter_provider=meter_provider)
 
@@ -249,19 +251,19 @@ class RavnObservability:
         span.set_status(Status(StatusCode.ERROR, error_type))
 
 
-_active = RavnObservability()
+_active = Observability()
 
 
 def configure_observability(
     config: ObservabilityConfig,
     *,
     resource_attributes: dict[str, Any] | None = None,
-) -> RavnObservability:
+) -> Observability:
     """Replace the active runtime from validated application configuration."""
     global _active
     _active.shutdown()
     if not config.enabled:
-        _active = RavnObservability()
+        _active = Observability()
         return _active
     try:
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
@@ -273,7 +275,7 @@ def configure_observability(
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
     except ImportError as exc:  # pragma: no cover - depends on optional install
         raise RuntimeError(
-            "Ravn observability is enabled but the otel extra is not installed"
+            "Niuu observability is enabled but the otel extra is not installed"
         ) from exc
 
     resource = Resource.create(
@@ -297,7 +299,7 @@ def configure_observability(
         export_interval_millis=config.metric_export_interval_milliseconds,
     )
     meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
-    _active = RavnObservability(
+    _active = Observability(
         tracer_provider=trace_provider,
         meter_provider=meter_provider,
         capture_content=config.capture_content,
@@ -305,7 +307,7 @@ def configure_observability(
     )
     atexit.register(_active.shutdown)
     logger.info(
-        "Ravn OpenTelemetry enabled: traces=%s metrics=%s service=%s",
+        "Niuu OpenTelemetry enabled: traces=%s metrics=%s service=%s",
         config.trace_endpoint,
         config.metric_endpoint,
         config.service_name,
@@ -313,14 +315,14 @@ def configure_observability(
     return _active
 
 
-def get_observability() -> RavnObservability:
+def get_observability() -> Observability:
     return _active
 
 
 def shutdown_observability() -> None:
     global _active
     _active.shutdown()
-    _active = RavnObservability()
+    _active = Observability()
 
 
 def _clean_attributes(values: dict[str, Any]) -> dict[str, Any]:
@@ -370,7 +372,7 @@ def _redact_string(value: str) -> str:
 
 
 __all__ = [
-    "RavnObservability",
+    "Observability",
     "configure_observability",
     "get_observability",
     "shutdown_observability",

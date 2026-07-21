@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any
 
+from niuu.observability import get_observability
 from ravn.config import Settings, SignalSourceConfig
 from ravn.domain.environment import (
     Environment,
@@ -24,7 +25,6 @@ from ravn.domain.environment import (
     apply_environment_metadata,
 )
 from ravn.domain.models import AgentTask, OutputMode
-from ravn.observability import get_observability
 from ravn.ports.signal_adapter import NormalizedSignal, SignalAdapter
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher

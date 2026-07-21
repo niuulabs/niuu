@@ -276,16 +276,18 @@ class TestBroker:
         assert b._room_bridge is not None
         ws = MemoryWebSocket()
         await b._room_bridge.register("ravn-1", "resident-codex", ws)
-        await b._room_bridge.handle_ravn_frame(
+        await b._room_bridge.handle_collaboration_frame(
             "ravn-1",
             {
-                "type": "help_needed",
-                "data": {
-                    "persona": "resident-codex",
-                    "reason": "operator_approval_required",
-                    "summary": "May I delegate this objective?",
-                    "recommendation": "Reply with approval or denial.",
-                    "context": {
+                "kind": "notification",
+                "sourceEventType": "help_needed",
+                "notificationType": "help_needed",
+                "persona": "resident-codex",
+                "reason": "operator_approval_required",
+                "summary": "May I delegate this objective?",
+                "recommendation": "Reply with approval or denial.",
+                "replyContext": {
+                    "help_context": {
                         "operator_contact_id": "operator-contact-risky",
                         "operator_contact_purpose": "approval",
                         "source_objective_id": "risky",
@@ -334,16 +336,16 @@ class TestBroker:
         await b._room_bridge.register("ivaldi", "Ivaldi", ivaldi_ws)
         await b._room_bridge.register("other", "Other", other_ws)
         for peer_id in ("ivaldi", "other"):
-            await b._room_bridge.handle_ravn_frame(
+            await b._room_bridge.handle_collaboration_frame(
                 peer_id,
                 {
-                    "type": "help_needed",
-                    "data": {
-                        "persona": peer_id,
-                        "reason": "needs_context",
-                        "summary": f"{peer_id} needs input",
-                        "context": {"resident_case_id": f"case-{peer_id}"},
-                    },
+                    "kind": "notification",
+                    "sourceEventType": "help_needed",
+                    "notificationType": "help_needed",
+                    "persona": peer_id,
+                    "reason": "needs_context",
+                    "summary": f"{peer_id} needs input",
+                    "replyContext": {"help_context": {"resident_case_id": f"case-{peer_id}"}},
                 },
             )
 
@@ -1709,7 +1711,7 @@ class TestBroker:
             "flock-security": MagicMock(persona="security-auditor"),
         }
         broker_under_test._room_bridge.register_mesh_peer = AsyncMock()
-        broker_under_test._room_bridge.handle_ravn_frame = AsyncMock()
+        broker_under_test._room_bridge.handle_collaboration_frame = AsyncMock()
         broker_under_test._artifacts.git_commit_count = 1
         broker_under_test._artifacts.git_push_count = 1
         broker_under_test._emit_pipeline_event = AsyncMock()
@@ -1755,15 +1757,14 @@ class TestBroker:
         assert final_call.args[0] == "outcome"
         assert final_call.args[1]["event_type"] == "ravn.task.completed"
         assert final_call.args[1]["verdict"] == "approve"
-        broker_under_test._room_bridge.handle_ravn_frame.assert_awaited_once()
+        broker_under_test._room_bridge.handle_collaboration_frame.assert_awaited_once()
         terminal_peer_id, terminal_frame = (
-            broker_under_test._room_bridge.handle_ravn_frame.await_args.args
+            broker_under_test._room_bridge.handle_collaboration_frame.await_args.args
         )
         assert terminal_peer_id == "workflow-stop:run-complete"
-        assert terminal_frame["type"] == "outcome"
-        assert terminal_frame["metadata"]["event_type"] == "ravn.task.completed"
-        assert terminal_frame["data"]["bubble_up"] is False
-        assert terminal_frame["data"]["fields"]["summary"] == (
+        assert terminal_frame["kind"] == "outcome"
+        assert terminal_frame["eventType"] == "ravn.task.completed"
+        assert terminal_frame["fields"]["summary"] == (
             "reviewer: Looks good | security-auditor: No security issues"
         )
         broker_under_test._report_activity_state.assert_awaited_once()
@@ -1805,7 +1806,7 @@ class TestBroker:
             "flock-publisher": MagicMock(persona="publisher"),
         }
         broker_under_test._room_bridge.register_mesh_peer = AsyncMock()
-        broker_under_test._room_bridge.handle_ravn_frame = AsyncMock()
+        broker_under_test._room_bridge.handle_collaboration_frame = AsyncMock()
         broker_under_test._emit_pipeline_event = AsyncMock()
         broker_under_test._report_activity_state = AsyncMock()
         broker_under_test._is_room_only_workflow_session = MagicMock(return_value=True)
@@ -1840,12 +1841,11 @@ class TestBroker:
             heartbeat_ttl_s=0.0,
         )
         terminal_peer_id, terminal_frame = (
-            broker_under_test._room_bridge.handle_ravn_frame.await_args.args
+            broker_under_test._room_bridge.handle_collaboration_frame.await_args.args
         )
         assert terminal_peer_id == "workflow-stop:delivery-complete"
-        assert terminal_frame["metadata"]["event_type"] == "delivery.completed"
-        assert terminal_frame["data"]["bubble_up"] is False
-        assert terminal_frame["data"]["summary"] == "publisher: Delivery artifacts published"
+        assert terminal_frame["eventType"] == "delivery.completed"
+        assert terminal_frame["summary"] == "publisher: Delivery artifacts published"
 
     @pytest.mark.asyncio
     async def test_parallel_terminal_node_waits_for_git_push_when_required(self, tmp_path):
@@ -1980,7 +1980,7 @@ class TestBroker:
             "flock-security": MagicMock(persona="security-auditor"),
         }
         broker_under_test._room_bridge.register_mesh_peer = AsyncMock()
-        broker_under_test._room_bridge.handle_ravn_frame = AsyncMock()
+        broker_under_test._room_bridge.handle_collaboration_frame = AsyncMock()
         broker_under_test._artifacts.git_commit_count = 0
         broker_under_test._artifacts.git_push_count = 0
         broker_under_test._git_workspace_checkpoint = MagicMock()
@@ -2030,7 +2030,7 @@ class TestBroker:
         assert "ravn.task.completed" in emitted_event_types
         assert broker_under_test._artifacts.git_commit_count == 1
         assert broker_under_test._artifacts.git_push_count == 1
-        broker_under_test._room_bridge.handle_ravn_frame.assert_awaited_once()
+        broker_under_test._room_bridge.handle_collaboration_frame.assert_awaited_once()
 
     def test_create_transport_invalid_class(self, tmp_path):
         """Valid module but missing class raises ValueError via AttributeError."""
@@ -5218,8 +5218,8 @@ class TestTokenRedactFilter:
 # ---------------------------------------------------------------------------
 
 
-class TestBrokerRoomBridge:
-    """Tests for RoomBridge wiring inside Broker."""
+class TestBrokerRoomAdapter:
+    """Tests for collaboration adapter wiring inside Broker."""
 
     @pytest.fixture
     def room_settings(self, tmp_path):
@@ -5238,11 +5238,11 @@ class TestBrokerRoomBridge:
         )
 
     def test_room_bridge_created_when_enabled(self, room_settings):
-        from skuld.room_bridge import RoomBridge
+        from skuld.collaboration_adapter import RoomAdapter
 
         b = Broker(settings=room_settings)
         assert b._room_bridge is not None
-        assert isinstance(b._room_bridge, RoomBridge)
+        assert isinstance(b._room_bridge, RoomAdapter)
 
     def test_room_bridge_none_when_disabled(self, no_room_settings):
         b = Broker(settings=no_room_settings)
@@ -5970,17 +5970,31 @@ class TestBrokerRoomBridge:
         b._room_bridge = mock_bridge
         b._observe_room_peer_event = AsyncMock()
 
-        frame = _json.dumps({"type": "response", "data": "Hello", "metadata": {}}) + "\n"
+        frame = (
+            _json.dumps(
+                {
+                    "type": "collaboration.events",
+                    "events": [
+                        {
+                            "kind": "message",
+                            "sourceEventType": "response",
+                            "content": "Hello",
+                        }
+                    ],
+                }
+            )
+            + "\n"
+        )
         mock_ws = AsyncMock()
         mock_ws.receive_text = AsyncMock(side_effect=[frame, WebSocketDisconnect()])
 
         await b.handle_ravn_websocket(mock_ws, "agent-1")
 
-        mock_bridge.handle_ravn_frame.assert_awaited_once()
+        mock_bridge.handle_collaboration_frame.assert_awaited_once()
         b._observe_room_peer_event.assert_not_awaited()
-        call_args = mock_bridge.handle_ravn_frame.call_args[0]
+        call_args = mock_bridge.handle_collaboration_frame.call_args[0]
         assert call_args[0] == "agent-1"
-        assert call_args[1]["type"] == "response"
+        assert call_args[1]["type"] == "collaboration.events"
 
     @pytest.mark.asyncio
     async def test_handle_ravn_websocket_routes_usage_to_existing_reporter(self, room_settings):
@@ -5999,14 +6013,15 @@ class TestBrokerRoomBridge:
             "outputTokens": 5,
             "usage_id": "usage-1",
         }
-        frame = _json.dumps({"type": "usage", "data": usage, "metadata": {}}) + "\n"
+        frame = _json.dumps({"events": [{"kind": "usage", "usage": usage}]}) + "\n"
         mock_ws = AsyncMock()
         mock_ws.receive_text = AsyncMock(side_effect=[frame, WebSocketDisconnect()])
 
         await b.handle_ravn_websocket(mock_ws, "agent-1")
 
-        b._room_mesh_bridge.report_usage.assert_awaited_once_with(usage)
-        mock_bridge.handle_ravn_frame.assert_not_awaited()
+        mock_bridge.handle_collaboration_frame.assert_awaited_once_with(
+            "agent-1", {"events": [{"kind": "usage", "usage": usage}]}
+        )
 
     @pytest.mark.asyncio
     async def test_handle_ravn_websocket_skips_invalid_json(self, room_settings):
@@ -6022,7 +6037,7 @@ class TestBrokerRoomBridge:
 
         await b.handle_ravn_websocket(mock_ws, "agent-1")
 
-        mock_bridge.handle_ravn_frame.assert_not_awaited()
+        mock_bridge.handle_collaboration_frame.assert_not_awaited()
         mock_bridge.unregister.assert_awaited_once_with("agent-1")
 
     @pytest.mark.asyncio

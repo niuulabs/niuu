@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from niuu.observability import get_observability
 from ravn.domain.models import AgentTask, OutputMode, TokenUsage, TurnResult
 from ravn.domain.resident_continuation import (
     ContinuationDecisionKind,
@@ -24,7 +25,6 @@ from ravn.domain.resident_continuation import (
     validate_resident_working_state,
 )
 from ravn.domain.resident_state import ResidentStatePort
-from ravn.observability import get_observability
 from ravn.ports.trigger import TriggerPort
 from ravn.resident_inbox import ResidentInboxBackend, ResidentInboxStatus
 from ravn.resident_text import compact_line

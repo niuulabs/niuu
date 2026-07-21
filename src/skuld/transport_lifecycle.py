@@ -319,9 +319,9 @@ class TransportLifecycleMixin:
         await self._write_workspace_archive()
 
         # Stop resident relay and room mesh bridge before mesh adapter
-        if self._resident_relay is not None:
-            await self._resident_relay.stop()
-            self._resident_relay = None
+        if self._observation_relay is not None:
+            await self._observation_relay.stop()
+            self._observation_relay = None
 
         if self._room_mesh_bridge is not None:
             await self._room_mesh_bridge.stop()

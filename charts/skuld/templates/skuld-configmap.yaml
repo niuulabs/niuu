@@ -66,6 +66,7 @@ data:
     # Resident: room mode — untargeted browser messages route to the resident.
     room:
       enabled: true
+      environment_id: {{ .Values.resident.environmentId | quote }}
       max_participants: 2
       presence_sweep_interval_s: 0
       default_target_peer_id: {{ .Values.resident.flock.peerId | default (printf "flock-%s" $persona) | quote }}

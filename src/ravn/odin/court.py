@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
-from ravn.observability import get_observability
+from niuu.observability import get_observability
 from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
 from sleipnir.domain import registry
 from sleipnir.domain.catalog import (

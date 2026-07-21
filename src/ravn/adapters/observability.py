@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 from time import monotonic
 from typing import Any
 
-from ravn.observability import get_observability
+from niuu.observability import get_observability
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import EventHandler, SleipnirPublisher, SleipnirSubscriber, Subscription
 

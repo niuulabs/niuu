@@ -18,7 +18,7 @@ from typing import Any, Literal
 from fastapi import WebSocketDisconnect
 
 from niuu.domain.outcome import parse_outcome_block
-from ravn.observability import get_observability
+from niuu.observability import get_observability
 
 logger = logging.getLogger("skuld.channels")
 

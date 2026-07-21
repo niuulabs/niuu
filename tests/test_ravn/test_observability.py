@@ -40,14 +40,14 @@ def test_span_context_and_metrics_are_real_when_sdk_is_installed() -> None:
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-    from ravn.observability import RavnObservability
+    from niuu.observability import Observability
 
     span_exporter = InMemorySpanExporter()
     tracer_provider = TracerProvider()
     tracer_provider.add_span_processor(SimpleSpanProcessor(span_exporter))
     metric_reader = InMemoryMetricReader()
     meter_provider = MeterProvider(metric_readers=[metric_reader])
-    telemetry = RavnObservability(
+    telemetry = Observability(
         tracer_provider=tracer_provider,
         meter_provider=meter_provider,
         capture_content=True,

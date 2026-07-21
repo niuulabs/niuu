@@ -12,6 +12,7 @@ from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from niuu.observability import get_observability
 from niuu.ports.mimir import MimirPort
 from ravn.adapters.memory.inline_facts import detect_and_write as _detect_and_write_facts
 from ravn.budget import IterationBudget, TokenEstimator
@@ -42,7 +43,6 @@ from ravn.domain.models import (
     ToolResult,
     TurnResult,
 )
-from ravn.observability import get_observability
 from ravn.ports.channel import ChannelPort
 from ravn.ports.checkpoint import CheckpointPort
 from ravn.ports.llm import LLMPort, SystemPrompt

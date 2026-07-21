@@ -12,8 +12,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from niuu.collaboration import Participant
 from observatory.contracts import ObservatoryFragment
-from skuld.room_models import ParticipantMeta
 from sleipnir.domain.events import SleipnirEvent
 
 EnvironmentType = str
@@ -431,11 +431,11 @@ class Environment(BaseModel):
         valkyrie_id: str | None = None,
         persona: str = "valkyrie",
         color: str = "amber",
-    ) -> ParticipantMeta:
-        """Project a resident Valkyrie into existing Skuld participant metadata."""
+    ) -> Participant:
+        """Project a resident into shared collaboration participant state."""
         default_peer_id = self.resident_valkyrie_ids[0] if self.resident_valkyrie_ids else ""
         peer_id = valkyrie_id or default_peer_id
-        return ParticipantMeta(
+        return Participant(
             peer_id=peer_id or f"valkyrie:{self.id}",
             persona=persona,
             color=color,

@@ -8,10 +8,10 @@ Monorepo for the Niuu agent platform. The detailed, binding conventions live in
 | Package | Role |
 |---|---|
 | `volundr` | Forge backend — session lifecycle, workspaces, chronicles, REST API (`/api/v1/forge`) |
-| `skuld` | Niuu room broker — shared Ravn/human rooms, presence, routing, channels, WebSocket chat |
-| `niuu` | Shared host/gateway — mounts plugin APIs, instance registry, the forge aggregate router |
+| `skuld` | Runtime session gateway — runs Codex/Claude/Ravn sessions and adapts shared collaboration to channels/WebSockets |
+| `niuu` | Shared platform libraries and host/gateway — collaboration/mesh mechanics, plugin APIs, registries, aggregate routing |
 | `ting` | Autonomous dispatcher — sagas, runs, tracker integration (must never import `volundr`) |
-| `ravn` | Autonomous agent — wraps model/runtimes and owns judgment, learning, tools, and A2A |
+| `ravn` | Agent runtime — wraps models/runtimes and owns judgment, learning, tools, A2A, and resident autonomy when enabled |
 | `bifrost` | Model gateway and catalog |
 | `sleipnir` | Event bus / event-type registry |
 | `cli` | `niuu` CLI — `niuu platform up` runs the whole stack in mini mode |

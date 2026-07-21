@@ -16,11 +16,11 @@ async def _run_daemon(
     resume: bool = False,
 ) -> None:
     """Build and run the gateway + drive loop until interrupted."""
+    from niuu.observability import configure_observability, shutdown_observability
     from ravn.adapters.channels.gateway import RavnGateway
     from ravn.adapters.channels.gateway_http import HttpGateway
     from ravn.adapters.channels.gateway_telegram import TelegramGateway
     from ravn.drive_loop import DriveLoop
-    from ravn.observability import configure_observability, shutdown_observability
     from ravn.ports.channel import ChannelPort
 
     configure_observability(
@@ -337,9 +337,7 @@ async def _run_daemon(
                             ObservedSleipnirBus,
                         )
 
-                        sleipnir_catalog_publisher = ObservedSleipnirBus(
-                            sleipnir_catalog_publisher
-                        )
+                        sleipnir_catalog_publisher = ObservedSleipnirBus(sleipnir_catalog_publisher)
                     await sleipnir_catalog_publisher.start()
                 except Exception as exc:
                     logger.warning(

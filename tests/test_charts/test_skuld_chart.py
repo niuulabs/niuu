@@ -422,6 +422,7 @@ class TestResidentWorkloadIdentityConfigFirst:
     RESIDENT_VALUES = {
         "resident": {
             "enabled": True,
+            "environmentId": "environment-a",
             "name": "Muninn",
             "persona": "product-steward",
             "routeId": "muninn",
@@ -602,6 +603,7 @@ class TestResidentWorkloadIdentityConfigFirst:
         configmaps = self._configmaps(rendered)
         ravn_cm = next(cm for name, cm in configmaps.items() if name.endswith("-ravn-config"))
         ravn_cfg = yaml.safe_load(ravn_cm["data"]["config.yaml"])
+        assert ravn_cfg["environment"]["id"] == "environment-a"
         platform = ravn_cfg["gateway"]["platform"]
         assert platform["enabled"] is True
         assert platform["workload_token_file"] == "/var/run/secrets/niuu-workload/token"
@@ -619,6 +621,19 @@ class TestResidentWorkloadIdentityConfigFirst:
         assert mimir["source_trigger"]["poll_interval_seconds"] == 300
         assert mimir["staleness_trigger"]["enabled"] is False
         assert mimir["staleness_trigger"]["schedule_hours"] == 24
+
+    def test_room_and_ravn_share_the_same_environment_identity(self, rendered):
+        configmaps = self._configmaps(rendered)
+        configs = [
+            yaml.safe_load(cm["data"]["config.yaml"])
+            for cm in configmaps.values()
+            if "config.yaml" in cm.get("data", {})
+        ]
+        broker_cfg = next(config for config in configs if "transport_adapter" in config)
+        ravn_cfg = next(config for config in configs if "persona" in config)
+
+        assert broker_cfg["room"]["environment_id"] == "environment-a"
+        assert ravn_cfg["environment"]["id"] == "environment-a"
 
     def test_ravn_config_can_override_platform_workload_exchange_url(self, tmp_path):
         values = dict(self.RESIDENT_VALUES)

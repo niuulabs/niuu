@@ -26,7 +26,8 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
-from ravn.config import MeshNatsConfig, ObservabilityConfig
+from niuu.domain.observability import ObservabilityConfig
+from niuu.mesh.config import MeshNatsConfig
 
 
 # Config file search paths (in order of priority).
@@ -163,6 +164,10 @@ class RoomConfig(BaseModel):
     """
 
     enabled: bool = Field(default=False)
+    environment_id: str = Field(
+        default="local",
+        description="Environment whose participants are represented in this room.",
+    )
     max_participants: int = Field(default=8)
     participant_colors: list[str] = Field(default_factory=lambda: list(_DEFAULT_PARTICIPANT_COLORS))
     activity_detail_max_length: int = Field(default=200)
@@ -276,8 +281,8 @@ class SkuldSessionConfig(BaseModel):
     )
 
 
-class ResidentRelayConfig(BaseModel):
-    """Platform event relay for resident sessions.
+class ObservationRelayConfig(BaseModel):
+    """External-event relay for a room participant.
 
     When the broker hosts a resident (``room.default_target_peer_id`` set),
     Sleipnir events matching *event_patterns* are checked against the
@@ -289,21 +294,11 @@ class ResidentRelayConfig(BaseModel):
 
     enabled: bool = Field(default=True)
     event_patterns: list[str] = Field(
-        default_factory=lambda: [
-            "research.*",
-            "spec.*",
-            "plan.*",
-            "delivery.*",
-            "ravn.task.*",
-        ],
+        default_factory=lambda: ["*"],
         description=(
-            "Sleipnir event-type patterns the relay subscribes to. Events "
-            "are still filtered by the resident's subscribes_to declaration "
-            "before delivery — patterns just bound the subscription. These "
-            "are initiative-scoped workflow events; platform-wide firehoses "
-            "(volundr.session.*, volundr.chronicle.*) are intentionally "
-            "excluded because they carry no resident/initiative provenance "
-            "and would wake every resident on every user's activity."
+            "Optional transport-level event patterns used to bound the relay "
+            "subscription. The default observes every event; the target Ravn's "
+            "declared subscribes_to patterns remain authoritative for delivery."
         ),
     )
     payload_preview_chars: int = Field(
@@ -589,7 +584,7 @@ class SkuldSettings(BaseSettings):
     activity_heartbeat: ActivityHeartbeatConfig = Field(default_factory=ActivityHeartbeatConfig)
     delivery: DeliveryConfig = Field(default_factory=DeliveryConfig)
     ws_auth: WsAuthConfig = Field(default_factory=WsAuthConfig)
-    resident_relay: ResidentRelayConfig = Field(default_factory=ResidentRelayConfig)
+    observation_relay: ObservationRelayConfig = Field(default_factory=ObservationRelayConfig)
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8081)
     volundr_api_url: str = Field(default="")

@@ -144,5 +144,6 @@ data:
       max_reconnect_attempts: {{ .Values.resident.skuld.maxReconnectAttempts | default 60 }}
       session_ready_timeout_seconds: {{ .Values.resident.skuld.sessionReadyTimeoutSeconds | default 600 }}
     environment:
+      id: {{ .Values.resident.environmentId | quote }}
       resident_name: {{ $residentName | quote }}
 {{- end }}

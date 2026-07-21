@@ -7,9 +7,9 @@ from typing import Any
 from uuid import uuid4
 
 from niuu.domain.agent_directory import AgentDirectoryEntry
+from niuu.observability import get_observability
 from ravn.adapters.tool_build.http import AsyncJsonHttpClient, normalize_http_origin
 from ravn.domain.models import ToolResult
-from ravn.observability import get_observability
 from ravn.ports.agent_directory import PeerAgentDirectoryPort
 from ravn.ports.tool import ToolPort
 
@@ -150,9 +150,7 @@ class A2ATaskTool(ToolPort):
         status = task.get("status") if isinstance(task, dict) else {}
         status = status if isinstance(status, dict) else {}
         task_id = str(
-            (task.get("id") if isinstance(task, dict) else "")
-            or input.get("task_id")
-            or ""
+            (task.get("id") if isinstance(task, dict) else "") or input.get("task_id") or ""
         )
         state = str(status.get("state") or "")
         result_attributes = {
