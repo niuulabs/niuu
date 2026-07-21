@@ -35,6 +35,9 @@ _WORKING_STATE_PROTOCOL = """## Resident working-state protocol
 
 When present, the durable state above was authored by an earlier resident turn. It is
 not an authoritative fact store. Re-evaluate it against the new observations and evidence.
+References such as `resident/...` and provider-specific URIs are opaque audit identifiers,
+not workspace paths. Do not pass them to filesystem tools unless a tool explicitly supports
+that reference scheme; the bounded content needed for this turn is already included above.
 
 In the final structured outcome, include a `working_state` mapping with these lists:
 

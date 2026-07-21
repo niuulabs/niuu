@@ -149,6 +149,38 @@ async def test_capability_list_filters_catalog_without_routing() -> None:
     payload = json.loads(result.content)
     assert payload["count"] == 1
     assert payload["capabilities"][0]["id"] == "workflow:wf-build"
+    assert payload["catalog_total"] == 3
+    assert payload["catalog_counts"] == {"tool": 1, "skill": 1, "workflow": 1}
+
+
+@pytest.mark.asyncio
+async def test_capability_list_distinguishes_no_match_from_empty_catalog() -> None:
+    tool = CapabilityListTool(
+        tools_provider=lambda: [FakeTool()],
+        agent_directory=FakeAgentDirectory(),
+    )
+
+    result = await tool.execute({"query": "unknown machine protocol"})
+
+    payload = json.loads(result.content)
+    assert payload["capabilities"] == []
+    assert payload["total"] == 0
+    assert payload["catalog_total"] == 2
+    assert payload["catalog_counts"] == {"tool": 1, "agent_skill": 1}
+    assert payload["catalog_preview"] == [
+        {
+            "id": "tool:mimir_search",
+            "kind": "tool",
+            "name": "mimir_search",
+            "source": "ravn",
+        },
+        {
+            "id": "agent:agent-1:research",
+            "kind": "agent_skill",
+            "name": "Research environment",
+            "source": "agent-card",
+        },
+    ]
 
 
 @pytest.mark.asyncio

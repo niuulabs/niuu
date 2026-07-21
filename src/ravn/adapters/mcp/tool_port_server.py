@@ -18,8 +18,25 @@ class ToolPortMcpServer:
     """Expose a list of Ravn ``ToolPort`` instances over MCP JSON-RPC."""
 
     def __init__(self, tools: list[ToolPort], name: str = "ravn-tools") -> None:
+        self._catalog_tools = tools
         self._tools = {tool.name: tool for tool in tools}
         self._name = name
+
+    def register_tool(self, tool: ToolPort, *, replace: bool = False) -> None:
+        """Register a tool for later MCP calls and capability discovery."""
+        existing = self._tools.get(tool.name)
+        if existing is not None and not replace:
+            raise ValueError(f"Tool {tool.name!r} is already registered")
+
+        self._tools[tool.name] = tool
+        if existing is None:
+            self._catalog_tools.append(tool)
+            return
+
+        for index, registered in enumerate(self._catalog_tools):
+            if registered.name == tool.name:
+                self._catalog_tools[index] = tool
+                return
 
     async def handle(self, payload: dict[str, Any] | list[dict[str, Any]]) -> Any:
         if isinstance(payload, list):

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -56,6 +56,37 @@ def test_attach_agent_build_tool_registers_for_allowed_persona(tmp_path) -> None
     )
     assert out is agent
     assert any(getattr(tool, "name", "") == "build_tool" for tool, _ in agent.registered)
+
+
+def test_tool_mcp_attaches_build_tool_for_allowed_persona(tmp_path) -> None:
+    settings = Settings(state_dir=str(tmp_path / "state"))
+    persona = MagicMock(allowed_tools=["build_tool"])
+    server = MagicMock()
+    server.run_stdio = AsyncMock()
+
+    with (
+        patch.object(commands_mod, "Settings", return_value=settings),
+        patch.object(commands_mod, "_configure_logging"),
+        patch.object(commands_mod.ProjectConfig, "discover", return_value=MagicMock()),
+        patch.object(commands_mod, "_resolve_profile", return_value=None),
+        patch.object(commands_mod, "_resolve_persona", return_value=persona),
+        patch.object(commands_mod, "_build_tool_mcp_tools", return_value=[]),
+        patch.object(commands_mod, "_resolve_workspace", return_value=tmp_path),
+        patch.object(commands_mod, "_attach_agent_build_tool") as attach,
+        patch(
+            "ravn.adapters.mcp.tool_port_server.ToolPortMcpServer",
+            return_value=server,
+        ),
+    ):
+        commands_mod.tool_mcp(config="", persona="ivaldi", profile="")
+
+    attach.assert_called_once_with(
+        server,
+        tmp_path,
+        enabled=True,
+        settings=settings,
+    )
+    server.run_stdio.assert_awaited_once()
 
 
 def _registered_build_tool(agent: _FakeAgent) -> Any:

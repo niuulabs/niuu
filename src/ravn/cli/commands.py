@@ -751,7 +751,17 @@ def tool_mcp(
 
     from ravn.adapters.mcp.tool_port_server import ToolPortMcpServer
 
-    asyncio.run(ToolPortMcpServer(tools).run_stdio())
+    server = ToolPortMcpServer(tools)
+    allowed_tools = _expand_allowed_tools(
+        set(persona_config.allowed_tools or []) if persona_config is not None else set()
+    )
+    _attach_agent_build_tool(
+        server,
+        _resolve_workspace(settings),
+        enabled="build_tool" in allowed_tools,
+        settings=settings,
+    )
+    asyncio.run(server.run_stdio())
 
 
 def _build_tool_mcp_tools(settings: Settings, *, persona_config: Any | None) -> list[Any]:

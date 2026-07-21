@@ -245,6 +245,14 @@ class CliTransportAgent(ExecutionAgentPort):
         await transport.send_control("steer", content=content)
         return True
 
+    async def close(self) -> None:
+        """Release the per-task CLI transport and any child process it owns."""
+        transport, self._transport = self._transport, None
+        self._turn_runner = None
+        self._started = False
+        if transport is not None:
+            await transport.stop()
+
     async def run_turn(self, user_input: str) -> TurnResult:
         if self._interrupt_reason is not None:
             raise RuntimeError(f"turn interrupted: {self._interrupt_reason}")

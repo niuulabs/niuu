@@ -198,7 +198,10 @@ def _build_tools(
     tools = _filter_tools(tools, settings, persona_config)
 
     # Update state tool with final tool names after filtering
-    runtime_ctx["capability_tools"] = list(tools)
+    # Keep the provider on the returned list itself. CLI transports expose it
+    # through a long-lived MCP server, where build_tool can register a freshly
+    # verified tool after server construction.
+    runtime_ctx["capability_tools"] = tools
     if state_tool is not None:
         state_tool._tool_names = [t.name for t in tools]
 

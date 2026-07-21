@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import inspect
 import json
 import logging
 import re
@@ -376,10 +377,7 @@ def _validate_resident_continuation_contract(fields: Mapping[str, object]) -> li
     selected = fields.get("selected_next_action")
     if isinstance(selected, Mapping):
         action = str(
-            selected.get("action")
-            or selected.get("next_step")
-            or selected.get("description")
-            or ""
+            selected.get("action") or selected.get("next_step") or selected.get("description") or ""
         ).strip()
     else:
         action = str(selected or "").strip()
@@ -2023,9 +2021,7 @@ class DriveLoop:
                 structured_outcome = getattr(episode, "structured_outcome", {}) or {}
                 if isinstance(structured_outcome, Mapping):
                     judgment_attributes = {
-                        "ravn.valkyrie.decision": _clean_string(
-                            structured_outcome.get("decision")
-                        ),
+                        "ravn.valkyrie.decision": _clean_string(structured_outcome.get("decision")),
                         "ravn.valkyrie.continuation": _clean_string(
                             structured_outcome.get("continuation")
                         ),
@@ -2205,6 +2201,16 @@ class DriveLoop:
                 release = getattr(self._resident_runtime, "release_failed_task", None)
                 if release is not None:
                     release(task)
+            close_agent = getattr(agent, "close", None)
+            if close_agent is not None and inspect.iscoroutinefunction(close_agent):
+                try:
+                    await close_agent()
+                except Exception:
+                    logger.warning(
+                        "drive_loop: failed to close agent for task %s",
+                        task.task_id,
+                        exc_info=True,
+                    )
             self._active_agents.pop(task.task_id, None)
             self._active_task_contexts.pop(task.task_id, None)
             self._current_task_var.reset(token)
@@ -2343,8 +2349,7 @@ class DriveLoop:
             if parsed is not None:
                 fields = dict(parsed.fields)
                 canonical_event_type = str(
-                    getattr(getattr(self._persona_config, "produces", None), "event_type", "")
-                    or ""
+                    getattr(getattr(self._persona_config, "produces", None), "event_type", "") or ""
                 )
                 if is_valkyrie_outcome_event(canonical_event_type):
                     _, fields, validation_errors = _resident_valkyrie_validation_result(
@@ -3207,9 +3212,7 @@ class DriveLoop:
             self._journal_path.parent.mkdir(parents=True, exist_ok=True)
             items = list(self._queue._queue)  # type: ignore[attr-defined]
             records = [self._task_journal_record(task) for _prio, _counter, task in items]
-            inflight = [
-                self._task_journal_record(task) for task in self._inflight_tasks.values()
-            ]
+            inflight = [self._task_journal_record(task) for task in self._inflight_tasks.values()]
             journal = {"queue": records, "inflight": inflight}
             if self._fan_in.pending_count > 0:
                 journal["fan_in_pending"] = self._fan_in.to_dict()

@@ -375,6 +375,7 @@ class TestDriveLoopCaptureIntegration:
 
         mock_agent = MagicMock()
         mock_agent.run_turn = _mock_run_turn
+        mock_agent.close = AsyncMock()
 
         def _agent_factory(channel, task_id=None, persona=None, triggered_by=None):  # noqa: ANN001
             captured_channels.append(channel)
@@ -397,6 +398,7 @@ class TestDriveLoopCaptureIntegration:
             await asyncio.gather(loop_task, return_exceptions=True)
 
         assert isinstance(captured_channels[0], SilentChannel)
+        mock_agent.close.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_run_task_sets_failed_status_on_exception(self):

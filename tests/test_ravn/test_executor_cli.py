@@ -68,12 +68,13 @@ class FakeResumableTransport(CLITransport):
         self.sent_messages: list[str] = []
         self._last_result: dict | None = None
         self.control_calls: list[tuple[str, dict]] = []
+        self.stopped = False
 
     async def start(self) -> None:
         return None
 
     async def stop(self) -> None:
-        return None
+        self.stopped = True
 
     async def send_message(self, content: str) -> None:
         self.sent_messages.append(content)
@@ -322,6 +323,26 @@ async def test_cli_executor_steers_active_transport_when_supported() -> None:
     assert steered is True
     assert transport is not None
     assert transport.control_calls == [("steer", {"content": "Switch to a safer plan"})]
+
+
+@pytest.mark.asyncio
+async def test_cli_executor_close_stops_and_releases_transport() -> None:
+    agent, _ = _make_agent(
+        binding=_TransportBinding(FakeResumableTransport, True),
+    )
+
+    await agent._ensure_transport()
+    transport = agent._transport
+    assert isinstance(transport, FakeResumableTransport)
+
+    await agent.close()
+
+    assert transport.stopped is True
+    assert agent._transport is None
+    assert agent._turn_runner is None
+    assert agent._started is False
+
+    await agent.close()
 
 
 def _make_agent(

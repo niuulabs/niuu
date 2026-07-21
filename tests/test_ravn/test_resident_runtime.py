@@ -320,6 +320,8 @@ async def test_working_state_is_reused_by_a_new_runtime_after_restart(tmp_path) 
     assert "Raven may expose a control surface" in second_context
     assert "no addressable source capability" in second_context
     assert "Re-evaluate it against the new observations" in second_context
+    assert "opaque audit identifiers" in second_context
+    assert "not workspace paths" in second_context
     assert "will not turn a prose" in second_context
     assert "Use available tools before producing the final outcome" in second_context
 
@@ -639,9 +641,7 @@ async def test_home_turn_continues_the_source_signal_trace(tmp_path) -> None:
     mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
     inbox = MimirResidentInbox(mimir)
     state = LocalResidentState(tmp_path / "state")
-    trace_context = {
-        "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
-    }
+    trace_context = {"traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"}
     await inbox.write_event(
         SimpleNamespace(
             event_id="evt-traced",

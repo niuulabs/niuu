@@ -57,7 +57,9 @@ class CapabilityListTool(ToolPort):
             "resident learned tools, resident skills, configured remote workflows, "
             "and peer Agent Card skills. Use this before building new tools so existing "
             "capabilities are not duplicated. Entries tagged 'learned' are not native "
-            "tools — execute them by name with learned_tool_run."
+            "tools — execute them by name with learned_tool_run. A filtered miss includes "
+            "a compact catalog_preview; use it to choose a broader query or kind before "
+            "concluding that no relevant capability exists."
         )
 
     @property
@@ -113,16 +115,27 @@ class CapabilityListTool(ToolPort):
             require_all_tags=bool(input.get("require_all_tags") or False),
         )
         limit = _int_in_range(input.get("limit"), default=100, minimum=1, maximum=500)
+        catalog_counts: dict[str, int] = {}
+        for capability in capabilities:
+            catalog_counts[capability.kind.value] = catalog_counts.get(capability.kind.value, 0) + 1
         payload = {
             "capabilities": [item.to_catalog_dict() for item in filtered[:limit]],
             "count": min(len(filtered), limit),
             "total": len(filtered),
+            "catalog_total": len(capabilities),
+            "catalog_counts": catalog_counts,
+            "catalog_preview": (
+                [
+                    {key: entry[key] for key in ("id", "kind", "name", "source")}
+                    for capability in capabilities[:limit]
+                    for entry in [capability.to_catalog_dict()]
+                ]
+                if not filtered
+                else []
+            ),
             "errors": errors,
         }
         telemetry = get_observability()
-        counts: dict[str, int] = {}
-        for capability in capabilities:
-            counts[capability.kind.value] = counts.get(capability.kind.value, 0) + 1
         telemetry.set_attributes(
             {
                 "ravn.capability.catalog.total": len(capabilities),
@@ -137,12 +150,12 @@ class CapabilityListTool(ToolPort):
                 "ravn.capability.catalog.returned": payload["count"],
                 "ravn.capability.catalog.error_count": len(errors),
                 "ravn.capability.catalog.kinds": [
-                    f"{kind}:{count}" for kind, count in sorted(counts.items())
+                    f"{kind}:{count}" for kind, count in sorted(catalog_counts.items())
                 ],
             },
             content=payload,
         )
-        for kind, count in counts.items():
+        for kind, count in catalog_counts.items():
             telemetry.gauge(
                 "ravn.capabilities.available",
                 count,
