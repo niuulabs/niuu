@@ -315,6 +315,61 @@ class TestBroker:
         assert b._room_bridge.pending_help_peer_ids() == ()
 
     @pytest.mark.asyncio
+    async def test_telegram_force_reply_routes_among_multiple_waiting_peers(self, tmp_path):
+        class MemoryWebSocket:
+            def __init__(self) -> None:
+                self.sent_text: list[str] = []
+
+            async def send_text(self, text: str) -> None:
+                self.sent_text.append(text)
+
+        settings = SkuldSettings(
+            session={"id": "operator-room", "workspace_dir": str(tmp_path)},
+            room={"enabled": True},
+        )
+        b = Broker(settings=settings)
+        assert b._room_bridge is not None
+        ivaldi_ws = MemoryWebSocket()
+        other_ws = MemoryWebSocket()
+        await b._room_bridge.register("ivaldi", "Ivaldi", ivaldi_ws)
+        await b._room_bridge.register("other", "Other", other_ws)
+        for peer_id in ("ivaldi", "other"):
+            await b._room_bridge.handle_ravn_frame(
+                peer_id,
+                {
+                    "type": "help_needed",
+                    "data": {
+                        "persona": peer_id,
+                        "reason": "needs_context",
+                        "summary": f"{peer_id} needs input",
+                        "context": {"resident_case_id": f"case-{peer_id}"},
+                    },
+                },
+            )
+
+        routed = await b._try_route_pending_help_reply(
+            {
+                "type": "message",
+                "source": "telegram",
+                "content": "This answer is for Ivaldi.",
+                "target_peer_id": "ivaldi",
+                "reply_to_message_id": 91,
+                "trace_context": {"traceparent": "00-abc-def-01"},
+            },
+            "This answer is for Ivaldi.",
+        )
+
+        assert routed is True
+        assert len(ivaldi_ws.sent_text) == 1
+        assert other_ws.sent_text == []
+        payload = json.loads(ivaldi_ws.sent_text[0])
+        assert payload["metadata"]["help_context"]["resident_case_id"] == "case-ivaldi"
+        assert payload["metadata"]["telegram_reply_to_message_id"] == "91"
+        assert payload["metadata"]["trace_context"] == {"traceparent": "00-abc-def-01"}
+        statuses = {request["peer_id"]: request["status"] for request in b.list_help_requests()}
+        assert statuses == {"ivaldi": "answered", "other": "pending"}
+
+    @pytest.mark.asyncio
     async def test_telegram_text_routes_to_single_room_peer_without_pending_help(self, tmp_path):
         """Telegram text can steer the sole connected Ravn room peer."""
 
@@ -6155,6 +6210,36 @@ class TestPendingHelpRequests:
         assert answered["status"] == "answered"
         assert answered["answer"] == "All namespaces, read-only."
         assert answered["answer_source"] == "a2a"
+
+    @pytest.mark.asyncio
+    async def test_answer_marks_requested_item_when_peer_has_multiple_questions(
+        self, settings, tmp_path
+    ):
+        broker_under_test = self._broker(settings, tmp_path)
+        await broker_under_test._observe_room_peer_event(
+            "flock-specification-framer", "help_needed", dict(self._FRAME)
+        )
+        first_id = broker_under_test.list_help_requests()[0]["id"]
+        second_frame = {
+            **self._FRAME,
+            "data": {
+                **self._FRAME["data"],
+                "summary": "Which cluster is in scope?",
+            },
+        }
+        await broker_under_test._observe_room_peer_event(
+            "flock-specification-framer", "help_needed", second_frame
+        )
+        broker_under_test.handle_directed_room_message = AsyncMock(return_value="msg-42")
+
+        await broker_under_test.answer_help_request(first_id, "The original scope.")
+
+        requests = {item["id"]: item for item in broker_under_test.list_help_requests()}
+        assert requests[first_id]["status"] == "answered"
+        assert requests[first_id]["answer"] == "The original scope."
+        pending = [item for item in requests.values() if item["id"] != first_id]
+        assert len(pending) == 1
+        assert pending[0]["status"] == "pending"
 
     @pytest.mark.asyncio
     async def test_answer_unknown_request_raises(self, settings, tmp_path):

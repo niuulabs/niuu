@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 
@@ -36,6 +36,7 @@ class RavnEvent:
     session_id: str
     task_id: str | None = None  # If from a sub-ravn
     root_correlation_id: str = ""  # Traces back to the original trigger across the event chain
+    trace_context: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def thought(
@@ -233,6 +234,7 @@ class RavnEvent:
         session_id: str,
         task_id: str | None = None,
         context: dict | None = None,
+        trace_context: dict[str, str] | None = None,
     ) -> RavnEvent:
         """Emit when a persona needs human input to proceed.
 
@@ -267,6 +269,7 @@ class RavnEvent:
             correlation_id=correlation_id,
             session_id=session_id,
             task_id=task_id,
+            trace_context=dict(trace_context or {}),
         )
 
     @classmethod

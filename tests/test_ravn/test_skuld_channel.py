@@ -144,6 +144,25 @@ def test_serialise_outcome_prefers_event_task_id() -> None:
     assert data["metadata"]["task_id"] == "event-task"
 
 
+def test_serialise_preserves_trace_context() -> None:
+    ch = _make_channel()
+    event = RavnEvent.help_needed(
+        source=_SRC,
+        persona="ivaldi",
+        summary="Operator input required",
+        reason="The available evidence is ambiguous.",
+        attempted=["researched the observed signal"],
+        recommendation="Confirm the intended policy.",
+        correlation_id=_CID,
+        session_id=_SID,
+        trace_context={"traceparent": "00-abc-def-01"},
+    )
+
+    data = json.loads(ch._serialise(event).strip())
+
+    assert data["trace_context"] == {"traceparent": "00-abc-def-01"}
+
+
 # ---------------------------------------------------------------------------
 # emit — happy path with mocked WebSocket
 # ---------------------------------------------------------------------------

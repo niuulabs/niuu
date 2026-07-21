@@ -47,6 +47,7 @@ from niuu.mesh.discovery_builder import build_discovery_adapters
 from niuu.mesh.identity import MeshIdentity
 from niuu.ports.cli import CLITransport
 from niuu.utils import import_class
+from ravn.observability import get_observability
 from skuld.activity_reporting import ActivityReportingMixin
 from skuld.channels import (
     ChannelRegistry,
@@ -192,15 +193,20 @@ def _non_empty_str(value: object) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else ""
 
 
-def _telegram_directed_metadata(data: dict) -> dict[str, str]:
+def _telegram_directed_metadata(data: dict) -> dict[str, Any]:
     """Build the directed-room-message metadata for an inbound Telegram payload."""
-    return {
+    metadata: dict[str, Any] = {
         "source": "telegram",
         "telegram_message_id": str(data.get("message_id") or ""),
+        "telegram_reply_to_message_id": str(data.get("reply_to_message_id") or ""),
         "telegram_chat_id": str(data.get("chat_id") or ""),
         "telegram_message_thread_id": str(data.get("message_thread_id") or ""),
         "telegram_date": str(data.get("date") or ""),
     }
+    trace_context = data.get("trace_context")
+    if isinstance(trace_context, dict) and trace_context:
+        metadata["trace_context"] = dict(trace_context)
+    return metadata
 
 
 def _describe_browser_content_block(block: dict[str, Any]) -> str | None:
@@ -1670,6 +1676,28 @@ class Broker(
         )
         return [asdict(request) for request in ordered]
 
+    @staticmethod
+    def _complete_help_request(
+        request: PendingHelpRequest,
+        answer: str,
+        source: str,
+    ) -> None:
+        request.status = "answered"
+        request.answered_at = datetime.now(UTC).isoformat()
+        request.answer = answer
+        request.answer_source = source
+
+    def _mark_pending_help_answered(self, peer_id: str, answer: str, source: str) -> None:
+        candidates = [
+            request
+            for request in self._pending_help_requests.values()
+            if request.peer_id == peer_id and request.status == "pending"
+        ]
+        if not candidates:
+            return
+        request = max(candidates, key=lambda item: item.requested_at)
+        self._complete_help_request(request, answer, source)
+
     async def answer_help_request(
         self,
         request_id: str,
@@ -1696,10 +1724,7 @@ class Broker(
             source=source,
             metadata={"help_request_id": request.id},
         )
-        request.status = "answered"
-        request.answered_at = datetime.now(UTC).isoformat()
-        request.answer = answer
-        request.answer_source = source
+        self._complete_help_request(request, answer, source)
         logger.info(
             "Help request %s answered by %s -> peer=%s message=%s",
             request.id,
@@ -3412,21 +3437,46 @@ class Broker(
         candidates: tuple[str, ...],
         log_message: str,
     ) -> bool:
-        """Deliver a Telegram payload to a peer when exactly one candidate exists."""
+        """Deliver Telegram input to its ForceReply target or sole candidate."""
         if str(data.get("source") or "").strip().lower() != "telegram":
             return False
-        if len(candidates) != 1:
+        requested_peer_id = str(data.get("target_peer_id") or "").strip()
+        if requested_peer_id and requested_peer_id in candidates:
+            target_peer_id = requested_peer_id
+        elif len(candidates) == 1:
+            target_peer_id = candidates[0]
+        else:
             return False
+        carrier = data.get("trace_context")
+        if not isinstance(carrier, dict):
+            carrier = {}
+        telemetry = get_observability()
         try:
-            await self.handle_directed_room_message(
-                candidates[0],
-                content,
-                source="telegram",
-                metadata=_telegram_directed_metadata(data),
-            )
+            with telemetry.span(
+                "skuld.operator.reply.route",
+                attributes={
+                    "skuld.help.peer_id": target_peer_id,
+                    "skuld.help.pending_candidates": len(candidates),
+                    "skuld.operator.source": "telegram",
+                },
+                carrier=carrier,
+            ):
+                metadata = _telegram_directed_metadata(data)
+                metadata["trace_context"] = telemetry.inject() or carrier
+                await self.handle_directed_room_message(
+                    target_peer_id,
+                    content,
+                    source="telegram",
+                    metadata=metadata,
+                )
+                self._mark_pending_help_answered(target_peer_id, content, "telegram")
+                telemetry.count(
+                    "skuld.operator.replies",
+                    attributes={"source": "telegram", "outcome": "routed"},
+                )
         except LookupError:
             return False
-        logger.info(log_message, _sanitize_log(candidates[0]))
+        logger.info(log_message, _sanitize_log(target_peer_id))
         return True
 
     async def _safe_transport_control(

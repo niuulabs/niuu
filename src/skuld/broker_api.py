@@ -63,14 +63,27 @@ def bind_broker(getter: Callable[[], Any], log_buffer: deque[dict]) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
+    from ravn.observability import configure_observability, shutdown_observability
+
     # Attach JWT redaction filter after uvicorn has configured its loggers
     _redact_filter = _TokenRedactFilter()
     for name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
         logging.getLogger(name).addFilter(_redact_filter)
 
-    await broker.startup()
-    yield
-    await broker.shutdown()
+    configure_observability(
+        broker._settings.observability,
+        resource_attributes={
+            "service.namespace": "skuld",
+            "service.instance.id": broker.session_id,
+            "niuu.session.id": broker.session_id,
+        },
+    )
+    try:
+        await broker.startup()
+        yield
+    finally:
+        await broker.shutdown()
+        shutdown_observability()
 
 
 app = FastAPI(

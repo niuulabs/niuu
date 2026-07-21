@@ -2242,19 +2242,42 @@ class DriveLoop:
                 "root_correlation_id": task.root_correlation_id or case_id,
                 "operator_ref": str(getattr(disposition, "operator_ref", "")),
             },
+            trace_context=get_observability().inject() or task.trace_context,
         )
-        if self._mesh is not None:
-            try:
-                await self._mesh.publish(event, topic=str(RavnEventType.HELP_NEEDED))
-            except Exception:
-                logger.warning("Failed to publish resident help_needed; continuing.", exc_info=True)
-        if self._skuld_channel is not None:
-            try:
-                await self._skuld_channel.emit(event)
-            except Exception:
-                logger.warning("Failed to emit resident help_needed to skuld.", exc_info=True)
-        await self._event_publisher.publish(event)
-        task.resident_help_published = True
+        await self._publish_help_needed(task, event)
+
+    async def _publish_help_needed(self, task: AgentTask, event: RavnEvent) -> None:
+        """Publish an LLM-selected help request through the configured operator transports."""
+        telemetry = get_observability()
+        attributes = {
+            "ravn.task.id": task.task_id,
+            "ravn.resident.case_id": task.resident_case_id or task.task_id,
+            "ravn.operator.skuld_configured": self._skuld_channel is not None,
+            "ravn.operator.mesh_configured": self._mesh is not None,
+        }
+        with telemetry.span(
+            "ravn.operator.help.publish",
+            attributes=attributes,
+            carrier=event.trace_context or task.trace_context,
+        ):
+            if self._mesh is not None:
+                try:
+                    await self._mesh.publish(event, topic=str(RavnEventType.HELP_NEEDED))
+                    telemetry.event("ravn.operator.help.mesh_published")
+                except Exception:
+                    logger.warning(
+                        "Failed to publish resident help_needed; continuing.", exc_info=True
+                    )
+            if self._skuld_channel is not None:
+                try:
+                    await self._skuld_channel.emit(event)
+                    telemetry.event("ravn.operator.help.skuld_published")
+                except Exception:
+                    logger.warning(
+                        "Failed to emit resident help_needed to skuld.", exc_info=True
+                    )
+            await self._event_publisher.publish(event)
+            task.resident_help_published = True
 
     async def _maybe_repair_resident_valkyrie_outcome(
         self,
@@ -2835,23 +2858,9 @@ class DriveLoop:
                 session_id=task.session_id or "",
                 task_id=task.task_id,
                 context=help_context,
+                trace_context=get_observability().inject() or task.trace_context,
             )
-            if mesh_available:
-                try:
-                    await self._mesh.publish(help_event, topic=str(RavnEventType.HELP_NEEDED))
-                except Exception:
-                    logger.warning(
-                        "Failed to publish help_needed mesh event; continuing.",
-                        exc_info=True,
-                    )
-            if self._skuld_channel is not None:
-                try:
-                    await self._skuld_channel.emit(help_event)
-                except Exception:
-                    logger.warning(
-                        "Failed to emit help_needed to skuld; continuing.",
-                        exc_info=True,
-                    )
+            await self._publish_help_needed(task, help_event)
 
         if not mesh_available:
             return

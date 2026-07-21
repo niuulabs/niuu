@@ -20,6 +20,7 @@ def build_help_needed_event(
     session_id: str = "",
     task_id: str = "",
     context: Mapping[str, Any] | None = None,
+    trace_context: Mapping[str, str] | None = None,
 ) -> RavnEvent:
     """Build the canonical event emitted when Ravn needs human input."""
     return RavnEvent.help_needed(
@@ -33,4 +34,5 @@ def build_help_needed_event(
         session_id=session_id,
         task_id=task_id or correlation_id,
         context=dict(context or {}),
+        trace_context=dict(trace_context or {}),
     )

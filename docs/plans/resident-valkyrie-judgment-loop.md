@@ -1,8 +1,9 @@
 # Resident Valkyrie Judgment Loop
 
 **Status:** Durable external-event judgment and model-runtime interchange are
-locally proven against real dependencies; operator resume, completed A2A work,
-tool construction/reuse, and repeated behavioral quality are not yet proven
+locally proven against real dependencies; the operator round-trip is
+mechanically proven but not deployed end to end; completed A2A work, tool
+construction/reuse, and repeated behavioral quality are not yet proven
 **Date:** 2026-07-21
 **Scope:** Ravn resident Valkyries, environment signals, resident continuity,
 Mímir, tool evolution, and agent-to-agent work
@@ -44,6 +45,77 @@ This is a step toward bounded, situated, self-extending agency. It is not model
 weight self-improvement or AGI. The resident can nevertheless improve its
 understanding, working methods, tools, schedules, shared knowledge, and use of
 other agents.
+
+## Architectural destination: recover Ravn as a harness
+
+The Codor comparison establishes a boundary that simplifies this work rather
+than adding another subsystem:
+
+> **Ravn is a standalone agent harness. A Valkyrie is a Niuu-managed agent that
+> may use Ravn, Codex, Claude Code, or another compatible harness. A Flokk
+> coordinates Valkyries independently of their harness.**
+
+The current repository does not yet respect that boundary. The `ravn` package
+contains both the small execution harness and Niuu's resident, flokk, Skuld,
+Sleipnir, Mímir, governance, and Kubernetes concerns. The direction is to
+extract the actual CLI/turn kernel, not move the entire current package into a
+second repository.
+
+The stable harness contract should remain small:
+
+```text
+input:  prompt | resume | interrupt | human_input
+output: session_started | text_delta | tool_started | tool_completed
+        input_required | turn_completed | turn_failed
+query:  capabilities
+```
+
+Ravn owns agent turns, local sessions, tools, model adapters, permissions,
+checkpoint/resume, project instructions, and this machine-readable event
+stream. Niuu owns resident judgment and continuity, Valkyrie identity, Flokk
+membership, Skuld, Sleipnir, Mímir, policy, workload identity, Kubernetes, and
+the HUD.
+
+This makes the current operator path precise. The harness reports generic
+`input_required` state with a run/session correlation. The Niuu Valkyrie
+adapter persists it, projects it into the shared Skuld operator room, and
+returns the answer as `human_input` to the exact suspended run. Telegram is a
+Skuld channel, not a Ravn feature. Sleipnir is telemetry and replay, not the
+delivery mechanism. Ting is not part of this path.
+
+It also makes the Codex/Nemotron comparison honest. Model, harness, and Niuu
+runtime become separate variables: Nemotron can run through Ravn, while Codex
+can run through its own harness adapter, with both receiving the same durable
+observations and emitting the same normalized run evidence.
+
+The intended adoption surface is correspondingly small:
+
+```text
+ravn                         # run the standalone harness
+niuu valkyrie start --harness ravn
+niuu flokk join <flokk> --as <role>
+niuu doctor
+```
+
+Niuu may auto-detect and attach an already-running harness session. Joining a
+Flokk must be durable and explicit about execution custody: an attached
+Valkyrie retains its own loop, while a managed Valkyrie is scheduled by Niuu.
+Discovery alone never implies admission or authority.
+
+The extraction order is intentionally narrow:
+
+1. Define and prove the headless Ravn run-event contract in this repository.
+2. Move resident/platform composition behind a Niuu harness adapter.
+3. Build Ravn as an independently installable package with no Niuu source
+   present.
+4. Make Niuu consume only that public contract and add Codex as the second
+   adapter proof.
+5. Split repositories only after the dependency boundary holds.
+
+The operator walking slice remains worth completing now, but it must test this
+boundary: one generic input request, one Niuu-owned Skuld route, one human
+answer, and one exact-run resume under a single trace. It must not establish a
+new direct Ravn-to-Telegram or Ravn-to-Sleipnir runtime dependency.
 
 ## Evidence provenance
 
@@ -327,7 +399,7 @@ Given a mandate and an environment, the resident should be able to:
 | Tool construction | `src/ravn/adapters/tools/build_tool.py` | Can author or commission, independently verify, review, canary, install, register, and propose a tool to a flock. |
 | A2A workflow tasks | `src/ravn/adapters/tool_build/a2a.py` and Ting's A2A facade | Supports Agent Card discovery, stateful tasks, `INPUT_REQUIRED`, artifacts, and provenance for tool-building workflows. |
 | Governance | permissions, ODIN, review items, trust modes, budgets, rollback | Correct place for deterministic authority and safety boundaries. |
-| Human-help transport | `help_needed`, resident operator state, Skuld pending requests, and directed replies | Persist-and-resume is composed and mechanically tested; a live operator question/answer trajectory remains unproven. |
+| Human-help transport | generic `help_needed`/future `input_required`, resident operator state, Skuld pending requests, ForceReply correlation, and directed replies | Persist-before-surface, exact-peer routing with multiple waiting Valkyries, trace propagation, and same-case resume are mechanically tested; a deployed human question/answer trajectory remains unproven. |
 | Resident state | `src/ravn/domain/resident_continuation.py`, `src/ravn/adapters/resident_state/`, and daemon wiring | Dynamically selected adapters now persist cases, working state, operator waits, answers, and bounded handoffs. |
 | Long-term storage | Mímir pages, the local resident inbox, resident state, learning pages, and evidence artifacts | Continuity no longer depends on Mímir. Knowledge remains useful only when deliberately accessed and evidence-qualified. |
 
@@ -385,15 +457,19 @@ state adapter or invokes a continuation decision after a resident turn.
 
 The missing resident agent is therefore already sketched in the domain layer.
 
-### 4. Headless questions do not resume the case
+### 4. The headless question path was open in the baseline
 
 Native daemon agents are built with `user_input_fn=None`, so `ask_user` cannot
 complete inside the turn. A persona may finish with `help_needed`, and Skuld can
 deliver an answer to a connected peer, but the original native task has already
 finished. A directed reply generally creates a new task with a new `Session`.
 
-For a resident without a Skuld channel, the `help_needed` event also lacks a
-complete operator delivery and answer path.
+The branch now composes the missing mechanics: persist the operator-needed
+record, emit one generic help event, retain exact Telegram ForceReply-to-peer
+correlation in Skuld, direct the answer back to that peer, and enqueue the same
+case with inherited trace context. This remains a mechanically tested path
+until the shared Skuld room and resident image are deployed and a human reply
+is observed end to end.
 
 The required contract is:
 
@@ -775,15 +851,18 @@ continue/ask/sleep/stop behavior without adding an objectives subsystem.
 #### 1.4 Complete the operator question round trip
 
 - Persist `operator-needed/latest` before surfacing the question.
-- Publish `help_needed` with the case and continuation identifiers.
-- Project it onto an authenticated operator surface available to headless
-  residents.
-- Add the smallest authenticated answer endpoint/event necessary to write the
-  free-text operator answer through `ResidentStatePort`.
+- Emit a harness-neutral `input_required` event with the run, case, and
+  continuation identifiers. During migration, the current `help_needed` event
+  is the wire-compatible precursor.
+- Let the Niuu Valkyrie adapter project it into one shared Skuld operator room.
+- Let Skuld deliver it through its configured Telegram channel and retain the
+  outbound ForceReply message id so replies route correctly even when multiple
+  Valkyries are waiting.
+- Write the free-text operator answer through `ResidentStatePort`.
 - Enqueue the same case, load the answer as an observation, and mark it consumed
   only after successful resume.
-- Keep the Skuld directed-message path as an adapter to the same continuation,
-  not as separate semantics.
+- Keep Skuld and Telegram outside the standalone Ravn harness; they are Niuu
+  adapters to the same continuation semantics.
 
 #### 1.5 Drive the home turn from the durable inbox
 
@@ -927,7 +1006,7 @@ the explicitly mounted paths and named credential become visible.
 | Phase | Code/test status | Live status |
 | --- | --- | --- |
 | 0 — clean judgment baseline | Mechanically tested | Locally exercised with real retained events and Nemotron; one clean judgment completed, while other trajectories showed unnecessary work and repetition |
-| 1 — durable resident continuity | Mechanically tested, including persist-before-ACK, coalesced wakes, trace propagation, and operator resume | Local shutdown/restart retained and resumed the active case; real observations accumulated behind one wake and were acknowledged only after valid state; operator question/answer has not been live-proven |
+| 1 — durable resident continuity | Mechanically tested, including persist-before-ACK, coalesced wakes, exact multi-peer Skuld reply routing, trace propagation, and operator resume | Local shutdown/restart retained and resumed the active case; real observations accumulated behind one wake and were acknowledged only after valid state; deployed operator question/answer has not been live-proven |
 | 2 — general A2A collaboration | Mechanically tested against protocol fixtures; Observatory workload-identity chart fix is linted but undeployed | Live Agent Card, token exchange, and tool-builder discovery work; general Guild discovery returns an empty catalog plus seven unavailable peers, and no uncued complete A2A task/build trajectory has occurred |
 | 3 — evidence-gated learning | Mechanically tested | Earlier explicit Mímir write/read occurred, but quality was weak; clean Ivaldi now disables knowledge Mímir and no reliable behavior improvement is established |
 | 4 — enforced learned-tool reach | Container and optional Kubernetes mechanisms tested | Ivaldi is configured for the unenforced `local` backend |
@@ -1116,8 +1195,9 @@ the central loop open:
 - Learned tools are configured to run with the `local` compatibility backend,
   which explicitly provides no filesystem or network boundary. The new
   `k8s_job` enforcement path is not configured for Ivaldi.
-- No HTTP operator channel/token is configured, so the new authenticated
-  question and answer endpoints are not exposed by this deployment.
+- No shared Skuld operator room is configured for Ivaldi, so a persisted
+  question cannot currently reach the owner through the existing Telegram
+  integration or return to the resident.
 
 These are configuration and deployment integration gaps, not evidence that the
 model is incapable. They do mean the system, as presently configured, cannot
@@ -1133,8 +1213,8 @@ existing path in this order:
 2. Align Ivaldi's contract with `ResidentRuntime`: expose
    `selected_next_action`, `continuation`, `question`, and `help_needed`; allow
    `build_tool`, web research, and the exact cron tools; enable the durable
-   environment inbox; configure one authenticated operator answer surface; and
-   use the enforced `k8s_job` learned-tool backend.
+   environment inbox; connect it to the shared Skuld operator room; and use the
+   enforced `k8s_job` learned-tool backend.
 3. Inspect the effective tool catalog from the running resident. A prompt claim
    is not evidence that a tool exists; `capability_list` and the API tool
    definitions must agree.
@@ -1174,7 +1254,9 @@ mechanisms, not a demonstrated self-evolving agent.**
 | Durable inbox | `src/ravn/resident_inbox/` | Load and durably acknowledge wake windows; preserve evidence references. |
 | Continuation domain | `src/ravn/domain/resident_continuation.py` | Reuse existing types; extend only where correlation/case metadata is genuinely missing. |
 | Resident-state adapters | `src/ravn/adapters/resident_state/` | Reuse preferred/fallback selection and question/answer storage. |
-| Operator path | `src/ravn/drive_loop.py`, `src/ravn/api/valkyrie_routes.py`, Skuld adapter | Surface and answer one persisted continuation contract. |
+| Harness contract | `RavnAgent`, CLI run/resume path, and canonical run events | Expose one small run/resume/interrupt/input/capabilities contract without Niuu platform types. |
+| Valkyrie harness adapter | current resident/daemon composition, moving under Niuu ownership | Translate generic harness events into resident continuation, Skuld, Sleipnir, policy, and HUD evidence. |
+| Operator path | resident continuation plus Skuld room/channel adapters | Surface and answer one persisted continuation contract; correlate a reply to the exact peer/run and trace. |
 | Reflection | `src/ravn/adapters/reflection/post_session.py` | Disable for baseline; later make session-neutral and evidence-gated. |
 | Mímir reflex | `src/ravn/reflex.py`, Ravn configuration | Disable for baseline; reintroduce only with measured benefit. |
 | Persona | resident persona configuration/YAML | Short charter; enable exact web/todo/cron tools; remove procedural recipe. |

@@ -26,7 +26,7 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
-from ravn.config import MeshNatsConfig
+from ravn.config import MeshNatsConfig, ObservabilityConfig
 
 
 # Config file search paths (in order of priority).
@@ -655,6 +655,7 @@ class SkuldSettings(BaseSettings):
     acp_prompt_timeout_s: float = Field(default=300.0)  # ACP (Grok Build) prompt turn timeout
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     reflex: ReflexConfig = Field(default_factory=ReflexConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     peer_watchdog: PeerWatchdogConfig = Field(default_factory=PeerWatchdogConfig)
     room: RoomConfig = Field(default_factory=RoomConfig)

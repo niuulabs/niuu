@@ -18,6 +18,7 @@ from typing import Any, Literal
 from fastapi import WebSocketDisconnect
 
 from niuu.domain.outcome import parse_outcome_block
+from ravn.observability import get_observability
 
 logger = logging.getLogger("skuld.channels")
 
@@ -27,6 +28,7 @@ TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 # Buffer flush interval for streaming text (seconds)
 TELEGRAM_BUFFER_FLUSH_INTERVAL = 1.5
 TELEGRAM_TOPIC_NAME_MAX_LENGTH = 128
+TELEGRAM_HELP_REPLY_CACHE_SIZE = 1024
 
 TelegramTopicMode = Literal["shared_chat", "fixed_topic", "topic_per_session"]
 
@@ -699,6 +701,7 @@ class TelegramChannel(MessageChannel):
         self._text_buffer: list[str] = []
         self._flush_task: asyncio.Task | None = None
         self._last_send_results: list[dict[str, Any]] = []
+        self._help_reply_targets: dict[int, dict[str, Any]] = {}
 
     async def start(self) -> None:
         """Start the Telegram bot (initialize, but don't poll if notify_only)."""
@@ -773,9 +776,49 @@ class TelegramChannel(MessageChannel):
                 self._flush_task = asyncio.create_task(self._scheduled_flush())
             return
 
-        # Non-delta event: flush buffer first, then send
+        # Non-delta event: flush buffer first, then send. Help notifications retain
+        # the Telegram message id so a ForceReply can be routed to the exact peer
+        # even when several Valkyries are waiting in the same operator room.
         await self._flush_buffer()
-        await self._send_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+        carrier = event.get("trace_context")
+        if not isinstance(carrier, dict):
+            carrier = {}
+        telemetry = get_observability()
+        with telemetry.span(
+            "skuld.telegram.send",
+            attributes={
+                "skuld.channel": "telegram",
+                "skuld.event.type": str(event_type),
+                "skuld.help.peer_id": str(event.get("participantId") or ""),
+            },
+            carrier=carrier,
+        ):
+            await self._send_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+            if reply_markup is not None:
+                self._remember_help_reply_targets(event)
+            telemetry.count(
+                "skuld.telegram.messages",
+                value=len(self._last_send_results),
+                attributes={"direction": "outbound", "event_type": str(event_type)},
+            )
+
+    def _remember_help_reply_targets(self, event: dict[str, Any]) -> None:
+        peer_id = str(event.get("participantId") or "").strip()
+        if not peer_id:
+            return
+        trace_context = event.get("trace_context")
+        if not isinstance(trace_context, dict):
+            trace_context = {}
+        for result in self._last_send_results:
+            message_id = result.get("message_id")
+            if not isinstance(message_id, int):
+                continue
+            self._help_reply_targets[message_id] = {
+                "target_peer_id": peer_id,
+                "trace_context": dict(trace_context),
+            }
+        while len(self._help_reply_targets) > TELEGRAM_HELP_REPLY_CACHE_SIZE:
+            self._help_reply_targets.pop(next(iter(self._help_reply_targets)))
 
     async def _scheduled_flush(self) -> None:
         """Wait then flush the text buffer."""
@@ -1058,7 +1101,32 @@ class TelegramChannel(MessageChannel):
             thread_id = getattr(message, "message_thread_id", None)
             if isinstance(thread_id, int):
                 payload["message_thread_id"] = thread_id
-            await self._on_message(payload)
+            reply_to = getattr(message, "reply_to_message", None)
+            reply_to_message_id = getattr(reply_to, "message_id", None)
+            if isinstance(reply_to_message_id, int):
+                payload["reply_to_message_id"] = reply_to_message_id
+                target = self._help_reply_targets.get(reply_to_message_id)
+                if target is not None:
+                    payload.update(target)
+            carrier = payload.get("trace_context")
+            if not isinstance(carrier, dict):
+                carrier = {}
+            telemetry = get_observability()
+            with telemetry.span(
+                "skuld.telegram.reply.receive",
+                attributes={
+                    "skuld.channel": "telegram",
+                    "skuld.help.peer_id": str(payload.get("target_peer_id") or ""),
+                    "skuld.telegram.reply_to_message_id": reply_to_message_id or 0,
+                },
+                carrier=carrier,
+            ):
+                payload["trace_context"] = telemetry.inject() or carrier
+                await self._on_message(payload)
+                telemetry.count(
+                    "skuld.telegram.messages",
+                    attributes={"direction": "inbound", "event_type": "message"},
+                )
 
     async def _handle_callback_query(self, update: object, context: object) -> None:
         """Handle inline keyboard button presses (permission responses)."""

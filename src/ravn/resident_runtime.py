@@ -444,31 +444,50 @@ class ResidentRuntime:
     async def pending_questions(self) -> list[dict[str, str]]:
         return [_pending_view(item) for item in await self._state.list_operator_needed()]
 
-    async def submit_operator_answer(self, *, case_id: str, answer: str) -> dict[str, Any]:
+    async def submit_operator_answer(
+        self,
+        *,
+        case_id: str,
+        answer: str,
+        trace_context: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         case_id = case_id.strip()
         answer = answer.strip()
         if not case_id or not answer:
             raise ValueError("case_id and answer are required")
-        pending = await self._state.read_operator_needed(case_id)
-        if pending is None:
-            raise LookupError(f"no pending operator question for case {case_id}")
-        prior_turn_handoff = await self._read_parent_handoff(pending)
-        answer_ref = await self._state.write_operator_answer(answer, case_id=case_id)
-        task = _operator_resume_task(
-            pending,
-            answer=answer,
-            answer_ref=answer_ref,
-            prior_turn_handoff=prior_turn_handoff,
-        )
-        accepted = await self._enqueue_task(task)
-        if accepted:
-            self._inflight_cases.add(case_id)
-        return {
-            "case_id": case_id,
-            "answer_ref": answer_ref,
-            "continuation_task_id": task.task_id if accepted else "",
-            "queued": accepted,
-        }
+        telemetry = get_observability()
+        with telemetry.span(
+            "ravn.resident.operator_answer.receive",
+            attributes={"ravn.resident.case_id": case_id},
+            carrier=trace_context,
+        ):
+            pending = await self._state.read_operator_needed(case_id)
+            if pending is None:
+                raise LookupError(f"no pending operator question for case {case_id}")
+            prior_turn_handoff = await self._read_parent_handoff(pending)
+            answer_ref = await self._state.write_operator_answer(answer, case_id=case_id)
+            task = _operator_resume_task(
+                pending,
+                answer=answer,
+                answer_ref=answer_ref,
+                prior_turn_handoff=prior_turn_handoff,
+            )
+            task.trace_context = telemetry.inject() or dict(trace_context or {})
+            accepted = await self._enqueue_task(task)
+            if accepted:
+                self._inflight_cases.add(case_id)
+            telemetry.set_attributes(
+                {
+                    "ravn.resident.answer_ref": answer_ref,
+                    "ravn.resident.answer_queued": accepted,
+                }
+            )
+            return {
+                "case_id": case_id,
+                "answer_ref": answer_ref,
+                "continuation_task_id": task.task_id if accepted else "",
+                "queued": accepted,
+            }
 
     async def consume_directed_message(
         self,
@@ -493,7 +512,14 @@ class ResidentRuntime:
             case_id = _metadata(pending[0].content, "case_id")
         if not case_id or await self._state.read_operator_needed(case_id) is None:
             return False
-        await self.submit_operator_answer(case_id=case_id, answer=content)
+        trace_context = metadata.get("trace_context")
+        if not isinstance(trace_context, dict):
+            trace_context = {}
+        await self.submit_operator_answer(
+            case_id=case_id,
+            answer=content,
+            trace_context=trace_context,
+        )
         return True
 
     async def next_home_task(

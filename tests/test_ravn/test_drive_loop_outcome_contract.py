@@ -1662,3 +1662,27 @@ recommendation: reply with the preferred tradeoff
         assert "council.chair.turn.completed" in published_topics
         assert "council.human_input.requested" in published_topics
         assert "help_needed" in published_topics
+
+    @pytest.mark.asyncio
+    async def test_help_event_uses_configured_channel_without_platform_fallback(self) -> None:
+        dl = _make_drive_loop()
+        sleipnir_publisher = AsyncMock()
+        skuld_channel = AsyncMock()
+        dl._sleipnir_publisher = sleipnir_publisher
+        dl._skuld_channel = skuld_channel
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(name="council-chair")
+        task = _make_agent_task(task_id="task-room-help")
+
+        await dl._emit_resident_help_needed(
+            task,
+            SimpleNamespace(
+                case_id="case-room-help",
+                reason="needs_context",
+                question="Which rollout should I choose?",
+                operator_ref="operator-needed/case-room-help.json",
+            ),
+        )
+
+        skuld_channel.emit.assert_awaited_once()
+        sleipnir_publisher.publish.assert_not_awaited()

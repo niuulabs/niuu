@@ -619,6 +619,7 @@ class TestTelegramChannelMocked:
             ch._closed = False
             ch._text_buffer = []
             ch._flush_task = None
+            ch._help_reply_targets = {}
         return ch
 
     def test_channel_type(self, channel):
@@ -707,6 +708,40 @@ class TestTelegramChannelMocked:
         assert kwargs["chat_id"] == "12345"
         assert kwargs["parse_mode"] == "HTML"
         assert "reply_markup" in kwargs
+
+    @pytest.mark.asyncio
+    async def test_help_force_reply_retains_exact_peer_and_trace_context(self, channel):
+        sent = MagicMock()
+        sent.message_id = 321
+        sent.chat.id = 12345
+        channel._bot.send_message.return_value = sent
+        event = {
+            "type": "room_notification",
+            "notificationType": "help_needed",
+            "participantId": "ivaldi",
+            "participant": {"persona": "Ivaldi"},
+            "summary": "Need operator input",
+            "reason": "needs_context",
+            "recommendation": "Reply with the missing facts.",
+            "trace_context": {"traceparent": "00-abc-def-01"},
+        }
+        await channel.send_event(event)
+
+        on_message = AsyncMock()
+        channel._on_message = on_message
+        update = MagicMock()
+        update.effective_chat.id = 12345
+        update.message.text = "The code is a slicer release-count mismatch."
+        update.message.message_id = 400
+        update.message.reply_to_message.message_id = 321
+        update.message.message_thread_id = None
+
+        await channel._handle_text_message(update, None)
+
+        payload = on_message.await_args.args[0]
+        assert payload["reply_to_message_id"] == 321
+        assert payload["target_peer_id"] == "ivaldi"
+        assert payload["trace_context"] == {"traceparent": "00-abc-def-01"}
 
     @pytest.mark.asyncio
     async def test_send_event_skips_none_format(self, channel):

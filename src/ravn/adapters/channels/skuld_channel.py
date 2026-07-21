@@ -30,6 +30,7 @@ import websockets.exceptions
 from websockets.protocol import State as WsState
 
 from ravn.domain.events import RavnEvent, RavnEventType
+from ravn.observability import get_observability
 from ravn.ports.channel import ChannelPort
 
 logger = logging.getLogger(__name__)
@@ -120,12 +121,30 @@ class SkuldChannel(ChannelPort):
 
     async def emit(self, event: RavnEvent) -> None:
         """Emit *event* to the Skuld broker as an NDJSON frame."""
-        payload = self._serialise(event)
-        try:
-            await self._send(payload)
-        except Exception as exc:
-            logger.warning("SkuldChannel: emit failed, buffering event: %r", exc)
-            self._buffer.append(event)
+        telemetry = get_observability()
+        with telemetry.span(
+            "ravn.port.skuld.emit",
+            attributes={
+                "ravn.event.type": str(event.type),
+                "ravn.peer.id": self._peer_id or "",
+                "ravn.session.id": event.session_id or self._session_id,
+            },
+            carrier=event.trace_context,
+        ):
+            payload = self._serialise(event)
+            try:
+                await self._send(payload)
+                telemetry.count(
+                    "ravn.skuld.events",
+                    attributes={"event_type": str(event.type), "outcome": "sent"},
+                )
+            except Exception as exc:
+                logger.warning("SkuldChannel: emit failed, buffering event: %r", exc)
+                self._buffer.append(event)
+                telemetry.count(
+                    "ravn.skuld.events",
+                    attributes={"event_type": str(event.type), "outcome": "buffered"},
+                )
 
     # ------------------------------------------------------------------
     # Connection management
@@ -205,7 +224,19 @@ class SkuldChannel(ChannelPort):
                     if not isinstance(metadata, dict):
                         metadata = None
                     if content:
-                        await self._on_directed_message(content, metadata)
+                        carrier = (
+                            metadata.get("trace_context", {})
+                            if isinstance(metadata, dict)
+                            else {}
+                        )
+                        if not isinstance(carrier, dict):
+                            carrier = {}
+                        with get_observability().span(
+                            "ravn.port.skuld.directed_message.receive",
+                            attributes={"ravn.peer.id": self._peer_id or ""},
+                            carrier=carrier,
+                        ):
+                            await self._on_directed_message(content, metadata)
                 elif frame.get("type") == "room_outcome" and self._on_directed_message:
                     event_type = str(frame.get("eventType") or "").strip()
                     if event_type and _matches_subscription(event_type, self._subscribes_to):
@@ -385,4 +416,6 @@ class SkuldChannel(ChannelPort):
             frame["persona"] = self._persona
         if event.root_correlation_id:
             frame["root_correlation_id"] = event.root_correlation_id
+        if event.trace_context:
+            frame["trace_context"] = dict(event.trace_context)
         return json.dumps(frame) + "\n"

@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import WebSocket
 
+from ravn.observability import get_observability
 from skuld.room_models import ParticipantMeta
 
 if TYPE_CHECKING:
@@ -92,6 +93,9 @@ def help_needed_frame_to_room_notification(meta: ParticipantMeta, frame: dict) -
     context = data.get("context")
     if context:
         notification["context"] = context
+    trace_context = frame.get("trace_context")
+    if isinstance(trace_context, dict) and trace_context:
+        notification["trace_context"] = dict(trace_context)
     return notification
 
 
@@ -1166,28 +1170,50 @@ class RoomBridge:
         without requiring them to watch logs.
         """
         notification = help_needed_frame_to_room_notification(meta, frame)
+        carrier = frame.get("trace_context")
+        if not isinstance(carrier, dict):
+            carrier = {}
+        telemetry = get_observability()
+        with telemetry.span(
+            "skuld.operator.help.receive",
+            attributes={
+                "skuld.help.peer_id": meta.peer_id,
+                "skuld.help.persona": str(notification.get("persona") or meta.persona),
+                "skuld.help.reason": str(notification.get("reason") or ""),
+            },
+            carrier=carrier,
+        ):
+            notification["trace_context"] = telemetry.inject() or carrier
 
-        # Include context if provided (file paths, errors, etc.)
-        context = notification.get("context")
-        if isinstance(context, dict):
-            self._pending_help_context[meta.peer_id] = {
-                "help_summary": notification["summary"],
-                "help_reason": notification["reason"],
-                "help_attempted": list(notification.get("attempted") or []),
-                "help_recommendation": notification.get("recommendation", ""),
-                "help_context": context,
-                "workflow_parent_event_id": str(context.get("workflow_parent_event_id") or ""),
-                "workflow_node_id": str(context.get("workflow_node_id") or ""),
-                "root_correlation_id": str(context.get("root_correlation_id") or ""),
-                "session_id": str(context.get("session_id") or frame.get("session_id") or ""),
-            }
+            # Include context if provided (file paths, errors, etc.)
+            context = notification.get("context")
+            if isinstance(context, dict):
+                self._pending_help_context[meta.peer_id] = {
+                    "help_summary": notification["summary"],
+                    "help_reason": notification["reason"],
+                    "help_attempted": list(notification.get("attempted") or []),
+                    "help_recommendation": notification.get("recommendation", ""),
+                    "help_context": context,
+                    "workflow_parent_event_id": str(
+                        context.get("workflow_parent_event_id") or ""
+                    ),
+                    "workflow_node_id": str(context.get("workflow_node_id") or ""),
+                    "root_correlation_id": str(context.get("root_correlation_id") or ""),
+                    "session_id": str(
+                        context.get("session_id") or frame.get("session_id") or ""
+                    ),
+                }
 
-        await self._channels.broadcast(notification)
-        logger.info(
-            "RoomBridge: help_needed notification peer_id=%s reason=%s",
-            meta.peer_id,
-            notification["reason"],
-        )
+            await self._channels.broadcast(notification)
+            telemetry.count(
+                "skuld.operator.help_requests",
+                attributes={"peer_id": meta.peer_id, "outcome": "surfaced"},
+            )
+            logger.info(
+                "RoomBridge: help_needed notification peer_id=%s reason=%s",
+                meta.peer_id,
+                notification["reason"],
+            )
 
     async def _handle_outcome_frame(
         self,
