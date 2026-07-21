@@ -46,22 +46,22 @@ weight self-improvement or AGI. The resident can nevertheless improve its
 understanding, working methods, tools, schedules, shared knowledge, and use of
 other agents.
 
-## Architectural destination: recover Ravn as a harness
+## Architectural destination: Ravn as the autonomous agent boundary
 
 The Codor comparison establishes a boundary that simplifies this work rather
 than adding another subsystem:
 
-> **Ravn is a standalone agent harness. A Valkyrie is a Niuu-managed agent that
-> may use Ravn, Codex, Claude Code, or another compatible harness. A Flokk
-> coordinates Valkyries independently of their harness.**
+> **Ravn is the autonomous agent that wraps models and runtimes such as Codex,
+> Claude Code, and Nemotron. A Valkyrie is a Niuu-managed Ravn. Niuu provides
+> Flokks, direct meshes, Skuld rooms, identity, deployment, and infrastructure.**
 
-The current repository does not yet respect that boundary. The `ravn` package
-contains both the small execution harness and Niuu's resident, flokk, Skuld,
-Sleipnir, Mímir, governance, and Kubernetes concerns. The direction is to
-extract the actual CLI/turn kernel, not move the entire current package into a
-second repository.
+The current repository does not yet respect that boundary consistently. Ravn
+contains agent semantics and some concrete Niuu infrastructure concerns, while
+Skuld currently wraps several execution runtimes directly. The direction is to
+put model and runtime adapters beneath Ravn and expose Niuu collaboration and
+infrastructure through ports, without introducing another agent loop.
 
-The stable harness contract should remain small:
+The stable Ravn-to-runtime contract should remain small:
 
 ```text
 input:  prompt | resume | interrupt | human_input
@@ -70,52 +70,52 @@ output: session_started | text_delta | tool_started | tool_completed
 query:  capabilities
 ```
 
-Ravn owns agent turns, local sessions, tools, model adapters, permissions,
-checkpoint/resume, project instructions, and this machine-readable event
-stream. Niuu owns resident judgment and continuity, Valkyrie identity, Flokk
-membership, Skuld, Sleipnir, Mímir, policy, workload identity, Kubernetes, and
-the HUD.
+Ravn owns the judgment and action loop, durable cases and continuation,
+evidence-backed learning, capability evolution, A2A interaction with external
+agents and systems, runtime/model adapters, permissions, and the normalized
+event stream. Niuu owns Valkyrie identity and lifecycle, Flokk membership and
+direct mesh infrastructure, Skuld rooms and channels, workload identity,
+Kubernetes, gateways, registries, and the HUD.
 
-This makes the current operator path precise. The harness reports generic
-`input_required` state with a run/session correlation. The Niuu Valkyrie
-adapter persists it, projects it into the shared Skuld operator room, and
-returns the answer as `human_input` to the exact suspended run. Telegram is a
-Skuld channel, not a Ravn feature. Sleipnir is telemetry and replay, not the
-delivery mechanism. Ting is not part of this path.
+This makes the current operator path precise. Ravn judges that input is
+required and persists the exact suspended case. Skuld projects that request
+into a room that humans and other Ravns may join, and routes the answer back to
+the exact case. Telegram is a Skuld room channel, not a Ravn cognitive feature.
+Skuld does not own the continuation decision.
 
-It also makes the Codex/Nemotron comparison honest. Model, harness, and Niuu
-runtime become separate variables: Nemotron can run through Ravn, while Codex
-can run through its own harness adapter, with both receiving the same durable
-observations and emitting the same normalized run evidence.
+It also makes the Codex/Nemotron comparison honest. Model/runtime, Ravn, and
+Niuu become separate variables: Ravn can use Nemotron directly or wrap Codex
+or Claude Code as a richer execution runtime while retaining the same case,
+judgment, learning, and evidence contracts.
 
 The intended adoption surface is correspondingly small:
 
 ```text
-ravn                         # run the standalone harness
-niuu valkyrie start --harness ravn
+ravn                         # run the autonomous agent
+niuu valkyrie start --runtime codex
 niuu flokk join <flokk> --as <role>
 niuu doctor
 ```
 
-Niuu may auto-detect and attach an already-running harness session. Joining a
-Flokk must be durable and explicit about execution custody: an attached
-Valkyrie retains its own loop, while a managed Valkyrie is scheduled by Niuu.
-Discovery alone never implies admission or authority.
+Niuu may auto-detect and attach an already-running Ravn. Joining a Flokk must
+be durable and explicit about execution custody. Discovery alone never implies
+admission or authority.
 
 The extraction order is intentionally narrow:
 
-1. Define and prove the headless Ravn run-event contract in this repository.
-2. Move resident/platform composition behind a Niuu harness adapter.
-3. Build Ravn as an independently installable package with no Niuu source
-   present.
-4. Make Niuu consume only that public contract and add Codex as the second
-   adapter proof.
-5. Split repositories only after the dependency boundary holds.
+1. Define and prove the Ravn-to-runtime contract with direct-model and Codex
+   adapters.
+2. Keep judgment, learning, continuation, capability evolution, and A2A in
+   Ravn while moving concrete Niuu infrastructure behind ports.
+3. Make Flokk mesh, Skuld room, and A2A paths explicit and separately traced.
+4. Prove the same Ravn case over more than one runtime.
+5. Split packaging or repositories only when it reduces coupling rather than
+   moving it.
 
 The operator walking slice remains worth completing now, but it must test this
-boundary: one generic input request, one Niuu-owned Skuld route, one human
-answer, and one exact-run resume under a single trace. It must not establish a
-new direct Ravn-to-Telegram or Ravn-to-Sleipnir runtime dependency.
+boundary: one Ravn-owned suspended case, one Niuu-owned Skuld room route, one
+answer from a human or another Ravn, and one exact-case resume under a single
+trace. It must not establish a direct Ravn-to-Telegram dependency.
 
 ## Evidence provenance
 
@@ -851,18 +851,19 @@ continue/ask/sleep/stop behavior without adding an objectives subsystem.
 #### 1.4 Complete the operator question round trip
 
 - Persist `operator-needed/latest` before surfacing the question.
-- Emit a harness-neutral `input_required` event with the run, case, and
+- Emit a runtime-neutral `input_required` event with the run, case, and
   continuation identifiers. During migration, the current `help_needed` event
   is the wire-compatible precursor.
-- Let the Niuu Valkyrie adapter project it into one shared Skuld operator room.
+- Let Ravn's configured Skuld room adapter project it into a shared room.
 - Let Skuld deliver it through its configured Telegram channel and retain the
   outbound ForceReply message id so replies route correctly even when multiple
   Valkyries are waiting.
 - Write the free-text operator answer through `ResidentStatePort`.
 - Enqueue the same case, load the answer as an observation, and mark it consumed
   only after successful resume.
-- Keep Skuld and Telegram outside the standalone Ravn harness; they are Niuu
-  adapters to the same continuation semantics.
+- Keep Skuld and Telegram outside Ravn's judgment domain. They are concrete
+  Niuu room infrastructure behind Ravn ports, not separate continuation
+  semantics.
 
 #### 1.5 Drive the home turn from the durable inbox
 
@@ -1254,8 +1255,8 @@ mechanisms, not a demonstrated self-evolving agent.**
 | Durable inbox | `src/ravn/resident_inbox/` | Load and durably acknowledge wake windows; preserve evidence references. |
 | Continuation domain | `src/ravn/domain/resident_continuation.py` | Reuse existing types; extend only where correlation/case metadata is genuinely missing. |
 | Resident-state adapters | `src/ravn/adapters/resident_state/` | Reuse preferred/fallback selection and question/answer storage. |
-| Harness contract | `RavnAgent`, CLI run/resume path, and canonical run events | Expose one small run/resume/interrupt/input/capabilities contract without Niuu platform types. |
-| Valkyrie harness adapter | current resident/daemon composition, moving under Niuu ownership | Translate generic harness events into resident continuation, Skuld, Sleipnir, policy, and HUD evidence. |
+| Runtime contract | Ravn-owned model/executor ports and canonical run events | Normalize direct models and agentic runtimes such as Codex and Claude Code beneath Ravn without giving them ownership of resident judgment or learning. |
+| Niuu collaboration adapters | Flokk mesh, Skuld room, identity, and deployment composition | Implement Ravn-facing infrastructure ports without moving semantic decisions out of Ravn. |
 | Operator path | resident continuation plus Skuld room/channel adapters | Surface and answer one persisted continuation contract; correlate a reply to the exact peer/run and trace. |
 | Reflection | `src/ravn/adapters/reflection/post_session.py` | Disable for baseline; later make session-neutral and evidence-gated. |
 | Mímir reflex | `src/ravn/reflex.py`, Ravn configuration | Disable for baseline; reintroduce only with measured benefit. |
