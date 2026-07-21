@@ -41,6 +41,13 @@ The exact tree varies with the model's choices. There is no span sequence that
 the model must follow. Runtime invariants—durability, authority, provenance,
 authentication, and bounds—remain deterministic.
 
+In-process tool execution produces the nested tool and dependency spans shown
+above. CLI transports also record the exact tool request and response as events
+on the model span. The CLI MCP subprocess does not yet inherit that task trace
+context, so its internal dependency spans form separate traces. Do not infer a
+single causal tree for those internal calls until cross-process propagation is
+implemented.
+
 Every Sleipnir event carries W3C trace context in its envelope. Publish and
 subscriber port decorators create producer/consumer spans, so ResidentLearning,
 ODIN, feedback, huddle, and other operators remain causally connected without
@@ -123,6 +130,34 @@ continuation became a stop disposition when its enqueue hit a full queue while
 the parent task was nevertheless recorded as successful. They are evidence
 that the telemetry is diagnostic, not evidence that the resident behavior is
 already correct.
+
+On 2026-07-21 a Codex-backed Ivaldi consumed unprompted events produced by a
+simulated Sindri printer through the real Laevateinn JetStream. Repeated print
+attempts independently failed with `RELEASE_OVERCOUNT` after the simulated
+release-film counter exceeded its declared maximum. No scenario name or tool
+building instruction was supplied to the resident.
+
+- The Observatory workload-identity chart was deployed through GitOps. Guild
+  then returned 2 real agents and 10 peer skills from 7 healthy sources; one
+  unrelated Valaskjalf source remained unavailable.
+- The trial exposed a harness defect: `build_tool` was described to the model
+  but absent from the CLI MCP tool server. After the server gained dynamic tool
+  registration, a real MCP `tools/list` included `build_tool` and capability
+  discovery shared the same live registry.
+- Trace `b0c5850ed42cc662ed2824c9c5218e07` records the exact operator answer,
+  Codex request and response, targeted `capability_list` call, and its truthful
+  result: 25 catalog entries including `web_search`, `a2a_task`, `build_tool`,
+  and 10 peer Agent Card skills.
+- Codex did not build or delegate. It revised an earlier physical-maintenance
+  assumption after learning the printer was simulated, preserved the repeated
+  failure pattern, prohibited another retry, and slept for an external event.
+  The source event exposed no addressable management interface, documentation,
+  object reference, or provenance link from which a safe reset capability
+  could be researched or verified. This is a blocked evolution trajectory, not
+  evidence of autonomous tool evolution.
+- The parent trace contains the complete MCP tool request and response, but not
+  the MCP subprocess's internal Guild HTTP spans. Cross-process trace-context
+  propagation remains required for a fully causal HUD.
 
 The JSON is checked in and importable but is not silently installed into the
 separately managed Glitnir Grafana release. Provision it through that release's
