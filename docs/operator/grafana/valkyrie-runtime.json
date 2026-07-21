@@ -206,6 +206,7 @@
     },
     {
       "datasource": {"type": "tempo", "uid": "${traces}"},
+      "description": "Each row is a real Tempo trace for this resident. Click a Trace ID to open the complete span timeline and inspect the LLM, tool, A2A, state, and event-bus path.",
       "gridPos": {"h": 14, "w": 24, "x": 0, "y": 53},
       "id": 50,
       "options": {},
@@ -226,8 +227,8 @@
   "tags": ["ravn", "valkyrie", "agents", "otel", "tempo"],
   "templating": {
     "list": [
-      {"current": {}, "hide": 0, "includeAll": false, "label": "Metrics", "multi": false, "name": "metrics", "options": [], "query": "prometheus", "refresh": 1, "type": "datasource"},
-      {"current": {}, "hide": 0, "includeAll": false, "label": "Traces", "multi": false, "name": "traces", "options": [], "query": "tempo", "refresh": 1, "type": "datasource"},
+      {"current": {"selected": true, "text": "Mimir (eitri)", "value": "mimir-eitri"}, "hide": 0, "includeAll": false, "label": "Metrics", "multi": false, "name": "metrics", "options": [], "query": "prometheus", "refresh": 1, "type": "datasource"},
+      {"current": {"selected": true, "text": "Tempo (eitri)", "value": "tempo-eitri"}, "hide": 0, "includeAll": false, "label": "Traces", "multi": false, "name": "traces", "options": [], "query": "tempo", "refresh": 1, "type": "datasource"},
       {"current": {"selected": true, "text": "ravn-ivaldi-local", "value": "ravn-ivaldi-local"}, "datasource": {"type": "prometheus", "uid": "${metrics}"}, "definition": "label_values(ravn_runtime_up, job)", "hide": 0, "includeAll": false, "label": "Resident service", "multi": false, "name": "job", "options": [], "query": {"query": "label_values(ravn_runtime_up, job)", "refId": "StandardVariableQuery"}, "refresh": 1, "sort": 1, "type": "query"},
       {"allValue": ".*", "current": {"selected": true, "text": "All", "value": "$__all"}, "datasource": {"type": "prometheus", "uid": "${metrics}"}, "definition": "label_values(ravn_runtime_up{job=~\"$job\"}, ravn_environment_id)", "hide": 0, "includeAll": true, "label": "Environment", "multi": true, "name": "environment", "options": [], "query": {"query": "label_values(ravn_runtime_up{job=~\"$job\"}, ravn_environment_id)", "refId": "StandardVariableQuery"}, "refresh": 1, "sort": 1, "type": "query"}
     ]
