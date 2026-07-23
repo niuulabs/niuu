@@ -15,7 +15,10 @@ from niuu.observability import get_observability
 from ravn.domain.models import ToolResult
 from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
 from ravn.ports.tool import ToolPort
-from ravn.ports.tool_build_backend import ToolBuildError, ToolBuildInputRequiredError
+from ravn.ports.tool_build_backend import (
+    ToolBuildError,
+    ToolBuildInputRequiredError,
+)
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
 from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
@@ -283,6 +286,45 @@ class BuildTool(ToolPort):
     def parallelisable(self) -> bool:
         return False
 
+    async def recover_pending(self) -> list[ToolResult]:
+        """Continue commissioned builds interrupted before their result was durable."""
+        results: list[ToolResult] = []
+        for record in self._commission_records():
+            if str(record.get("environment_id") or "") != self._environment_id:
+                continue
+            if str(record.get("valkyrie_id") or "") != self._valkyrie_id:
+                continue
+            original = record.get("input")
+            if not isinstance(original, dict):
+                continue
+            operation_id = str(record.get("operation_id") or "")
+            telemetry = get_observability()
+            with telemetry.span(
+                "ravn.tool_build.commission.recover",
+                attributes={"ravn.tool_build.operation.id": operation_id},
+            ):
+                telemetry.event(
+                    "ravn.tool_build.commission.recovery_started",
+                    attributes={
+                        "ravn.tool_build.operation.id": operation_id,
+                        "ravn.tool_build.name": str(record.get("tool_name") or ""),
+                        "ravn.tool_build.commission.state": str(record.get("state") or ""),
+                    },
+                )
+                result = await self._execute_pipeline(dict(original))
+                results.append(result)
+                telemetry.event(
+                    "ravn.tool_build.commission.recovery_finished",
+                    attributes={
+                        "ravn.tool_build.operation.id": operation_id,
+                        "ravn.tool_build.recovery.outcome": (
+                            "error" if result.is_error else "completed"
+                        ),
+                    },
+                    content=result.content,
+                )
+        return results
+
     async def execute(self, input: dict) -> ToolResult:  # noqa: A002
         telemetry = get_observability()
         commissioned = bool(str(input.get("continuation_task_id") or "").strip()) or (
@@ -390,6 +432,7 @@ class BuildTool(ToolPort):
                 },
             )
             if verify_error is not None:
+                self._complete_commission(input)
                 return verify_error
 
             canary_input = input.get("canary_input")
@@ -419,6 +462,7 @@ class BuildTool(ToolPort):
                         "findings": review.findings,
                     },
                 )
+                self._complete_commission(input)
                 return ToolResult(
                     tool_call_id="",
                     content="build_tool rejected by review: " + "; ".join(review.blocking_findings),
@@ -433,6 +477,7 @@ class BuildTool(ToolPort):
                         "ravn.review.filed": review_filed,
                     },
                 )
+                self._complete_commission(input)
                 return ToolResult(
                     tool_call_id="",
                     content=_review_summary(artifact, artifact_path, review_filed=review_filed),
@@ -440,6 +485,7 @@ class BuildTool(ToolPort):
                 )
 
             tool_path = write_learned_tool(tools_dir=self._tools_dir, artifact=artifact)
+            self._complete_commission(input)
             telemetry.event(
                 "ravn.tool_build.tool.persisted",
                 attributes={
@@ -599,18 +645,32 @@ class BuildTool(ToolPort):
             valkyrie_id=self._valkyrie_id,
             domain=self._domain,
             signal_context=signal_context,
+            operation_id=str(input.get("_build_operation_id") or ""),
             continuation=dict(input.get("_build_continuation") or {}),
         )
 
     async def _commission_and_merge(self, input: dict, *, signal_context_suffix: str) -> dict:  # noqa: A002
         """Commission the backend and merge its result back into the input."""
-        request = self._build_backend_request(input, signal_context_suffix=signal_context_suffix)
+        prepared = dict(input)
+        operation_id = ""
+        if bool(getattr(self._build_backend, "supports_restart_recovery", False)):
+            prepared = self._prepare_commission(
+                input,
+                replace_current=bool(signal_context_suffix),
+            )
+            operation_id = str(prepared["_build_operation_id"])
+        request = self._build_backend_request(
+            prepared,
+            signal_context_suffix=signal_context_suffix,
+        )
         try:
             result = await self._build_backend.build(request)
         except ToolBuildInputRequiredError as exc:
-            self._persist_pending_build(input, exc)
+            self._persist_pending_build(prepared, exc)
+            if operation_id:
+                self._delete_commission(operation_id)
             raise
-        merged = dict(input)
+        merged = dict(prepared)
         merged.pop("_build_continuation", None)
         merged.pop("continuation_task_id", None)
         merged.pop("continuation_answer", None)
@@ -696,6 +756,7 @@ class BuildTool(ToolPort):
             if key
             not in {
                 "_build_continuation",
+                "_build_operation_id",
                 "continuation_task_id",
                 "continuation_answer",
                 "continuation_metadata",
@@ -758,6 +819,129 @@ class BuildTool(ToolPort):
     def _pending_build_path(self, task_id: str) -> Path:
         digest = hashlib.sha256(task_id.encode("utf-8")).hexdigest()
         return self._artifacts_dir / "pending-builds" / f"{digest}.json"
+
+    def _prepare_commission(
+        self,
+        input: dict,  # noqa: A002
+        *,
+        replace_current: bool,
+    ) -> dict:
+        prepared = dict(input)
+        current_id = str(prepared.get("_build_operation_id") or "").strip()
+        if current_id and not replace_current:
+            return prepared
+        if current_id:
+            self._delete_commission(current_id)
+
+        manifest = prepared.get("manifest")
+        manifest = manifest if isinstance(manifest, dict) else {}
+        tool_name = str(manifest.get("name") or "").strip()
+        existing = None if replace_current else self._pending_commission(tool_name)
+        if existing is not None:
+            operation_id = str(existing["operation_id"])
+        else:
+            operation_id = str(uuid4())
+            original = {
+                key: value
+                for key, value in prepared.items()
+                if key
+                not in {
+                    "_build_continuation",
+                    "_build_operation_id",
+                    "continuation_task_id",
+                    "continuation_answer",
+                    "continuation_metadata",
+                }
+            }
+            self._write_commission(
+                operation_id,
+                {
+                    "version": 1,
+                    "operation_id": operation_id,
+                    "tool_name": tool_name,
+                    "environment_id": self._environment_id,
+                    "valkyrie_id": self._valkyrie_id,
+                    "state": "submitting",
+                    "input": original,
+                },
+            )
+            get_observability().event(
+                "ravn.tool_build.commission.persisted",
+                attributes={
+                    "ravn.tool_build.operation.id": operation_id,
+                    "ravn.tool_build.name": tool_name,
+                    "ravn.tool_build.commission.state": "submitting",
+                },
+            )
+
+        prepared["_build_operation_id"] = operation_id
+        return prepared
+
+    def _pending_commission(self, tool_name: str) -> dict[str, Any] | None:
+        if not tool_name:
+            return None
+        return next(
+            (
+                payload
+                for payload in self._commission_records()
+                if str(payload.get("tool_name") or "") == tool_name
+                and str(payload.get("environment_id") or "") == self._environment_id
+                and str(payload.get("valkyrie_id") or "") == self._valkyrie_id
+            ),
+            None,
+        )
+
+    def _commission_records(self) -> list[dict[str, Any]]:
+        directory = self._artifacts_dir / "pending-commissions"
+        try:
+            paths = sorted(
+                directory.glob("*.json"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            return []
+        records: list[dict[str, Any]] = []
+        for path in paths:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(payload, dict) or payload.get("version") != 1:
+                continue
+            records.append(payload)
+        return records
+
+    def _write_commission(self, operation_id: str, payload: dict[str, Any]) -> None:
+        path = self._commission_path(operation_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        temporary.write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        temporary.chmod(0o600)
+        temporary.replace(path)
+
+    def _complete_commission(self, input: dict) -> None:  # noqa: A002
+        operation_id = str(input.get("_build_operation_id") or "").strip()
+        if not operation_id:
+            return
+        self._delete_commission(operation_id)
+        get_observability().event(
+            "ravn.tool_build.commission.completed",
+            attributes={"ravn.tool_build.operation.id": operation_id},
+        )
+
+    def _delete_commission(self, operation_id: str) -> None:
+        try:
+            self._commission_path(operation_id).unlink()
+        except FileNotFoundError:
+            return
+
+    def _commission_path(self, operation_id: str) -> Path:
+        digest = hashlib.sha256(operation_id.encode("utf-8")).hexdigest()
+        return self._artifacts_dir / "pending-commissions" / f"{digest}.json"
 
     def _input_required_result(self, required: ToolBuildInputRequiredError) -> ToolResult:
         continuation = required.continuation

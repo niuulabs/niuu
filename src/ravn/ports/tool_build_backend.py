@@ -61,6 +61,8 @@ class ToolBuildRequest:
     domain: str = ""
     #: The signal/investigation context that motivated the tool.
     signal_context: str = ""
+    #: Stable local operation identifier used to recover a lost remote response.
+    operation_id: str = ""
     #: Opaque backend-owned state used to resume a durable remote build.
     continuation: dict[str, Any] = field(default_factory=dict)
 
@@ -85,6 +87,11 @@ class ToolBuildResult:
 
 class ToolBuildBackend(ABC):
     """Produce a learned tool's manifest + code from a build request."""
+
+    @property
+    def supports_restart_recovery(self) -> bool:
+        """Whether repeated builds with the same operation_id resume one task."""
+        return False
 
     @property
     @abstractmethod

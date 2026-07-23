@@ -124,6 +124,19 @@ class TestDaemonCallsConfigEcho:
         mock_log.assert_called_once()
 
     @pytest.mark.usefixtures("_clean_env")
+    def test_daemon_resumes_interrupted_tasks_by_default(self):
+        captured: dict[str, object] = {}
+
+        async def _record_run(_settings, **kwargs):
+            captured.update(kwargs)
+
+        with patch("ravn.cli.commands._run_daemon", side_effect=_record_run):
+            result = runner.invoke(app, ["daemon"])
+
+        assert result.exit_code == 0
+        assert captured["resume"] is True
+
+    @pytest.mark.usefixtures("_clean_env")
     def test_listen_emits_config_log(self):
         with (
             patch("ravn.cli.commands._log_effective_config") as mock_log,

@@ -80,6 +80,7 @@ A2A_SURFACE = "a2a"
 LAUNCH_SCOPE = "ting:workflow:launch"
 _CANCELED_KEY = "a2a_canceled"
 _CONTEXT_ID_KEY = "a2a_context_id"
+_MESSAGE_ID_KEY = "a2a_message_id"
 _WORKFLOW_SLUG_KEY = "a2a_workflow_slug"
 
 _STATUS_TO_STATE: dict[WorkflowCampaignStatus, int] = {
@@ -172,11 +173,28 @@ class WorkflowTaskHandler(RequestHandler):
             )
 
         metadata = _merged_metadata(params)
-        workflow = await self._resolve_workflow(metadata)
         prompt = _prompt_from_message(message)
         if not prompt:
             raise InvalidParamsError("message must include a non-empty text part")
 
+        existing = await self._campaign_for_message(message.message_id)
+        if existing is not None:
+            requested_workflow_id = str(metadata.get("workflowId") or "")
+            if requested_workflow_id != str(existing.workflow_id):
+                raise InvalidParamsError(
+                    f"messageId {message.message_id!r} already belongs to another workflow"
+                )
+            get_observability().event(
+                "ting.a2a.workflow.launch.reused",
+                attributes={
+                    "a2a.message.id": message.message_id,
+                    "a2a.task.id": existing.slug,
+                    "a2a.skill.id": str(existing.workflow_id),
+                },
+            )
+            return campaign_to_task(existing)
+
+        workflow = await self._resolve_workflow(metadata)
         telemetry = get_observability()
         trace_context = _trace_context(metadata)
         attributes = {
@@ -255,6 +273,7 @@ class WorkflowTaskHandler(RequestHandler):
                 "prompt": prompt,
                 "cluster_name": execution.session.cluster_name,
                 _CONTEXT_ID_KEY: message.context_id or slug,
+                _MESSAGE_ID_KEY: message.message_id,
                 _WORKFLOW_SLUG_KEY: execution.slug,
                 # Code-output pointers: for code workflows the durable
                 # artifact is the branch the session pushes, not a Mimir page.
@@ -341,7 +360,52 @@ class WorkflowTaskHandler(RequestHandler):
         params: ListTasksRequest,
         context: ServerCallContext,
     ) -> ListTasksResponse:
-        raise UnsupportedOperationError("task listing is not supported")
+        campaigns = await self._campaign_repo.list_campaigns(
+            owner_id=self._principal.user_id,
+        )
+        tasks: list[Task] = []
+        requested_state = int(params.status)
+        after = (
+            params.status_timestamp_after.ToDatetime(tzinfo=UTC)
+            if params.HasField("status_timestamp_after")
+            else None
+        )
+        for campaign in campaigns:
+            task = campaign_to_task(campaign)
+            if params.context_id and task.context_id != params.context_id:
+                continue
+            if requested_state and int(task.status.state) != requested_state:
+                continue
+            if after is not None and campaign.updated_at.astimezone(UTC) <= after:
+                continue
+            tasks.append(task)
+
+        tasks.sort(key=lambda item: item.status.timestamp.ToDatetime(), reverse=True)
+        try:
+            offset = int(params.page_token or 0)
+        except ValueError as exc:
+            raise InvalidParamsError("pageToken must be a non-negative integer") from exc
+        if offset < 0:
+            raise InvalidParamsError("pageToken must be a non-negative integer")
+
+        page_size = int(params.page_size) if params.page_size > 0 else len(tasks)
+        selected = tasks[offset : offset + page_size]
+        campaigns_by_slug = {campaign.slug: campaign for campaign in campaigns}
+        for task in selected:
+            campaign = campaigns_by_slug[task.id]
+            if params.include_artifacts and task.status.state == TaskState.TASK_STATE_COMPLETED:
+                await self._attach_artifacts(task, campaign)
+            if task.status.state == TaskState.TASK_STATE_INPUT_REQUIRED:
+                await self._attach_pending_questions(task, campaign)
+                await self._attach_pending_gates(task, campaign)
+
+        next_offset = offset + len(selected)
+        return ListTasksResponse(
+            tasks=selected,
+            next_page_token=str(next_offset) if next_offset < len(tasks) else "",
+            page_size=page_size,
+            total_size=len(tasks),
+        )
 
     async def on_message_send_stream(
         self,
@@ -408,6 +472,19 @@ class WorkflowTaskHandler(RequestHandler):
         )
 
     # -- Internals ------------------------------------------------------ #
+
+    async def _campaign_for_message(self, message_id: str) -> WorkflowCampaign | None:
+        campaigns = await self._campaign_repo.list_campaigns(
+            owner_id=self._principal.user_id,
+        )
+        return next(
+            (
+                campaign
+                for campaign in campaigns
+                if str(campaign.metadata.get(_MESSAGE_ID_KEY) or "") == message_id
+            ),
+            None,
+        )
 
     async def _continue_task(self, message: Message) -> Task:
         """Handle a reply on an INPUT_REQUIRED task.

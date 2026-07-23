@@ -951,6 +951,7 @@ class DriveLoop:
         self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         self._active_tasks: dict[str, asyncio.Task] = {}
         self._inflight_tasks: dict[str, AgentTask] = {}
+        self._restored_inflight_task_ids: set[str] = set()
         self._active_task_contexts: dict[str, AgentTask] = {}
         self._active_agents: dict[str, object] = {}
         self._semaphore = asyncio.Semaphore(config.max_concurrent_tasks)
@@ -1941,6 +1942,69 @@ class DriveLoop:
             )
             return outcome
 
+    async def _recover_interrupted_tool_operations(
+        self,
+        agent: object,
+        task: AgentTask,
+    ) -> list[str]:
+        if task.task_id not in self._restored_inflight_task_ids:
+            return []
+        self._restored_inflight_task_ids.discard(task.task_id)
+
+        tools = getattr(agent, "tools", [])
+        if callable(tools):
+            tools = tools()
+        if not isinstance(tools, list):
+            return []
+
+        recovered: list[str] = []
+        max_chars = int(getattr(self._settings.tools, "max_result_chars", 0) or 0)
+        token = self._current_task_var.set(task)
+        try:
+            for tool in tools:
+                recover = getattr(tool, "recover_pending", None)
+                if not callable(recover):
+                    continue
+                try:
+                    results = await recover()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "drive_loop: durable tool recovery failed for task %s tool=%s: %s",
+                        task.task_id,
+                        getattr(tool, "name", type(tool).__name__),
+                        exc,
+                    )
+                    get_observability().event(
+                        "ravn.tool.recovery.failed",
+                        attributes={
+                            "ravn.task.id": task.task_id,
+                            "gen_ai.tool.name": str(
+                                getattr(tool, "name", type(tool).__name__)
+                            ),
+                            "error.type": type(exc).__name__,
+                        },
+                        content={"error": str(exc)},
+                    )
+                    recovered.append(
+                        f"### {getattr(tool, 'name', type(tool).__name__)} (error)\n\n"
+                        f"Durable operation recovery failed: {exc}"
+                    )
+                    continue
+                for result in results or []:
+                    content = str(getattr(result, "content", result))
+                    if max_chars > 0 and len(content) > max_chars:
+                        content = content[:max_chars].rstrip() + "\n… (truncated)"
+                    status = "error" if bool(getattr(result, "is_error", False)) else "completed"
+                    recovered.append(
+                        f"### {getattr(tool, 'name', type(tool).__name__)} ({status})\n\n"
+                        f"{content}"
+                    )
+        finally:
+            self._current_task_var.reset(token)
+        return recovered
+
     async def _run_task_observed(self, task: AgentTask) -> str:
         """Execute a single initiative task."""
         telemetry = get_observability()
@@ -2018,11 +2082,31 @@ class DriveLoop:
                     "ravn.agent.tool_count": len(getattr(agent, "_tools", {}) or {}),
                 },
             )
+            recovered_tool_results = await self._recover_interrupted_tool_operations(
+                agent,
+                task,
+            )
             logger.info("drive_loop: task %s building prompt", task.task_id)
             prompt_task = task
             if self._resident_runtime is not None:
                 resident_context = await self._resident_runtime.prepare_context(task)
                 prompt_task = replace(task, initiative_context=resident_context)
+            if recovered_tool_results:
+                recovery_context = "\n\n".join(
+                    (
+                        "## Interrupted operation recovery",
+                        "The runtime reconciled durable tool work that was interrupted "
+                        "during the previous process. Treat these truthful tool results "
+                        "as part of the current case:",
+                        *recovered_tool_results,
+                    )
+                )
+                prompt_task = replace(
+                    prompt_task,
+                    initiative_context=(
+                        f"{prompt_task.initiative_context}\n\n{recovery_context}"
+                    ),
+                )
             prompt = build_initiative_prompt(prompt_task)
             prompt = await self._apply_retrieval_reflex(prompt, task)
             telemetry.event(
@@ -3506,9 +3590,16 @@ class DriveLoop:
         # Support old format (bare list) and new format (dict with queue key)
         if isinstance(raw, list):
             records = raw
+            inflight_task_ids: set[str] = set()
             fan_in_data: dict = {}
         else:
-            records = [*raw.get("inflight", []), *raw.get("queue", [])]
+            inflight_records = raw.get("inflight", [])
+            records = [*inflight_records, *raw.get("queue", [])]
+            inflight_task_ids = {
+                str(record.get("task_id") or "")
+                for record in inflight_records
+                if isinstance(record, dict)
+            }
             fan_in_data = raw.get("fan_in_pending", {})
 
         restored = 0
@@ -3561,6 +3652,8 @@ class DriveLoop:
                 track = getattr(self._resident_runtime, "track_task", None)
                 if track is not None:
                     track(task)
+                if task.task_id in inflight_task_ids:
+                    self._restored_inflight_task_ids.add(task.task_id)
                 restored += 1
             except Exception as exc:
                 logger.warning("drive_loop: failed to restore journal entry: %s", exc)

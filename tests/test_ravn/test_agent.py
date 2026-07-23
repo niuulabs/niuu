@@ -310,6 +310,95 @@ class TestRavnAgentToolUse:
         assert persisted["requirements"] == []
         assert persisted["provenance"]["build_evidence"] == {"retrieval": "canonical_file"}
 
+    async def test_build_tool_reuses_persisted_commission_after_restart(self, tmp_path) -> None:
+        from ravn.ports.tool_build_backend import (
+            ToolBuildBackend,
+            ToolBuildError,
+            ToolBuildRequest,
+            ToolBuildResult,
+        )
+
+        class _Backend(ToolBuildBackend):
+            def __init__(self, *, interrupted: bool) -> None:
+                self.interrupted = interrupted
+                self.requests: list[ToolBuildRequest] = []
+
+            @property
+            def name(self) -> str:
+                return "recoverable"
+
+            @property
+            def supports_restart_recovery(self) -> bool:
+                return True
+
+            async def build(self, request: ToolBuildRequest) -> ToolBuildResult:
+                self.requests.append(request)
+                if self.interrupted:
+                    raise ToolBuildError("connection closed before task response")
+                return ToolBuildResult(
+                    manifest={
+                        "name": "restart_probe",
+                        "description": "Recovered build.",
+                        "input_schema": {"type": "object"},
+                        "required_permission": "probe:read",
+                        "declared_reach": [{"kind": "pure_compute", "access": "none"}],
+                        "entry_point": "run",
+                    },
+                    tool_code="def run(input):\n    return {'recovered': True}\n",
+                    test_code=(
+                        "def test_run():\n"
+                        "    import restart_probe\n"
+                        "    assert restart_probe.run({})['recovered'] is True\n"
+                        "\n"
+                        "test_run()\n"
+                    ),
+                )
+
+        build_input = {
+            "manifest": {"name": "restart_probe", "required_permission": "probe:read"},
+            "build_request": "Build a reusable read-only probe.",
+            "canary_input": {},
+        }
+        artifacts_dir = tmp_path / "artifacts"
+
+        interrupted = _Backend(interrupted=True)
+        first_agent, _ = make_agent(make_simple_llm("unused"))
+        first_tool = attach_build_tool(
+            first_agent,
+            tools_dir=tmp_path / "tools",
+            artifacts_dir=artifacts_dir,
+            build_backend=interrupted,
+            environment_id="cluster-a",
+            valkyrie_id="resident-a",
+        )
+
+        first_result = await first_tool.execute(build_input)
+
+        assert first_result.is_error
+        operation_id = interrupted.requests[0].operation_id
+        pending = list((artifacts_dir / "pending-commissions").glob("*.json"))
+        assert len(pending) == 1
+        assert json.loads(pending[0].read_text())["state"] == "submitting"
+
+        recovered = _Backend(interrupted=False)
+        second_agent, _ = make_agent(make_simple_llm("unused"))
+        second_tool = attach_build_tool(
+            second_agent,
+            tools_dir=tmp_path / "tools",
+            artifacts_dir=artifacts_dir,
+            build_backend=recovered,
+            environment_id="cluster-a",
+            valkyrie_id="resident-a",
+        )
+
+        recovered_results = await second_tool.recover_pending()
+
+        assert len(recovered_results) == 1
+        second_result = recovered_results[0]
+        assert not second_result.is_error
+        assert recovered.requests[0].operation_id == operation_id
+        assert list((artifacts_dir / "pending-commissions").glob("*.json")) == []
+
     async def test_build_tool_rejects_build_request_without_backend(self, tmp_path) -> None:
         agent, _ = make_agent(make_simple_llm("unused"))
         tool = attach_build_tool(agent, tools_dir=tmp_path / "tools")

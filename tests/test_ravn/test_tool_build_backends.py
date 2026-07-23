@@ -891,6 +891,65 @@ async def test_a2a_backend_builds_from_inline_canonical_artifact() -> None:
     assert all(headers.get("A2A-Version") == "1.0" for headers in client.headers_seen)
 
 
+async def test_a2a_backend_uses_durable_operation_id_for_message_correlation() -> None:
+    artifacts = [
+        {
+            "artifactId": "x/learned_tool.json",
+            "parts": [{"filename": "learned_tool.json", "text": _BUILT_CONTRACT}],
+        }
+    ]
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"tasks": []}),
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_task("TASK_STATE_COMPLETED", artifacts=artifacts)),
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1")
+
+    await backend.build(replace(_request(), operation_id="operation-resident-1"))
+
+    assert [body["method"] for body in client.post_bodies] == [
+        "ListTasks",
+        "SendMessage",
+        "GetTask",
+    ]
+    message = client.post_bodies[1]["params"]["message"]
+    assert message["messageId"] == "operation-resident-1"
+    assert message["contextId"] == "operation-resident-1"
+
+
+async def test_a2a_backend_recovers_existing_task_by_context_id() -> None:
+    artifacts = [
+        {
+            "artifactId": "x/learned_tool.json",
+            "parts": [{"filename": "learned_tool.json", "text": _BUILT_CONTRACT}],
+        }
+    ]
+    recovered = _a2a_task("TASK_STATE_WORKING")
+    recovered["contextId"] = "operation-resident-1"
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"tasks": [recovered]}),
+                _rpc_result(_a2a_task("TASK_STATE_COMPLETED", artifacts=artifacts)),
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1")
+
+    result = await backend.build(
+        replace(_request(), operation_id="operation-resident-1")
+    )
+
+    assert result.provenance["a2a_task_id"] == "task-1"
+    assert [body["method"] for body in client.post_bodies] == ["ListTasks", "GetTask"]
+
+
 async def test_a2a_backend_propagates_active_trace_in_message_metadata(
     monkeypatch,
 ) -> None:

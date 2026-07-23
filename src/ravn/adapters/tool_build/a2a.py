@@ -124,6 +124,10 @@ class A2AToolBuildBackend(ToolBuildBackend):
         return "a2a"
 
     @property
+    def supports_restart_recovery(self) -> bool:
+        return True
+
+    @property
     def card_url(self) -> str:
         """Configured agent-card URL (read-only, for diagnostics)."""
         return self._card_url
@@ -148,6 +152,7 @@ class A2AToolBuildBackend(ToolBuildBackend):
         attributes = {
             "ravn.tool_build.backend": self.name,
             "ravn.tool_build.name": request.name,
+            "ravn.tool_build.operation.id": request.operation_id,
             "a2a.card.url": self._card_url,
         }
         with telemetry.span("ravn.a2a.tool_build", attributes=attributes) as span:
@@ -242,12 +247,14 @@ class A2AToolBuildBackend(ToolBuildBackend):
             )
         else:
             _system, initial_prompt = build_prompts(request)
-            task = await self._send_message(
-                endpoint,
-                prompt=initial_prompt,
-                workflow_id=workflow_id,
-                request=request,
-            )
+            task = await self._find_task_by_context(endpoint, request.operation_id)
+            if task is None:
+                task = await self._send_message(
+                    endpoint,
+                    prompt=initial_prompt,
+                    workflow_id=workflow_id,
+                    request=request,
+                )
             task_id = str(task.get("id") or "")
             if not task_id:
                 raise ToolBuildError("A2A SendMessage returned no task id")
@@ -726,6 +733,7 @@ class A2AToolBuildBackend(ToolBuildBackend):
         workflow_id: str,
         request: ToolBuildRequest,
     ) -> dict[str, Any]:
+        operation_id = request.operation_id or str(uuid4())
         metadata: dict[str, Any] = {
             "workflowId": workflow_id,
             "sessionName": f"tool-build-{request.name}",
@@ -748,7 +756,8 @@ class A2AToolBuildBackend(ToolBuildBackend):
             "SendMessage",
             {
                 "message": {
-                    "messageId": str(uuid4()),
+                    "messageId": operation_id,
+                    "contextId": operation_id,
                     "role": "ROLE_USER",
                     "parts": [{"text": prompt}],
                     "metadata": metadata,
@@ -758,6 +767,49 @@ class A2AToolBuildBackend(ToolBuildBackend):
         task = result.get("task")
         if not isinstance(task, dict):
             raise ToolBuildError("A2A SendMessage returned no task")
+        return task
+
+    async def _find_task_by_context(
+        self,
+        endpoint: str,
+        operation_id: str,
+    ) -> dict[str, Any] | None:
+        if not operation_id:
+            return None
+        try:
+            result = await self._rpc(
+                endpoint,
+                "ListTasks",
+                {"contextId": operation_id},
+            )
+        except ToolBuildError as exc:
+            get_observability().event(
+                "ravn.a2a.task.recovery_lookup_unavailable",
+                attributes={"ravn.tool_build.operation.id": operation_id},
+                content={"error": str(exc)},
+            )
+            return None
+        tasks = result.get("tasks")
+        if not isinstance(tasks, list):
+            return None
+        task = next(
+            (
+                item
+                for item in tasks
+                if isinstance(item, dict)
+                and str(item.get("contextId") or item.get("context_id") or "")
+                == operation_id
+            ),
+            None,
+        )
+        if task is not None:
+            get_observability().event(
+                "ravn.a2a.task.recovered",
+                attributes={
+                    "ravn.tool_build.operation.id": operation_id,
+                    "a2a.task.id": str(task.get("id") or ""),
+                },
+            )
         return task
 
     async def _get_task(self, endpoint: str, task_id: str) -> dict[str, Any]:

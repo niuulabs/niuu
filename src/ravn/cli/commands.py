@@ -1250,7 +1250,9 @@ def daemon(
         "", "--profile", help="Profile name (built-in or from ~/.ravn/profiles/)."
     ),
     resume: bool = typer.Option(
-        False, "--resume", help="Resume unfinished tasks from the journal."
+        True,
+        "--resume/--no-resume",
+        help="Resume unfinished tasks from the journal.",
     ),
 ) -> None:
     """Start gateway channels AND drive loop simultaneously.  Never exits.

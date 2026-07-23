@@ -409,7 +409,23 @@ class TestSendMessage:
         assert campaign is not None
         assert campaign.owner_id == "user-1"
         assert campaign.metadata["surface"] == "a2a"
+        assert campaign.metadata["a2a_message_id"] == "msg-1"
         assert campaign.metadata["a2a_workflow_slug"] == "build-the-widget-tool"
+
+    def test_reuses_task_when_message_is_retried(self) -> None:
+        workflow = _make_workflow()
+        client, _, port = _make_client(
+            workflow_repo=InMemoryWorkflowRepository([workflow]),
+        )
+        params = _send_params(str(workflow.id))
+        params["message"]["contextId"] = "resident-operation-1"
+
+        first = _rpc(client, "SendMessage", params).json()["result"]["task"]
+        retried = _rpc(client, "SendMessage", params).json()["result"]["task"]
+
+        assert retried["id"] == first["id"]
+        assert retried["contextId"] == "resident-operation-1"
+        assert len(port.spawned) == 1
 
     def test_missing_workflow_id_is_invalid_params(self) -> None:
         client, _, _ = _make_client()
@@ -774,12 +790,35 @@ class TestProtocolSurface:
         error = response.json()["error"]
         assert error["code"] == -32601
 
-    def test_list_tasks_is_unsupported(self) -> None:
-        client, _, _ = _make_client()
+    def test_list_tasks_filters_owned_tasks_by_context(self) -> None:
+        mine = _make_campaign(
+            slug="task-mine",
+            metadata={"a2a_context_id": "resident-operation-1"},
+        )
+        other_context = _make_campaign(
+            slug="task-other-context",
+            metadata={"a2a_context_id": "resident-operation-2"},
+        )
+        other_owner = _make_campaign(
+            slug="task-other-owner",
+            owner_id="user-2",
+            metadata={"a2a_context_id": "resident-operation-1"},
+        )
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository(
+                [mine, other_context, other_owner]
+            )
+        )
 
-        response = _rpc(client, "ListTasks", {})
+        response = _rpc(
+            client,
+            "ListTasks",
+            {"contextId": "resident-operation-1"},
+        )
 
-        assert "error" in response.json()
+        result = response.json()["result"]
+        assert [task["id"] for task in result["tasks"]] == ["task-mine"]
+        assert result["totalSize"] == 1
 
     def test_missing_identity_headers_are_unauthorized(self) -> None:
         client, _, _ = _make_client()
