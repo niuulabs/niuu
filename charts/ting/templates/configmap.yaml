@@ -121,7 +121,7 @@ data:
       auto_approve_threshold: {{ .Values.review.autoApproveThreshold }}
       {{- end }}
     {{- end }}
-    {{- if .Values.a2a }}
+    {{- if or .Values.a2a.agentName .Values.a2a.agentDescription .Values.a2a.cardMaxAgeSeconds .Values.a2a.inlineArtifactMaxChars .Values.a2a.extraArtifactFiles .Values.a2a.publicBaseUrl }}
     a2a:
       {{- if .Values.a2a.agentName }}
       agent_name: {{ .Values.a2a.agentName | quote }}
