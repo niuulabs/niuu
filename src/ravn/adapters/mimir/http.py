@@ -18,6 +18,7 @@ SPIFFE mTLS (production)::
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -97,7 +98,11 @@ class HttpMimirAdapter(MimirPort):
 
         if self._auth is None:
             return ""
-        token_file = self._auth.token_file or "/var/run/secrets/niuu-workload/token"
+        token_file = (
+            self._auth.token_file
+            or os.environ.get("NIUU_WORKLOAD_IDENTITY_TOKEN_FILE", "").strip()
+            or "/var/run/secrets/niuu-workload/token"
+        )
         token_path = Path(token_file)
         if not token_path.exists():
             return ""
@@ -105,7 +110,9 @@ class HttpMimirAdapter(MimirPort):
         if not proof:
             return ""
 
-        exchange_url = self._auth.exchange_url
+        exchange_url = self._auth.exchange_url or os.environ.get(
+            "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", ""
+        ).strip()
         if not exchange_url:
             return ""
         audiences = list(self._auth.audiences or ("mimir",))
