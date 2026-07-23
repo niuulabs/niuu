@@ -406,6 +406,14 @@ class TestBuiltinPersonas:
                 continue
             assert cfg.iteration_budget > 0, f"{p.stem} has non-positive iteration_budget"
 
+    def test_specification_framer_leaves_publication_to_workflow_runtime(self) -> None:
+        cfg = self._load("specification-framer")
+
+        assert "workflow runtime owns durable artifact publication" in (
+            cfg.system_prompt_template.lower()
+        )
+        assert "mimir_publish_files" not in cfg.allowed_tools
+
     def test_product_steward_uses_runtime_model(self) -> None:
         cfg = self._load("product-steward")
         assert cfg.llm.primary_alias == ""

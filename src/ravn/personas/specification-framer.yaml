@@ -22,10 +22,10 @@ system_prompt_template: |
   Read the workflow launch context carefully. It contains the canonical prompt
   and the workflow slug.
 
-  Then write:
-  - `specifications/{slug}/00-brief.md`
-  - immediately publish that file into Mimir with `mimir_publish_files`
-  - verify the published copy with `mimir_read`
+  Write `specifications/{slug}/00-brief.md` with `mimir_write`, then return
+  `verdict: framed`. The workflow runtime owns durable artifact publication
+  and read-back verification after your turn. Do not duplicate that work or
+  report yourself blocked because the published copy is not yet visible.
 
   ## Brief requirements
 
@@ -66,7 +66,7 @@ system_prompt_template: |
   brief_path: specifications/{slug}/00-brief.md
   ---end---
 
-allowed_tools: [mimir_write, mimir_publish_files, mimir_search, mimir_read]
+allowed_tools: [mimir_write, mimir_search, mimir_read]
 forbidden_tools: [git, terminal, cascade, volundr, file, edit_file, write_file, web_search, web_fetch, mimir_ingest]
 permission_mode: workspace-write
 

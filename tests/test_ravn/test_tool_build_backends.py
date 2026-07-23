@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -25,7 +26,11 @@ from ravn.adapters.tool_build._contract import (
 from ravn.adapters.tool_build.forge_session import _decode_canonical_body
 from ravn.adapters.tool_build.http import client_from_workload_identity, normalize_http_origin
 from ravn.adapters.tool_build.ting_workflow import _decode_canonical_content
-from ravn.ports.tool_build_backend import ToolBuildError, ToolBuildRequest
+from ravn.ports.tool_build_backend import (
+    ToolBuildError,
+    ToolBuildInputRequiredError,
+    ToolBuildRequest,
+)
 
 
 async def _no_sleep(_seconds: float) -> None:
@@ -190,6 +195,8 @@ def test_build_prompts_instructs_canonical_file_and_new_fields() -> None:
     assert "learned_tool.json" in initial
     assert "test_code" in initial
     assert "requirements" in initial
+    assert "imports\n  `_verify_tool`" in initial
+    assert "must not read `learned_tool.json`" in initial
 
 
 async def test_poll_until_stops_on_done_and_bounds_attempts() -> None:
@@ -1255,7 +1262,7 @@ async def test_a2a_backend_answers_gate_and_completes() -> None:
     assert reply["params"]["message"]["parts"][0]["text"].startswith("Spec matches")
 
 
-async def test_a2a_backend_fails_loud_on_gate_without_reviewer() -> None:
+async def test_a2a_backend_suspends_gate_without_reviewer() -> None:
     client = _FakeHttpClient(
         {
             ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
@@ -1267,8 +1274,12 @@ async def test_a2a_backend_fails_loud_on_gate_without_reviewer() -> None:
     )
     backend = _a2a_backend(client, workflow_id="wf-1")
 
-    with pytest.raises(ToolBuildError, match="no gate_reviewer"):
+    with pytest.raises(ToolBuildInputRequiredError) as raised:
         await backend.build(_request())
+    assert raised.value.task_id == "task-1"
+    assert raised.value.input_kind == "gate"
+    assert raised.value.prompt.startswith("Confirm capability specification")
+    assert raised.value.continuation["reply_metadata"] == {"gateId": "gate-1"}
 
 
 async def test_a2a_backend_bounds_gate_rounds() -> None:
@@ -1398,7 +1409,7 @@ async def test_a2a_backend_answers_peer_question_and_completes() -> None:
     assert reply["params"]["message"]["parts"][0]["text"].startswith("All namespaces")
 
 
-async def test_a2a_backend_fails_loud_on_question_without_answerer() -> None:
+async def test_a2a_backend_suspends_question_without_answerer() -> None:
     client = _FakeHttpClient(
         {
             ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
@@ -1410,5 +1421,57 @@ async def test_a2a_backend_fails_loud_on_question_without_answerer() -> None:
     )
     backend = _a2a_backend(client, workflow_id="wf-1", gate_reviewer=_approving_reviewer())
 
-    with pytest.raises(ToolBuildError, match="no question_answerer"):
+    with pytest.raises(ToolBuildInputRequiredError) as raised:
         await backend.build(_request())
+    assert raised.value.task_id == "task-1"
+    assert raised.value.input_kind == "question"
+    assert raised.value.prompt == "Which namespaces are in scope?"
+    assert raised.value.continuation["reply_metadata"] == {"requestId": "help-1"}
+
+
+async def test_a2a_backend_resumes_same_task_after_external_question_answer() -> None:
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_questioned_task()),
+                _rpc_result({"task": _a2a_task("TASK_STATE_WORKING")}),
+                _rpc_result(
+                    _a2a_task(
+                        "TASK_STATE_COMPLETED",
+                        artifacts=_A2A_DONE_ARTIFACTS,
+                    )
+                ),
+            ],
+        }
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1")
+
+    with pytest.raises(ToolBuildInputRequiredError) as raised:
+        await backend.build(_request())
+
+    continuation = {
+        **raised.value.continuation,
+        "answer": "All namespaces, read-only.",
+    }
+    result = await backend.build(replace(_request(), continuation=continuation))
+
+    replies = [
+        body
+        for body in client.post_bodies
+        if body["method"] == "SendMessage" and body["params"]["message"].get("taskId") == "task-1"
+    ]
+    assert len(replies) == 1
+    assert replies[0]["params"]["message"]["metadata"] == {"requestId": "help-1"}
+    assert replies[0]["params"]["message"]["parts"] == [{"text": "All namespaces, read-only."}]
+    exchanges = result.build_evidence["gate_exchanges"]
+    assert exchanges == [
+        {
+            "round": 1,
+            "kind": "question",
+            "question": _a2a_questioned_task()["metadata"]["pendingQuestions"][0],
+            "answer": "All namespaces, read-only.",
+            "delivery": "delivered",
+        }
+    ]

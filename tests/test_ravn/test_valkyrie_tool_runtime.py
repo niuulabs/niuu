@@ -274,6 +274,19 @@ def test_reach_grant_accepts_kind_shorthand_and_rejects_other_shapes() -> None:
         ToolReachGrant.from_dict(42)
 
 
+def test_learned_tool_manifest_rejects_scalar_declared_reach() -> None:
+    with pytest.raises(ValueError, match="manifest.declared_reach must be an array"):
+        LearnedToolManifest.from_dict(
+            {
+                "name": "bad_reach",
+                "description": "invalid scalar reach",
+                "input_schema": {"type": "object"},
+                "required_permission": "tool:run",
+                "declared_reach": "Pure local computation",
+            }
+        )
+
+
 def test_learned_tool_rejects_invalid_declared_reach(tmp_path) -> None:
     artifact = _learned_tool_artifact()
     bad = LearnedToolArtifact(

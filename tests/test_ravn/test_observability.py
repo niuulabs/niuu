@@ -23,6 +23,10 @@ from ravn.domain.models import ToolResult
             ),
             "review_pending",
         ),
+        (
+            ToolResult(tool_call_id="", content='{"status": "input_required"}'),
+            "input_required",
+        ),
     ],
 )
 def test_tool_build_lifecycle_outcome_is_not_inferred_from_success_alone(
@@ -80,9 +84,7 @@ def test_span_context_and_metrics_are_real_when_sdk_is_installed() -> None:
     assert "[REDACTED]" in spans[1].events[0].attributes["ravn.content"]
     assert carrier["traceparent"].startswith("00-")
     assert spans[2].attributes["error.type"] == "a2a_rpc_failed"
-    assert spans[2].attributes["error.message"] == (
-        "A2A SendMessage failed with Bearer [REDACTED]"
-    )
+    assert spans[2].attributes["error.message"] == ("A2A SendMessage failed with Bearer [REDACTED]")
     assert spans[2].status.description == "A2A SendMessage failed with Bearer [REDACTED]"
     metric_names = {
         metric.name

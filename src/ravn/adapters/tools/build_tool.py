@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
@@ -14,7 +15,7 @@ from niuu.observability import get_observability
 from ravn.domain.models import ToolResult
 from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
 from ravn.ports.tool import ToolPort
-from ravn.ports.tool_build_backend import ToolBuildError
+from ravn.ports.tool_build_backend import ToolBuildError, ToolBuildInputRequiredError
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
 from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
@@ -129,6 +130,10 @@ class BuildTool(ToolPort):
             "Provide a manifest with name, description, input_schema, required_permission, "
             "and declared_reach. "
             + authoring
+            + "If a commissioned build returns status=input_required, either answer from "
+            "available evidence or ask the operator. Resume the same durable A2A task with "
+            "continuation_task_id and continuation_answer; include continuation_metadata "
+            "when the result requests a gate decision. "
             + "The entry point defaults to run(input). Good instruments "
             "ACQUIRE live evidence: tool_code may run CLI commands (subprocess), call HTTP "
             "APIs, and read files — declare that reach honestly in declared_reach, it is "
@@ -151,6 +156,41 @@ class BuildTool(ToolPort):
                         "input_schema, required_permission. Optional: declared_reach, "
                         "output_schema, entry_point."
                     ),
+                    "properties": {
+                        "name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "input_schema": {"type": "object"},
+                        "required_permission": {"type": "string"},
+                        "declared_reach": {
+                            "type": "array",
+                            "description": (
+                                "External reach grants. Use [] for pure local computation."
+                            ),
+                            "items": {
+                                "oneOf": [
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "kind": {"type": "string"},
+                                            "target": {"type": "string"},
+                                            "access": {"type": "string"},
+                                            "metadata": {"type": "object"},
+                                        },
+                                        "required": ["kind"],
+                                    },
+                                    {"type": "string", "minLength": 1},
+                                ]
+                            },
+                        },
+                        "output_schema": {"type": "object"},
+                        "entry_point": {"type": "string"},
+                    },
+                    "required": [
+                        "name",
+                        "description",
+                        "input_schema",
+                        "required_permission",
+                    ],
                 },
                 "tool_code": {
                     "type": "string",
@@ -208,8 +248,31 @@ class BuildTool(ToolPort):
                     "type": "boolean",
                     "description": "Replace an existing tool of the same name.",
                 },
+                "continuation_task_id": {
+                    "type": "string",
+                    "description": (
+                        "A durable commissioned-build task id returned by an earlier "
+                        "status=input_required result. Use it to resume that exact task."
+                    ),
+                },
+                "continuation_answer": {
+                    "type": "string",
+                    "description": (
+                        "The model's or operator's answer to the pending remote question or gate."
+                    ),
+                },
+                "continuation_metadata": {
+                    "type": "object",
+                    "description": (
+                        "Optional A2A reply metadata requested by the input_required "
+                        "result, such as gateDecision=approve or request_changes."
+                    ),
+                },
             },
-            "required": ["manifest"],
+            "anyOf": [
+                {"required": ["manifest"]},
+                {"required": ["continuation_task_id", "continuation_answer"]},
+            ],
         }
 
     @property
@@ -222,8 +285,9 @@ class BuildTool(ToolPort):
 
     async def execute(self, input: dict) -> ToolResult:  # noqa: A002
         telemetry = get_observability()
-        commissioned = bool(str(input.get("build_request") or "").strip()) and not bool(
-            str(input.get("tool_code") or "").strip()
+        commissioned = bool(str(input.get("continuation_task_id") or "").strip()) or (
+            bool(str(input.get("build_request") or "").strip())
+            and not bool(str(input.get("tool_code") or "").strip())
         )
         attributes = {
             "ravn.tool_build.mode": "commissioned" if commissioned else "inline",
@@ -441,6 +505,8 @@ class BuildTool(ToolPort):
                 },
             )
             await self._publish_flock_proposal(artifact)
+        except ToolBuildInputRequiredError as exc:
+            return self._input_required_result(exc)
         except (LearnedToolError, ToolBuildError, TypeError, ValueError) as exc:
             return ToolResult(tool_call_id="", content=f"build_tool failed: {exc}", is_error=True)
 
@@ -457,6 +523,10 @@ class BuildTool(ToolPort):
         workflow; the produced manifest + code merge back into the input so the
         rest of execute() reviews and installs it identically to an inline tool.
         """
+        continuation_task_id = str(input.get("continuation_task_id") or "").strip()
+        if continuation_task_id:
+            return await self._resume_commission(input, task_id=continuation_task_id)
+
         build_request = str(input.get("build_request") or "").strip()
         tool_code = str(input.get("tool_code") or "").strip()
         telemetry = get_observability()
@@ -509,6 +579,7 @@ class BuildTool(ToolPort):
         from ravn.ports.tool_build_backend import ToolBuildRequest  # noqa: PLC0415
 
         manifest_in = input.get("manifest") if isinstance(input.get("manifest"), dict) else {}
+        declared_reach = LearnedToolManifest.from_dict(manifest_in).declared_reach
         signal_context = str(input.get("signal_context") or "")
         if signal_context_suffix:
             signal_context = (
@@ -522,19 +593,28 @@ class BuildTool(ToolPort):
             build_request=str(input.get("build_request") or "").strip(),
             input_schema=dict(manifest_in.get("input_schema") or {"type": "object"}),
             required_permission=str(manifest_in.get("required_permission") or "tool:run"),
-            declared_reach=list(manifest_in.get("declared_reach") or []),
+            declared_reach=[grant.to_dict() for grant in declared_reach],
             entry_point=str(manifest_in.get("entry_point") or "run"),
             environment_id=self._environment_id,
             valkyrie_id=self._valkyrie_id,
             domain=self._domain,
             signal_context=signal_context,
+            continuation=dict(input.get("_build_continuation") or {}),
         )
 
     async def _commission_and_merge(self, input: dict, *, signal_context_suffix: str) -> dict:  # noqa: A002
         """Commission the backend and merge its result back into the input."""
         request = self._build_backend_request(input, signal_context_suffix=signal_context_suffix)
-        result = await self._build_backend.build(request)
+        try:
+            result = await self._build_backend.build(request)
+        except ToolBuildInputRequiredError as exc:
+            self._persist_pending_build(input, exc)
+            raise
         merged = dict(input)
+        merged.pop("_build_continuation", None)
+        merged.pop("continuation_task_id", None)
+        merged.pop("continuation_answer", None)
+        merged.pop("continuation_metadata", None)
         merged["manifest"] = result.manifest
         merged["tool_code"] = result.tool_code
         merged["test_code"] = result.test_code
@@ -545,6 +625,169 @@ class BuildTool(ToolPort):
             provenance["build_evidence"] = dict(result.build_evidence)
         merged["provenance"] = provenance
         return merged
+
+    async def _resume_commission(self, input: dict, *, task_id: str) -> dict:  # noqa: A002
+        """Resume the exact commissioned A2A task suspended on remote input."""
+        if self._build_backend is None:
+            raise LearnedToolError(
+                "continuation_task_id was given but no tool build backend is configured"
+            )
+        answer = str(input.get("continuation_answer") or "").strip()
+        if not answer:
+            raise LearnedToolError("continuation_answer must be non-empty")
+
+        pending = self._load_pending_build(task_id)
+        original = pending.get("input")
+        continuation = pending.get("continuation")
+        if not isinstance(original, dict) or not isinstance(continuation, dict):
+            raise LearnedToolError(f"pending build {task_id!r} has invalid durable state")
+        if str(continuation.get("task_id") or "") != task_id:
+            raise LearnedToolError(f"pending build state does not match task {task_id!r}")
+
+        continuation = dict(continuation)
+        continuation["answer"] = answer
+        supplied_metadata = input.get("continuation_metadata")
+        if supplied_metadata is not None and not isinstance(supplied_metadata, dict):
+            raise LearnedToolError("continuation_metadata must be an object")
+        reply_metadata = continuation.get("reply_metadata")
+        reply_metadata = dict(reply_metadata) if isinstance(reply_metadata, dict) else {}
+        reply_metadata.update(dict(supplied_metadata or {}))
+        continuation["reply_metadata"] = reply_metadata
+
+        resumed = dict(original)
+        resumed["_build_continuation"] = continuation
+        telemetry = get_observability()
+        attributes = {
+            "a2a.task.id": task_id,
+            "a2a.input.kind": str(continuation.get("input_kind") or ""),
+            "ravn.tool_build.backend": str(getattr(self._build_backend, "name", "unknown")),
+        }
+        telemetry.event(
+            "ravn.tool_build.continuation.resumed",
+            attributes=attributes,
+            content={
+                "answer": answer,
+                "reply_metadata": reply_metadata,
+            },
+        )
+        try:
+            merged = await self._commission_and_merge(
+                resumed,
+                signal_context_suffix="",
+            )
+        except ToolBuildInputRequiredError:
+            raise
+        self._delete_pending_build(task_id)
+        telemetry.event(
+            "ravn.tool_build.continuation.completed",
+            attributes=attributes,
+        )
+        return merged
+
+    def _persist_pending_build(
+        self,
+        input: dict,  # noqa: A002
+        required: ToolBuildInputRequiredError,
+    ) -> None:
+        """Atomically persist the minimum state needed to resume one build."""
+        original = {
+            key: value
+            for key, value in input.items()
+            if key
+            not in {
+                "_build_continuation",
+                "continuation_task_id",
+                "continuation_answer",
+                "continuation_metadata",
+            }
+        }
+        payload = {
+            "version": 1,
+            "task_id": required.task_id,
+            "input": original,
+            "continuation": required.continuation,
+        }
+        path = self._pending_build_path(required.task_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        temporary.write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        temporary.chmod(0o600)
+        temporary.replace(path)
+        get_observability().event(
+            "ravn.tool_build.continuation.suspended",
+            attributes={
+                "a2a.task.id": required.task_id,
+                "a2a.input.kind": required.input_kind,
+                "ravn.tool_build.pending.path": str(path),
+            },
+            content={
+                "prompt": required.prompt,
+                "input_payload": required.continuation.get("input_payload", {}),
+                "reply_metadata": required.continuation.get("reply_metadata", {}),
+            },
+        )
+
+    def _load_pending_build(self, task_id: str) -> dict[str, Any]:
+        path = self._pending_build_path(task_id)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise LearnedToolError(
+                f"no pending commissioned build exists for task {task_id!r}"
+            ) from exc
+        except (OSError, ValueError) as exc:
+            raise LearnedToolError(
+                f"could not read pending commissioned build {task_id!r}: {exc}"
+            ) from exc
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            raise LearnedToolError(f"pending build {task_id!r} has invalid durable state")
+        if str(payload.get("task_id") or "") != task_id:
+            raise LearnedToolError(f"pending build state does not match task {task_id!r}")
+        return payload
+
+    def _delete_pending_build(self, task_id: str) -> None:
+        path = self._pending_build_path(task_id)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
+
+    def _pending_build_path(self, task_id: str) -> Path:
+        digest = hashlib.sha256(task_id.encode("utf-8")).hexdigest()
+        return self._artifacts_dir / "pending-builds" / f"{digest}.json"
+
+    def _input_required_result(self, required: ToolBuildInputRequiredError) -> ToolResult:
+        continuation = required.continuation
+        payload = {
+            "status": "input_required",
+            "backend": str(getattr(self._build_backend, "name", "unknown")),
+            "task_id": required.task_id,
+            "input_kind": required.input_kind,
+            "question": required.prompt,
+            "input_payload": continuation.get("input_payload", {}),
+            "reply_metadata": continuation.get("reply_metadata", {}),
+            "resume_with": {
+                "continuation_task_id": required.task_id,
+                "continuation_answer": "<answer>",
+            },
+            "next_step": (
+                "Answer from reliable available evidence, or ask the operator this exact "
+                "question. Then call build_tool with continuation_task_id and "
+                "continuation_answer to resume the same A2A task."
+            ),
+        }
+        if required.input_kind == "gate":
+            payload["resume_with"]["continuation_metadata"] = {
+                "gateDecision": "approve | request_changes"
+            }
+        return ToolResult(
+            tool_call_id="",
+            content=json.dumps(payload, indent=2, sort_keys=True),
+            is_error=False,
+        )
 
     async def _verify_and_repair(
         self,
@@ -1020,6 +1263,8 @@ def _build_result_outcome(result: ToolResult) -> str:
         return "completed"
     if not isinstance(payload, dict):
         return "completed"
+    if payload.get("status") == "input_required":
+        return "input_required"
     if payload.get("registered") is True:
         return "registered"
     if payload.get("review_required") is True and payload.get("review_filed") is True:

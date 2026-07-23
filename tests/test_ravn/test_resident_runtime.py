@@ -578,6 +578,56 @@ async def test_operator_answer_resumes_same_case_and_is_consumed_after_success(t
 
 
 @pytest.mark.asyncio
+async def test_operator_answer_preserves_suspended_a2a_build_handoff(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    queued: list[AgentTask] = []
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime = ResidentRuntime(state=state, tool_result_max_chars=5000)
+    runtime.bind_enqueue(enqueue)
+    await runtime.handle_completed_turn(
+        task=_task(),
+        prompt="commission the missing capability",
+        result=_result(
+            {
+                "continuation": "ask_operator",
+                "question": "Which namespace should the remote builder target?",
+                "next_action_timing": "operator_input",
+            },
+            tools=("build_tool",),
+            tool_outputs={
+                "build_tool": (
+                    '{"status":"input_required",'
+                    '"task_id":"tool-build-peer-42",'
+                    '"input_kind":"question",'
+                    '"question":"Which namespace should the remote builder target?",'
+                    '"reply_metadata":{"requestId":"help-17"},'
+                    '"resume_with":{"continuation_task_id":"tool-build-peer-42",'
+                    '"continuation_answer":"<answer>"}}'
+                )
+            },
+        ),
+        response_text="The remote A2A task needs operator-owned scope.",
+    )
+
+    submitted = await runtime.submit_operator_answer(
+        case_id="root-1",
+        answer="Use the staging namespace only.",
+    )
+
+    assert submitted["queued"] is True
+    resume = queued[-1]
+    assert resume.triggered_by == "resident:operator_answer"
+    assert "Operator answer: Use the staging namespace only." in resume.initiative_context
+    assert '"task_id":"tool-build-peer-42"' in resume.initiative_context
+    assert '"requestId":"help-17"' in resume.initiative_context
+    assert '"continuation_task_id":"tool-build-peer-42"' in resume.initiative_context
+
+
+@pytest.mark.asyncio
 async def test_operator_answer_fails_if_exact_parent_turn_is_unavailable(tmp_path) -> None:
     state = LocalResidentState(tmp_path)
     runtime = ResidentRuntime(state=state)

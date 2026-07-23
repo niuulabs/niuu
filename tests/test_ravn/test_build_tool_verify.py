@@ -9,7 +9,7 @@ from typing import Any
 
 import ravn.adapters.tools.build_tool as build_tool_mod
 from ravn.adapters.tools.build_tool import DEFAULT_MAX_REPAIR_ATTEMPTS, BuildTool
-from ravn.ports.tool_build_backend import ToolBuildResult
+from ravn.ports.tool_build_backend import ToolBuildInputRequiredError, ToolBuildResult
 from ravn.valkyrie_evolution.tool_verification import VerificationResult
 
 _ECHO_TOOL = "def run(payload):\n    return {'echo': payload}\n"
@@ -59,6 +59,13 @@ def _persisted_provenance(tmp_path: Path) -> dict[str, Any]:
 
 def test_default_max_repair_attempts_is_three() -> None:
     assert DEFAULT_MAX_REPAIR_ATTEMPTS == 3
+
+
+def test_manifest_schema_describes_declared_reach_as_an_array(tmp_path) -> None:
+    tool, _ = _tool(tmp_path)
+    reach_schema = tool.input_schema["properties"]["manifest"]["properties"]["declared_reach"]
+
+    assert reach_schema["type"] == "array"
 
 
 async def test_verify_passes_then_tool_installs_real_venv(tmp_path) -> None:
@@ -238,3 +245,111 @@ async def test_verify_failure_exhausts_repair_budget_and_aborts(tmp_path, monkey
     prov = _persisted_provenance(tmp_path)
     assert prov["verification"]["ok"] is False
     assert prov["verification"]["attempts"] == 2
+
+
+async def test_commissioned_build_question_is_persisted_and_resumed(tmp_path) -> None:
+    requests: list[Any] = []
+
+    class _Backend:
+        name = "a2a"
+
+        async def build(self, request: Any) -> ToolBuildResult:
+            requests.append(request)
+            if not request.continuation:
+                raise ToolBuildInputRequiredError(
+                    task_id="task-1",
+                    input_kind="question",
+                    prompt="Which namespaces are in scope?",
+                    continuation={
+                        "task_id": "task-1",
+                        "input_kind": "question",
+                        "input_payload": {
+                            "requestId": "help-1",
+                            "question": "Which namespaces are in scope?",
+                        },
+                        "reply_metadata": {"requestId": "help-1"},
+                        "exchanges": [],
+                        "round": 1,
+                    },
+                )
+            assert request.continuation["answer"] == "All namespaces, read-only."
+            assert request.continuation["reply_metadata"] == {"requestId": "help-1"}
+            return ToolBuildResult(
+                manifest=_manifest(),
+                tool_code=_ECHO_TOOL,
+                test_code=_ECHO_TEST,
+                requirements=[],
+                provenance={"builder": "remote"},
+            )
+
+    tool, registered = _tool(tmp_path, build_backend=_Backend())
+    first = await tool.execute(
+        {
+            "manifest": _manifest(),
+            "build_request": "build an echo tool",
+        }
+    )
+
+    assert first.is_error is False
+    suspended = json.loads(first.content)
+    assert suspended["status"] == "input_required"
+    assert suspended["task_id"] == "task-1"
+    assert suspended["question"] == "Which namespaces are in scope?"
+    pending = list((tmp_path / "arts" / "pending-builds").glob("*.json"))
+    assert len(pending) == 1
+    assert registered == []
+
+    resumed = await tool.execute(
+        {
+            "continuation_task_id": "task-1",
+            "continuation_answer": "All namespaces, read-only.",
+        }
+    )
+
+    assert resumed.is_error is False
+    assert len(requests) == 2
+    assert len(registered) == 1
+    assert list((tmp_path / "arts" / "pending-builds").glob("*.json")) == []
+
+
+async def test_commissioned_build_rejects_scalar_declared_reach(tmp_path) -> None:
+    class _Backend:
+        name = "a2a"
+
+        async def build(self, request: Any) -> ToolBuildResult:
+            raise AssertionError("invalid manifest must not reach the backend")
+
+    tool, registered = _tool(tmp_path, build_backend=_Backend())
+    result = await tool.execute(
+        {
+            "manifest": {
+                **_manifest(),
+                "declared_reach": "Pure local computation",
+            },
+            "build_request": "build an echo tool",
+        }
+    )
+
+    assert result.is_error is True
+    assert "manifest.declared_reach must be an array" in result.content
+    assert registered == []
+
+
+async def test_commissioned_build_rejects_unknown_continuation_task(tmp_path) -> None:
+    class _Backend:
+        name = "a2a"
+
+        async def build(self, request: Any) -> ToolBuildResult:
+            raise AssertionError("backend must not be called without durable state")
+
+    tool, registered = _tool(tmp_path, build_backend=_Backend())
+    result = await tool.execute(
+        {
+            "continuation_task_id": "unknown-task",
+            "continuation_answer": "answer",
+        }
+    )
+
+    assert result.is_error is True
+    assert "no pending commissioned build exists" in result.content
+    assert registered == []
