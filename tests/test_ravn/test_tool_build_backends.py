@@ -24,7 +24,11 @@ from ravn.adapters.tool_build._contract import (
     poll_until,
 )
 from ravn.adapters.tool_build.forge_session import _decode_canonical_body
-from ravn.adapters.tool_build.http import client_from_workload_identity, normalize_http_origin
+from ravn.adapters.tool_build.http import (
+    HttpxJsonClient,
+    client_from_workload_identity,
+    normalize_http_origin,
+)
 from ravn.adapters.tool_build.ting_workflow import _decode_canonical_content
 from ravn.ports.tool_build_backend import (
     ToolBuildError,
@@ -561,6 +565,56 @@ def test_client_from_workload_identity_exchanges_projected_token(tmp_path: Path)
     )
 
     assert client._headers()["Authorization"] == "Bearer workload-jwt"
+
+
+async def test_http_client_refreshes_rejected_workload_identity_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RefreshableAuth:
+        def __init__(self) -> None:
+            self.token = "expired"
+            self.invalidations = 0
+
+        def headers(self) -> dict[str, str]:
+            return {"Authorization": f"Bearer {self.token}"}
+
+        def invalidate(self) -> bool:
+            self.invalidations += 1
+            self.token = "fresh"
+            return True
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs: object) -> None:
+            self.authorizations: list[str] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def get(self, _url: str, *, headers: dict[str, str]) -> httpx.Response:
+            authorization = headers["Authorization"]
+            self.authorizations.append(authorization)
+            status = 401 if authorization == "Bearer expired" else 200
+            return httpx.Response(status, json={"ok": status == 200})
+
+    created: list[FakeAsyncClient] = []
+
+    def build_client(**kwargs: object) -> FakeAsyncClient:
+        client = FakeAsyncClient(**kwargs)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(httpx, "AsyncClient", build_client)
+    auth = RefreshableAuth()
+    client = HttpxJsonClient(auth=auth, allowed_origins=["https://forge.example"])
+
+    response = await client.get("https://forge.example/api/v1/forge/sessions")
+
+    assert response.status_code == 200
+    assert auth.invalidations == 1
+    assert created[0].authorizations == ["Bearer expired", "Bearer fresh"]
 
 
 def test_ting_backend_requests_end_to_end_build_scopes(

@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import suppress
 from time import monotonic
 from typing import Any
 
@@ -201,6 +202,9 @@ class NatsJetStreamSignalAdapter(GenericSignalAdapter):
                     attributes={**attributes, "ravn.signal.transport.outcome": "idle"},
                 )
                 return []
+            except Exception:
+                await self._reset_connection("fetch_failed")
+                raise
             decoded = [_decode_payload(msg.data) for msg in msgs]
             self._pending = list(msgs)
             span.set_attribute("messaging.batch.message_count", len(msgs))
@@ -269,8 +273,10 @@ class NatsJetStreamSignalAdapter(GenericSignalAdapter):
             )
 
     async def _ensure_subscription(self) -> Any:
-        if self._psub is not None:
+        if self._psub is not None and not self._client_is_closed():
             return self._psub
+        if self._psub is not None or self._client_is_closed():
+            await self._reset_connection("connection_closed")
         telemetry = get_observability()
         attributes = self._messaging_attributes("create_consumer")
         with telemetry.span("bind JetStream consumer", attributes=attributes):
@@ -303,6 +309,40 @@ class NatsJetStreamSignalAdapter(GenericSignalAdapter):
             self._subject,
         )
         return self._psub
+
+    def _client_is_closed(self) -> bool:
+        if self._client is None:
+            return False
+        closed = getattr(self._client, "is_closed", False)
+        return bool(closed() if callable(closed) else closed)
+
+    async def _reset_connection(self, reason: str) -> None:
+        client = self._client
+        self._client = None
+        self._psub = None
+        if client is not None and not self._client_is_closed_value(client):
+            close = getattr(client, "close", None)
+            if callable(close):
+                with suppress(Exception):
+                    await close()
+        get_observability().event(
+            "ravn.signal.transport.connection_reset",
+            attributes={
+                **self._messaging_attributes("reconnect"),
+                "ravn.signal.transport.reset_reason": reason,
+            },
+        )
+        logger.warning(
+            "environment_signals: source=%s reset NATS connection reason=%s; "
+            "the next poll will reconnect",
+            self.source_id,
+            reason,
+        )
+
+    @staticmethod
+    def _client_is_closed_value(client: Any) -> bool:
+        closed = getattr(client, "is_closed", False)
+        return bool(closed() if callable(closed) else closed)
 
     def _messaging_attributes(self, operation: str) -> dict[str, Any]:
         return {

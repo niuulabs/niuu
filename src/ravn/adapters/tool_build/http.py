@@ -167,6 +167,26 @@ class HttpxJsonClient:
             )
             return headers
 
+    async def _refresh_rejected_auth(self) -> dict[str, str] | None:
+        invalidate = getattr(self._auth, "invalidate", None)
+        if not callable(invalidate):
+            return None
+
+        import asyncio  # noqa: PLC0415
+
+        if not await asyncio.to_thread(invalidate):
+            return None
+        get_observability().event(
+            "ravn.http.auth.invalidated",
+            attributes={
+                "ravn.http.auth.adapter": (
+                    type(self._auth).__name__ if self._auth is not None else "none"
+                ),
+                "http.response.status_code": 401,
+            },
+        )
+        return await self._resolve_headers()
+
     async def get(self, url: str, *, headers: dict[str, str] | None = None) -> HttpResponse:
         import httpx  # noqa: PLC0415
 
@@ -182,6 +202,13 @@ class HttpxJsonClient:
             try:
                 async with httpx.AsyncClient(timeout=self._timeout) as client:
                     resp = await client.get(url, headers=merged)
+                    if resp.status_code == 401:
+                        refreshed = await self._refresh_rejected_auth()
+                        if refreshed is not None:
+                            if headers:
+                                refreshed.update(headers)
+                            refreshed.update(telemetry.inject())
+                            resp = await client.get(url, headers=refreshed)
             except Exception as exc:
                 telemetry.mark_error(span, type(exc).__name__)
                 _record_http_metrics(
@@ -222,6 +249,13 @@ class HttpxJsonClient:
             try:
                 async with httpx.AsyncClient(timeout=self._timeout) as client:
                     resp = await client.post(url, headers=merged, json=json_body)
+                    if resp.status_code == 401:
+                        refreshed = await self._refresh_rejected_auth()
+                        if refreshed is not None:
+                            if headers:
+                                refreshed.update(headers)
+                            refreshed.update(telemetry.inject())
+                            resp = await client.post(url, headers=refreshed, json=json_body)
             except Exception as exc:
                 telemetry.mark_error(span, type(exc).__name__)
                 _record_http_metrics(

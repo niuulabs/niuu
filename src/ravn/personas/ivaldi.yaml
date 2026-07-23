@@ -54,6 +54,7 @@ allowed_tools:
     build_tool,
     file,
     terminal,
+    kubernetes_inspect,
     todo_read,
     todo_write,
     volundr,

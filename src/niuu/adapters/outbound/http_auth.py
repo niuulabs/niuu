@@ -18,6 +18,9 @@ class NoAuthHeaderAdapter(HttpAuthPort):
     def headers(self) -> dict[str, str]:
         return {}
 
+    def invalidate(self) -> bool:
+        return False
+
 
 class StaticBearerTokenAuthAdapter(HttpAuthPort):
     """Emit a bearer token from an injected value or explicit external env var."""
@@ -38,6 +41,9 @@ class StaticBearerTokenAuthAdapter(HttpAuthPort):
         if not token:
             return {}
         return {"Authorization": f"Bearer {token}"}
+
+    def invalidate(self) -> bool:
+        return False
 
 
 class WorkloadIdentityBearerTokenAuthAdapter(HttpAuthPort):
@@ -77,6 +83,11 @@ class WorkloadIdentityBearerTokenAuthAdapter(HttpAuthPort):
         if not token:
             return {}
         return {"Authorization": f"Bearer {token}"}
+
+    def invalidate(self) -> bool:
+        self._token = ""
+        self._expires_at = 0.0
+        return True
 
     def _current_token(self) -> str:
         now = time.monotonic()
@@ -161,6 +172,11 @@ class ClientCredentialsBearerTokenAuthAdapter(HttpAuthPort):
     def headers(self) -> dict[str, str]:
         token = self._current_token()
         return {"Authorization": f"Bearer {token}"}
+
+    def invalidate(self) -> bool:
+        self._token = ""
+        self._expires_at = 0.0
+        return True
 
     def _current_token(self) -> str:
         now = time.monotonic()

@@ -94,6 +94,31 @@ _RAVN_TASK_DROPPED = "ravn.task.dropped"
 _RESIDENT_VALKYRIE_SCHEMA_REPAIR_TRIGGER = "schema_repair:resident_valkyrie"
 
 
+def _build_workflow_outcome_repair_prompt(
+    *,
+    task: AgentTask,
+    original_response: str,
+    allowed_topics: set[str],
+) -> str:
+    """Ask the same workflow agent to resolve an outcome the graph cannot route."""
+    return (
+        "Your previous outcome cannot advance the active workflow node because none of its "
+        "outgoing routes accept that outcome. Reassess the result using the evidence and tool "
+        "results already available. You may use tools again when that could resolve a transient "
+        "failure or materially change the answer. Do not claim success without evidence and do "
+        "not invent missing facts. If a material decision genuinely requires external input, "
+        "return `verdict: help_needed` with one concrete `question`; the workflow can route that "
+        "to the commissioning party.\n\n"
+        f"Active workflow node: {task.workflow_node_id}\n"
+        f"Routable event types: {json.dumps(sorted(allowed_topics))}\n\n"
+        "Original response:\n"
+        "<original_response>\n"
+        f"{original_response}\n"
+        "</original_response>\n\n"
+        "Return the complete outcome contract required by your persona."
+    )
+
+
 def _default_success_verdict(produces: object) -> str:
     """Return the best success verdict to synthesize for a persona outcome."""
     event_type_map = getattr(produces, "event_type_map", {}) or {}
@@ -2092,6 +2117,18 @@ class DriveLoop:
                     )
                     turn_result = repair_result
                     response_text = repair_result.response
+                workflow_repair_result = await self._maybe_repair_unroutable_workflow_outcome(
+                    agent=agent,
+                    task=task,
+                    response_text=response_text,
+                )
+                if workflow_repair_result is not None:
+                    repair_cost_usd = self._record_task_cost(task, workflow_repair_result)
+                    await self._emit_task_usage(
+                        channel, task, workflow_repair_result, repair_cost_usd, agent
+                    )
+                    turn_result = workflow_repair_result
+                    response_text = workflow_repair_result.response
                 structured_outcome, resident_outcome_valid = (
                     self._decorate_turn_result_outcome(task, turn_result, response_text)
                 )
@@ -2433,6 +2470,86 @@ class DriveLoop:
                 task.task_id,
             )
         return repair_result
+
+    async def _maybe_repair_unroutable_workflow_outcome(
+        self,
+        *,
+        agent: object,
+        task: AgentTask,
+        response_text: str,
+    ) -> object | None:
+        """Give a workflow agent one chance to revise an outcome the graph cannot route."""
+        if not task.workflow_node_id or self._workflow_allowed_outcomes_resolver is None:
+            return None
+        canonical_event_type = str(
+            getattr(getattr(self._persona_config, "produces", None), "event_type", "") or ""
+        )
+        if not canonical_event_type or is_valkyrie_outcome_event(canonical_event_type):
+            return None
+        parsed = _parse_outcome_for_persona(response_text, self._persona_config)
+        if parsed is None or not parsed.valid:
+            return None
+        verdict = str(
+            parsed.fields.get("verdict", "") or parsed.fields.get("decision", "") or ""
+        ).strip()
+        if not verdict or verdict == "help_needed":
+            return None
+        event_type_map = getattr(self._persona_config.produces, "event_type_map", {}) or {}
+        alias_event_type = str(event_type_map.get(verdict) or "")
+        allowed_topics = self._workflow_allowed_outcomes_resolver(task, self._persona_config)
+        if allowed_topics is None:
+            return None
+        if canonical_event_type in allowed_topics or alias_event_type in allowed_topics:
+            return None
+        run_turn = getattr(agent, "run_turn", None)
+        if run_turn is None or not asyncio.iscoroutinefunction(run_turn):
+            return None
+
+        telemetry = get_observability()
+        attributes = {
+            "ravn.task.id": task.task_id,
+            "ravn.workflow.node.id": task.workflow_node_id,
+            "ravn.workflow.outcome.verdict": verdict,
+            "ravn.workflow.outcome.alias": alias_event_type,
+        }
+        logger.warning(
+            "drive_loop: repairing unroutable workflow outcome task_id=%s "
+            "node=%s verdict=%s alias=%s allowed=%s",
+            task.task_id,
+            task.workflow_node_id,
+            verdict,
+            alias_event_type or "-",
+            sorted(allowed_topics),
+        )
+        telemetry.event(
+            "ravn.workflow.outcome.repair_requested",
+            attributes=attributes,
+            content={"allowed_topics": sorted(allowed_topics)},
+        )
+        prompt = _build_workflow_outcome_repair_prompt(
+            task=task,
+            original_response=response_text,
+            allowed_topics=allowed_topics,
+        )
+        try:
+            result = await run_turn(prompt)
+        except Exception as exc:
+            logger.warning(
+                "drive_loop: workflow outcome repair failed; continuing with original response",
+                exc_info=True,
+            )
+            telemetry.event(
+                "ravn.workflow.outcome.repair_failed",
+                attributes={**attributes, "error.type": type(exc).__name__},
+                content={"error": str(exc)},
+            )
+            return None
+        telemetry.event(
+            "ravn.workflow.outcome.repair_completed",
+            attributes=attributes,
+            content=getattr(result, "response", ""),
+        )
+        return result
 
     async def _emit_sleipnir_task_completed(
         self,

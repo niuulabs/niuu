@@ -15,6 +15,7 @@ from ravn.domain.models import TokenUsage, TurnResult
 from ravn.domain.valkyrie_contracts import normalize_valkyrie_outcome
 from ravn.drive_loop import (
     _build_resident_valkyrie_schema_repair_prompt,
+    _build_workflow_outcome_repair_prompt,
     _default_success_verdict,
     _extract_mimir_dream_counts,
     _infer_tool_written_verdict,
@@ -241,6 +242,106 @@ class TestDriveLoopOutcomeContract:
             dl._persona_config,
         )
         assert validation_errors == []
+
+    @pytest.mark.asyncio
+    async def test_repair_unroutable_workflow_outcome_reuses_same_agent(self) -> None:
+        dl = _make_drive_loop()
+        dl._persona_config = SimpleNamespace(
+            name="specification-framer",
+            produces=SimpleNamespace(
+                event_type="spec.frame.completed",
+                event_type_map={
+                    "framed": "spec.framed",
+                    "blocked": "spec.blocked",
+                },
+            ),
+        )
+        dl.set_workflow_allowed_outcomes_resolver(
+            lambda _task, _persona: {"spec.framed"}
+        )
+        task = _make_agent_task(task_id="task-workflow-repair")
+        task.workflow_node_id = "capability-frame"
+
+        class RepairAgent:
+            def __init__(self) -> None:
+                self.prompts: list[str] = []
+
+            async def run_turn(self, prompt: str) -> TurnResult:
+                self.prompts.append(prompt)
+                return TurnResult(
+                    response=(
+                        "---outcome---\n"
+                        "verdict: framed\n"
+                        "summary: brief is ready\n"
+                        "---end---\n"
+                    ),
+                    tool_calls=[],
+                    tool_results=[],
+                    usage=TokenUsage(input_tokens=8, output_tokens=12),
+                )
+
+        agent = RepairAgent()
+        repair_result = await dl._maybe_repair_unroutable_workflow_outcome(
+            agent=agent,
+            task=task,
+            response_text=(
+                "---outcome---\n"
+                "verdict: blocked\n"
+                "summary: artifact store was temporarily unavailable\n"
+                "---end---\n"
+            ),
+        )
+
+        assert repair_result is not None
+        assert repair_result.response.startswith("---outcome---\nverdict: framed")
+        assert agent.prompts
+        assert "Routable event types: [\"spec.framed\"]" in agent.prompts[0]
+        assert "verdict: help_needed" in agent.prompts[0]
+
+    @pytest.mark.asyncio
+    async def test_does_not_repair_routable_workflow_outcome(self) -> None:
+        dl = _make_drive_loop()
+        dl._persona_config = SimpleNamespace(
+            name="specification-framer",
+            produces=SimpleNamespace(
+                event_type="spec.frame.completed",
+                event_type_map={"framed": "spec.framed"},
+            ),
+        )
+        dl.set_workflow_allowed_outcomes_resolver(
+            lambda _task, _persona: {"spec.framed"}
+        )
+        task = _make_agent_task(task_id="task-workflow-routable")
+        task.workflow_node_id = "capability-frame"
+        agent = AsyncMock()
+
+        result = await dl._maybe_repair_unroutable_workflow_outcome(
+            agent=agent,
+            task=task,
+            response_text=(
+                "---outcome---\n"
+                "verdict: framed\n"
+                "summary: brief is ready\n"
+                "---end---\n"
+            ),
+        )
+
+        assert result is None
+        agent.run_turn.assert_not_awaited()
+
+    def test_workflow_outcome_repair_prompt_preserves_original_evidence(self) -> None:
+        task = _make_agent_task(task_id="task-workflow-prompt")
+        task.workflow_node_id = "capability-frame"
+
+        prompt = _build_workflow_outcome_repair_prompt(
+            task=task,
+            original_response="verdict: blocked\nreason: transient failure",
+            allowed_topics={"spec.framed"},
+        )
+
+        assert "capability-frame" in prompt
+        assert "transient failure" in prompt
+        assert "Do not claim success without evidence" in prompt
 
     def test_resident_control_fields_do_not_depend_on_an_episode(self) -> None:
         dl = _make_drive_loop()

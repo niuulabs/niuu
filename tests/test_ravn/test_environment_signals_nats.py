@@ -74,10 +74,14 @@ class _FakeClient:
     def __init__(self, js: _FakeJetStream) -> None:
         self._js = js
         self.jetstream_calls: list[dict[str, Any]] = []
+        self.is_closed = False
 
     def jetstream(self, **kwargs: Any) -> _FakeJetStream:
         self.jetstream_calls.append(kwargs)
         return self._js
+
+    async def close(self) -> None:
+        self.is_closed = True
 
 
 def _adapter(
@@ -431,6 +435,43 @@ async def test_connects_via_shared_transport_helper_when_no_client_injected(
     ]
     assert connect_calls[0]["options"] == {"user": "ivaldi", "password": "secret"}
     assert js.pull_subscribe_calls[0]["stream"] == "workshop-laevateinn-events"
+
+
+@pytest.mark.asyncio
+async def test_fetch_failure_reconnects_and_rebinds_on_next_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingSubscription(_FakePullSubscription):
+        async def fetch(self, batch: int, timeout: float) -> list[_FakeMsg]:
+            self.fetch_calls.append((batch, timeout))
+            raise ConnectionError("NATS connection closed")
+
+    failed_subscription = FailingSubscription([])
+    first_client = _FakeClient(_FakeJetStream(failed_subscription))
+    recovered_message = _FakeMsg(json.dumps(_envelope()).encode())
+    recovered_subscription = _FakePullSubscription([[recovered_message]])
+    second_client = _FakeClient(_FakeJetStream(recovered_subscription))
+    clients = [first_client, second_client]
+
+    async def _fake_connect(**_kwargs: Any) -> _FakeClient:
+        return clients.pop(0)
+
+    monkeypatch.setattr(signals_nats, "connect_nats", _fake_connect)
+    adapter = NatsJetStreamSignalAdapter(
+        environment=k8s_environment_fixture(),
+        source_id="workshop-laevateinn",
+        servers=["tls://nats.test:4222"],
+        stream_name="workshop-laevateinn-events",
+        subject="workshop.laevateinn.>",
+    )
+
+    with pytest.raises(ConnectionError, match="connection closed"):
+        await adapter.collect()
+    signals = await adapter.collect()
+
+    assert first_client.is_closed is True
+    assert len(signals) == 1
+    assert signals[0].normalized_payload == _envelope()
 
 
 @pytest.mark.parametrize(
