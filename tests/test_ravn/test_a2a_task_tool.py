@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from contextlib import nullcontext
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -176,6 +178,36 @@ async def test_a2a_task_preserves_task_state_questions_artifacts_and_provenance(
     assert reply_message["taskId"] == "task-1"
     assert reply_message["metadata"] == {"requestId": "question-1"}
     assert all(url == "https://peer.example/a2a" for url, _, _ in client.posts)
+
+
+@pytest.mark.asyncio
+async def test_a2a_task_propagates_active_trace_in_message_metadata(monkeypatch) -> None:
+    client = _Client(
+        [{"task": {"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}}}]
+    )
+    telemetry = MagicMock()
+    telemetry.inject.return_value = {
+        "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+    }
+    telemetry.span.side_effect = lambda *_args, **_kwargs: nullcontext(MagicMock())
+    monkeypatch.setattr(
+        "ravn.adapters.tools.a2a_task.get_observability",
+        lambda: telemetry,
+    )
+    tool = A2ATaskTool(agent_directory=_Directory(_agent()), client=client)
+
+    result = await tool.execute(
+        {
+            "operation": "start",
+            "agent_id": _agent().id,
+            "skill_id": "review",
+            "prompt": "Review the change.",
+        }
+    )
+
+    assert not result.is_error
+    metadata = client.posts[0][1]["params"]["message"]["metadata"]
+    assert metadata["traceContext"] == telemetry.inject.return_value
 
 
 @pytest.mark.asyncio

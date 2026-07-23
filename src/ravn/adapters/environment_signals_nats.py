@@ -14,16 +14,16 @@ messages published while it was down.
 Configuration example (``signal_sources`` entry)::
 
     signal_sources:
-      - id: workshop-laevateinn
-        name: Laevateinn workshop events
+      - id: upstream-events
+        name: Upstream event stream
         kind: generic
         adapter: ravn.adapters.environment_signals_nats.NatsJetStreamSignalAdapter
         enabled: true
         kwargs:
           servers: ["tls://nats.example.svc:4222"]
-          stream_name: workshop-laevateinn-events
-          subject: workshop.laevateinn.>
-          durable_name: ivaldi-workshop-laevateinn
+          stream_name: upstream-events
+          subject: upstream.events.>
+          durable_name: resident-upstream-events
           deliver_policy: all
           tls_ca_file: /etc/nats-ca/ca.crt
           nkeys_seed_file: /etc/nats-nkey/nats.nk

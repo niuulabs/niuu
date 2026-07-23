@@ -736,6 +736,79 @@ def test_cli_executor_adds_ravn_tools_mcp_server_when_tools_are_preloaded() -> N
         key == "mcp_servers.ravn-tools.args" and '"tool-mcp"' in value
         for key, value in transport._mcp_overrides
     )
+    assert (
+        "mcp_servers.ravn-tools.tool_timeout_sec",
+        "3600.0",
+    ) in transport._mcp_overrides
+
+
+def test_cli_executor_allows_ravn_tool_mcp_timeout_override() -> None:
+    channel = _CollectingChannel()
+    executor = CliTransportExecutor(
+        transport_adapter="skuld.transports.codex.CodexSubprocessTransport",
+        ravn_tool_mcp_timeout_seconds=900,
+    )
+    agent = executor.build(
+        channel=channel,
+        system_prompt="You are a researcher.",
+        session=Session(),
+        model="gpt-5.5",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-ravn-tool-mcp-timeout",
+        persona="product-steward",
+        workspace_dir="/tmp/workspace",
+        permission_mode="read_only",
+        tools=[DummyTool()],
+        mcp_servers=[],
+    )
+
+    transport = agent._create_transport()
+    assert (
+        "mcp_servers.ravn-tools.tool_timeout_sec",
+        "900.0",
+    ) in transport._mcp_overrides
+
+
+def test_cli_executor_resolves_ravn_tool_mcp_config_before_changing_workspace(
+    tmp_path, monkeypatch
+) -> None:
+    config = tmp_path / "configs" / "resident.yaml"
+    config.parent.mkdir()
+    config.write_text("state_dir: /tmp/resident-state\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("RAVN_CONFIG", "configs/resident.yaml")
+
+    channel = _CollectingChannel()
+    executor = CliTransportExecutor(
+        transport_adapter="skuld.transports.codex.CodexSubprocessTransport"
+    )
+    agent = executor.build(
+        channel=channel,
+        system_prompt="You are a resident.",
+        session=Session(),
+        model="gpt-5.5",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-ravn-tool-mcp-config",
+        persona="ivaldi",
+        workspace_dir="/different/resident/workspace",
+        permission_mode="read_only",
+        tools=[DummyTool()],
+        mcp_servers=[],
+    )
+
+    server = agent._transport_kwargs["mcp_servers"][0]
+    assert server["args"] == [
+        "-m",
+        "ravn",
+        "tool-mcp",
+        "--config",
+        str(config),
+        "--persona",
+        "ivaldi",
+    ]
+    assert server["env"]["RAVN_CONFIG"] == str(config)
 
 
 def test_cli_executor_delegates_codex_ws_permissions_to_codex_config() -> None:

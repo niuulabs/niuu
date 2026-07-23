@@ -292,6 +292,16 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     assert builder_stage_personas["Frame missing capability"] == ["specification-framer"]
     assert builder_stage_personas["Build tool or skill"] == ["coder"]
     assert builder_stage_personas["Review capability"] == ["reviewer", "security-auditor"]
+    assert builder_stage_personas["Publish capability record"] == ["capability-publisher"]
+    builder_edge_labels = {edge["label"] for edge in builder_flow.graph["edges"]}
+    assert {
+        "spec.framed -> spec.framed",
+        "review.passed -> review.passed",
+        "security.passed -> security.passed",
+        "review.changes_requested -> review.changes_requested",
+        "security.changes_requested -> security.changes_requested",
+        "capability.ready -> capability.ready",
+    }.issubset(builder_edge_labels)
     builder_resources = {
         node["label"]: node
         for node in builder_flow.graph["nodes"]
@@ -302,6 +312,12 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         "https://mimir.yggdrasil.niuu.world/api/v1"
     )
     assert builder_resources["Capability Memory"]["authRef"] == "integration:volundr"
+    builder_binding = next(
+        binding
+        for binding in builder_flow.graph["resourceBindings"]
+        if binding["id"] == "binding-capability-memory"
+    )
+    assert "specifications/" in builder_binding["writePrefixes"]
 
 
 @pytest.mark.asyncio

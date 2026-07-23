@@ -34,6 +34,7 @@ def test_help_projection_carries_exact_resume_context() -> None:
     )[0]
 
     assert projected["kind"] == "notification"
+    assert projected["sourceEventId"]
     assert projected["notificationType"] == "help_needed"
     assert projected["replyContext"]["help_context"] == {"case_id": "case-1"}
     assert projected["replyContext"]["correlation_id"] == "corr-1"
@@ -51,6 +52,20 @@ def test_help_without_optional_context_still_accepts_an_operator_reply() -> None
     assert projected["replyContext"]["session_id"] == "session-1"
     assert projected["replyContext"]["correlation_id"] == "corr-1"
     assert projected["replyContext"]["help_context"] == {}
+
+
+def test_error_projection_preserves_failure_kind() -> None:
+    projected = project_ravn_event(
+        RavnEvent.error(
+            source="ravn-1",
+            message="Backend unavailable",
+            correlation_id="task-1",
+            session_id="session-1",
+            failure_kind="LLMError",
+        )
+    )[0]
+
+    assert projected["failureKind"] == "LLMError"
 
 
 def test_tool_projection_exposes_activity_and_delegation_without_skuld_logic() -> None:
@@ -71,6 +86,7 @@ def test_tool_projection_exposes_activity_and_delegation_without_skuld_logic() -
         "agent_event",
     ]
     assert projected[1]["eventType"] == "code.review"
+    assert len({event["sourceEventId"] for event in projected}) == 1
 
 
 def test_outcome_projection_is_structured_and_instruction_free() -> None:

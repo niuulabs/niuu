@@ -630,6 +630,7 @@ def _deep_merge_config(base: dict[str, Any], overlay: dict[str, Any]) -> dict[st
 def _normalize_workflow_config(
     workflow: dict[str, Any] | None,
     initiative_context: str,
+    trace_context: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(workflow, dict):
         return None
@@ -645,6 +646,7 @@ def _normalize_workflow_config(
         "scope": str(workflow.get("scope") or ""),
         "initial_context": initiative_context,
         "graph": graph,
+        "trace_context": dict(trace_context or {}),
     }
 
 
@@ -813,9 +815,22 @@ class RavnFlockContributor(SessionContributor):
         except (TypeError, ValueError):
             daily_budget_usd = None
         initiative_context = str(wc.get("initiative_context") or "")
+        provenance = wc.get("provenance")
+        provenance = provenance if isinstance(provenance, dict) else {}
+        raw_trace_context = provenance.get("trace_context")
+        trace_context = (
+            {
+                key: str(raw_trace_context[key])
+                for key in ("traceparent", "tracestate", "baggage")
+                if raw_trace_context.get(key)
+            }
+            if isinstance(raw_trace_context, dict)
+            else {}
+        )
         workflow_cfg = _normalize_workflow_config(
             wc.get("workflow"),
             initiative_context,
+            trace_context,
         )
 
         values, pod_spec = self._build_flock_spec(
@@ -959,6 +974,10 @@ class RavnFlockContributor(SessionContributor):
                         {
                             "name": "SKULD__WORKFLOW__GRAPH",
                             "value": json.dumps(workflow_graph),
+                        },
+                        {
+                            "name": "SKULD__WORKFLOW__TRACE_CONTEXT",
+                            "value": json.dumps(workflow.get("trace_context") or {}),
                         },
                     ]
                 )

@@ -12,6 +12,7 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from time import monotonic
 from typing import Any
 
@@ -569,6 +570,10 @@ class CliTransportAgent(ExecutionAgentPort):
 
     async def _record_tool_result_block(self, block: dict, correlation_id: str) -> None:
         tool_use_id = str(block.get("tool_use_id", ""))
+        if tool_use_id and any(
+            result.tool_call_id == tool_use_id for result in self._turn_tool_results
+        ):
+            return
         tool_name = self._current_tool_names.get(tool_use_id, "")
         result = str(block.get("content", ""))
         is_error = bool(block.get("is_error", False))
@@ -643,6 +648,8 @@ class CliTransportAgent(ExecutionAgentPort):
         tool_name = str(block.get("name", ""))
         tool_input = block.get("input", {})
         tool_use_id = str(block.get("id", f"tool_{len(self._turn_tool_calls) + 1}"))
+        if tool_use_id in self._current_tool_names:
+            return
         normalized_input = tool_input if isinstance(tool_input, dict) else {}
         self._current_tool_names[tool_use_id] = tool_name
         self._turn_tool_calls.append(
@@ -668,9 +675,14 @@ class CliTransportExecutor(ExecutorPort):
         *,
         transport_adapter: str = "skuld.transports.subprocess.SubprocessTransport",
         transport_kwargs: dict[str, Any] | None = None,
+        ravn_tool_mcp_timeout_seconds: float = 3600.0,
     ) -> None:
         self._transport_adapter = transport_adapter
         self._transport_kwargs = dict(transport_kwargs or {})
+        self._ravn_tool_mcp_timeout_seconds = max(
+            1.0,
+            float(ravn_tool_mcp_timeout_seconds),
+        )
         cls = import_class(transport_adapter)
         sig = inspect.signature(cls)
         self._binding = _TransportBinding(
@@ -698,6 +710,7 @@ class CliTransportExecutor(ExecutorPort):
                 list(kwargs["mcp_servers"]),
                 persona=str(kwargs.get("persona", "")),
                 tools=tools,
+                tool_timeout_seconds=self._ravn_tool_mcp_timeout_seconds,
             )
         transport_kwargs.update(self._transport_kwargs)
 
@@ -722,17 +735,25 @@ def _with_ravn_tool_mcp_server(
     *,
     persona: str,
     tools: list[object],
+    tool_timeout_seconds: float,
 ) -> list[dict[str, Any]]:
     if not tools or any(str(server.get("name") or "") == "ravn-tools" for server in mcp_servers):
         return mcp_servers
 
     env: dict[str, str] = {}
+    config_path = ""
     if config := os.environ.get("RAVN_CONFIG"):
-        env["RAVN_CONFIG"] = config
+        path = Path(config).expanduser()
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        config_path = str(path.resolve())
+        env["RAVN_CONFIG"] = config_path
     if pythonpath := os.environ.get("PYTHONPATH"):
         env["PYTHONPATH"] = pythonpath
 
     args = ["-m", "ravn", "tool-mcp"]
+    if config_path:
+        args.extend(["--config", config_path])
     if persona:
         args.extend(["--persona", persona])
 
@@ -744,5 +765,9 @@ def _with_ravn_tool_mcp_server(
             "command": sys.executable,
             "args": args,
             "env": env,
+            # Commissioned builds can remain in a real A2A workflow for
+            # minutes. Codex's short MCP default would cancel the local waiter
+            # while leaving that remote task running.
+            "tool_timeout_sec": tool_timeout_seconds,
         },
     ]

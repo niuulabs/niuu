@@ -362,6 +362,7 @@ class AgentTask:
     workflow_parent_event_id: str = ""  # Direct upstream event task_id for per-cycle joins
     workflow_node_id: str = ""  # Active workflow graph node for node-scoped contracts
     tool_outcomes: dict[str, dict[str, Any]] = field(default_factory=dict)
+    human_initiated: bool = False  # True when a human message entered through a channel
     # Durable resident continuation metadata.  These fields are transport
     # state, not a semantic task taxonomy: the model still selects the action
     # described by ``initiative_context``.

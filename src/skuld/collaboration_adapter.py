@@ -6,6 +6,7 @@ import json
 import logging
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
@@ -29,12 +30,31 @@ PresencePublisher = Callable[[Any], Awaitable[None]]
 UsageReporter = Callable[[dict[str, Any]], Awaitable[None]]
 
 
+def _source_wire_fields(event: dict[str, Any]) -> dict[str, Any]:
+    """Keep neutral source identity available to delivery adapters."""
+    fields: dict[str, Any] = {}
+    for key in (
+        "sourceEventId",
+        "sourceEventType",
+        "sessionId",
+        "taskId",
+        "correlationId",
+        "rootCorrelationId",
+    ):
+        value = event.get(key)
+        if value:
+            fields[key] = value
+    return fields
+
+
 def _peer_observation(event: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
     """Translate a collaboration event into Skuld's peer-observation contract."""
     kind = str(event.get("kind") or "")
     base = {
+        "source_event_id": event.get("sourceEventId") or "",
         "task_id": event.get("taskId") or "",
         "session_id": event.get("sessionId") or "",
+        "correlation_id": event.get("correlationId") or "",
         "root_correlation_id": event.get("rootCorrelationId") or "",
     }
 
@@ -138,6 +158,7 @@ class SkuldCollaborationAdapter(CollaborationRoom):
         self._report_usage = report_usage
         self._websockets: dict[str, WebSocket] = {}
         self._reported_usage_ids: set[str] = set()
+        self._delivered_source_events: OrderedDict[str, None] = OrderedDict()
         self._timeline_started_at = time.monotonic()
         super().__init__(
             participant_colors=config.participant_colors,
@@ -198,6 +219,13 @@ class SkuldCollaborationAdapter(CollaborationRoom):
 
     async def _handle_event(self, participant: Participant, event: dict[str, Any]) -> None:
         kind = str(event.get("kind") or "")
+        delivery_key = self._delivery_key(event, kind)
+        if delivery_key and not self._claim_delivery(delivery_key):
+            get_observability().count(
+                "skuld.collaboration.events",
+                attributes={"kind": kind or "unknown", "outcome": "duplicate"},
+            )
+            return
         carrier = event.get("traceContext")
         if not isinstance(carrier, dict):
             carrier = {}
@@ -243,12 +271,28 @@ class SkuldCollaborationAdapter(CollaborationRoom):
                     attributes={"kind": kind, "outcome": "handled"},
                 )
             except Exception:
+                if delivery_key:
+                    self._delivered_source_events.pop(delivery_key, None)
                 telemetry.mark_error(span, "collaboration_event_failed")
                 telemetry.count(
                     "skuld.collaboration.events",
                     attributes={"kind": kind or "unknown", "outcome": "failed"},
                 )
                 raise
+
+    def _delivery_key(self, event: dict[str, Any], kind: str) -> str:
+        source_event_id = str(event.get("sourceEventId") or "").strip()
+        if not source_event_id:
+            return ""
+        return f"{source_event_id}:{kind}"
+
+    def _claim_delivery(self, key: str) -> bool:
+        if key in self._delivered_source_events:
+            return False
+        self._delivered_source_events[key] = None
+        while len(self._delivered_source_events) > self._config.delivery_dedupe_max_entries:
+            self._delivered_source_events.popitem(last=False)
+        return True
 
     async def _handle_message(self, participant: Participant, event: dict[str, Any]) -> None:
         message_id = str(uuid.uuid4())
@@ -266,9 +310,13 @@ class SkuldCollaborationAdapter(CollaborationRoom):
             "participant": asdict(participant),
             "content": content,
             "visibility": visibility,
+            **_source_wire_fields(event),
         }
         if is_error:
             wire_event["error"] = True
+            failure_kind = str(event.get("failureKind") or "").strip()
+            if failure_kind:
+                wire_event["failureKind"] = failure_kind
         if thread_id:
             wire_event["threadId"] = thread_id
         await self._channels.broadcast(wire_event)
@@ -322,6 +370,7 @@ class SkuldCollaborationAdapter(CollaborationRoom):
             "type": "room_activity",
             "participantId": participant.peer_id,
             "activityType": activity_type,
+            **_source_wire_fields(event),
         }
         detail = event.get("detail")
         if detail:
@@ -342,6 +391,7 @@ class SkuldCollaborationAdapter(CollaborationRoom):
             "attempted": list(event.get("attempted") or []),
             "recommendation": event.get("recommendation") or "",
             "urgency": event.get("urgency", 0.5),
+            **_source_wire_fields(event),
         }
         for key in ("context", "traceContext"):
             if event.get(key):
@@ -375,6 +425,7 @@ class SkuldCollaborationAdapter(CollaborationRoom):
             "eventType": event.get("eventType") or "",
             "fields": dict(event.get("fields") or {}),
             "valid": bool(event.get("valid", True)),
+            **_source_wire_fields(event),
         }
         for key in ("summary", "verdict"):
             if event.get(key):
@@ -402,6 +453,7 @@ class SkuldCollaborationAdapter(CollaborationRoom):
                 "eventType": event.get("eventType") or "work",
                 "direction": event.get("direction") or "delegate",
                 "preview": event.get("preview") or "",
+                **_source_wire_fields(event),
             }
         )
 
@@ -411,6 +463,7 @@ class SkuldCollaborationAdapter(CollaborationRoom):
                 "type": "room_agent_event",
                 "participantId": participant.peer_id,
                 "frame": event.get("event") or {},
+                **_source_wire_fields(event),
             }
         )
         timeline = event.get("timeline")

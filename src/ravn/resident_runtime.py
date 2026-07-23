@@ -52,12 +52,14 @@ entries per list, each no longer than 500 characters. Do not invent evidence or 
 hypotheses into observations. The runtime persists this mapping exactly; it does not interpret
 the environment or manufacture state on your behalf.
 
-Use available tools before producing the final outcome. The runtime will not turn a prose
-`selected_next_action` into another immediate model turn. If useful progress requires a future
-external event or passage of time, use `sleep`; a new observation or configured schedule will
-wake the resident. Use `ask_operator` when missing intent blocks progress and `stop` when no
-wake is required. Declare `next_action_timing` as `external_event` or `scheduled_time` for
-sleep, `operator_input` for ask_operator, and `none` for stop."""
+Use available tools when they can materially reduce uncertainty, test a hypothesis, or perform
+a needed action. Do not call a tool merely to demonstrate tool use.
+The runtime will not turn a prose `selected_next_action` into another immediate model turn. If
+useful progress requires a future external event or passage of time, use `sleep`; a new
+observation or configured schedule will wake the resident. Use `ask_operator` when an operator's
+knowledge, intent, or authority is the best available way to progress, and `stop` when no wake
+is required. Declare `next_action_timing` as `external_event` or `scheduled_time` for sleep,
+`operator_input` for ask_operator, and `none` for stop."""
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,8 @@ class ResidentRuntime:
         state: ResidentStatePort,
         inbox: ResidentInboxBackend | None = None,
         resident_id: str = "resident",
+        resident_personality: str = "",
+        charter: str = "",
         max_turns: int = 3,
         max_tokens: int = 0,
         context_max_chars: int = 12000,
@@ -91,6 +95,8 @@ class ResidentRuntime:
         self._state = state
         self._inbox = inbox
         self._resident_id = resident_id.strip() or "resident"
+        self._resident_personality = resident_personality.strip()
+        self._charter = charter.strip()
         self._max_turns = max(1, int(max_turns))
         self._max_tokens = max(0, int(max_tokens))
         self._context_max_chars = max(1000, int(context_max_chars))
@@ -549,11 +555,18 @@ class ResidentRuntime:
         context_lines = [
             "Resident home turn over durable, unconsumed observations.",
             "Judge what these observations mean. Retrieve full evidence only when it can "
-            "change the decision. Select a next action, ask for operator intent, schedule a "
-            "recheck, or stop as appropriate.",
+            "improve the judgment. Investigate, research, collaborate, ask the operator, "
+            "act, schedule a recheck, or stop as appropriate.",
             "",
-            "Observations:",
         ]
+        if self._resident_personality or self._charter:
+            context_lines.append("Configured resident context:")
+            if self._resident_personality:
+                context_lines.append(f"- Personality: {self._resident_personality}")
+            if self._charter:
+                context_lines.append(f"- Charter: {self._charter}")
+            context_lines.append("")
+        context_lines.append("Observations:")
         payload_budget = max(
             200,
             min(4000, self._context_max_chars // (2 * max(1, len(rows)))),

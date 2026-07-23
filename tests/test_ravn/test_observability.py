@@ -65,14 +65,25 @@ def test_span_context_and_metrics_are_real_when_sdk_is_installed() -> None:
         telemetry.count("ravn.agent.tasks", attributes={"ravn.task.outcome": "complete"})
         telemetry.duration("ravn.agent.task.duration", 0.25)
         telemetry.gauge("ravn.queue.depth", 3)
+    with telemetry.span("failed") as failed_span:
+        telemetry.mark_error(
+            failed_span,
+            "a2a_rpc_failed",
+            "A2A SendMessage failed with Bearer secret-value",
+        )
 
     spans = span_exporter.get_finished_spans()
-    assert [span.name for span in spans] == ["signal", "agent"]
+    assert [span.name for span in spans] == ["signal", "agent", "failed"]
     assert spans[0].context.trace_id == spans[1].context.trace_id
     assert spans[1].events[0].name == "model.response"
     assert "must-not-escape" not in spans[1].events[0].attributes["ravn.content"]
     assert "[REDACTED]" in spans[1].events[0].attributes["ravn.content"]
     assert carrier["traceparent"].startswith("00-")
+    assert spans[2].attributes["error.type"] == "a2a_rpc_failed"
+    assert spans[2].attributes["error.message"] == (
+        "A2A SendMessage failed with Bearer [REDACTED]"
+    )
+    assert spans[2].status.description == "A2A SendMessage failed with Bearer [REDACTED]"
     metric_names = {
         metric.name
         for resource in metric_reader.get_metrics_data().resource_metrics

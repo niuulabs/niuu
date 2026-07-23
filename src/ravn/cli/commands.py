@@ -48,6 +48,7 @@ from ravn.workflow_runtime import (  # noqa: F401
     _workflow_event_matches_filters,
     _workflow_graph,
     _workflow_runtime_for_persona,
+    _workflow_stage_context,
 )
 
 logger = logging.getLogger(__name__)

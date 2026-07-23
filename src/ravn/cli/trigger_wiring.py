@@ -600,10 +600,16 @@ def _wire_cascade(
 
                 task_id_suffix = (root_corr or "unknown")[:8]
                 safe_group_id = group_id.replace(".", "_").replace("-", "_")
+                stage_context = _workflow_stage_context(settings, node_id=group_id)
+                initiative_context = (
+                    f"{stage_context}\n\n{result.merged_context}"
+                    if stage_context
+                    else result.merged_context
+                )
                 task = AgentTask(
                     task_id=f"event_{safe_group_id}_{task_id_suffix}",
                     title=f"Handle {result.triggered_by}",
-                    initiative_context=result.merged_context,
+                    initiative_context=initiative_context,
                     triggered_by=result.triggered_by,
                     output_mode=OutputMode.SILENT,
                     persona=(
@@ -615,6 +621,7 @@ def _wire_cascade(
                     workflow_node_id=group_id,
                 )
                 task.session_id = event.session_id or task.session_id
+                task.trace_context = dict(event.trace_context)
 
                 try:
                     await drive_loop.enqueue(task)

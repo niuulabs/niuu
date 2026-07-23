@@ -323,7 +323,8 @@ async def test_working_state_is_reused_by_a_new_runtime_after_restart(tmp_path) 
     assert "opaque audit identifiers" in second_context
     assert "not workspace paths" in second_context
     assert "will not turn a prose" in second_context
-    assert "Use available tools before producing the final outcome" in second_context
+    assert "Use available tools when they can materially reduce uncertainty" in second_context
+    assert "Do not call a tool merely to demonstrate tool use" in second_context
 
 
 @pytest.mark.asyncio
@@ -610,7 +611,12 @@ async def test_home_turn_reads_new_records_and_acknowledges_only_after_record(tm
             "source_context": {"service": "deployer", "state": "stalled"},
         },
     )
-    runtime = ResidentRuntime(state=state, inbox=inbox)
+    runtime = ResidentRuntime(
+        state=state,
+        inbox=inbox,
+        resident_personality="Patient investigator",
+        charter="Understand this environment and close material knowledge gaps.",
+    )
 
     task = await runtime.next_home_task(
         limit=5,
@@ -623,6 +629,11 @@ async def test_home_turn_reads_new_records_and_acknowledges_only_after_record(tm
     assert "Bounded raw payload:" in task.initiative_context
     assert '"service": "deployer"' in task.initiative_context
     assert '"state": "stalled"' in task.initiative_context
+    assert "Personality: Patient investigator" in task.initiative_context
+    assert (
+        "Charter: Understand this environment and close material knowledge gaps."
+        in task.initiative_context
+    )
     assert len(await inbox.list_signals(status=ResidentInboxStatus.NEW.value)) == 1
 
     await runtime.handle_completed_turn(

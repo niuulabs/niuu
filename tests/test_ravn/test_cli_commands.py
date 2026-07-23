@@ -39,6 +39,7 @@ from ravn.cli.commands import (
     _workflow_event_matches_filters,
     _workflow_graph,
     _workflow_runtime_for_persona,
+    _workflow_stage_context,
     app,
     main,
 )
@@ -1318,6 +1319,34 @@ class TestWorkflowRuntimeForPersona:
         assert _workflow_event_matches_filters(payload, {"page_path": "research/demo.md"}) is True
         assert _workflow_event_matches_filters(payload, {"mount_names": "missing"}) is False
         assert _workflow_event_matches_filters(payload, {"verdict": "fail"}) is False
+
+    def test_workflow_stage_context_exposes_configured_stage_instructions(self) -> None:
+        settings = Settings.model_validate(
+            {
+                "workflow": {
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "build-stage",
+                                "kind": "stage",
+                                "label": "Build capability",
+                                "description": (
+                                    "Write the canonical artifact to learned_tool.json."
+                                ),
+                            }
+                        ],
+                        "edges": [],
+                    }
+                }
+            }
+        )
+
+        assert _workflow_stage_context(settings, node_id="build-stage") == (
+            "Workflow stage: Build capability\n"
+            "Stage instructions:\n"
+            "Write the canonical artifact to learned_tool.json."
+        )
+        assert _workflow_stage_context(settings, node_id="missing") == ""
 
     def test_derive_capabilities_prefers_persona_allowed_tools(self) -> None:
         settings = Settings()

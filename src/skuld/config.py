@@ -30,6 +30,12 @@ from niuu.domain.observability import ObservabilityConfig
 from niuu.mesh.config import MeshNatsConfig
 
 
+class SkuldObservabilityConfig(ObservabilityConfig):
+    """OpenTelemetry settings with Skuld's stable service identity."""
+
+    service_name: str = Field(default="skuld")
+
+
 # Config file search paths (in order of priority).
 # NIUU_CONFIG env var (set by the CLI --config flag) takes precedence.
 def _config_paths() -> list[Path]:
@@ -142,6 +148,7 @@ class WorkflowRuntimeConfig(BaseModel):
     scope: str = Field(default="")
     initial_context: str = Field(default="")
     graph: dict[str, Any] = Field(default_factory=dict)
+    trace_context: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -153,6 +160,11 @@ class WorkflowRuntimeConfig(BaseModel):
             with suppress(Exception):
                 value = dict(value)
                 value["graph"] = json.loads(graph)
+        trace_context = value.get("trace_context")
+        if isinstance(trace_context, str) and trace_context.strip():
+            with suppress(Exception):
+                value = dict(value)
+                value["trace_context"] = json.loads(trace_context)
         return value
 
 
@@ -170,6 +182,14 @@ class RoomConfig(BaseModel):
     )
     participant_colors: list[str] = Field(default_factory=lambda: list(_DEFAULT_PARTICIPANT_COLORS))
     activity_detail_max_length: int = Field(default=200)
+    delivery_dedupe_max_entries: int = Field(
+        default=4096,
+        gt=0,
+        description=(
+            "Maximum number of source collaboration-event identities retained "
+            "to suppress exact transport redeliveries."
+        ),
+    )
     default_target_peer_id: str = Field(
         default="",
         description=(
@@ -649,7 +669,7 @@ class SkuldSettings(BaseSettings):
     acp_prompt_timeout_s: float = Field(default=300.0)  # ACP (Grok Build) prompt turn timeout
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     reflex: ReflexConfig = Field(default_factory=ReflexConfig)
-    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    observability: SkuldObservabilityConfig = Field(default_factory=SkuldObservabilityConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     peer_watchdog: PeerWatchdogConfig = Field(default_factory=PeerWatchdogConfig)
     room: RoomConfig = Field(default_factory=RoomConfig)

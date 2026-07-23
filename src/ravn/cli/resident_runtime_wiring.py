@@ -200,6 +200,8 @@ def _build_resident_runtime(
             or settings.initiative.default_persona
             or "resident"
         ),
+        resident_personality=settings.environment.resident_personality,
+        charter=settings.environment.charter,
         max_turns=cfg.continuation_max_turns,
         max_tokens=cfg.continuation_max_tokens,
         context_max_chars=cfg.continuation_context_max_chars,

@@ -1477,17 +1477,32 @@ class DriveLoop:
         """Render a directed human reply as initiative context for the target persona."""
         trimmed = content.strip()
         if not metadata:
-            return trimmed
+            return "\n".join(
+                [
+                    "This is a directed message from a human.",
+                    f"Human message: {trimmed}",
+                ]
+            )
 
         help_summary = str(metadata.get("help_summary") or "").strip()
         help_reason = str(metadata.get("help_reason") or "").strip()
         help_recommendation = str(metadata.get("help_recommendation") or "").strip()
         attempted = metadata.get("help_attempted")
         context = metadata.get("help_context")
+        reply_context = metadata.get("reply_context")
+        recent_room_context = metadata.get("recent_room_context")
+        has_help_context = bool(
+            help_summary
+            or help_reason
+            or help_recommendation
+            or isinstance(attempted, list)
+            or isinstance(context, dict)
+        )
 
-        parts = [
-            "This is a directed human reply for an in-progress workflow turn.",
-        ]
+        if has_help_context:
+            parts = ["This is a directed human reply for an in-progress workflow turn."]
+        else:
+            parts = ["This is a directed message from a human."]
         if help_summary:
             parts.append(f"Pending help summary: {help_summary}")
         if help_reason:
@@ -1501,7 +1516,27 @@ class DriveLoop:
             parts.append(f"Previous recommendation: {help_recommendation}")
         if isinstance(context, dict) and context:
             parts.append(f"Workflow context: {json.dumps(context, sort_keys=True)}")
-        parts.append(f"Human reply: {trimmed}")
+        if isinstance(reply_context, dict) and reply_context:
+            prior_content = str(reply_context.get("content") or "").strip()
+            if prior_content:
+                parts.extend(
+                    [
+                        "The human replied to this prior room message:",
+                        prior_content,
+                    ]
+                )
+        elif isinstance(recent_room_context, dict) and recent_room_context:
+            prior_content = str(recent_room_context.get("content") or "").strip()
+            if prior_content:
+                parts.extend(
+                    [
+                        "Most recent message from this participant in the room "
+                        "(context only; the human did not explicitly reply to it):",
+                        prior_content,
+                    ]
+                )
+        label = "Human reply" if has_help_context or reply_context else "Human message"
+        parts.append(f"{label}: {trimmed}")
         return "\n".join(parts)
 
     async def _handle_joined_session_message(
@@ -1576,12 +1611,14 @@ class DriveLoop:
             output_mode=OutputMode.SURFACE,
             persona=persona,
             priority=1,  # high priority — user is waiting
+            human_initiated=True,
         )
         if metadata:
             root_correlation_id = str(metadata.get("root_correlation_id") or "").strip()
             workflow_parent_event_id = str(metadata.get("workflow_parent_event_id") or "").strip()
             workflow_node_id = str(metadata.get("workflow_node_id") or "").strip()
             session_id = str(metadata.get("session_id") or "").strip()
+            trace_context = metadata.get("trace_context")
             if root_correlation_id:
                 task.root_correlation_id = root_correlation_id
             if workflow_parent_event_id:
@@ -1590,6 +1627,8 @@ class DriveLoop:
                 task.workflow_node_id = workflow_node_id
             if session_id:
                 task.session_id = session_id
+            if isinstance(trace_context, dict):
+                task.trace_context = {str(key): str(value) for key, value in trace_context.items()}
         logger.info("drive_loop: directed message enqueued as task %s", task_id)
         await self.enqueue(task)
 
@@ -2065,7 +2104,10 @@ class DriveLoop:
                         result=turn_result,
                         response_text=response_text,
                     )
-                    if str(getattr(resident_disposition, "kind", "")) == "ask_operator":
+                    if (
+                        str(getattr(resident_disposition, "kind", "")) == "ask_operator"
+                        and not task.resident_help_published
+                    ):
                         await self._emit_resident_help_needed(task, resident_disposition)
                     telemetry.event(
                         "ravn.resident.disposition",
@@ -2135,6 +2177,7 @@ class DriveLoop:
                         correlation_id=task.task_id,
                         session_id=task.session_id or task.task_id,
                         task_id=task.task_id,
+                        failure_kind=type(exc).__name__,
                     )
                 )
 
@@ -2262,7 +2305,19 @@ class DriveLoop:
         ):
             if self._mesh is not None:
                 try:
-                    await self._mesh.publish(event, topic=str(RavnEventType.HELP_NEEDED))
+                    mesh_event = event
+                    if self._skuld_channel is not None:
+                        mesh_event = replace(
+                            event,
+                            payload={
+                                **event.payload,
+                                "collaboration_routing_only": True,
+                            },
+                        )
+                    await self._mesh.publish(
+                        mesh_event,
+                        topic=str(RavnEventType.HELP_NEEDED),
+                    )
                     telemetry.event("ravn.operator.help.mesh_published")
                 except Exception:
                     logger.warning(
@@ -3249,6 +3304,7 @@ class DriveLoop:
             "workflow_parent_event_id": task.workflow_parent_event_id,
             "workflow_node_id": task.workflow_node_id,
             "tool_outcomes": task.tool_outcomes,
+            "human_initiated": task.human_initiated,
             "resident_case_id": task.resident_case_id,
             "resident_mandate": task.resident_mandate,
             "resident_turn_index": task.resident_turn_index,
@@ -3306,6 +3362,7 @@ class DriveLoop:
                     workflow_parent_event_id=rec.get("workflow_parent_event_id", ""),
                     workflow_node_id=rec.get("workflow_node_id", ""),
                     tool_outcomes=rec.get("tool_outcomes", {}) or {},
+                    human_initiated=rec.get("human_initiated", False),
                     resident_case_id=rec.get("resident_case_id", ""),
                     resident_mandate=rec.get("resident_mandate", ""),
                     resident_turn_index=rec.get("resident_turn_index", 0),

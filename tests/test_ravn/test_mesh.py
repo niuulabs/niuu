@@ -272,10 +272,16 @@ class TestSleipnirMeshAdapterUnit:
 
         # Publish an event
         event = _make_event()
+        object.__setattr__(
+            event,
+            "trace_context",
+            {"traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"},
+        )
         await adapter.publish(event, "test.topic")
 
         assert len(received_events) == 1
         assert received_events[0].type == RavnEventType.THOUGHT
+        assert received_events[0].trace_context == event.trace_context
 
     @pytest.mark.asyncio
     async def test_handler_failure_logs_environment_context(

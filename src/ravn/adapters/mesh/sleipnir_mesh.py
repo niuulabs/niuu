@@ -64,12 +64,14 @@ def _ravn_to_sleipnir(
         source=f"ravn:{source_peer_id}",
         payload={
             "ravn_event": event.payload,
+            "ravn_event_id": event.event_id,
             "ravn_type": str(event.type),
             "ravn_source": event.source,
             "ravn_urgency": event.urgency,
             "ravn_session_id": event.session_id,
             "ravn_task_id": event.task_id,
             "ravn_root_correlation_id": event.root_correlation_id,
+            "ravn_trace_context": event.trace_context,
             "ravn_environment_id": environment_id,
             "collaboration_events": project_ravn_event(event),
         },
@@ -102,6 +104,8 @@ def _sleipnir_to_ravn(sleipnir_event: Any) -> RavnEvent:
         session_id=payload.get("ravn_session_id", ""),
         task_id=payload.get("ravn_task_id"),
         root_correlation_id=payload.get("ravn_root_correlation_id", ""),
+        trace_context=dict(payload.get("ravn_trace_context") or {}),
+        event_id=payload.get("ravn_event_id") or uuid.uuid4().hex,
     )
 
 

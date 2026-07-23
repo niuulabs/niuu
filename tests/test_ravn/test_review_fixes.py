@@ -50,7 +50,9 @@ def test_classify_text_covers_every_rule_and_helpers() -> None:
         "actually that is wrong, fix that": cls.CORRECTION,
         "can you investigate pricing": cls.TASK_REQUEST,
         "maybe we could add a bundle": cls.IDEA,
-        "the printer filament ran out": cls.PHYSICAL_OBSERVATION,
+        # Domain language has no hardcoded meaning; the resident LLM receives
+        # the original text and decides what it represents.
+        "the printer filament ran out": cls.FACT,
         "this is a security risk": cls.RISK,
         "status: blocked waiting": cls.STATUS_UPDATE,
         "see notes.md for details": cls.FILE_REFERENCE,

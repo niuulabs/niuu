@@ -68,6 +68,7 @@ data:
       enabled: true
       environment_id: {{ .Values.resident.environmentId | quote }}
       presence_sweep_interval_s: 0
+      delivery_dedupe_max_entries: {{ .Values.resident.roomDeliveryDedupeMaxEntries | default 4096 }}
       default_target_peer_id: {{ .Values.resident.flock.peerId | default (printf "flock-%s" $persona) | quote }}
 
     # Resident: in-pod nng mesh between the broker and the ravn daemon.

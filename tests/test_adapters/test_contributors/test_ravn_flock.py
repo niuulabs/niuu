@@ -361,6 +361,14 @@ class TestContributorOutput:
             workload_type="ravn_flock",
             workload_config={
                 "personas": ["coder"],
+                "provenance": {
+                    "trace_context": {
+                        "traceparent": (
+                            "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+                        ),
+                        "ignored": "not-w3c",
+                    }
+                },
                 "workflow": {
                     "workflow_id": "wf-1",
                     "name": "Code",
@@ -397,6 +405,9 @@ class TestContributorOutput:
         assert env_names["SKULD__WORKFLOW__WORKFLOW_ID"] == "wf-1"
         assert env_names["SKULD__WORKFLOW__NAME"] == "Code"
         assert '"trigger-1"' in env_names["SKULD__WORKFLOW__GRAPH"]
+        assert json.loads(env_names["SKULD__WORKFLOW__TRACE_CONTEXT"]) == {
+            "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+        }
 
     async def test_skuld_generic_trigger_env_present_for_plain_coordinator_flock(self, session):
         template = LaunchSpec(

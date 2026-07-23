@@ -49,6 +49,7 @@ from google.protobuf.json_format import MessageToDict
 
 from niuu.domain.models import Principal
 from niuu.domain.services.token_scope import token_has_scope
+from niuu.observability import get_observability
 from ting.adapters.inbound.auth import extract_bearer_token, extract_principal
 from ting.api.a2a_card import _endpoint_url as _card_endpoint_url
 from ting.api.a2a_card import build_agent_card
@@ -174,26 +175,60 @@ class WorkflowTaskHandler(RequestHandler):
         if not prompt:
             raise InvalidParamsError("message must include a non-empty text part")
 
-        launch = WorkflowLaunchBody(
-            prompt=prompt,
-            sessionName=_optional_str(metadata, "sessionName"),
-            repo=str(metadata.get("repo") or ""),
-            branch=str(metadata.get("branch") or ""),
-            model=str(metadata.get("model") or ""),
-            connectionId=_optional_str(metadata, "connectionId"),
-            provenance={
-                "surface": A2A_SURFACE,
-                "a2a_message_id": message.message_id,
-            },
-        )
-        execution = await launch_workflow_execution(
-            request=self._request,
-            workflow=workflow,
-            launch=launch,
-            volundr_factory=self._volundr_factory,
-            principal=self._principal,
-            bearer_token=self._bearer_token,
-        )
+        telemetry = get_observability()
+        trace_context = _trace_context(metadata)
+        attributes = {
+            "a2a.message.id": message.message_id,
+            "a2a.skill.id": str(workflow.id),
+            "ting.workflow.name": workflow.name,
+        }
+        with telemetry.span(
+            "ting.a2a.workflow.launch",
+            attributes=attributes,
+            carrier=trace_context,
+        ) as span:
+            launch = WorkflowLaunchBody(
+                prompt=prompt,
+                sessionName=_optional_str(metadata, "sessionName"),
+                repo=str(metadata.get("repo") or ""),
+                branch=str(metadata.get("branch") or ""),
+                model=str(metadata.get("model") or ""),
+                connectionId=_optional_str(metadata, "connectionId"),
+                provenance={
+                    "surface": A2A_SURFACE,
+                    "a2a_message_id": message.message_id,
+                    **(
+                        {"trace_context": outbound_trace_context}
+                        if (outbound_trace_context := telemetry.inject() or trace_context)
+                        else {}
+                    ),
+                },
+            )
+            try:
+                execution = await launch_workflow_execution(
+                    request=self._request,
+                    workflow=workflow,
+                    launch=launch,
+                    volundr_factory=self._volundr_factory,
+                    principal=self._principal,
+                    bearer_token=self._bearer_token,
+                )
+            except Exception as exc:
+                telemetry.mark_error(span, type(exc).__name__, str(exc))
+                telemetry.event(
+                    "ting.a2a.workflow.launch.failed",
+                    attributes={**attributes, "error.type": type(exc).__name__},
+                    content={"error": str(exc)},
+                )
+                raise
+            span.set_attribute("ting.session.id", str(execution.session.id))
+            telemetry.event(
+                "ting.a2a.workflow.launched",
+                attributes={
+                    **attributes,
+                    "ting.session.id": str(execution.session.id),
+                },
+            )
 
         campaign_id = uuid4()
         slug = f"{execution.slug or 'workflow'}-{campaign_id.hex[:12]}"
@@ -755,6 +790,18 @@ def _prompt_from_message(message: Message) -> str:
 def _optional_str(metadata: dict[str, Any], key: str) -> str | None:
     value = str(metadata.get(key) or "").strip()
     return value or None
+
+
+def _trace_context(metadata: dict[str, Any]) -> dict[str, str]:
+    """Accept only W3C propagation fields from A2A message metadata."""
+    raw = metadata.get("traceContext") or metadata.get("trace_context")
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        key: str(raw[key])
+        for key in ("traceparent", "tracestate", "baggage")
+        if raw.get(key)
+    }
 
 
 def create_a2a_router() -> APIRouter:

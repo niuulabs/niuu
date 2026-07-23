@@ -210,15 +210,24 @@ working_state:
     assert "environment_type" not in parsed.fields
 
 
-def test_ivaldi_uses_environment_capabilities_not_the_source_checkout() -> None:
+def test_ivaldi_can_investigate_and_work_in_its_configured_environment() -> None:
     persona = _load("ivaldi")
 
     assert "build_tool" in persona.allowed_tools
     assert {"a2a_task", "workflow", "web"}.issubset(persona.allowed_tools)
-    assert "file" not in persona.allowed_tools
-    assert "terminal" not in persona.allowed_tools
-    assert {"file", "terminal", "todo_read", "todo_write", "mimir"}.issubset(
-        persona.forbidden_tools
+    assert {
+        "file",
+        "terminal",
+        "todo_read",
+        "todo_write",
+        "volundr",
+    }.issubset(persona.allowed_tools)
+    assert persona.forbidden_tools == []
+    assert persona.iteration_budget == 80
+    assert persona.stop_on_outcome is False
+    assert (
+        "Uncertainty is work to assess, not a reason to stop"
+        in persona.system_prompt_template
     )
 
 

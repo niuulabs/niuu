@@ -243,12 +243,22 @@ class Observability:
             if provider is not None:
                 provider.shutdown()
 
-    def mark_error(self, span: Any, error_type: str) -> None:
+    def mark_error(
+        self,
+        span: Any,
+        error_type: str,
+        description: str = "",
+    ) -> None:
         if self._tracer is None:
             return
         from opentelemetry.trace import Status, StatusCode
 
-        span.set_status(Status(StatusCode.ERROR, error_type))
+        safe_error_type = _redact_string(str(error_type))[: self._content_max_chars]
+        safe_description = _redact_string(str(description))[: self._content_max_chars]
+        span.set_attribute("error.type", safe_error_type)
+        if safe_description:
+            span.set_attribute("error.message", safe_description)
+        span.set_status(Status(StatusCode.ERROR, safe_description or safe_error_type))
 
 
 _active = Observability()

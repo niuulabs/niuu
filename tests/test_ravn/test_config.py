@@ -97,6 +97,7 @@ class TestObservabilityConfig:
 
         assert config.enabled is False
         assert config.capture_content is False
+        assert config.service_name == "ravn"
 
     def test_enabled_requires_separate_trace_and_metric_endpoints(self) -> None:
         with pytest.raises(ValueError, match="trace_endpoint and metric_endpoint"):

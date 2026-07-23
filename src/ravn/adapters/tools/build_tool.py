@@ -14,6 +14,7 @@ from niuu.observability import get_observability
 from ravn.domain.models import ToolResult
 from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
 from ravn.ports.tool import ToolPort
+from ravn.ports.tool_build_backend import ToolBuildError
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
 from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
@@ -117,12 +118,18 @@ class BuildTool(ToolPort):
 
     @property
     def description(self) -> str:
+        authoring = (
+            "A build backend is configured: provide build_request and omit tool_code "
+            "so the backend develops the implementation and tests. "
+            if self._build_backend is not None
+            else "No build backend is configured: provide tool_code and test_code inline. "
+        )
         return (
             "Author and install a reusable agent tool during the current investigation. "
             "Provide a manifest with name, description, input_schema, required_permission, "
-            "declared_reach, and either Python tool_code exposing the manifest entry_point "
-            "(default run(input)) OR a build_request describing what to build when a build "
-            "backend (Forge session / Ting workflow) is configured. Good instruments "
+            "and declared_reach. "
+            + authoring
+            + "The entry point defaults to run(input). Good instruments "
             "ACQUIRE live evidence: tool_code may run CLI commands (subprocess), call HTTP "
             "APIs, and read files — declare that reach honestly in declared_reach, it is "
             "what review and invocation policy gate on. Do not hardcode environment values "
@@ -225,6 +232,13 @@ class BuildTool(ToolPort):
                 if commissioned
                 else "inline"
             ),
+            "ravn.tool_build.backend.configured": self._build_backend is not None,
+            "ravn.tool_build.request.has_build_request": bool(
+                str(input.get("build_request") or "").strip()
+            ),
+            "ravn.tool_build.request.has_inline_code": bool(
+                str(input.get("tool_code") or "").strip()
+            ),
             "ravn.autonomy.mode": self._autonomy_mode,
         }
         manifest = input.get("manifest")
@@ -235,7 +249,7 @@ class BuildTool(ToolPort):
             try:
                 result = await self._execute_pipeline(input)
             except Exception as exc:
-                telemetry.mark_error(span, type(exc).__name__)
+                telemetry.mark_error(span, type(exc).__name__, str(exc))
                 telemetry.count(
                     "ravn.tool_build.lifecycle.operations",
                     attributes={
@@ -248,6 +262,8 @@ class BuildTool(ToolPort):
                 raise
             outcome = _build_result_outcome(result)
             span.set_attribute("ravn.tool_build.outcome", outcome)
+            if result.is_error:
+                telemetry.mark_error(span, "tool_build_failed", result.content)
             telemetry.event(
                 "ravn.tool_build.finished",
                 attributes={**attributes, "ravn.tool_build.outcome": outcome},
@@ -425,7 +441,7 @@ class BuildTool(ToolPort):
                 },
             )
             await self._publish_flock_proposal(artifact)
-        except (LearnedToolError, TypeError, ValueError) as exc:
+        except (LearnedToolError, ToolBuildError, TypeError, ValueError) as exc:
             return ToolResult(tool_call_id="", content=f"build_tool failed: {exc}", is_error=True)
 
         return ToolResult(
@@ -443,12 +459,49 @@ class BuildTool(ToolPort):
         """
         build_request = str(input.get("build_request") or "").strip()
         tool_code = str(input.get("tool_code") or "").strip()
-        if not build_request or tool_code:
+        telemetry = get_observability()
+        if tool_code:
+            telemetry.event(
+                "ravn.tool_build.route.selected",
+                attributes={
+                    "ravn.tool_build.route": "inline",
+                    "ravn.tool_build.route.reason": "inline_code_supplied",
+                    "ravn.tool_build.backend.configured": self._build_backend is not None,
+                },
+            )
+            return input
+        if not build_request:
+            telemetry.event(
+                "ravn.tool_build.route.selected",
+                attributes={
+                    "ravn.tool_build.route": "inline",
+                    "ravn.tool_build.route.reason": "no_build_request",
+                    "ravn.tool_build.backend.configured": self._build_backend is not None,
+                },
+            )
             return input
         if self._build_backend is None:
+            telemetry.event(
+                "ravn.tool_build.route.selected",
+                attributes={
+                    "ravn.tool_build.route": "rejected",
+                    "ravn.tool_build.route.reason": "backend_unconfigured",
+                    "ravn.tool_build.backend.configured": False,
+                },
+            )
             raise LearnedToolError(
                 "build_request was given but no tool build backend is configured"
             )
+        telemetry.event(
+            "ravn.tool_build.route.selected",
+            attributes={
+                "ravn.tool_build.route": "commissioned",
+                "ravn.tool_build.route.reason": "build_request_supplied",
+                "ravn.tool_build.backend": str(getattr(self._build_backend, "name", "unknown")),
+                "ravn.tool_build.backend.configured": True,
+                "ravn.tool_build.inline_fallback.enabled": False,
+            },
+        )
         return await self._commission_and_merge(input, signal_context_suffix="")
 
     def _build_backend_request(self, input: dict, *, signal_context_suffix: str) -> Any:  # noqa: A002

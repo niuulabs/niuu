@@ -102,6 +102,34 @@ class A2ATaskTool(ToolPort):
     async def execute(self, input: dict) -> ToolResult:
         telemetry = get_observability()
         operation = str(input.get("operation") or "").strip().lower()
+        attributes = {
+            "a2a.operation": operation or "unknown",
+            "a2a.agent.id": str(input.get("agent_id") or "").strip(),
+            "a2a.task.id": str(input.get("task_id") or "").strip(),
+        }
+        with telemetry.span("ravn.a2a.task", attributes=attributes) as span:
+            try:
+                result = await self._execute_observed(input)
+            except Exception as exc:
+                telemetry.mark_error(span, type(exc).__name__, str(exc))
+                telemetry.event(
+                    "ravn.a2a.operation.failed",
+                    attributes={**attributes, "error.type": type(exc).__name__},
+                    content={"error": str(exc)},
+                )
+                raise
+            if result.is_error:
+                telemetry.mark_error(span, "a2a_operation_failed", result.content)
+                telemetry.event(
+                    "ravn.a2a.operation.failed",
+                    attributes={**attributes, "error.type": "a2a_operation_failed"},
+                    content={"error": result.content},
+                )
+            return result
+
+    async def _execute_observed(self, input: dict) -> ToolResult:
+        telemetry = get_observability()
+        operation = str(input.get("operation") or "").strip().lower()
         if operation not in {"start", "get", "reply", "cancel"}:
             return _error("operation must be start, get, reply, or cancel")
 
@@ -200,6 +228,9 @@ class A2ATaskTool(ToolPort):
             metadata = dict(supplied_metadata) if isinstance(supplied_metadata, dict) else {}
             self._validate_metadata(metadata)
             metadata.update({"skillId": skill_id, "workflowId": skill_id})
+            trace_context = get_observability().inject()
+            if trace_context:
+                metadata["traceContext"] = trace_context
             return await self._rpc(
                 endpoint,
                 "SendMessage",
@@ -228,6 +259,9 @@ class A2ATaskTool(ToolPort):
         supplied_metadata = input.get("metadata")
         metadata = dict(supplied_metadata) if isinstance(supplied_metadata, dict) else {}
         self._validate_metadata(metadata)
+        trace_context = get_observability().inject()
+        if trace_context:
+            metadata["traceContext"] = trace_context
         return await self._rpc(
             endpoint,
             "SendMessage",
@@ -261,27 +295,56 @@ class A2ATaskTool(ToolPort):
         method: str,
         params: dict[str, Any],
     ) -> dict[str, Any]:
-        try:
-            response = await self._client.post(
-                endpoint,
-                {
-                    "jsonrpc": "2.0",
-                    "id": str(uuid4()),
-                    "method": method,
-                    "params": params,
-                },
-                headers=_A2A_HEADERS,
+        telemetry = get_observability()
+        attributes = {
+            "rpc.system": "jsonrpc",
+            "rpc.method": method,
+            "server.address": endpoint,
+        }
+        with telemetry.span("ravn.a2a.rpc", attributes=attributes) as span:
+            try:
+                response = await self._client.post(
+                    endpoint,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": str(uuid4()),
+                        "method": method,
+                        "params": params,
+                    },
+                    headers=_A2A_HEADERS,
+                )
+            except Exception as exc:
+                error = _A2ATaskError(f"A2A {method} transport failed: {exc}")
+                telemetry.mark_error(span, type(error).__name__, str(error))
+                raise error from exc
+            span.set_attribute("http.response.status_code", response.status_code)
+            if response.status_code != 200 or not isinstance(response.body, dict):
+                error = _A2ATaskError(
+                    f"A2A {method} returned HTTP {response.status_code}"
+                )
+                telemetry.mark_error(span, type(error).__name__, str(error))
+                raise error
+            rpc_error = response.body.get("error")
+            if rpc_error:
+                message = (
+                    rpc_error.get("message", rpc_error)
+                    if isinstance(rpc_error, dict)
+                    else rpc_error
+                )
+                if isinstance(rpc_error, dict) and rpc_error.get("code") is not None:
+                    span.set_attribute(
+                        "rpc.jsonrpc.error_code",
+                        str(rpc_error["code"]),
+                    )
+                error = _A2ATaskError(f"A2A {method} failed: {message}")
+                telemetry.mark_error(span, type(error).__name__, str(error))
+                raise error
+            telemetry.event(
+                "ravn.a2a.rpc.completed",
+                attributes={**attributes, "http.response.status_code": response.status_code},
             )
-        except Exception as exc:
-            raise _A2ATaskError(f"A2A {method} transport failed: {exc}") from exc
-        if response.status_code != 200 or not isinstance(response.body, dict):
-            raise _A2ATaskError(f"A2A {method} returned HTTP {response.status_code}")
-        error = response.body.get("error")
-        if error:
-            message = error.get("message", error) if isinstance(error, dict) else error
-            raise _A2ATaskError(f"A2A {method} failed: {message}")
-        result = response.body.get("result")
-        return result if isinstance(result, dict) else {}
+            result = response.body.get("result")
+            return result if isinstance(result, dict) else {}
 
 
 class _A2ATaskError(RuntimeError):

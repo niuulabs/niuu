@@ -81,12 +81,6 @@ _CLASSIFICATION_RULES: tuple[tuple[str, ResidentInboxClassification, float, str]
         "message suggests an idea",
     ),
     (
-        r"\b(print failed|failed print|support|slicer|printer|filament|resin)\b",
-        ResidentInboxClassification.PHYSICAL_OBSERVATION,
-        0.8,
-        "message describes physical-world or print state",
-    ),
-    (
         r"\b(risk|unsafe|danger|customer data|private)\b",
         ResidentInboxClassification.RISK,
         0.76,

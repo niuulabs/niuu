@@ -154,6 +154,16 @@ def test_build_initiative_prompt_contains_surface_instruction() -> None:
     assert "No human sent this message" in prompt
 
 
+def test_build_initiative_prompt_identifies_human_channel_input_truthfully() -> None:
+    task = _make_task()
+    task.human_initiated = True
+
+    prompt = build_initiative_prompt(task)
+
+    assert "A human sent this message through a communication channel" in prompt
+    assert "No human sent this message" not in prompt
+
+
 # ---------------------------------------------------------------------------
 # DriveLoop — enqueue / priority ordering
 # ---------------------------------------------------------------------------
@@ -293,9 +303,7 @@ async def test_run_waits_for_active_task_cancellation_before_returning(tmp_path:
     assert cancelled.is_set()
     assert loop._active_tasks == {}
     journal = json.loads(loop._journal_path.read_text())
-    assert [record["task_id"] for record in journal["inflight"]] == [
-        "task-active-at-shutdown"
-    ]
+    assert [record["task_id"] for record in journal["inflight"]] == ["task-active-at-shutdown"]
 
 
 @pytest.mark.asyncio
@@ -353,6 +361,7 @@ async def test_drive_loop_journal_round_trip(tmp_path: Path) -> None:
 
     loop1 = DriveLoop(agent_factory=factory, config=config, settings=settings)
     task = _make_task()
+    task.human_initiated = True
     await loop1.enqueue(task)
 
     assert journal.exists()
@@ -361,6 +370,7 @@ async def test_drive_loop_journal_round_trip(tmp_path: Path) -> None:
     records = raw["queue"] if isinstance(raw, dict) else raw
     assert len(records) == 1
     assert records[0]["task_id"] == task.task_id
+    assert records[0]["human_initiated"] is True
 
     # Simulate restart by creating a new DriveLoop and loading the journal
     loop2 = DriveLoop(agent_factory=factory, config=config, settings=settings)
@@ -368,6 +378,7 @@ async def test_drive_loop_journal_round_trip(tmp_path: Path) -> None:
     assert not loop2._queue.empty()
     _, _, restored = await loop2._queue.get()
     assert restored.task_id == task.task_id
+    assert restored.human_initiated is True
 
 
 @pytest.mark.asyncio

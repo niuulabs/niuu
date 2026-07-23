@@ -205,6 +205,9 @@ def _telegram_directed_metadata(data: dict) -> dict[str, Any]:
     trace_context = data.get("trace_context")
     if isinstance(trace_context, dict) and trace_context:
         metadata["trace_context"] = dict(trace_context)
+    reply_context = data.get("reply_context")
+    if isinstance(reply_context, dict) and reply_context:
+        metadata["reply_context"] = dict(reply_context)
     return metadata
 
 
@@ -305,6 +308,10 @@ class PendingHelpRequest:
     recommendation: str
     context: dict[str, Any]
     attempted: list[str]
+    source_event_id: str
+    task_id: str
+    correlation_id: str
+    root_correlation_id: str
     requested_at: str
     status: str = "pending"  # pending | answered
     answered_at: str = ""
@@ -1241,6 +1248,10 @@ class Broker(
             session_id=self.session_id,
             task_id=None if correlation_id else event_id,
             root_correlation_id=self.session_id,
+            trace_context=(
+                get_observability().inject()
+                or dict(self._settings.workflow.trace_context)
+            ),
         )
         await self._mesh_adapter.publish(event, event_type)
         return event_id
@@ -1292,6 +1303,7 @@ class Broker(
     async def _run_workflow_trigger_task(self) -> None:
         """Dispatch the initial workflow trigger after broker startup completes."""
         cfg = self._settings.workflow_trigger
+        telemetry = get_observability()
         workflow_name = (
             str(getattr(self._settings.workflow, "name", "") or "").strip()
             or cfg.label
@@ -1311,19 +1323,37 @@ class Broker(
                     "source": cfg.source,
                 },
             )
-        try:
-            await self._publish_workflow_trigger()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            await self._finish_trace_span(
-                self._trace_workflow_span_id,
-                status="failed",
-                attributes={"reason": "workflow_trigger_failed"},
-            )
-            self._trace_workflow_span_id = None
-            logger.exception("Workflow trigger dispatch failed")
-            raise
+        attributes = {
+            "skuld.workflow.id": str(self._settings.workflow.workflow_id or ""),
+            "skuld.workflow.name": workflow_name,
+            "skuld.workflow.trigger.event_type": cfg.event_type,
+            "skuld.workflow.trigger.node_id": cfg.node_id,
+        }
+        with telemetry.span(
+            "skuld.workflow.dispatch",
+            attributes=attributes,
+            carrier=dict(self._settings.workflow.trace_context),
+        ) as span:
+            try:
+                await self._publish_workflow_trigger()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                telemetry.mark_error(span, type(exc).__name__, str(exc))
+                telemetry.event(
+                    "skuld.workflow.dispatch.failed",
+                    attributes={**attributes, "error.type": type(exc).__name__},
+                    content={"error": str(exc)},
+                )
+                await self._finish_trace_span(
+                    self._trace_workflow_span_id,
+                    status="failed",
+                    attributes={"reason": "workflow_trigger_failed"},
+                )
+                self._trace_workflow_span_id = None
+                logger.exception("Workflow trigger dispatch failed")
+                raise
+            telemetry.event("skuld.workflow.dispatched", attributes=attributes)
 
     def _observer_peer_id(self) -> str:
         """Return Skuld's room participant id when available."""
@@ -1368,7 +1398,8 @@ class Broker(
         if event_type == "outcome":
             await self._emit_peer_outcome_pipeline_event(peer_id, frame)
         elif event_type == "help_needed":
-            self._record_pending_help_request(peer_id, frame)
+            if not self._record_pending_help_request(peer_id, frame):
+                return
             await self._report_peer_help_needed_activity(peer_id, frame)
             await self._emit_peer_help_needed_sleipnir_event(peer_id, frame)
 
@@ -1629,6 +1660,10 @@ class Broker(
         ).strip()
         payload: dict[str, Any] = {
             "session_id": session_id,
+            "source_event_id": str(frame.get("source_event_id") or ""),
+            "task_id": str(frame.get("task_id") or ""),
+            "correlation_id": str(frame.get("correlation_id") or ""),
+            "root_correlation_id": str(frame.get("root_correlation_id") or ""),
             "persona": persona,
             "summary": str(data.get("summary") or "Agent requested human feedback."),
             "reason": str(data.get("reason") or "needs_context"),
@@ -1654,11 +1689,17 @@ class Broker(
         )
         return [asdict(state) for state in states]
 
-    def _record_pending_help_request(self, peer_id: str, frame: dict[str, Any]) -> None:
+    def _record_pending_help_request(self, peer_id: str, frame: dict[str, Any]) -> bool:
         """Track a peer's help_needed question so a remote caller can answer it."""
         payload = self._build_peer_help_needed_payload(peer_id, frame)
         if payload is None:
-            return
+            return False
+        source_event_id = str(payload.get("source_event_id") or "")
+        if source_event_id and any(
+            request.peer_id == peer_id and request.source_event_id == source_event_id
+            for request in self._pending_help_requests.values()
+        ):
+            return False
         request = PendingHelpRequest(
             id=uuid.uuid4().hex[:12],
             peer_id=peer_id,
@@ -1668,6 +1709,10 @@ class Broker(
             recommendation=str(payload.get("recommendation") or ""),
             context=dict(payload.get("context") or {}),
             attempted=[str(item) for item in payload.get("attempted") or []],
+            source_event_id=source_event_id,
+            task_id=str(payload.get("task_id") or ""),
+            correlation_id=str(payload.get("correlation_id") or ""),
+            root_correlation_id=str(payload.get("root_correlation_id") or ""),
             requested_at=datetime.now(UTC).isoformat(),
         )
         self._pending_help_requests[request.id] = request
@@ -1678,6 +1723,7 @@ class Broker(
             request.persona,
             request.summary[:200],
         )
+        return True
 
     def list_help_requests(self) -> list[dict[str, Any]]:
         """Return help requests ordered from newest to oldest."""
@@ -3315,6 +3361,18 @@ class Broker(
                 message = data.get("content", "")
                 if not message:
                     return
+                content_str = _normalize_browser_message_content(message)
+                if not content_str:
+                    return
+
+                # Telegram carries peer targeting, reply correlation, and W3C
+                # trace context outside the browser's nested metadata object.
+                # Give the channel adapter first refusal before the resident's
+                # default browser route so that context is not discarded.
+                if await self._try_route_pending_help_reply(data, content_str):
+                    return
+                if await self._try_route_single_room_peer_message(data, content_str):
+                    return
 
                 # Resident sessions: untargeted messages route to the
                 # configured default participant as directed messages. Normalize
@@ -3325,17 +3383,21 @@ class Broker(
                 if default_target:
                     request_id = data.get("request_id")
                     request_id = request_id if isinstance(request_id, str) and request_id else None
+                    incoming_source = str(data.get("source") or "").strip().lower()
+                    source = "telegram" if incoming_source == "telegram" else "browser"
+                    if source == "telegram":
+                        metadata = _telegram_directed_metadata(data)
+                    else:
+                        metadata = (
+                            data.get("metadata") if isinstance(data.get("metadata"), dict) else None
+                        )
                     try:
                         await self.handle_directed_room_message(
                             default_target,
-                            _normalize_browser_message_content(message),
-                            source="browser",
+                            content_str,
+                            source=source,
                             request_id=request_id,
-                            metadata=(
-                                data.get("metadata")
-                                if isinstance(data.get("metadata"), dict)
-                                else None
-                            ),
+                            metadata=metadata,
                         )
                     except LookupError as exc:
                         if sender_ws:
@@ -3357,13 +3419,6 @@ class Broker(
                     return
 
                 # Record user turn in conversation history
-                content_str = _normalize_browser_message_content(message)
-                if not content_str:
-                    return
-                if await self._try_route_pending_help_reply(data, content_str):
-                    return
-                if await self._try_route_single_room_peer_message(data, content_str):
-                    return
                 msg_id = str(uuid.uuid4())
                 request_id = data.get("request_id")
                 request_id = request_id if isinstance(request_id, str) and request_id else None
@@ -4043,6 +4098,10 @@ class Broker(
         if self.session_id:
             routing_metadata.setdefault("session_id", self.session_id)
             routing_metadata.setdefault("root_correlation_id", self.session_id)
+        if "reply_context" not in routing_metadata:
+            recent_context = self._recent_room_message_context(target_peer_id)
+            if recent_context:
+                routing_metadata["recent_room_context"] = recent_context
         rendered_content = (
             content if content.lstrip().startswith(target_prefix) else f"{target_prefix} {content}"
         )
@@ -4095,6 +4154,21 @@ class Broker(
         if not delivered:
             raise LookupError(f"Unknown room participant: {target_peer_id}")
         return msg_id
+
+    def _recent_room_message_context(self, target_peer_id: str) -> dict[str, str]:
+        """Return one bounded prior message from the addressed room participant."""
+        for turn in reversed(self._conversation_turns):
+            if turn.role != "assistant" or turn.participant_id != target_peer_id:
+                continue
+            content = turn.content.strip()
+            if not content:
+                continue
+            return {
+                "message_id": turn.id,
+                "participant_id": target_peer_id,
+                "content": content[:4096],
+            }
+        return {}
 
     async def handle_resend_initial_prompt(
         self,

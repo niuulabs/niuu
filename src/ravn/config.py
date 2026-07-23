@@ -3230,7 +3230,7 @@ class SignalSourceConfig(BaseModel):
     )
     kind: str = Field(
         default="generic",
-        description="Provider-neutral signal kind, for example kubernetes, email, or printer.",
+        description="Provider-neutral signal kind, for example events, metrics, or messages.",
     )
     enabled: bool = Field(
         default=True,
@@ -3289,7 +3289,7 @@ class EnvironmentConfig(BaseModel):
     )
     type: str = Field(
         default="local",
-        description="Environment type, for example k8s, host, printer, or local.",
+        description="Opaque, configuration-defined environment type.",
     )
     resident_name: str = Field(
         default="",

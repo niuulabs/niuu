@@ -93,6 +93,32 @@ async def test_message_event_renders_persists_and_reports_timeline() -> None:
 
 
 @pytest.mark.asyncio
+async def test_error_message_preserves_failure_kind_for_channel_coalescing() -> None:
+    adapter, channels = _adapter()
+    await adapter.register("ravn-1", "Resident", _websocket())
+    channels.broadcast.reset_mock()
+
+    await adapter.handle_collaboration_frame(
+        "ravn-1",
+        {
+            "events": [
+                {
+                    "kind": "message",
+                    "sourceEventType": "error",
+                    "content": "Backend unavailable",
+                    "error": True,
+                    "failureKind": "LLMError",
+                }
+            ],
+        },
+    )
+
+    message = channels.broadcast.await_args_list[0].args[0]
+    assert message["type"] == "room_message"
+    assert message["failureKind"] == "LLMError"
+
+
+@pytest.mark.asyncio
 async def test_activity_and_agent_event_are_surface_projections_only() -> None:
     timeline = AsyncMock()
     observe = AsyncMock()
@@ -154,6 +180,7 @@ async def test_help_notification_preserves_ravn_reply_context_for_operator_resum
             "events": [
                 {
                     "kind": "notification",
+                    "sourceEventId": "help-event-1",
                     "sourceEventType": "help_needed",
                     "notificationType": "help_needed",
                     "summary": "Approval required",
@@ -167,6 +194,7 @@ async def test_help_notification_preserves_ravn_reply_context_for_operator_resum
 
     notification = channels.broadcast.await_args.args[0]
     assert notification["notificationType"] == "help_needed"
+    assert notification["sourceEventId"] == "help-event-1"
     assert notification["trace_context"] == {"traceparent": "trace-1"}
     assert adapter.pending_help_peer_ids() == ("ravn-1",)
     assert observe.await_args.args[1] == "help_needed"
@@ -176,6 +204,28 @@ async def test_help_notification_preserves_ravn_reply_context_for_operator_resum
     payload = json.loads(websocket.send_text.await_args.args[0])
     assert payload["metadata"]["case_id"] == "case-1"
     assert adapter.pending_help_peer_ids() == ()
+
+
+@pytest.mark.asyncio
+async def test_exact_collaboration_event_redelivery_is_handled_once() -> None:
+    observe = AsyncMock()
+    adapter, channels = _adapter(observe_peer_event=observe)
+    await adapter.register("ravn-1", "Resident", _websocket())
+    channels.broadcast.reset_mock()
+    event = {
+        "kind": "notification",
+        "sourceEventId": "help-event-replayed",
+        "sourceEventType": "help_needed",
+        "notificationType": "help_needed",
+        "summary": "Approval required",
+        "reason": "missing_authority",
+    }
+
+    await adapter.handle_collaboration_frame("ravn-1", {"events": [event]})
+    await adapter.handle_collaboration_frame("ravn-1", {"events": [dict(event)]})
+
+    channels.broadcast.assert_awaited_once()
+    observe.assert_awaited_once()
 
 
 @pytest.mark.asyncio

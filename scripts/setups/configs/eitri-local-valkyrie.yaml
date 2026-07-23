@@ -209,7 +209,7 @@ observability:
   enabled: true
   capture_content: true
   content_max_chars: 20000
-  service_name: ravn-eitri-local
+  service_name: ravn
   trace_endpoint: https://eitri.grpc-tempo.proxy.glitnir.alfheim.niuu.world:443
   metric_endpoint: https://mimir.proxy.glitnir.alfheim.niuu.world/eitri/otlp/v1/metrics
   insecure: false

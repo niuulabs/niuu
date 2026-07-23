@@ -380,8 +380,14 @@ class TestSendMessage:
         client, campaigns, port = _make_client(
             workflow_repo=InMemoryWorkflowRepository([workflow]),
         )
+        params = _send_params(str(workflow.id))
+        params["message"]["metadata"]["traceContext"] = {
+            "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+            "tracestate": "niuu=resident",
+            "ignored": "not-w3c",
+        }
 
-        response = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
+        response = _rpc(client, "SendMessage", params)
 
         assert response.status_code == 200
         result = response.json()["result"]["task"]
@@ -391,6 +397,10 @@ class TestSendMessage:
 
         assert len(port.spawned) == 1
         assert port.spawned[0].workload_type == "ravn_flock"
+        assert port.spawned[0].workload_config["provenance"]["trace_context"] == {
+            "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+            "tracestate": "niuu=resident",
+        }
 
         import asyncio
 

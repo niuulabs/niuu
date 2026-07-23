@@ -174,6 +174,29 @@ class TestConstruction:
         ) in t._mcp_overrides
         assert not any(key == "mcp_servers.ravn-tools.env" for key, _ in t._mcp_overrides)
 
+    def test_init_with_mcp_server_timeouts_uses_codex_overrides(self, tmp_path):
+        t = _make_transport(
+            tmp_path,
+            mcp_servers=[
+                {
+                    "name": "ravn-tools",
+                    "command": "python3",
+                    "args": ["-m", "ravn", "tool-mcp"],
+                    "startup_timeout_sec": 30,
+                    "tool_timeout_sec": 3600,
+                }
+            ],
+        )
+
+        assert (
+            "mcp_servers.ravn-tools.startup_timeout_sec",
+            "30.0",
+        ) in t._mcp_overrides
+        assert (
+            "mcp_servers.ravn-tools.tool_timeout_sec",
+            "3600.0",
+        ) in t._mcp_overrides
+
     @pytest.mark.asyncio
     async def test_connect_ws_uses_configured_large_message_limit(self, tmp_path):
         t = _make_transport(tmp_path, max_ws_message_bytes=12 * 1024 * 1024)
@@ -296,6 +319,7 @@ class TestHandshake:
 
         thread_params = params_captured[1][1]
         assert thread_params["baseInstructions"] == "Be helpful"
+        assert thread_params["experimentalRawEvents"] is True
 
     @pytest.mark.asyncio
     async def test_handshake_skip_permissions(self, tmp_path):
@@ -1819,6 +1843,60 @@ class TestApprovals:
         )
         assert calls[1][0] == "thread/inject_items"
         assert calls[1][1]["items"][0]["call_id"] == "call-response-1"
+
+    @pytest.mark.asyncio
+    async def test_raw_custom_tool_call_emits_observable_tool_lifecycle(self, tmp_path):
+        t = _make_transport(tmp_path)
+        emits = _collect_emits(t)
+
+        await t._handle_server_message(
+            {
+                "method": "rawResponseItem/completed",
+                "params": {
+                    "item": {
+                        "type": "custom_tool_call",
+                        "call_id": "call-exec-1",
+                        "name": "exec",
+                        "input": "const r = await tools.exec_command({cmd: 'pwd'});",
+                    }
+                },
+            }
+        )
+        await t._handle_server_message(
+            {
+                "method": "rawResponseItem/completed",
+                "params": {
+                    "item": {
+                        "type": "custom_tool_call_output",
+                        "call_id": "call-exec-1",
+                        "output": [
+                            {"type": "input_text", "text": "Script completed\nOutput:\n/tmp"}
+                        ],
+                    }
+                },
+            }
+        )
+
+        events = _emitted_events(emits)
+        tool_use = next(
+            event["message"]["content"][0]
+            for event in events
+            if event.get("type") == "assistant" and event.get("message", {}).get("content")
+        )
+        assert tool_use == {
+            "type": "tool_use",
+            "id": "call-exec-1",
+            "name": "exec",
+            "input": {"input": "const r = await tools.exec_command({cmd: 'pwd'});"},
+        }
+        tool_result = next(
+            event["content_block"]
+            for event in events
+            if event.get("type") == "content_block_start"
+            and event.get("content_block", {}).get("type") == "tool_result"
+        )
+        assert tool_result["tool_use_id"] == "call-exec-1"
+        assert tool_result["content"] == "Script completed\nOutput:\n/tmp"
 
 
 # ---------------------------------------------------------------------------

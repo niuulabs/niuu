@@ -19,6 +19,7 @@ _ACTIVITY_BY_EVENT: dict[RavnEventType, str] = {
 def _base(event: RavnEvent, kind: str) -> dict[str, Any]:
     projected: dict[str, Any] = {
         "kind": kind,
+        "sourceEventId": event.event_id,
         "sourceEventType": str(event.type),
         "source": event.source,
         "sessionId": event.session_id,
@@ -204,6 +205,8 @@ def project_ravn_event(event: RavnEvent, *, persona: str = "") -> list[dict[str,
                 "visibility": "public",
             }
         )
+        if event.type == RavnEventType.ERROR and event.payload.get("failure_kind"):
+            projected["failureKind"] = str(event.payload["failure_kind"])
         return [projected]
 
     if event.type == RavnEventType.HELP_NEEDED:

@@ -411,6 +411,59 @@ class TestBroker:
         assert payload["metadata"]["telegram_message_id"] == "43"
 
     @pytest.mark.asyncio
+    async def test_telegram_dispatch_precedes_default_room_route_and_preserves_context(
+        self, tmp_path
+    ):
+        """The resident default route must not erase Telegram reply metadata."""
+
+        class MemoryWebSocket:
+            def __init__(self) -> None:
+                self.sent_text: list[str] = []
+
+            async def send_text(self, text: str) -> None:
+                self.sent_text.append(text)
+
+        settings = SkuldSettings(
+            session={"id": "operator-room", "workspace_dir": str(tmp_path)},
+            room={"enabled": True, "default_target_peer_id": "ivaldi"},
+        )
+        b = Broker(settings=settings)
+        b._transport = AsyncMock()
+        assert b._room_bridge is not None
+        ws = MemoryWebSocket()
+        await b._room_bridge.register("ivaldi", "Ivaldi", ws)
+
+        await b._dispatch_browser_message(
+            {
+                "type": "message",
+                "source": "telegram",
+                "content": "ignore indeed",
+                "chat_id": "-100123",
+                "message_id": 44,
+                "reply_to_message_id": 322,
+                "trace_context": {"traceparent": "00-room-parent-01"},
+                "reply_context": {
+                    "event_type": "room_message",
+                    "content": "[Ivaldi] decision: ignore transport check only",
+                    "participant_id": "ivaldi",
+                },
+            }
+        )
+
+        payload = json.loads(ws.sent_text[0])
+        assert payload["type"] == "directed_message"
+        assert payload["content"] == "ignore indeed"
+        assert payload["metadata"]["source"] == "telegram"
+        assert payload["metadata"]["telegram_message_id"] == "44"
+        assert payload["metadata"]["telegram_reply_to_message_id"] == "322"
+        assert payload["metadata"]["trace_context"] == {"traceparent": "00-room-parent-01"}
+        assert payload["metadata"]["reply_context"]["content"].endswith("transport check only")
+        turn = b._conversation_turns[-1]
+        assert turn.content == "@Ivaldi ignore indeed"
+        assert turn.metadata["source"] == "telegram"
+        assert turn.metadata["telegram_reply_to_message_id"] == "322"
+
+    @pytest.mark.asyncio
     async def test_startup_creates_workspace(self, test_broker, tmp_path):
         """Test startup creates workspace directory and initializes transport."""
         import shutil
@@ -440,6 +493,14 @@ class TestBroker:
                 "source": "manual dispatch",
                 "event_type": "code.requested",
                 "startup_delay_s": 0.0,
+            },
+            workflow={
+                "workflow_id": "wf-1",
+                "trace_context": {
+                    "traceparent": (
+                        "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+                    )
+                },
             },
             chronicle_watcher_enabled=False,
         )
@@ -476,6 +537,7 @@ class TestBroker:
         assert published_topic == "code.requested"
         assert published_event.payload["task_description"] == "Implement the requested change"
         assert published_event.payload["workflow_trigger_node_id"] == "trigger-1"
+        assert published_event.trace_context == settings.workflow.trace_context
         assert [turn.role for turn in broker._conversation_turns] == ["user"]
         assert broker._conversation_turns[0].content == "Implement the requested change"
         assert any(
@@ -5091,7 +5153,7 @@ class TestPipelineEventEmission:
 
 
 class TestTokenRedactFilter:
-    """Tests for JWT redaction in log output."""
+    """Tests for credential redaction in log output."""
 
     def test_redacts_access_token_in_msg(self):
         """access_token values are replaced with [REDACTED]."""
@@ -5185,22 +5247,64 @@ class TestTokenRedactFilter:
         f.filter(record)
         assert record.args == ("WebSocket", "/session?access_token=[REDACTED]")
 
+    def test_redacts_telegram_bot_token_in_dependency_url(self):
+        f = _TokenRedactFilter()
+        record = logging.LogRecord(
+            name="httpx",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg='HTTP Request: POST %s "HTTP/1.1 200 OK"',
+            args=("https://api.telegram.org/bot123456:secret-value/getUpdates",),
+            exc_info=None,
+        )
+
+        f.filter(record)
+
+        assert record.args == ("https://api.telegram.org/bot[REDACTED]/getUpdates",)
+
+    def test_redacts_telegram_bot_token_in_httpx_url_object(self):
+        f = _TokenRedactFilter()
+        record = logging.LogRecord(
+            name="httpx",
+            level=logging.WARNING,
+            pathname="",
+            lineno=0,
+            msg="Telegram request failed: %s",
+            args=(httpx.URL("https://api.telegram.org/bot123456:secret-value/getUpdates"),),
+            exc_info=None,
+        )
+
+        f.filter(record)
+
+        assert record.args == ("https://api.telegram.org/bot[REDACTED]/getUpdates",)
+
     @pytest.mark.asyncio
     async def test_filter_attached_during_lifespan(self):
-        """Lifespan attaches redact filter to uvicorn loggers."""
+        """Lifespan suppresses credential-bearing dependency request logs."""
         from skuld.broker import lifespan
 
         async def check():
-            for name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+            httpx_logger = logging.getLogger("httpx")
+            previous_httpx_level = httpx_logger.level
+            logger_names = ("uvicorn", "uvicorn.access", "uvicorn.error")
+            for name in logger_names:
                 logging.getLogger(name).filters = []
 
             with patch.object(broker, "startup", new_callable=AsyncMock):
                 with patch.object(broker, "shutdown", new_callable=AsyncMock):
                     async with lifespan(app):
-                        for name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
-                            lgr = logging.getLogger(name)
-                            has_redact = any(isinstance(f, _TokenRedactFilter) for f in lgr.filters)
-                            assert has_redact, f"{name} missing _TokenRedactFilter"
+                        assert httpx_logger.level == logging.WARNING
+                        for name in (*logger_names, "httpx"):
+                            assert any(
+                                isinstance(item, _TokenRedactFilter)
+                                for item in logging.getLogger(name).filters
+                            )
+            assert httpx_logger.level == previous_httpx_level
+            for name in (*logger_names, "httpx"):
+                assert not any(
+                    isinstance(item, _TokenRedactFilter) for item in logging.getLogger(name).filters
+                )
 
         await check()
 
@@ -5567,6 +5671,65 @@ class TestBrokerRoomAdapter:
         payload = json.loads(register_ws.send_text.await_args.args[0])
         assert payload["metadata"]["session_id"] == "workflow-session"
         assert payload["metadata"]["root_correlation_id"] == "workflow-root"
+
+    @pytest.mark.asyncio
+    async def test_directed_room_message_includes_one_bounded_recent_peer_message(
+        self, room_settings
+    ):
+        b = Broker(settings=room_settings)
+        b._transport = AsyncMock()
+        assert b._room_bridge is not None
+        register_ws = AsyncMock()
+        await b._room_bridge.register("peer-1", "coder", register_ws, display_name="Coder")
+        b._append_turn(
+            ConversationTurn(
+                id="prior-room-message",
+                role="assistant",
+                content="I ignored the transport-only check and preserved the printer concern.",
+                participant_id="peer-1",
+            )
+        )
+
+        await b.handle_directed_room_message("peer-1", "makes sense, ignore")
+
+        payload = json.loads(register_ws.send_text.await_args.args[0])
+        assert payload["metadata"]["recent_room_context"] == {
+            "message_id": "prior-room-message",
+            "participant_id": "peer-1",
+            "content": "I ignored the transport-only check and preserved the printer concern.",
+        }
+
+    @pytest.mark.asyncio
+    async def test_explicit_reply_context_wins_over_recent_room_message(self, room_settings):
+        b = Broker(settings=room_settings)
+        b._transport = AsyncMock()
+        assert b._room_bridge is not None
+        register_ws = AsyncMock()
+        await b._room_bridge.register("peer-1", "coder", register_ws, display_name="Coder")
+        b._append_turn(
+            ConversationTurn(
+                id="unrelated-recent-message",
+                role="assistant",
+                content="Unrelated newer message",
+                participant_id="peer-1",
+            )
+        )
+
+        await b.handle_directed_room_message(
+            "peer-1",
+            "yes",
+            metadata={
+                "reply_context": {
+                    "message_id": "explicit-message",
+                    "participant_id": "peer-1",
+                    "content": "Exact message selected through Telegram Reply",
+                }
+            },
+        )
+
+        payload = json.loads(register_ws.send_text.await_args.args[0])
+        assert payload["metadata"]["reply_context"]["message_id"] == "explicit-message"
+        assert "recent_room_context" not in payload["metadata"]
 
     @pytest.mark.asyncio
     async def test_directed_room_message_does_not_double_prefix(self, room_settings):
@@ -6191,6 +6354,30 @@ class TestPendingHelpRequests:
         assert request["persona"] == "specification-framer"
         assert request["summary"] == "Which namespaces are in scope for the PVC summary?"
         assert request["attempted"] == ["re-read the build request"]
+
+    @pytest.mark.asyncio
+    async def test_help_needed_transport_redelivery_reuses_pending_request(
+        self, settings, tmp_path
+    ):
+        broker_under_test = self._broker(settings, tmp_path)
+        frame = {
+            **self._FRAME,
+            "source_event_id": "help-event-1",
+            "task_id": "task-help-1",
+            "correlation_id": "case-help-1",
+        }
+
+        await broker_under_test._observe_room_peer_event(
+            "flock-specification-framer", "help_needed", frame
+        )
+        await broker_under_test._observe_room_peer_event(
+            "flock-specification-framer", "help_needed", dict(frame)
+        )
+
+        requests = broker_under_test.list_help_requests()
+        assert len(requests) == 1
+        assert requests[0]["source_event_id"] == "help-event-1"
+        assert requests[0]["task_id"] == "task-help-1"
 
     @pytest.mark.asyncio
     async def test_answer_routes_directed_message_to_asking_peer(self, settings, tmp_path):

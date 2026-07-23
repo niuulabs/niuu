@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -826,6 +828,41 @@ async def test_a2a_backend_builds_from_inline_canonical_artifact() -> None:
     assert message["parts"][0]["text"]
     assert client.post_bodies[1]["method"] == "GetTask"
     assert all(headers.get("A2A-Version") == "1.0" for headers in client.headers_seen)
+
+
+async def test_a2a_backend_propagates_active_trace_in_message_metadata(
+    monkeypatch,
+) -> None:
+    artifacts = [
+        {
+            "artifactId": "x/learned_tool.json",
+            "parts": [{"filename": "learned_tool.json", "text": _BUILT_CONTRACT}],
+        }
+    ]
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_task("TASK_STATE_COMPLETED", artifacts=artifacts)),
+            ],
+        }
+    )
+    telemetry = MagicMock()
+    telemetry.inject.return_value = {
+        "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+    }
+    telemetry.span.side_effect = lambda *_args, **_kwargs: nullcontext(MagicMock())
+    monkeypatch.setattr(
+        "ravn.adapters.tool_build.a2a.get_observability",
+        lambda: telemetry,
+    )
+    backend = _a2a_backend(client, workflow_id="wf-1")
+
+    await backend.build(_request())
+
+    metadata = client.post_bodies[0]["params"]["message"]["metadata"]
+    assert metadata["traceContext"] == telemetry.inject.return_value
 
 
 async def test_a2a_backend_passes_connection_id_when_configured() -> None:

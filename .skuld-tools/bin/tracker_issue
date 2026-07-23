@@ -5,7 +5,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-BASE_URL = 'http://localhost:8080'.rstrip("/")
+BASE_URL = 'https://yggdrasil.niuu.world'.rstrip("/")
 TIMEOUT = 30.0
 AUTH_HEADER = ''
 TRACKER_PATH = "/api/v1/tracker/issues"

@@ -1217,11 +1217,36 @@ summary: post-mortem source captured
                 "help_attempted": ["compared cost", "compared quality"],
                 "help_recommendation": "Choose latency or quality",
                 "help_context": {"workflow_node_id": "chair"},
+                "reply_context": {
+                    "event_type": "room_notification",
+                    "content": "[chair] Need a product trade-off",
+                },
             },
         )
         assert "Pending help summary: Need a product trade-off" in context
         assert "Already attempted:" in context
+        assert "The human replied to this prior room message:" in context
+        assert "[chair] Need a product trade-off" in context
         assert "Human reply: Please prefer the lower-latency option." in context
+
+        direct_context = dl._directed_message_context("Please inspect this", None)
+        assert direct_context == (
+            "This is a directed message from a human.\nHuman message: Please inspect this"
+        )
+
+        recent_context = dl._directed_message_context(
+            "makes sense, ignore",
+            {
+                "recent_room_context": {
+                    "content": (
+                        "I ignored the transport-only check and preserved the printer concern."
+                    )
+                }
+            },
+        )
+        assert "the human did not explicitly reply to it" in recent_context
+        assert "ignored the transport-only check" in recent_context
+        assert recent_context.endswith("Human message: makes sense, ignore")
 
     def test_record_tool_outcome_fields_merges_existing_values(self) -> None:
         dl = _make_drive_loop()
@@ -1254,15 +1279,24 @@ summary: post-mortem source captured
                 "workflow_parent_event_id": "parent-1",
                 "workflow_node_id": "chair-node",
                 "session_id": "session-1",
+                "trace_context": {"traceparent": "00-room-parent-01"},
+                "reply_context": {
+                    "event_type": "room_message",
+                    "content": "[Ivaldi] decision: ignore transport check only",
+                },
             },
         )
 
         enqueued = dl.enqueue.await_args.args[0]
+        assert enqueued.human_initiated is True
         assert enqueued.persona == "council-chair"
         assert enqueued.root_correlation_id == "root-1"
         assert enqueued.workflow_parent_event_id == "parent-1"
         assert enqueued.workflow_node_id == "chair-node"
         assert enqueued.session_id == "session-1"
+        assert enqueued.trace_context == {"traceparent": "00-room-parent-01"}
+        assert "The human replied to this prior room message:" in enqueued.initiative_context
+        assert "transport check only" in enqueued.initiative_context
 
     @pytest.mark.asyncio
     async def test_handle_directed_message_steers_active_agent_when_available(self) -> None:
@@ -1617,6 +1651,7 @@ recommendation: choose whether to optimize for latency or quality
         assert help_event.payload["context"]["root_correlation_id"] == "root-help"
         assert help_event.payload["context"]["workflow_parent_event_id"] == "parent-help"
         assert help_event.payload["context"]["workflow_node_id"] == "chair-synthesis"
+        assert help_event.payload["collaboration_routing_only"] is True
         assert alias_event.payload["event_type"] == "council.human_input.requested"
 
         emitted_types = [call.args[0].type for call in skuld_channel.emit.await_args_list]

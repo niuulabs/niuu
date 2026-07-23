@@ -25,6 +25,7 @@ class TelegramRavnChannel(ChannelPort):
         notification = {
             "type": "room_notification",
             "notificationType": projected["notificationType"],
+            "sourceEventId": projected["sourceEventId"],
             "participantId": event.source,
             "persona": projected["persona"],
             "reason": projected["reason"],

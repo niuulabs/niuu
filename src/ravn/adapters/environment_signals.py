@@ -363,8 +363,8 @@ class GenericSignalAdapter(_IterableSignalAdapter):
     Deliberately encodes NO domain opinions — no field extraction beyond
     identity/time, no severity heuristics. Severity is honored only when the
     SOURCE declares it about itself; everything else is `info`. Residents
-    form their own understanding of what the payloads mean (see the removal
-    of the printer/inbox/host adapters — bf281083).
+    form their own understanding of what the payloads mean; the adapter does
+    not contain source-domain classifiers.
     """
 
     signal_type: NormalizedSignalType = "generic"

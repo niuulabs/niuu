@@ -207,11 +207,21 @@
     {
       "datasource": {"type": "tempo", "uid": "${traces}"},
       "description": "Each row is a real Tempo trace for this resident. Click a Trace ID to open the complete span timeline and inspect the LLM, tool, A2A, state, and event-bus path.",
-      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 53},
+      "gridPos": {"h": 14, "w": 12, "x": 0, "y": 53},
       "id": 50,
       "options": {},
       "targets": [{"query": "{ resource.service.name = \"$job\" && span.ravn.task.id != nil }", "queryType": "traceql", "refId": "A"}],
       "title": "Recent resident task traces",
+      "type": "table"
+    },
+    {
+      "datasource": {"type": "tempo", "uid": "${traces}"},
+      "description": "Tool-development and general A2A traces. Open a row to follow discovery, JSON-RPC, remote workflow dispatch, task polling/input, artifact retrieval, verification, and the exact terminal failure or success.",
+      "gridPos": {"h": 14, "w": 12, "x": 12, "y": 53},
+      "id": 51,
+      "options": {},
+      "targets": [{"query": "{ resource.service.name = \"$job\" && (name =~ \"ravn.a2a.*\" || name =~ \"ravn.tool_build.*\") }", "queryType": "traceql", "refId": "A"}],
+      "title": "A2A and capability-build traces",
       "type": "table"
     },
     {
@@ -229,7 +239,7 @@
     "list": [
       {"current": {"selected": true, "text": "Mimir (eitri)", "value": "mimir-eitri"}, "hide": 0, "includeAll": false, "label": "Metrics", "multi": false, "name": "metrics", "options": [], "query": "prometheus", "refresh": 1, "type": "datasource"},
       {"current": {"selected": true, "text": "Tempo (eitri)", "value": "tempo-eitri"}, "hide": 0, "includeAll": false, "label": "Traces", "multi": false, "name": "traces", "options": [], "query": "tempo", "refresh": 1, "type": "datasource"},
-      {"current": {"selected": true, "text": "ravn-ivaldi-local", "value": "ravn-ivaldi-local"}, "datasource": {"type": "prometheus", "uid": "${metrics}"}, "definition": "label_values(ravn_runtime_up, job)", "hide": 0, "includeAll": false, "label": "Resident service", "multi": false, "name": "job", "options": [], "query": {"query": "label_values(ravn_runtime_up, job)", "refId": "StandardVariableQuery"}, "refresh": 1, "sort": 1, "type": "query"},
+      {"current": {"selected": true, "text": "ravn", "value": "ravn"}, "datasource": {"type": "prometheus", "uid": "${metrics}"}, "definition": "label_values(ravn_runtime_up, job)", "hide": 0, "includeAll": false, "label": "Ravn service", "multi": false, "name": "job", "options": [], "query": {"query": "label_values(ravn_runtime_up, job)", "refId": "StandardVariableQuery"}, "refresh": 1, "sort": 1, "type": "query"},
       {"allValue": ".*", "current": {"selected": true, "text": "All", "value": "$__all"}, "datasource": {"type": "prometheus", "uid": "${metrics}"}, "definition": "label_values(ravn_runtime_up{job=~\"$job\"}, ravn_environment_id)", "hide": 0, "includeAll": true, "label": "Environment", "multi": true, "name": "environment", "options": [], "query": {"query": "label_values(ravn_runtime_up{job=~\"$job\"}, ravn_environment_id)", "refId": "StandardVariableQuery"}, "refresh": 1, "sort": 1, "type": "query"}
     ]
   },

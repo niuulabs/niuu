@@ -154,7 +154,15 @@ class A2AToolBuildBackend(ToolBuildBackend):
             try:
                 result = await self._build_observed(request)
             except Exception as exc:
-                telemetry.mark_error(span, type(exc).__name__)
+                telemetry.mark_error(span, type(exc).__name__, str(exc))
+                telemetry.event(
+                    "ravn.a2a.tool_build.failed",
+                    attributes={
+                        **attributes,
+                        "error.type": type(exc).__name__,
+                    },
+                    content={"error": str(exc)},
+                )
                 telemetry.count(
                     "ravn.tool_build.operations",
                     attributes={
@@ -267,43 +275,69 @@ class A2AToolBuildBackend(ToolBuildBackend):
         rounds = 0
         task: dict[str, Any] = {}
         telemetry = get_observability()
-        for attempt in range(self._max_poll_attempts):
-            task = await self._get_task(endpoint, task_id)
-            state = _task_state(task)
+        attributes = {
+            "a2a.task.id": task_id,
+            "a2a.endpoint": endpoint,
+            "a2a.task.max_poll_attempts": self._max_poll_attempts,
+        }
+        with telemetry.span("ravn.a2a.task.wait", attributes=attributes) as span:
+            try:
+                for attempt in range(self._max_poll_attempts):
+                    task = await self._get_task(endpoint, task_id)
+                    state = _task_state(task)
+                    span.set_attribute("a2a.task.state", state)
+                    span.set_attribute("a2a.task.poll_attempt", attempt + 1)
+                    telemetry.event(
+                        "ravn.a2a.task.state",
+                        attributes={
+                            "a2a.task.id": task_id,
+                            "a2a.task.state": state,
+                            "a2a.task.poll_attempt": attempt + 1,
+                        },
+                        content=task,
+                    )
+                    telemetry.count(
+                        "ravn.a2a.task.polls",
+                        attributes={"a2a.task.state": state},
+                    )
+                    if state in _TERMINAL_STATES:
+                        return task, exchanges
+                    if state == _INPUT_REQUIRED_STATE:
+                        rounds += 1
+                        if rounds > self._max_gate_rounds:
+                            raise ToolBuildError(
+                                f"A2A task {task_id} exceeded {self._max_gate_rounds} "
+                                "input rounds without completing"
+                            )
+                        question = _first_pending_question(task)
+                        if question:
+                            exchange = await self._answer_question(
+                                endpoint, task_id, question, request, round=rounds
+                            )
+                        else:
+                            exchange = await self._answer_gate(
+                                endpoint, task_id, task, request, round=rounds
+                            )
+                        exchanges.append(exchange)
+                    await self._sleep(self._poll_interval)
+            except Exception as exc:
+                telemetry.mark_error(span, type(exc).__name__, str(exc))
+                raise
+            last_state = _task_state(task)
+            message = (
+                f"A2A task {task_id} exhausted {self._max_poll_attempts} polls "
+                f"in state {last_state!r}"
+            )
+            telemetry.mark_error(span, "poll_exhausted", message)
             telemetry.event(
-                "ravn.a2a.task.state",
+                "ravn.a2a.task.poll_exhausted",
                 attributes={
                     "a2a.task.id": task_id,
-                    "a2a.task.state": state,
-                    "a2a.task.poll_attempt": attempt + 1,
+                    "a2a.task.state": last_state,
+                    "a2a.task.poll_attempt": self._max_poll_attempts,
                 },
-                content=task,
             )
-            telemetry.count(
-                "ravn.a2a.task.polls",
-                attributes={"a2a.task.state": state},
-            )
-            if state in _TERMINAL_STATES:
-                return task, exchanges
-            if state == _INPUT_REQUIRED_STATE:
-                rounds += 1
-                if rounds > self._max_gate_rounds:
-                    raise ToolBuildError(
-                        f"A2A task {task_id} exceeded {self._max_gate_rounds} "
-                        "input rounds without completing"
-                    )
-                question = _first_pending_question(task)
-                if question:
-                    exchange = await self._answer_question(
-                        endpoint, task_id, question, request, round=rounds
-                    )
-                else:
-                    exchange = await self._answer_gate(
-                        endpoint, task_id, task, request, round=rounds
-                    )
-                exchanges.append(exchange)
-            await self._sleep(self._poll_interval)
-        return task, exchanges
+            return task, exchanges
 
     async def _answer_question(
         self,
@@ -352,9 +386,28 @@ class A2AToolBuildBackend(ToolBuildBackend):
             if any(marker in str(exc) for marker in _STALE_QUESTION_MARKERS):
                 logger.warning("A2A question reply for task %s was stale: %s", task_id, exc)
                 exchange["delivery"] = "stale"
+                get_observability().event(
+                    "ravn.a2a.task.input",
+                    attributes={
+                        "a2a.task.id": task_id,
+                        "a2a.input.kind": "question",
+                        "a2a.input.round": round,
+                        "a2a.input.delivery": "stale",
+                    },
+                )
                 return exchange
             raise
         exchange["delivery"] = "delivered"
+        get_observability().event(
+            "ravn.a2a.task.input",
+            attributes={
+                "a2a.task.id": task_id,
+                "a2a.input.kind": "question",
+                "a2a.input.round": round,
+                "a2a.input.delivery": "delivered",
+            },
+            content=exchange,
+        )
         logger.info(
             "A2A question round %d for task %s: answered %s (%s)",
             round,
@@ -417,9 +470,30 @@ class A2AToolBuildBackend(ToolBuildBackend):
                 # auto-forward) — benign; record it and keep polling.
                 logger.warning("A2A gate reply for task %s was stale: %s", task_id, exc)
                 exchange["delivery"] = "stale"
+                get_observability().event(
+                    "ravn.a2a.task.input",
+                    attributes={
+                        "a2a.task.id": task_id,
+                        "a2a.input.kind": "gate",
+                        "a2a.input.round": round,
+                        "a2a.input.delivery": "stale",
+                        "a2a.gate.decision": decision,
+                    },
+                )
                 return exchange
             raise
         exchange["delivery"] = "delivered"
+        get_observability().event(
+            "ravn.a2a.task.input",
+            attributes={
+                "a2a.task.id": task_id,
+                "a2a.input.kind": "gate",
+                "a2a.input.round": round,
+                "a2a.input.delivery": "delivered",
+                "a2a.gate.decision": decision,
+            },
+            content=exchange,
+        )
         logger.info(
             "A2A gate round %d for task %s: %s — %s",
             round,
@@ -433,44 +507,65 @@ class A2AToolBuildBackend(ToolBuildBackend):
 
     async def _resolve_endpoint_and_workflow(self) -> tuple[str, str]:
         telemetry = get_observability()
-        resp = await self._client.get(self._card_url, headers=_A2A_HEADERS)
-        if resp.status_code != 200 or not isinstance(resp.body, dict):
-            raise ToolBuildError(f"A2A agent card fetch returned HTTP {resp.status_code}")
-        card = resp.body
+        attributes = {"a2a.card.url": self._card_url}
+        with telemetry.span("ravn.a2a.discover", attributes=attributes) as span:
+            try:
+                resp = await self._client.get(self._card_url, headers=_A2A_HEADERS)
+                span.set_attribute("http.response.status_code", resp.status_code)
+                if resp.status_code != 200 or not isinstance(resp.body, dict):
+                    raise ToolBuildError(
+                        f"A2A agent card fetch returned HTTP {resp.status_code}"
+                    )
+                card = resp.body
 
-        endpoint = _jsonrpc_endpoint(card)
-        if not endpoint:
-            raise ToolBuildError("A2A agent card declares no JSONRPC interface")
-        if not _same_origin(endpoint, self._card_url):
-            raise ToolBuildError("A2A JSONRPC interface must share the configured card origin")
+                endpoint = _jsonrpc_endpoint(card)
+                if not endpoint:
+                    raise ToolBuildError("A2A agent card declares no JSONRPC interface")
+                if not _same_origin(endpoint, self._card_url):
+                    raise ToolBuildError(
+                        "A2A JSONRPC interface must share the configured card origin"
+                    )
 
-        if self._workflow_id:
-            telemetry.event(
-                "ravn.a2a.skill.selected",
-                attributes={
-                    "a2a.skill.id": self._workflow_id,
-                    "a2a.endpoint": endpoint,
-                    "ravn.a2a.selection": "configured",
-                },
-            )
-            return endpoint, self._workflow_id
-        if not self._workflow_selector.configured:
-            raise ToolBuildError("a2a backend requires workflow_id or workflow_selector")
-        skills = [_skill_capability(skill) for skill in card.get("skills") or []]
-        workflow = select_workflow(self._workflow_selector, skills)
-        if workflow is None:
-            raise ToolBuildError("A2A agent card lists no skill matching the tool-builder selector")
-        self._workflow_id = workflow.workflow_id
-        telemetry.event(
-            "ravn.a2a.skill.selected",
-            attributes={
-                "a2a.skill.id": workflow.workflow_id,
-                "a2a.endpoint": endpoint,
-                "ravn.a2a.selection": "agent_card",
-            },
-            content=card,
-        )
-        return endpoint, workflow.workflow_id
+                if self._workflow_id:
+                    selection = "configured"
+                    workflow_id = self._workflow_id
+                else:
+                    if not self._workflow_selector.configured:
+                        raise ToolBuildError(
+                            "a2a backend requires workflow_id or workflow_selector"
+                        )
+                    skills = [_skill_capability(skill) for skill in card.get("skills") or []]
+                    workflow = select_workflow(self._workflow_selector, skills)
+                    if workflow is None:
+                        raise ToolBuildError(
+                            "A2A agent card lists no skill matching the "
+                            "tool-builder selector"
+                        )
+                    self._workflow_id = workflow.workflow_id
+                    workflow_id = workflow.workflow_id
+                    selection = "agent_card"
+
+                span.set_attribute("a2a.endpoint", endpoint)
+                span.set_attribute("a2a.skill.id", workflow_id)
+                span.set_attribute("ravn.a2a.selection", selection)
+                telemetry.event(
+                    "ravn.a2a.skill.selected",
+                    attributes={
+                        "a2a.skill.id": workflow_id,
+                        "a2a.endpoint": endpoint,
+                        "ravn.a2a.selection": selection,
+                    },
+                    content=card,
+                )
+                return endpoint, workflow_id
+            except Exception as exc:
+                telemetry.mark_error(span, type(exc).__name__, str(exc))
+                telemetry.event(
+                    "ravn.a2a.discovery.failed",
+                    attributes={"error.type": type(exc).__name__},
+                    content={"error": str(exc)},
+                )
+                raise
 
     # -- JSON-RPC calls --------------------------------------------------- #
 
@@ -496,6 +591,9 @@ class A2AToolBuildBackend(ToolBuildBackend):
             # Target a specific Volundr connection (e.g. the resident's own
             # cluster) instead of the principal's default.
             metadata["connectionId"] = self._connection_id
+        trace_context = get_observability().inject()
+        if trace_context:
+            metadata["traceContext"] = trace_context
         result = await self._rpc(
             endpoint,
             "SendMessage",
@@ -523,22 +621,49 @@ class A2AToolBuildBackend(ToolBuildBackend):
         method: str,
         params: dict[str, Any],
     ) -> dict[str, Any]:
-        resp = await self._client.post(
-            endpoint,
-            {"jsonrpc": "2.0", "id": str(uuid4()), "method": method, "params": params},
-            headers=_A2A_HEADERS,
-        )
-        if resp.status_code != 200 or not isinstance(resp.body, dict):
-            raise ToolBuildError(f"A2A {method} returned HTTP {resp.status_code}")
-        error = resp.body.get("error")
-        if error:
-            raise ToolBuildError(
-                f"A2A {method} failed: {error.get('message', error)}"
-                if isinstance(error, dict)
-                else f"A2A {method} failed: {error}"
-            )
-        result = resp.body.get("result")
-        return result if isinstance(result, dict) else {}
+        telemetry = get_observability()
+        attributes = {
+            "rpc.system": "jsonrpc",
+            "rpc.method": method,
+            "server.address": endpoint,
+        }
+        with telemetry.span("ravn.a2a.rpc", attributes=attributes) as span:
+            try:
+                resp = await self._client.post(
+                    endpoint,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": str(uuid4()),
+                        "method": method,
+                        "params": params,
+                    },
+                    headers=_A2A_HEADERS,
+                )
+                span.set_attribute("http.response.status_code", resp.status_code)
+                if resp.status_code != 200 or not isinstance(resp.body, dict):
+                    raise ToolBuildError(
+                        f"A2A {method} returned HTTP {resp.status_code}"
+                    )
+                error = resp.body.get("error")
+                if error:
+                    message = error.get("message", error) if isinstance(error, dict) else error
+                    if isinstance(error, dict) and error.get("code") is not None:
+                        span.set_attribute("rpc.jsonrpc.error_code", str(error["code"]))
+                    raise ToolBuildError(f"A2A {method} failed: {message}")
+                result = resp.body.get("result")
+                telemetry.event(
+                    "ravn.a2a.rpc.completed",
+                    attributes={**attributes, "http.response.status_code": resp.status_code},
+                )
+                return result if isinstance(result, dict) else {}
+            except Exception as exc:
+                telemetry.mark_error(span, type(exc).__name__, str(exc))
+                telemetry.event(
+                    "ravn.a2a.rpc.failed",
+                    attributes={**attributes, "error.type": type(exc).__name__},
+                    content={"error": str(exc)},
+                )
+                raise
 
     # -- Artifact retrieval ------------------------------------------------ #
 
@@ -548,32 +673,80 @@ class A2AToolBuildBackend(ToolBuildBackend):
         request: ToolBuildRequest,
     ) -> tuple[ToolBuildResult, str]:
         """Prefer the canonical ``learned_tool.json`` artifact; fall back to scrape."""
-        artifacts = task.get("artifacts")
-        artifacts = artifacts if isinstance(artifacts, list) else []
+        telemetry = get_observability()
+        attributes = {
+            "ravn.tool_build.name": request.name,
+            "a2a.task.id": str(task.get("id") or ""),
+        }
+        with telemetry.span("ravn.a2a.artifact.retrieve", attributes=attributes) as span:
+            try:
+                artifacts = task.get("artifacts")
+                artifacts = artifacts if isinstance(artifacts, list) else []
+                span.set_attribute("a2a.artifact.count", len(artifacts))
 
-        canonical = await self._canonical_content(artifacts)
-        if canonical is not None:
-            document = decode_canonical_document(canonical)
-            if document is not None:
-                return (
-                    parse_tool_build_document(document, tool_name=request.name),
-                    "canonical_file",
-                )
-        logger.warning(
-            "A2A task carried no parseable %s artifact; scraping inline text parts",
-            CANONICAL_ARTIFACT_FILENAME,
-        )
-        for artifact in artifacts:
-            for part in _parts(artifact):
-                text = part.get("text")
-                if isinstance(text, str) and text.strip():
-                    try:
-                        return parse_tool_build_response(text, tool_name=request.name), (
-                            "inline_scrape"
+                canonical = await self._canonical_content(artifacts)
+                if canonical is not None:
+                    document = decode_canonical_document(canonical)
+                    if document is not None:
+                        result = parse_tool_build_document(document, tool_name=request.name)
+                        span.set_attribute("ravn.a2a.artifact.retrieval", "canonical_file")
+                        telemetry.event(
+                            "ravn.a2a.artifact.selected",
+                            attributes={
+                                **attributes,
+                                "ravn.a2a.artifact.retrieval": "canonical_file",
+                            },
                         )
-                    except ToolBuildError:
-                        continue
-        raise ToolBuildError("A2A task produced no retrievable tool-build artifact")
+                        return result, "canonical_file"
+                    telemetry.event(
+                        "ravn.a2a.artifact.canonical_invalid",
+                        attributes=attributes,
+                    )
+                logger.warning(
+                    "A2A task carried no parseable %s artifact; scraping inline text parts",
+                    CANONICAL_ARTIFACT_FILENAME,
+                )
+                telemetry.event(
+                    "ravn.a2a.artifact.inline_scrape.considered",
+                    attributes={
+                        **attributes,
+                        "ravn.a2a.artifact.reason": "canonical_missing_or_invalid",
+                    },
+                )
+                for artifact in artifacts:
+                    for part in _parts(artifact):
+                        text = part.get("text")
+                        if isinstance(text, str) and text.strip():
+                            try:
+                                result = parse_tool_build_response(
+                                    text,
+                                    tool_name=request.name,
+                                )
+                            except ToolBuildError:
+                                continue
+                            span.set_attribute(
+                                "ravn.a2a.artifact.retrieval",
+                                "inline_scrape",
+                            )
+                            telemetry.event(
+                                "ravn.a2a.artifact.selected",
+                                attributes={
+                                    **attributes,
+                                    "ravn.a2a.artifact.retrieval": "inline_scrape",
+                                },
+                            )
+                            return result, "inline_scrape"
+                raise ToolBuildError(
+                    "A2A task produced no retrievable tool-build artifact"
+                )
+            except Exception as exc:
+                telemetry.mark_error(span, type(exc).__name__, str(exc))
+                telemetry.event(
+                    "ravn.a2a.artifact.retrieval.failed",
+                    attributes={**attributes, "error.type": type(exc).__name__},
+                    content={"error": str(exc)},
+                )
+                raise
 
     async def _canonical_content(self, artifacts: list[Any]) -> str | None:
         for artifact in artifacts:

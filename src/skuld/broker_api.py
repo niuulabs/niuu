@@ -65,10 +65,19 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     from niuu.observability import configure_observability, shutdown_observability
 
-    # Attach JWT redaction filter after uvicorn has configured its loggers
+    # Telegram embeds the bot credential in every Bot API URL. Suppress httpx's
+    # request-level INFO records so the credential never enters a log record;
+    # retain value redaction for Skuld/uvicorn-owned access-token messages.
     _redact_filter = _TokenRedactFilter()
-    for name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
-        logging.getLogger(name).addFilter(_redact_filter)
+    filtered_loggers = [
+        logging.getLogger(name) for name in ("uvicorn", "uvicorn.access", "uvicorn.error")
+    ]
+    httpx_logger = logging.getLogger("httpx")
+    filtered_loggers.append(httpx_logger)
+    for filtered_logger in filtered_loggers:
+        filtered_logger.addFilter(_redact_filter)
+    previous_httpx_level = httpx_logger.level
+    httpx_logger.setLevel(logging.WARNING)
 
     configure_observability(
         broker._settings.observability,
@@ -82,8 +91,13 @@ async def lifespan(app: FastAPI):
         await broker.startup()
         yield
     finally:
-        await broker.shutdown()
-        shutdown_observability()
+        try:
+            await broker.shutdown()
+        finally:
+            shutdown_observability()
+            httpx_logger.setLevel(previous_httpx_level)
+            for filtered_logger in filtered_loggers:
+                filtered_logger.removeFilter(_redact_filter)
 
 
 app = FastAPI(
@@ -988,14 +1002,22 @@ async def get_communication_routes() -> dict:
 
 
 class _TokenRedactFilter(logging.Filter):
-    """Redact access_token values from log messages to prevent JWT leaks."""
+    """Redact bearer and channel credentials from log messages."""
 
-    _pattern = re.compile(r"access_token=[^\s\"&]+")
+    _patterns = (
+        (re.compile(r"access_token=[^\s\"&]+"), "access_token=[REDACTED]"),
+        (
+            re.compile(r"(https?://api\.telegram\.org/bot)[^/\s\"]+"),
+            r"\1[REDACTED]",
+        ),
+    )
 
     def _redact(self, value: object) -> object:
-        if isinstance(value, str):
-            return self._pattern.sub("access_token=[REDACTED]", value)
-        return value
+        original = value if isinstance(value, str) else str(value)
+        redacted = original
+        for pattern, replacement in self._patterns:
+            redacted = pattern.sub(replacement, redacted)
+        return redacted if redacted != original or isinstance(value, str) else value
 
     def filter(self, record: logging.LogRecord) -> bool:
         if hasattr(record, "msg"):

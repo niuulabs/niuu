@@ -178,6 +178,7 @@ class HttpxJsonClient:
             merged = await self._resolve_headers()
             if headers:
                 merged.update(headers)
+            merged.update(telemetry.inject())
             try:
                 async with httpx.AsyncClient(timeout=self._timeout) as client:
                     resp = await client.get(url, headers=merged)
@@ -217,6 +218,7 @@ class HttpxJsonClient:
             merged = await self._resolve_headers()
             if headers:
                 merged.update(headers)
+            merged.update(telemetry.inject())
             try:
                 async with httpx.AsyncClient(timeout=self._timeout) as client:
                     resp = await client.post(url, headers=merged, json=json_body)

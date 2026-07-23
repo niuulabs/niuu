@@ -28,6 +28,10 @@ def test_runtime_dashboard_covers_judgment_and_causal_dependencies() -> None:
     assert {panel.get("type") for panel in panels} >= {"stat", "timeseries", "table"}
     trace_search_panel = next(panel for panel in panels if panel["id"] == 50)
     assert trace_search_panel["type"] == "table"
+    a2a_trace_panel = next(panel for panel in panels if panel["id"] == 51)
+    assert a2a_trace_panel["type"] == "table"
+    assert "ravn.a2a" in a2a_trace_panel["targets"][0]["query"]
+    assert "ravn.tool_build" in a2a_trace_panel["targets"][0]["query"]
     assert "ravn_valkyrie_judgments" in queries
     assert "ravn_signal_transport_messages" in queries
     assert "ravn_agent_tool_calls" in queries
