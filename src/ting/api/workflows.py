@@ -44,6 +44,15 @@ class WorkflowBody(BaseModel):
         alias="resourceBindings",
         serialization_alias="resourceBindings",
     )
+    artifact_paths: list[str] = Field(
+        default_factory=list,
+        alias="artifactPaths",
+        serialization_alias="artifactPaths",
+        description=(
+            "Durable Mimir paths returned as workflow artifacts. "
+            "The {slug} placeholder resolves to the launch slug."
+        ),
+    )
     model_config = {"populate_by_name": True}
 
 
@@ -60,6 +69,10 @@ class WorkflowResponse(BaseModel):
     resource_bindings: list[dict[str, Any]] = Field(
         default_factory=list,
         serialization_alias="resourceBindings",
+    )
+    artifact_paths: list[str] = Field(
+        default_factory=list,
+        serialization_alias="artifactPaths",
     )
     created_at: datetime
     updated_at: datetime
@@ -268,6 +281,7 @@ def _body_to_graph(body: WorkflowBody) -> dict[str, Any]:
         "nodes": body.nodes,
         "edges": body.edges,
         "resourceBindings": body.resource_bindings,
+        "artifactPaths": body.artifact_paths,
     }
 
 
@@ -286,6 +300,11 @@ def _to_response(workflow: WorkflowDefinition) -> WorkflowResponse:
         resource_bindings=list(
             graph.get("resourceBindings") or graph.get("resource_bindings") or []
         ),
+        artifact_paths=[
+            str(path)
+            for path in list(graph.get("artifactPaths") or graph.get("artifact_paths") or [])
+            if str(path).strip()
+        ],
         created_at=workflow.created_at,
         updated_at=workflow.updated_at,
     )

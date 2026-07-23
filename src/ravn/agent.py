@@ -1585,24 +1585,52 @@ async def _validate_mimir_outcome_for_persona(
     persona_config: PersonaConfig | None,
     mimir: MimirPort | None,
 ) -> ParsedOutcome:
-    """Apply persona-specific Mimir-backed outcome validation.
+    """Apply Mimir-backed outcome validation declared by persona schemas.
 
-    At the moment this enforces research-page provenance for personas that emit
-    ``research.completed``. The page must exist, be marked
+    Any successful outcome with an ``artifact_path`` must resolve to a real
+    durable Mimir page. Research outcomes additionally enforce provenance: the
+    page must exist, be marked
     ``produced_by_thread: true``, reference non-empty ``source_ids``, and those
     source IDs must resolve to ingested raw sources that are not merely the
     final page content copied back into ``raw/``.
     """
-    if persona_config is None or mimir is None:
+    if persona_config is None:
         return parsed_outcome
+    errors: list[str] = []
+    artifact_path = str(parsed_outcome.fields.get("artifact_path") or "").strip()
+    verdict = str(parsed_outcome.fields.get("verdict") or "").strip().lower()
+    artifact_succeeded = "artifact_path" in persona_config.produces.schema and verdict not in {
+        "blocked",
+        "fail",
+        "failed",
+    }
+    if artifact_succeeded:
+        if not artifact_path:
+            errors.append("successful artifact outcome requires a non-empty artifact_path")
+        elif mimir is None:
+            errors.append(
+                f"artifact {artifact_path} cannot be verified because Mimir is not configured"
+            )
+        else:
+            try:
+                await mimir.get_page(artifact_path)
+            except FileNotFoundError:
+                errors.append(f"artifact not found in Mimir: {artifact_path}")
+
     produces_research_completed = persona_config.produces.event_type == "research.completed" or (
         "research.completed" in set(persona_config.produces.event_type_map.values())
     )
     if not produces_research_completed:
+        if errors:
+            parsed_outcome.valid = False
+            parsed_outcome.errors.extend(errors)
+        return parsed_outcome
+    if mimir is None:
+        parsed_outcome.valid = False
+        parsed_outcome.errors.append("research.completed outcome requires Mimir")
         return parsed_outcome
 
     page_path = str(parsed_outcome.fields.get("page_path") or "").strip()
-    errors: list[str] = []
     if not page_path:
         errors.append("research.completed outcome requires a non-empty page_path")
     else:

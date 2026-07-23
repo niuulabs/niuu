@@ -994,6 +994,7 @@
   version: 1.0.0
   graph:
     tags: [tool-builder, skill-builder, capability-builder]
+    artifactPaths: ["capabilities/{slug}/learned_tool.json"]
     nodes:
       - id: capability-request
         kind: trigger
@@ -1049,6 +1050,13 @@
             budget: 48
             model: gpt-5.5
             consumesEventTypes: [spec.framed, review.changes_requested, security.changes_requested]
+            systemPromptExtra: >-
+              This capability workflow may intentionally run without a source
+              repository. When no real repository and remote were supplied, do
+              not initialize Git or invent a local remote. Build and test the
+              canonical learned_tool.json in the workspace; the publisher stage
+              owns durable publication. If a real repository was supplied,
+              retain the normal commit and push discipline.
         position:
           x: 704
           y: 280
@@ -1067,10 +1075,20 @@
             budget: 24
             model: gpt-5.5
             consumesEventTypes: [code.changed]
+            systemPromptExtra: >-
+              In a capability workspace with no supplied source repository,
+              review learned_tool.json and its executable tests directly. Do
+              not require or invent a Git checkpoint. When a real repository
+              was supplied, retain the normal committed-diff requirement.
           - personaId: security-auditor
             budget: 24
             model: gpt-5.5
             consumesEventTypes: [code.changed]
+            systemPromptExtra: >-
+              In a capability workspace with no supplied source repository,
+              audit learned_tool.json and its executable tests directly. Do
+              not require or invent a Git checkpoint. When a real repository
+              was supplied, retain the normal committed-diff requirement.
         position:
           x: 1056
           y: 280
@@ -1078,10 +1096,10 @@
         kind: stage
         label: Publish capability record
         description: >-
-          Publish the capability record and confirm the canonical
-          learned_tool.json artifact (manifest, tool_code, test_code,
-          requirements) is present at the repo/workspace root so the commissioning
-          Valkyrie can retrieve it structurally rather than by scraping the summary.
+          Publish the canonical learned_tool.json artifact (manifest, tool_code,
+          test_code, requirements) from the repo/workspace root to the durable
+          capabilities/{slug}/learned_tool.json path and verify it can be read
+          back so the commissioning Valkyrie can retrieve it structurally.
         executionMode: sequential
         joinMode: all
         stageMembers:

@@ -293,6 +293,22 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     assert builder_stage_personas["Build tool or skill"] == ["coder"]
     assert builder_stage_personas["Review capability"] == ["reviewer", "security-auditor"]
     assert builder_stage_personas["Publish capability record"] == ["capability-publisher"]
+    assert builder_flow.graph["artifactPaths"] == ["capabilities/{slug}/learned_tool.json"]
+    builder_members = {
+        member["personaId"]: member
+        for node in builder_flow.graph["nodes"]
+        if node.get("kind") == "stage"
+        for member in node.get("stageMembers", [])
+    }
+    assert "do not initialize Git" in builder_members["coder"]["systemPromptExtra"]
+    assert (
+        "Do not require or invent a Git checkpoint"
+        in (builder_members["reviewer"]["systemPromptExtra"])
+    )
+    assert (
+        "Do not require or invent a Git checkpoint"
+        in (builder_members["security-auditor"]["systemPromptExtra"])
+    )
     builder_edge_labels = {edge["label"] for edge in builder_flow.graph["edges"]}
     assert {
         "spec.framed -> spec.framed",

@@ -109,6 +109,23 @@ def _research_alias_persona() -> PersonaConfig:
     )
 
 
+def _artifact_persona() -> PersonaConfig:
+    return PersonaConfig(
+        name="artifact-publisher",
+        produces=PersonaProduces(
+            event_type="artifact.publish.completed",
+            schema={
+                "verdict": OutcomeField(
+                    type="enum",
+                    enum_values=["published", "blocked"],
+                    description="publication verdict",
+                ),
+                "artifact_path": OutcomeField(type="string", description="artifact path"),
+            },
+        ),
+    )
+
+
 class _FakeMimir:
     def __init__(
         self,
@@ -228,6 +245,80 @@ class TestParseOutcomeBlockForPersona:
 
 
 class TestValidateMimirOutcomeForPersona:
+    @pytest.mark.asyncio
+    async def test_published_artifact_must_exist_in_mimir(self) -> None:
+        persona = _artifact_persona()
+        parsed = _parse_outcome_block_for_persona(
+            (
+                "---outcome---\n"
+                "verdict: published\n"
+                "artifact_path: capabilities/demo/learned_tool.json\n"
+                "---end---\n"
+            ),
+            persona,
+        )
+        assert parsed is not None
+
+        validated = await _validate_mimir_outcome_for_persona(
+            parsed,
+            persona_config=persona,
+            mimir=_FakeMimir(),
+        )
+
+        assert validated.valid is False
+        assert any("artifact not found in Mimir" in error for error in validated.errors)
+
+    @pytest.mark.asyncio
+    async def test_published_artifact_requires_configured_mimir(self) -> None:
+        persona = _artifact_persona()
+        parsed = _parse_outcome_block_for_persona(
+            (
+                "---outcome---\n"
+                "verdict: published\n"
+                "artifact_path: capabilities/demo/learned_tool.json\n"
+                "---end---\n"
+            ),
+            persona,
+        )
+        assert parsed is not None
+
+        validated = await _validate_mimir_outcome_for_persona(
+            parsed,
+            persona_config=persona,
+            mimir=None,
+        )
+
+        assert validated.valid is False
+        assert any("Mimir is not configured" in error for error in validated.errors)
+
+    @pytest.mark.asyncio
+    async def test_published_artifact_is_valid_when_mimir_read_succeeds(self) -> None:
+        persona = _artifact_persona()
+        path = "capabilities/demo/learned_tool.json"
+        parsed = _parse_outcome_block_for_persona(
+            f"---outcome---\nverdict: published\nartifact_path: {path}\n---end---\n",
+            persona,
+        )
+        assert parsed is not None
+        page = MimirPage(
+            meta=MimirPageMeta(
+                path=path,
+                title="learned_tool.json",
+                summary="",
+                category="capabilities",
+                updated_at=datetime.now(UTC),
+            ),
+            content='{"manifest": {"name": "demo"}}',
+        )
+
+        validated = await _validate_mimir_outcome_for_persona(
+            parsed,
+            persona_config=persona,
+            mimir=_FakeMimir(page=page),
+        )
+
+        assert validated.valid is True
+
     @pytest.mark.asyncio
     async def test_research_outcome_invalid_when_page_has_no_source_ids(self) -> None:
         persona = _research_persona()

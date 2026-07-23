@@ -68,6 +68,7 @@ from ting.api.workflows import (
     resolve_workflow_repo,
 )
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
+from ting.domain.workflow_snapshot import workflow_artifact_paths_from_snapshot
 from ting.ports.volundr import VolundrFactory
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
@@ -79,6 +80,7 @@ A2A_SURFACE = "a2a"
 LAUNCH_SCOPE = "ting:workflow:launch"
 _CANCELED_KEY = "a2a_canceled"
 _CONTEXT_ID_KEY = "a2a_context_id"
+_WORKFLOW_SLUG_KEY = "a2a_workflow_slug"
 
 _STATUS_TO_STATE: dict[WorkflowCampaignStatus, int] = {
     WorkflowCampaignStatus.PENDING: TaskState.TASK_STATE_SUBMITTED,
@@ -253,6 +255,7 @@ class WorkflowTaskHandler(RequestHandler):
                 "prompt": prompt,
                 "cluster_name": execution.session.cluster_name,
                 _CONTEXT_ID_KEY: message.context_id or slug,
+                _WORKFLOW_SLUG_KEY: execution.slug,
                 # Code-output pointers: for code workflows the durable
                 # artifact is the branch the session pushes, not a Mimir page.
                 **({"repo": launch.repo} if launch.repo else {}),
@@ -599,33 +602,48 @@ class WorkflowTaskHandler(RequestHandler):
             task.metadata.update({"pendingGates": pending})
 
     async def _attach_artifacts(self, task: Task, campaign: WorkflowCampaign) -> None:
-        """Project the campaign's Mimir pages onto ``task.artifacts``.
+        """Project configured durable Mimir outputs onto ``task.artifacts``.
 
         Only called for COMPLETED tasks: artifacts are outputs, and skipping
         the Mimir round-trips on every mid-run poll keeps GetTask cheap.
         Small text pages are inlined; anything over the configured limit
         becomes a url part pointing at the authenticated artifact route.
+
+        Workflows can declare exact ``artifactPaths`` in their graph. Paths may
+        contain ``{slug}``, resolved from the immutable launch slug. Legacy
+        research campaigns retain their campaign-prefix discovery behavior.
         """
         settings = self._request.app.state.settings
         adapter = _resolve_campaign_mimir_port(campaign, settings)
         if adapter is None:
             return
-        prefix = f"research/campaigns/{campaign.slug}/"
         loaded: list[Any] = []
-        for meta in await adapter.list_pages(prefix=prefix):
-            try:
-                loaded.append(await adapter.get_page(meta.path))
-            except FileNotFoundError:
-                continue
-        listed_paths = {page.meta.path for page in loaded}
-        for name in settings.a2a.extra_artifact_files:
-            path = f"{prefix}{name}"
-            if path in listed_paths:
-                continue
+        artifact_slug = str(campaign.metadata.get(_WORKFLOW_SLUG_KEY) or campaign.slug).strip()
+        configured_paths = workflow_artifact_paths_from_snapshot(
+            campaign.workflow_snapshot,
+            slug=artifact_slug,
+        )
+        for path in configured_paths:
             try:
                 loaded.append(await adapter.get_page(path))
             except FileNotFoundError:
                 continue
+        if not configured_paths and not _declares_artifact_paths(campaign):
+            prefix = f"research/campaigns/{campaign.slug}/"
+            for meta in await adapter.list_pages(prefix=prefix):
+                try:
+                    loaded.append(await adapter.get_page(meta.path))
+                except FileNotFoundError:
+                    continue
+            listed_paths = {page.meta.path for page in loaded}
+            for name in settings.a2a.extra_artifact_files:
+                path = f"{prefix}{name}"
+                if path in listed_paths:
+                    continue
+                try:
+                    loaded.append(await adapter.get_page(path))
+                except FileNotFoundError:
+                    continue
 
         max_inline = settings.a2a.inline_artifact_max_chars
         for page in sorted(loaded, key=lambda page: page.meta.path):
@@ -782,6 +800,11 @@ def _artifact_media_type(path: str) -> str:
     return guessed or "text/plain"
 
 
+def _declares_artifact_paths(campaign: WorkflowCampaign) -> bool:
+    graph = campaign.workflow_snapshot.get("graph")
+    return isinstance(graph, dict) and ("artifactPaths" in graph or "artifact_paths" in graph)
+
+
 def _prompt_from_message(message: Message) -> str:
     texts = [part.text for part in message.parts if part.text]
     return "\n\n".join(text for text in texts if text.strip()).strip()
@@ -797,11 +820,7 @@ def _trace_context(metadata: dict[str, Any]) -> dict[str, str]:
     raw = metadata.get("traceContext") or metadata.get("trace_context")
     if not isinstance(raw, dict):
         return {}
-    return {
-        key: str(raw[key])
-        for key in ("traceparent", "tracestate", "baggage")
-        if raw.get(key)
-    }
+    return {key: str(raw[key]) for key in ("traceparent", "tracestate", "baggage") if raw.get(key)}
 
 
 def create_a2a_router() -> APIRouter:

@@ -263,6 +263,7 @@ def _make_workflow(*, name: str = "tool-builder") -> WorkflowDefinition:
         owner_id=None,
         graph={
             "tags": ["tool-builder"],
+            "artifactPaths": ["capabilities/{slug}/learned_tool.json"],
             "nodes": [
                 {
                     "id": "stage-1",
@@ -408,6 +409,7 @@ class TestSendMessage:
         assert campaign is not None
         assert campaign.owner_id == "user-1"
         assert campaign.metadata["surface"] == "a2a"
+        assert campaign.metadata["a2a_workflow_slug"] == "build-the-widget-tool"
 
     def test_missing_workflow_id_is_invalid_params(self) -> None:
         client, _, _ = _make_client()
@@ -860,6 +862,7 @@ def _mimir_workflow(root: Path) -> WorkflowDefinition:
         owner_id=None,
         graph={
             "tags": ["tool-builder"],
+            "artifactPaths": ["capabilities/{slug}/learned_tool.json"],
             "nodes": [
                 {
                     "id": "memory",
@@ -885,7 +888,7 @@ def _mimir_workflow(root: Path) -> WorkflowDefinition:
 
 class TestTaskArtifacts:
     _SLUG = "build-widget"
-    _JSON_PATH = "research/campaigns/build-widget/learned_tool.json"
+    _JSON_PATH = "capabilities/build-widget/learned_tool.json"
     _JSON_CONTENT = '{"manifest": {"name": "widget"}}'
 
     def _client_with_files(
@@ -899,12 +902,12 @@ class TestTaskArtifacts:
         campaign = _make_campaign(
             slug=self._SLUG,
             status=status,
+            metadata={"a2a_workflow_slug": self._SLUG},
             workflow_snapshot=build_workflow_snapshot(workflow),
         )
-        artifact_dir = tmp_path / "wiki" / "research" / "campaigns" / self._SLUG
+        artifact_dir = tmp_path / "wiki" / "capabilities" / self._SLUG
         artifact_dir.mkdir(parents=True)
         (artifact_dir / "learned_tool.json").write_text(self._JSON_CONTENT, encoding="utf-8")
-        (artifact_dir / "final.md").write_text("# Final\n\nDone.", encoding="utf-8")
         settings = Settings(
             auth=AuthConfig(allow_anonymous_dev=False),
             a2a=A2AConfig(inline_artifact_max_chars=inline_max),
@@ -926,9 +929,6 @@ class TestTaskArtifacts:
         assert json_part["text"] == self._JSON_CONTENT
         assert json_part["mediaType"] == "application/json"
         assert json_part["filename"] == "learned_tool.json"
-        md_part = artifacts["research/campaigns/build-widget/final.md"]["parts"][0]
-        assert md_part["mediaType"] == "text/markdown"
-        assert "Done." in md_part["text"]
 
     def test_large_artifact_becomes_fetchable_url_part(self, tmp_path: Path) -> None:
         client, campaign = self._client_with_files(tmp_path, inline_max=10)
@@ -950,6 +950,23 @@ class TestTaskArtifacts:
         client, campaign = self._client_with_files(
             tmp_path,
             status=WorkflowCampaignStatus.RUNNING,
+        )
+
+        result = _rpc(client, "GetTask", {"id": campaign.slug}).json()["result"]
+
+        assert result.get("artifacts", []) == []
+
+    def test_unsafe_configured_artifact_path_is_ignored(self, tmp_path: Path) -> None:
+        workflow = _mimir_workflow(tmp_path)
+        workflow.graph["artifactPaths"] = ["../private.json"]
+        campaign = _make_campaign(
+            slug=self._SLUG,
+            status=WorkflowCampaignStatus.COMPLETED,
+            workflow_snapshot=build_workflow_snapshot(workflow),
+        )
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([campaign]),
+            settings=Settings(auth=AuthConfig(allow_anonymous_dev=False)),
         )
 
         result = _rpc(client, "GetTask", {"id": campaign.slug}).json()["result"]

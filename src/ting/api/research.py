@@ -37,7 +37,10 @@ from ting.domain.services.dispatch_service import (
     _resolve_mimir_registry_refs,
 )
 from ting.domain.utils import _session_name, _slugify
-from ting.domain.workflow_snapshot import workflow_mimir_from_snapshot
+from ting.domain.workflow_snapshot import (
+    workflow_artifact_paths_from_snapshot,
+    workflow_mimir_from_snapshot,
+)
 from ting.ports.event_bus import TingEvent
 from ting.ports.volundr import VolundrFactory
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
@@ -412,7 +415,7 @@ def create_research_router() -> APIRouter:
         campaign = await repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
         if campaign is None or not _campaign_artifacts_accessible(campaign):
             raise HTTPException(status_code=404, detail="Campaign not found")
-        if not _campaign_owns_path(campaign.slug, path):
+        if not _campaign_owns_path(campaign, path):
             raise HTTPException(status_code=404, detail="Artifact not found")
         adapter = _resolve_campaign_mimir_port(campaign, request.app.state.settings)
         if adapter is None:
@@ -942,7 +945,16 @@ def _mimir_http_auth(settings: Any) -> MimirAuth | None:
     return MimirAuth(type="bearer", token=token)
 
 
-def _campaign_owns_path(slug: str, path: str) -> bool:
+def _campaign_owns_path(campaign: WorkflowCampaign, path: str) -> bool:
+    if str(campaign.metadata.get("surface") or "").strip() == _A2A_SURFACE:
+        workflow_slug = str(campaign.metadata.get("a2a_workflow_slug") or campaign.slug).strip()
+        declared = workflow_artifact_paths_from_snapshot(
+            campaign.workflow_snapshot,
+            slug=workflow_slug,
+        )
+        return path in declared
+
+    slug = campaign.slug
     if path.startswith(f"research/campaigns/{slug}/"):
         return True
     return path in {
