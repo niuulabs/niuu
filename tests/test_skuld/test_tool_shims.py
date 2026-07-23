@@ -104,3 +104,40 @@ def test_ensure_codex_tool_shims_bakes_ravn_config_when_available(
     assert env["RAVN_CONFIG"] == "/tmp/ravn-config.yaml"
     tracker_script = (bin_dir / "tracker_issue").read_text(encoding="utf-8")
     assert "BASE_URL = " in tracker_script
+
+
+def test_ensure_codex_tool_shims_adds_mimir_bridges_for_dynamic_ravn_mount(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "ravn.yaml"
+    config_path.write_text(
+        """
+mimir:
+  registry_refs:
+    - mount_name: mimir-yggdrasil
+      url: https://mimir.example.test/api/v1
+  bindings:
+    - target_id: tool-builder
+      resource_node_id: capability-memory
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RAVN_CONFIG", str(config_path))
+
+    bin_dir, env = ensure_codex_tool_shims(
+        str(tmp_path / "workspace"),
+        mcp_servers=[
+            {
+                "name": "mimir-yggdrasil",
+                "type": "http",
+                "url": "https://mimir.example.test/api/v1",
+            }
+        ],
+    )
+
+    assert bin_dir is not None
+    assert (bin_dir / "mimir_write").exists()
+    assert (bin_dir / "mimir_read").exists()
+    assert env["RAVN_CONFIG"] == str(config_path)
+    assert "RAVN_MIMIR_PATH" not in env

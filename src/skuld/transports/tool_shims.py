@@ -52,6 +52,17 @@ def _extract_platform_config() -> tuple[str, float, str]:
     return base_url, timeout, pat_token
 
 
+def _ravn_config_has_mimir(config_path: str) -> bool:
+    if not config_path:
+        return False
+    try:
+        payload = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+    except Exception:
+        return False
+    mimir = payload.get("mimir")
+    return isinstance(mimir, dict) and any(bool(value) for value in mimir.values())
+
+
 def _tracker_issue_script(base_url: str, timeout: float, pat_token: str) -> str:
     auth_header = f"Bearer {pat_token}" if pat_token else ""
     return textwrap.dedent(
@@ -210,6 +221,7 @@ def ensure_codex_tool_shims(
     project_root = source_root.parent
     uv_bin = shutil.which("uv") or "uv"
     ravn_config = os.environ.get("RAVN_CONFIG", "").strip()
+    mimir_configured = mount is not None or _ravn_config_has_mimir(ravn_config)
     platform_base_url, platform_timeout, platform_pat = _extract_platform_config()
 
     tracker_target = bin_dir / "tracker_issue"
@@ -223,7 +235,7 @@ def ensure_codex_tool_shims(
     _install_present_file_shim(bin_dir)
 
     commands: dict[str, tuple[str, str, str]] = {}
-    if mount is not None:
+    if mimir_configured:
         commands.update(
             {
                 "mimir_ingest": (

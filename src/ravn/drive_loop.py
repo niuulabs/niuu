@@ -630,11 +630,14 @@ class FanInBuffer:
         consumes_event_types: list[str],
         strategy: str,
         consumer_key: str | None = None,
+        cycle_correlation_id: str | None = None,
     ) -> _FanInResult | None:
         """Accept an event for consumer-side fan-in.
 
         Returns a ``_FanInResult`` when all required events have arrived,
-        otherwise ``None``.  For ``merge`` strategy returns immediately.
+        otherwise ``None``. ``cycle_correlation_id`` keeps repeated workflow
+        passes under one root from mixing approvals across artifact generations.
+        For ``merge`` strategy returns immediately.
         """
         # Act immediately when:
         # - merge strategy (plain event subscription)
@@ -650,7 +653,8 @@ class FanInBuffer:
                 triggered_by=f"mesh:outcome:{event_type}",
             )
 
-        group_key = f"consumer:{consumer_key or persona_name}:{root_correlation_id}"
+        cycle_id = cycle_correlation_id or root_correlation_id
+        group_key = f"consumer:{consumer_key or persona_name}:{cycle_id}"
         slot = self._slots.get(group_key)
         now = datetime.now(UTC)
 
@@ -693,18 +697,21 @@ class FanInBuffer:
         event_type: str,
         event_payload: dict,
         root_correlation_id: str,
+        cycle_correlation_id: str | None = None,
     ) -> _FanInResult | None:
         """Accept a producer outcome for aggregation.
 
         Returns a ``_FanInResult`` when all contributors have produced,
         otherwise ``None``.  Returns ``None`` immediately if no contributor
-        registry exists for *contributes_to*.
+        registry exists for *contributes_to*. ``cycle_correlation_id`` separates
+        repeated producer rounds under one workflow root.
         """
         required = self._contributor_names.get(contributes_to)
         if not required or len(required) <= 1:
             return None
 
-        group_key = f"producer:{contributes_to}:{root_correlation_id}"
+        cycle_id = cycle_correlation_id or root_correlation_id
+        group_key = f"producer:{contributes_to}:{cycle_id}"
         slot = self._slots.get(group_key)
         now = datetime.now(UTC)
 

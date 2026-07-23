@@ -139,20 +139,21 @@ async def test_mesh_outcome_subscription_enqueues_work():
     topic, handler = mesh._pending_outcome_subscriptions[0]
     assert topic == "code.requested"
 
-    await handler(
-        RavnEvent(
-            type=RavnEventType.OUTCOME,
-            source="skuld",
-            payload={"event_type": "code.requested", "persona": "skuld"},
-            timestamp=datetime.now(UTC),
-            urgency=0.5,
-            correlation_id="session-123",
-            session_id="session-123",
-            root_correlation_id="session-123",
-        )
+    source_event = RavnEvent(
+        type=RavnEventType.OUTCOME,
+        source="skuld",
+        payload={"event_type": "code.requested", "persona": "skuld"},
+        timestamp=datetime.now(UTC),
+        urgency=0.5,
+        correlation_id="session-123",
+        session_id="session-123",
+        root_correlation_id="session-123",
     )
+    await handler(source_event)
 
     assert dl.queued_task_ids() == ["event_coder_session-"]
+    queued = list(dl._queue._queue)  # type: ignore[attr-defined]
+    assert queued[0][2].workflow_parent_event_id == source_event.event_id
 
 
 @pytest.mark.asyncio

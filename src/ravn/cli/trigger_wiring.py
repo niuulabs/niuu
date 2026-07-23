@@ -517,6 +517,8 @@ def _wire_cascade(
             source_persona = payload.get("persona", "")
             source_task_id = event.task_id or event.correlation_id
             root_corr = event.root_correlation_id or event.correlation_id
+            source_event_id = event.event_id or source_task_id
+            cycle_corr = str(payload.get("workflow_parent_event_id") or root_corr)
 
             logger.info(
                 "mesh: received outcome event_type=%s from=%s task_id=%s root=%s",
@@ -550,6 +552,7 @@ def _wire_cascade(
                     event_type=event_type,
                     event_payload=payload,
                     root_correlation_id=root_corr,
+                    cycle_correlation_id=cycle_corr,
                 )
                 if agg_result is not None:
                     logger.info(
@@ -604,6 +607,7 @@ def _wire_cascade(
                     consumes_event_types=group_event_types,
                     strategy=group_strategy,
                     consumer_key=group_id,
+                    cycle_correlation_id=cycle_corr,
                 )
 
                 if result is None:
@@ -629,7 +633,7 @@ def _wire_cascade(
                     ),
                     priority=5,
                     root_correlation_id=result.root_correlation_id,
-                    workflow_parent_event_id=source_task_id,
+                    workflow_parent_event_id=source_event_id,
                     workflow_node_id=group_id,
                 )
                 task.session_id = event.session_id or task.session_id

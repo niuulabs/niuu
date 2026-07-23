@@ -100,6 +100,48 @@ class TestAllMustPassStrategy:
         )
         assert buf.pending_count == 2
 
+    def test_different_cycles_under_same_root_do_not_mix_approvals(self):
+        buf = self._make_buffer()
+        common = {
+            "root_correlation_id": "root1",
+            "persona_name": "publisher",
+            "consumes_event_types": ["review.passed", "security.passed"],
+            "strategy": "all_must_pass",
+        }
+
+        assert (
+            buf.try_accept_consumer(
+                event_type="review.passed",
+                event_payload={"persona": "reviewer", "outcome": {"verdict": "pass"}},
+                cycle_correlation_id="code-generation-1",
+                **common,
+            )
+            is None
+        )
+        assert (
+            buf.try_accept_consumer(
+                event_type="security.passed",
+                event_payload={
+                    "persona": "security-auditor",
+                    "outcome": {"verdict": "pass"},
+                },
+                cycle_correlation_id="code-generation-2",
+                **common,
+            )
+            is None
+        )
+        assert buf.pending_count == 2
+
+        result = buf.try_accept_consumer(
+            event_type="review.passed",
+            event_payload={"persona": "reviewer", "outcome": {"verdict": "pass"}},
+            cycle_correlation_id="code-generation-2",
+            **common,
+        )
+        assert result is not None
+        assert result.root_correlation_id == "root1"
+        assert buf.pending_count == 1
+
     def test_consumer_key_keeps_same_persona_groups_separate(self):
         buf = FanInBuffer()
         first = buf.try_accept_consumer(

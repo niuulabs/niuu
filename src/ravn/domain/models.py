@@ -359,7 +359,7 @@ class AgentTask:
     deadline: datetime | None = None  # task discarded if queue time exceeds this
     output_path: Path | None = None  # where to save task output (cron tasks)
     root_correlation_id: str = ""  # Propagated from triggering event for fan-in chain tracking
-    workflow_parent_event_id: str = ""  # Direct upstream event task_id for per-cycle joins
+    workflow_parent_event_id: str = ""  # Direct upstream event ID for per-cycle joins
     workflow_node_id: str = ""  # Active workflow graph node for node-scoped contracts
     tool_outcomes: dict[str, dict[str, Any]] = field(default_factory=dict)
     human_initiated: bool = False  # True when a human message entered through a channel
