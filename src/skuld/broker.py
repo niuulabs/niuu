@@ -2091,6 +2091,8 @@ class Broker(
         payload: dict[str, Any],
     ) -> None:
         """Evaluate deterministic end nodes against bubbled-up peer outcomes."""
+        if str(peer_id).startswith("workflow-stop:"):
+            return
         event_type = str(payload.get("event_type") or "").strip()
         if not event_type or event_type == "ravn.task.completed":
             return

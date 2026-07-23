@@ -497,9 +497,7 @@ class TestBroker:
             workflow={
                 "workflow_id": "wf-1",
                 "trace_context": {
-                    "traceparent": (
-                        "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
-                    )
+                    "traceparent": ("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")
                 },
             },
             chronicle_watcher_enabled=False,
@@ -1904,6 +1902,25 @@ class TestBroker:
         assert terminal_peer_id == "workflow-stop:delivery-complete"
         assert terminal_frame["eventType"] == "delivery.completed"
         assert terminal_frame["summary"] == "publisher: Delivery artifacts published"
+
+        emitted_count = broker_under_test._emit_pipeline_event.await_count
+        await broker_under_test._observe_room_peer_event(
+            "workflow-stop:delivery-complete",
+            "outcome",
+            {
+                "metadata": {"event_type": "delivery.completed"},
+                "data": {
+                    "event_type": "delivery.completed",
+                    "fields": terminal_frame["fields"],
+                    "valid": True,
+                    "verdict": "approve",
+                    "summary": terminal_frame["summary"],
+                    "bubble_up": False,
+                },
+            },
+        )
+        assert broker_under_test._emit_pipeline_event.await_count == emitted_count
+        broker_under_test._room_bridge.handle_collaboration_frame.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_parallel_terminal_node_waits_for_git_push_when_required(self, tmp_path):
