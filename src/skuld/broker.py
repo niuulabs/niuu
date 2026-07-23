@@ -1249,8 +1249,7 @@ class Broker(
             task_id=None if correlation_id else event_id,
             root_correlation_id=self.session_id,
             trace_context=(
-                get_observability().inject()
-                or dict(self._settings.workflow.trace_context)
+                get_observability().inject() or dict(self._settings.workflow.trace_context)
             ),
         )
         await self._mesh_adapter.publish(event, event_type)
@@ -4125,25 +4124,36 @@ class Broker(
             and participant.participant_kind == "mesh"
             and self._mesh_adapter is not None
         ):
+            telemetry = get_observability()
+            carrier = routing_metadata.get("trace_context")
+            if not isinstance(carrier, dict):
+                carrier = {}
+            attributes = {
+                "skuld.room.target_peer_id": target_peer_id,
+                "skuld.room.source": source,
+                "skuld.room.message_id": msg_id,
+            }
             try:
-                response = await self._mesh_adapter.request_work(
-                    target_peer_id,
-                    content,
-                    request_id=request_id or msg_id,
-                )
-                status = str(response.get("status") or "error")
-                output = str(response.get("output") or response.get("error") or status)
-                await self._room_bridge.handle_collaboration_frame(
-                    target_peer_id,
-                    {
-                        "kind": "message",
-                        "sourceEventType": ("response" if status == "complete" else "error"),
-                        "content": output,
-                        "error": status != "complete",
-                        "metadata": routing_metadata,
-                    },
-                )
-                delivered = True
+                with telemetry.span(
+                    "skuld.room.directed_message",
+                    attributes=attributes,
+                    carrier=carrier,
+                ):
+                    routing_metadata["trace_context"] = telemetry.inject() or carrier
+                    response = await self._mesh_adapter.send_directed_message(
+                        target_peer_id,
+                        content,
+                        metadata=routing_metadata,
+                    )
+                    status = str(response.get("status") or "error").strip().lower()
+                    telemetry.set_attributes({**attributes, "skuld.room.status": status})
+                    if status != "accepted":
+                        error = str(response.get("error") or status)
+                        raise RuntimeError(
+                            f"Mesh-directed room message was not accepted by "
+                            f"{target_peer_id}: {error}"
+                        )
+                    delivered = True
             except Exception as exc:
                 logger.warning(
                     "Mesh-directed room message failed target=%s: %s",
@@ -4151,6 +4161,9 @@ class Broker(
                     exc,
                     exc_info=True,
                 )
+                raise RuntimeError(
+                    f"Mesh-directed room message failed for {target_peer_id}: {exc}"
+                ) from exc
         if not delivered:
             raise LookupError(f"Unknown room participant: {target_peer_id}")
         return msg_id

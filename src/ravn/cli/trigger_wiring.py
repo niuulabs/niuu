@@ -348,6 +348,16 @@ def _wire_cascade(
             await drive_loop.cancel(task_id)
             return {"status": "cancelled", "task_id": task_id}
 
+        if msg_type == "directed_message":
+            content = str(message.get("content") or "")
+            metadata = message.get("metadata")
+            if not content.strip():
+                return {"status": "rejected", "error": "empty content"}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            accepted = await drive_loop.handle_directed_message(content, metadata)
+            return {"status": "accepted" if accepted else "rejected"}
+
         if msg_type == "task_result":
             task_id = message.get("task_id", "")
             result = drive_loop.get_result(task_id)

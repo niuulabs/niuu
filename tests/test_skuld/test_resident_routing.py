@@ -104,9 +104,7 @@ class TestPlainMessageRouting:
         broker._room_bridge.handle_collaboration_frame = AsyncMock()
         broker.handle_human_room_message = AsyncMock(return_value="message-1")
         broker._mesh_adapter = MagicMock()
-        broker._mesh_adapter.request_work = AsyncMock(
-            return_value={"status": "complete", "output": "Hermes reply"}
-        )
+        broker._mesh_adapter.send_directed_message = AsyncMock(return_value={"status": "accepted"})
 
         message_id = await broker.handle_directed_room_message(
             participant.peer_id,
@@ -115,24 +113,36 @@ class TestPlainMessageRouting:
         )
 
         assert message_id == "message-1"
-        broker._mesh_adapter.request_work.assert_awaited_once_with(
-            participant.peer_id,
-            "Review this",
-            request_id="request-1",
+        broker._mesh_adapter.send_directed_message.assert_awaited_once()
+        args, kwargs = broker._mesh_adapter.send_directed_message.await_args
+        assert args == (participant.peer_id, "Review this")
+        assert kwargs["metadata"]["session_id"] == "resident-session"
+        assert kwargs["metadata"]["root_correlation_id"] == "resident-session"
+        assert "trace_context" in kwargs["metadata"]
+        broker._room_bridge.handle_collaboration_frame.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_directed_message_fails_when_mesh_rejects_dispatch(self):
+        broker = _resident_broker()
+        participant = SimpleNamespace(
+            peer_id="hermes-worker",
+            persona="Hermes",
+            participant_kind="mesh",
         )
-        broker._room_bridge.handle_collaboration_frame.assert_awaited_once_with(
-            participant.peer_id,
-            {
-                "kind": "message",
-                "sourceEventType": "response",
-                "content": "Hermes reply",
-                "error": False,
-                "metadata": {
-                    "session_id": "resident-session",
-                    "root_correlation_id": "resident-session",
-                },
-            },
+        broker._room_bridge.participants = {participant.peer_id: participant}
+        broker._room_bridge.route_directed_message = AsyncMock(return_value=False)
+        broker.handle_human_room_message = AsyncMock(return_value="message-1")
+        broker._mesh_adapter = MagicMock()
+        broker._mesh_adapter.send_directed_message = AsyncMock(
+            return_value={"status": "rejected", "error": "queue unavailable"}
         )
+
+        with pytest.raises(RuntimeError, match="queue unavailable"):
+            await broker.handle_directed_room_message(
+                participant.peer_id,
+                "Review this",
+                request_id="request-1",
+            )
 
     @pytest.mark.asyncio
     async def test_no_default_target_keeps_classic_path(self):

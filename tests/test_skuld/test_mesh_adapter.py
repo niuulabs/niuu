@@ -301,22 +301,32 @@ class TestWorkRequestHandling:
     """Test work_request RPC handling."""
 
     @pytest.mark.asyncio
-    async def test_request_work_preserves_room_correlation(self, adapter, mock_mesh):
-        mock_mesh.send = AsyncMock(return_value={"status": "complete", "output": "done"})
+    async def test_directed_message_preserves_room_correlation(self, adapter, mock_mesh):
+        mock_mesh.send = AsyncMock(return_value={"status": "accepted"})
 
-        result = await adapter.request_work("reviewer", "Review this", request_id="room-msg-1")
+        result = await adapter.send_directed_message(
+            "reviewer",
+            "Review this",
+            metadata={
+                "session_id": "test-session-42",
+                "root_correlation_id": "test-session-42",
+                "trace_context": {"traceparent": "00-a-b-01"},
+            },
+        )
 
-        assert result == {"status": "complete", "output": "done"}
+        assert result == {"status": "accepted"}
         mock_mesh.send.assert_awaited_once_with(
             "reviewer",
             {
-                "type": "work_request",
-                "prompt": "Review this",
-                "request_id": "room-msg-1",
-                "session_id": "test-session-42",
-                "root_correlation_id": "test-session-42",
+                "type": "directed_message",
+                "content": "Review this",
+                "metadata": {
+                    "session_id": "test-session-42",
+                    "root_correlation_id": "test-session-42",
+                    "trace_context": {"traceparent": "00-a-b-01"},
+                },
             },
-            timeout_s=120.0,
+            timeout_s=5.0,
         )
 
     @pytest.mark.asyncio

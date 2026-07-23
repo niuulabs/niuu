@@ -122,26 +122,24 @@ class SkuldMeshAdapter:
             return
         await self._mesh.publish(event, topic=topic)
 
-    async def request_work(
+    async def send_directed_message(
         self,
         target_peer_id: str,
-        prompt: str,
+        content: str,
         *,
-        request_id: str,
+        metadata: dict[str, Any],
     ) -> dict[str, Any]:
-        """Send the standard mesh request used by room-directed messages."""
+        """Deliver operator input without awaiting the recipient's model turn."""
         if self._mesh is None:
             return {"status": "error", "error": "Mesh is unavailable"}
         return await self._mesh.send(
             target_peer_id,
             {
-                "type": "work_request",
-                "prompt": prompt,
-                "request_id": request_id,
-                "session_id": self._session_id,
-                "root_correlation_id": self._session_id,
+                "type": "directed_message",
+                "content": content,
+                "metadata": metadata,
             },
-            timeout_s=self._config.default_work_timeout_s,
+            timeout_s=self._config.rpc_timeout_s,
         )
 
     async def _handle_rpc(self, message: dict) -> dict:

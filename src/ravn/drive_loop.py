@@ -1609,22 +1609,22 @@ class DriveLoop:
         )
         await self.enqueue(task)
 
-    async def _handle_directed_message(
+    async def handle_directed_message(
         self,
         content: str,
         metadata: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> bool:
         """Enqueue a directed message from the browser as an agent task."""
         for handler in list(self._directed_message_interceptors):
             try:
                 if await handler(content, metadata):
                     logger.info("drive_loop: directed message consumed by interceptor")
-                    return
+                    return True
             except Exception:
                 logger.exception("drive_loop: directed message interceptor failed")
 
         if await self._try_steer_active_agent(content):
-            return
+            return True
 
         import time
 
@@ -1657,7 +1657,7 @@ class DriveLoop:
             if isinstance(trace_context, dict):
                 task.trace_context = {str(key): str(value) for key, value in trace_context.items()}
         logger.info("drive_loop: directed message enqueued as task %s", task_id)
-        await self.enqueue(task)
+        return await self.enqueue(task)
 
     async def _try_steer_active_agent(self, content: str) -> bool:
         """Attempt to steer the currently active agent instead of queueing a new task."""
@@ -1703,7 +1703,7 @@ class DriveLoop:
         # channel with persona, display_name, subscribes_to, emits, tools —
         # the registration frame sent on connect carries the full identity.
         if self._skuld_channel is not None:
-            self._skuld_channel.on_directed_message(self._handle_directed_message)
+            self._skuld_channel.on_directed_message(self.handle_directed_message)
             self._session_join_manager.set_status_channel(self._skuld_channel)
             await self._skuld_channel.connect()
 

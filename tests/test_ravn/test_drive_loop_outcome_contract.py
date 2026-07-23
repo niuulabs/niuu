@@ -1316,7 +1316,7 @@ summary: post-mortem source captured
         dl.enqueue = AsyncMock()
         dl._persona_config = SimpleNamespace(name="council-chair")
 
-        await dl._handle_directed_message(
+        await dl.handle_directed_message(
             "Please continue with option A",
             {
                 "root_correlation_id": "root-1",
@@ -1353,7 +1353,7 @@ summary: post-mortem source captured
         )
         dl._active_agents["task-1"] = steering_agent
 
-        await dl._handle_directed_message("Please switch to option B")
+        await dl.handle_directed_message("Please switch to option B")
 
         steering_agent.steer.assert_awaited_once_with("Please switch to option B")
         dl.enqueue.assert_not_called()

@@ -229,6 +229,43 @@ async def test_mesh_rpc_work_request_generates_request_id():
 
 
 @pytest.mark.asyncio
+async def test_mesh_rpc_directed_message_queues_without_waiting_for_result():
+    """Operator input is acknowledged when Ravn accepts it, not when its turn ends."""
+    dl = _make_drive_loop()
+    dl.handle_directed_message = AsyncMock(return_value=True)
+
+    from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
+
+    settings = MagicMock(spec=Settings)
+    settings.cascade = MagicMock()
+    settings.cascade.enabled = True
+    settings.mesh = MagicMock()
+    settings.mesh.enabled = False
+    settings.discovery = MagicMock()
+    settings.discovery.enabled = False
+
+    with patch("ravn.cli.commands._build_mesh", side_effect=RuntimeError("disabled")):
+        with patch("ravn.cli.commands._build_discovery", side_effect=RuntimeError("disabled")):
+            _wire_cascade(dl, settings)
+
+    metadata = {
+        "help_request_id": "help-1",
+        "session_id": "session-1",
+        "trace_context": {"traceparent": "00-a-b-01"},
+    }
+    reply = await dl.handle_rpc(
+        {
+            "type": "directed_message",
+            "content": "Use the local artifact.",
+            "metadata": metadata,
+        }
+    )
+
+    assert reply == {"status": "accepted"}
+    dl.handle_directed_message.assert_awaited_once_with("Use the local artifact.", metadata)
+
+
+@pytest.mark.asyncio
 async def test_mesh_rpc_task_status():
     dl = _make_drive_loop()
     task = _make_agent_task("status-task")
