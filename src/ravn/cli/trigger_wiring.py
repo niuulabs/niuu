@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from ravn.domain.events import RavnEvent, RavnEventType
 
 # Dependencies are supplied by the CLI compatibility facade immediately before

@@ -194,6 +194,41 @@ async def test_mesh_rpc_task_dispatch():
 
 
 @pytest.mark.asyncio
+async def test_mesh_rpc_work_request_generates_request_id():
+    """A directed human reply can resume work without supplying an RPC request id."""
+    dl = _make_drive_loop()
+    dl.enqueue = AsyncMock()
+    dl.wait_for_result = AsyncMock(return_value=MagicMock(output="continued"))
+
+    from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
+
+    settings = MagicMock(spec=Settings)
+    settings.cascade = MagicMock()
+    settings.cascade.enabled = True
+    settings.mesh = MagicMock()
+    settings.mesh.enabled = False
+    settings.discovery = MagicMock()
+    settings.discovery.enabled = False
+
+    with patch("ravn.cli.commands._build_mesh", side_effect=RuntimeError("disabled")):
+        with patch("ravn.cli.commands._build_discovery", side_effect=RuntimeError("disabled")):
+            _wire_cascade(dl, settings)
+
+    reply = await dl.handle_rpc(
+        {
+            "type": "work_request",
+            "prompt": "Continue with the local artifact.",
+            "event_type": "human.reply",
+        }
+    )
+
+    assert reply["status"] == "complete"
+    assert reply["request_id"]
+    assert reply["output"] == "continued"
+    dl.enqueue.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_mesh_rpc_task_status():
     dl = _make_drive_loop()
     task = _make_agent_task("status-task")
