@@ -7,7 +7,7 @@ import hashlib
 import json
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -170,6 +170,8 @@ class ResidentRuntime:
         prompt: str,
         result: TurnResult,
         response_text: str,
+        outcome_fields: Mapping[str, Any] | None = None,
+        outcome_valid: bool | None = None,
     ) -> ResidentTurnDisposition:
         telemetry = get_observability()
         attributes = {
@@ -185,6 +187,8 @@ class ResidentRuntime:
                 prompt=prompt,
                 result=result,
                 response_text=response_text,
+                outcome_fields=outcome_fields,
+                outcome_valid=outcome_valid,
             )
             kind = str(disposition.kind)
             span.set_attribute("ravn.resident.disposition", kind)
@@ -202,6 +206,8 @@ class ResidentRuntime:
         prompt: str,
         result: TurnResult,
         response_text: str,
+        outcome_fields: Mapping[str, Any] | None,
+        outcome_valid: bool | None,
     ) -> ResidentTurnDisposition:
         """Persist one turn, acknowledge its observations, then decide transport."""
         telemetry = get_observability()
@@ -210,8 +216,13 @@ class ResidentRuntime:
         turn_index = task.resident_turn_index or 1
         mandate = task.resident_mandate or task.initiative_context
         episode = getattr(result, "episode", None)
-        fields = dict(getattr(episode, "structured_outcome", None) or {})
-        outcome_valid = getattr(episode, "outcome_valid", None) is not False
+        fields = dict(
+            outcome_fields
+            if outcome_fields is not None
+            else getattr(episode, "structured_outcome", None) or {}
+        )
+        if outcome_valid is None:
+            outcome_valid = getattr(episode, "outcome_valid", None) is not False
         action = selected_action_from_outcome(fields)
         telemetry.event(
             "ravn.resident.outcome_interpreted",

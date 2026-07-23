@@ -242,6 +242,34 @@ class TestDriveLoopOutcomeContract:
         )
         assert validation_errors == []
 
+    def test_resident_control_fields_do_not_depend_on_an_episode(self) -> None:
+        dl = _make_drive_loop()
+        dl._persona_config = SimpleNamespace(
+            name="k8s-valkyrie",
+            produces=_valkyrie_judgment_produces(),
+        )
+        dl._settings = SimpleNamespace(
+            environment=SimpleNamespace(id="cluster-a", type="k8s"),
+            mesh=SimpleNamespace(own_peer_id="k8s-valkyrie"),
+        )
+        result = TurnResult(
+            response=_valid_valkyrie_judgment_text(),
+            tool_calls=[],
+            tool_results=[],
+            usage=TokenUsage(input_tokens=8, output_tokens=12),
+        )
+
+        fields, valid = dl._decorate_turn_result_outcome(
+            _make_agent_task(task_id="task-no-episode"),
+            result,
+            result.response,
+        )
+
+        assert result.episode is None
+        assert valid is True
+        assert fields["decision"] == "propose_action"
+        assert fields["environment_id"] == "cluster-a"
+
     def test_schema_repair_prompt_includes_required_resident_contract_shape(self) -> None:
         task = _make_agent_task(task_id="task-valkyrie-repair-prompt")
         prompt = _build_resident_valkyrie_schema_repair_prompt(

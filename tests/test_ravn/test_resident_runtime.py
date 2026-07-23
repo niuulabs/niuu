@@ -481,6 +481,37 @@ async def test_budget_stops_another_operator_round_trip(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_explicit_outcome_routes_operator_question_without_an_episode(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state)
+    result = TurnResult(
+        response="operator input is required",
+        tool_calls=[],
+        tool_results=[],
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
+    )
+
+    disposition = await runtime.handle_completed_turn(
+        task=_task(),
+        prompt="prompt",
+        result=result,
+        response_text=result.response,
+        outcome_fields={
+            "verdict": "help_needed",
+            "continuation": "ask_operator",
+            "question": "Which scope is authorized?",
+            "next_action_timing": "operator_input",
+        },
+        outcome_valid=True,
+    )
+
+    assert result.episode is None
+    assert disposition.kind is ContinuationDecisionKind.ASK_OPERATOR
+    assert disposition.question == "Which scope is authorized?"
+    assert await state.read_operator_needed("root-1") is not None
+
+
+@pytest.mark.asyncio
 async def test_home_trigger_keeps_only_one_wake_inflight(tmp_path) -> None:
     mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
     inbox = MimirResidentInbox(mimir)

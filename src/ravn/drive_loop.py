@@ -1324,11 +1324,8 @@ class DriveLoop:
         task: AgentTask,
         turn_result: object,
         response_text: str,
-    ) -> None:
-        """Persist the same runtime-owned metadata later published on the event."""
-        episode = getattr(turn_result, "episode", None)
-        if episode is None:
-            return
+    ) -> tuple[dict[str, object], bool | None]:
+        """Parse resident control fields independently of episodic memory."""
         canonical_event_type, outcome_fields, validation_errors = (
             _resident_valkyrie_validation_result(
                 response_text,
@@ -1336,9 +1333,15 @@ class DriveLoop:
                 authoritative_fields=self._authoritative_valkyrie_fields(task),
             )
         )
-        if canonical_event_type and outcome_fields:
+        if not canonical_event_type:
+            return {}, None
+
+        outcome_valid = not validation_errors
+        episode = getattr(turn_result, "episode", None)
+        if episode is not None and outcome_fields:
             episode.structured_outcome = outcome_fields
-            episode.outcome_valid = not validation_errors
+            episode.outcome_valid = outcome_valid
+        return outcome_fields, outcome_valid
 
     def _default_mimir_mount_fields(self) -> dict[str, object]:
         """Infer the active Mimir mount names from runtime config when unambiguous."""
@@ -2089,9 +2092,9 @@ class DriveLoop:
                     )
                     turn_result = repair_result
                     response_text = repair_result.response
-                self._decorate_turn_result_outcome(task, turn_result, response_text)
-                episode = getattr(turn_result, "episode", None)
-                structured_outcome = getattr(episode, "structured_outcome", {}) or {}
+                structured_outcome, resident_outcome_valid = (
+                    self._decorate_turn_result_outcome(task, turn_result, response_text)
+                )
                 if isinstance(structured_outcome, Mapping):
                     judgment_attributes = {
                         "ravn.valkyrie.decision": _clean_string(structured_outcome.get("decision")),
@@ -2105,9 +2108,7 @@ class DriveLoop:
                         "ravn.valkyrie.action_authority": _clean_string(
                             structured_outcome.get("action_authority")
                         ),
-                        "ravn.valkyrie.outcome_valid": bool(
-                            getattr(episode, "outcome_valid", False)
-                        ),
+                        "ravn.valkyrie.outcome_valid": bool(resident_outcome_valid),
                     }
                     confidence = structured_outcome.get("confidence")
                     if isinstance(confidence, int | float):
@@ -2137,6 +2138,8 @@ class DriveLoop:
                         prompt=prompt,
                         result=turn_result,
                         response_text=response_text,
+                        outcome_fields=structured_outcome,
+                        outcome_valid=resident_outcome_valid,
                     )
                     if (
                         str(getattr(resident_disposition, "kind", "")) == "ask_operator"
