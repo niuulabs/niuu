@@ -427,6 +427,16 @@ async def launch_workflow_execution(
                     if settings.dispatch.flock.llm_config
                     else {}
                 ),
+                **(
+                    {"ravn_config": settings.dispatch.flock.ravn_config}
+                    if settings.dispatch.flock.ravn_config
+                    else {}
+                ),
+                **(
+                    {"observability": settings.dispatch.flock.observability}
+                    if settings.dispatch.flock.observability
+                    else {}
+                ),
             },
             credential_names=_mimir_auth_credential_names(workflow_mimir),
             definition=resolved_definition,

@@ -363,9 +363,7 @@ class TestContributorOutput:
                 "personas": ["coder"],
                 "provenance": {
                     "trace_context": {
-                        "traceparent": (
-                            "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
-                        ),
+                        "traceparent": ("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"),
                         "ignored": "not-w3c",
                     }
                 },
@@ -631,6 +629,67 @@ class TestMountedConfig:
         reviewer_cfg = yaml.safe_load(_extract_mounted_config(result.pod_spec, "reviewer"))
 
         assert reviewer_cfg["permission"]["workspace_root"] == "/workspace"
+
+    async def test_ravn_config_deep_merges_workload_settings(self, session):
+        contributor = RavnFlockContributor()
+        context = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": ["reviewer"],
+                "ravn_config": {
+                    "gateway": {
+                        "platform": {
+                            "enabled": True,
+                            "workload_token_file": "/var/run/secrets/niuu-workload/token",
+                            "workload_exchange_url": "https://platform.example/token/exchange",
+                        }
+                    }
+                },
+            },
+        )
+
+        result = await contributor.contribute(session, context)
+        reviewer_cfg = yaml.safe_load(_extract_mounted_config(result.pod_spec, "reviewer"))
+
+        assert reviewer_cfg["gateway"]["enabled"] is True
+        assert reviewer_cfg["gateway"]["platform"] == {
+            "enabled": True,
+            "workload_token_file": "/var/run/secrets/niuu-workload/token",
+            "workload_exchange_url": "https://platform.example/token/exchange",
+        }
+
+    async def test_observability_config_reaches_ravn_and_skuld_with_stable_names(self, session):
+        contributor = RavnFlockContributor()
+        context = SessionContext(
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": ["reviewer"],
+                "observability": {
+                    "enabled": True,
+                    "trace_endpoint": "https://tempo.example:443",
+                    "metric_endpoint": "https://mimir.example/v1/metrics",
+                    "capture_content": True,
+                },
+            },
+        )
+
+        result = await contributor.contribute(session, context)
+        reviewer_cfg = yaml.safe_load(_extract_mounted_config(result.pod_spec, "reviewer"))
+        skuld_env = {entry["name"]: entry["value"] for entry in result.pod_spec.env}
+
+        assert reviewer_cfg["observability"] == {
+            "enabled": True,
+            "trace_endpoint": "https://tempo.example:443",
+            "metric_endpoint": "https://mimir.example/v1/metrics",
+            "capture_content": True,
+            "service_name": "ravn",
+        }
+        assert skuld_env["SKULD__OBSERVABILITY__SERVICE_NAME"] == "skuld"
+        assert skuld_env["SKULD__OBSERVABILITY__ENABLED"] == "true"
+        assert skuld_env["SKULD__OBSERVABILITY__TRACE_ENDPOINT"] == ("https://tempo.example:443")
+        assert skuld_env["SKULD__OBSERVABILITY__METRIC_ENDPOINT"] == (
+            "https://mimir.example/v1/metrics"
+        )
 
     async def test_ravn_sidecars_use_unique_service_ports(self, session, flock_template):
         """Each Ravn API server must bind its own port inside the shared pod netns."""

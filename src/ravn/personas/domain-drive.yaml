@@ -105,6 +105,10 @@ produces:
       type: string
       description: help_needed reason when requesting human input
       required: false
+    question:
+      type: string
+      description: concrete operator question for help_needed
+      required: false
     attempted:
       type: array
       description: approaches already attempted before asking for help

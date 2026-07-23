@@ -69,6 +69,12 @@ config:
 
 # Dispatcher configuration
 dispatch:
+  flock:
+    # -- Additional config deep-merged into every dynamically launched Ravn node.
+    ravnConfig: {}
+    # -- Shared OTEL exporter settings; runtime service names stay ravn and skuld.
+    observability: {}
+
   # -- In-process (single-turn) dispatch configuration.
   # Controls the LLM used by the RavnDispatcher when running review-arbiter
   # and decomposer personas inline (no mesh, no pod).

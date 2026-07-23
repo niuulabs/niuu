@@ -624,14 +624,21 @@ def _wire_cascade(
                 task.trace_context = dict(event.trace_context)
 
                 try:
-                    await drive_loop.enqueue(task)
-                    logger.info(
-                        "mesh: enqueued task %s for %s (fan-in: %s group=%s)",
-                        task.task_id,
-                        result.triggered_by,
-                        group_strategy,
-                        group_id,
-                    )
+                    accepted = await drive_loop.enqueue(task)
+                    if accepted:
+                        logger.info(
+                            "mesh: enqueued task %s for %s (fan-in: %s group=%s)",
+                            task.task_id,
+                            result.triggered_by,
+                            group_strategy,
+                            group_id,
+                        )
+                    else:
+                        logger.info(
+                            "mesh: task %s for %s was already queued or active",
+                            task.task_id,
+                            result.triggered_by,
+                        )
                 except Exception as exc:
                     logger.error("mesh: failed to enqueue task for event: %s", exc)
 

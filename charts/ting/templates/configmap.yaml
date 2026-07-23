@@ -82,6 +82,16 @@ data:
       in_process:
         llm_config: {{ .Values.dispatch.inProcess.llmConfig | toJson }}
       {{- end }}
+      {{- if .Values.dispatch.flock }}
+      flock:
+        enabled: {{ .Values.dispatch.flock.enabled | default false }}
+        {{- if .Values.dispatch.flock.ravnConfig }}
+        ravn_config: {{ .Values.dispatch.flock.ravnConfig | toJson }}
+        {{- end }}
+        {{- if .Values.dispatch.flock.observability }}
+        observability: {{ .Values.dispatch.flock.observability | toJson }}
+        {{- end }}
+      {{- end }}
 
     {{- if and .Values.planner (or .Values.planner.plannerSystemPrompt .Values.planner.finalizePrompt) }}
     planner:

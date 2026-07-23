@@ -522,6 +522,17 @@ class FlockConfig(BaseModel):
             "When empty, ravn nodes use their own default or image-baked config."
         ),
     )
+    ravn_config: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Additional config deep-merged into every Ravn node in a flock. "
+            "Use this for deployment-owned platform and observability settings."
+        ),
+    )
+    observability: dict[str, Any] = Field(
+        default_factory=dict,
+        description="OpenTelemetry export settings shared by the flock's Ravn and Skuld runtimes.",
+    )
     daily_budget_usd: float = Field(
         default=25.0,
         ge=0.0,

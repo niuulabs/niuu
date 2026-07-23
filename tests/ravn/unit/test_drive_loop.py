@@ -211,6 +211,18 @@ async def test_drive_loop_enqueue_respects_queue_max(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_drive_loop_enqueue_rejects_duplicate_task_id(tmp_path: Path) -> None:
+    loop, _ = _make_drive_loop(tmp_path)
+    task = _make_task()
+    task.task_id = "task-duplicate"
+
+    assert await loop.enqueue(task) is True
+    assert await loop.enqueue(task) is False
+
+    assert loop.queued_task_ids() == ["task-duplicate"]
+
+
+@pytest.mark.asyncio
 async def test_executor_leaves_waiting_task_in_durable_journal(tmp_path: Path) -> None:
     journal = tmp_path / "queue.json"
     config = _make_initiative_config(

@@ -48,8 +48,8 @@ system_prompt_template: |
   When the request was commissioned by another agent or operator and it leaves
   a MATERIAL decision open — one where guessing wrong would produce the wrong
   deliverable (scope, interface, units, access assumptions, success criteria)
-  — do not invent an answer. Emit `verdict: help_needed` with your concrete
-  question in `summary`; it is routed to the commissioning party, and their
+  — do not invent an answer. Emit `verdict: help_needed` with one concrete
+  `question`; it is routed to the commissioning party, and their
   answer comes back to you as a directed message so you can finish the frame.
   Reserve this for genuinely material gaps: framing judgment calls you can
   defend from the given context are yours to make.
@@ -59,8 +59,8 @@ system_prompt_template: |
   ---outcome---
   verdict: framed | help_needed | blocked
   summary: |
-    [One-line summary of the frame — or, for help_needed, the concrete
-    question the commissioning party must answer]
+    [One-line summary of the work completed this turn]
+  question: [help_needed only: the concrete question the commissioning party must answer]
   reason: [help_needed only: why this cannot be responsibly guessed]
   recommendation: [help_needed only: your suggested default, if any]
   brief_path: specifications/{slug}/00-brief.md
@@ -89,6 +89,10 @@ produces:
       values: [framed, help_needed, blocked]
     summary:
       type: string
+    question:
+      type: string
+      description: help_needed only — concrete question the commissioning party must answer
+      required: false
     brief_path:
       type: string
     reason:

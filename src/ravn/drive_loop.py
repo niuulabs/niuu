@@ -1045,6 +1045,19 @@ class DriveLoop:
 
     async def _enqueue_observed(self, task: AgentTask) -> tuple[bool, str]:
         """Perform queue admission and return the decision with its reason."""
+        if (
+            task.task_id in self._active_tasks
+            or task.task_id in self._inflight_tasks
+            or task.task_id in self.queued_task_ids()
+        ):
+            logger.info(
+                "drive_loop: duplicate task %s (%r) already queued or active — discarding",
+                task.task_id,
+                task.title,
+            )
+            await self._emit_sleipnir_task_dropped(task, reason="duplicate_task")
+            return False, "duplicate_task"
+
         if task.deadline is not None and datetime.now(UTC) > task.deadline:
             logger.info(
                 "drive_loop: task %s (%r) deadline exceeded before enqueue — discarding",
@@ -1362,15 +1375,15 @@ class DriveLoop:
         self,
         task: AgentTask,
         outcome_fields: dict[str, object],
-    ) -> None:
+    ) -> str:
         """Mirror workflow-authored markdown artifacts into the active Mimir mount."""
         if self._mimir is None:
-            return
+            return ""
         if not str(task.workflow_node_id or "").strip():
-            return
+            return ""
         paths = self._artifact_publish_paths(outcome_fields)
         if not paths:
-            return
+            return ""
 
         from ravn.adapters.tools.mimir_tools import MimirPublishFilesTool  # noqa: PLC0415
 
@@ -1379,20 +1392,34 @@ class DriveLoop:
             or Path.cwd()
         )
         tool = MimirPublishFilesTool(self._mimir, workspace_root)
-        result = await tool.execute({"paths": paths})
+        local_paths = [path for path in paths if tool.resolve_workspace_file(path) is not None]
+        if not local_paths:
+            return ""
+        result = await tool.execute({"paths": local_paths})
         if result.is_error:
+            error = str(result.content or "artifact publication failed")
             logger.warning(
                 "drive_loop: failed to publish workflow artifacts to Mimir for task %s: %s",
                 task.task_id,
-                result.content,
+                error,
             )
-            return
-        outcome_fields.setdefault("published_paths", paths)
+            get_observability().event(
+                "ravn.workflow.artifact.publish_failed",
+                attributes={
+                    "ravn.task.id": task.task_id,
+                    "ravn.workflow.node.id": task.workflow_node_id,
+                    "error.type": "artifact_publish_failed",
+                    "error.message": error,
+                },
+            )
+            return error
+        outcome_fields.setdefault("published_paths", local_paths)
         logger.info(
             "drive_loop: published workflow artifacts to Mimir for task %s: %s",
             task.task_id,
-            paths,
+            local_paths,
         )
+        return ""
 
     async def _maybe_materialize_workflow_artifacts(
         self,
@@ -2716,6 +2743,7 @@ class DriveLoop:
                 outcome_fields["verdict"] = normalized_verdict
         outcome_fields = _json_safe(outcome_fields)  # type: ignore[assignment]
         summary = str(outcome_fields.get("summary", "") or "").strip()
+        question = str(outcome_fields.get("question", "") or "").strip()
         files_changed = outcome_fields.get("files_changed")
         if (synthesized_pass or synthesized_from_tool_write) and not valid:
             valid = True
@@ -2791,18 +2819,34 @@ class DriveLoop:
                 return
             valid = True
 
-        await self._maybe_publish_workflow_artifacts(task, outcome_fields)
-        await self._maybe_materialize_workflow_artifacts(task, outcome_fields)
+        outcome_errors: list[str] = []
+        if verdict == "help_needed" and not question:
+            outcome_errors.append("help_needed requires a non-empty question")
+
+        artifact_publish_error = ""
+        if not outcome_errors:
+            artifact_publish_error = await self._maybe_publish_workflow_artifacts(
+                task,
+                outcome_fields,
+            )
+        if not outcome_errors and not artifact_publish_error:
+            await self._maybe_materialize_workflow_artifacts(task, outcome_fields)
+        if artifact_publish_error:
+            outcome_errors.append(artifact_publish_error)
 
         base_payload: dict[str, object] = {
             "persona": self._persona_config.name,
-            "success": success,
+            "success": success and not outcome_errors,
             "outcome": outcome_fields,
             "fields": outcome_fields,
-            "valid": valid,
+            "valid": valid and not outcome_errors,
             "task_id": task.task_id,
             "workflow_node_id": task.workflow_node_id,
         }
+        if outcome_errors:
+            base_payload["errors"] = outcome_errors
+        if artifact_publish_error:
+            base_payload["artifact_publish_error"] = artifact_publish_error
         if task.workflow_parent_event_id:
             base_payload["workflow_parent_event_id"] = task.workflow_parent_event_id
         if verdict:
@@ -2849,7 +2893,7 @@ class DriveLoop:
             root_correlation_id=root_corr,
         )
 
-        if self._mesh is not None:
+        if self._mesh is not None and not outcome_errors:
             try:
                 logger.info(
                     "drive_loop: publishing canonical outcome event_type=%s task_id=%s",
@@ -2881,6 +2925,9 @@ class DriveLoop:
                 valid=valid,
             )
 
+        if outcome_errors:
+            return
+
         if self._mesh is None:
             mesh_available = False
         else:
@@ -2904,7 +2951,7 @@ class DriveLoop:
                 source=self._source_id,
                 persona=self._persona_config.name,
                 reason=str(outcome_fields.get("reason") or "needs_context"),
-                summary=summary or "Agent requested human input before continuing.",
+                summary=question,
                 attempted=attempted,
                 recommendation=str(
                     outcome_fields.get("recommendation")

@@ -99,6 +99,16 @@ _RAVN_SECURITY_CONTEXT = {
     "runAsNonRoot": True,
     "allowPrivilegeEscalation": False,
 }
+_OBSERVABILITY_FIELDS = {
+    "enabled",
+    "trace_endpoint",
+    "metric_endpoint",
+    "insecure",
+    "metric_export_interval_milliseconds",
+    "capture_content",
+    "content_max_chars",
+    "headers",
+}
 
 # Persona source modes
 _PERSONA_SOURCE_FILESYSTEM = "filesystem"
@@ -809,6 +819,28 @@ class RavnFlockContributor(SessionContributor):
             "max_concurrent_tasks", _DEFAULT_MAX_CONCURRENT_TASKS
         )
         global_llm: dict | None = wc.get("llm_config") or None
+        extra_ravn_config = wc.get("ravn_config")
+        extra_ravn_config = extra_ravn_config if isinstance(extra_ravn_config, dict) else None
+        observability_config = wc.get("observability")
+        observability_config = (
+            {
+                key: value
+                for key, value in observability_config.items()
+                if key in _OBSERVABILITY_FIELDS
+            }
+            if isinstance(observability_config, dict)
+            else {}
+        )
+        if observability_config:
+            extra_ravn_config = _deep_merge_config(
+                dict(extra_ravn_config or {}),
+                {
+                    "observability": {
+                        **observability_config,
+                        "service_name": "ravn",
+                    }
+                },
+            )
         raw_daily_budget_usd = wc.get("daily_budget_usd")
         try:
             daily_budget_usd = float(raw_daily_budget_usd)
@@ -848,6 +880,8 @@ class RavnFlockContributor(SessionContributor):
             persona_source_mount_path=self._persona_source_mount_path,
             persona_source_http_base_url=self._persona_source_http_base_url,
             workflow=workflow_cfg,
+            extra_ravn_config=extra_ravn_config,
+            observability_config=observability_config,
             runtime_backend=context.runtime_backend,
         )
 
@@ -881,6 +915,7 @@ class RavnFlockContributor(SessionContributor):
         persona_source_http_base_url: str = "",
         workflow: dict[str, Any] | None = None,
         extra_ravn_config: dict[str, Any] | None = None,
+        observability_config: dict[str, Any] | None = None,
         runtime_backend: str = "",
     ) -> tuple[dict[str, Any], PodSpecAdditions]:
         session_id = str(session.id)
@@ -940,6 +975,24 @@ class RavnFlockContributor(SessionContributor):
                 ),
             },
         ]
+        if observability_config:
+            skuld_observability = {
+                **observability_config,
+                "service_name": "skuld",
+            }
+            for key, value in skuld_observability.items():
+                if isinstance(value, bool):
+                    rendered_value = str(value).lower()
+                elif isinstance(value, dict):
+                    rendered_value = json.dumps(value)
+                else:
+                    rendered_value = str(value)
+                skuld_env.append(
+                    {
+                        "name": f"SKULD__OBSERVABILITY__{key.upper()}",
+                        "value": rendered_value,
+                    }
+                )
         workflow_trigger = _workflow_trigger_config(workflow)
         if workflow_trigger is None:
             workflow_trigger = _default_flock_trigger_config(

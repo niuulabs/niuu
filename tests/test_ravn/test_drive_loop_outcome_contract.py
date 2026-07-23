@@ -963,6 +963,50 @@ brief_path: research/campaigns/example/brief.md
         assert event.payload["fields"]["workspace_paths"] == ["research/campaigns/example/brief.md"]
 
     @pytest.mark.asyncio
+    async def test_workflow_artifact_publish_failure_blocks_routing_alias(
+        self,
+        tmp_path,
+    ) -> None:
+        dl = _make_drive_loop()
+        mesh = AsyncMock()
+        skuld_channel = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = skuld_channel
+        dl._source_id = "drive_loop"
+        dl._settings.permission.workspace_root = str(tmp_path)
+        dl._mimir = AsyncMock()
+        dl._mimir.upsert_page.side_effect = RuntimeError("unauthorized")
+        artifact = tmp_path / "research" / "campaigns" / "example" / "brief.md"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("# Brief\n\nReady.", encoding="utf-8")
+        dl._persona_config = SimpleNamespace(
+            name="research-framer",
+            produces=SimpleNamespace(
+                event_type="research.frame.completed",
+                event_type_map={"framed": "research.framed"},
+            ),
+        )
+
+        task = _make_agent_task(task_id="task-missing-artifact")
+        task.workflow_node_id = "research-framer"
+        response_text = """\
+---outcome---
+verdict: framed
+summary: Research brief framed.
+brief_path: research/campaigns/example/brief.md
+---end---
+"""
+
+        await dl._emit_mesh_outcome_event(task, response_text, success=True)
+
+        mesh.publish.assert_not_awaited()
+        canonical = skuld_channel.emit.await_args.args[0]
+        assert canonical.payload["event_type"] == "research.frame.completed"
+        assert canonical.payload["success"] is False
+        assert canonical.payload["valid"] is False
+        assert "unauthorized" in canonical.payload["artifact_publish_error"]
+
+    @pytest.mark.asyncio
     async def test_split_outcome_markers_still_route_alias_for_wrapped_codex_output(self) -> None:
         dl = _make_drive_loop()
         mesh = AsyncMock()
@@ -1597,6 +1641,7 @@ files_changed:
 ---outcome---
 verdict: help_needed
 summary: need a tie-breaker
+question: Which option should I use?
 reason: ambiguous
 ---end---
 """
@@ -1628,6 +1673,7 @@ reason: ambiguous
 ---outcome---
 verdict: help_needed
 summary: need the user's preference between the top two options
+question: Should I optimize for latency or quality?
 reason: uncertain
 attempted:
   - compared the strongest evidence
@@ -1644,10 +1690,7 @@ recommendation: choose whether to optimize for latency or quality
         alias_event = mesh.publish.await_args_list[2].args[0]
 
         assert help_topic == "help_needed"
-        assert (
-            help_event.payload["summary"]
-            == "need the user's preference between the top two options"
-        )
+        assert help_event.payload["summary"] == "Should I optimize for latency or quality?"
         assert help_event.payload["context"]["root_correlation_id"] == "root-help"
         assert help_event.payload["context"]["workflow_parent_event_id"] == "parent-help"
         assert help_event.payload["context"]["workflow_node_id"] == "chair-synthesis"
@@ -1660,6 +1703,39 @@ recommendation: choose whether to optimize for latency or quality
             skuld_channel.emit.await_args_list[2].args[0].payload["event_type"]
             == "council.human_input.requested"
         )
+
+    @pytest.mark.asyncio
+    async def test_help_needed_without_question_is_failed_without_help_or_alias(self) -> None:
+        dl = _make_drive_loop()
+        mesh = AsyncMock()
+        skuld_channel = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = skuld_channel
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="coder",
+            produces=SimpleNamespace(
+                event_type="code.completed",
+                event_type_map={"help_needed": "code.blocked"},
+            ),
+        )
+
+        task = _make_agent_task(task_id="task-empty-help")
+        response_text = """\
+---outcome---
+verdict: help_needed
+summary: Created the requested artifact.
+reason: pytest was unavailable
+---end---
+"""
+
+        await dl._emit_mesh_outcome_event(task, response_text, success=True)
+
+        mesh.publish.assert_not_awaited()
+        canonical = skuld_channel.emit.await_args.args[0]
+        assert canonical.payload["success"] is False
+        assert canonical.payload["valid"] is False
+        assert canonical.payload["errors"] == ["help_needed requires a non-empty question"]
 
     @pytest.mark.asyncio
     async def test_help_needed_bypasses_node_outcome_filter_for_human_intervention(self) -> None:
@@ -1687,6 +1763,7 @@ recommendation: choose whether to optimize for latency or quality
 ---outcome---
 verdict: help_needed
 summary: need an operator tie-break
+question: Which tradeoff should I prefer?
 reason: the final two opinions remain split
 attempted:
   - compared the submitted reviews
