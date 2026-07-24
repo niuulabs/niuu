@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 
@@ -31,9 +31,8 @@ def _make_task(
     output_mode: OutputMode = OutputMode.SILENT,
     deadline: datetime | None = None,
 ) -> AgentTask:
-    hex_ts = hex(int(time.time() * 1000))[2:]
     return AgentTask(
-        task_id=f"task_{hex_ts}_0001",
+        task_id=f"task_{uuid4().hex}_0001",
         title="test task",
         initiative_context="do something useful",
         triggered_by="cron:test",
@@ -175,12 +174,13 @@ async def test_drive_loop_enqueue_respects_priority(tmp_path: Path) -> None:
     high = _make_task(priority=1)
     low = _make_task(priority=20)
 
-    await loop.enqueue(low)
-    await loop.enqueue(high)
+    assert await loop.enqueue(low) is True
+    assert await loop.enqueue(high) is True
+    assert loop._queue.qsize() == 2
 
     # First item dequeued should be the higher-priority task (lower number)
-    prio1, _, task1 = await loop._queue.get()
-    prio2, _, task2 = await loop._queue.get()
+    prio1, _, task1 = loop._queue.get_nowait()
+    prio2, _, task2 = loop._queue.get_nowait()
     assert prio1 < prio2
     assert task1.task_id == high.task_id
     assert task2.task_id == low.task_id
@@ -1167,7 +1167,7 @@ async def test_directed_message_steers_single_active_agent(tmp_path: Path) -> No
     steerable.steer = AsyncMock(return_value=True)
     loop._active_agents["task-1"] = steerable
 
-    await loop._handle_directed_message("Change course")
+    assert await loop.handle_directed_message("Change course") is True
 
     steerable.steer.assert_awaited_once_with("Change course")
     loop.enqueue.assert_not_called()
@@ -1187,7 +1187,7 @@ async def test_directed_message_interceptor_can_consume_reply(tmp_path: Path) ->
     loop._active_agents["task-1"] = steerable
 
     metadata = {"help_context": {"operator_contact_id": "operator-contact-risky"}}
-    await loop._handle_directed_message("Approved", metadata)
+    assert await loop.handle_directed_message("Approved", metadata) is True
 
     interceptor.assert_awaited_once_with("Approved", metadata)
     steerable.steer.assert_not_called()
@@ -1213,7 +1213,7 @@ async def test_directed_message_falls_back_to_enqueue_when_steering_unavailable(
 
     loop._active_agents = {"task-1": first, "task-2": second}
 
-    await loop._handle_directed_message("Queue this instead")
+    await loop.handle_directed_message("Queue this instead")
 
     loop.enqueue.assert_awaited_once()
     first.steer.assert_not_called()
@@ -1373,9 +1373,8 @@ async def test_drive_loop_runs_agent_turn_from_cron(tmp_path: Path) -> None:
 
 
 def _make_thread_task(path: str = "threads/test-thread") -> AgentTask:
-    hex_ts = hex(int(time.time() * 1000))[2:]
     return AgentTask(
-        task_id=f"task_{hex_ts}_thread",
+        task_id=f"task_{uuid4().hex}_thread",
         title="thread task",
         initiative_context="work on thread",
         triggered_by=f"thread:{path}",
