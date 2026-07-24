@@ -365,7 +365,6 @@ class LocalResidentMemory(ResidentMemoryPort):
         path.parent.mkdir(parents=True, exist_ok=True)
         # Local resident pages are deliberately operator-inspectable Markdown,
         # not a credential store. Keep them private to the owning OS account.
-        # codeql[py/clear-text-storage-sensitive-data]
         path.write_text(content, encoding="utf-8")
         path.chmod(0o600)
         return str(rel)
@@ -422,7 +421,6 @@ def _render_working_state(record: ResidentWorkingStateRecord) -> str:
     evidence_refs = "\n".join(f"- {ref}" for ref in record.evidence_refs) or "- none"
     return (
         "# Resident Working State\n\n"
-        f"- resident_id: {record.resident_id}\n"
         f"- updated_at: {record.updated_at.isoformat()}\n"
         f"- source_turn_ref: {record.source_turn_ref}\n"
         f"- source_case_id: {record.source_case_id}\n"

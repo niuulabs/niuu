@@ -76,6 +76,7 @@ async def test_local_memory_working_state_round_trip(tmp_path) -> None:
     assert loaded is not None
     assert '"capability_gaps"' in loaded.content
     assert "source-1" in loaded.content
+    assert "resident_id:" not in loaded.content
 
 
 @pytest.mark.asyncio
