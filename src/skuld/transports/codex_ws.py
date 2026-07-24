@@ -1331,9 +1331,8 @@ class CodexWebSocketTransport(CLITransport):
             if not isinstance(output, str):
                 output = str(output)
             exit_code = item.get("exitCode", 0)
-            if output or exit_code != 0:
-                prefix = "" if exit_code == 0 else f"[exit code {exit_code}] "
-                await self._emit_tool_result(item_id, prefix + output, is_error=exit_code != 0)
+            prefix = "" if exit_code == 0 else f"[exit code {exit_code}] "
+            await self._emit_tool_result(item_id, prefix + output, is_error=exit_code != 0)
             return
 
         if item_type == "agentMessage":
@@ -1351,20 +1350,18 @@ class CodexWebSocketTransport(CLITransport):
             result_text = self._extract_item_result_text(item)
             if not result_text:
                 result_text = self._consume_buffered_item_output(item_id)
-            if result_text:
-                is_error = bool(item.get("isError") or item.get("is_error"))
-                await self._emit_tool_result(item_id, result_text, is_error=is_error)
+            is_error = bool(item.get("isError") or item.get("is_error"))
+            await self._emit_tool_result(item_id, result_text, is_error=is_error)
             return
 
         if item_type == "dynamicToolCall":
             await self._emit_content_block_stop()
             result_text = self._dynamic_tool_content_text(item.get("contentItems"))
-            if result_text:
-                await self._emit_tool_result(
-                    item_id,
-                    result_text,
-                    is_error=item.get("success") is False,
-                )
+            await self._emit_tool_result(
+                item_id,
+                result_text,
+                is_error=item.get("success") is False,
+            )
             return
 
         self._buffered_item_output.pop(item_id, None)

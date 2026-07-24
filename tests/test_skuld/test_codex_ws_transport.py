@@ -2560,40 +2560,52 @@ class TestEmitToolUse:
 class TestItemCompletedEdgeCases:
     @pytest.mark.asyncio
     async def test_file_change_completed_emits_stop(self, tmp_path):
-        """fileChange completion should emit content_block_stop."""
+        """fileChange completion should close both use and result blocks."""
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
         await t._handle_item_completed({"type": "fileChange", "id": "fc-1", "changes": []})
 
         stops = _events_of_type(emit, "content_block_stop")
-        assert len(stops) == 1
+        assert len(stops) == 2
+        results = [
+            event["content_block"]
+            for event in _events_of_type(emit, "content_block_start")
+            if event["content_block"]["type"] == "tool_result"
+        ]
+        assert results == [{"type": "tool_result", "tool_use_id": "fc-1", "content": ""}]
 
     @pytest.mark.asyncio
     async def test_web_search_completed_emits_stop(self, tmp_path):
-        """webSearch completion should emit content_block_stop."""
+        """webSearch completion should remain observable without a result body."""
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
         await t._handle_item_completed({"type": "webSearch", "id": "ws-1", "query": "test"})
 
         stops = _events_of_type(emit, "content_block_stop")
-        assert len(stops) == 1
+        assert len(stops) == 2
+        results = [
+            event["content_block"]
+            for event in _events_of_type(emit, "content_block_start")
+            if event["content_block"]["type"] == "tool_result"
+        ]
+        assert results == [{"type": "tool_result", "tool_use_id": "ws-1", "content": ""}]
 
     @pytest.mark.asyncio
     async def test_mcp_tool_call_completed_emits_stop(self, tmp_path):
-        """mcpToolCall completion should emit content_block_stop."""
+        """mcpToolCall completion should close both use and result blocks."""
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
         await t._handle_item_completed({"type": "mcpToolCall", "id": "mcp-1", "tool": "read_file"})
 
         stops = _events_of_type(emit, "content_block_stop")
-        assert len(stops) == 1
+        assert len(stops) == 2
 
     @pytest.mark.asyncio
-    async def test_command_completed_no_output_no_text_block(self, tmp_path):
-        """Command with empty output should still emit stop but no text block."""
+    async def test_command_completed_no_output_emits_empty_tool_result(self, tmp_path):
+        """Command completion remains observable when stdout is empty."""
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
@@ -2603,8 +2615,13 @@ class TestItemCompletedEdgeCases:
 
         events = _emitted_events(emit)
         stops = _events_of_type(emit, "content_block_stop")
-        # Only one stop (for the tool_use block), no text block started
-        assert len(stops) == 1
+        assert len(stops) == 2
+        results = [
+            event["content_block"]
+            for event in _events_of_type(emit, "content_block_start")
+            if event["content_block"]["type"] == "tool_result"
+        ]
+        assert results == [{"type": "tool_result", "tool_use_id": "cmd-1", "content": ""}]
         # No text delta emitted
         text_deltas = [
             e
@@ -2615,8 +2632,8 @@ class TestItemCompletedEdgeCases:
         assert len(text_deltas) == 0
 
     @pytest.mark.asyncio
-    async def test_command_completed_none_output_no_text_block(self, tmp_path):
-        """Command with null aggregated output should still emit stop and not crash."""
+    async def test_command_completed_none_output_emits_empty_tool_result(self, tmp_path):
+        """Command with null output should still expose its completion."""
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
@@ -2626,7 +2643,13 @@ class TestItemCompletedEdgeCases:
 
         events = _emitted_events(emit)
         stops = _events_of_type(emit, "content_block_stop")
-        assert len(stops) == 1
+        assert len(stops) == 2
+        results = [
+            event["content_block"]
+            for event in _events_of_type(emit, "content_block_start")
+            if event["content_block"]["type"] == "tool_result"
+        ]
+        assert results == [{"type": "tool_result", "tool_use_id": "cmd-1", "content": ""}]
         text_deltas = [
             e
             for e in events
