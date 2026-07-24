@@ -29,6 +29,9 @@ TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 TELEGRAM_BUFFER_FLUSH_INTERVAL = 1.5
 TELEGRAM_TOPIC_NAME_MAX_LENGTH = 128
 TELEGRAM_REPLY_CACHE_SIZE = 1024
+TELEGRAM_OUTCOME_SUMMARY_MAX_LENGTH = 450
+TELEGRAM_OUTCOME_DETAIL_MAX_LENGTH = 220
+TELEGRAM_OUTCOME_LIST_LIMIT = 2
 
 TelegramTopicMode = Literal["shared_chat", "fixed_topic", "topic_per_session"]
 
@@ -260,6 +263,15 @@ def _format_outcome_lines(
     summary: str,
     fields: object,
 ) -> str:
+    if isinstance(fields, dict) and _is_judgment_outcome(outcome_type, fields):
+        return _format_judgment_outcome(
+            name=name,
+            outcome_type=outcome_type,
+            verdict=verdict,
+            summary=summary,
+            fields=fields,
+        )
+
     outcome_label = _humanize_field_name(outcome_type or "outcome")
     lines = [f"{name} — {outcome_label}"]
     if verdict:
@@ -274,6 +286,252 @@ def _format_outcome_lines(
     elif fields:
         lines.append(str(fields))
     return "\n".join(line for line in lines if line)
+
+
+def _is_judgment_outcome(outcome_type: str, fields: dict[str, Any]) -> bool:
+    return "judgment" in outcome_type.casefold() or (
+        "decision" in fields
+        and any(
+            key in fields
+            for key in (
+                "rationale",
+                "recommended_action",
+                "operational_state",
+                "tier",
+            )
+        )
+    )
+
+
+def _format_judgment_outcome(
+    *,
+    name: str,
+    outcome_type: str,
+    verdict: str,
+    summary: str,
+    fields: dict[str, Any],
+) -> str:
+    decision = str(fields.get("decision") or "").strip()
+    title = _judgment_title(decision, outcome_type)
+    lines = [f"{_judgment_emoji(decision, fields)} **{name} — {title}**"]
+
+    narrative = _first_meaningful(
+        summary,
+        fields.get("state_summary"),
+        fields.get("evidence_summary"),
+    )
+    if narrative:
+        lines.extend(
+            [
+                "",
+                _bounded_telegram_text(
+                    narrative,
+                    TELEGRAM_OUTCOME_SUMMARY_MAX_LENGTH,
+                ),
+            ]
+        )
+
+    question = _meaningful_text(fields.get("question"))
+    if question:
+        lines.extend(
+            [
+                "",
+                "**Needs your input**",
+                _bounded_telegram_text(question, TELEGRAM_OUTCOME_DETAIL_MAX_LENGTH),
+            ]
+        )
+
+    recommendation = _meaningful_text(fields.get("recommended_action"))
+    if recommendation:
+        lines.extend(
+            [
+                "",
+                "**Recommended action**",
+                _bounded_telegram_text(
+                    recommendation,
+                    TELEGRAM_OUTCOME_DETAIL_MAX_LENGTH,
+                ),
+            ]
+        )
+
+    rationale = _meaningful_text(fields.get("rationale"))
+    if rationale and rationale != narrative:
+        lines.extend(
+            [
+                "",
+                "**Why**",
+                ">! "
+                + _bounded_telegram_text(
+                    rationale,
+                    TELEGRAM_OUTCOME_SUMMARY_MAX_LENGTH,
+                ),
+            ]
+        )
+
+    capability_gap = _meaningful_text(fields.get("capability_gap"))
+    if capability_gap:
+        lines.extend(
+            [
+                "",
+                "**Capability gap**",
+                _bounded_telegram_text(
+                    capability_gap,
+                    TELEGRAM_OUTCOME_DETAIL_MAX_LENGTH,
+                ),
+            ]
+        )
+
+    tool_plan = _meaningful_text(fields.get("tool_evolution_plan"))
+    if tool_plan:
+        lines.extend(
+            [
+                "",
+                "**Tool evolution**",
+                _bounded_telegram_text(
+                    tool_plan,
+                    TELEGRAM_OUTCOME_DETAIL_MAX_LENGTH,
+                ),
+            ]
+        )
+
+    open_questions = _bounded_outcome_items(
+        fields.get("open_questions"),
+        limit=2,
+    )
+    if open_questions:
+        lines.extend(["", "**Open questions**"])
+        lines.extend(f"- {item}" for item in open_questions)
+
+    raw_evidence = fields.get("evidence")
+    evidence = _bounded_outcome_items(raw_evidence)
+    if evidence:
+        evidence_count = _outcome_item_count(raw_evidence)
+        count_label = (
+            str(len(evidence))
+            if evidence_count == len(evidence)
+            else f"{len(evidence)} of {evidence_count}"
+        )
+        lines.extend(["", f"**Evidence ({count_label})**"])
+        lines.extend(f">! • {item}" for item in evidence)
+
+    details = _judgment_details(verdict=verdict, fields=fields)
+    if details:
+        lines.extend(["", "**Details**"])
+        lines.extend(f">! {detail}" for detail in details)
+
+    return "\n".join(lines)
+
+
+def _judgment_title(decision: str, outcome_type: str) -> str:
+    labels = {
+        "ignore": "No action needed",
+        "watch": "Watching",
+        "investigate": "Investigating",
+        "propose_action": "Action proposed",
+        "escalate": "Escalation",
+        "learn": "Learning",
+        "blocked": "Blocked",
+    }
+    return labels.get(decision.casefold(), _humanize_field_name(outcome_type or "judgment"))
+
+
+def _judgment_emoji(decision: str, fields: dict[str, Any]) -> str:
+    tier = str(fields.get("tier") or "").casefold()
+    if tier == "urgent":
+        return "🚨"
+    return {
+        "ignore": "✅",
+        "watch": "👀",
+        "investigate": "🔎",
+        "propose_action": "🛠️",
+        "escalate": "⚠️",
+        "learn": "🧠",
+        "blocked": "⛔",
+    }.get(decision.casefold(), "ℹ️")
+
+
+def _judgment_details(*, verdict: str, fields: dict[str, Any]) -> list[str]:
+    details: list[str] = []
+    status_parts = [
+        _humanize_field_name(fields[key])
+        for key in ("tier", "operational_state", "wakefulness")
+        if _meaningful_text(fields.get(key))
+    ]
+    if status_parts:
+        details.append("Status: " + " · ".join(status_parts))
+
+    authority = _meaningful_text(fields.get("action_authority"))
+    capability = _meaningful_text(fields.get("action_capability"))
+    action_parts: list[str] = []
+    if authority:
+        action_parts.append(_humanize_field_name(authority))
+    if capability:
+        action_parts.append(_bounded_telegram_text(capability, 160))
+    if action_parts:
+        details.append("Authority: " + " · ".join(action_parts))
+
+    if verdict and verdict.casefold() not in {"judged", "success"}:
+        details.append(f"Verdict: {_humanize_field_name(verdict)}")
+
+    confidence = fields.get("confidence")
+    if isinstance(confidence, int | float):
+        percentage = confidence * 100 if 0 <= confidence <= 1 else confidence
+        details.append(f"Confidence: {percentage:.0f}%")
+
+    targets = _bounded_outcome_items(fields.get("target_surfaces"), limit=2, max_length=160)
+    if targets:
+        details.append("Targets: " + ", ".join(targets))
+
+    signal_refs = fields.get("signal_refs")
+    if isinstance(signal_refs, list | tuple) and signal_refs:
+        details.append(f"Signals: {len(signal_refs)}")
+    return details
+
+
+def _first_meaningful(*values: object) -> str:
+    for value in values:
+        text = _meaningful_text(value)
+        if text:
+            return text
+    return ""
+
+
+def _meaningful_text(value: object) -> str:
+    if value is None:
+        return ""
+    text = " ".join(str(value).split())
+    if not text or text.casefold() in {"none", "n/a", "null", "unknown"}:
+        return ""
+    return text
+
+
+def _bounded_telegram_text(value: object, max_length: int) -> str:
+    text = _meaningful_text(value)
+    if len(text) <= max_length:
+        return text
+    return text[: max(0, max_length - 1)].rstrip() + "…"
+
+
+def _bounded_outcome_items(
+    value: object,
+    *,
+    limit: int = TELEGRAM_OUTCOME_LIST_LIMIT,
+    max_length: int = TELEGRAM_OUTCOME_DETAIL_MAX_LENGTH,
+) -> list[str]:
+    if not isinstance(value, list | tuple):
+        return []
+    items = [
+        _bounded_telegram_text(item, max_length)
+        for item in value
+        if _meaningful_text(item)
+    ]
+    return items[:limit]
+
+
+def _outcome_item_count(value: object) -> int:
+    if not isinstance(value, list | tuple):
+        return 0
+    return sum(1 for item in value if _meaningful_text(item))
 
 
 def _humanize_field_name(value: object) -> str:
@@ -651,6 +909,21 @@ def render_telegram_html(text: str) -> str:
     while index < len(lines):
         line = lines[index]
 
+        if line.startswith(">! ") or line.startswith("> "):
+            expandable = line.startswith(">! ")
+            prefix = ">! " if expandable else "> "
+            quote_lines: list[str] = []
+            while index < len(lines) and lines[index].startswith(prefix):
+                quote_lines.append(
+                    _render_inline_telegram_html(lines[index][len(prefix) :])
+                )
+                index += 1
+            attribute = " expandable" if expandable else ""
+            rendered.append(
+                f"<blockquote{attribute}>{chr(10).join(quote_lines)}</blockquote>"
+            )
+            continue
+
         header_cells = _parse_markdown_table_row(line)
         divider_line = lines[index + 1] if index + 1 < len(lines) else None
         if header_cells and divider_line and _is_markdown_table_divider(divider_line):
@@ -684,11 +957,6 @@ def render_telegram_html(text: str) -> str:
             rendered.append(
                 f"{ordered_match.group(1)}. {_render_inline_telegram_html(ordered_match.group(2))}"
             )
-            index += 1
-            continue
-
-        if line.startswith("> "):
-            rendered.append(f"&gt; {_render_inline_telegram_html(line[2:])}")
             index += 1
             continue
 

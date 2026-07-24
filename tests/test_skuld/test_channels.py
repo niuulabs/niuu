@@ -479,6 +479,90 @@ class TestFormatTelegramEvent:
         assert "Verdict: Conditional" in result
         assert "Checks passed: 12" in result
 
+    def test_judgment_outcome_is_projected_as_operator_card(self):
+        event = {
+            "type": "room_outcome",
+            "participant": {"persona": "Ivaldi"},
+            "eventType": "valkyrie.judgment.proposed",
+            "verdict": "judged",
+            "fields": {
+                "decision": "investigate",
+                "operational_state": "nominal",
+                "wakefulness": "wakeful",
+                "tier": "present",
+                "action_authority": "autonomous",
+                "action_capability": "none",
+                "signal_refs": ["skuld:directed_message"],
+                "rationale": "One verified learned tool is available.",
+                "evidence": [
+                    "Catalog metadata reports verification=passed.",
+                    "The tool has tests.",
+                ],
+                "recommended_action": "Use the verified tool when its capability matches.",
+                "target_surfaces": ["learned_tools"],
+                "confidence": 0.91,
+                "working_state": {
+                    "attempts": ["This verbose audit state must stay out of Telegram."]
+                },
+            },
+        }
+
+        result = format_telegram_event(event)
+
+        assert result.startswith("🔎 **Ivaldi — Investigating**")
+        assert "**Recommended action**" in result
+        assert "**Why**" in result
+        assert ">! One verified learned tool is available." in result
+        assert "**Evidence (2)**" in result
+        assert ">! • Catalog metadata reports verification=passed." in result
+        assert ">! Status: Present · Nominal · Wakeful" in result
+        assert ">! Authority: Autonomous" in result
+        assert ">! Confidence: 91%" in result
+        assert "Verdict: Judged" not in result
+        assert "Action capability: none" not in result
+        assert "working_state" not in result
+        assert "verbose audit state" not in result
+
+    def test_judgment_operator_card_stays_within_one_telegram_message(self):
+        long_text = "diagnostic evidence " * 200
+        event = {
+            "type": "room_outcome",
+            "participant": {"persona": "Ivaldi"},
+            "eventType": "valkyrie.judgment.proposed",
+            "summary": long_text,
+            "fields": {
+                "decision": "investigate",
+                "question": long_text,
+                "recommended_action": long_text,
+                "rationale": long_text,
+                "capability_gap": long_text,
+                "tool_evolution_plan": long_text,
+                "open_questions": [long_text] * 5,
+                "evidence": [long_text] * 5,
+                "target_surfaces": [long_text] * 5,
+            },
+        }
+
+        rendered = render_telegram_html(format_telegram_event(event) or "")
+
+        assert len(rendered) <= 4096
+        assert "<b>Evidence (2 of 5)</b>" in rendered
+
+    def test_non_judgment_outcome_with_rationale_keeps_generic_format(self):
+        event = {
+            "type": "room_outcome",
+            "participant": {"persona": "verifier"},
+            "eventType": "verification.completed",
+            "verdict": "conditional",
+            "fields": {"rationale": "One issue remains."},
+        }
+
+        result = format_telegram_event(event)
+
+        assert result.startswith("verifier — Verification completed")
+        assert "Verdict: Conditional" in result
+        assert "Rationale: One issue remains." in result
+
     def test_room_outcome_serializes_list_fields(self):
         event = {
             "type": "room_outcome",
@@ -575,7 +659,23 @@ class TestFormatTelegramEvent:
         assert "<b>Heading</b>" in rendered
         assert "• bullet" in rendered
         assert "1. ordered" in rendered
-        assert "&gt; quoted" in rendered
+        assert "<blockquote>quoted</blockquote>" in rendered
+
+    def test_render_telegram_html_formats_expandable_details(self):
+        rendered = render_telegram_html(
+            "**Evidence**\n"
+            ">! • First supporting item\n"
+            ">! • Second supporting item\n"
+            "\n"
+            "**Details**\n"
+            ">! Status: Present · Wakeful"
+        )
+        assert "<b>Evidence</b>" in rendered
+        assert (
+            "<blockquote expandable>• First supporting item\n"
+            "• Second supporting item</blockquote>"
+        ) in rendered
+        assert "<blockquote expandable>Status: Present · Wakeful</blockquote>" in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -715,6 +815,38 @@ class TestTelegramChannelMocked:
         assert "<b>Blocked</b>" in kwargs["text"]
         assert "<code>README.md</code>" in kwargs["text"]
         assert '<a href="https://example.com">docs</a>' in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_send_event_projects_judgment_as_expandable_operator_card(self, channel):
+        await channel.send_event(
+            {
+                "type": "room_outcome",
+                "participantId": "ivaldi",
+                "participant": {"persona": "Ivaldi"},
+                "eventType": "valkyrie.judgment.proposed",
+                "verdict": "judged",
+                "fields": {
+                    "decision": "investigate",
+                    "tier": "present",
+                    "rationale": "The catalog contains one verified learned tool.",
+                    "recommended_action": "Use it when the capability matches.",
+                    "evidence": ["verification=passed", "has_tests=true"],
+                    "working_state": {"attempts": ["internal detail"]},
+                },
+            }
+        )
+
+        channel._bot.send_message.assert_awaited_once()
+        _, kwargs = channel._bot.send_message.call_args
+        assert kwargs["parse_mode"] == "HTML"
+        assert kwargs["text"].startswith("🔎 <b>Ivaldi — Investigating</b>")
+        assert "<b>Recommended action</b>" in kwargs["text"]
+        assert (
+            "<blockquote expandable>The catalog contains one verified learned tool."
+            "</blockquote>"
+        ) in kwargs["text"]
+        assert "working_state" not in kwargs["text"]
+        assert "internal detail" not in kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_send_event_room_message_table_uses_preformatted_block(self, channel):
