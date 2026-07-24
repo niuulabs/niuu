@@ -22,7 +22,7 @@ ravn.environment.collect
   ravn.signal.commit
     ack JetStream signals
 
-invoke_agent <persona>                     # same trace after queued delay/restart
+invoke_agent <persona>                     # same trace after queueing
   chat <model>                             # iteration number + request/response event
   execute_tool capability_list
     GET /api/v1/niuu/observatory/agents
@@ -43,16 +43,18 @@ authentication, and bounds—remain deterministic.
 
 In-process tool execution produces the nested tool and dependency spans shown
 above. CLI transports also record the exact tool request and response as events
-on the model span. The CLI MCP subprocess does not yet inherit that task trace
-context, so its internal dependency spans form separate traces. Do not infer a
-single causal tree for those internal calls until cross-process propagation is
-implemented.
+on the model span. The CLI MCP subprocess inherits the current task trace
+context, so its tool, Guild, A2A, and tool-build spans remain part of the same
+causal trace. `ravn.trace.boundaries` records that cross-process remote-parent
+boundary.
 
 Every Sleipnir event carries W3C trace context in its envelope. Publish and
 subscriber port decorators create producer/consumer spans, so ResidentLearning,
 ODIN, feedback, huddle, and other operators remain causally connected without
-each operator inventing its own propagation scheme. Queue journals also retain
-trace context across process restarts.
+each operator inventing its own propagation scheme. Queue journals retain trace
+context across process restarts, but recovered work starts a bounded new trace
+with an OpenTelemetry link to the pre-restart trace. This avoids an indefinitely
+open trace while preserving causality.
 
 ## Content capture and safety
 
@@ -167,6 +169,8 @@ through its existing dashboard sidecar and GitOps configuration. Open the live
 dashboard, select a resident service, and click a Trace ID in **Recent resident
 task traces** to inspect its complete Tempo span timeline. **Installed learned
 tools** distinguishes the durable artifact envelope from the separately
-materialized Python tool. **Tempo incomplete-trace warnings** exposes rootless
-or disconnected WAL flushes that can make search results temporarily lack a
-root span.
+materialized Python tool. **Trace boundaries in range** shows the remote-parent
+MCP crossings and restart-recovery links where a trajectory crosses a process
+or lifetime boundary. Tempo collector warning metrics are not ingested into the
+`eitri` Mimir tenant, so the dashboard does not fabricate a zero-valued warning
+panel.

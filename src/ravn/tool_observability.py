@@ -36,6 +36,8 @@ async def execute_observed_tool[T](
         attributes["ravn.task.id"] = task_id
     if iteration is not None:
         attributes["ravn.agent.iteration"] = iteration
+    if carrier:
+        attributes["ravn.trace.relationship"] = "remote_parent"
 
     metric_attributes = {
         key: attributes[key]
@@ -47,6 +49,15 @@ async def execute_observed_tool[T](
         )
         if key in attributes
     }
+    if carrier:
+        telemetry.count(
+            "ravn.trace.boundaries",
+            attributes={
+                "ravn.trace.relationship": "remote_parent",
+                "ravn.trace.component": "tool_execution",
+            },
+            description="Explicit cross-process and restart trace boundaries.",
+        )
     started = monotonic()
     with telemetry.span(
         f"execute_tool {name}",

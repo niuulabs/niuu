@@ -149,9 +149,16 @@ async def test_tool_port_mcp_server_emits_tool_metrics_and_propagates_trace(
         for scope in resource.scope_metrics
         for metric in scope.metrics
     }
-    assert {"ravn.agent.tool.calls", "ravn.agent.tool.duration"} <= metrics.keys()
+    assert {
+        "ravn.agent.tool.calls",
+        "ravn.agent.tool.duration",
+        "ravn.trace.boundaries",
+    } <= metrics.keys()
     call_point = metrics["ravn.agent.tool.calls"].data.data_points[0]
     assert call_point.attributes["gen_ai.agent.name"] == "ivaldi"
     assert call_point.attributes["gen_ai.tool.name"] == "echo_tool"
     assert call_point.attributes["ravn.tool.outcome"] == "success"
+    boundary_point = metrics["ravn.trace.boundaries"].data.data_points[0]
+    assert boundary_point.attributes["ravn.trace.relationship"] == "remote_parent"
+    assert boundary_point.attributes["ravn.trace.component"] == "tool_execution"
     telemetry.shutdown()

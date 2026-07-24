@@ -41,7 +41,6 @@ def test_runtime_dashboard_covers_judgment_and_causal_dependencies() -> None:
     assert "ravn_tool_build_reviews" in queries
     assert "ravn_tool_build_canary_operations" in queries
     assert "ravn_event_bus_operations" in queries
-    assert "tempo_warnings_total" in queries
-    assert "rootless_trace_flushed_to_wal" in queries
-    assert "disconnected_trace_flushed_to_wal" in queries
+    assert "ravn_trace_boundaries" in queries
+    assert "ravn_trace_relationship" in queries
     assert "span.ravn.task.id" in queries

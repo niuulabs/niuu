@@ -1912,11 +1912,20 @@ class DriveLoop:
         }
         started = monotonic()
         restart_recovery = task.task_id in self._restored_inflight_task_ids
-        if restart_recovery:
+        restart_link = restart_recovery and bool(task.trace_context)
+        if restart_link:
             attributes["ravn.trace.relationship"] = "restart_recovery_link"
+            telemetry.count(
+                "ravn.trace.boundaries",
+                attributes={
+                    "ravn.trace.relationship": "restart_recovery_link",
+                    "ravn.trace.component": "agent_task",
+                },
+                description="Explicit cross-process and restart trace boundaries.",
+            )
         trace_kwargs = (
             {"link_carrier": task.trace_context}
-            if restart_recovery and task.trace_context
+            if restart_link
             else {"carrier": task.trace_context}
         )
         with telemetry.span(

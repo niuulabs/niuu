@@ -217,17 +217,14 @@
     },
     {
       "datasource": {"type": "prometheus", "uid": "${metrics}"},
-      "description": "Tempo warnings that explain incomplete trace search results. Exact trace-ID lookup may still assemble a complete trace after delayed blocks arrive.",
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "bars", "fillOpacity": 30, "lineWidth": 1, "showPoints": "never"}, "unit": "ops"}, "overrides": []},
+      "description": "Expected causal cuts made explicit by Ravn: MCP tool execution inherits a remote parent, while work recovered after a daemon restart starts a bounded trace linked to the pre-restart trace.",
+      "fieldConfig": {"defaults": {"color": {"mode": "continuous-GrYlRd"}, "unit": "short"}, "overrides": []},
       "gridPos": {"h": 7, "w": 24, "x": 0, "y": 60},
       "id": 44,
-      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
-      "targets": [
-        {"expr": "sum(rate(tempo_warnings_total{reason=\"rootless_trace_flushed_to_wal\"}[$__rate_interval])) or vector(0)", "legendFormat": "rootless trace flushed to WAL", "refId": "A"},
-        {"expr": "sum(rate(tempo_warnings_total{reason=\"disconnected_trace_flushed_to_wal\"}[$__rate_interval])) or vector(0)", "legendFormat": "disconnected trace flushed to WAL", "refId": "B"}
-      ],
-      "title": "Tempo incomplete-trace warnings",
-      "type": "timeseries"
+      "options": {"displayMode": "gradient", "orientation": "horizontal", "reduceOptions": {"calcs": ["sum"], "fields": "", "values": false}},
+      "targets": [{"expr": "sum by (ravn_trace_relationship,ravn_trace_component) (increase(ravn_trace_boundaries{job=~\"$job\"}[$__range]))", "instant": true, "legendFormat": "{{ravn_trace_relationship}} / {{ravn_trace_component}}", "refId": "A"}],
+      "title": "Trace boundaries in range",
+      "type": "bargauge"
     },
     {
       "datasource": {"type": "tempo", "uid": "${traces}"},
