@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import stat
+
 import pytest
 
 from ravn.domain.models import TokenUsage
@@ -39,6 +41,8 @@ async def test_local_memory_turn_round_trip_and_recall(tmp_path) -> None:
 
     ref = await mem.write_turn(_turn(1))
     assert ref
+    mode = stat.S_IMODE((tmp_path / ref).stat().st_mode)
+    assert mode == 0o600
     await mem.write_turn(_turn(2))
 
     recalled = await mem.recall("mandate", limit=5)

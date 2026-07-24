@@ -328,24 +328,22 @@ async def test_bearer_auth_header_is_sent(adapter_bearer: HttpMimirAdapter) -> N
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_workload_auth_uses_environment_fallbacks(
+async def test_workload_auth_uses_configured_identity_endpoints(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     proof_file = tmp_path / "workload-token"
     proof_file.write_text("projected-proof", encoding="utf-8")
-    monkeypatch.setenv("NIUU_WORKLOAD_IDENTITY_TOKEN_FILE", str(proof_file))
-    monkeypatch.setenv(
-        "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL",
-        "http://identity.test/exchange",
-    )
     exchange = respx.post("http://identity.test/exchange").mock(
         return_value=Response(200, json={"token": "mimir-token"})
     )
     request = respx.get("http://mimir.test/mimir/pages").mock(return_value=Response(200, json=[]))
     adapter = HttpMimirAdapter(
         base_url="http://mimir.test",
-        auth=MimirAuth(type="workload"),
+        auth=MimirAuth(
+            type="workload",
+            token_file=str(proof_file),
+            exchange_url="http://identity.test/exchange",
+        ),
     )
 
     await adapter.list_pages()

@@ -363,7 +363,11 @@ class LocalResidentMemory(ResidentMemoryPort):
     def _write(self, rel: Path, content: str) -> str:
         path = self._root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Local resident pages are deliberately operator-inspectable Markdown,
+        # not a credential store. Keep them private to the owning OS account.
+        # codeql[py/clear-text-storage-sensitive-data]
         path.write_text(content, encoding="utf-8")
+        path.chmod(0o600)
         return str(rel)
 
     def _working_state_path(self, resident_id: str) -> Path:

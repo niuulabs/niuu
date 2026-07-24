@@ -664,8 +664,7 @@ def _mimir_workload_platform_defaults(settings: Settings) -> tuple[str | None, s
     uses ``type: workload`` auth without an explicit ``token_file`` /
     ``exchange_url``, the values configured for the platform tools are the
     canonical source. Returns ``(token_file, exchange_url)`` — either may be
-    ``None`` when the platform section is disabled or empty, in which case
-    the HTTP adapter keeps its legacy env-var fallback for compatibility.
+    ``None`` when the platform section is disabled or empty.
     """
     platform = settings.gateway.platform
     if not platform.enabled:

@@ -683,7 +683,7 @@ class MarkdownMimirAdapter(MimirPort):
         else:
             self._update_index_entry(path, content)
 
-        logger.info("mimir: upserted page %s (new=%s)", _sanitize_log(path), is_new)
+        logger.info("mimir: upserted page (new=%s)", is_new)
 
         # NIU-582: emit mimir.page.written to Sleipnir catalog (best-effort)
         if self._sleipnir_publisher is not None and _catalog_page_written is not None:

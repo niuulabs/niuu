@@ -1290,7 +1290,6 @@ class TestBuildMimirAuthWorkloadDefaults:
 
         settings.gateway.platform.enabled = False
         auth = _build_mimir_auth(settings, MimirAuthConfig(type="workload"))
-        # None means the HTTP adapter keeps its legacy env-var fallback.
         assert auth.token_file is None
         assert auth.exchange_url is None
 
