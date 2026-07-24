@@ -35,9 +35,13 @@ def test_runtime_dashboard_covers_judgment_and_causal_dependencies() -> None:
     assert "ravn_valkyrie_judgments" in queries
     assert "ravn_signal_transport_messages" in queries
     assert "ravn_agent_tool_calls" in queries
+    assert "ravn_learned_tool_installed" in queries
     assert "ravn_a2a_operations" in queries
     assert "ravn_tool_build_verifications" in queries
     assert "ravn_tool_build_reviews" in queries
     assert "ravn_tool_build_canary_operations" in queries
     assert "ravn_event_bus_operations" in queries
+    assert "tempo_warnings_total" in queries
+    assert "rootless_trace_flushed_to_wal" in queries
+    assert "disconnected_trace_flushed_to_wal" in queries
     assert "span.ravn.task.id" in queries

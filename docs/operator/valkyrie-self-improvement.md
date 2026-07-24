@@ -9,13 +9,14 @@ the validations; do not assume.
 
 A Valkyrie hits a capability gap → `build_tool` commissions a **Ting workflow**
 (which spawns Forge sessions) → the workflow returns
-`{manifest, tool_code, test_code, requirements}` as a canonical
-`learned_tool.json` artifact → ravn **independently verifies** it in a
-throwaway venv (bounded repair loop on failure) → the **policy court** gates it
-on declared reach + autonomy → install → the tool becomes callable, its usage
-is tracked, three consecutive failures auto-roll it back (restoring the
-previous version when one exists) → adoption/rollback is mirrored to the
-realm's **capability ledger**.
+`{manifest, tool_code, test_code, requirements}` in a canonical
+`learned_tool.json` **artifact envelope** → ravn extracts the Python and tests,
+then **independently verifies** them in a throwaway venv (bounded repair loop
+on failure) → the **policy court** gates it on declared reach + autonomy →
+install materializes executable Python separately from the envelope → the tool
+becomes callable, its usage is tracked, three consecutive failures auto-roll
+it back (restoring the previous version when one exists) → adoption/rollback
+is mirrored to the realm's **capability ledger**.
 
 Who is allowed to do what is governed by the Valkyrie's **realm**: an
 append-only ledger of **trust grants**. The `build` grant decides which

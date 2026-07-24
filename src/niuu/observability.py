@@ -88,18 +88,32 @@ class Observability:
         *,
         attributes: dict[str, Any] | None = None,
         carrier: dict[str, str] | None = None,
+        link_carrier: dict[str, str] | None = None,
     ) -> Any:
         if self._tracer is None:
             return nullcontext(_NullSpan())
+        if carrier and link_carrier:
+            raise ValueError("span cannot use both a parent carrier and a link carrier")
         context = None
+        links = None
         if carrier:
             from opentelemetry.propagate import extract
 
             context = extract(carrier)
+        if link_carrier:
+            from opentelemetry import trace
+            from opentelemetry.context import Context
+            from opentelemetry.propagate import extract
+
+            linked_context = trace.get_current_span(extract(link_carrier)).get_span_context()
+            context = Context()
+            if linked_context.is_valid:
+                links = [trace.Link(linked_context)]
         return self._tracer.start_as_current_span(
             name,
             context=context,
             attributes=_clean_attributes(attributes or {}),
+            links=links,
         )
 
     def inject(self) -> dict[str, str]:

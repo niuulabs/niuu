@@ -155,12 +155,18 @@ building instruction was supplied to the resident.
   object reference, or provenance link from which a safe reset capability
   could be researched or verified. This is a blocked evolution trajectory, not
   evidence of autonomous tool evolution.
-- The parent trace contains the complete MCP tool request and response, but not
-  the MCP subprocess's internal Guild HTTP spans. Cross-process trace-context
-  propagation remains required for a fully causal HUD.
+- That historical trace predates MCP subprocess instrumentation. Current
+  Codex-backed turns start the tool MCP process with the parent trace context,
+  emit the same tool-call metrics as native Ravn execution, and preserve
+  internal Guild/A2A/tool-build spans in the causal trace. A client may supply
+  fresher per-call context through MCP request metadata.
 
 The dashboard is provisioned in the separately managed Glitnir Grafana release
 through its existing dashboard sidecar and GitOps configuration. Open the live
 [`Valkyrie Runtime and Judgment`](https://grafana.glitnir.alfheim.niuu.world/d/valkyrie-runtime-judgment/valkyrie-runtime-and-judgment)
 dashboard, select a resident service, and click a Trace ID in **Recent resident
-task traces** to inspect its complete Tempo span timeline.
+task traces** to inspect its complete Tempo span timeline. **Installed learned
+tools** distinguishes the durable artifact envelope from the separately
+materialized Python tool. **Tempo incomplete-trace warnings** exposes rootless
+or disconnected WAL flushes that can make search results temporarily lack a
+root span.

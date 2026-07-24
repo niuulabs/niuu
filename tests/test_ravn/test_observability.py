@@ -99,3 +99,33 @@ def test_span_context_and_metrics_are_real_when_sdk_is_installed() -> None:
     }
 
     telemetry.shutdown()
+
+
+def test_linked_span_starts_a_bounded_trace_with_causal_link() -> None:
+    pytest.importorskip("opentelemetry.sdk")
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from niuu.observability import Observability
+
+    exporter = InMemorySpanExporter()
+    tracer_provider = TracerProvider()
+    tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    telemetry = Observability(
+        tracer_provider=tracer_provider,
+        meter_provider=MeterProvider(metric_readers=[InMemoryMetricReader()]),
+    )
+
+    with telemetry.span("before-restart"):
+        carrier = telemetry.inject()
+    with telemetry.span("after-restart", link_carrier=carrier):
+        pass
+
+    before, after = exporter.get_finished_spans()
+    assert before.context.trace_id != after.context.trace_id
+    assert len(after.links) == 1
+    assert after.links[0].context.trace_id == before.context.trace_id
+    telemetry.shutdown()

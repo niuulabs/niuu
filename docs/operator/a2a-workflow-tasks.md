@@ -77,7 +77,7 @@ On `COMPLETED`, `GetTask` populates `task.artifacts[]` from the campaign's
 Mimir pages under `research/campaigns/<slug>/`. Text at or under
 `a2a.inline_artifact_max_chars` is inlined; larger content becomes a `url`
 part pointing at the authenticated campaign-artifact route. Non-markdown
-canonical artifacts (default `learned_tool.json`) are probed via
+canonical artifact envelopes (default `learned_tool.json`) are probed via
 `a2a.extra_artifact_files`.
 
 #### Code outputs

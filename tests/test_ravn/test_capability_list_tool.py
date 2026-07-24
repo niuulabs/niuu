@@ -245,6 +245,14 @@ async def test_capability_list_includes_learned_tools_without_loading_them() -> 
     assert len(learned) == 1
     assert learned[0]["tags"] == ["tool", "learned"]
     assert learned[0]["metadata"]["invoke_via"] == "learned_tool_run"
+    assert learned[0]["metadata"] == {
+        "invoke_via": "learned_tool_run",
+        "artifact_id": "learned-tool:metric_window",
+        "artifact_type": "agent_tool",
+        "verification": "unknown",
+        "has_tests": False,
+        "requirements_count": 0,
+    }
 
 
 @pytest.mark.asyncio

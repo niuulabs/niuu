@@ -22,6 +22,7 @@ from ravn.ports.agent_directory import PeerAgentDirectoryPort
 from ravn.ports.capability import WorkflowCapabilityPort
 from ravn.ports.skill import SkillPort
 from ravn.ports.tool import ToolPort
+from ravn.tool_observability import publish_learned_tool_inventory
 
 _PERMISSION = "introspect:read"
 
@@ -204,8 +205,18 @@ class CapabilityListTool(ToolPort):
         if self._learned_tools_provider is not None:
             before = len(capabilities)
             try:
-                for artifact in self._learned_tools_provider():
+                learned_artifacts = list(self._learned_tools_provider())
+                publish_learned_tool_inventory(learned_artifacts)
+                for artifact in learned_artifacts:
                     manifest = artifact.manifest
+                    verification = artifact.provenance.get("verification")
+                    verification_outcome = (
+                        "passed"
+                        if isinstance(verification, dict) and verification.get("ok") is True
+                        else "failed"
+                        if isinstance(verification, dict) and verification.get("ok") is False
+                        else "unknown"
+                    )
                     # Skip names already exposed natively (legacy bulk mode, or
                     # a tool build_tool registered live in this session).
                     if manifest.name in native_names:
@@ -217,7 +228,14 @@ class CapabilityListTool(ToolPort):
                             input_schema=manifest.input_schema,
                             required_permission=manifest.required_permission,
                             tags=["tool", "learned"],
-                            metadata={"invoke_via": "learned_tool_run"},
+                            metadata={
+                                "invoke_via": "learned_tool_run",
+                                "artifact_id": artifact.artifact_id,
+                                "artifact_type": artifact.artifact_type,
+                                "verification": verification_outcome,
+                                "has_tests": bool(artifact.test_code),
+                                "requirements_count": len(artifact.requirements),
+                            },
                         )
                     )
             except Exception as exc:

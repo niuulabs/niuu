@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -742,6 +743,38 @@ def test_cli_executor_adds_ravn_tools_mcp_server_when_tools_are_preloaded() -> N
     ) in transport._mcp_overrides
 
 
+def test_cli_executor_propagates_active_trace_to_ravn_tool_mcp(monkeypatch) -> None:
+    import ravn.adapters.executors.cli as cli_module
+
+    telemetry = MagicMock()
+    telemetry.inject.return_value = {
+        "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+        "tracestate": "vendor=value",
+    }
+    monkeypatch.setattr(cli_module, "get_observability", lambda: telemetry)
+
+    agent = CliTransportExecutor(
+        transport_adapter="skuld.transports.codex.CodexSubprocessTransport"
+    ).build(
+        channel=_CollectingChannel(),
+        system_prompt="Observe.",
+        session=Session(),
+        model="gpt-5.5",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-traced-mcp",
+        persona="ivaldi",
+        workspace_dir="/tmp/workspace",
+        permission_mode="read_only",
+        tools=[DummyTool()],
+        mcp_servers=[],
+    )
+
+    args = agent._transport_kwargs["mcp_servers"][0]["args"]
+    assert args[args.index("--traceparent") + 1] == telemetry.inject.return_value["traceparent"]
+    assert args[args.index("--tracestate") + 1] == "vendor=value"
+
+
 def test_cli_executor_allows_ravn_tool_mcp_timeout_override() -> None:
     channel = _CollectingChannel()
     executor = CliTransportExecutor(
@@ -799,7 +832,7 @@ def test_cli_executor_resolves_ravn_tool_mcp_config_before_changing_workspace(
     )
 
     server = agent._transport_kwargs["mcp_servers"][0]
-    assert server["args"] == [
+    assert server["args"][:7] == [
         "-m",
         "ravn",
         "tool-mcp",
@@ -808,6 +841,9 @@ def test_cli_executor_resolves_ravn_tool_mcp_config_before_changing_workspace(
         "--persona",
         "ivaldi",
     ]
+    assert server["args"][7] == "--conversation-id"
+    assert server["args"][8]
+    assert server["args"][9:] == ["--task-id", "task-ravn-tool-mcp-config"]
     assert server["env"]["RAVN_CONFIG"] == str(config)
 
 

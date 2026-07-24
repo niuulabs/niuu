@@ -102,7 +102,7 @@
       "gridPos": {"h": 9, "w": 8, "x": 0, "y": 20},
       "id": 20,
       "options": {"displayMode": "gradient", "orientation": "horizontal", "reduceOptions": {"calcs": ["sum"], "fields": "", "values": false}},
-      "targets": [{"expr": "sum by (gen_ai_tool_name,ravn_tool_outcome) (increase(ravn_agent_tool_calls{job=~\"$job\"}[$__range]))", "instant": true, "legendFormat": "{{gen_ai_tool_name}} / {{ravn_tool_outcome}}", "refId": "A"}],
+      "targets": [{"expr": "sum by (gen_ai_tool_name,ravn_learned_tool_name,ravn_tool_outcome) (increase(ravn_agent_tool_calls{job=~\"$job\"}[$__range]))", "instant": true, "legendFormat": "{{gen_ai_tool_name}} {{ravn_learned_tool_name}} / {{ravn_tool_outcome}}", "refId": "A"}],
       "title": "Tool calls in range",
       "type": "bargauge"
     },
@@ -128,8 +128,19 @@
     },
     {
       "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "description": "The resident's current learned-tool catalog. An artifact envelope carries the manifest, Python source, tests, requirements, provenance, and verification result; installed code is materialized and executed separately.",
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 29},
+      "id": 23,
+      "options": {"cellHeight": "sm", "showHeader": true},
+      "targets": [{"expr": "max by (ravn_learned_tool_name,ravn_learned_tool_artifact_id,ravn_learned_tool_verification,ravn_learned_tool_required_permission) (ravn_learned_tool_installed{job=~\"$job\"})", "format": "table", "instant": true, "refId": "A"}],
+      "title": "Installed learned tools",
+      "type": "table"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never"}, "unit": "short"}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 29},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 36},
       "id": 30,
       "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "targets": [
@@ -142,7 +153,7 @@
     {
       "datasource": {"type": "prometheus", "uid": "${metrics}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never"}, "unit": "ops"}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 29},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 36},
       "id": 31,
       "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "targets": [
@@ -155,7 +166,7 @@
     {
       "datasource": {"type": "prometheus", "uid": "${metrics}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "bars", "fillOpacity": 30, "lineWidth": 1, "showPoints": "never"}, "unit": "ops"}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 37},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 44},
       "id": 40,
       "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "targets": [{"expr": "sum by (server_address,url_template,http_response_status_code) (rate(ravn_http_client_requests{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "{{server_address}}{{url_template}} HTTP {{http_response_status_code}}", "refId": "A"}],
@@ -165,7 +176,7 @@
     {
       "datasource": {"type": "prometheus", "uid": "${metrics}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2, "showPoints": "never"}, "unit": "ops"}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 37},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 44},
       "id": 41,
       "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "targets": [
@@ -184,7 +195,7 @@
     {
       "datasource": {"type": "prometheus", "uid": "${metrics}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never"}, "unit": "ops"}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 45},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 52},
       "id": 42,
       "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "targets": [
@@ -197,7 +208,7 @@
     {
       "datasource": {"type": "prometheus", "uid": "${metrics}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 8, "lineWidth": 1, "showPoints": "never"}, "unit": "ops"}, "overrides": []},
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 45},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 52},
       "id": 43,
       "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
       "targets": [{"expr": "sum by (ravn_event_direction,ravn_event_type,ravn_event_handler) (rate(ravn_event_bus_operations{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "{{ravn_event_direction}} {{ravn_event_type}} {{ravn_event_handler}}", "refId": "A"}],
@@ -205,9 +216,23 @@
       "type": "timeseries"
     },
     {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "description": "Tempo warnings that explain incomplete trace search results. Exact trace-ID lookup may still assemble a complete trace after delayed blocks arrive.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "bars", "fillOpacity": 30, "lineWidth": 1, "showPoints": "never"}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 60},
+      "id": 44,
+      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "sum(rate(tempo_warnings_total{reason=\"rootless_trace_flushed_to_wal\"}[$__rate_interval])) or vector(0)", "legendFormat": "rootless trace flushed to WAL", "refId": "A"},
+        {"expr": "sum(rate(tempo_warnings_total{reason=\"disconnected_trace_flushed_to_wal\"}[$__rate_interval])) or vector(0)", "legendFormat": "disconnected trace flushed to WAL", "refId": "B"}
+      ],
+      "title": "Tempo incomplete-trace warnings",
+      "type": "timeseries"
+    },
+    {
       "datasource": {"type": "tempo", "uid": "${traces}"},
       "description": "Each row is a real Tempo trace for this resident. Click a Trace ID to open the complete span timeline and inspect the LLM, tool, A2A, state, and event-bus path.",
-      "gridPos": {"h": 14, "w": 12, "x": 0, "y": 53},
+      "gridPos": {"h": 14, "w": 12, "x": 0, "y": 67},
       "id": 50,
       "options": {},
       "targets": [{"query": "{ resource.service.name = \"$job\" && span.ravn.task.id != nil }", "queryType": "traceql", "refId": "A"}],
@@ -217,7 +242,7 @@
     {
       "datasource": {"type": "tempo", "uid": "${traces}"},
       "description": "Tool-development and general A2A traces. Open a row to follow discovery, JSON-RPC, remote workflow dispatch, task polling/input, artifact retrieval, verification, and the exact terminal failure or success.",
-      "gridPos": {"h": 14, "w": 12, "x": 12, "y": 53},
+      "gridPos": {"h": 14, "w": 12, "x": 12, "y": 67},
       "id": 51,
       "options": {},
       "targets": [{"query": "{ resource.service.name = \"$job\" && (name =~ \"ravn.a2a.*\" || name =~ \"ravn.tool_build.*\") }", "queryType": "traceql", "refId": "A"}],
@@ -225,7 +250,7 @@
       "type": "table"
     },
     {
-      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 67},
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 81},
       "id": 60,
       "options": {"content": "### How to read one trajectory\nOpen a task trace and follow: JetStream `receive` → signal normalization/publish → queue admission → `invoke_agent` → ordered `chat` and `execute_tool` spans → capability, HTTP/A2A, resident-state, and ODIN child spans → JetStream ACK or NAK. Trace events contain bounded redacted content only when `observability.capture_content=true`; production defaults to metadata-only. `environment_type` is provenance, never a handler selector. A tool launch is not success: require terminal A2A state, verified artifact, adoption, execution, and later reuse evidence.", "mode": "markdown"},
       "title": "Evidence contract",

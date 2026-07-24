@@ -1221,77 +1221,18 @@ class RavnAgent:
         )
 
     async def _execute_tool(self, tool_call: ToolCall) -> ToolResult:
-        telemetry = get_observability()
-        attributes = {
-            "gen_ai.operation.name": "execute_tool",
-            "gen_ai.tool.name": tool_call.name,
-            "gen_ai.tool.type": "function",
-            "gen_ai.conversation.id": str(self._session.id),
-            "gen_ai.agent.name": self._persona or "ravn",
-            "ravn.task.id": self._task_id,
-            "ravn.agent.iteration": self._trace_iteration,
-        }
-        for input_name, attribute_name in (
-            ("action", "ravn.tool.action"),
-            ("skill_id", "a2a.skill.id"),
-            ("capability_name", "ravn.capability.name"),
-            ("task_id", "a2a.task.id"),
-        ):
-            value = tool_call.input.get(input_name)
-            if isinstance(value, str | int | float | bool):
-                attributes[attribute_name] = value
-        metric_attributes = {
-            "gen_ai.operation.name": "execute_tool",
-            "gen_ai.tool.name": tool_call.name,
-            "gen_ai.agent.name": self._persona or "ravn",
-        }
-        started = time.monotonic()
-        with telemetry.span(f"execute_tool {tool_call.name}", attributes=attributes) as span:
-            telemetry.event(
-                "gen_ai.tool.request",
-                attributes={
-                    "gen_ai.tool.name": tool_call.name,
-                    "gen_ai.tool.call.id": tool_call.id,
-                },
-                content=tool_call.input,
-            )
-            try:
-                result = await self._execute_tool_observed(tool_call)
-            except Exception:
-                telemetry.count(
-                    "ravn.agent.tool.calls",
-                    attributes={**metric_attributes, "error.type": "exception"},
-                )
-                telemetry.duration(
-                    "ravn.agent.tool.duration",
-                    time.monotonic() - started,
-                    attributes={**metric_attributes, "error.type": "exception"},
-                )
-                raise
-            outcome = "error" if result.is_error else "success"
-            result_attributes = {**metric_attributes, "ravn.tool.outcome": outcome}
-            span.set_attribute("ravn.tool.outcome", outcome)
-            if result.is_error:
-                result_attributes["error.type"] = "tool_error"
-                span.set_attribute("error.type", "tool_error")
-                telemetry.mark_error(span, "tool_error")
-            telemetry.event(
-                "gen_ai.tool.response",
-                attributes={
-                    "gen_ai.tool.name": tool_call.name,
-                    "gen_ai.tool.call.id": tool_call.id,
-                    "ravn.tool.outcome": outcome,
-                },
-                content=result.content,
-            )
-            telemetry.count("ravn.agent.tool.calls", attributes=result_attributes)
-            telemetry.duration(
-                "ravn.agent.tool.duration",
-                time.monotonic() - started,
-                attributes=result_attributes,
-                description="Duration of a resident tool execution.",
-            )
-            return result
+        from ravn.tool_observability import execute_observed_tool
+
+        return await execute_observed_tool(
+            name=tool_call.name,
+            arguments=tool_call.input,
+            execute=lambda: self._execute_tool_observed(tool_call),
+            call_id=tool_call.id,
+            agent_name=self._persona or "ravn",
+            conversation_id=str(self._session.id),
+            task_id=self._task_id,
+            iteration=self._trace_iteration,
+        )
 
     async def _execute_tool_observed(self, tool_call: ToolCall) -> ToolResult:
         """Execute a single tool call, enforcing permissions and running hooks.

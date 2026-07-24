@@ -231,6 +231,9 @@ def _build_learned_tool_resolver(settings: Settings, workspace: Path) -> Any | N
         logger.warning("Skipping learned tools: %s", exc)
         return None
     resolver.sweep_orphaned_venvs()
+    from ravn.tool_observability import publish_learned_tool_inventory  # noqa: PLC0415
+
+    publish_learned_tool_inventory(resolver.list_artifacts())
     return resolver
 
 

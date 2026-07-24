@@ -1911,10 +1911,18 @@ class DriveLoop:
             )
         }
         started = monotonic()
+        restart_recovery = task.task_id in self._restored_inflight_task_ids
+        if restart_recovery:
+            attributes["ravn.trace.relationship"] = "restart_recovery_link"
+        trace_kwargs = (
+            {"link_carrier": task.trace_context}
+            if restart_recovery and task.trace_context
+            else {"carrier": task.trace_context}
+        )
         with telemetry.span(
             f"invoke_agent {task.persona or 'ravn'}",
             attributes=attributes,
-            carrier=task.trace_context,
+            **trace_kwargs,
         ) as span:
             try:
                 outcome = await self._run_task_observed(task)

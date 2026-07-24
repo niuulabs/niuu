@@ -737,6 +737,10 @@ def tool_mcp(
     profile: str = typer.Option(
         "", "--profile", help="Profile name (built-in or from ~/.ravn/profiles/)."
     ),
+    conversation_id: str = typer.Option("", "--conversation-id", hidden=True),
+    task_id: str = typer.Option("", "--task-id", hidden=True),
+    traceparent: str = typer.Option("", "--traceparent", hidden=True),
+    tracestate: str = typer.Option("", "--tracestate", hidden=True),
 ) -> None:
     """Serve the active Ravn ToolPort set over MCP stdio."""
     if config:
@@ -744,25 +748,53 @@ def tool_mcp(
 
     settings = Settings()
     _configure_logging(settings)
-    project_config = ProjectConfig.discover()
-    ravn_profile = _resolve_profile(profile)
-    effective_persona = persona or (ravn_profile.persona if ravn_profile else "")
-    persona_config = _resolve_persona(effective_persona, project_config, settings=settings)
-    tools = _build_tool_mcp_tools(settings, persona_config=persona_config)
+    from niuu.observability import configure_observability, shutdown_observability
 
-    from ravn.adapters.mcp.tool_port_server import ToolPortMcpServer
+    configure_observability(
+        settings.observability,
+        resource_attributes={
+            "service.instance.id": settings.mesh.own_peer_id or settings.environment.id,
+            "deployment.environment.name": settings.environment.id,
+            "ravn.environment.id": settings.environment.id,
+            "ravn.environment.type": settings.environment.type,
+            "ravn.runtime.component": "tool_mcp",
+        },
+    )
+    try:
+        project_config = ProjectConfig.discover()
+        ravn_profile = _resolve_profile(profile)
+        effective_persona = persona or (ravn_profile.persona if ravn_profile else "")
+        persona_config = _resolve_persona(effective_persona, project_config, settings=settings)
+        tools = _build_tool_mcp_tools(settings, persona_config=persona_config)
 
-    server = ToolPortMcpServer(tools)
-    allowed_tools = _expand_allowed_tools(
-        set(persona_config.allowed_tools or []) if persona_config is not None else set()
-    )
-    _attach_agent_build_tool(
-        server,
-        _resolve_workspace(settings),
-        enabled="build_tool" in allowed_tools,
-        settings=settings,
-    )
-    asyncio.run(server.run_stdio())
+        from ravn.adapters.mcp.tool_port_server import ToolPortMcpServer
+
+        server = ToolPortMcpServer(
+            tools,
+            agent_name=effective_persona or "ravn",
+            conversation_id=conversation_id,
+            task_id=task_id,
+            trace_carrier={
+                key: value
+                for key, value in (
+                    ("traceparent", traceparent),
+                    ("tracestate", tracestate),
+                )
+                if value
+            },
+        )
+        allowed_tools = _expand_allowed_tools(
+            set(persona_config.allowed_tools or []) if persona_config is not None else set()
+        )
+        _attach_agent_build_tool(
+            server,
+            _resolve_workspace(settings),
+            enabled="build_tool" in allowed_tools,
+            settings=settings,
+        )
+        asyncio.run(server.run_stdio())
+    finally:
+        shutdown_observability()
 
 
 def _build_tool_mcp_tools(settings: Settings, *, persona_config: Any | None) -> list[Any]:

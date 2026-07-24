@@ -711,6 +711,9 @@ class CliTransportExecutor(ExecutorPort):
                 persona=str(kwargs.get("persona", "")),
                 tools=tools,
                 tool_timeout_seconds=self._ravn_tool_mcp_timeout_seconds,
+                conversation_id=str(session.id),
+                task_id=task_id,
+                trace_carrier=get_observability().inject(),
             )
         transport_kwargs.update(self._transport_kwargs)
 
@@ -736,6 +739,9 @@ def _with_ravn_tool_mcp_server(
     persona: str,
     tools: list[object],
     tool_timeout_seconds: float,
+    conversation_id: str = "",
+    task_id: str = "",
+    trace_carrier: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     if not tools or any(str(server.get("name") or "") == "ravn-tools" for server in mcp_servers):
         return mcp_servers
@@ -756,6 +762,15 @@ def _with_ravn_tool_mcp_server(
         args.extend(["--config", config_path])
     if persona:
         args.extend(["--persona", persona])
+    if conversation_id:
+        args.extend(["--conversation-id", conversation_id])
+    if task_id:
+        args.extend(["--task-id", task_id])
+    trace_carrier = trace_carrier or {}
+    if traceparent := trace_carrier.get("traceparent"):
+        args.extend(["--traceparent", traceparent])
+    if tracestate := trace_carrier.get("tracestate"):
+        args.extend(["--tracestate", tracestate])
 
     return [
         *mcp_servers,

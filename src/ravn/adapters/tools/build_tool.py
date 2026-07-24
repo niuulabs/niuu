@@ -19,6 +19,7 @@ from ravn.ports.tool_build_backend import (
     ToolBuildError,
     ToolBuildInputRequiredError,
 )
+from ravn.tool_observability import publish_learned_tool_inventory
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
 from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
@@ -428,7 +429,7 @@ class BuildTool(ToolPort):
                 "ravn.tool_build.artifact.persisted",
                 attributes={
                     "ravn.tool_build.artifact.id": artifact.artifact_id,
-                    "ravn.tool_build.artifact.path": str(artifact_path),
+                    "ravn.tool_build.artifact.envelope.path": str(artifact_path),
                 },
             )
             if verify_error is not None:
@@ -490,7 +491,7 @@ class BuildTool(ToolPort):
                 "ravn.tool_build.tool.persisted",
                 attributes={
                     "ravn.tool_build.artifact.id": artifact.artifact_id,
-                    "ravn.tool_build.tool.path": str(tool_path),
+                    "ravn.tool_build.tool.code.path": str(tool_path),
                 },
             )
             learned_tool = load_learned_tool(
@@ -543,6 +544,7 @@ class BuildTool(ToolPort):
 
             replace = bool(input.get("replace"))
             self._register_tool(learned_tool, replace=replace)  # type: ignore[call-arg]
+            publish_learned_tool_inventory([artifact])
             telemetry.event(
                 "ravn.tool_build.registered",
                 attributes={
@@ -1410,8 +1412,10 @@ def _summary(
         "registered": registered,
         "required_permission": artifact.manifest.required_permission,
         "declared_reach": [grant.to_dict() for grant in artifact.manifest.declared_reach],
-        "tool_path": str(tool_path),
-        "artifact_path": str(artifact_path),
+        "installed_code_path": str(tool_path),
+        "artifact_envelope_path": str(artifact_path),
+        "tests_embedded_in_envelope": bool(artifact.test_code),
+        "verification": _verification_payload(artifact),
     }
     return json.dumps(payload, indent=2, sort_keys=True)
 
@@ -1430,7 +1434,9 @@ def _review_summary(
         "review_filed": review_filed,
         "required_permission": artifact.manifest.required_permission,
         "declared_reach": [grant.to_dict() for grant in artifact.manifest.declared_reach],
-        "artifact_path": str(artifact_path),
+        "artifact_envelope_path": str(artifact_path),
+        "tests_embedded_in_envelope": bool(artifact.test_code),
+        "verification": _verification_payload(artifact),
     }
     if not review_filed:
         payload["reason"] = "operator review is required but no review requester is configured"
@@ -1454,3 +1460,8 @@ def _build_result_outcome(result: ToolResult) -> str:
     if payload.get("review_required") is True and payload.get("review_filed") is True:
         return "review_pending"
     return "completed"
+
+
+def _verification_payload(artifact: LearnedToolArtifact) -> dict[str, Any]:
+    verification = artifact.provenance.get("verification")
+    return dict(verification) if isinstance(verification, dict) else {}

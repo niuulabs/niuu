@@ -10,6 +10,7 @@ from typing import IO, Any
 
 from ravn.adapters.mcp.protocol import MCP_PROTOCOL_VERSION
 from ravn.ports.tool import ToolPort
+from ravn.tool_observability import execute_observed_tool
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +18,23 @@ logger = logging.getLogger(__name__)
 class ToolPortMcpServer:
     """Expose a list of Ravn ``ToolPort`` instances over MCP JSON-RPC."""
 
-    def __init__(self, tools: list[ToolPort], name: str = "ravn-tools") -> None:
+    def __init__(
+        self,
+        tools: list[ToolPort],
+        name: str = "ravn-tools",
+        *,
+        agent_name: str = "ravn",
+        conversation_id: str = "",
+        task_id: str = "",
+        trace_carrier: dict[str, str] | None = None,
+    ) -> None:
         self._catalog_tools = tools
         self._tools = {tool.name: tool for tool in tools}
         self._name = name
+        self._agent_name = agent_name
+        self._conversation_id = conversation_id
+        self._task_id = task_id
+        self._trace_carrier = dict(trace_carrier or {})
 
     def register_tool(self, tool: ToolPort, *, replace: bool = False) -> None:
         """Register a tool for later MCP calls and capability discovery."""
@@ -104,7 +118,12 @@ class ToolPortMcpServer:
                 arguments = params.get("arguments") or {}
                 if not isinstance(arguments, dict):
                     raise KeyError("arguments must be an object")
-                return await self._call_tool(name, arguments)
+                return await self._call_tool(
+                    name,
+                    arguments,
+                    call_id=_tool_call_id(params),
+                    trace_carrier=_trace_carrier(params) or self._trace_carrier,
+                )
             case "ping":
                 return {}
             case _:
@@ -117,12 +136,28 @@ class ToolPortMcpServer:
             "inputSchema": tool.input_schema,
         }
 
-    async def _call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def _call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        call_id: str = "",
+        trace_carrier: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         tool = self._tools.get(name)
         if tool is None:
             raise KeyError(f"Unknown tool: {name}")
 
-        result = await tool.execute(arguments)
+        result = await execute_observed_tool(
+            name=name,
+            arguments=arguments,
+            execute=lambda: tool.execute(arguments),
+            call_id=call_id,
+            agent_name=self._agent_name,
+            conversation_id=self._conversation_id,
+            task_id=self._task_id,
+            carrier=trace_carrier,
+        )
         return {
             "content": [{"type": "text", "text": result.content}],
             "isError": result.is_error,
@@ -131,6 +166,27 @@ class ToolPortMcpServer:
 
 class _MethodNotFoundError(Exception):
     pass
+
+
+def _trace_carrier(params: dict[str, Any]) -> dict[str, str]:
+    metadata = params.get("_meta")
+    if not isinstance(metadata, dict):
+        return {}
+    raw = metadata.get("traceContext") or metadata.get("trace_context")
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        key: str(raw[key])
+        for key in ("traceparent", "tracestate")
+        if isinstance(raw.get(key), str) and raw[key]
+    }
+
+
+def _tool_call_id(params: dict[str, Any]) -> str:
+    metadata = params.get("_meta")
+    if not isinstance(metadata, dict):
+        return ""
+    return str(metadata.get("toolCallId") or "")
 
 
 def _error(req_id: Any, code: int, message: str) -> dict[str, Any]:
