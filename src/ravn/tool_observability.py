@@ -20,6 +20,7 @@ async def execute_observed_tool[T](
     task_id: str = "",
     iteration: int | None = None,
     carrier: dict[str, str] | None = None,
+    runtime_component: str = "resident",
 ) -> T:
     """Execute one tool and emit the same spans and metrics on every runtime."""
     telemetry = get_observability()
@@ -28,6 +29,7 @@ async def execute_observed_tool[T](
         "gen_ai.tool.name": name,
         "gen_ai.tool.type": "function",
         "gen_ai.agent.name": agent_name or "ravn",
+        "ravn.runtime.component": runtime_component,
         **tool_argument_attributes(name, arguments),
     }
     if conversation_id:
@@ -46,6 +48,7 @@ async def execute_observed_tool[T](
             "gen_ai.tool.name",
             "gen_ai.agent.name",
             "ravn.learned_tool.name",
+            "ravn.runtime.component",
         )
         if key in attributes
     }
@@ -55,6 +58,7 @@ async def execute_observed_tool[T](
             attributes={
                 "ravn.trace.relationship": "remote_parent",
                 "ravn.trace.component": "tool_execution",
+                "ravn.runtime.component": runtime_component,
             },
             description="Explicit cross-process and restart trace boundaries.",
         )

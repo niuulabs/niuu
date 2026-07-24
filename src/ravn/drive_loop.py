@@ -1920,6 +1920,7 @@ class DriveLoop:
                 attributes={
                     "ravn.trace.relationship": "restart_recovery_link",
                     "ravn.trace.component": "agent_task",
+                    "ravn.runtime.component": "resident",
                 },
                 description="Explicit cross-process and restart trace boundaries.",
             )

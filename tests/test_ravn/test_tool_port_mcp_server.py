@@ -158,7 +158,9 @@ async def test_tool_port_mcp_server_emits_tool_metrics_and_propagates_trace(
     assert call_point.attributes["gen_ai.agent.name"] == "ivaldi"
     assert call_point.attributes["gen_ai.tool.name"] == "echo_tool"
     assert call_point.attributes["ravn.tool.outcome"] == "success"
+    assert call_point.attributes["ravn.runtime.component"] == "tool_mcp"
     boundary_point = metrics["ravn.trace.boundaries"].data.data_points[0]
     assert boundary_point.attributes["ravn.trace.relationship"] == "remote_parent"
     assert boundary_point.attributes["ravn.trace.component"] == "tool_execution"
+    assert boundary_point.attributes["ravn.runtime.component"] == "tool_mcp"
     telemetry.shutdown()

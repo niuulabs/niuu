@@ -546,8 +546,10 @@ async def test_cli_transport_agent_records_durable_tool_metrics(monkeypatch) -> 
     assert call_point.attributes["gen_ai.tool.name"] == "alpha"
     assert call_point.attributes["ravn.tool.outcome"] == "success"
     assert call_point.attributes["ravn.tool.telemetry_source"] == "cli_transport"
+    assert call_point.attributes["ravn.runtime.component"] == "resident"
     boundary_point = metrics["ravn.trace.boundaries"].data.data_points[0]
     assert boundary_point.attributes["ravn.trace.relationship"] == "remote_parent"
+    assert boundary_point.attributes["ravn.runtime.component"] == "resident"
     telemetry.shutdown()
 
 

@@ -667,6 +667,7 @@ class CliTransportAgent(ExecutionAgentPort):
                 attributes={
                     "ravn.trace.relationship": "remote_parent",
                     "ravn.trace.component": "tool_execution",
+                    "ravn.runtime.component": "resident",
                 },
                 description="Explicit cross-process and restart trace boundaries.",
             )
@@ -694,6 +695,7 @@ class CliTransportAgent(ExecutionAgentPort):
             "gen_ai.agent.name": self._persona or "ravn",
             "ravn.tool.outcome": "error" if is_error else "success",
             "ravn.tool.telemetry_source": "cli_transport",
+            "ravn.runtime.component": "resident",
             **tool_argument_attributes(metric_name, call.input if call is not None else {}),
         }
         if is_error:

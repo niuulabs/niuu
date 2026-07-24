@@ -157,6 +157,7 @@ class ToolPortMcpServer:
             conversation_id=self._conversation_id,
             task_id=self._task_id,
             carrier=trace_carrier,
+            runtime_component="tool_mcp",
         )
         return {
             "content": [{"type": "text", "text": result.content}],
