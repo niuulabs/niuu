@@ -127,6 +127,7 @@ def _build_tools(
         runtime_ctx["agent_directory"] = GuildAgentDirectoryAdapter(
             base_url=platform.base_url,
             client=peer_client,
+            agent_card_urls=platform.a2a_agent_card_urls,
         )
         runtime_ctx["a2a_client"] = peer_client
         runtime_ctx["a2a_trusted_origins"] = [

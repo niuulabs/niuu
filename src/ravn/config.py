@@ -1075,6 +1075,14 @@ class PlatformToolsConfig(BaseModel):
             "credentials. The platform base URL is always trusted."
         ),
     )
+    a2a_agent_card_urls: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Explicit trusted Agent Card URLs to include beside Guild-discovered peers. "
+            "Use this for platform workflow facades or other stable peers that are not "
+            "projected by an Observatory Agent Directory."
+        ),
+    )
     a2a_message_max_chars: int = Field(
         default=12_000,
         ge=1_000,
