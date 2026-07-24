@@ -1,11 +1,12 @@
-"""PostSessionReflectionService — write operational learnings after ravn.session.ended.
+"""Post-session reflection candidates and evidence-gated learning promotion.
 
 When a ``ravn.session.ended`` event arrives, this service:
 
-1. Calls a cheap LLM with session metadata to extract a structured learning.
-2. Searches Mímir for an existing ``learnings/`` page about the same pattern.
-3. Updates the existing page (merging a new timeline entry + upgrading
-   confidence when warranted) or creates a new one.
+1. Calls a cheap LLM with session metadata to extract a reflection candidate.
+2. Stores it under ``learning-candidates/`` where normal learning retrieval
+   cannot see it.
+3. Promotes it to ``learnings/`` only after repeated independent observations
+   or stronger, explicit evidence supplied by feedback/review/verification.
 
 Confidence ladder
 -----------------
@@ -38,35 +39,41 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _RAVN_SESSION_ENDED = "ravn.session.ended"
+_RAVN_TASK_COMPLETED = "ravn.task.completed"
+_FEEDBACK_RECORDED = "feedback.recorded"
+_ODIN_REVIEW_DECIDED = "odin.review.decided"
+_POSITIVE_FEEDBACK = frozenset({"useful", "good_action", "draft_accepted"})
 
 # Approximate chars-per-token ratio used for rough budget enforcement.
 _CHARS_PER_TOKEN = 4
+_REFLECTION_CONTEXT_MAX_CHARS = 12_000
 
 # Number of timeline entries that trigger each confidence level.
 _CONFIDENCE_MEDIUM_THRESHOLD = 2
 _CONFIDENCE_HIGH_THRESHOLD = 3
 
 _REFLECTION_SYSTEM = (
-    "You are an expert at extracting operational learnings from software engineering sessions. "
+    "You extract possible operational learning candidates from AI agent sessions. "
     "Respond only with valid JSON or the literal null. No markdown fences, no commentary."
 )
 
 _REFLECTION_PROMPT = """\
-A Ravn AI agent just completed a coding session. Analyse the session metadata \
-below and extract ONE actionable learning that would help future sessions in \
-the same repository avoid mistakes or work more efficiently.
+A Ravn AI agent just completed a session. Analyse the record below and extract \
+ONE possible actionable learning candidate that might help this agent make a \
+better future judgment in the same kind of environment.
 
 Session metadata:
   persona:     {persona}
   outcome:     {outcome}
   token_count: {token_count}
   duration_s:  {duration_s}
-  repo_slug:   {repo_slug}
+{repo_line}
+
+Recorded work context:
+{work_context}
 
 Questions to consider:
-1. Was the session unusually expensive or slow? (high token_count or duration)
-2. Did the outcome suggest a failure or partial result? (outcome != success)
-3. What project-specific quirk might a future session benefit from knowing?
+{questions}
 
 Respond with a single JSON object:
 {{
@@ -77,15 +84,29 @@ Respond with a single JSON object:
   "evidence": "one sentence describing what this session revealed"
 }}
 
-If the session was unremarkable and no useful learning can be extracted, \
-respond with exactly: null
+A learning must concern the work or its subject matter. Token counts, duration, \
+outcome bookkeeping, missing fields, and other session mechanics are not \
+learnings. Do not infer facts absent from the record. If the record contains \
+insufficient evidence for a useful learning, respond with exactly: null
 
 Do not explain why there is no learning. Do not wrap the response in markdown.\
 """
 
+_REPO_QUESTIONS = """\
+1. What concrete project behavior, constraint, or successful approach is supported by the record?
+2. Would remembering it change a future decision in this repository?
+3. Is the evidence specific enough to avoid turning a one-off event into a general rule?
+"""
+
+_GENERIC_QUESTIONS = """\
+1. What did the session reveal about the environment or subject the agent works in?
+2. Did an approach succeed or fail in a way worth remembering next time?
+3. Is the evidence specific enough to avoid turning a one-off event into a general rule?
+"""
+
 
 class PostSessionReflectionService:
-    """Service that writes Mímir learnings after each ``ravn.session.ended`` event.
+    """Store reflections as candidates and promote only evidence-backed ones.
 
     Args:
         subscriber:  Sleipnir subscriber used to register the event handler.
@@ -114,10 +135,15 @@ class PostSessionReflectionService:
             return
 
         self._subscription = await self._subscriber.subscribe(
-            [_RAVN_SESSION_ENDED],
-            handler=self._on_session_ended,
+            [
+                _RAVN_SESSION_ENDED,
+                _RAVN_TASK_COMPLETED,
+                _FEEDBACK_RECORDED,
+                _ODIN_REVIEW_DECIDED,
+            ],
+            handler=self._on_event,
         )
-        logger.info("PostSessionReflectionService: subscribed to %s", _RAVN_SESSION_ENDED)
+        logger.info("PostSessionReflectionService: subscribed to records and promotion evidence")
 
     async def stop(self) -> None:
         """Cancel the Sleipnir subscription."""
@@ -134,6 +160,18 @@ class PostSessionReflectionService:
     # Event handler
     # ------------------------------------------------------------------
 
+    async def _on_event(self, event: SleipnirEvent) -> None:
+        if event.event_type == _RAVN_SESSION_ENDED:
+            await self._on_session_ended(event)
+            return
+        try:
+            await self._record_promotion_evidence(event)
+        except Exception as exc:
+            logger.warning(
+                "PostSessionReflectionService: failed to record promotion evidence: %s",
+                exc,
+            )
+
     async def _on_session_ended(self, event: SleipnirEvent) -> None:
         """Handle a ``ravn.session.ended`` event — best-effort, never raises."""
         try:
@@ -143,8 +181,69 @@ class PostSessionReflectionService:
                 "PostSessionReflectionService: unhandled error processing event: %s", exc
             )
 
+    async def _record_promotion_evidence(self, event: SleipnirEvent) -> None:
+        """Apply explicit feedback, verification, or review to one candidate."""
+        candidate_path = _candidate_path_from_payload(event.payload)
+        if not candidate_path:
+            return
+
+        evidence_payload: dict[str, object]
+        source: str
+        if event.event_type == _FEEDBACK_RECORDED:
+            feedback_type = str(event.payload.get("feedback_type") or "").casefold()
+            if feedback_type not in _POSITIVE_FEEDBACK:
+                return
+            source = "external_feedback"
+            evidence_payload = {"external_feedback_refs": [event.event_id]}
+        elif event.event_type == _ODIN_REVIEW_DECIDED:
+            decision = str(event.payload.get("decision") or "").casefold()
+            requested_action = str(event.payload.get("requested_action") or "").casefold()
+            if decision != "approved" or requested_action != "promote":
+                return
+            source = "reviewed_promotion"
+            evidence_payload = {
+                "reviewed_promotion": {"decision": "approved"},
+            }
+        elif event.event_type == _RAVN_TASK_COMPLETED:
+            refs = event.payload.get("verification_refs")
+            if event.payload.get("outcome_verified") is not True or not isinstance(refs, list):
+                return
+            source = "verified_outcome"
+            evidence_payload = {
+                "outcome_verified": True,
+                "verification_refs": refs,
+            }
+        else:
+            return
+
+        content = await self._mimir.read_page(candidate_path)
+        if not isinstance(content, str) or "category: learning-candidates" not in content:
+            return
+        updated = _append_candidate_evidence(
+            content,
+            source=source,
+            event_id=event.event_id,
+            note=str(event.payload.get("notes") or event.summary or source),
+            date=event.timestamp,
+        )
+        title = _candidate_title(updated)
+        if not title:
+            return
+        await self._persist_candidate_and_maybe_promote(
+            candidate_path=candidate_path,
+            candidate_content=updated,
+            title=title,
+            repo_slug="",
+            payload=evidence_payload,
+            learning_path_override=candidate_path.replace(
+                "learning-candidates/",
+                "learnings/",
+                1,
+            ),
+        )
+
     async def _process(self, payload: dict) -> None:
-        """Extract a learning from *payload* and write it to Mímir."""
+        """Extract a reflection candidate from *payload* and record its evidence."""
         session_id = payload.get("session_id", "unknown")
         logger.info("PostSessionReflectionService: reflecting on session %s", session_id)
 
@@ -164,12 +263,30 @@ class PostSessionReflectionService:
 
     async def _run_reflection(self, payload: dict) -> dict | None:
         """Call the LLM and parse the structured learning JSON."""
+        repo_slug = str(payload.get("repo_slug") or "").strip()
+        work_context = {
+            key: payload[key]
+            for key in ("structured_outcome", "outcome_event_type")
+            if payload.get(key) not in (None, "", {}, [])
+        }
+        rendered_context = (
+            json.dumps(work_context, indent=2, sort_keys=True, default=str)
+            if work_context
+            else "(no subject-matter context was recorded)"
+        )
+        if len(rendered_context) > _REFLECTION_CONTEXT_MAX_CHARS:
+            rendered_context = (
+                rendered_context[:_REFLECTION_CONTEXT_MAX_CHARS].rstrip()
+                + "\n… (recorded context truncated)"
+            )
         prompt = _REFLECTION_PROMPT.format(
             persona=payload.get("persona", ""),
             outcome=payload.get("outcome", ""),
             token_count=payload.get("token_count", 0),
             duration_s=payload.get("duration_s", 0.0),
-            repo_slug=payload.get("repo_slug", ""),
+            repo_line=f"  repo_slug:   {repo_slug}" if repo_slug else "",
+            work_context=rendered_context,
+            questions=_REPO_QUESTIONS if repo_slug else _GENERIC_QUESTIONS,
         )
 
         attempts = 2
@@ -229,7 +346,7 @@ class PostSessionReflectionService:
     # ------------------------------------------------------------------
 
     async def _write_learning(self, learning: dict, payload: dict) -> None:
-        """Search for an existing page and update it, or create a new one."""
+        """Record a candidate and promote it only when evidence qualifies."""
         title = learning.get("title", "").strip()
         if not title:
             logger.warning("PostSessionReflectionService: LLM returned learning without title")
@@ -242,29 +359,31 @@ class PostSessionReflectionService:
         existing_page = await self._find_existing_page(title, repo_slug)
 
         if existing_page is not None:
+            if existing_page.meta.category == "learnings":
+                logger.info(
+                    "PostSessionReflectionService: trusted learning %r already exists; "
+                    "reflection %s cannot mutate it",
+                    existing_page.meta.path,
+                    session_id,
+                )
+                return
             updated = _merge_timeline_entry(
                 existing_page.content,
                 session_id=session_id,
                 evidence=learning.get("evidence", ""),
                 date=now,
             )
-            try:
-                await self._mimir.upsert_page(existing_page.meta.path, updated)
-                logger.info(
-                    "PostSessionReflectionService: updated learning page %r (session=%s)",
-                    existing_page.meta.path,
-                    session_id,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "PostSessionReflectionService: failed to update page %r: %s",
-                    existing_page.meta.path,
-                    exc,
-                )
+            await self._persist_candidate_and_maybe_promote(
+                candidate_path=existing_page.meta.path,
+                candidate_content=updated,
+                title=title,
+                repo_slug=repo_slug,
+                payload=payload,
+            )
             return
 
-        page_path = _build_page_path(title, repo_slug)
-        content = _build_page_content(
+        page_path = _build_candidate_path(title, repo_slug)
+        content = _build_candidate_content(
             title=title,
             learning=learning.get("learning", ""),
             page_type=learning.get("type", "observation"),
@@ -275,19 +394,75 @@ class PostSessionReflectionService:
             date=now,
         )
 
+        await self._persist_candidate_and_maybe_promote(
+            candidate_path=page_path,
+            candidate_content=content,
+            title=title,
+            repo_slug=repo_slug,
+            payload=payload,
+        )
+
+    async def _persist_candidate_and_maybe_promote(
+        self,
+        *,
+        candidate_path: str,
+        candidate_content: str,
+        title: str,
+        repo_slug: str,
+        payload: dict,
+        learning_path_override: str = "",
+    ) -> None:
+        """Persist evidence first, then materialize a trusted learning if qualified."""
         try:
-            await self._mimir.upsert_page(page_path, content)
+            await self._mimir.upsert_page(candidate_path, candidate_content)
+        except Exception as exc:
+            logger.warning(
+                "PostSessionReflectionService: failed to write candidate %r: %s",
+                candidate_path,
+                exc,
+            )
+            return
+
+        evidence_count = len(_timeline_session_ids(candidate_content))
+        reason = _promotion_reason(
+            payload,
+            evidence_count=evidence_count,
+            min_repetitions=self._config.candidate_min_repetitions,
+        )
+        if not reason:
             logger.info(
-                "PostSessionReflectionService: created learning page %r (session=%s)",
-                page_path,
-                session_id,
+                "PostSessionReflectionService: recorded candidate %r (%d/%d observations)",
+                candidate_path,
+                evidence_count,
+                self._config.candidate_min_repetitions,
+            )
+            return
+
+        learning_path = learning_path_override or _build_page_path(title, repo_slug)
+        promoted_content = _promote_candidate_content(
+            candidate_content,
+            candidate_path=candidate_path,
+            promotion_reason=reason,
+        )
+        try:
+            await self._mimir.upsert_page(learning_path, promoted_content)
+            await self._mimir.upsert_page(
+                candidate_path,
+                _mark_candidate_promoted(candidate_content, learning_path),
             )
         except Exception as exc:
             logger.warning(
-                "PostSessionReflectionService: failed to create page %r: %s",
-                page_path,
+                "PostSessionReflectionService: failed to promote candidate %r: %s",
+                candidate_path,
                 exc,
             )
+            return
+        logger.info(
+            "PostSessionReflectionService: promoted %r to %r (%s)",
+            candidate_path,
+            learning_path,
+            reason,
+        )
 
     async def _find_existing_page(self, title: str, repo_slug: str) -> MimirPage | None:
         """Search Mímir for an existing learning page matching *title*.
@@ -305,11 +480,16 @@ class PostSessionReflectionService:
             logger.warning("PostSessionReflectionService: Mímir search failed: %s", exc)
             return None
 
-        for page in results:
-            if page.meta.category != "learnings":
-                continue
-            if _titles_similar(page.meta.title or "", title):
-                return page
+        matches = [
+            page
+            for page in results
+            if page.meta.category in {"learning-candidates", "learnings"}
+            and _titles_similar(page.meta.title or "", title)
+        ]
+        for category in ("learning-candidates", "learnings"):
+            match = next((page for page in matches if page.meta.category == category), None)
+            if match is not None:
+                return match
 
         return None
 
@@ -508,6 +688,199 @@ def _learning_injection_prefixes(
 # ---------------------------------------------------------------------------
 
 
+def _build_candidate_path(title: str, repo_slug: str) -> str:
+    """Build an isolated path that normal learning retrieval never scans."""
+    slug = _slugify(title)
+    if repo_slug:
+        safe_repo = re.sub(r"[^a-z0-9_-]", "-", repo_slug.lower())
+        return f"learning-candidates/{safe_repo}/{slug}.md"
+    return f"learning-candidates/general/{slug}.md"
+
+
+def _build_candidate_content(
+    *,
+    title: str,
+    learning: str,
+    page_type: str,
+    tags: list[str],
+    evidence: str,
+    repo_slug: str,
+    session_id: str,
+    date: datetime,
+) -> str:
+    """Render a reflection candidate with explicit untrusted status."""
+    content = _build_page_content(
+        title=title,
+        learning=learning,
+        page_type=page_type,
+        tags=tags,
+        evidence=evidence,
+        repo_slug=repo_slug,
+        session_id=session_id,
+        date=date,
+    )
+    content = content.replace(
+        f'title: "Learning: {title}"',
+        f'title: "Learning candidate: {title}"',
+        1,
+    )
+    content = content.replace("category: learnings", "category: learning-candidates", 1)
+    content = content.replace(
+        "confidence: low",
+        "confidence: low\nstatus: candidate\nevidence_count: 1",
+        1,
+    )
+    content = content.replace(f"# Learning: {title}", f"# Learning candidate: {title}", 1)
+    content = content.replace(
+        "## What was learned",
+        "## Candidate claim\n\n"
+        "Untrusted reflection; do not inject as operational context.\n\n"
+        "## What was learned",
+        1,
+    )
+    return content
+
+
+def _candidate_path_from_payload(payload: dict) -> str:
+    """Read an explicit candidate reference without accepting path traversal."""
+    candidates: list[object] = [payload.get("learning_candidate_path")]
+    for key in ("correction", "evidence"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            candidates.append(nested.get("learning_candidate_path"))
+    for value in candidates:
+        path = str(value or "").strip().lstrip("/")
+        if path.startswith("learning-candidates/") and ".." not in path.split("/"):
+            return path
+    return ""
+
+
+def _candidate_title(content: str) -> str:
+    match = re.search(
+        r'^title:\s*["\']?Learning candidate:\s*(.*?)["\']?\s*$',
+        content,
+        flags=re.MULTILINE,
+    )
+    return match.group(1).strip() if match is not None else ""
+
+
+def _append_candidate_evidence(
+    content: str,
+    *,
+    source: str,
+    event_id: str,
+    note: str,
+    date: datetime,
+) -> str:
+    """Append non-reflection evidence with an immutable event reference."""
+    if event_id and re.search(
+        rf"^\s{{4}}event_id:\s*{re.escape(event_id)}\s*$",
+        content,
+        flags=re.MULTILINE,
+    ):
+        return content
+    entry = (
+        f"  - source: {source}\n"
+        f"    event_id: {event_id}\n"
+        f"    date: {date.strftime('%Y-%m-%dT%H:%M:%SZ')}\n"
+        f'    note: "{_escape_yaml(note)}"'
+    )
+    updated = _insert_timeline_entry(content, entry)
+    count_match = re.search(r"^evidence_count:\s*(\d+)", updated, flags=re.MULTILINE)
+    count = int(count_match.group(1)) + 1 if count_match is not None else 1
+    return _set_frontmatter_value(updated, "evidence_count", str(count))
+
+
+def _promotion_reason(
+    payload: dict,
+    *,
+    evidence_count: int,
+    min_repetitions: int,
+) -> str:
+    """Return the explicit evidence class that permits promotion, if any."""
+    reviewed = payload.get("reviewed_promotion")
+    if reviewed is True or (
+        isinstance(reviewed, dict)
+        and str(reviewed.get("decision") or "").casefold() in {"approved", "promote"}
+    ):
+        return "explicit_reviewed_promotion"
+    feedback_refs = payload.get("external_feedback_refs")
+    if payload.get("external_feedback_verified") is True or (
+        isinstance(feedback_refs, list) and any(str(item).strip() for item in feedback_refs)
+    ):
+        return "external_feedback"
+    verification_refs = payload.get("verification_refs")
+    if payload.get("outcome_verified") is True and (
+        not isinstance(verification_refs, list)
+        or any(str(item).strip() for item in verification_refs)
+    ):
+        return "verified_outcome"
+    if evidence_count >= min_repetitions:
+        return f"repeated_evidence:{evidence_count}"
+    return ""
+
+
+def _promote_candidate_content(
+    content: str,
+    *,
+    candidate_path: str,
+    promotion_reason: str,
+) -> str:
+    """Materialize a trusted learning while retaining its evidence provenance."""
+    promoted = re.sub(
+        r'^title: "Learning candidate: (.*)"$',
+        r'title: "Learning: \1"',
+        content,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    promoted = promoted.replace("category: learning-candidates", "category: learnings", 1)
+    promoted = promoted.replace("status: candidate", "status: promoted", 1)
+    promoted = promoted.replace("# Learning candidate:", "# Learning:", 1)
+    promoted = promoted.replace(
+        "Untrusted reflection; do not inject as operational context.",
+        "Promoted after the evidence gate below was satisfied.",
+        1,
+    )
+    promoted = _set_frontmatter_value(
+        promoted,
+        "promotion_reason",
+        f'"{_escape_yaml(promotion_reason)}"',
+    )
+    return _set_frontmatter_value(
+        promoted,
+        "promoted_from",
+        f'"{_escape_yaml(candidate_path)}"',
+    )
+
+
+def _mark_candidate_promoted(content: str, learning_path: str) -> str:
+    marked = content.replace("status: candidate", "status: promoted", 1)
+    return _set_frontmatter_value(
+        marked,
+        "promoted_to",
+        f'"{_escape_yaml(learning_path)}"',
+    )
+
+
+def _set_frontmatter_value(content: str, key: str, value: str) -> str:
+    pattern = rf"^{re.escape(key)}:.*$"
+    if re.search(pattern, content, flags=re.MULTILINE):
+        return re.sub(pattern, f"{key}: {value}", content, count=1, flags=re.MULTILINE)
+    timeline = re.search(r"^timeline:\s*$", content, flags=re.MULTILINE)
+    if timeline is None:
+        return content
+    return content[: timeline.start()] + f"{key}: {value}\n" + content[timeline.start() :]
+
+
+def _timeline_session_ids(content: str) -> set[str]:
+    return {
+        match.group(1).strip()
+        for match in re.finditer(r"^\s{4}session_id:\s*(.+?)\s*$", content, flags=re.MULTILINE)
+        if match.group(1).strip()
+    }
+
+
 def _build_page_path(title: str, repo_slug: str) -> str:
     """Build a ``learnings/`` wiki path from *title* and *repo_slug*."""
     slug = _slugify(title)
@@ -587,6 +960,9 @@ def _merge_timeline_entry(
     entry, recalculates ``confidence``, and returns the updated page content.
     Uses string manipulation to avoid a full YAML round-trip.
     """
+    if session_id in _timeline_session_ids(existing_content):
+        return existing_content
+
     date_str = date.strftime("%Y-%m-%dT%H:%M:%SZ")
     new_entry = (
         f"  - source: ravn_reflection\n"
@@ -614,6 +990,13 @@ def _merge_timeline_entry(
     updated = re.sub(
         r"^confidence:\s+\w+",
         f"confidence: {new_confidence}",
+        updated,
+        flags=re.MULTILINE,
+    )
+
+    updated = re.sub(
+        r"^evidence_count:\s*\d+",
+        f"evidence_count: {new_count}",
         updated,
         flags=re.MULTILINE,
     )
@@ -672,6 +1055,7 @@ def _titles_similar(a: str, b: str) -> bool:
             "of",
             "is",
             "learning",
+            "candidate",
         }
         return {w for w in re.findall(r"\b\w{3,}\b", t.lower()) if w not in stop}
 

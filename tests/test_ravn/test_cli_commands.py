@@ -39,6 +39,7 @@ from ravn.cli.commands import (
     _workflow_event_matches_filters,
     _workflow_graph,
     _workflow_runtime_for_persona,
+    _workflow_stage_context,
     app,
     main,
 )
@@ -1319,6 +1320,34 @@ class TestWorkflowRuntimeForPersona:
         assert _workflow_event_matches_filters(payload, {"mount_names": "missing"}) is False
         assert _workflow_event_matches_filters(payload, {"verdict": "fail"}) is False
 
+    def test_workflow_stage_context_exposes_configured_stage_instructions(self) -> None:
+        settings = Settings.model_validate(
+            {
+                "workflow": {
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "build-stage",
+                                "kind": "stage",
+                                "label": "Build capability",
+                                "description": (
+                                    "Write the canonical artifact to learned_tool.json."
+                                ),
+                            }
+                        ],
+                        "edges": [],
+                    }
+                }
+            }
+        )
+
+        assert _workflow_stage_context(settings, node_id="build-stage") == (
+            "Workflow stage: Build capability\n"
+            "Stage instructions:\n"
+            "Write the canonical artifact to learned_tool.json."
+        )
+        assert _workflow_stage_context(settings, node_id="missing") == ""
+
     def test_derive_capabilities_prefers_persona_allowed_tools(self) -> None:
         settings = Settings()
         persona = PersonaConfig(
@@ -1384,17 +1413,18 @@ class TestDaemonAgentFactory:
             }
         ]
 
-        recorded: dict[str, object] = {}
+        recorded: list[dict[str, object]] = []
 
         class _FakeExecutor:
             def build(self, **kwargs):  # noqa: ANN003
-                recorded.update(kwargs)
+                recorded.append(kwargs)
                 return MagicMock()
 
         class _FakeDriveLoop:
             def __init__(self, *, agent_factory, **kwargs):  # noqa: ANN003
                 self._triggers: list[object] = []
                 agent_factory(MagicMock(), task_id="task-1", triggered_by="mesh:outcome:test")
+                agent_factory(MagicMock(), task_id="task-2", triggered_by="mesh:outcome:test")
 
             async def run(self) -> None:
                 return None
@@ -1403,10 +1433,17 @@ class TestDaemonAgentFactory:
 
         with (
             patch("ravn.cli.commands._resolve_workspace", return_value=Path("/tmp/workspace")),
+            patch(
+                "ravn.cli.tool_builders._build_learned_tool_resolver",
+                return_value=MagicMock(),
+            ) as publish_inventory,
             patch("ravn.cli.commands._build_llm", return_value=MagicMock()),
             patch("ravn.cli.commands._build_memory", return_value=MagicMock()),
             patch("ravn.cli.commands._build_compressor", return_value=MagicMock()),
-            patch("ravn.cli.commands._build_prompt_builder", return_value=MagicMock()),
+            patch(
+                "ravn.cli.commands._build_prompt_builder",
+                side_effect=lambda *_args: MagicMock(),
+            ),
             patch("ravn.cli.commands._build_hooks", return_value=([], [])),
             patch("ravn.cli.commands._start_mcp_shared", new=AsyncMock(return_value=(None, []))),
             patch("ravn.cli.commands._build_mimir", return_value=None),
@@ -1425,8 +1462,13 @@ class TestDaemonAgentFactory:
         ):
             await _run_daemon(settings, persona_config=persona)
 
-        assert recorded["workspace_dir"] == "/tmp/workspace"
-        assert recorded["mcp_servers"] == [
+        assert [call["workspace_dir"] for call in recorded] == [
+            "/tmp/workspace",
+            "/tmp/workspace",
+        ]
+        publish_inventory.assert_called_once_with(settings, Path("/tmp/workspace"))
+        assert recorded[0]["prompt_builder"] is not recorded[1]["prompt_builder"]
+        assert recorded[0]["mcp_servers"] == [
             {
                 "name": "mimir-local",
                 "type": "stdio",

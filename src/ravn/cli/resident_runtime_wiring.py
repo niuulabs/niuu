@@ -16,6 +16,7 @@ def _build_environment_signal_runtime(
     mimir: Any | None = None,
     resident_learning_runtime: Any | None = None,
     resident_wakefulness: Any | None = None,
+    resident_inbox: Any | None = None,
     owns_publisher: bool = True,
 ) -> Any | None:
     """Build the resident Environment signal runtime when sources are configured."""
@@ -45,15 +46,15 @@ def _build_environment_signal_runtime(
         persona = settings.initiative.default_persona or None
 
     resident_signal_processor = None
-    resident_signal_recorder = None
-    if (
-        mimir is not None
-        and settings.resident_inbox.enabled
-        and settings.resident_inbox.environment_signals_enabled
-    ):
-        from ravn.resident_inbox import MimirResidentInbox  # noqa: PLC0415
-
-        resident_signal_recorder = MimirResidentInbox(mimir)
+    if resident_inbox is None:
+        resident_inbox = _build_resident_inbox(
+            settings,
+            workspace=_resolve_workspace(settings),
+            mimir=mimir,
+        )
+    resident_signal_recorder = (
+        resident_inbox if settings.resident_inbox.environment_signals_enabled else None
+    )
 
     async def _process_resident_signal(event: Any) -> Any:
         result: dict[str, Any] = {}
@@ -90,6 +91,121 @@ def _build_environment_signal_runtime(
         persona=persona,
         output_mode=output_mode,
         owns_publisher=owns_publisher,
+        durable_home_enabled=resident_signal_recorder is not None,
+    )
+
+
+def _build_resident_inbox(
+    settings: Settings,
+    *,
+    workspace: Path,
+    mimir: Any | None,
+) -> Any | None:
+    """Build the configured durable inbox shared by intake and home turns."""
+    if not settings.resident_inbox.enabled:
+        return None
+
+    import inspect  # noqa: PLC0415
+
+    cfg = settings.resident_inbox
+    cls = _import_class(cfg.adapter)
+    kwargs = _inject_secrets(dict(cfg.kwargs), cfg.secret_kwargs_env)
+    params = inspect.signature(cls.__init__).parameters
+    if "root" in params and "root" not in kwargs:
+        kwargs["root"] = _resident_ravn_state_dir(workspace, settings) / "resident-inbox"
+    if "mimir" in params and "mimir" not in kwargs:
+        if mimir is None:
+            raise RuntimeError(
+                f"resident inbox adapter {cfg.adapter} requires Mimir, but Mimir is disabled"
+            )
+        kwargs["mimir"] = mimir
+    if "retention_max_pages" in params:
+        kwargs.setdefault("retention_max_pages", cfg.signal_retention_max_pages)
+    if "retention_max_age_days" in params:
+        kwargs.setdefault("retention_max_age_days", cfg.signal_retention_max_age_days)
+    if "retention_sweep_interval_seconds" in params:
+        kwargs.setdefault(
+            "retention_sweep_interval_seconds",
+            cfg.signal_retention_sweep_interval_seconds,
+        )
+    return cls(**kwargs)
+
+
+async def _build_resident_state(
+    settings: Settings,
+    *,
+    workspace: Path,
+    mimir: Any | None,
+) -> Any:
+    """Select the configured preferred/fallback ResidentStatePort adapters."""
+    import inspect  # noqa: PLC0415
+
+    from ravn.adapters.resident_state import select_resident_state  # noqa: PLC0415
+
+    cfg = settings.resident_state
+    state_root = _resident_ravn_state_dir(workspace, settings) / "resident-state"
+
+    def _candidate(
+        adapter_path: str,
+        kwargs: dict[str, Any],
+        secret_kwargs_env: dict[str, str],
+    ) -> Any | None:
+        try:
+            cls = _import_class(adapter_path)
+            resolved = _inject_secrets(dict(kwargs), secret_kwargs_env)
+            params = inspect.signature(cls.__init__).parameters
+            if "root" in params and "root" not in resolved:
+                resolved["root"] = state_root
+            if "mimir" in params and "mimir" not in resolved:
+                if mimir is None:
+                    raise RuntimeError("adapter requires Mimir but no Mimir backend is configured")
+                resolved["mimir"] = mimir
+            return cls(**resolved)
+        except Exception as exc:
+            logger.warning("resident state adapter %s unavailable: %s", adapter_path, exc)
+            return None
+
+    candidates = [
+        candidate
+        for candidate in (
+            _candidate(cfg.adapter, cfg.kwargs, cfg.secret_kwargs_env),
+            _candidate(
+                cfg.fallback_adapter,
+                cfg.fallback_kwargs,
+                cfg.fallback_secret_kwargs_env,
+            ),
+        )
+        if candidate is not None
+    ]
+    if not candidates:
+        raise RuntimeError("no resident-state adapters could be constructed")
+    return await select_resident_state(*candidates)
+
+
+def _build_resident_runtime(
+    settings: Settings,
+    *,
+    state: Any,
+    inbox: Any | None,
+) -> Any:
+    from ravn.resident_runtime import ResidentRuntime  # noqa: PLC0415
+
+    cfg = settings.resident_state
+    return ResidentRuntime(
+        state=state,
+        inbox=inbox,
+        resident_id=(
+            settings.mesh.own_peer_id
+            or settings.environment.resident_name
+            or settings.initiative.default_persona
+            or "resident"
+        ),
+        resident_personality=settings.environment.resident_personality,
+        charter=settings.environment.charter,
+        max_turns=cfg.continuation_max_turns,
+        max_tokens=cfg.continuation_max_tokens,
+        context_max_chars=cfg.continuation_context_max_chars,
+        tool_result_max_chars=cfg.continuation_tool_result_max_chars,
     )
 
 
@@ -117,6 +233,10 @@ def _build_resident_learning_runtime(
     from ravn.valkyrie_evolution import (  # noqa: PLC0415
         ResidentLearningIdentity,
         ResidentLearningRuntime,
+    )
+    from ravn.valkyrie_evolution.learned_tools import (  # noqa: PLC0415
+        learned_tool_runner_for_backend,
+        learned_tool_venvs_dir,
     )
 
     resident_id = settings.mesh.own_peer_id or f"valkyrie:{settings.environment.id}"
@@ -178,6 +298,16 @@ def _build_resident_learning_runtime(
         ),
         learning_store=FlockLearningStore(local_ravn_dir / "flock_learning.json"),
         review_requester=review_requester,
+        learned_tool_runner=learned_tool_runner_for_backend(
+            settings.resident_evolution.learned_tool_execution_backend,
+            workspace_root=workspace,
+            venvs_dir=learned_tool_venvs_dir(local_ravn_dir),
+            backend_kwargs=(
+                settings.resident_evolution.learned_tool_k8s.model_dump()
+                if settings.resident_evolution.learned_tool_execution_backend == "k8s_job"
+                else None
+            ),
+        ),
     )
 
 
@@ -363,6 +493,11 @@ def _build_environment_signal_publisher(settings: Settings) -> Any | None:
     publisher = build_transport(adapter, **kwargs)
     if publisher is None:
         logger.warning("environment_signals: failed to build %s transport", adapter)
+        return None
+    if settings.observability.enabled:
+        from ravn.adapters.observability import ObservedSleipnirBus  # noqa: PLC0415
+
+        return ObservedSleipnirBus(publisher)
     return publisher
 
 

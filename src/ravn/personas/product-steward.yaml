@@ -81,7 +81,7 @@ llm:
 iteration_budget: 0
 stop_on_outcome: false
 
-# The events the resident wakes for. The Skuld ResidentRelay only delivers a
+# The events the Ravn asks the neutral observation relay to deliver. The relay only delivers a
 # platform event to the resident when its type matches one of these (exact or
 # prefix.*), so this is what makes the "return path" work — research/spec/plan
 # completions and gates from the workflows this steward launches. Deliberately

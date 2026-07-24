@@ -50,6 +50,10 @@ import yaml as _yaml
 
 from niuu.domain.outcome import OutcomeField, OutcomeSchema, generate_outcome_instruction
 from ravn.config import ProjectConfig, _safe_int
+from ravn.domain.valkyrie_contracts import (
+    VALKYRIE_RUNTIME_OWNED_FIELDS,
+    is_valkyrie_outcome_event,
+)
 from ravn.ports.persona import PersonaRegistryPort
 
 # Active bundled personas shipped with the ravn package (src/ravn/personas/*.yaml)
@@ -131,7 +135,7 @@ class PersonaConfig:
     produces: PersonaProduces = field(default_factory=PersonaProduces)
     consumes: PersonaConsumes = field(default_factory=PersonaConsumes)
     fan_in: PersonaFanIn = field(default_factory=PersonaFanIn)
-    # NIU-612: Stop agent loop early when outcome block detected
+    # Legacy compatibility field. Outcomes never suppress requested tool calls.
     stop_on_outcome: bool = False
 
     def to_dict(self) -> dict:
@@ -843,7 +847,14 @@ def _apply_outcome_instruction(persona: PersonaConfig) -> PersonaConfig:
     """Append outcome block instruction to system prompt when schema is declared."""
     if not persona.produces.schema:
         return persona
-    schema = OutcomeSchema(fields=persona.produces.schema)
+    fields = persona.produces.schema
+    if is_valkyrie_outcome_event(persona.produces.event_type):
+        fields = {
+            name: field
+            for name, field in fields.items()
+            if name not in VALKYRIE_RUNTIME_OWNED_FIELDS
+        }
+    schema = OutcomeSchema(fields=fields)
     instruction = generate_outcome_instruction(schema)
     return dataclasses.replace(
         persona,

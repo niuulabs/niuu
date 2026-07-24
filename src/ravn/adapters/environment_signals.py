@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import os
@@ -13,9 +14,7 @@ from typing import Any
 from observatory.contracts import ObservatoryFragment
 from ravn.domain.environment import (
     Environment,
-    inbox_environment_fixture,
     k8s_environment_fixture,
-    printer_environment_fixture,
 )
 from ravn.ports.signal_adapter import NormalizedSignal, NormalizedSignalType, SignalAdapter
 
@@ -181,6 +180,7 @@ class KubernetesSignalAdapter(_IterableSignalAdapter):
         label_selector: str = "",
         limit: int | None = None,
         max_event_age_seconds: float | None = None,
+        critical_reasons: list[str] | None = None,
     ) -> None:
         self._core_v1 = core_v1
         self._in_cluster = in_cluster
@@ -188,6 +188,10 @@ class KubernetesSignalAdapter(_IterableSignalAdapter):
         self._kubeconfig_path = kubeconfig_path
         self._namespaces = list(namespaces or [])
         self._include_reasons = {reason.lower() for reason in include_reasons or []}
+        # Which reasons escalate to critical is operator judgment, not a
+        # baked-in opinion: default is none — severity then only mirrors
+        # Kubernetes's own Normal/Warning event classification.
+        self._critical_reasons = {reason.lower() for reason in critical_reasons or []}
         self._exclude_reasons = {reason.lower() for reason in exclude_reasons or []}
         self._field_selector = field_selector
         self._label_selector = label_selector
@@ -244,10 +248,16 @@ class KubernetesSignalAdapter(_IterableSignalAdapter):
         environment: Environment,
         core_v1: Any,
         source_id: str = "kubernetes-events",
+        critical_reasons: list[str] | None = None,
     ) -> KubernetesSignalAdapter:
         """Build from an injected Kubernetes CoreV1Api-like client."""
 
-        return cls(environment=environment, source_id=source_id, core_v1=core_v1)
+        return cls(
+            environment=environment,
+            source_id=source_id,
+            core_v1=core_v1,
+            critical_reasons=critical_reasons,
+        )
 
     async def _provider_from_kubernetes(self) -> list[Any]:
         core_v1 = await self._load_core_v1()
@@ -311,7 +321,7 @@ class KubernetesSignalAdapter(_IterableSignalAdapter):
             _field(raw, "eventTime", "event_time", "lastTimestamp", "last_timestamp")
         )
         severity = "warning" if event_type.lower() == "warning" else "info"
-        if reason.lower() in {"failed", "failedscheduling", "oomkilled", "backoff"}:
+        if reason.lower() in self._critical_reasons:
             severity = "critical"
         dedupe_key = f"k8s:{namespace}:{kind}:{name}:{reason}"
         raw_ref = f"k8s://{namespace}/events/{event_name}#{uid}"
@@ -347,142 +357,51 @@ class KubernetesSignalAdapter(_IterableSignalAdapter):
         )
 
 
-class InboxSignalAdapter(_IterableSignalAdapter):
-    """Normalize inbox/email messages from a pluggable provider."""
+class GenericSignalAdapter(_IterableSignalAdapter):
+    """Domain-neutral signal ingestion: raw payloads pass through untouched.
 
-    signal_type: NormalizedSignalType = "email"
+    Deliberately encodes NO domain opinions — no field extraction beyond
+    identity/time, no severity heuristics. Severity is honored only when the
+    SOURCE declares it about itself; everything else is `info`. Residents
+    form their own understanding of what the payloads mean; the adapter does
+    not contain source-domain classifiers.
+    """
+
+    signal_type: NormalizedSignalType = "generic"
 
     async def collect(self) -> list[NormalizedSignal]:
-        return [self.normalize_message(raw) for raw in await self._raw()]
+        return [self.normalize_raw(raw) for raw in await self._raw()]
 
-    def normalize_message(self, raw: Any) -> NormalizedSignal:
-        message_id = _text(_field(raw, "message_id", "id", default="unknown"))
-        thread_id = _text(_field(raw, "thread_id", "threadId", default=message_id))
-        sender = _text(_field(raw, "from", "sender", default="unknown"))
-        subject = _text(_field(raw, "subject", default=""))
-        importance = _text(_field(raw, "importance", "priority", default="normal")).lower()
-        severity = "warning" if importance in {"high", "important", "pinned"} else "info"
-        timestamp = _parse_timestamp(_field(raw, "received_at", "timestamp", "date"))
-        dedupe_key = f"email:{thread_id}:{message_id}"
-        provider = _text(_field(raw, "provider", default="inbox"))
+    def normalize_raw(self, raw: Any) -> NormalizedSignal:
+        payload = raw if isinstance(raw, dict) else {"value": raw}
+        event_id = _text(_field(payload, "id", "event_id", default=""))
+        if not event_id:
+            digest = hashlib.sha256(
+                json.dumps(payload, sort_keys=True, default=str).encode()
+            ).hexdigest()
+            event_id = digest[:16]
+        declared = _text(_field(payload, "severity", default="")).lower()
+        severity = declared if declared in {"debug", "info", "warning", "critical"} else "info"
+        timestamp = _parse_timestamp(_field(payload, "observed_at", "timestamp", "time"))
+        dedupe_key = f"{self.source_id}:{event_id}"
         return NormalizedSignal(
             source_id=self.source_id,
             environment_id=self.environment.id,
             environment_type=self.environment.type,
-            signal_type="email",
+            signal_type="generic",
             severity=severity,  # type: ignore[arg-type]
             timestamp=timestamp,
-            raw_payload_ref=f"email://{provider}/threads/{thread_id}/messages/{message_id}",
-            normalized_payload={
-                "message_id": message_id,
-                "thread_id": thread_id,
-                "from": sender,
-                "subject": subject,
-                "snippet": _text(_field(raw, "snippet", "body_preview")),
-                "labels": list(_field(raw, "labels", default=[]) or []),
-                "importance": importance,
-            },
+            raw_payload_ref=f"generic://{self.source_id}/{event_id}",
+            normalized_payload=dict(payload),
             dedupe_key=dedupe_key,
             correlation_id=_correlation(self.environment, dedupe_key),
-            provider=provider,
-            provider_event_id=message_id,
-            object_ref={"thread_id": thread_id, "message_id": message_id, "from": sender},
-            provenance={"adapter": "inbox.message", "source_id": self.source_id},
-        )
-
-
-class HostSignalAdapter(_IterableSignalAdapter):
-    """Normalize local host events from logs, webhooks, or file providers."""
-
-    signal_type: NormalizedSignalType = "host"
-
-    async def collect(self) -> list[NormalizedSignal]:
-        return [self.normalize_host_event(raw) for raw in await self._raw()]
-
-    def normalize_host_event(self, raw: Any) -> NormalizedSignal:
-        event_id = _text(_field(raw, "event_id", "id", default="unknown"))
-        host_id = _text(_field(raw, "host_id", "host", default=self.environment.topology.host_id))
-        severity = _text(_field(raw, "severity", default="info")).lower()
-        if severity not in {"debug", "info", "warning", "critical"}:
-            severity = "warning"
-        category = _text(_field(raw, "category", "kind", default="host"))
-        timestamp = _parse_timestamp(_field(raw, "observed_at", "timestamp"))
-        dedupe_key = f"host:{host_id}:{category}:{event_id}"
-        return NormalizedSignal(
-            source_id=self.source_id,
-            environment_id=self.environment.id,
-            environment_type=self.environment.type,
-            signal_type="host",
-            severity=severity,  # type: ignore[arg-type]
-            timestamp=timestamp,
-            raw_payload_ref=f"host://{host_id}/events/{event_id}",
-            normalized_payload={
-                "event_id": event_id,
-                "host_id": host_id,
-                "category": category,
-                "message": _text(_field(raw, "message")),
-            },
-            dedupe_key=dedupe_key,
-            correlation_id=_correlation(self.environment, dedupe_key),
-            provider=_text(_field(raw, "provider", default="host")),
-            provider_event_id=event_id,
-            object_ref={"host_id": host_id, "event_id": event_id, "category": category},
-            provenance={"adapter": "host.event", "source_id": self.source_id},
-        )
-
-
-class PrinterPiSignalAdapter(_IterableSignalAdapter):
-    """Normalize printer/Pi telemetry from webhook, MQTT, file, or mock providers."""
-
-    signal_type: NormalizedSignalType = "printer_telemetry"
-
-    async def collect(self) -> list[NormalizedSignal]:
-        return [self.normalize_telemetry(raw) for raw in await self._raw()]
-
-    def normalize_telemetry(self, raw: Any) -> NormalizedSignal:
-        event_id = _text(_field(raw, "event_id", "id", default="unknown"))
-        printer_id = _text(_field(raw, "printer_id", "printer", default="printer"))
-        event_kind = _text(_field(raw, "event_type", "type", "kind", default="telemetry"))
-        resin_percent = _field(raw, "resin_percent")
-        filament_percent = _field(raw, "filament_percent")
-        severity = "info"
-        if event_kind in {"error", "fault", "sensor_error"}:
-            severity = "critical"
-        elif event_kind in {"resin_low", "filament_low"}:
-            severity = "warning"
-        timestamp = _parse_timestamp(_field(raw, "observed_at", "timestamp"))
-        dedupe_key = f"printer:{printer_id}:{event_kind}:{event_id}"
-        return NormalizedSignal(
-            source_id=self.source_id,
-            environment_id=self.environment.id,
-            environment_type=self.environment.type,
-            signal_type="printer_telemetry",
-            severity=severity,  # type: ignore[arg-type]
-            timestamp=timestamp,
-            raw_payload_ref=f"printer://{printer_id}/events/{event_id}",
-            normalized_payload={
-                "event_id": event_id,
-                "printer_id": printer_id,
-                "event_type": event_kind,
-                "status": _text(_field(raw, "status")),
-                "message": _text(_field(raw, "message")),
-                "resin_percent": resin_percent,
-                "filament_percent": filament_percent,
-            },
-            dedupe_key=dedupe_key,
-            correlation_id=_correlation(self.environment, dedupe_key),
-            provider=_text(_field(raw, "provider", default="printer-pi")),
-            provider_event_id=event_id,
-            object_ref={"printer_id": printer_id, "event_id": event_id, "event_type": event_kind},
-            provenance={"adapter": "printer.telemetry", "source_id": self.source_id},
+            provider=_text(_field(payload, "provider", default="generic")),
         )
 
 
 def demo_signal_adapters() -> list[SignalAdapter]:
     """Return deterministic adapters for the Environment MVP demo."""
     k8s = k8s_environment_fixture()
-    inbox = inbox_environment_fixture()
-    printer = printer_environment_fixture()
     return [
         KubernetesSignalAdapter(
             environment=k8s,
@@ -515,71 +434,6 @@ def demo_signal_adapters() -> list[SignalAdapter]:
                     "reason": "OOMKilled",
                     "message": "Container was terminated by OOM killer",
                     "eventTime": "2026-06-03T12:05:00Z",
-                },
-            ],
-        ),
-        InboxSignalAdapter(
-            environment=inbox,
-            source_id="gmail-inbox",
-            raw_items=[
-                {
-                    "id": "msg-newsletter",
-                    "thread_id": "thread-newsletter",
-                    "from": "updates@example.com",
-                    "subject": "Weekly digest",
-                    "importance": "normal",
-                    "received_at": "2026-06-03T12:10:00Z",
-                    "provider": "gmail",
-                },
-                {
-                    "id": "msg-renewal",
-                    "thread_id": "thread-renewal",
-                    "from": "customer@example.com",
-                    "subject": "Renewal question",
-                    "importance": "high",
-                    "received_at": "2026-06-03T12:12:00Z",
-                    "provider": "gmail",
-                },
-            ],
-        ),
-        HostSignalAdapter(
-            environment=inbox,
-            source_id="host-events",
-            raw_items=[
-                {
-                    "id": "host-power",
-                    "host_id": "jozef-mac",
-                    "category": "power",
-                    "severity": "info",
-                    "message": "Host woke from sleep",
-                    "observed_at": "2026-06-03T12:14:00Z",
-                }
-            ],
-        ),
-        PrinterPiSignalAdapter(
-            environment=printer,
-            source_id="moonraker-telemetry",
-            raw_items=[
-                {
-                    "id": "print-done",
-                    "printer": "saturn-4",
-                    "type": "print_done",
-                    "status": "complete",
-                    "observed_at": "2026-06-03T12:20:00Z",
-                },
-                {
-                    "id": "resin-low",
-                    "printer": "saturn-4",
-                    "type": "resin_low",
-                    "resin_percent": 8,
-                    "observed_at": "2026-06-03T12:22:00Z",
-                },
-                {
-                    "id": "z-axis-fault",
-                    "printer": "saturn-4",
-                    "type": "error",
-                    "message": "Z axis failed homing check",
-                    "observed_at": "2026-06-03T12:25:00Z",
                 },
             ],
         ),

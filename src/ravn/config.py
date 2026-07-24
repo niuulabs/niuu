@@ -31,17 +31,19 @@ import os
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     EnvSettingsSource,
-    NoDecode,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
     YamlConfigSettingsSource,
 )
+
+from niuu.domain.observability import ObservabilityConfig
+from niuu.mesh.config import MeshNatsConfig
 
 # ---------------------------------------------------------------------------
 # Config file resolution
@@ -238,6 +240,16 @@ class WebToolsConfig(BaseModel):
     search: WebSearchConfig = Field(default_factory=WebSearchConfig)
 
 
+class KubernetesToolsConfig(BaseModel):
+    """Connection settings for the read-only Kubernetes inspection tool."""
+
+    enabled: bool = Field(default=False)
+    in_cluster: bool = Field(default=True)
+    kubeconfig_env: str = Field(default="KUBECONFIG")
+    kubeconfig_path: str = Field(default="")
+    max_log_lines: int = Field(default=120, ge=1)
+
+
 class BashToolConfig(BaseModel):
     """Bash tool configuration (non-persistent, validation-gated execution)."""
 
@@ -301,6 +313,16 @@ class ToolGroupConfig(BaseModel):
 class ToolsConfig(BaseModel):
     """Tool availability and custom adapter configuration."""
 
+    max_result_chars: int = Field(
+        default=100_000,
+        description=(
+            "Maximum characters of a single tool result injected into agent "
+            "history. Oversized results are truncated with an explicit marker; "
+            "context compression protects the most recent messages, so one "
+            "giant result would otherwise make the turn unrecoverable "
+            "(NIU-1118). 0 disables the cap."
+        ),
+    )
     enabled: list[str] = Field(
         default_factory=list,
         description=(
@@ -334,6 +356,10 @@ class ToolsConfig(BaseModel):
     web: WebToolsConfig = Field(
         default_factory=WebToolsConfig,
         description="Configuration for the built-in web tools (web_fetch, web_search).",
+    )
+    kubernetes: KubernetesToolsConfig = Field(
+        default_factory=KubernetesToolsConfig,
+        description="Connection settings for the built-in Kubernetes inspection tool.",
     )
     bash: BashToolConfig = Field(
         default_factory=BashToolConfig,
@@ -435,7 +461,8 @@ class MemoryConfig(BaseModel):
     )
     prefetch_limit: int = Field(
         default=5,
-        description="Maximum number of episodes retrieved during prefetch.",
+        ge=0,
+        description="Maximum number of episodes retrieved during prefetch; 0 disables it.",
     )
     prefetch_min_relevance: float = Field(
         default=0.3,
@@ -470,7 +497,9 @@ class MemoryConfig(BaseModel):
         default="claude-haiku-4-5-20251001",
         description=(
             "Model alias used for the compact post-task reflection call. Use empty, "
-            "'default', 'agent', or 'same-as-agent' to reuse the effective agent model."
+            "'default', 'agent', or 'same-as-agent' to reuse the effective agent model; "
+            "use 'off', 'disabled', or 'none' to retain raw episodes without generated "
+            "reflection."
         ),
     )
     reflection_max_tokens: int = Field(
@@ -790,6 +819,17 @@ class ContextManagementConfig(BaseModel):
         default="~/.ravn/prompt_cache",
         description="Directory for disk-snapshot prompt cache entries.",
     )
+    max_prompt_tokens: int = Field(
+        default=0,
+        description=(
+            "Hard per-call budget for the estimated prompt size (system prompt + "
+            "tool schemas + message history), in tokens. 0 disables the check. "
+            "When a turn's estimated prompt still exceeds this after context "
+            "compression, the LLM call is refused with PromptBudgetExceededError "
+            "and a per-section breakdown — fail loud instead of sending a request "
+            "that overflows the model's context window."
+        ),
+    )
 
     def effective_protect_last(self) -> int:
         """Return the protect_last value to pass to ContextCompressor.
@@ -923,6 +963,13 @@ class HttpChannelConfig(BaseModel):
         default="ravn.adapters.events.cli_translator.CliFormatTranslator",
         description="Fully-qualified class path for the EventTranslatorPort implementation.",
     )
+    operator_token_env: str = Field(
+        default="RAVN_OPERATOR_TOKEN",
+        description=(
+            "Environment variable containing the bearer token required by resident "
+            "operator-question and answer endpoints. Missing tokens disable those endpoints."
+        ),
+    )
 
 
 class SkuldChannelConfig(BaseModel):
@@ -1020,6 +1067,31 @@ class PlatformToolsConfig(BaseModel):
     workload_audiences: list[str] = Field(
         default_factory=lambda: ["volundr-api", "forge", "ting", "mimir", "guild"],
         description="Target service audiences requested from workload token exchange.",
+    )
+    a2a_trusted_origins: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Additional peer Agent Card origins allowed to receive platform A2A "
+            "credentials. The platform base URL is always trusted."
+        ),
+    )
+    a2a_agent_card_urls: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Explicit trusted Agent Card URLs to include beside Guild-discovered peers. "
+            "Use this for platform workflow facades or other stable peers that are not "
+            "projected by an Observatory Agent Directory."
+        ),
+    )
+    a2a_message_max_chars: int = Field(
+        default=12_000,
+        ge=1_000,
+        description="Maximum A2A prompt, answer, or metadata payload size.",
+    )
+    a2a_result_max_chars: int = Field(
+        default=12_000,
+        ge=1_000,
+        description="Maximum model-facing A2A task snapshot size.",
     )
     workflow_aliases: dict[str, PlatformWorkflowAliasConfig] = Field(
         default_factory=dict,
@@ -1577,8 +1649,11 @@ class MimirReflexConfig(BaseModel):
     """
 
     enabled: bool = Field(
-        default=True,
-        description="Enable retrieval reflex pointer injection on agent turns.",
+        default=False,
+        description=(
+            "Enable automatic retrieval-reflex pointer injection on agent turns. "
+            "Disabled by default; agents can still query Mímir explicitly."
+        ),
     )
     max_pointers: int = Field(
         default=5,
@@ -1706,196 +1781,6 @@ class MeshSleipnirConfig(BaseModel):
     rpc_timeout_s: float = Field(
         default=10.0,
         description="Default RPC reply timeout in seconds.",
-    )
-
-
-class MeshNatsExtraSubscriptionConfig(BaseModel):
-    """Additional NATS JetStream filter subject for an existing stream."""
-
-    subject: str = Field(
-        default="",
-        description="Raw NATS filter subject to subscribe to in addition to the prefixed subject.",
-    )
-    stream_name: str = Field(
-        default="",
-        description="JetStream stream that owns the raw filter subject.",
-    )
-    event_types: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Logical Sleipnir event types allowed to attach this raw NATS subject. "
-            "When empty, the raw subject is attached to every logical subscription."
-        ),
-    )
-
-
-class MeshNatsCoreSubscriptionConfig(BaseModel):
-    """Additional core NATS filter subject for live control messages."""
-
-    subject: str = Field(
-        default="",
-        description="Core NATS filter subject to subscribe to in addition to JetStream.",
-    )
-
-
-class MeshNatsConfig(BaseSettings):
-    """NATS JetStream mesh settings for environment-resident Valkyries."""
-
-    model_config = SettingsConfigDict(env_prefix="", extra="ignore", case_sensitive=True)
-
-    @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        del cls, settings_cls, dotenv_settings
-        return env_settings, init_settings, file_secret_settings
-
-    servers: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: ["nats://localhost:4222"],
-        validation_alias=AliasChoices(
-            "servers",
-            "NATS_URL",
-        ),
-        description="One or more NATS server URLs.",
-    )
-
-    @field_validator("servers", mode="before")
-    @classmethod
-    def _parse_servers(cls, value: object) -> object:
-        del cls
-        if not isinstance(value, str):
-            return value
-        return [entry.strip() for entry in value.split(",") if entry.strip()]
-
-    stream_name: str = Field(
-        default="ravn_environment",
-        description="JetStream stream used for Ravn environment/flock events.",
-    )
-    jetstream_domain: str = Field(
-        default="",
-        description=(
-            "Optional JetStream domain to use when the connected NATS account exposes "
-            "JetStream through a domain. Empty uses the server/account default."
-        ),
-    )
-    subject_prefix: str = Field(
-        default="ravn.environment",
-        description="NATS subject prefix for Ravn environment signals and mesh traffic.",
-    )
-    consumer_group: str = Field(
-        default="",
-        description="Optional durable consumer group for load-sharing resident agents.",
-    )
-    publish_timeout_s: float = Field(
-        default=10.0,
-        description="Hard deadline for one JetStream publish before raising.",
-    )
-    replay_from_sequence: int | None = Field(
-        default=None,
-        description="Optional JetStream sequence to replay from on startup.",
-    )
-    retention: str = Field(
-        default="limits",
-        description="JetStream retention policy: limits, interest, or workqueue.",
-    )
-    max_age_seconds: int = Field(
-        default=7 * 24 * 3600,
-        description="Maximum age of retained environment events.",
-    )
-    max_bytes: int = Field(
-        default=1024 * 1024 * 1024,
-        description="Maximum bytes retained by the environment stream.",
-    )
-    ring_buffer_depth: int = Field(
-        default=1000,
-        description="Per-subscriber in-process event buffer depth.",
-    )
-    connect_timeout_s: float = Field(
-        default=10.0,
-        description="NATS connection timeout in seconds.",
-    )
-    max_reconnect_attempts: int = Field(
-        default=60,
-        description="Maximum reconnect attempts before the NATS client gives up.",
-    )
-    ensure_stream: bool = Field(
-        default=True,
-        description="Create/ensure the JetStream stream on startup. Disable for GitOps streams.",
-    )
-    tls_ca_file: str = Field(
-        default="",
-        description="Optional CA bundle path for TLS-secured NATS servers.",
-    )
-    tls_ca_pem: str = Field(
-        default="",
-        description="Optional inline CA bundle for TLS-secured NATS servers.",
-    )
-    tls_cert_file: str = Field(
-        default="",
-        description="Optional client TLS certificate path.",
-    )
-    tls_key_file: str = Field(
-        default="",
-        description="Optional client TLS private key path.",
-    )
-    tls_hostname: str = Field(
-        default="",
-        description="Optional TLS server name override.",
-    )
-    tls_handshake_first: bool = Field(
-        default=False,
-        description="Use TLS-first handshakes for NATS servers that require it.",
-    )
-    tls_legacy_ca: bool = Field(
-        default=False,
-        description="Allow private CAs without modern X.509 key-usage extensions.",
-    )
-    tls_insecure_skip_verify: bool = Field(
-        default=False,
-        description="Disable NATS TLS certificate verification for internal/self-signed endpoints.",
-    )
-    user: str = Field(
-        default="",
-        description="Optional NATS username.",
-    )
-    user_env: str = Field(
-        default="",
-        description="Optional env var containing the NATS username.",
-    )
-    password_env: str = Field(
-        default="",
-        description="Optional env var containing the NATS password.",
-    )
-    token_env: str = Field(
-        default="",
-        description="Optional env var containing the NATS token.",
-    )
-    nkeys_seed_file: str = Field(
-        default="",
-        description="Optional mounted NKey seed file path.",
-    )
-    nkeys_seed_env: str = Field(
-        default="",
-        description="Optional env var containing an NKey seed string.",
-    )
-    extra_subscriptions: list[MeshNatsExtraSubscriptionConfig] = Field(
-        default_factory=list,
-        description=(
-            "Optional raw NATS subject filters, with stream names, consumed in addition "
-            "to subject_prefix-derived Sleipnir subjects."
-        ),
-    )
-    core_subscriptions: list[MeshNatsCoreSubscriptionConfig] = Field(
-        default_factory=list,
-        description=(
-            "Optional core NATS subject filters for live controls such as resident "
-            "Valkyrie commands routed over leafnodes."
-        ),
     )
 
 
@@ -2385,6 +2270,14 @@ class PostSessionReflectionConfig(BaseModel):
         default=5,
         description="Maximum number of learning pages injected at session start.",
     )
+    candidate_min_repetitions: int = Field(
+        default=3,
+        ge=2,
+        description=(
+            "Distinct session observations required before a reflection candidate "
+            "may be promoted to a reusable learning without stronger evidence."
+        ),
+    )
 
 
 class RecapConfig(BaseModel):
@@ -2630,6 +2523,34 @@ class TrustLevelAutonomyTable(BaseModel):
         return self
 
 
+class LearnedToolKubernetesConfig(BaseModel):
+    """Deployment contract for pod-per-run learned tools."""
+
+    namespace: str = Field(
+        default="",
+        description="Explicit namespace in which learned-tool Jobs are created.",
+    )
+    image: str = Field(
+        default=(
+            "ghcr.io/niuulabs/devrunner@"
+            "sha256:ec7a32ffd8ca1f3ddb8bd4983198988538ab74804201ce45e14e56241adfc518"
+        ),
+        description="Reviewed learned-tool runner image pinned by sha256 digest.",
+    )
+    deny_policy_name: str = Field(
+        default="",
+        description="NetworkPolicy that selects denied learned-tool pods and denies egress.",
+    )
+    allow_policy_name: str = Field(
+        default="",
+        description="NetworkPolicy that selects network-enabled learned-tool pods.",
+    )
+    network_policy_label_key: str = Field(
+        default="niuu.world/tool-network",
+        description="Pod label selected by both verified learned-tool NetworkPolicies.",
+    )
+
+
 class ResidentEvolutionConfig(BaseModel):
     """Resident Valkyrie self-evolution: builder, reviewer, rollback, autonomy.
 
@@ -2689,12 +2610,33 @@ class ResidentEvolutionConfig(BaseModel):
             "opportunistic snapshots still fire)."
         ),
     )
-    learned_tool_execution_backend: Literal["local", "forge", "devrunner"] = Field(
-        default="local",
+    learned_tool_execution_backend: Literal[
+        "container", "local", "forge", "devrunner", "k8s_job"
+    ] = Field(
+        default="container",
         description=(
             "Execution backend for learned agent tools authored through build_tool. "
-            "'local' uses the resident subprocess sandbox; 'forge'/'devrunner' run "
-            "inside the workspace-mounted devrunner container path."
+            "'container' runs each invocation in a fail-closed, least-reach OCI "
+            "container; 'local' is an explicit compatibility mode without hard "
+            "reach enforcement; 'k8s_job' creates one locked-down Job per invocation "
+            "after verifying its NetworkPolicies; 'forge'/'devrunner' select the "
+            "legacy workspace-mounted persistent container path."
+        ),
+    )
+    learned_tool_k8s: LearnedToolKubernetesConfig = Field(
+        default_factory=LearnedToolKubernetesConfig,
+        description="Pod-per-run Kubernetes execution and policy coordinates.",
+    )
+    learned_tool_injection_mode: Literal["dispatch", "bulk"] = Field(
+        default="dispatch",
+        description=(
+            "How persisted learned tools reach the agent. 'dispatch' (default) keeps "
+            "them out of the per-turn tool schema: they are discovered on demand via "
+            "capability_list and executed by name through the single learned_tool_run "
+            "tool, so prompt size stays independent of how many tools the resident "
+            "has accumulated. 'bulk' restores the legacy behavior of loading every "
+            "artifact as a native callable tool on every turn (unbounded prompt "
+            "growth — NIU-1118)."
         ),
     )
     tool_build_adapter: str = Field(
@@ -2792,6 +2734,27 @@ class ResidentEvolutionConfig(BaseModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def _validate_k8s_job_contract(self) -> ResidentEvolutionConfig:
+        if self.learned_tool_execution_backend != "k8s_job":
+            return self
+        missing = [
+            name
+            for name, value in (
+                ("namespace", self.learned_tool_k8s.namespace),
+                ("deny_policy_name", self.learned_tool_k8s.deny_policy_name),
+                ("allow_policy_name", self.learned_tool_k8s.allow_policy_name),
+            )
+            if not value.strip()
+        ]
+        if missing:
+            raise ValueError(
+                f"k8s_job learned-tool execution requires learned_tool_k8s {', '.join(missing)}"
+            )
+        if "@sha256:" not in self.learned_tool_k8s.image:
+            raise ValueError("learned_tool_k8s.image must be pinned by sha256 digest")
+        return self
+
 
 class ResidentInboxConfig(BaseModel):
     """Resident inbox intake and triage configuration."""
@@ -2800,9 +2763,24 @@ class ResidentInboxConfig(BaseModel):
         default=True,
         description="Persist and triage resident inbox signals when resident autonomy is enabled.",
     )
+    adapter: str = Field(
+        default="ravn.resident_inbox.backend.LocalResidentInbox",
+        description="Fully-qualified ResidentInboxBackend adapter class.",
+    )
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constructor kwargs passed to the resident inbox adapter.",
+    )
+    secret_kwargs_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps resident inbox adapter kwargs to secret environment variables.",
+    )
     environment_signals_enabled: bool = Field(
-        default=True,
-        description="Record configured Environment signals into resident/inbox/signals.",
+        default=False,
+        description=(
+            "Persist configured Environment signals through the resident inbox adapter. "
+            "Disabled by default so existing deployments opt into this delivery owner explicitly."
+        ),
     )
     directed_messages_enabled: bool = Field(
         default=True,
@@ -2826,6 +2804,33 @@ class ResidentInboxConfig(BaseModel):
     min_attach_score: int = Field(
         default=2,
         description="Minimum keyword overlap required before attaching to an existing objective.",
+    )
+    signal_retention_max_pages: int = Field(
+        default=500,
+        description=(
+            "Target maximum resident inbox signal records kept by supporting adapters. "
+            "Only processed records are eligible, so an unconsumed backlog may exceed the cap. "
+            "The inbox is a "
+            "rolling working set, not an archive — signal pages are write-only "
+            "records that otherwise accumulate without bound and poison "
+            "backing-store queries. Oldest records beyond the cap are pruned. 0 disables "
+            "count-based pruning."
+        ),
+    )
+    signal_retention_max_age_days: float = Field(
+        default=7.0,
+        description=(
+            "Maximum age in days of resident inbox signal pages; older pages "
+            "are pruned. 0 disables age-based pruning."
+        ),
+    )
+    signal_retention_sweep_interval_seconds: float = Field(
+        default=900.0,
+        description=(
+            "Minimum seconds between inbox retention sweeps. Sweeps run off "
+            "the signal write path in a worker thread; this throttle bounds "
+            "how often the signals directory is rescanned."
+        ),
     )
 
 
@@ -2862,6 +2867,31 @@ class ResidentStateConfig(BaseModel):
     fallback_secret_kwargs_env: dict[str, str] = Field(
         default_factory=dict,
         description="Maps fallback adapter kwarg names to env var names for secret injection.",
+    )
+    continuation_max_turns: int = Field(
+        default=3,
+        ge=1,
+        description="Maximum model turns in one automatically continued resident case.",
+    )
+    continuation_max_tokens: int = Field(
+        default=0,
+        ge=0,
+        description="Cumulative resident-case token cap; 0 leaves the token cap disabled.",
+    )
+    continuation_context_max_chars: int = Field(
+        default=12000,
+        ge=1000,
+        description="Maximum durable prior-turn characters restored into a continuation.",
+    )
+    continuation_tool_result_max_chars: int = Field(
+        default=2000,
+        ge=100,
+        description="Maximum characters persisted from each resident tool result.",
+    )
+    home_wake_interval_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description="Seconds between routine resident home turns over the durable inbox.",
     )
 
 
@@ -3208,7 +3238,7 @@ class SignalSourceConfig(BaseModel):
     )
     kind: str = Field(
         default="generic",
-        description="Provider-neutral signal kind, for example kubernetes, email, or printer.",
+        description="Provider-neutral signal kind, for example events, metrics, or messages.",
     )
     enabled: bool = Field(
         default=True,
@@ -3225,17 +3255,13 @@ class SignalSourceConfig(BaseModel):
 
 
 class EnvironmentVocabularyConfig(BaseModel):
-    """Deployment-defined vocabulary extensions for Environment models.
+    """Deployment-defined signal and health vocabulary extensions.
 
     Values listed here are registered into the domain vocabulary registry on
-    settings load, so new environment types, signal kinds, and health states
-    are a config change, not a code change.
+    settings load. Environment ``type`` is an opaque configuration value and
+    therefore needs no registration.
     """
 
-    environment_types: list[str] = Field(
-        default_factory=list,
-        description="Extra environment types beyond the platform defaults.",
-    )
     signal_source_kinds: list[str] = Field(
         default_factory=list,
         description="Extra signal source kinds beyond the platform defaults.",
@@ -3244,6 +3270,18 @@ class EnvironmentVocabularyConfig(BaseModel):
         default_factory=list,
         description="Extra operational health states beyond the platform defaults.",
     )
+
+
+class EnvironmentTopologyConfig(BaseModel):
+    """Explicit Observatory topology projection for an Environment."""
+
+    node_id: str = ""
+    type_id: str = ""
+    parent_id: str | None = None
+    realm_id: str = ""
+    cluster_id: str = ""
+    host_id: str = ""
+    zone: str = ""
 
 
 class EnvironmentConfig(BaseModel):
@@ -3259,7 +3297,7 @@ class EnvironmentConfig(BaseModel):
     )
     type: str = Field(
         default="local",
-        description="Environment type, for example k8s, host, printer, or local.",
+        description="Opaque, configuration-defined environment type.",
     )
     resident_name: str = Field(
         default="",
@@ -3277,6 +3315,13 @@ class EnvironmentConfig(BaseModel):
             "The human seed for this resident: a few sentences describing what the "
             "Valkyrie stewards and what 'better' means for its environment. Injected "
             "into every autonomous task and surfaced on the dashboard."
+        ),
+    )
+    topology: EnvironmentTopologyConfig = Field(
+        default_factory=EnvironmentTopologyConfig,
+        description=(
+            "Optional explicit Observatory topology metadata. type_id defaults to the "
+            "configured Environment type without interpreting it."
         ),
     )
     flocks: list[str] = Field(
@@ -3316,6 +3361,22 @@ class EnvironmentConfig(BaseModel):
         default=200,
         description="Maximum below-threshold signals summarized in one idle triage task.",
     )
+    idle_triage_sample_signals: int = Field(
+        default=15,
+        description=(
+            "Maximum individual signal lines rendered in an idle triage prompt; "
+            "the rest of the batch is summarized by the severity breakdown and "
+            "an explicit overflow line so the prompt stays bounded."
+        ),
+    )
+    idle_triage_sample_summary_max_chars: int = Field(
+        default=300,
+        description="Maximum characters of one signal summary rendered in an idle triage prompt.",
+    )
+    idle_triage_max_signal_refs: int = Field(
+        default=25,
+        description="Maximum signal refs listed in the idle triage outcome template.",
+    )
     signal_subjects: list[str] = Field(
         default_factory=list,
         description=(
@@ -3333,7 +3394,6 @@ class EnvironmentConfig(BaseModel):
         from ravn.domain.environment import extend_environment_vocabulary  # noqa: PLC0415
 
         extend_environment_vocabulary(
-            environment_types=self.vocabulary.environment_types,
             signal_source_kinds=self.vocabulary.signal_source_kinds,
             operational_health_states=self.vocabulary.operational_health_states,
         )
@@ -4105,6 +4165,7 @@ class Settings(BaseSettings):
     # Legacy — kept so existing CLI wiring (NIU-426) continues to work
     llm_adapter: LLMAdapterConfig = Field(default_factory=LLMAdapterConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
 
     @classmethod
     def settings_customise_sources(

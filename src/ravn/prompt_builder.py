@@ -130,6 +130,18 @@ class PromptBuilder:
         self._replace_or_add(PromptSection(name="learnings_context", content=text, cacheable=False))
 
     # ------------------------------------------------------------------
+    # Introspection
+    # ------------------------------------------------------------------
+
+    def section_texts(self) -> dict[str, str]:
+        """Return each non-empty section's text keyed by section name.
+
+        Used by the prompt-composition audit to attribute prompt size to the
+        section that produced it (NIU-1118).
+        """
+        return {s.name: s.content for s in self._sections if s.content}
+
+    # ------------------------------------------------------------------
     # Rendering
     # ------------------------------------------------------------------
 
@@ -352,16 +364,22 @@ def _is_claude(model: str) -> bool:
 def build_initiative_prompt(task: AgentTask) -> str:
     """Build the synthetic user message for a drive-loop initiative task.
 
-    The returned string is passed directly to ``agent.run_turn()`` in place
-    of a human message.  The agent should default to silent output and only
-    produce a response starting with ``[SURFACE]`` if something requires
-    attention.
+    The returned string is passed directly to ``agent.run_turn()``. Autonomous
+    triggers default to silent output; channel-originated human tasks identify
+    their origin explicitly while retaining the same outcome contract.
     """
+    origin_statement = "You are running autonomously. No human sent this message."
+    if task.human_initiated:
+        origin_statement = (
+            "A human sent this message through a communication channel. "
+            "Treat the human content in the context below as direct input."
+        )
+
     return (
         f"[INITIATIVE TASK — triggered by: {task.triggered_by}]\n"
         f"Title: {task.title}\n"
         "\n"
-        "You are running autonomously. No human sent this message.\n"
+        f"{origin_statement}\n"
         "\n"
         "Context:\n"
         "<initiative_context>\n"

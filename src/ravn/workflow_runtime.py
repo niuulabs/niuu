@@ -250,3 +250,24 @@ def _workflow_allowed_outcome_topics(
         if source_event
     }
     return topics if topics else None
+
+
+def _workflow_stage_context(
+    settings: Settings,
+    *,
+    node_id: str,
+) -> str:
+    """Render configured guidance for one workflow stage."""
+    if not node_id:
+        return ""
+    nodes, _edges = _workflow_graph(settings)
+    for node in nodes:
+        if str(node.get("id") or "") != node_id or node.get("kind") != "stage":
+            continue
+        label = str(node.get("label") or "").strip()
+        description = str(node.get("description") or "").strip()
+        lines = [f"Workflow stage: {label or node_id}"]
+        if description:
+            lines.extend(["Stage instructions:", description])
+        return "\n".join(lines)
+    return ""

@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from niuu.domain.agent_directory import AgentDirectoryEntry, AgentSkill
+
 
 class CapabilityKind(StrEnum):
     """Provider-neutral capability categories."""
@@ -20,6 +22,7 @@ class CapabilityKind(StrEnum):
     TOOL = "tool"
     SKILL = "skill"
     WORKFLOW = "workflow"
+    AGENT_SKILL = "agent_skill"
 
 
 @dataclass(frozen=True)
@@ -194,6 +197,54 @@ def capability_from_workflow(
         source=source,
         version=workflow.version,
         metadata=metadata,
+    )
+
+
+def capability_from_agent_skill(
+    agent: AgentDirectoryEntry,
+    skill: AgentSkill,
+) -> Capability:
+    """Project one Guild-visible Agent Card skill into the shared catalog."""
+    interfaces = [item.model_dump(by_alias=True) for item in agent.supported_interfaces]
+    provenance = [item.model_dump(by_alias=True) for item in agent.provenance]
+    input_modes = skill.input_modes or agent.default_input_modes
+    output_modes = skill.output_modes or agent.default_output_modes
+    security_requirements = skill.security_requirements or agent.security_requirements
+    return Capability(
+        capability_id=f"agent:{agent.id}:{skill.id}",
+        kind=CapabilityKind.AGENT_SKILL,
+        name=skill.name or skill.id,
+        description=skill.description or agent.description,
+        input_schema={
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string"},
+                "metadata": {"type": "object"},
+            },
+            "required": ["prompt"],
+        },
+        required_permission="a2a:task",
+        tags=list(dict.fromkeys(["agent-skill", agent.kind, *agent.tags, *skill.tags])),
+        source="agent-card",
+        version=agent.card_version,
+        metadata={
+            "invoke_via": "a2a_task",
+            "agent_id": agent.id,
+            "source_agent_id": agent.source_agent_id,
+            "skill_id": skill.id,
+            "card_url": agent.card_url,
+            "card_hash": agent.card_hash,
+            "signature_verified": agent.signature_verified,
+            "interfaces": interfaces,
+            "input_modes": list(input_modes),
+            "output_modes": list(output_modes),
+            "security_schemes": dict(agent.security_schemes),
+            "security_requirements": list(security_requirements),
+            "observed_status": agent.observed_status,
+            "last_seen": agent.last_seen,
+            "examples": list(skill.examples),
+            "provenance": provenance,
+        },
     )
 
 

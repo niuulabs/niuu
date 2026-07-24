@@ -395,9 +395,8 @@ class WebSocketLifecycleMixin:
     async def handle_ravn_websocket(self, websocket: WebSocket, peer_id: str) -> None:
         """Handle a Ravn WebSocket connection at /ws/ravn/{peer_id}.
 
-        Accepts NDJSON frames from Ravn daemons and forwards them to the
-        RoomBridge for translation and broadcast. Only active when room mode
-        is enabled.
+        Accepts NDJSON collaboration frames projected by Ravn and forwards
+        them to the room adapter. Only active when room mode is enabled.
         """
         if self._room_bridge is None:
             logger.warning(
@@ -453,15 +452,7 @@ class WebSocketLifecycleMixin:
                             tools=frame.get("tools"),
                         )
 
-                    if (
-                        str(frame.get("type") or "").lower() == "usage"
-                        and isinstance(frame.get("data"), dict)
-                        and self._room_mesh_bridge is not None
-                    ):
-                        await self._room_mesh_bridge.report_usage(frame["data"])
-                        continue
-
-                    await self._room_bridge.handle_ravn_frame(peer_id, frame)
+                    await self._room_bridge.handle_collaboration_frame(peer_id, frame)
 
         except WebSocketDisconnect:
             logger.info(

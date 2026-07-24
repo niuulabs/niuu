@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Literal
+from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -15,20 +16,16 @@ from sleipnir.ports.events import SleipnirPublisher
 
 SignalSeverity = Literal["debug", "info", "warning", "critical"]
 NormalizedSignalType = Literal[
+    "generic",
     "kubernetes",
-    "email",
-    "host",
-    "printer_telemetry",
     "webhook",
     "metrics",
     "logs",
 ]
 
 _CATALOG_SIGNAL_KIND: dict[str, str] = {
+    "generic": "generic",
     "kubernetes": "kubernetes",
-    "email": "inbox",
-    "host": "host",
-    "printer_telemetry": "printer",
     "webhook": "received",
     "metrics": "received",
     "logs": "received",
@@ -93,6 +90,15 @@ class NormalizedSignal(BaseModel):
             tenant_id=tenant_id,
         )
         event.timestamp = self.timestamp
+        event.event_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                (
+                    f"ravn:signal:{self.environment_id}:{self.source_id}:"
+                    f"{self.provider_event_id or self.dedupe_key}"
+                ),
+            )
+        )
         if environment is not None:
             apply_environment_metadata(event, environment)
         return event
@@ -117,15 +123,34 @@ class SignalAdapter(ABC):
     async def collect(self) -> list[NormalizedSignal]:
         """Collect provider signals and normalize them."""
 
+    @property
+    def requires_commit(self) -> bool:
+        """Whether collected signals remain pending until explicitly committed."""
+        return False
+
+    async def commit(self) -> None:
+        """Acknowledge the most recently collected batch after durable handling."""
+
+    async def rollback(self) -> None:
+        """Release the most recently collected batch for retry after failure."""
+
     async def publish(self, publisher: SleipnirPublisher) -> list[SleipnirEvent]:
         """Collect, convert, and publish signals over Sleipnir."""
-        events = [
-            signal.to_event(
-                source=f"adapter:{self.source_id}",
-                environment=self.environment,
-                tenant_id=self.environment.tenant_id,
-            )
-            for signal in await self.collect()
-        ]
-        await publisher.publish_batch(events)
-        return events
+        try:
+            events = [
+                signal.to_event(
+                    source=f"adapter:{self.source_id}",
+                    environment=self.environment,
+                    tenant_id=self.environment.tenant_id,
+                )
+                for signal in await self.collect()
+            ]
+            await publisher.publish_batch(events)
+            await self.commit()
+            return events
+        except BaseException as exc:
+            try:
+                await self.rollback()
+            except Exception as rollback_exc:
+                exc.add_note(f"signal rollback also failed: {rollback_exc}")
+            raise

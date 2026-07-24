@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -68,12 +69,13 @@ class FakeResumableTransport(CLITransport):
         self.sent_messages: list[str] = []
         self._last_result: dict | None = None
         self.control_calls: list[tuple[str, dict]] = []
+        self.stopped = False
 
     async def start(self) -> None:
         return None
 
     async def stop(self) -> None:
-        return None
+        self.stopped = True
 
     async def send_message(self, content: str) -> None:
         self.sent_messages.append(content)
@@ -216,6 +218,9 @@ async def test_cli_executor_runs_turn_and_emits_ravn_events() -> None:
     assert result.usage.cache_write_tokens == 1
     assert [call.name for call in result.tool_calls] == ["Bash"]
     assert [tool.content for tool in result.tool_results] == ["ok"]
+    assert result.episode is not None
+    assert result.episode.tools_used == ["Bash"]
+    assert result.episode.outcome.value == "success"
 
     assert [event.type.value for event in channel.events] == [
         "thought",
@@ -319,6 +324,26 @@ async def test_cli_executor_steers_active_transport_when_supported() -> None:
     assert steered is True
     assert transport is not None
     assert transport.control_calls == [("steer", {"content": "Switch to a safer plan"})]
+
+
+@pytest.mark.asyncio
+async def test_cli_executor_close_stops_and_releases_transport() -> None:
+    agent, _ = _make_agent(
+        binding=_TransportBinding(FakeResumableTransport, True),
+    )
+
+    await agent._ensure_transport()
+    transport = agent._transport
+    assert isinstance(transport, FakeResumableTransport)
+
+    await agent.close()
+
+    assert transport.stopped is True
+    assert agent._transport is None
+    assert agent._turn_runner is None
+    assert agent._started is False
+
+    await agent.close()
 
 
 def _make_agent(
@@ -467,6 +492,65 @@ async def test_cli_transport_agent_emits_event_variants_and_filters_transport_kw
     assert channel.events[-1].payload["message"] == "kaboom"
     assert [call.name for call in agent._turn_tool_calls] == ["Bash"]
     assert [result.is_error for result in agent._turn_tool_results] == [True]
+
+
+@pytest.mark.asyncio
+async def test_cli_transport_agent_records_durable_tool_metrics(monkeypatch) -> None:
+    pytest.importorskip("opentelemetry.sdk")
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.trace import TracerProvider
+
+    import niuu.observability as observability_module
+    from niuu.observability import Observability
+
+    metric_reader = InMemoryMetricReader()
+    telemetry = Observability(
+        tracer_provider=TracerProvider(),
+        meter_provider=MeterProvider(metric_readers=[metric_reader]),
+    )
+    monkeypatch.setattr(observability_module, "_active", telemetry)
+    agent, _ = _make_agent()
+
+    await agent._emit_content_block(
+        {
+            "type": "tool_use",
+            "id": "tool-1",
+            "name": "mcp__ravn_tools__alpha",
+            "input": {"value": "hello"},
+        },
+        "conversation-1",
+    )
+    await agent._record_tool_result_block(
+        {
+            "type": "tool_result",
+            "tool_use_id": "tool-1",
+            "content": "ok",
+            "is_error": False,
+        },
+        "conversation-1",
+    )
+
+    metrics = {
+        metric.name: metric
+        for resource in metric_reader.get_metrics_data().resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+    }
+    assert {
+        "ravn.agent.tool.calls",
+        "ravn.agent.tool.duration",
+        "ravn.trace.boundaries",
+    } <= metrics.keys()
+    call_point = metrics["ravn.agent.tool.calls"].data.data_points[0]
+    assert call_point.attributes["gen_ai.tool.name"] == "alpha"
+    assert call_point.attributes["ravn.tool.outcome"] == "success"
+    assert call_point.attributes["ravn.tool.telemetry_source"] == "cli_transport"
+    assert call_point.attributes["ravn.runtime.component"] == "resident"
+    boundary_point = metrics["ravn.trace.boundaries"].data.data_points[0]
+    assert boundary_point.attributes["ravn.trace.relationship"] == "remote_parent"
+    assert boundary_point.attributes["ravn.runtime.component"] == "resident"
+    telemetry.shutdown()
 
 
 @pytest.mark.asyncio
@@ -712,6 +796,114 @@ def test_cli_executor_adds_ravn_tools_mcp_server_when_tools_are_preloaded() -> N
         key == "mcp_servers.ravn-tools.args" and '"tool-mcp"' in value
         for key, value in transport._mcp_overrides
     )
+    assert (
+        "mcp_servers.ravn-tools.tool_timeout_sec",
+        "3600.0",
+    ) in transport._mcp_overrides
+
+
+def test_cli_executor_propagates_active_trace_to_ravn_tool_mcp(monkeypatch) -> None:
+    import ravn.adapters.executors.cli as cli_module
+
+    telemetry = MagicMock()
+    telemetry.inject.return_value = {
+        "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+        "tracestate": "vendor=value",
+    }
+    monkeypatch.setattr(cli_module, "get_observability", lambda: telemetry)
+
+    agent = CliTransportExecutor(
+        transport_adapter="skuld.transports.codex.CodexSubprocessTransport"
+    ).build(
+        channel=_CollectingChannel(),
+        system_prompt="Observe.",
+        session=Session(),
+        model="gpt-5.5",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-traced-mcp",
+        persona="ivaldi",
+        workspace_dir="/tmp/workspace",
+        permission_mode="read_only",
+        tools=[DummyTool()],
+        mcp_servers=[],
+    )
+
+    args = agent._transport_kwargs["mcp_servers"][0]["args"]
+    assert args[args.index("--traceparent") + 1] == telemetry.inject.return_value["traceparent"]
+    assert args[args.index("--tracestate") + 1] == "vendor=value"
+
+
+def test_cli_executor_allows_ravn_tool_mcp_timeout_override() -> None:
+    channel = _CollectingChannel()
+    executor = CliTransportExecutor(
+        transport_adapter="skuld.transports.codex.CodexSubprocessTransport",
+        ravn_tool_mcp_timeout_seconds=900,
+    )
+    agent = executor.build(
+        channel=channel,
+        system_prompt="You are a researcher.",
+        session=Session(),
+        model="gpt-5.5",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-ravn-tool-mcp-timeout",
+        persona="product-steward",
+        workspace_dir="/tmp/workspace",
+        permission_mode="read_only",
+        tools=[DummyTool()],
+        mcp_servers=[],
+    )
+
+    transport = agent._create_transport()
+    assert (
+        "mcp_servers.ravn-tools.tool_timeout_sec",
+        "900.0",
+    ) in transport._mcp_overrides
+
+
+def test_cli_executor_resolves_ravn_tool_mcp_config_before_changing_workspace(
+    tmp_path, monkeypatch
+) -> None:
+    config = tmp_path / "configs" / "resident.yaml"
+    config.parent.mkdir()
+    config.write_text("state_dir: /tmp/resident-state\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("RAVN_CONFIG", "configs/resident.yaml")
+
+    channel = _CollectingChannel()
+    executor = CliTransportExecutor(
+        transport_adapter="skuld.transports.codex.CodexSubprocessTransport"
+    )
+    agent = executor.build(
+        channel=channel,
+        system_prompt="You are a resident.",
+        session=Session(),
+        model="gpt-5.5",
+        max_iterations=3,
+        checkpoint_port=None,
+        task_id="task-ravn-tool-mcp-config",
+        persona="ivaldi",
+        workspace_dir="/different/resident/workspace",
+        permission_mode="read_only",
+        tools=[DummyTool()],
+        mcp_servers=[],
+    )
+
+    server = agent._transport_kwargs["mcp_servers"][0]
+    assert server["args"][:7] == [
+        "-m",
+        "ravn",
+        "tool-mcp",
+        "--config",
+        str(config),
+        "--persona",
+        "ivaldi",
+    ]
+    assert server["args"][7] == "--conversation-id"
+    assert server["args"][8]
+    assert server["args"][9:] == ["--task-id", "task-ravn-tool-mcp-config"]
+    assert server["env"]["RAVN_CONFIG"] == str(config)
 
 
 def test_cli_executor_delegates_codex_ws_permissions_to_codex_config() -> None:

@@ -30,6 +30,10 @@ def _make_channel(broker_url: str = "ws://localhost:9000/ws/ravn/test") -> Skuld
     )
 
 
+def _event_of_kind(data: dict, kind: str) -> dict:
+    return next(event for event in data["events"] if event["kind"] == kind)
+
+
 # ---------------------------------------------------------------------------
 # Serialisation
 # ---------------------------------------------------------------------------
@@ -40,10 +44,9 @@ def test_serialise_response_event():
     event = RavnEvent.response(_SRC, "Hello!", _CID, _SID)
     line = ch._serialise(event)
     data = json.loads(line.strip())
-    assert data["type"] == "response"
-    assert data["data"] == "Hello!"
+    assert data["type"] == "collaboration.events"
+    assert _event_of_kind(data, "message")["content"] == "Hello!"
     assert data["session_id"] == "test-session"
-    assert "metadata" in data
 
 
 def test_serialise_tool_start_event():
@@ -51,9 +54,10 @@ def test_serialise_tool_start_event():
     event = RavnEvent.tool_start(_SRC, "BashTool", {"command": "ls"}, _CID, _SID)
     line = ch._serialise(event)
     data = json.loads(line.strip())
-    assert data["type"] == "tool_start"
-    assert data["data"] == "BashTool"
-    assert data["metadata"]["input"] == {"command": "ls"}
+    assert data["type"] == "collaboration.events"
+    agent_event = _event_of_kind(data, "agent_event")["event"]
+    assert agent_event["type"] == "tool_start"
+    assert agent_event["payload"]["input"] == {"command": "ls"}
 
 
 def test_serialise_error_event():
@@ -61,8 +65,9 @@ def test_serialise_error_event():
     event = RavnEvent.error(_SRC, "boom", _CID, _SID)
     line = ch._serialise(event)
     data = json.loads(line.strip())
-    assert data["type"] == "error"
-    assert data["data"] == "boom"
+    message = _event_of_kind(data, "message")
+    assert message["error"] is True
+    assert message["content"] == "boom"
 
 
 def test_serialise_thought_event():
@@ -70,9 +75,8 @@ def test_serialise_thought_event():
     event = RavnEvent.thought(_SRC, "thinking...", _CID, _SID)
     line = ch._serialise(event)
     data = json.loads(line.strip())
-    assert data["type"] == "thought"
-    assert data["data"] == "thinking..."
-    assert data["metadata"] == {}
+    assert _event_of_kind(data, "activity")["detail"] == "thinking..."
+    assert _event_of_kind(data, "agent_event")["event"]["type"] == "thought"
 
 
 def test_serialise_thinking_event():
@@ -80,9 +84,8 @@ def test_serialise_thinking_event():
     event = RavnEvent.thinking(_SRC, "deep thought", _CID, _SID)
     line = ch._serialise(event)
     data = json.loads(line.strip())
-    assert data["type"] == "thought"
-    assert data["data"] == "deep thought"
-    assert data["metadata"]["thinking"] is True
+    assert _event_of_kind(data, "activity")["detail"] == "deep thought"
+    assert _event_of_kind(data, "agent_event")["event"]["payload"]["thinking"] is True
 
 
 def test_serialise_tool_result_event():
@@ -90,10 +93,10 @@ def test_serialise_tool_result_event():
     event = RavnEvent.tool_result(_SRC, "echo", "output", _CID, _SID)
     line = ch._serialise(event)
     data = json.loads(line.strip())
-    assert data["type"] == "tool_result"
-    assert data["data"] == "output"
-    assert data["metadata"]["tool_name"] == "echo"
-    assert data["metadata"]["is_error"] is False
+    agent_event = _event_of_kind(data, "agent_event")["event"]
+    assert agent_event["payload"]["result"] == "output"
+    assert agent_event["payload"]["tool_name"] == "echo"
+    assert agent_event["payload"]["is_error"] is False
 
 
 def test_serialise_tool_start_with_diff():
@@ -101,7 +104,8 @@ def test_serialise_tool_start_with_diff():
     event = RavnEvent.tool_start(_SRC, "Edit", {"file": "a.py"}, _CID, _SID, diff="- old\n+ new")
     line = ch._serialise(event)
     data = json.loads(line.strip())
-    assert data["metadata"]["diff"] == "- old\n+ new"
+    agent_event = _event_of_kind(data, "agent_event")["event"]
+    assert agent_event["payload"]["diff"] == "- old\n+ new"
 
 
 def test_serialise_ends_with_newline():
@@ -123,8 +127,9 @@ def test_serialise_outcome_includes_task_id_from_payload_or_event() -> None:
     )
     line = ch._serialise(event)
     data = json.loads(line.strip())
-    assert data["metadata"]["event_type"] == "review.completed"
-    assert data["metadata"]["task_id"] == "payload-task"
+    outcome = _event_of_kind(data, "outcome")
+    assert outcome["eventType"] == "review.completed"
+    assert outcome["taskId"] == "payload-task"
 
 
 def test_serialise_outcome_prefers_event_task_id() -> None:
@@ -141,7 +146,26 @@ def test_serialise_outcome_prefers_event_task_id() -> None:
     )
     line = ch._serialise(event)
     data = json.loads(line.strip())
-    assert data["metadata"]["task_id"] == "event-task"
+    assert _event_of_kind(data, "outcome")["taskId"] == "event-task"
+
+
+def test_serialise_preserves_trace_context() -> None:
+    ch = _make_channel()
+    event = RavnEvent.help_needed(
+        source=_SRC,
+        persona="ivaldi",
+        summary="Operator input required",
+        reason="The available evidence is ambiguous.",
+        attempted=["researched the observed signal"],
+        recommendation="Confirm the intended policy.",
+        correlation_id=_CID,
+        session_id=_SID,
+        trace_context={"traceparent": "00-abc-def-01"},
+    )
+
+    data = json.loads(ch._serialise(event).strip())
+
+    assert data["trace_context"] == {"traceparent": "00-abc-def-01"}
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +185,7 @@ async def test_emit_sends_serialised_payload():
     mock_ws.send.assert_awaited_once()
     sent = mock_ws.send.call_args[0][0]
     data = json.loads(sent.strip())
-    assert data["data"] == "test response"
+    assert _event_of_kind(data, "message")["content"] == "test response"
 
 
 @pytest.mark.asyncio
@@ -351,7 +375,7 @@ async def test_recv_loop_delivers_subscribed_room_outcome() -> None:
         side_effect=[
             json.dumps(
                 {
-                    "type": "room_outcome",
+                    "type": "collaboration.outcome",
                     "eventType": "research.completed",
                     "summary": "done",
                     "verdict": "published",
@@ -388,7 +412,7 @@ async def test_recv_loop_ignores_unsubscribed_room_outcome() -> None:
     mock_ws.state = 1
     mock_ws.recv = AsyncMock(
         side_effect=[
-            json.dumps({"type": "room_outcome", "eventType": "research.completed"}),
+            json.dumps({"type": "collaboration.outcome", "eventType": "research.completed"}),
             asyncio.CancelledError(),
         ]
     )
@@ -542,8 +566,8 @@ def test_serialise_task_complete_event():
     )
     line = ch._serialise(event)
     data = json.loads(line.strip())
-    assert data["type"] == "task_complete"
-    assert "success" in data["data"]  # str(payload) will contain "success"
+    assert data["type"] == "collaboration.events"
+    assert _event_of_kind(data, "agent_event")["event"]["payload"]["success"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -576,9 +600,10 @@ def test_serialise_usage_preserves_structured_payload():
 
     data = json.loads(ch._serialise(event).strip())
 
-    assert data["type"] == "usage"
-    assert data["data"]["model"] == "gpt-5.6-sol"
-    assert data["data"]["inputTokens"] == 10
+    assert data["type"] == "collaboration.events"
+    usage = _event_of_kind(data, "usage")["usage"]
+    assert usage["model"] == "gpt-5.6-sol"
+    assert usage["inputTokens"] == 10
 
 
 def test_serialise_includes_persona_when_provided():
@@ -617,8 +642,8 @@ def test_serialise_with_peer_id_preserves_existing_fields():
     event = RavnEvent.tool_start(_SRC, "BashTool", {"command": "ls"}, _CID, _SID)
     line = ch._serialise(event)
     data = json.loads(line.strip())
-    assert data["type"] == "tool_start"
-    assert data["data"] == "BashTool"
+    assert data["type"] == "collaboration.events"
+    assert _event_of_kind(data, "agent_event")["event"]["type"] == "tool_start"
     assert data["session_id"] == "sess-2"
     assert data["source"] == "agent-x"
     assert data["persona"] == "Ravn"

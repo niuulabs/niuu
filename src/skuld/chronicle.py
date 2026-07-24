@@ -283,7 +283,7 @@ class ChronicleMixin:
                 self._mesh_adapter.peer_id,
                 len(self._artifacts.files_changed),
             )
-            # RoomMeshBridge subscribes to the same NNG bus and will
+            # The shared collaboration mesh bridge subscribes to the same NNG bus and will
             # pick this up via loopback (subscriber dials own pub address
             # from cluster.yaml).  No separate broadcast needed.
 

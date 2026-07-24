@@ -37,7 +37,10 @@ from ting.domain.services.dispatch_service import (
     _resolve_mimir_registry_refs,
 )
 from ting.domain.utils import _session_name, _slugify
-from ting.domain.workflow_snapshot import workflow_mimir_from_snapshot
+from ting.domain.workflow_snapshot import (
+    workflow_artifact_paths_from_snapshot,
+    workflow_mimir_from_snapshot,
+)
 from ting.ports.event_bus import TingEvent
 from ting.ports.volundr import VolundrFactory
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
@@ -45,6 +48,7 @@ from ting.ports.workflow_repository import WorkflowRepository
 
 _DEFAULT_RESEARCH_WORKFLOW_NAME = "Research Campaign"
 _RESEARCH_SURFACE = "ting.research"
+_A2A_SURFACE = "a2a"
 logger = logging.getLogger(__name__)
 _MANIFEST_PATH_RE = re.compile(
     r"(research/campaigns/[A-Za-z0-9._/-]+\.md|learnings/research/[A-Za-z0-9._-]+\.md|followups/research/[A-Za-z0-9._-]+\.md)"
@@ -262,6 +266,7 @@ def create_research_router() -> APIRouter:
             updated_at=now,
             last_activity_at=now,
             completed_at=now if execution.session.status == "stopped" else None,
+            connection_id=execution.connection_id,
         )
         saved = await campaign_repo.save_campaign(campaign)
         await _emit_campaign_event(request, "workflow.campaign.created", saved)
@@ -391,7 +396,7 @@ def create_research_router() -> APIRouter:
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
     ) -> list[CampaignArtifactResponse]:
         campaign = await repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
-        if campaign is None or not _is_research_campaign(campaign):
+        if campaign is None or not _campaign_artifacts_accessible(campaign):
             raise HTTPException(status_code=404, detail="Campaign not found")
         artifacts, _canonical = await _load_campaign_artifacts(
             campaign,
@@ -408,9 +413,9 @@ def create_research_router() -> APIRouter:
         repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
     ) -> CampaignArtifactDetailResponse:
         campaign = await repo.get_campaign_by_slug(slug, owner_id=principal.user_id)
-        if campaign is None or not _is_research_campaign(campaign):
+        if campaign is None or not _campaign_artifacts_accessible(campaign):
             raise HTTPException(status_code=404, detail="Campaign not found")
-        if not _campaign_owns_path(campaign.slug, path):
+        if not _campaign_owns_path(campaign, path):
             raise HTTPException(status_code=404, detail="Artifact not found")
         adapter = _resolve_campaign_mimir_port(campaign, request.app.state.settings)
         if adapter is None:
@@ -478,6 +483,19 @@ def _is_research_campaign(campaign: WorkflowCampaign) -> bool:
         campaign.workflow_name == _DEFAULT_RESEARCH_WORKFLOW_NAME
         or campaign.metadata.get("question") is not None
     )
+
+
+def _campaign_artifacts_accessible(campaign: WorkflowCampaign) -> bool:
+    """Artifact routes serve research campaigns AND A2A-launched ones.
+
+    A2A tasks expose their outputs through these routes as url parts, so an
+    ``a2a``-surface campaign must be able to serve artifacts even though it
+    is not a research campaign.
+    """
+    surface = str(campaign.metadata.get("surface") or "").strip()
+    if surface == _A2A_SURFACE:
+        return True
+    return _is_research_campaign(campaign)
 
 
 async def _reserve_slug(repo: WorkflowCampaignRepository, base_slug: str) -> str:
@@ -927,7 +945,16 @@ def _mimir_http_auth(settings: Any) -> MimirAuth | None:
     return MimirAuth(type="bearer", token=token)
 
 
-def _campaign_owns_path(slug: str, path: str) -> bool:
+def _campaign_owns_path(campaign: WorkflowCampaign, path: str) -> bool:
+    if str(campaign.metadata.get("surface") or "").strip() == _A2A_SURFACE:
+        workflow_slug = str(campaign.metadata.get("a2a_workflow_slug") or campaign.slug).strip()
+        declared = workflow_artifact_paths_from_snapshot(
+            campaign.workflow_snapshot,
+            slug=workflow_slug,
+        )
+        return path in declared
+
+    slug = campaign.slug
     if path.startswith(f"research/campaigns/{slug}/"):
         return True
     return path in {

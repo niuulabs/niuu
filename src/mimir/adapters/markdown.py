@@ -683,7 +683,7 @@ class MarkdownMimirAdapter(MimirPort):
         else:
             self._update_index_entry(path, content)
 
-        logger.info("mimir: upserted page %s (new=%s)", _sanitize_log(path), is_new)
+        logger.info("mimir: upserted page (new=%s)", is_new)
 
         # NIU-582: emit mimir.page.written to Sleipnir catalog (best-effort)
         if self._sleipnir_publisher is not None and _catalog_page_written is not None:
@@ -701,6 +701,39 @@ class MarkdownMimirAdapter(MimirPort):
 
         if self._search_port is not None:
             await self._reindex_page(path, content)
+
+    async def delete_page(self, path: str, mimir: str | None = None) -> bool:
+        """Delete a wiki page and remove every derived reference to it."""
+        del mimir
+        page_path = self._safe_wiki_path(path)
+        if not page_path.exists():
+            return False
+
+        content = page_path.read_text(encoding="utf-8")
+        if self._search_port is not None:
+            chunk_count = self._page_chunk_counts.get(path)
+            if chunk_count is None:
+                category = path.split("/")[0] if "/" in path else "uncategorised"
+                page_type = "thread" if path.startswith("threads/") else "wiki"
+                chunk_count = len(
+                    _chunk_markdown(
+                        content,
+                        path,
+                        category,
+                        page_type,
+                        page_title=_extract_title(content, path),
+                    )
+                )
+            for index in range(chunk_count):
+                await self._search_port.remove(f"{path}::{index}")
+            self._page_chunk_counts.pop(path, None)
+
+        page_path.unlink()
+        self._remove_from_index(path)
+        self._graph_cache = None
+
+        logger.info("mimir: deleted page %s", _sanitize_log(path))
+        return True
 
     async def get_page(self, path: str) -> MimirPage:
         """Return content and metadata for the wiki page at *path* in one call."""
@@ -1293,6 +1326,16 @@ class MarkdownMimirAdapter(MimirPort):
                 line = f"- [{title}]({path}) — {summary} {meta}\n".rstrip() + "\n"
             new_lines.append(line)
         self._index.write_text("".join(new_lines), encoding="utf-8")
+
+    def _remove_from_index(self, path: str) -> None:
+        if not self._index.exists():
+            return
+        marker = f"]({path})"
+        lines = self._index.read_text(encoding="utf-8").splitlines(keepends=True)
+        self._index.write_text(
+            "".join(line for line in lines if marker not in line),
+            encoding="utf-8",
+        )
 
     # ------------------------------------------------------------------
     # Log management

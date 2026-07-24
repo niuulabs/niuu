@@ -201,7 +201,8 @@ class TestDriveLoopChannelConstruction:
         await dl._run_task(_make_task("failing-task"))
 
         emitted = [call.args[0] for call in mock_skuld.emit.await_args_list]
-        assert any(event.type == "error" for event in emitted)
+        error = next(event for event in emitted if event.type == "error")
+        assert error.payload["failure_kind"] == "LLMError"
 
     @pytest.mark.asyncio
     async def test_failed_task_does_not_publish_mesh_outcome(self):

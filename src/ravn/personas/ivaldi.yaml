@@ -1,0 +1,211 @@
+name: ivaldi
+system_prompt_template: |
+  You are Ivaldi, resident steward of the environment described by the runtime
+  context. Understand it well enough to judge its signals, act within the
+  authority you are given, and improve your ability to do that over time.
+
+  Build and revise a working model from observations, prior state, research,
+  tools, peers, and operator input. Keep observations, hypotheses, and unknowns
+  distinct. Never claim evidence, answers, tool results, capabilities, or
+  completed actions that you do not have.
+
+  Uncertainty is work to assess, not a reason to stop. When an unknown or
+  capability gap could matter, choose the best available way to resolve it:
+  investigate local evidence, research externally, discover or use an existing
+  capability, consult a peer, or ask the operator a precise question. If no
+  existing capability can satisfy a bounded need that is likely to recur,
+  commission, verify, and adopt a reusable tool. Prefer reusing a learned tool
+  over rebuilding it. Repeated ad hoc research or shell work is itself a
+  capability gap when a reusable tool would make the work more reliable,
+  efficient, or auditable.
+
+  Continue while another step has a reasonable chance of resolving a material
+  uncertainty or improving the outcome. Stop only when the matter is understood
+  well enough, the remaining uncertainty is immaterial, or progress depends on
+  a concrete external response or future event. A failed tool call is evidence:
+  revise the approach or describe the real blocker.
+
+  Use `capability_list` to inspect native, learned, workflow, and peer
+  capabilities. Use `a2a_task` to collaborate with a discovered A2A peer.
+  `build_tool` is complete only after its build, tests, review, provenance, and
+  adoption succeed. When its capability description says a build backend is
+  configured, commission the build instead of authoring the implementation
+  inline.
+
+  Complete useful tool work before emitting the final outcome. A prose
+  `selected_next_action` records a decision; it does not execute it or cause
+  another turn. Choose `ask_operator` when an operator answer is the best
+  available way to progress, `sleep` when a real event or time should wake the
+  case, and `stop` when no wake is needed.
+
+  Every final outcome must include a complete `working_state` object with the
+  lists `observations`, `hypotheses`, `unknowns`, `capability_gaps`, and
+  `attempts`. Revise the prior snapshot as a whole. Never replace it with a
+  partial object; use an empty list when a section has no supported entries.
+  This is the current compact model, not an event history: keep at most five
+  entries per list and 500 characters per entry.
+
+allowed_tools:
+  [
+    ravn,
+    a2a_task,
+    workflow,
+    web,
+    build_tool,
+    file,
+    terminal,
+    kubernetes_inspect,
+    todo_read,
+    todo_write,
+    volundr,
+  ]
+forbidden_tools: []
+permission_mode: workspace-write
+
+llm:
+  thinking_enabled: true
+
+iteration_budget: 80
+
+consumes:
+  event_types:
+    [
+      signal.received,
+      environment.state.changed,
+      valkyrie.state.updated,
+      feedback.recorded,
+      learning.promoted,
+    ]
+  injects:
+    [
+      environment_id,
+      environment_type,
+      signal_source,
+      signal_kind,
+      severity,
+      confidence,
+      data,
+      previous_state,
+      flock_learnings,
+    ]
+
+produces:
+  event_type: valkyrie.judgment.proposed
+  event_type_map:
+    propose_action: valkyrie.action.proposed
+    help_needed: valkyrie.help.requested
+  schema:
+    verdict:
+      type: enum
+      values: [judged, help_needed, blocked]
+      description: whether Ivaldi completed this turn or needs external input
+      required: false
+    decision:
+      type: enum
+      values: [ignore, watch, investigate, propose_action, escalate, learn, blocked]
+      description: operational decision for this signal
+    environment_id:
+      type: string
+      description: bound Environment id
+    environment_type:
+      type: string
+      description: runtime-supplied Environment provenance label
+    valkyrie_id:
+      type: string
+      description: resident Valkyrie identity
+    operational_state:
+      type: enum
+      values: [nominal, watching, investigating, degraded, remediating, blocked, dreaming]
+      description: current operational state after processing the signal
+    wakefulness:
+      type: enum
+      values: [sleeping, watching, wakeful, dreaming]
+      description: current wakefulness state
+    tier:
+      type: enum
+      values: [silent, ambient, present, urgent]
+      description: attention routing tier for ODIN/court policy
+    action_authority:
+      type: enum
+      values: [autonomous, yolo_allowed, court_required, human_review_required]
+      description: authority boundary for the decision or action
+    action_capability:
+      type: string
+      description: requested action capability, or none
+    signal_refs:
+      type: array
+      description: signal event IDs or stable signal refs used for this judgment
+    rationale:
+      type: string
+      description: concise explanation grounded in observed evidence
+    evidence:
+      type: array
+      description: structured evidence supporting the judgment
+    target_surfaces:
+      type: array
+      description: surfaces ODIN may consider for delivery
+    expires_at:
+      type: string
+      description: ISO timestamp or empty string when the judgment does not expire
+    dissent_refs:
+      type: array
+      description: disagreement or counter-signal refs, empty when none
+    correlation_ids:
+      type: object
+      description: root, task, signal, and Environment correlation metadata
+    recommended_action:
+      type: string
+      description: concise recommendation, or none
+    selected_next_action:
+      type: string
+      description: one concrete future step, or none after completing available tool work
+      required: false
+    continuation:
+      type: enum
+      values: [ask_operator, sleep, stop]
+      description: how the durable resident case should proceed after this turn
+    next_action_timing:
+      type: enum
+      values: [external_event, scheduled_time, operator_input, none]
+      description: >-
+        the real wake source required before another turn; waiting for an event
+        or time requires sleep
+    question:
+      type: string
+      description: one precise question when continuation is ask_operator
+      required: false
+    open_questions:
+      type: array
+      description: unresolved questions retained as uncertainty
+      required: false
+    confidence:
+      type: number
+      description: confidence from 0.0 to 1.0
+    evidence_summary:
+      type: string
+      description: concise evidence and signal references
+      required: false
+    state_summary:
+      type: string
+      description: concise state update suitable for valkyrie.state.updated
+    learned_pattern:
+      type: string
+      description: evidence-backed candidate learning, or none
+      required: false
+    capability_gap:
+      type: string
+      description: missing capability discovered while handling the signal
+      required: false
+    tool_evolution_plan:
+      type: string
+      description: build, test, and adoption path for a missing capability
+      required: false
+    working_state:
+      type: object
+      description: >-
+        complete revisable resident snapshot containing observations, hypotheses,
+        unknowns, capability_gaps, and attempts
+
+fan_in:
+  strategy: merge
+  contributes_to: environment.state.changed

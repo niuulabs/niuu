@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+from skuld.collaboration_adapter import SkuldCollaborationAdapter
 from skuld.config import RoomConfig
-from skuld.room_bridge import RoomBridge
 from sleipnir.domain import registry as event_registry
 
 
@@ -17,7 +17,7 @@ def _make_bridge(publish_presence_event=None):
     async def publish(event):
         published.append(event)
 
-    bridge = RoomBridge(
+    bridge = SkuldCollaborationAdapter(
         config=RoomConfig(enabled=True, participant_colors=["p1", "p2", "p3"]),
         channels=channels,
         publish_presence_event=publish_presence_event or publish,
@@ -96,11 +96,12 @@ async def test_late_join_replay_orders_human_and_mesh_messages() -> None:
         thread_id="thread-2",
         metadata={"root_correlation_id": "root-2"},
     )
-    await bridge.handle_ravn_frame(
+    await bridge.handle_collaboration_frame(
         "valkyrie:k8s",
         {
-            "type": "response",
-            "data": "Inspection complete.",
+            "kind": "message",
+            "sourceEventType": "response",
+            "content": "Inspection complete.",
             "metadata": {"thread_id": "thread-2"},
         },
     )

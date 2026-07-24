@@ -69,6 +69,12 @@ config:
 
 # Dispatcher configuration
 dispatch:
+  flock:
+    # -- Additional config deep-merged into every dynamically launched Ravn node.
+    ravnConfig: {}
+    # -- Shared OTEL exporter settings; runtime service names stay ravn and skuld.
+    observability: {}
+
   # -- In-process (single-turn) dispatch configuration.
   # Controls the LLM used by the RavnDispatcher when running review-arbiter
   # and decomposer personas inline (no mesh, no pod).
@@ -144,6 +150,21 @@ planner:
   plannerSystemPrompt: ""
   # -- Prompt injected when the user clicks "Finalize Plan". Leave empty for built-in default.
   finalizePrompt: ""
+
+# A2A protocol surface (agent card + task endpoint)
+a2a:
+  # -- Agent name advertised on the A2A agent card. Leave empty for built-in default.
+  agentName: ""
+  # -- Agent description advertised on the A2A agent card. Leave empty for built-in default.
+  agentDescription: ""
+  # -- Cache-Control max-age for the served agent card. Leave empty for built-in default.
+  cardMaxAgeSeconds: ""
+  # -- Artifacts at or under this size (chars) inline on A2A tasks. Leave empty for built-in default.
+  inlineArtifactMaxChars: ""
+  # -- Extra artifact filenames probed beyond the .md page listing. Leave empty for built-in default.
+  extraArtifactFiles: []
+  # -- Public origin for interface URLs on the card. Leave empty to use the request base URL.
+  publicBaseUrl: ""
 
 # Review configuration
 review:

@@ -1,7 +1,7 @@
-"""E2E test for the post-session learning loop (NIU-598).
+"""E2E test for evidence-gated post-session learning.
 
 Verifies the full cycle:
-  ravn.session.ended event  →  learning written to Mímir  →  learning injected in next session
+  session record → isolated candidate → evidence gate → deliberate retrieval
 """
 
 from __future__ import annotations
@@ -47,13 +47,12 @@ def _make_llm(response_json: str) -> AsyncMock:
 
 
 # ---------------------------------------------------------------------------
-# Full learning loop: session.ended → Mímir write → injection
+# Full learning loop: record → candidate → verified promotion → retrieval
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_learning_loop_session_end_to_injection(tmp_path: Path) -> None:
-    """Session ends → learning written to Mímir → new session injects it."""
+async def test_learning_loop_requires_verified_evidence_before_retrieval(tmp_path: Path) -> None:
     bus = InProcessBus()
     mimir = MarkdownMimirAdapter(root=tmp_path)
     llm = _make_llm(
@@ -95,16 +94,42 @@ async def test_learning_loop_session_end_to_injection(tmp_path: Path) -> None:
     await bus.publish(event)
     await bus.flush()
 
-    # --- Verify learning page was written to Mímir -------------------------
+    candidates = await mimir.list_pages(category="learning-candidates")
     pages = await mimir.list_pages(category="learnings")
-    assert len(pages) > 0, "Expected at least one learning page after session ended"
+    assert len(candidates) == 1
+    assert pages == []
 
+    before_verification = await fetch_relevant_learnings(
+        mimir,
+        repo_slug="niuulabs/volundr",
+        max_pages=5,
+        token_budget=500,
+    )
+    assert before_verification == ""
+
+    verified = ravn_session_ended(
+        session_id="s2",
+        persona="reviewer",
+        outcome="success",
+        token_count=5000,
+        duration_s=30.0,
+        repo_slug="niuulabs/volundr",
+        source="ravn:test",
+    )
+    verified.payload["outcome_verified"] = True
+    verified.payload["verification_refs"] = ["ci:auth-integration:42"]
+    await bus.publish(verified)
+    await bus.flush()
+
+    pages = await mimir.list_pages(category="learnings")
+    assert len(pages) == 1
     page_content = await mimir.read_page(pages[0].path)
     assert "OIDC" in page_content
     assert "## What was learned" in page_content
-    assert "confidence: low" in page_content
+    assert 'promotion_reason: "verified_outcome"' in page_content
 
-    # --- Verify learning is injected in a new session ----------------------
+    # This helper models deliberate retrieval; Phase 0 keeps it out of the
+    # automatic prompt path.
     learnings_block = await fetch_relevant_learnings(
         mimir,
         repo_slug="niuulabs/volundr",

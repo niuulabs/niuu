@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 import logging
 import re
 import time
@@ -11,11 +12,12 @@ from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from niuu.observability import get_observability
 from niuu.ports.mimir import MimirPort
 from ravn.adapters.memory.inline_facts import detect_and_write as _detect_and_write_facts
 from ravn.budget import IterationBudget, TokenEstimator
 from ravn.compression import CompressionResult, ContextCompressor
-from ravn.config import ExtendedThinkingConfig, PostSessionReflectionConfig
+from ravn.config import ExtendedThinkingConfig
 from ravn.domain.budget import compute_cost as _compute_cost_usd
 from ravn.domain.checkpoint import (
     DESTRUCTIVE_TOOL_NAMES,
@@ -23,7 +25,11 @@ from ravn.domain.checkpoint import (
     InterruptReason,
 )
 from ravn.domain.events import RavnEvent
-from ravn.domain.exceptions import MaxIterationsError, PermissionDeniedError
+from ravn.domain.exceptions import (
+    MaxIterationsError,
+    PermissionDeniedError,
+    PromptBudgetExceededError,
+)
 from ravn.domain.models import (
     Episode,
     LLMResponse,
@@ -122,11 +128,15 @@ class RavnAgent:
         repo_slug: str = "",
         # NIU-588: learnings injection at session start
         mimir: MimirPort | None = None,
-        reflection_config: PostSessionReflectionConfig | None = None,
         # NIU-594: persona config for outcome block parsing
         persona_config: PersonaConfig | None = None,
-        # NIU-612: stop loop early when outcome block detected
+        # Retained for constructor compatibility. A tool-use response is never
+        # final, even when its text already contains an outcome block.
         stop_on_outcome: bool = False,
+        # NIU-1118: hard per-call prompt budget; 0 disables
+        max_prompt_tokens: int = 0,
+        # NIU-1118: cap one tool result's contribution to history; 0 disables
+        max_tool_result_chars: int = 0,
     ) -> None:
         self._llm = llm
         self._tools = {t.name: t for t in tools}
@@ -159,6 +169,7 @@ class RavnAgent:
         self._session = session or Session()
         self._source_id = f"ravn-{uuid.uuid4().hex[:8]}"
         self._last_compression_result: CompressionResult | None = None
+        self._trace_iteration = 0
         self._checkpoint_port = checkpoint_port
         self._task_id = task_id or str(self._session.id)
         self._interrupt_reason: InterruptReason | None = None
@@ -177,11 +188,12 @@ class RavnAgent:
         self._session_ended_emitted: bool = False
         # NIU-588: learnings injection at session start
         self._mimir = mimir
-        self._reflection_config = reflection_config
         # NIU-594: persona config for outcome block parsing
         self._persona_config = persona_config
-        # NIU-612: stop loop early when outcome block detected
-        self._stop_on_outcome = stop_on_outcome
+        # NIU-1118: hard per-call prompt budget; 0 disables
+        self._max_prompt_tokens = max_prompt_tokens
+        # NIU-1118: cap one tool result's contribution to history; 0 disables
+        self._max_tool_result_chars = max_tool_result_chars
 
     @property
     def session(self) -> Session:
@@ -231,6 +243,11 @@ class RavnAgent:
         """
         if self._interrupt_reason is None:
             self._interrupt_reason = reason
+
+    @property
+    def llm(self) -> LLMPort:
+        """The active LLM adapter (read-only, for composition wiring)."""
+        return self._llm
 
     @property
     def llm_adapter_name(self) -> str:
@@ -412,6 +429,7 @@ class RavnAgent:
             itertools.count() if self._max_iterations <= 0 else range(self._max_iterations)
         )
         for iteration in iteration_indices:
+            self._trace_iteration = iteration
             # Check external interruption (SIGINT/SIGTERM/Ting cancel via interrupt()).
             if self._interrupt_reason is not None:
                 await self._write_checkpoint(
@@ -439,6 +457,13 @@ class RavnAgent:
                 effective_system, memory_summary=memory_ctx
             )
 
+            # NIU-1118: prompt-composition audit + hard budget. Runs after
+            # compression so the budget judges what would actually be sent.
+            prompt_sections = self._prompt_section_estimates(effective_system, messages_for_llm)
+            if iteration == 0:
+                self._log_prompt_composition(prompt_sections)
+            self._enforce_prompt_budget(prompt_sections)
+
             thinking_param = self._resolve_thinking(
                 user_input=user_input,
                 iteration=iteration,
@@ -459,19 +484,6 @@ class RavnAgent:
             cumulative_usage = cumulative_usage + llm_response.usage
 
             if llm_response.stop_reason != StopReason.TOOL_USE:
-                if self._domain_drive_response_needs_more_grounding(llm_response.content):
-                    self._session.add_message(
-                        Message(role="assistant", content=llm_response.content)
-                    )
-                    self._session.add_message(
-                        Message(
-                            role="user",
-                            content=self._domain_drive_grounding_rejection_message(),
-                        )
-                    )
-                    last_had_tool_error = True
-                    continue
-
                 if llm_response.content:
                     await self._channel.emit(
                         RavnEvent.response(
@@ -488,37 +500,6 @@ class RavnAgent:
             # Track partial response for checkpointing during tool-call iterations.
             if llm_response.content:
                 final_response = llm_response.content
-
-            # NIU-612: Early termination when outcome block detected (optional).
-            # Some models continue calling tools even after producing the outcome.
-            # When stop_on_outcome is enabled, we check for the block and break early.
-            if self._stop_on_outcome and llm_response.content:
-                early_outcome = _parse_outcome_block_for_persona(
-                    llm_response.content, self._persona_config
-                )
-                if (
-                    early_outcome is not None
-                    and not self._domain_drive_response_needs_more_grounding(llm_response.content)
-                ):
-                    logger.info("Early termination: outcome block detected, skipping tool calls")
-                    logger.debug(
-                        "outcome_block: valid=%s fields=%s errors=%s",
-                        early_outcome.valid,
-                        early_outcome.fields,
-                        early_outcome.errors,
-                    )
-                    await self._channel.emit(
-                        RavnEvent.response(
-                            source=self._source_id,
-                            text=llm_response.content,
-                            correlation_id=self._session.id,
-                            session_id=self._session.id,
-                        )
-                    )
-                    self._session.add_message(
-                        Message(role="assistant", content=llm_response.content)
-                    )
-                    break
 
             # Append the assistant message (with tool calls) to history.
             assistant_content = _build_assistant_content(llm_response)
@@ -538,6 +519,11 @@ class RavnAgent:
                     await self._maybe_save_snapshot(label=f"auto: before {tool_call.name}")
 
                 result = await self._execute_tool(tool_call)
+
+                # NIU-1118: cap the result BEFORE it enters history — one
+                # oversized result lands in the compression-protected tail
+                # and would make the rest of the turn unrecoverable.
+                result = self._truncate_oversized_tool_result(tool_call, result)
 
                 # Inject budget warning into the tool result content.
                 result = _maybe_append_budget_warning(result, self._iteration_budget)
@@ -671,9 +657,6 @@ class RavnAgent:
                     logger.warning(
                         "Memory prefetch failed; continuing without context.", exc_info=True
                     )
-            # NIU-588: inject Mímir learnings on the first turn only.
-            if self._turn_count == 1 and self._mimir is not None:
-                await self._inject_learnings()
             return self._prompt_builder.render_blocks()
 
         # Legacy: plain-string system prompt with optional memory suffix.
@@ -687,32 +670,102 @@ class RavnAgent:
                 logger.warning("Memory prefetch failed; continuing without context.", exc_info=True)
         return effective
 
-    async def _inject_learnings(self) -> None:
-        """Fetch Mímir learnings for the current repo and inject into the prompt.
+    def _prompt_section_estimates(
+        self,
+        effective_system: SystemPrompt,
+        messages: list[Message],
+    ) -> dict[str, int]:
+        """Estimate this call's prompt tokens, attributed per section.
 
-        Best-effort — logs a warning and does nothing if Mímir is unavailable
-        or the reflection config is not provided.
+        Sections: the tool schemas sent with every request, each system-prompt
+        section (per PromptBuilder section when one is configured, flat
+        otherwise), and the message history. This is the prompt-composition
+        audit NIU-1118 asks for — the data that shows WHERE an oversized
+        drive-loop prompt comes from.
         """
-        if self._mimir is None or self._prompt_builder is None:
+        sections: dict[str, int] = {}
+        tool_defs = self._tool_defs()
+        sections["tool_schemas"] = TokenEstimator.rough(
+            json.dumps(tool_defs, default=str, sort_keys=True)
+        )
+        if self._prompt_builder is not None:
+            for name, text in self._prompt_builder.section_texts().items():
+                sections[f"system:{name}"] = TokenEstimator.rough(text)
+        elif isinstance(effective_system, str):
+            sections["system"] = TokenEstimator.rough(effective_system)
+        else:
+            sections["system"] = TokenEstimator.rough_blocks(effective_system)
+        sections["history"] = TokenEstimator.rough_messages(messages)
+        return sections
+
+    def _log_prompt_composition(self, sections: dict[str, int]) -> None:
+        total = sum(sections.values())
+        breakdown = ", ".join(f"{name}≈{count}" for name, count in sections.items())
+        logger.info(
+            "prompt_composition: total≈%d tokens (%s; tools=%d, messages=%d)",
+            total,
+            breakdown,
+            len(self._tools),
+            len(self._session.messages),
+        )
+
+    def _enforce_prompt_budget(self, sections: dict[str, int]) -> None:
+        """Refuse an LLM call whose estimated prompt exceeds the hard budget.
+
+        Only active when ``max_prompt_tokens`` is configured (> 0). Runs after
+        context compression had its chance, so hitting it means a genuinely
+        oversized prompt — fail loudly with the per-section breakdown instead
+        of letting the provider reject (or silently accept) an overflowing
+        request.
+        """
+        if self._max_prompt_tokens <= 0:
             return
+        total = sum(sections.values())
+        if total <= self._max_prompt_tokens:
+            return
+        error = PromptBudgetExceededError(
+            estimated_tokens=total,
+            budget_tokens=self._max_prompt_tokens,
+            sections=sections,
+        )
+        logger.error("%s", error)
+        raise error
 
-        cfg = self._reflection_config
-        max_pages = cfg.max_learnings_injected if cfg is not None else 5
-        token_budget = cfg.learning_token_budget if cfg is not None else 500
+    def _truncate_oversized_tool_result(
+        self,
+        tool_call: ToolCall,
+        result: ToolResult,
+    ) -> ToolResult:
+        """Bound a single tool result's contribution to the conversation.
 
-        try:
-            from ravn.adapters.reflection.post_session import fetch_relevant_learnings
-
-            learnings_text = await fetch_relevant_learnings(
-                self._mimir,
-                repo_slug=self._repo_slug,
-                max_pages=max_pages,
-                token_budget=token_budget,
-            )
-            if learnings_text:
-                self._prompt_builder.set_learnings_context(learnings_text)
-        except Exception:
-            logger.warning("Learnings injection failed; continuing without.", exc_info=True)
+        Observed in production (NIU-1118): one mimir tool result injected
+        ~229MB into history; compression protects the most recent messages,
+        so nothing downstream could shrink it and the turn died on the prompt
+        budget. Truncate here with an explicit marker so the model knows the
+        result is partial and the turn can continue.
+        """
+        limit = self._max_tool_result_chars
+        content = result.content
+        if limit <= 0 or not isinstance(content, str) or len(content) <= limit:
+            return result
+        dropped = len(content) - limit
+        logger.warning(
+            "tool result for %r truncated: %d of %d chars dropped (max_tool_result_chars=%d)",
+            tool_call.name,
+            dropped,
+            len(content),
+            limit,
+        )
+        marker = (
+            f"\n\n[tool result truncated: {dropped} characters beyond the "
+            f"{limit}-character limit were dropped — narrow the query or "
+            "paginate instead of repeating the same call]"
+        )
+        return ToolResult(
+            tool_call_id=result.tool_call_id,
+            content=content[:limit] + marker,
+            is_error=result.is_error,
+        )
 
     async def _maybe_compress(
         self,
@@ -940,6 +993,8 @@ class RavnAgent:
         past_context: str,
     ) -> str:
         """Call the fast LLM to generate a compact post-task reflection."""
+        if self._reflection_model.strip().lower() in {"off", "disabled", "none"}:
+            return ""
         tools_str = ", ".join(tools_used) if tools_used else "none"
         errors_str = "; ".join(errors[:5]) if errors else "none"
         past_str = past_context[:800] if past_context else "none"
@@ -1008,6 +1063,103 @@ class RavnAgent:
         messages: list[Message] | None = None,
         thinking: dict | None = None,
     ) -> LLMResponse:
+        telemetry = get_observability()
+        attributes = {
+            "gen_ai.operation.name": "chat",
+            "gen_ai.provider.name": type(self._llm).__name__,
+            "gen_ai.request.model": self._model,
+            "gen_ai.conversation.id": str(self._session.id),
+            "gen_ai.agent.name": self._persona or "ravn",
+            "gen_ai.agent.id": self._source_id,
+            "ravn.task.id": self._task_id,
+            "ravn.agent.iteration": self._trace_iteration,
+        }
+        metric_attributes = {
+            key: attributes[key]
+            for key in (
+                "gen_ai.operation.name",
+                "gen_ai.provider.name",
+                "gen_ai.request.model",
+                "gen_ai.agent.name",
+            )
+        }
+        started = time.monotonic()
+        with telemetry.span(f"chat {self._model}", attributes=attributes) as span:
+            telemetry.event(
+                "gen_ai.request",
+                attributes={"gen_ai.request.message_count": len(messages or [])},
+                content={
+                    "system_prompt": system_prompt,
+                    "messages": [
+                        {"role": str(message.role), "content": message.content}
+                        for message in (messages or [])
+                    ],
+                    "thinking": thinking,
+                },
+            )
+            try:
+                response = await self._call_llm_streaming_observed(
+                    system_prompt=system_prompt,
+                    messages=messages,
+                    thinking=thinking,
+                )
+            except Exception:
+                telemetry.count(
+                    "ravn.agent.llm.calls",
+                    attributes={**metric_attributes, "error.type": "exception"},
+                )
+                telemetry.duration(
+                    "gen_ai.client.operation.duration",
+                    time.monotonic() - started,
+                    attributes={**metric_attributes, "error.type": "exception"},
+                )
+                raise
+            duration = time.monotonic() - started
+            span.set_attribute("gen_ai.usage.input_tokens", response.usage.input_tokens)
+            span.set_attribute("gen_ai.usage.output_tokens", response.usage.output_tokens)
+            span.set_attribute("ravn.llm.tool_call_count", len(response.tool_calls))
+            span.set_attribute("ravn.llm.stop_reason", str(response.stop_reason))
+            telemetry.event(
+                "gen_ai.response",
+                attributes={
+                    "gen_ai.response.stop_reason": str(response.stop_reason),
+                    "gen_ai.response.tool_call_count": len(response.tool_calls),
+                    "gen_ai.response.tool_names": [call.name for call in response.tool_calls],
+                },
+                content={
+                    "content": response.content,
+                    "tool_calls": [
+                        {"id": call.id, "name": call.name, "input": call.input}
+                        for call in response.tool_calls
+                    ],
+                },
+            )
+            telemetry.count("ravn.agent.llm.calls", attributes=metric_attributes)
+            telemetry.duration(
+                "gen_ai.client.operation.duration",
+                duration,
+                attributes=metric_attributes,
+                description="Duration of a generative AI operation.",
+            )
+            for token_type, value in (
+                ("input", response.usage.input_tokens),
+                ("output", response.usage.output_tokens),
+            ):
+                telemetry.record(
+                    "gen_ai.client.token.usage",
+                    value,
+                    unit="{token}",
+                    attributes={**metric_attributes, "gen_ai.token.type": token_type},
+                    description="Number of input and output tokens used.",
+                )
+            return response
+
+    async def _call_llm_streaming_observed(
+        self,
+        system_prompt: SystemPrompt | None = None,
+        messages: list[Message] | None = None,
+        thinking: dict | None = None,
+    ) -> LLMResponse:
         """Call the LLM with streaming and accumulate into an LLMResponse."""
         accumulated_text = ""
         tool_calls: list[ToolCall] = []
@@ -1069,6 +1221,20 @@ class RavnAgent:
         )
 
     async def _execute_tool(self, tool_call: ToolCall) -> ToolResult:
+        from ravn.tool_observability import execute_observed_tool
+
+        return await execute_observed_tool(
+            name=tool_call.name,
+            arguments=tool_call.input,
+            execute=lambda: self._execute_tool_observed(tool_call),
+            call_id=tool_call.id,
+            agent_name=self._persona or "ravn",
+            conversation_id=str(self._session.id),
+            task_id=self._task_id,
+            iteration=self._trace_iteration,
+        )
+
+    async def _execute_tool_observed(self, tool_call: ToolCall) -> ToolResult:
         """Execute a single tool call, enforcing permissions and running hooks.
 
         The ``ask_user`` tool is intercepted before regular dispatch and
@@ -1109,27 +1275,6 @@ class RavnAgent:
                 diff=diff,
             )
         )
-
-        if self._should_defer_initial_domain_drive_tool(tool_call):
-            result = ToolResult(
-                tool_call_id=tool_call.id,
-                content=(
-                    "tool deferred: initial domain-drive orientation must start "
-                    "with glob_search workspace discovery."
-                ),
-                is_error=True,
-            )
-            await self._channel.emit(
-                RavnEvent.tool_result(
-                    self._source_id,
-                    tool_call.name,
-                    result.content,
-                    self._session.id,
-                    self._session.id,
-                    is_error=True,
-                )
-            )
-            return result
 
         granted = await self._permission.check(tool.required_permission)
         if not granted:
@@ -1203,27 +1348,6 @@ class RavnAgent:
             )
         )
 
-        if self._should_defer_initial_domain_drive_question():
-            result = ToolResult(
-                tool_call_id=tool_call.id,
-                content=(
-                    "ask_user deferred: initial domain-drive orientation must inspect "
-                    "available context before asking the operator."
-                ),
-                is_error=True,
-            )
-            await self._channel.emit(
-                RavnEvent.tool_result(
-                    self._source_id,
-                    _ASK_USER_TOOL_NAME,
-                    result.content,
-                    self._session.id,
-                    self._session.id,
-                    is_error=True,
-                )
-            )
-            return result
-
         if self._user_input_fn is None:
             result = ToolResult(
                 tool_call_id=tool_call.id,
@@ -1254,132 +1378,6 @@ class RavnAgent:
             )
         )
         return result
-
-    def _should_defer_initial_domain_drive_question(self) -> bool:
-        persona_name = getattr(self._persona_config, "name", "")
-        if persona_name != "domain-drive":
-            return False
-
-        return not self._observed_tool_result_names()
-
-    def _should_defer_initial_domain_drive_tool(self, tool_call: ToolCall) -> bool:
-        if getattr(self._persona_config, "name", "") != "domain-drive":
-            return False
-        if "glob_search" not in self._tools:
-            return False
-        if tool_call.name == "glob_search":
-            return False
-        return not self._observed_tool_result_names()
-
-    def _domain_drive_response_needs_more_grounding(self, content: str) -> bool:
-        if getattr(self._persona_config, "name", "") != "domain-drive":
-            return False
-        if self._domain_drive_outcome_needs_more_grounding(content):
-            return True
-
-        parsed = _parse_outcome_block_for_persona(content, self._persona_config)
-        if parsed is not None:
-            return False
-
-        observed_tools = self._observed_tool_result_names()
-        if not observed_tools:
-            return "glob_search" in self._tools
-
-        if "glob_search" in self._tools and "glob_search" not in observed_tools:
-            return True
-
-        grounding_tools = {
-            "read_file",
-            "grep_search",
-            "mimir_query",
-            "mimir_search",
-            "mimir_read",
-        }
-        if "glob_search" in observed_tools and observed_tools.isdisjoint(grounding_tools):
-            return True
-
-        return "write_file" in self._tools and "write_file" not in observed_tools
-
-    def _domain_drive_grounding_rejection_message(self) -> str:
-        observed_tools = self._observed_tool_result_names()
-        base = (
-            "domain-drive response rejected: continue from the same mandate. "
-            "This turn is not complete until you use actual tool calls, not code "
-            "examples or narrative claims. Do not ask_user yet. "
-        )
-        if "glob_search" in self._tools and "glob_search" not in observed_tools:
-            return (
-                base + "Call `glob_search` now for broad workspace discovery. Then read or "
-                "search at least one relevant discovered file."
-            )
-        grounding_tools = {
-            "read_file",
-            "grep_search",
-            "mimir_query",
-            "mimir_search",
-            "mimir_read",
-        }
-        if observed_tools.isdisjoint(grounding_tools):
-            return (
-                base + "Read or search at least one relevant discovered local file before "
-                "finishing."
-            )
-        if "write_file" in self._tools and "write_file" not in observed_tools:
-            return (
-                base + "Write `resident-domain-map.md` with observed evidence, any outside "
-                "context you actually gathered, hypotheses, open questions, "
-                "self-authored work, capability gaps, and one safe next action."
-            )
-        return base + "Continue grounding the orientation with available tools."
-
-    def _domain_drive_outcome_needs_more_grounding(self, content: str) -> bool:
-        if getattr(self._persona_config, "name", "") != "domain-drive":
-            return False
-        parsed = _parse_outcome_block_for_persona(content, self._persona_config)
-        if parsed is None:
-            return "---outcome---" in content
-
-        observed_tools = self._observed_tool_result_names()
-        if not observed_tools:
-            return True
-
-        if "glob_search" in self._tools and "glob_search" not in observed_tools:
-            return True
-
-        grounding_tools = {
-            "read_file",
-            "grep_search",
-            "mimir_query",
-            "mimir_search",
-            "mimir_read",
-        }
-        if "glob_search" in observed_tools and observed_tools.isdisjoint(grounding_tools):
-            return True
-
-        verdict = str(parsed.fields.get("verdict", "")).strip().casefold()
-        if (
-            verdict in {"oriented", "help_needed"}
-            and "write_file" in self._tools
-            and "write_file" not in observed_tools
-        ):
-            return True
-
-        return False
-
-    def _observed_tool_result_names(self) -> set[str]:
-        names: set[str] = set()
-        for message in self._session.messages:
-            content = message.content
-            if not isinstance(content, list):
-                continue
-            for item in content:
-                if not isinstance(item, dict):
-                    continue
-                if item.get("type") == "tool_result" and not item.get("is_error", False):
-                    name = str(item.get("name", ""))
-                    if name and name != _ASK_USER_TOOL_NAME:
-                        names.add(name)
-        return names
 
 
 def _maybe_append_budget_warning(
@@ -1504,7 +1502,17 @@ def _parse_outcome_block_for_persona(
         return None
     try:
         from niuu.domain.outcome import OutcomeSchema, parse_outcome_block
+        from ravn.domain.valkyrie_contracts import (  # noqa: PLC0415
+            VALKYRIE_RUNTIME_OWNED_FIELDS,
+            is_valkyrie_outcome_event,
+        )
 
+        if is_valkyrie_outcome_event(produces.event_type):
+            schema_fields = {
+                name: field
+                for name, field in schema_fields.items()
+                if name not in VALKYRIE_RUNTIME_OWNED_FIELDS
+            }
         schema = OutcomeSchema(fields=schema_fields)
         return parse_outcome_block(text, schema)
     except Exception:
@@ -1518,24 +1526,52 @@ async def _validate_mimir_outcome_for_persona(
     persona_config: PersonaConfig | None,
     mimir: MimirPort | None,
 ) -> ParsedOutcome:
-    """Apply persona-specific Mimir-backed outcome validation.
+    """Apply Mimir-backed outcome validation declared by persona schemas.
 
-    At the moment this enforces research-page provenance for personas that emit
-    ``research.completed``. The page must exist, be marked
+    Any successful outcome with an ``artifact_path`` must resolve to a real
+    durable Mimir page. Research outcomes additionally enforce provenance: the
+    page must exist, be marked
     ``produced_by_thread: true``, reference non-empty ``source_ids``, and those
     source IDs must resolve to ingested raw sources that are not merely the
     final page content copied back into ``raw/``.
     """
-    if persona_config is None or mimir is None:
+    if persona_config is None:
         return parsed_outcome
+    errors: list[str] = []
+    artifact_path = str(parsed_outcome.fields.get("artifact_path") or "").strip()
+    verdict = str(parsed_outcome.fields.get("verdict") or "").strip().lower()
+    artifact_succeeded = "artifact_path" in persona_config.produces.schema and verdict not in {
+        "blocked",
+        "fail",
+        "failed",
+    }
+    if artifact_succeeded:
+        if not artifact_path:
+            errors.append("successful artifact outcome requires a non-empty artifact_path")
+        elif mimir is None:
+            errors.append(
+                f"artifact {artifact_path} cannot be verified because Mimir is not configured"
+            )
+        else:
+            try:
+                await mimir.get_page(artifact_path)
+            except FileNotFoundError:
+                errors.append(f"artifact not found in Mimir: {artifact_path}")
+
     produces_research_completed = persona_config.produces.event_type == "research.completed" or (
         "research.completed" in set(persona_config.produces.event_type_map.values())
     )
     if not produces_research_completed:
+        if errors:
+            parsed_outcome.valid = False
+            parsed_outcome.errors.extend(errors)
+        return parsed_outcome
+    if mimir is None:
+        parsed_outcome.valid = False
+        parsed_outcome.errors.append("research.completed outcome requires Mimir")
         return parsed_outcome
 
     page_path = str(parsed_outcome.fields.get("page_path") or "").strip()
-    errors: list[str] = []
     if not page_path:
         errors.append("research.completed outcome requires a non-empty page_path")
     else:

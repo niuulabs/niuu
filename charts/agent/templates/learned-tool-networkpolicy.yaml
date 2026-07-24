@@ -1,0 +1,34 @@
+{{- if .Values.learnedToolRunner.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agent.learnedToolDenyPolicyName" . }}
+  labels:
+    {{- include "agent.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{ .Values.learnedToolRunner.networkPolicyLabelKey }}: denied
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agent.learnedToolAllowPolicyName" . }}
+  labels:
+    {{- include "agent.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{ .Values.learnedToolRunner.networkPolicyLabelKey }}: allowed
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - {}
+{{- end }}

@@ -25,7 +25,7 @@ from ting.domain.services.dispatch_service import (
 )
 from ting.domain.utils import _session_name, _slugify
 from ting.domain.workflow_snapshot import build_workflow_snapshot, workflow_mimir_from_snapshot
-from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrSession
+from ting.ports.volundr import SpawnRequest, VolundrFactory, VolundrPort, VolundrSession
 from ting.ports.workflow_repository import WorkflowRepository
 
 _DEFAULT_WORKFLOW_LAUNCH_DEFINITION = "skuldCodex"
@@ -44,6 +44,15 @@ class WorkflowBody(BaseModel):
         alias="resourceBindings",
         serialization_alias="resourceBindings",
     )
+    artifact_paths: list[str] = Field(
+        default_factory=list,
+        alias="artifactPaths",
+        serialization_alias="artifactPaths",
+        description=(
+            "Durable Mimir paths returned as workflow artifacts. "
+            "The {slug} placeholder resolves to the launch slug."
+        ),
+    )
     model_config = {"populate_by_name": True}
 
 
@@ -60,6 +69,10 @@ class WorkflowResponse(BaseModel):
     resource_bindings: list[dict[str, Any]] = Field(
         default_factory=list,
         serialization_alias="resourceBindings",
+    )
+    artifact_paths: list[str] = Field(
+        default_factory=list,
+        serialization_alias="artifactPaths",
     )
     created_at: datetime
     updated_at: datetime
@@ -109,6 +122,10 @@ class WorkflowLaunchExecution:
     workflow_snapshot: dict[str, Any]
     slug: str
     session: VolundrSession
+    adapter: VolundrPort
+    # Canonical id of the Volundr connection the session was created on;
+    # campaigns persist this so later reads target the same instance.
+    connection_id: str | None = None
 
 
 async def resolve_workflow_repo() -> WorkflowRepository:
@@ -264,6 +281,7 @@ def _body_to_graph(body: WorkflowBody) -> dict[str, Any]:
         "nodes": body.nodes,
         "edges": body.edges,
         "resourceBindings": body.resource_bindings,
+        "artifactPaths": body.artifact_paths,
     }
 
 
@@ -282,6 +300,11 @@ def _to_response(workflow: WorkflowDefinition) -> WorkflowResponse:
         resource_bindings=list(
             graph.get("resourceBindings") or graph.get("resource_bindings") or []
         ),
+        artifact_paths=[
+            str(path)
+            for path in list(graph.get("artifactPaths") or graph.get("artifact_paths") or [])
+            if str(path).strip()
+        ],
         created_at=workflow.created_at,
         updated_at=workflow.updated_at,
     )
@@ -423,6 +446,16 @@ async def launch_workflow_execution(
                     if settings.dispatch.flock.llm_config
                     else {}
                 ),
+                **(
+                    {"ravn_config": settings.dispatch.flock.ravn_config}
+                    if settings.dispatch.flock.ravn_config
+                    else {}
+                ),
+                **(
+                    {"observability": settings.dispatch.flock.observability}
+                    if settings.dispatch.flock.observability
+                    else {}
+                ),
             },
             credential_names=_mimir_auth_credential_names(workflow_mimir),
             definition=resolved_definition,
@@ -435,6 +468,8 @@ async def launch_workflow_execution(
         workflow_snapshot=workflow_snapshot,
         slug=launch_slug,
         session=session,
+        adapter=target_adapter,
+        connection_id=getattr(target_adapter, "target_id", None) or None,
     )
 
 

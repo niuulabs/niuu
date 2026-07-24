@@ -21,7 +21,7 @@ Reuse these existing surfaces:
 | Warden data hooks | `web-next/packages/plugin-mimir/src/application/useRavns.ts` |
 | Mimir Warden IA | `docs/operator/mimir-warden-ui-plan.md` |
 | Observatory topology/events | `src/observatory/app.py`, `src/observatory/contracts.py` |
-| Skuld rooms and human join | `src/skuld/broker.py`, `src/skuld/room_bridge.py`, `web-next` `useSkuldChat` usage in Mimir UI |
+| Collaboration rooms and human join | `src/niuu/collaboration/`, `src/skuld/collaboration_adapter.py`, `web-next` `useSkuldChat` usage in Mimir UI |
 | Environment event taxonomy | `docs/operator/environment-event-taxonomy.md`, `src/sleipnir/domain/registry.py` |
 | Environment NATS mesh | `docs/operator/environment-nats-mesh.md` |
 | Existing Flock config | `docs/operator/flock-composition.md`, `src/ting/flock_flows.yaml`, `src/ting/api/flock_config.py` |
@@ -67,8 +67,8 @@ Proposed routes:
 
 The first screen should be an operations index, not a landing page:
 
-- left column: Environment list grouped by type (`k8s`, `inbox.host`,
-  `printer.pi`, `host`)
+- left column: Environment list grouped by configured labels or ownership
+  metadata; the UI must not assume a closed set of environment types
 - center: selected Environment health/state/signals
 - right: Flock learning and active huddles relevant to the selected context
 
@@ -76,14 +76,15 @@ The first screen should be an operations index, not a landing page:
 
 ### Environment
 
-An Environment is the deployment boundary where resident Valkyries live and
-where signals are interpreted.
+An Environment is the deployment boundary where residents live and where Ravn
+interprets signals. Environment metadata is config-driven rather than a closed
+runtime enum.
 
 Examples:
 
-- `cluster-prod-a` (`environment_type=k8s`)
-- `host-jozef-mail` (`environment_type=inbox.host`)
-- `printer-cell-basement` (`environment_type=printer.pi`)
+- `cluster-prod-a` (configured labels may describe it as Kubernetes)
+- `host-jozef-mail` (configured labels may describe its mailbox scope)
+- `printer-cell-basement` (configured labels may describe its printer cell)
 
 Primary data sources:
 

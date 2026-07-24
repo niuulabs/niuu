@@ -26,7 +26,14 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
-from ravn.config import MeshNatsConfig
+from niuu.domain.observability import ObservabilityConfig
+from niuu.mesh.config import MeshNatsConfig
+
+
+class SkuldObservabilityConfig(ObservabilityConfig):
+    """OpenTelemetry settings with Skuld's stable service identity."""
+
+    service_name: str = Field(default="skuld")
 
 
 # Config file search paths (in order of priority).
@@ -116,6 +123,20 @@ class WorkflowTriggerConfig(BaseModel):
     source: str = Field(default="manual dispatch")
     event_type: str = Field(default="")
     startup_delay_s: float = Field(default=3.0)
+    ack_timeout_s: float = Field(
+        default=20.0,
+        description=(
+            "Seconds to wait for a workflow.kickoff.acknowledged mesh event "
+            "from the flock before republishing the kickoff."
+        ),
+    )
+    ack_max_redeliveries: int = Field(
+        default=5,
+        description=(
+            "How many times an unacknowledged kickoff is republished before "
+            "the session fails loudly. Total attempts = 1 + this value."
+        ),
+    )
 
 
 class WorkflowRuntimeConfig(BaseModel):
@@ -127,6 +148,7 @@ class WorkflowRuntimeConfig(BaseModel):
     scope: str = Field(default="")
     initial_context: str = Field(default="")
     graph: dict[str, Any] = Field(default_factory=dict)
+    trace_context: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -138,6 +160,11 @@ class WorkflowRuntimeConfig(BaseModel):
             with suppress(Exception):
                 value = dict(value)
                 value["graph"] = json.loads(graph)
+        trace_context = value.get("trace_context")
+        if isinstance(trace_context, str) and trace_context.strip():
+            with suppress(Exception):
+                value = dict(value)
+                value["trace_context"] = json.loads(trace_context)
         return value
 
 
@@ -149,9 +176,20 @@ class RoomConfig(BaseModel):
     """
 
     enabled: bool = Field(default=False)
-    max_participants: int = Field(default=8)
+    environment_id: str = Field(
+        default="local",
+        description="Environment whose participants are represented in this room.",
+    )
     participant_colors: list[str] = Field(default_factory=lambda: list(_DEFAULT_PARTICIPANT_COLORS))
     activity_detail_max_length: int = Field(default=200)
+    delivery_dedupe_max_entries: int = Field(
+        default=4096,
+        gt=0,
+        description=(
+            "Maximum number of source collaboration-event identities retained "
+            "to suppress exact transport redeliveries."
+        ),
+    )
     default_target_peer_id: str = Field(
         default="",
         description=(
@@ -262,8 +300,8 @@ class SkuldSessionConfig(BaseModel):
     )
 
 
-class ResidentRelayConfig(BaseModel):
-    """Platform event relay for resident sessions.
+class ObservationRelayConfig(BaseModel):
+    """External-event relay for a room participant.
 
     When the broker hosts a resident (``room.default_target_peer_id`` set),
     Sleipnir events matching *event_patterns* are checked against the
@@ -275,21 +313,11 @@ class ResidentRelayConfig(BaseModel):
 
     enabled: bool = Field(default=True)
     event_patterns: list[str] = Field(
-        default_factory=lambda: [
-            "research.*",
-            "spec.*",
-            "plan.*",
-            "delivery.*",
-            "ravn.task.*",
-        ],
+        default_factory=lambda: ["*"],
         description=(
-            "Sleipnir event-type patterns the relay subscribes to. Events "
-            "are still filtered by the resident's subscribes_to declaration "
-            "before delivery — patterns just bound the subscription. These "
-            "are initiative-scoped workflow events; platform-wide firehoses "
-            "(volundr.session.*, volundr.chronicle.*) are intentionally "
-            "excluded because they carry no resident/initiative provenance "
-            "and would wake every resident on every user's activity."
+            "Optional transport-level event patterns used to bound the relay "
+            "subscription. The default observes every event; the target Ravn's "
+            "declared subscribes_to patterns remain authoritative for delivery."
         ),
     )
     payload_preview_chars: int = Field(
@@ -575,7 +603,7 @@ class SkuldSettings(BaseSettings):
     activity_heartbeat: ActivityHeartbeatConfig = Field(default_factory=ActivityHeartbeatConfig)
     delivery: DeliveryConfig = Field(default_factory=DeliveryConfig)
     ws_auth: WsAuthConfig = Field(default_factory=WsAuthConfig)
-    resident_relay: ResidentRelayConfig = Field(default_factory=ResidentRelayConfig)
+    observation_relay: ObservationRelayConfig = Field(default_factory=ObservationRelayConfig)
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8081)
     volundr_api_url: str = Field(default="")
@@ -641,6 +669,7 @@ class SkuldSettings(BaseSettings):
     acp_prompt_timeout_s: float = Field(default=300.0)  # ACP (Grok Build) prompt turn timeout
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     reflex: ReflexConfig = Field(default_factory=ReflexConfig)
+    observability: SkuldObservabilityConfig = Field(default_factory=SkuldObservabilityConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     peer_watchdog: PeerWatchdogConfig = Field(default_factory=PeerWatchdogConfig)
     room: RoomConfig = Field(default_factory=RoomConfig)

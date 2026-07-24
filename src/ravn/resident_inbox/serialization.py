@@ -33,6 +33,9 @@ def _signal_from_record(record: dict[str, Any], *, default_kind: str) -> Residen
         kind=str(record.get("kind") or default_kind),
         summary=summary,
         payload=dict(record),
+        trace_context={
+            str(key): str(value) for key, value in dict(record.get("trace_context") or {}).items()
+        },
         raw_ref=str(record.get("evidence_ref") or ""),
         classification=classification,
         confidence=confidence,
@@ -105,6 +108,7 @@ def _environment_signal_record(event: Any) -> dict[str, Any]:
         "severity": severity,
         "observed_at": _event_timestamp(event, data),
         "payload": payload,
+        "trace_context": dict(getattr(event, "trace_context", {}) or {}),
     }
 
 
@@ -209,6 +213,7 @@ def _signal_to_dict(signal: ResidentInboxSignal) -> dict[str, Any]:
         "kind": signal.kind,
         "summary": signal.summary,
         "payload": signal.payload,
+        "trace_context": signal.trace_context,
         "raw_ref": signal.raw_ref,
         "classification": signal.classification,
         "confidence": signal.confidence,
@@ -229,6 +234,9 @@ def _signal_from_dict(data: dict[str, Any]) -> ResidentInboxSignal:
         kind=str(data.get("kind") or "signal"),
         summary=str(data.get("summary") or "Resident inbox signal"),
         payload=dict(data.get("payload") or {}),
+        trace_context={
+            str(key): str(value) for key, value in dict(data.get("trace_context") or {}).items()
+        },
         raw_ref=str(data.get("raw_ref") or ""),
         classification=str(data.get("classification") or ResidentInboxClassification.UNKNOWN.value),
         confidence=float(data.get("confidence") or 0.5),

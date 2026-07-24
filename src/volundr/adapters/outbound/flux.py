@@ -338,6 +338,18 @@ class FluxPodManager(PodManager, ResidentRuntimeController):
         if obj is None:
             if session.status == SessionStatus.STARTING:
                 return SessionStatus.STARTING
+            if session.status == SessionStatus.PROVISIONING:
+                # The release was created (provisioning began) and is now gone:
+                # Flux remediation uninstalled it after a failed install. It
+                # will never come back — reporting STARTING here spins forever
+                # and STOPPED would surface as a successful completion upstream.
+                logger.error(
+                    "HelmRelease %s vanished while session %s was provisioning "
+                    "— install failed and Flux uninstalled it; marking FAILED",
+                    release_name,
+                    session.id,
+                )
+                return SessionStatus.FAILED
             return SessionStatus.STOPPED
 
         return self._map_status(obj)
@@ -388,6 +400,16 @@ class FluxPodManager(PodManager, ResidentRuntimeController):
                 field_selector=f"metadata.name={release_name}",
                 timeout_seconds=int(timeout),
             ):
+                if str(event.get("type") or "").upper() == "DELETED":
+                    # Flux uninstalled the release mid-provisioning (install
+                    # failed and remediation tore it down). Terminal — fail
+                    # now instead of watching a void until the timeout.
+                    logger.error(
+                        "HelmRelease %s was deleted while waiting for readiness "
+                        "— install failed and Flux uninstalled it; marking FAILED",
+                        release_name,
+                    )
+                    return SessionStatus.FAILED
                 obj = event.get("object", {})
                 if not isinstance(obj, dict):
                     continue

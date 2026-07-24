@@ -90,18 +90,22 @@ class GBrainResidentStateAdapter(LocalResidentState):
         question: str,
         reason: str,
         turn: ResidentTurnRecord,
+        case_id: str = "",
+        turn_ref: str = "",
     ) -> str:
         ref = await super().write_operator_needed(
             question=question,
             reason=reason,
             turn=turn,
+            case_id=case_id,
+            turn_ref=turn_ref,
         )
         if self._capture_enabled:
             await self._capture_local_ref(ref)
         return ref
 
-    async def write_operator_answer(self, answer: str) -> str:
-        ref = await super().write_operator_answer(answer)
+    async def write_operator_answer(self, answer: str, *, case_id: str = "") -> str:
+        ref = await super().write_operator_answer(answer, case_id=case_id)
         if self._capture_enabled:
             await self._capture_local_ref(ref)
         return ref

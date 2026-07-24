@@ -111,6 +111,29 @@ def test_workload_identity_adapter_omits_scopes_when_not_requested(tmp_path) -> 
     assert "scopes" not in seen_bodies[0]
 
 
+def test_workload_identity_adapter_reloads_projected_token_after_rejection(tmp_path) -> None:
+    proof_file = tmp_path / "token"
+    proof_file.write_text("proof-jwt-1", encoding="utf-8")
+    seen_proofs: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        proof = json.loads(request.content.decode())["token"]
+        seen_proofs.append(proof)
+        return httpx.Response(200, json={"token": f"exchanged-{proof}", "expires_in": 300})
+
+    adapter = WorkloadIdentityBearerTokenAuthAdapter(
+        exchange_url="https://volundr.test/api/v1/tokens/workload/exchange",
+        token_file=str(proof_file),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert adapter.headers() == {"Authorization": "Bearer exchanged-proof-jwt-1"}
+    proof_file.write_text("proof-jwt-2", encoding="utf-8")
+    assert adapter.invalidate() is True
+    assert adapter.headers() == {"Authorization": "Bearer exchanged-proof-jwt-2"}
+    assert seen_proofs == ["proof-jwt-1", "proof-jwt-2"]
+
+
 def test_workload_identity_adapter_direct_kwargs_beat_env(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

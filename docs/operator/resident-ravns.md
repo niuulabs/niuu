@@ -195,12 +195,12 @@ exactly the sessions its owner owns — nothing else.
 
 ## The loop back
 
-Two mechanisms resume the chat when launched work lands:
+Two mechanisms resume the resident when launched work lands:
 
-- **Resident relay** (`resident_relay` in the broker config): platform
-  events matching the resident's persona `consumes_event_types`
-  declaration (research/spec/plan completions by default) become a
-  directed turn plus a `room_notification` in the chat history.
+- **Observation relay** (`observation_relay` in the broker config): platform
+  events matching the resident's own `consumes_event_types` declaration become
+  neutral evidence in a directed turn plus a `room_notification` in chat
+  history. The relay does not prescribe a conclusion or action.
 - **Session join** (`session_join` tool): the resident joins the room of a
   session it launched (`{"action": "join", "session_id": ..., "chat_endpoint": ...}`),
   appears in that session's participant list, receives messages directed

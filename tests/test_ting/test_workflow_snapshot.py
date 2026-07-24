@@ -186,6 +186,7 @@ def test_workflow_snapshot_helpers_fall_back_to_graph_and_dedupe_personas() -> N
                             "personaId": "reviewer",
                             "budget": 12,
                             "consumesEventTypes": ["review.requested"],
+                            "systemPromptExtra": "Review the workspace artifact directly.",
                         },
                         {"personaId": "reviewer", "budget": 99},
                         {"personaId": ""},
@@ -222,6 +223,7 @@ def test_workflow_snapshot_helpers_fall_back_to_graph_and_dedupe_personas() -> N
             "name": "reviewer",
             "iteration_budget": 12,
             "consumes_event_types": ["review.requested"],
+            "system_prompt_extra": "Review the workspace artifact directly.",
         },
         {"name": "writer"},
     ]

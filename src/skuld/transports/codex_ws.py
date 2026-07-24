@@ -521,7 +521,11 @@ class CodexWebSocketTransport(CLITransport):
             logger.info("Codex thread resumed: %s", self._thread_id)
         else:
             thread_params: dict = {
-                "experimentalRawEvents": False,
+                # Native Codex tools such as ``exec`` are Responses API items
+                # that do not appear in the normal ThreadItem history.  Keep
+                # raw events enabled so the transport can normalize those
+                # calls into the same generic tool lifecycle as CLI/MCP tools.
+                "experimentalRawEvents": True,
                 "persistExtendedHistory": True,
                 "cwd": self.workspace_dir,
             }
@@ -777,12 +781,18 @@ class CodexWebSocketTransport(CLITransport):
 
         if method == "rawResponseItem/completed":
             item = params.get("item", {})
-            if isinstance(item, dict) and item.get("type") == "function_call":
+            if (
+                isinstance(item, dict)
+                and item.get("type") == "function_call"
+                and item.get("name") == "shell_command"
+            ):
                 task = asyncio.create_task(
                     self._handle_raw_function_call_item(item),
-                    name=f"codex-raw-function-{item.get('call_id') or item.get('name') or 'call'}",
+                    name=f"codex-raw-function-{item.get('call_id') or 'shell_command'}",
                 )
                 task.add_done_callback(self._log_dynamic_tool_task_result)
+                return
+            await self._observe_raw_response_item(item)
             return
 
         # --- Command / file output deltas ---
@@ -827,6 +837,13 @@ class CodexWebSocketTransport(CLITransport):
         """Handle rollout-style response_item frames emitted by app-server."""
         if not isinstance(payload, dict):
             return
+        if payload.get("type") in {
+            "custom_tool_call",
+            "custom_tool_call_output",
+            "function_call_output",
+        }:
+            await self._observe_raw_response_item(payload)
+            return
         if payload.get("type") == "function_call":
             logger.info(
                 "Codex response_item function_call: name=%s call_id=%s",
@@ -842,6 +859,54 @@ class CodexWebSocketTransport(CLITransport):
             )
             task.add_done_callback(self._log_dynamic_tool_task_result)
             return
+
+    async def _observe_raw_response_item(self, item: object) -> None:
+        """Normalize completed Responses API tool items without executing them.
+
+        Raw notifications are observational.  Codex already owns execution of
+        these calls; the transport only exposes their lifecycle to Ravn so
+        episodes, resident turns, and traces truthfully report tool use.
+        """
+        if not isinstance(item, dict):
+            return
+
+        item_type = str(item.get("type") or "")
+        call_id = str(item.get("call_id") or item.get("id") or "")
+        if not call_id:
+            return
+
+        if item_type in {"custom_tool_call", "function_call"}:
+            name = _map_codex_tool(str(item.get("name") or ""))
+            if not name:
+                return
+            raw_input = item.get("input")
+            if item_type == "function_call":
+                raw_input = item.get("arguments")
+                tool_input = self._decode_function_arguments(raw_input)
+            elif isinstance(raw_input, dict):
+                tool_input = raw_input
+            else:
+                try:
+                    decoded = json.loads(raw_input) if isinstance(raw_input, str) else raw_input
+                except json.JSONDecodeError:
+                    decoded = raw_input
+                tool_input = decoded if isinstance(decoded, dict) else {"input": decoded}
+            await self._emit_tool_use(call_id, name, tool_input)
+            return
+
+        if item_type not in {"custom_tool_call_output", "function_call_output"}:
+            return
+        output = item.get("output", "")
+        if isinstance(output, str):
+            output_text = output
+        else:
+            output_text = self._dynamic_tool_content_text(output)
+            if not output_text:
+                try:
+                    output_text = json.dumps(output)
+                except (TypeError, ValueError):
+                    output_text = str(output)
+        await self._emit_tool_result(call_id, output_text)
 
     # ------------------------------------------------------------------
     # Server requests (approval callbacks)
@@ -911,6 +976,23 @@ class CodexWebSocketTransport(CLITransport):
                 name=f"codex-dynamic-tool-{rid}",
             )
             task.add_done_callback(self._log_dynamic_tool_task_result)
+            return
+
+        if method == "mcpServer/elicitation/request":
+            if self._skip_permissions or self._approval_policy == "never":
+                await self._send_rpc_response(rid, {"action": "accept", "content": {}})
+                return
+            request_id = str(rid)
+            await self._emit(
+                {
+                    "type": "control_request",
+                    "subtype": "can_use_tool",
+                    "request_id": request_id,
+                    "tool": "MCP",
+                    "input": params,
+                }
+            )
+            self._pending_approvals[request_id] = (rid, "mcp_elicitation")
             return
 
         # Default: auto-approve unknown requests
@@ -1231,7 +1313,11 @@ class CodexWebSocketTransport(CLITransport):
             return
 
         if item_type == "webSearch":
-            await self._emit_tool_use(item_id, "WebSearch", {"query": item.get("query", "")})
+            await self._emit_tool_use(
+                item_id,
+                "WebSearch",
+                self._web_search_activity(item),
+            )
             return
 
     async def _handle_item_completed(self, item: dict) -> None:
@@ -1249,9 +1335,8 @@ class CodexWebSocketTransport(CLITransport):
             if not isinstance(output, str):
                 output = str(output)
             exit_code = item.get("exitCode", 0)
-            if output or exit_code != 0:
-                prefix = "" if exit_code == 0 else f"[exit code {exit_code}] "
-                await self._emit_tool_result(item_id, prefix + output, is_error=exit_code != 0)
+            prefix = "" if exit_code == 0 else f"[exit code {exit_code}] "
+            await self._emit_tool_result(item_id, prefix + output, is_error=exit_code != 0)
             return
 
         if item_type == "agentMessage":
@@ -1269,20 +1354,22 @@ class CodexWebSocketTransport(CLITransport):
             result_text = self._extract_item_result_text(item)
             if not result_text:
                 result_text = self._consume_buffered_item_output(item_id)
-            if result_text:
-                is_error = bool(item.get("isError") or item.get("is_error"))
-                await self._emit_tool_result(item_id, result_text, is_error=is_error)
+            if item_type == "webSearch" and not result_text:
+                activity = self._web_search_activity(item)
+                if activity:
+                    result_text = json.dumps(activity)
+            is_error = bool(item.get("isError") or item.get("is_error"))
+            await self._emit_tool_result(item_id, result_text, is_error=is_error)
             return
 
         if item_type == "dynamicToolCall":
             await self._emit_content_block_stop()
             result_text = self._dynamic_tool_content_text(item.get("contentItems"))
-            if result_text:
-                await self._emit_tool_result(
-                    item_id,
-                    result_text,
-                    is_error=item.get("success") is False,
-                )
+            await self._emit_tool_result(
+                item_id,
+                result_text,
+                is_error=item.get("success") is False,
+            )
             return
 
         self._buffered_item_output.pop(item_id, None)
@@ -1316,6 +1403,18 @@ class CodexWebSocketTransport(CLITransport):
             except (TypeError, ValueError):
                 return str(val)
         return ""
+
+    @staticmethod
+    def _web_search_activity(item: dict) -> dict:
+        """Preserve the app-server's truthful search/open/find descriptor."""
+        activity: dict = {}
+        query = item.get("query")
+        if isinstance(query, str) and query:
+            activity["query"] = query
+        action = item.get("action")
+        if isinstance(action, dict):
+            activity["action"] = action
+        return activity
 
     def _buffer_item_output(self, item_id: object, delta: object) -> None:
         """Accumulate incremental tool output until the item completes."""
@@ -1561,9 +1660,16 @@ class CodexWebSocketTransport(CLITransport):
             decision = "approved_for_session" if behavior == "allowForever" else "approved"
             if behavior not in ("allow", "allowForever"):
                 decision = "denied"
+            result = {"decision": decision}
+        elif approval_kind == "mcp_elicitation":
+            result = {"action": "accept" if behavior in ("allow", "allowForever") else "decline"}
+            if result["action"] == "accept":
+                content = response.get("content")
+                result["content"] = content if isinstance(content, dict) else {}
         else:
             decision = "accept" if behavior in ("allow", "allowForever") else "decline"
-        await self._send_rpc_response(rid, {"decision": decision})
+            result = {"decision": decision}
+        await self._send_rpc_response(rid, result)
 
     async def send_control(self, subtype: str, **kwargs: object) -> None:
         if self._fallback_transport is not None:

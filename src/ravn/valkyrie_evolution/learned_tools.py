@@ -6,11 +6,13 @@ import ast
 import asyncio
 import json
 import logging
+import os
 import re
 import shlex
+import shutil
 import uuid
-from collections.abc import Sequence
-from dataclasses import replace
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -49,6 +51,15 @@ NETWORK_DENIED_DOCKER_NETWORK = "none"
 
 #: Default devrunner image for the Forge sandbox execution path.
 DEFAULT_FORGE_SANDBOX_IMAGE = "ghcr.io/niuulabs/devrunner:latest"
+
+#: Immutable default image for the fail-closed, one-container-per-run backend.
+#: ``--pull=never`` is used, so an operator must preload this exact reviewed
+#: image rather than letting an autonomous tool execution silently change its
+#: own runtime. Tests and alternate composition roots may inject another policy.
+DEFAULT_CONTAINED_TOOL_IMAGE = (
+    "ghcr.io/niuulabs/devrunner@"
+    "sha256:ec7a32ffd8ca1f3ddb8bd4983198988538ab74804201ce45e14e56241adfc518"
+)
 
 #: ``ToolRunResult.enforcement`` marker: the sandbox boundary applied the
 #: tool's declared reach (network on only when granted).
@@ -174,12 +185,576 @@ class LocalLearnedToolRunner:
         )
 
 
+@dataclass(frozen=True)
+class ContainerRuntimePolicy:
+    """Fixed resource and privilege ceiling for one learned-tool run."""
+
+    image: str = DEFAULT_CONTAINED_TOOL_IMAGE
+    memory: str = "256m"
+    cpus: str = "0.5"
+    pids_limit: int = 64
+    tmpfs_size: str = "64m"
+
+
+@dataclass(frozen=True)
+class _ContainerProcessResult:
+    returncode: int
+    stdout: bytes = b""
+    stderr: bytes = b""
+    error: str = ""
+    timed_out: bool = False
+    output_exceeded: bool = False
+
+
+ContainerCommandRunner = Callable[
+    [Sequence[str], bytes, float, str], Awaitable[_ContainerProcessResult]
+]
+
+_CONTAINER_TOOL_PATH = "/opt/ravn/tool/tool.py"
+_CONTAINER_VENV_PATH = "/opt/ravn/venv"
+_CONTAINER_WORKDIR = "/work"
+_FILESYSTEM_REACH_KINDS = frozenset({"file", "filesystem", "path", "workspace"})
+_CREDENTIAL_REACH_KINDS = frozenset({"credential", "credentials", "secret", "secrets"})
+_READ_ONLY_ACCESS = frozenset({"none", "read"})
+_ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_DOCKER_PROXY_ENV = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+)
+
+
+class ContainedLearnedToolRunner:
+    """Run each learned tool in a fresh, least-reach OCI container.
+
+    This is the hard execution boundary for resident-authored code. The
+    container receives no workspace mount, no host environment, no runtime
+    socket, and no network by default. A manifest may add only:
+
+    * exact existing filesystem paths, mounted read-only or read-write;
+    * explicitly named credential environment variables; and
+    * broad outbound network access.
+
+    A target-specific network grant is rejected because a Docker bridge cannot
+    enforce a hostname/IP allowlist. Failing closed is intentional: recording
+    such a run as "contained" would turn review metadata into pretend safety.
+    """
+
+    enforces_reach = True
+
+    def __init__(
+        self,
+        *,
+        workspace_root: str | Path,
+        venvs_dir: str | Path | None = None,
+        policy: ContainerRuntimePolicy | None = None,
+        command_runner: ContainerCommandRunner | None = None,
+        output_limit_bytes: int = 256 * 1024,
+        provision_timeout_seconds: float = DEFAULT_TOOL_VENV_PIP_TIMEOUT_SECONDS,
+    ) -> None:
+        self._workspace_root = Path(workspace_root).resolve()
+        self._venvs_dir = (
+            Path(venvs_dir).resolve()
+            if venvs_dir is not None
+            else self._workspace_root / ".ravn" / "learned_tool_venvs"
+        )
+        self._policy = policy or ContainerRuntimePolicy()
+        self._command_runner = command_runner or self._run_docker
+        self._output_limit_bytes = output_limit_bytes
+        self._provision_timeout_seconds = provision_timeout_seconds
+        self._venv_locks: dict[str, asyncio.Lock] = {}
+
+    async def run(
+        self,
+        tool_path: Path,
+        payload: dict[str, Any],
+        *,
+        entry_point: str,
+        timeout_seconds: float,
+        requirements: Sequence[str] = (),
+        declared_reach: Sequence[ToolReachGrant] = (),
+    ) -> ToolRunResult:
+        path = tool_path.resolve()
+        if not path.is_file():
+            return ToolRunResult(ok=False, error=f"tool implementation missing: {path}")
+        try:
+            reach_args, credential_names = self._reach_args(declared_reach)
+            venv_dir = await self._ensure_container_venv(path.stem, requirements)
+        except LearnedToolError as exc:
+            return ToolRunResult(
+                ok=False,
+                error=str(exc),
+                enforcement=REACH_ENFORCEMENT_UNAVAILABLE,
+            )
+
+        name = f"ravn-tool-{uuid.uuid4().hex[:16]}"
+        argv = self._base_docker_argv(name=name)
+        argv.extend(reach_args)
+        argv.extend(self._credential_args(credential_names))
+        argv.extend(
+            [
+                "--mount",
+                self._bind_mount(path, Path(_CONTAINER_TOOL_PATH), read_only=True),
+            ]
+        )
+        python = "python"
+        if venv_dir is not None:
+            argv.extend(
+                [
+                    "--mount",
+                    self._bind_mount(
+                        venv_dir,
+                        Path(_CONTAINER_VENV_PATH),
+                        read_only=True,
+                    ),
+                ]
+            )
+            python = f"{_CONTAINER_VENV_PATH}/bin/python"
+        argv.extend(
+            [
+                self._policy.image,
+                python,
+                "-I",
+                "-c",
+                _CONTAINER_BOOTSTRAP,
+                _CONTAINER_TOOL_PATH,
+                entry_point,
+            ]
+        )
+        completed = await self._command_runner(
+            argv,
+            json.dumps(payload).encode("utf-8"),
+            timeout_seconds,
+            name,
+        )
+        return self._tool_result(completed, path=path, timeout_seconds=timeout_seconds)
+
+    def _reach_args(
+        self,
+        declared_reach: Sequence[ToolReachGrant],
+    ) -> tuple[list[str], list[str]]:
+        args: list[str] = []
+        credentials: list[str] = []
+        network_grants = [
+            grant
+            for grant in declared_reach
+            if (grant.kind.lower() in NETWORK_REACH_KINDS or grant.kind.lower().startswith("http"))
+            and grant.access != "none"
+        ]
+        targeted_network = [grant.target for grant in network_grants if grant.target.strip()]
+        if targeted_network:
+            raise LearnedToolError(
+                "contained learned-tool runner cannot enforce target-specific network reach "
+                f"({', '.join(targeted_network)}); refusing to widen it to unrestricted egress"
+            )
+        narrow_network = [grant.access for grant in network_grants if grant.access != "read_write"]
+        if narrow_network:
+            raise LearnedToolError(
+                "contained learned-tool runner can enforce only a broad network/read_write "
+                "grant; refusing to treat unrestricted sockets as read-only or write-only"
+            )
+        network = (
+            NETWORK_ALLOWED_DOCKER_NETWORK if network_grants else NETWORK_DENIED_DOCKER_NETWORK
+        )
+        args.append(f"--network={network}")
+
+        for grant in declared_reach:
+            kind = grant.kind.lower()
+            if kind in _FILESYSTEM_REACH_KINDS:
+                if grant.access == "none":
+                    continue
+                if grant.access not in {"read", "read_write"}:
+                    raise LearnedToolError(
+                        "contained learned-tool runner can enforce filesystem access only as "
+                        f"read or read_write, not {grant.access!r}"
+                    )
+                target = self._filesystem_target(grant)
+                args.extend(
+                    [
+                        "--mount",
+                        self._bind_mount(
+                            target,
+                            target,
+                            read_only=grant.access in _READ_ONLY_ACCESS,
+                        ),
+                    ]
+                )
+            elif kind in _CREDENTIAL_REACH_KINDS:
+                if grant.access == "none":
+                    continue
+                if grant.access != "read":
+                    raise LearnedToolError(f"credential reach {grant.target!r} must be read-only")
+                name = grant.target.strip()
+                if not _ENV_NAME_RE.fullmatch(name):
+                    raise LearnedToolError(
+                        "credential reach target must name one environment variable"
+                    )
+                if name not in os.environ:
+                    raise LearnedToolError(
+                        f"credential environment variable {name!r} is not available"
+                    )
+                credentials.append(name)
+        return args, sorted(set(credentials))
+
+    def _filesystem_target(self, grant: ToolReachGrant) -> Path:
+        raw = grant.target.strip()
+        if not raw:
+            raise LearnedToolError("filesystem reach requires an exact target path")
+        target = Path(raw)
+        if not target.is_absolute():
+            target = self._workspace_root / target
+        try:
+            target = target.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise LearnedToolError(
+                f"filesystem reach target does not exist: {grant.target}"
+            ) from exc
+        if "," in str(target):
+            raise LearnedToolError("filesystem reach paths containing ',' are unsupported")
+        forbidden = (
+            Path("/proc").resolve(),
+            Path("/sys").resolve(),
+            Path("/dev").resolve(),
+            Path("/run").resolve(),
+            Path("/var/run").resolve(),
+            Path("/run/containerd").resolve(),
+            Path("/var/run/docker.sock").resolve(),
+        )
+        if target == Path("/") or any(
+            blocked == target or blocked.is_relative_to(target) or target.is_relative_to(blocked)
+            for blocked in forbidden
+        ):
+            raise LearnedToolError(
+                f"filesystem reach target crosses a container escape boundary: {target}"
+            )
+        return target
+
+    def _base_docker_argv(self, *, name: str) -> list[str]:
+        return [
+            "docker",
+            "run",
+            "--rm",
+            "--interactive",
+            "--init",
+            "--pull=never",
+            "--entrypoint=",
+            "--name",
+            name,
+            "--read-only",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges",
+            f"--pids-limit={self._policy.pids_limit}",
+            f"--memory={self._policy.memory}",
+            f"--cpus={self._policy.cpus}",
+            f"--user={os.getuid()}:{os.getgid()}",
+            "--tmpfs",
+            (
+                f"{_CONTAINER_WORKDIR}:rw,noexec,nosuid,nodev,"
+                f"size={self._policy.tmpfs_size},mode=1777"
+            ),
+            "--tmpfs",
+            f"/tmp:rw,noexec,nosuid,nodev,size={self._policy.tmpfs_size},mode=1777",
+            "--workdir",
+            _CONTAINER_WORKDIR,
+            "--env",
+            "HOME=/tmp",
+            "--env",
+            "PYTHONDONTWRITEBYTECODE=1",
+            "--env",
+            "PYTHONPYCACHEPREFIX=/tmp/pycache",
+        ]
+
+    @staticmethod
+    def _bind_mount(source: Path, destination: Path, *, read_only: bool) -> str:
+        mount = f"type=bind,src={source},dst={destination}"
+        return f"{mount},readonly" if read_only else mount
+
+    @staticmethod
+    def _credential_args(names: Sequence[str]) -> list[str]:
+        args: list[str] = []
+        granted = set(names)
+        # Docker can inject proxy variables from ~/.docker/config.json even
+        # when the caller did not pass them. Blank those unless explicitly
+        # present in the credential contract.
+        for name in _DOCKER_PROXY_ENV:
+            args.extend(["--env", name if name in granted else f"{name}="])
+        for name in names:
+            if name not in _DOCKER_PROXY_ENV:
+                args.extend(["--env", name])
+        return args
+
+    async def _ensure_container_venv(
+        self,
+        tool_name: str,
+        requirements: Sequence[str],
+    ) -> Path | None:
+        if not requirements:
+            return None
+        for requirement in requirements:
+            if not requirement.strip() or requirement.lstrip().startswith("-"):
+                raise LearnedToolError(f"unsafe learned-tool requirement argument: {requirement!r}")
+        safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", tool_name.strip())
+        if not safe_name:
+            raise LearnedToolError("cannot provision a venv for an empty tool name")
+        venv_dir = self._venvs_dir / safe_name
+        stamp = venv_dir / TOOL_VENV_REQUIREMENTS_STAMP
+        desired = "\n".join(requirements)
+        lock = self._venv_locks.setdefault(str(venv_dir), asyncio.Lock())
+        async with lock:
+            if stamp.is_file() and stamp.read_text(encoding="utf-8") == desired:
+                return venv_dir
+            if venv_dir.exists():
+                shutil.rmtree(venv_dir)
+            venv_dir.mkdir(parents=True)
+            cache_dir = self._venvs_dir / TOOL_VENV_UV_CACHE_DIRNAME
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            created = await self._run_provision_step(
+                venv_dir,
+                cache_dir,
+                ["python", "-m", "venv", _CONTAINER_VENV_PATH],
+                network=NETWORK_DENIED_DOCKER_NETWORK,
+            )
+            if created.returncode != 0 or created.error or created.timed_out:
+                shutil.rmtree(venv_dir, ignore_errors=True)
+                raise LearnedToolError(
+                    "contained learned-tool venv creation failed: " + self._process_error(created)
+                )
+            installed = await self._run_provision_step(
+                venv_dir,
+                cache_dir,
+                [
+                    f"{_CONTAINER_VENV_PATH}/bin/python",
+                    "-m",
+                    "pip",
+                    "install",
+                    "--disable-pip-version-check",
+                    *requirements,
+                ],
+                network=NETWORK_ALLOWED_DOCKER_NETWORK,
+            )
+            if installed.returncode != 0 or installed.error or installed.timed_out:
+                shutil.rmtree(venv_dir, ignore_errors=True)
+                raise LearnedToolError(
+                    "contained learned-tool dependency install failed: "
+                    + self._process_error(installed)
+                )
+            stamp.write_text(desired, encoding="utf-8")
+            return venv_dir
+
+    async def _run_provision_step(
+        self,
+        venv_dir: Path,
+        cache_dir: Path,
+        command: list[str],
+        *,
+        network: str,
+    ) -> _ContainerProcessResult:
+        name = f"ravn-tool-provision-{uuid.uuid4().hex[:16]}"
+        argv = self._base_docker_argv(name=name)
+        argv.extend(self._credential_args(()))
+        argv.extend(
+            [
+                f"--network={network}",
+                "--mount",
+                self._bind_mount(venv_dir, Path(_CONTAINER_VENV_PATH), read_only=False),
+                "--mount",
+                self._bind_mount(cache_dir, Path("/opt/ravn/pip-cache"), read_only=False),
+                "--env",
+                "PIP_CACHE_DIR=/opt/ravn/pip-cache",
+                self._policy.image,
+                *command,
+            ]
+        )
+        return await self._command_runner(
+            argv,
+            b"",
+            self._provision_timeout_seconds,
+            name,
+        )
+
+    def _tool_result(
+        self,
+        completed: _ContainerProcessResult,
+        *,
+        path: Path,
+        timeout_seconds: float,
+    ) -> ToolRunResult:
+        if completed.timed_out:
+            return ToolRunResult(
+                ok=False,
+                error=f"tool timed out after {timeout_seconds}s: {path.name}",
+                enforcement=REACH_ENFORCEMENT_ENFORCED,
+            )
+        if completed.output_exceeded:
+            return ToolRunResult(
+                ok=False,
+                error=f"tool output exceeded {self._output_limit_bytes} bytes: {path.name}",
+                enforcement=REACH_ENFORCEMENT_ENFORCED,
+            )
+        if completed.error:
+            return ToolRunResult(
+                ok=False,
+                error=f"contained learned-tool execution unavailable: {completed.error}",
+                enforcement=REACH_ENFORCEMENT_UNAVAILABLE,
+            )
+        stderr = completed.stderr.decode("utf-8", errors="replace")[: self._output_limit_bytes]
+        if completed.returncode != 0:
+            return ToolRunResult(
+                ok=False,
+                error=f"contained tool exited with status {completed.returncode}: {path.name}",
+                stderr=stderr,
+                enforcement=REACH_ENFORCEMENT_ENFORCED,
+            )
+        if len(completed.stdout) > self._output_limit_bytes:
+            return ToolRunResult(
+                ok=False,
+                error=f"tool output exceeded {self._output_limit_bytes} bytes: {path.name}",
+                stderr=stderr,
+                enforcement=REACH_ENFORCEMENT_ENFORCED,
+            )
+        try:
+            result = json.loads(completed.stdout.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError as exc:
+            return ToolRunResult(
+                ok=False,
+                error=f"contained tool produced non-JSON output: {exc}",
+                stderr=stderr,
+                enforcement=REACH_ENFORCEMENT_ENFORCED,
+            )
+        if not isinstance(result, dict):
+            return ToolRunResult(
+                ok=False,
+                error=f"contained tool must return a JSON object, got {type(result).__name__}",
+                stderr=stderr,
+                enforcement=REACH_ENFORCEMENT_ENFORCED,
+            )
+        return ToolRunResult(
+            ok=True,
+            result=result,
+            stderr=stderr,
+            enforcement=REACH_ENFORCEMENT_ENFORCED,
+        )
+
+    @staticmethod
+    def _process_error(result: _ContainerProcessResult) -> str:
+        if result.timed_out:
+            return "timed out"
+        if result.error:
+            return result.error
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        return stderr or f"container exited with status {result.returncode}"
+
+    async def _run_docker(
+        self,
+        argv: Sequence[str],
+        stdin: bytes,
+        timeout_seconds: float,
+        container_name: str,
+    ) -> _ContainerProcessResult:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as exc:
+            return _ContainerProcessResult(returncode=-1, error=str(exc))
+
+        assert process.stdin is not None  # noqa: S101 - PIPE requested above
+        assert process.stdout is not None  # noqa: S101 - PIPE requested above
+        assert process.stderr is not None  # noqa: S101 - PIPE requested above
+        output_exceeded = asyncio.Event()
+
+        async def _read_bounded(stream: asyncio.StreamReader) -> bytes:
+            retained = bytearray()
+            while chunk := await stream.read(64 * 1024):
+                room = self._output_limit_bytes - len(retained)
+                if room > 0:
+                    retained.extend(chunk[:room])
+                if len(chunk) > room:
+                    output_exceeded.set()
+                # Continue draining after the ceiling. Otherwise the pipe can
+                # block the container before the supervisor gets to kill it.
+            return bytes(retained)
+
+        async def _communicate_bounded() -> tuple[bytes, bytes, bool]:
+            stdout_task = asyncio.create_task(_read_bounded(process.stdout))
+            stderr_task = asyncio.create_task(_read_bounded(process.stderr))
+            process.stdin.write(stdin)
+            await process.stdin.drain()
+            process.stdin.close()
+            process_wait = asyncio.create_task(process.wait())
+            overflow_wait = asyncio.create_task(output_exceeded.wait())
+            done, _ = await asyncio.wait(
+                {process_wait, overflow_wait},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if overflow_wait in done and output_exceeded.is_set() and not process_wait.done():
+                process.kill()
+                await process_wait
+                await self._remove_container(container_name)
+            else:
+                overflow_wait.cancel()
+            stdout, stderr = await asyncio.gather(stdout_task, stderr_task)
+            return stdout, stderr, output_exceeded.is_set()
+
+        try:
+            stdout, stderr, exceeded = await asyncio.wait_for(
+                _communicate_bounded(),
+                timeout=timeout_seconds,
+            )
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+            await self._remove_container(container_name)
+            return _ContainerProcessResult(returncode=124, timed_out=True)
+        return _ContainerProcessResult(
+            returncode=process.returncode or 0,
+            stdout=stdout,
+            stderr=stderr,
+            output_exceeded=exceeded,
+        )
+
+    @staticmethod
+    async def _remove_container(name: str) -> None:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "docker",
+                "rm",
+                "--force",
+                name,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(process.wait(), timeout=5.0)
+        except Exception:  # noqa: BLE001 - best-effort cleanup of an exact run id
+            logger.warning("failed to remove timed-out learned-tool container %s", name)
+
+
+_CONTAINER_BOOTSTRAP = """
+import importlib.util
+import json
+import sys
+
+spec = importlib.util.spec_from_file_location("learned_tool", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+payload = json.load(sys.stdin)
+result = getattr(module, sys.argv[2])(payload)
+json.dump(result, sys.stdout)
+"""
+
+
 class ForgeSandboxLearnedToolRunner:
     """OPTIONAL containerized execution backend — only where Docker exists.
 
     Scope this honestly: this runner requires a Docker daemon, which a
     Kubernetes pod does not (and should not) have, so it is NOT the production
-    security boundary — in-cluster residents use the local backend. It exists
+    security boundary. It exists
     for hosts/VMs that already run Docker, where it adds container isolation
     and network scoping (network-reach tools run with
     :data:`NETWORK_ALLOWED_DOCKER_NETWORK`, others with
@@ -190,8 +765,9 @@ class ForgeSandboxLearnedToolRunner:
     downstream of execution: review/policy gating on declared reach before a
     tool is adopted, independent verification of its code, least-privilege
     short-lived credentials so a misbehaving tool's blast radius is bounded,
-    the audit trail, and rollback. Hard runtime isolation in Kubernetes means
-    pod-per-run execution (a future runner adapter), not Docker-in-pod.
+    the audit trail, and rollback. New deployments use
+    :class:`ContainedLearnedToolRunner`; in Kubernetes it must be backed by a
+    separate OCI execution service rather than mounting the runtime socket.
     """
 
     def __init__(
@@ -741,6 +1317,156 @@ _REACH_BOUNDARY = {
     "external_write": "external_send",
     "admin": "authority_expansion",
 }
+
+
+#: Execution backends the resolver accepts; anything else is a config error.
+KNOWN_EXECUTION_BACKENDS = frozenset({"", "container", "local", "forge", "devrunner", "k8s_job"})
+
+
+def learned_tool_runner_for_backend(
+    execution_backend: str,
+    *,
+    workspace_root: str | Path,
+    venvs_dir: str | Path,
+    sandbox_shell: Any | None = None,
+    backend_kwargs: Mapping[str, Any] | None = None,
+) -> LearnedToolRunner:
+    """Build the configured runner at the composition boundary.
+
+    ``container`` is the fail-closed production path. ``local`` and the old
+    persistent ``forge``/``devrunner`` runner remain explicit compatibility
+    choices, but neither is silently selected for autonomous execution.
+    """
+    if execution_backend == "container":
+        return ContainedLearnedToolRunner(
+            workspace_root=workspace_root,
+            venvs_dir=venvs_dir,
+        )
+    if execution_backend in {"", "local"}:
+        return LocalLearnedToolRunner(venvs_dir=venvs_dir)
+    if execution_backend in {"forge", "devrunner"}:
+        return ForgeSandboxLearnedToolRunner(
+            workspace_root=workspace_root,
+            shell=sandbox_shell,
+        )
+    if execution_backend == "k8s_job":
+        from ravn.valkyrie_evolution.k8s_tool_runner import (  # noqa: PLC0415
+            KubernetesJobExecutor,
+            KubernetesJobLearnedToolRunner,
+        )
+
+        kwargs = dict(backend_kwargs or {})
+        executor = KubernetesJobExecutor(**kwargs)
+        return KubernetesJobLearnedToolRunner(
+            executor=executor,
+            image=str(kwargs.get("image") or DEFAULT_CONTAINED_TOOL_IMAGE),
+        )
+    raise LearnedToolError(f"unknown learned tool execution backend: {execution_backend!r}")
+
+
+class LearnedToolResolver:
+    """Resolve persisted learned tools from resident state on demand.
+
+    One resolver owns the storage conventions and execution-backend selection
+    for a resident's learned tools, so every consumer — the legacy bulk loader,
+    the ``learned_tool_run`` dispatch tool, and the capability catalog — sees
+    the same tool in the same place with the same runner. Listing reads only
+    the artifact envelopes; a callable :class:`LearnedTool` is constructed
+    per-name in :meth:`load`, never eagerly for the whole catalog (NIU-1118).
+    """
+
+    def __init__(
+        self,
+        *,
+        state_dir: str | Path,
+        execution_backend: str = "local",
+        workspace_root: str | Path | None = None,
+        timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
+        execution_backend_kwargs: Mapping[str, Any] | None = None,
+    ) -> None:
+        if execution_backend not in KNOWN_EXECUTION_BACKENDS:
+            raise LearnedToolError(f"unknown learned tool execution backend: {execution_backend!r}")
+        self._state_dir = Path(state_dir)
+        self._execution_backend = execution_backend
+        self._workspace_root = Path(workspace_root) if workspace_root else self._state_dir.parent
+        self._timeout_seconds = timeout_seconds
+        self._execution_backend_kwargs = dict(execution_backend_kwargs or {})
+        self._code_dir, self._artifacts_dir = learned_tool_storage(self._state_dir)
+        self._venvs_dir = learned_tool_venvs_dir(self._state_dir)
+
+    @property
+    def artifacts_dir(self) -> Path:
+        return self._artifacts_dir
+
+    def sweep_orphaned_venvs(self) -> None:
+        """Garbage-collect venvs whose tool code is gone. Never raises."""
+        from ravn.valkyrie_evolution.tool_runtime import prune_orphaned_tool_venvs  # noqa: PLC0415
+
+        try:
+            pruned = prune_orphaned_tool_venvs(venvs_dir=self._venvs_dir, tools_dir=self._code_dir)
+            if pruned:
+                logger.info("Pruned %d orphaned learned-tool venv(s): %s", len(pruned), pruned)
+        except Exception as exc:  # noqa: BLE001 — venv GC must never block startup
+            logger.warning("Learned-tool venv sweep failed: %s", exc)
+
+    def list_artifacts(self) -> list[LearnedToolArtifact]:
+        """Return every loadable artifact envelope, without building callables.
+
+        Envelopes that fail validation or whose code file is missing are
+        skipped with a warning — a broken artifact must not hide the rest of
+        the catalog.
+        """
+        if not self._artifacts_dir.exists():
+            return []
+        artifacts: list[LearnedToolArtifact] = []
+        for artifact_file in sorted(self._artifacts_dir.glob("*.json")):
+            try:
+                artifact = read_learned_tool_artifact(artifact_file)
+            except Exception as exc:
+                logger.warning("Failed to read learned tool artifact %s: %s", artifact_file, exc)
+                continue
+            if not self._tool_path(artifact.manifest.name).exists():
+                logger.warning(
+                    "Learned tool %s has an artifact but no code file; skipping",
+                    artifact.manifest.name,
+                )
+                continue
+            artifacts.append(artifact)
+        return artifacts
+
+    def load(self, name: str) -> LearnedTool:
+        """Load one learned tool as an executable ToolPort, by manifest name.
+
+        Raises :class:`LearnedToolError` when the tool does not exist or its
+        artifact cannot be validated.
+        """
+        if not _TOOL_NAME_RE.fullmatch(name):
+            raise LearnedToolError(f"invalid learned tool name: {name!r}")
+        artifact_path = learned_tool_artifact_path(self._artifacts_dir, name)
+        if not artifact_path.is_file():
+            raise LearnedToolError(f"no learned tool named {name!r} is installed")
+        artifact = read_learned_tool_artifact(artifact_path)
+        tool_path = self._tool_path(artifact.manifest.name)
+        if not tool_path.exists():
+            raise LearnedToolError(f"learned tool {name!r} has no code file at {tool_path}")
+        return load_learned_tool(
+            artifact=artifact,
+            tool_path=tool_path,
+            timeout_seconds=self._timeout_seconds,
+            runner=self._runner(),
+            venvs_dir=self._venvs_dir,
+        )
+
+    def _tool_path(self, name: str) -> Path:
+        return learned_tool_path(self._code_dir, name)
+
+    def _runner(self) -> LearnedToolRunner | None:
+        return learned_tool_runner_for_backend(
+            self._execution_backend,
+            workspace_root=self._workspace_root,
+            venvs_dir=self._venvs_dir,
+            backend_kwargs=self._execution_backend_kwargs,
+        )
 
 
 def learned_tool_storage(state_dir: str | Path) -> tuple[Path, Path]:

@@ -522,6 +522,17 @@ class FlockConfig(BaseModel):
             "When empty, ravn nodes use their own default or image-baked config."
         ),
     )
+    ravn_config: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Additional config deep-merged into every Ravn node in a flock. "
+            "Use this for deployment-owned platform and observability settings."
+        ),
+    )
+    observability: dict[str, Any] = Field(
+        default_factory=dict,
+        description="OpenTelemetry export settings shared by the flock's Ravn and Skuld runtimes.",
+    )
     daily_budget_usd: float = Field(
         default=25.0,
         ge=0.0,
@@ -1048,6 +1059,52 @@ class EventsConfig(BaseModel):
     )
 
 
+class A2AConfig(BaseModel):
+    """Agent-to-Agent protocol surface (agent card + task endpoint)."""
+
+    agent_name: str = Field(
+        default="Niuu Workflows",
+        description="Agent name advertised on the A2A agent card.",
+    )
+    agent_description: str = Field(
+        default=(
+            "Launchable Niuu platform workflows. Each skill is a Ting workflow; "
+            "send a message with metadata.workflowId to start a run. Reply to a "
+            "task in INPUT_REQUIRED with metadata.gateDecision "
+            '("approve" or "request_changes") to resolve its workflow gate.'
+        ),
+        description="Agent description advertised on the A2A agent card.",
+    )
+    card_max_age_seconds: int = Field(
+        default=60,
+        ge=0,
+        description="Cache-Control max-age for the served agent card.",
+    )
+    inline_artifact_max_chars: int = Field(
+        default=65536,
+        ge=0,
+        description=(
+            "Campaign artifacts at or under this size are inlined as text "
+            "parts on the A2A task; larger ones become url parts."
+        ),
+    )
+    extra_artifact_files: list[str] = Field(
+        default_factory=lambda: ["learned_tool.json"],
+        description=(
+            "Filenames probed under the campaign artifact prefix in addition "
+            "to the page listing — Mimir's markdown listing only enumerates "
+            ".md pages, so canonical machine artifacts are named here."
+        ),
+    )
+    public_base_url: str = Field(
+        default="",
+        description=(
+            "Public origin used for interface URLs on the agent card. "
+            "Falls back to the request base URL when empty."
+        ),
+    )
+
+
 class Settings(BaseSettings):
     """Application settings.
 
@@ -1094,6 +1151,7 @@ class Settings(BaseSettings):
     watcher: WatcherConfig = Field(default_factory=WatcherConfig)
     event_bus: EventBusConfig = Field(default_factory=EventBusConfig)
     events: EventsConfig = Field(default_factory=EventsConfig)
+    a2a: A2AConfig = Field(default_factory=A2AConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)

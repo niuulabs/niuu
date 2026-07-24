@@ -38,6 +38,31 @@ def workflow_name_from_snapshot(snapshot: dict[str, Any] | None) -> str | None:
     return None
 
 
+def workflow_artifact_paths_from_snapshot(
+    snapshot: dict[str, Any] | None,
+    *,
+    slug: str,
+) -> list[str]:
+    """Resolve safe, exact artifact paths declared by a workflow graph."""
+    if not snapshot:
+        return []
+    graph = snapshot.get("graph")
+    if not isinstance(graph, dict):
+        return []
+    raw_paths = graph.get("artifactPaths") or graph.get("artifact_paths") or []
+    paths: list[str] = []
+    for raw_path in raw_paths:
+        path = str(raw_path or "").strip().replace("{slug}", slug)
+        if not path or path.startswith("/"):
+            continue
+        parts = [part for part in path.split("/") if part]
+        if not parts or any(part in {".", ".."} for part in parts):
+            continue
+        if path not in paths:
+            paths.append(path)
+    return paths
+
+
 def workflow_stage_models_from_snapshot(snapshot: dict[str, Any] | None) -> list[str]:
     """Extract explicit stage-member models from a workflow snapshot graph."""
     if not snapshot:
@@ -276,6 +301,11 @@ def _persona_from_member(member: Any) -> dict[str, Any] | None:
     model = str(member.get("model") or "").strip()
     if model:
         persona["model"] = model
+    system_prompt_extra = str(
+        member.get("systemPromptExtra") or member.get("system_prompt_extra") or ""
+    ).strip()
+    if system_prompt_extra:
+        persona["system_prompt_extra"] = system_prompt_extra
     return persona
 
 

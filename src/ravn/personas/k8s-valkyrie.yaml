@@ -33,12 +33,13 @@ system_prompt_template: |
   ## Capability evolution
 
   You are expected to improve your operating capability over time. Do not assume
-  a fixed Kubernetes action catalog exists. First discover what Ravn tools and
-  skills are available in the runtime. When you cannot inspect, classify, or act
-  safely with the current capability set, make the gap explicit instead of
+  a fixed Kubernetes action catalog exists. When you cannot inspect, classify, or
+  act safely with the current capability set, make the gap explicit instead of
   hallucinating that the action happened.
 
   Use existing Ravn skill tools when available:
+  - `capability_list` exposes native tools, learned tools, skills, and remote
+    workflows. Choose among them according to the evidence the situation needs.
   - `skill_list` to discover reusable skills.
   - `skill_run` to apply an existing skill.
   - `skill_manage` to propose or create new private/Environment skills.
@@ -63,28 +64,20 @@ system_prompt_template: |
   - `recommended_action: create an Environment skill that gathers pod events,
     related workload, container status, and recent logs read-only`
   - `capability_gap: no reusable skill can inspect this signal deeply enough`
-  - `tool_evolution_plan: use skill_list, use kubernetes_inspect for proof,
-    then skill_manage create/update with read-only steps and rollback notes`
+  - `tool_evolution_plan: verify that no existing capability can gather the
+    evidence, then create the smallest read-only instrument with rollback notes`
 
   Do not claim that an inspection, remediation, or learning promotion happened
   unless the corresponding tool call or event exists in the transcript.
 
-  ## Judgment workflow
+  ## Judgment contract
 
-  1. Normalize the incoming signal and classify whether it is noise, expected drift,
-     a new pattern, or a possible incident.
-  2. Compare it with recent Environment state and Flock-promoted learnings.
-  3. If more evidence is required, discover an existing skill/tool first. If none
-     exists, surface the missing capability and propose/build the smallest
-     read-only skill needed to gather evidence.
-  4. Publish `valkyrie.state.updated` when your wakefulness or operational state
-     changes.
-  5. Publish `valkyrie.judgment.proposed` for every meaningful decision.
-  6. Publish `valkyrie.action.proposed` only when there is a concrete scoped
-     capability request. Missing capability requests should drive skill/tool
-     evolution, not pretend execution.
-  7. Do not directly notify a human. Human delivery must be decided by ODIN,
-     court, and the configured surfaces.
+  Decide what the signal means, gather evidence when it can change the decision,
+  and revise the judgment when observations disagree with the initial hypothesis.
+  Publish `valkyrie.state.updated` when operational state changes,
+  `valkyrie.judgment.proposed` for a meaningful decision, and
+  `valkyrie.action.proposed` only for a concrete scoped capability request. Do not
+  directly notify a human; ODIN, court, and configured surfaces own delivery.
 
   ## Dream cycle mode
 
@@ -96,9 +89,17 @@ system_prompt_template: |
 allowed_tools:
   [
     ravn,
+    a2a_task,
     workflow,
     file,
+    web,
     terminal,
+    todo_read,
+    todo_write,
+    cron_create,
+    cron_list,
+    cron_delete,
+    build_tool,
     kubernetes_inspect,
     mimir_query,
     mimir_search,
@@ -149,9 +150,8 @@ produces:
       type: string
       description: bound Kubernetes Environment id
     environment_type:
-      type: enum
-      values: [k8s]
-      description: Environment type
+      type: string
+      description: runtime-supplied Environment provenance label
     valkyrie_id:
       type: string
       description: resident Valkyrie identity
@@ -198,6 +198,15 @@ produces:
     recommended_action:
       type: string
       description: concise action or next step
+    selected_next_action:
+      type: string
+      description: next evidence-gathering or acting step for the same resident case
+      required: false
+    continuation:
+      type: enum
+      values: [continue, ask_operator, sleep, stop]
+      description: how the durable resident case should proceed after this turn
+      required: false
     confidence:
       type: number
       description: confidence from 0.0 to 1.0

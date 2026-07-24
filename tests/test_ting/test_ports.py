@@ -75,6 +75,8 @@ class TestVolundrPort:
             "send_directed_room_message",
             "get_workflow_gates",
             "resolve_workflow_gate",
+            "get_help_requests",
+            "answer_help_request",
             "stop_session",
             "list_integration_ids",
             "list_repos",

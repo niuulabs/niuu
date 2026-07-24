@@ -54,6 +54,7 @@ class TestSkuldSettings:
         assert s.session.id == "unknown"
         assert s.session.name == "unknown"
         assert s.session.model == "claude-opus-4-8"
+        assert s.observability.service_name == "skuld"
         assert s.persistence_mount_path == "/volundr/sessions"
         assert s.peer_watchdog.enabled is True
         assert s.peer_watchdog.poll_seconds == 5.0
@@ -84,6 +85,19 @@ class TestSkuldSettings:
         assert s.transport == "subprocess"
         assert s.host == "127.0.0.1"
         assert s.port == 9999
+
+    def test_observability_partial_env_keeps_skuld_service_name(self, monkeypatch):
+        monkeypatch.setenv("SKULD__OBSERVABILITY__ENABLED", "true")
+        monkeypatch.setenv("SKULD__OBSERVABILITY__TRACE_ENDPOINT", "https://tempo:4317")
+        monkeypatch.setenv(
+            "SKULD__OBSERVABILITY__METRIC_ENDPOINT",
+            "https://mimir:4318/v1/metrics",
+        )
+
+        s = SkuldSettings()
+
+        assert s.observability.enabled is True
+        assert s.observability.service_name == "skuld"
 
     def test_nested_env_vars(self, monkeypatch):
         """Test SKULD__SESSION__* nested env vars."""
@@ -419,3 +433,16 @@ class TestBehaviorSettingsAliases:
 
         assert settings.cli_binary == "claude-custom"
         assert settings.remote_control_permission_mode == "acceptEdits"
+
+
+def test_workflow_trace_context_loads_from_nested_env(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "SKULD__WORKFLOW__TRACE_CONTEXT",
+        '{"traceparent":"00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"}',
+    )
+
+    settings = SkuldSettings()
+
+    assert settings.workflow.trace_context == {
+        "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+    }

@@ -359,9 +359,24 @@ class AgentTask:
     deadline: datetime | None = None  # task discarded if queue time exceeds this
     output_path: Path | None = None  # where to save task output (cron tasks)
     root_correlation_id: str = ""  # Propagated from triggering event for fan-in chain tracking
-    workflow_parent_event_id: str = ""  # Direct upstream event task_id for per-cycle joins
+    workflow_parent_event_id: str = ""  # Direct upstream event ID for per-cycle joins
     workflow_node_id: str = ""  # Active workflow graph node for node-scoped contracts
     tool_outcomes: dict[str, dict[str, Any]] = field(default_factory=dict)
+    human_initiated: bool = False  # True when a human message entered through a channel
+    # Durable resident continuation metadata.  These fields are transport
+    # state, not a semantic task taxonomy: the model still selects the action
+    # described by ``initiative_context``.
+    resident_case_id: str = ""
+    resident_mandate: str = ""
+    resident_turn_index: int = 0
+    resident_input_tokens: int = 0
+    resident_output_tokens: int = 0
+    resident_started_at: str = ""
+    resident_parent_turn_ref: str = ""
+    resident_inbox_refs: list[str] = field(default_factory=list)
+    resident_answer_ref: str = ""
+    resident_help_published: bool = False
+    trace_context: dict[str, str] = field(default_factory=dict)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     session_id: str = field(init=False)
 

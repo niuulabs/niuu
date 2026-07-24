@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .backend import MimirResidentInbox
+from .backend import LocalResidentInbox, MimirResidentInbox
 from .classify import classify_text
 from .models import (
     ResidentInboxBackend,
@@ -23,6 +23,7 @@ from .serialization import (
 
 __all__ = [
     "MimirResidentInbox",
+    "LocalResidentInbox",
     "ResidentInboxBackend",
     "ResidentInboxClassification",
     "ResidentInboxConfig",

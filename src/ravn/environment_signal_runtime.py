@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib
 import json
 import logging
@@ -14,6 +15,7 @@ from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any
 
+from niuu.observability import get_observability
 from ravn.config import Settings, SignalSourceConfig
 from ravn.domain.environment import (
     Environment,
@@ -29,7 +31,7 @@ from sleipnir.ports.events import SleipnirPublisher
 
 logger = logging.getLogger(__name__)
 
-EnqueueFn = Callable[[AgentTask], Awaitable[None]]
+EnqueueFn = Callable[[AgentTask], Awaitable[bool | None]]
 ResidentSignalFn = Callable[[SleipnirEvent], Awaitable[dict[str, Any] | None]]
 
 
@@ -37,6 +39,12 @@ def _import_class(dotted_path: str) -> type:
     module_path, class_name = dotted_path.rsplit(".", 1)
     module = importlib.import_module(module_path)
     return getattr(module, class_name)
+
+
+def _truncate(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "…"
 
 
 def _inject_secrets(kwargs: dict[str, Any], secret_map: dict[str, str]) -> dict[str, Any]:
@@ -51,18 +59,16 @@ def _inject_secrets(kwargs: dict[str, Any], secret_map: dict[str, str]) -> dict[
 def build_runtime_environment(settings: Settings) -> Environment:
     """Project runtime config into the shared Environment contract."""
     cfg = settings.environment
-    if cfg.type == "k8s":
-        type_id = "cluster"
-    elif cfg.type.startswith("host"):
-        type_id = "host"
-    else:
-        type_id = cfg.type
+    configured_topology = cfg.topology
+    type_id = configured_topology.type_id or cfg.type
     topology = TopologyRef(
-        node_id=f"{type_id}:{cfg.id}",
+        node_id=configured_topology.node_id or f"{type_id}:{cfg.id}",
         type_id=type_id,
-        realm_id=cfg.id,
-        cluster_id=cfg.id if cfg.type == "k8s" else "",
-        host_id=cfg.id if cfg.type.startswith("host") else "",
+        parent_id=configured_topology.parent_id,
+        realm_id=configured_topology.realm_id or cfg.id,
+        cluster_id=configured_topology.cluster_id,
+        host_id=configured_topology.host_id,
+        zone=configured_topology.zone,
     )
     return Environment(
         id=cfg.id,
@@ -101,6 +107,7 @@ class EnvironmentSignalRuntime:
         persona: str | None = None,
         output_mode: OutputMode = OutputMode.AMBIENT,
         owns_publisher: bool = False,
+        durable_home_enabled: bool = False,
     ) -> None:
         self._settings = settings
         self._publisher = publisher
@@ -109,6 +116,7 @@ class EnvironmentSignalRuntime:
         self._persona = persona
         self._output_mode = output_mode
         self._owns_publisher = owns_publisher
+        self._durable_home_enabled = durable_home_enabled
         self._environment = build_runtime_environment(settings)
         self._adapters: list[SignalAdapter] = []
         self._seen: OrderedDict[str, None] = OrderedDict()
@@ -134,7 +142,7 @@ class EnvironmentSignalRuntime:
                 )
             )
         triage_interval = self._settings.environment.idle_triage_interval_seconds
-        if self._enqueue is not None and triage_interval > 0:
+        if self._enqueue is not None and triage_interval > 0 and not self._durable_home_enabled:
             self._tasks.append(
                 asyncio.create_task(
                     self._idle_triage_loop(triage_interval),
@@ -201,40 +209,132 @@ class EnvironmentSignalRuntime:
             await asyncio.sleep(interval)
 
     async def _collect_adapter_once(self, adapter: SignalAdapter) -> int:
+        telemetry = get_observability()
+        attributes = {
+            "ravn.environment.id": self._environment.id,
+            "ravn.environment.type": self._environment.type,
+            "ravn.signal.source": adapter.source_id,
+            "ravn.signal.type": adapter.signal_type,
+            "ravn.signal.durable": adapter.requires_commit,
+        }
         started = perf_counter()
-        collected = await adapter.collect()
-        signals = [signal for signal in collected if self._remember(signal)]
-        events: list[SleipnirEvent] = []
-        enqueued_count = 0
-        events = [
-            signal.to_event(
-                source=f"adapter:{adapter.source_id}",
-                environment=self._environment,
-                tenant_id=self._environment.tenant_id,
+        with telemetry.span("ravn.environment.collect", attributes=attributes) as span:
+            try:
+                count = await self._collect_adapter_once_observed(adapter)
+                span.set_attribute("ravn.signal.accepted_count", count)
+                span.set_attribute("ravn.signal.poll.outcome", "success")
+                return count
+            except BaseException as exc:
+                span.set_attribute("ravn.signal.poll.outcome", "error")
+                telemetry.mark_error(span, type(exc).__name__)
+                raise
+            finally:
+                telemetry.duration(
+                    "ravn.environment.signal_poll.duration",
+                    perf_counter() - started,
+                    attributes=attributes,
+                    description="Duration of one environment signal-source poll.",
+                )
+
+    async def _collect_adapter_once_observed(self, adapter: SignalAdapter) -> int:
+        telemetry = get_observability()
+        started = perf_counter()
+        with telemetry.span(
+            "ravn.signal.adapter.collect",
+            attributes={"ravn.signal.source": adapter.source_id},
+        ) as collect_span:
+            collected = await adapter.collect()
+            collect_span.set_attribute("ravn.signal.collected_count", len(collected))
+            telemetry.event(
+                "ravn.signal.collected",
+                attributes={"ravn.signal.collected_count": len(collected)},
+                content=[signal.model_dump(mode="json") for signal in collected],
             )
-            for signal in signals
-        ]
-        if events:
-            await self._publisher.publish_batch(events)
-        resident_results = await self._process_resident_learning(events)
-        if self._enqueue is not None:
-            for signal, event, resident_result in zip(
-                signals,
-                events,
-                resident_results,
-                strict=True,
-            ):
-                if signal.severity in self._settings.environment.signal_task_severities:
-                    await self._enqueue(
-                        self._task_from_signal(
-                            signal,
-                            event,
-                            resident_learning_result=resident_result,
-                        )
-                    )
-                    enqueued_count += 1
-                else:
-                    self._remember_untriaged(signal, event)
+        with telemetry.span("ravn.signal.normalize") as normalize_span:
+            signals = [signal for signal in collected if not self._is_seen(signal)]
+            events = [
+                signal.to_event(
+                    source=f"adapter:{adapter.source_id}",
+                    environment=self._environment,
+                    tenant_id=self._environment.tenant_id,
+                )
+                for signal in signals
+            ]
+            normalize_span.set_attribute("ravn.signal.new_count", len(signals))
+            normalize_span.set_attribute(
+                "ravn.signal.duplicate_count",
+                len(collected) - len(signals),
+            )
+            telemetry.event(
+                "ravn.signal.normalized",
+                attributes={
+                    "ravn.signal.new_count": len(signals),
+                    "ravn.signal.duplicate_count": len(collected) - len(signals),
+                    "ravn.signal.refs": [event.event_id for event in events],
+                },
+                content=[event.payload for event in events],
+            )
+        enqueued_count = 0
+        resident_results: list[dict[str, Any] | None] = []
+        try:
+            if events:
+                with telemetry.span(
+                    "ravn.signal.publish",
+                    attributes={"ravn.signal.event_count": len(events)},
+                ):
+                    await self._publisher.publish_batch(events)
+            with telemetry.span("ravn.signal.resident_projection") as projection_span:
+                resident_results = await self._process_resident_learning(
+                    events,
+                    fail_on_error=adapter.requires_commit and self._durable_home_enabled,
+                )
+                projection_span.set_attribute(
+                    "ravn.signal.resident_projection.required",
+                    adapter.requires_commit and self._durable_home_enabled,
+                )
+            with telemetry.span("ravn.signal.enqueue") as enqueue_span:
+                enqueued_count = await self._enqueue_signals(
+                    adapter,
+                    signals,
+                    events,
+                    resident_results,
+                )
+                enqueue_span.set_attribute("ravn.signal.enqueued_count", enqueued_count)
+            with telemetry.span("ravn.signal.commit"):
+                await adapter.commit()
+        except BaseException as exc:
+            try:
+                with telemetry.span("ravn.signal.rollback"):
+                    await adapter.rollback()
+            except Exception as rollback_exc:
+                telemetry.event(
+                    "ravn.signal.rollback.failed",
+                    attributes={"error.type": type(rollback_exc).__name__},
+                )
+                logger.warning(
+                    "environment_signals: source=%s rollback failed",
+                    adapter.source_id,
+                    exc_info=True,
+                )
+            telemetry.event(
+                "ravn.signal.processing.failed",
+                attributes={"error.type": type(exc).__name__},
+                content=str(exc),
+            )
+            raise
+        for signal in signals:
+            self._remember(signal)
+            get_observability().count(
+                "ravn.environment.signals",
+                attributes={
+                    "ravn.environment.id": signal.environment_id,
+                    "ravn.environment.type": signal.environment_type,
+                    "ravn.signal.source": signal.source_id,
+                    "ravn.signal.type": signal.signal_type,
+                    "ravn.signal.severity": signal.severity,
+                },
+                description="Environment signals accepted for resident judgment.",
+            )
         duration_ms = int((perf_counter() - started) * 1000)
         await self._publish_signal_poll_completed(
             adapter,
@@ -254,27 +354,70 @@ class EnvironmentSignalRuntime:
         )
         return len(events)
 
+    async def _enqueue_signals(
+        self,
+        adapter: SignalAdapter,
+        signals: list[NormalizedSignal],
+        events: list[SleipnirEvent],
+        resident_results: list[dict[str, Any] | None],
+    ) -> int:
+        if not signals:
+            return 0
+        if adapter.requires_commit:
+            if self._durable_home_enabled:
+                if len(resident_results) != len(events) or any(
+                    not result
+                    or result.get("residentAutonomySignalPersisted") is not True
+                    or not str(result.get("residentAutonomySignalRef") or "").strip()
+                    for result in resident_results
+                ):
+                    raise RuntimeError(
+                        "durable signal transport requires every event in the resident inbox"
+                    )
+                # ResidentHomeTrigger is the sole queue producer for durable inbox
+                # observations. It coalesces NEW records and keeps intake independent
+                # of model latency.
+                return 0
+            if self._enqueue is None:
+                raise RuntimeError("durable signal transport requires a resident task queue")
+            batch = [
+                self._window_entry(signal, event)
+                for signal, event in zip(signals, events, strict=True)
+            ]
+            accepted = await self._enqueue(self._triage_task(batch, durable=True))
+            if accepted is False:
+                raise RuntimeError("resident task queue rejected durable signal window")
+            return 1
+        if self._enqueue is None:
+            return 0
+        enqueued = 0
+        for signal, event, resident_result in zip(
+            signals,
+            events,
+            resident_results,
+            strict=True,
+        ):
+            if signal.severity in self._settings.environment.signal_task_severities:
+                await self._enqueue(
+                    self._task_from_signal(
+                        signal,
+                        event,
+                        resident_learning_result=resident_result,
+                    )
+                )
+                enqueued += 1
+            elif not self._durable_home_enabled:
+                self._remember_untriaged(signal, event)
+        return enqueued
+
     def _remember_untriaged(self, signal: NormalizedSignal, event: SleipnirEvent) -> None:
-        self._untriaged.append(
-            {
-                "signal_ref": event.event_id or signal.provider_event_id or signal.dedupe_key,
-                "signal_type": signal.signal_type,
-                "severity": signal.severity,
-                "source_id": signal.source_id,
-                "summary": event.summary,
-            }
-        )
+        self._untriaged.append(self._window_entry(signal, event))
         max_signals = self._settings.environment.idle_triage_max_signals
         if len(self._untriaged) > max_signals:
             self._untriaged = self._untriaged[-max_signals:]
 
     async def _idle_triage_loop(self, interval: float) -> None:
-        """Periodically make the resident reason over below-threshold signals.
-
-        Without this, a quiet environment produces zero judgments and the
-        dashboard shows silence even though signals were seen — watching
-        should be an observable act, not an absence of records.
-        """
+        """Periodically give the resident a bounded window of accumulated signals."""
         if self._enqueue is None:
             return
         while True:
@@ -292,44 +435,61 @@ class EnvironmentSignalRuntime:
                     exc,
                 )
 
-    def _triage_task(self, batch: list[dict[str, Any]]) -> AgentTask:
-        peer_id = self._settings.mesh.own_peer_id or "unknown"
+    def _triage_task(self, batch: list[dict[str, Any]], *, durable: bool = False) -> AgentTask:
+        env_cfg = self._settings.environment
         severity_counts: dict[str, int] = {}
         source_counts: dict[str, int] = {}
         for entry in batch:
             severity_counts[entry["severity"]] = severity_counts.get(entry["severity"], 0) + 1
             source_counts[entry["source_id"]] = source_counts.get(entry["source_id"], 0) + 1
+        # The prompt stays bounded no matter how large the batch is: a capped
+        # number of truncated sample lines plus an explicit overflow line; the
+        # severity breakdown is what summarizes the whole batch (NIU-1118).
+        sample_count = max(0, env_cfg.idle_triage_sample_signals)
+        summary_max_chars = max(1, env_cfg.idle_triage_sample_summary_max_chars)
         sample_lines = "\n".join(
             f"- `{entry['signal_type']}` ({entry['severity']}, {entry['source_id']}): "
-            f"{entry['summary']}"
-            for entry in batch[:15]
+            f"observed_at={entry.get('observed_at', 'unknown')} payload="
+            f"{_truncate(str(entry.get('payload', entry.get('summary', ''))), summary_max_chars)}"
+            for entry in batch[:sample_count]
         )
+        overflow = len(batch) - sample_count
+        if overflow > 0:
+            sample_lines += (
+                f"\n- …and {overflow} more signal(s) not shown; "
+                "the severity breakdown above covers the full batch."
+            )
         severity_lines = "\n".join(
             f"- **{severity}**: {count}" for severity, count in sorted(severity_counts.items())
         )
-        signal_refs = "\n".join(f"  - {entry['signal_ref']}" for entry in batch[:25])
+        signal_refs = "\n".join(
+            f"  - {entry['signal_ref']}" for entry in batch[: env_cfg.idle_triage_max_signal_refs]
+        )
         outcome_template = (
             "---outcome---\n"
-            "decision: watch\n"
-            f"environment_id: {self._environment.id}\n"
-            f"environment_type: {self._environment.type}\n"
-            f"valkyrie_id: {peer_id}\n"
+            "decision: <ignore | watch | investigate | propose_action | "
+            "escalate | learn | blocked>\n"
             "signal_refs:\n"
             f"{signal_refs}\n"
-            "tier: ambient\n"
-            "confidence: 0.5\n"
-            "operational_state: watching\n"
-            "wakefulness: watching\n"
-            "rationale: concise summary of why the environment needs no action\n"
-            "evidence: []\n"
-            "recommended_action: none\n"
-            "action_authority: autonomous\n"
-            "action_capability: none\n"
+            "tier: <silent | ambient | present | urgent>\n"
+            "confidence: <0.0-1.0>\n"
+            "operational_state: <nominal | watching | investigating | degraded | "
+            "remediating | blocked | dreaming>\n"
+            "wakefulness: <sleeping | watching | wakeful | dreaming>\n"
+            "rationale: <concise evidence-based judgment>\n"
+            "evidence: <evidence references, or []>\n"
+            "recommended_action: <next step, or none>\n"
+            "selected_next_action: <one concrete next step, or none>\n"
+            "continuation: <ask_operator | sleep | stop>\n"
+            "next_action_timing: <external_event | scheduled_time | "
+            "operator_input | none>\n"
+            'question: ""\n'
+            "action_authority: <autonomous | yolo_allowed | court_required | "
+            "human_review_required>\n"
+            "action_capability: <required capability, or none>\n"
             "target_surfaces: []\n"
             'expires_at: ""\n'
             "dissent_refs: []\n"
-            "correlation_ids:\n"
-            f"  environment: {self._environment.id}\n"
             "---end---"
         )
         charter_section = ""
@@ -337,40 +497,65 @@ class EnvironmentSignalRuntime:
         if charter:
             charter_section = f"\n## Charter\n\n{charter}\n"
         context = (
-            f"# Idle triage — {len(batch)} routine signal(s)\n\n"
-            "None of the signals below crossed the task severity threshold "
-            f"(`signal_task_severities: {self._settings.environment.signal_task_severities}`). "
-            "Review the batch as a whole and confirm — or refute — that the "
-            "environment is healthy.\n"
+            f"# Signals since your last look — {len(batch)} observation(s)\n\n"
+            "These observations are presented without a predetermined interpretation. "
+            "Source severity labels and counts are context, not a decision.\n"
             f"{charter_section}\n"
             "## Severity breakdown\n\n"
             f"{severity_lines}\n\n"
-            "## Sample signals\n\n"
+            "## Observed signals (bounded payload excerpts)\n\n"
             f"{sample_lines}\n\n"
             "## Your task\n\n"
-            "Judge whether the aggregate pattern is routine or hides an emerging "
-            "problem (repeated warnings from one source, a drift in volume, a "
-            "new signal type). Say explicitly WHY nothing is actionable, or "
-            "escalate what is.\n\n"
+            "Decide what, if anything, these observations mean in this environment. "
+            "Gather evidence with the available capabilities when that would improve "
+            "the judgment, and ask the operator when their knowledge, intent, or "
+            "authority is the best available way to progress. It is valid to conclude "
+            "that no action is needed; "
+            "ground whichever conclusion you reach in the observations.\n\n"
             "## Required outcome\n\n"
             "Finish with exactly one `valkyrie.judgment.proposed` block:\n\n"
             "```text\n"
             f"{outcome_template}\n"
             "```\n"
         )
+        digest = hashlib.sha256(
+            "\n".join(sorted(str(entry["signal_ref"]) for entry in batch)).encode()
+        ).hexdigest()[:16]
         return AgentTask(
             task_id=f"task_{int(datetime.now(UTC).timestamp() * 1000):x}_{uuid.uuid4().hex[:8]}",
-            title=f"Idle triage: {len(batch)} routine signal(s)",
+            title=(
+                f"Resident signal window: {len(batch)} observation(s)"
+                if durable
+                else f"Signal window: {len(batch)} observation(s)"
+            ),
             initiative_context=context,
-            triggered_by="signal:idle_triage",
+            triggered_by="signal:durable_window" if durable else "signal:idle_triage",
             output_mode=self._output_mode,
             persona=self._persona,
             priority=9,
-            root_correlation_id=f"idle-triage:{self._environment.id}",
+            root_correlation_id=f"signal-window:{self._environment.id}:{digest}",
+            trace_context=get_observability().inject(),
         )
 
+    @staticmethod
+    def _window_entry(signal: NormalizedSignal, event: SleipnirEvent) -> dict[str, Any]:
+        payload = getattr(signal, "normalized_payload", None)
+        if payload is None:
+            payload = event.summary
+        return {
+            "signal_ref": event.event_id or signal.provider_event_id or signal.dedupe_key,
+            "signal_type": signal.signal_type,
+            "severity": signal.severity,
+            "source_id": signal.source_id,
+            "observed_at": getattr(signal, "timestamp", event.timestamp).isoformat(),
+            "payload": json.dumps(payload, sort_keys=True, default=str),
+        }
+
+    def _is_seen(self, signal: NormalizedSignal) -> bool:
+        return self._signal_key(signal) in self._seen
+
     def _remember(self, signal: NormalizedSignal) -> bool:
-        key = f"{signal.source_id}:{signal.provider_event_id or signal.dedupe_key}"
+        key = self._signal_key(signal)
         if key in self._seen:
             self._seen.move_to_end(key)
             return False
@@ -380,9 +565,15 @@ class EnvironmentSignalRuntime:
             self._seen.popitem(last=False)
         return True
 
+    @staticmethod
+    def _signal_key(signal: NormalizedSignal) -> str:
+        return f"{signal.source_id}:{signal.provider_event_id or signal.dedupe_key}"
+
     async def _process_resident_learning(
         self,
         events: list[SleipnirEvent],
+        *,
+        fail_on_error: bool = False,
     ) -> list[dict[str, Any] | None]:
         if self._resident_signal_processor is None:
             return [None for _ in events]
@@ -397,6 +588,8 @@ class EnvironmentSignalRuntime:
                     exc,
                 )
                 await self._publish_resident_learning_failed(event, exc)
+                if fail_on_error:
+                    raise
                 results.append(
                     {
                         "usedAdoptedLearning": False,
@@ -434,50 +627,24 @@ class EnvironmentSignalRuntime:
         if charter:
             resident_lines.append(f"- **Charter:** {charter}")
 
-        # Markdown section the agent reads about what resident learning already found.
+        # Cheap deterministic lookup is retrieval evidence for the model, never
+        # a judgment or a mandatory route.
         learning_section = ""
-        closing_section = ""
         if resident_learning_result:
-            decision = resident_learning_result.get("decision")
-            capability = resident_learning_result.get("capabilityName")
-            if resident_learning_result.get("usedAdoptedLearning"):
+            lookup_hint = {
+                key: value
+                for key, value in resident_learning_result.items()
+                if not key.startswith("residentAutonomy")
+            }
+            if lookup_hint:
                 learning_section = (
-                    "\n## Resident learning\n\n"
-                    f"- **Decision:** `{decision}`\n"
-                    f"- **Skill:** `{resident_learning_result.get('skillName')}`\n"
-                    f"- **Capability:** `{capability}`\n\n"
-                    "Use the adopted skill context before proposing new tooling.\n"
-                )
-            elif decision == "defer_to_investigation_with_build_tool":
-                learning_section = (
-                    "\n## Resident learning\n\n"
-                    f"- **Decision:** `{decision}`\n"
-                    f"- **Capability:** `{capability}`\n"
-                )
-                closing_section = (
-                    "\n## Required before you finish\n\n"
-                    f"No installed instrument matches capability `{capability}`. "
-                    "Decide for yourself which available skill or tool should handle "
-                    "the signal. If no suitable capability exists, use `build_tool`: "
-                    "author the `tool_code` yourself, or pass your spec as "
-                    "`build_request` so the configured builder can produce it.\n\n"
-                    "Guardrails, not recipes:\n\n"
-                    "- Declare the tool's **real reach** — review gates on it, and "
-                    "mutating reach is held for an operator.\n"
-                    "- Never hardcode environment values or thresholds; take them "
-                    "as `input_schema` parameters and fetch live state.\n"
-                    "- When access is missing, return a clear error object instead "
-                    "of raising, so the canary still passes in restricted "
-                    "environments.\n\n"
-                    "When you build or use a capability, cite the result in the "
-                    "outcome. If the tool is held for operator review, say so in "
-                    "the rationale.\n"
-                )
-            elif decision:
-                learning_section = (
-                    "\n## Resident learning\n\n"
-                    f"- **Decision:** `{decision}`\n"
-                    f"- **Capability:** `{capability}`\n"
+                    "\n## Capability lookup hints\n\n"
+                    "```json\n"
+                    f"{json.dumps(lookup_hint, indent=2, sort_keys=True, default=str)}\n"
+                    "```\n\n"
+                    "This is a cheap catalog hint, not a prior judgment and not evidence "
+                    "that a capability was executed. Compare it with the signal and the "
+                    "live catalog before choosing what to do.\n"
                 )
 
         workflow_section = ""
@@ -492,6 +659,9 @@ class EnvironmentSignalRuntime:
                 "do not treat the launch receipt as the outcome; use `workflow_status` "
                 "and then `workflow_events`, `workflow_artifacts`, or "
                 "`workflow_artifact_read` to inspect what Ting reports.\n"
+                "Peer Agent Card skills appear in `capability_list` as `agent_skill` "
+                "entries and are invoked through `a2a_task`; preserve the returned "
+                "agent and task ids when a peer requests input or continues later.\n"
             )
 
         payload_json = json.dumps(signal.normalized_payload, indent=2, sort_keys=True, default=str)
@@ -501,38 +671,39 @@ class EnvironmentSignalRuntime:
         # while the ticket renders it as a clean code block, not a stray card.
         outcome_template = (
             "---outcome---\n"
-            "decision: watch\n"
-            f"environment_id: {signal.environment_id}\n"
-            f"environment_type: {signal.environment_type}\n"
-            f"valkyrie_id: {peer_id}\n"
+            "decision: <ignore | watch | investigate | propose_action | "
+            "escalate | learn | blocked>\n"
             "signal_refs:\n"
             f"  - {signal_ref}\n"
-            "tier: ambient\n"
-            "confidence: 0.5\n"
-            "operational_state: watching\n"
-            "wakefulness: wakeful\n"
+            "tier: <silent | ambient | present | urgent>\n"
+            "confidence: <0.0-1.0>\n"
+            "operational_state: <nominal | watching | investigating | degraded | "
+            "remediating | blocked | dreaming>\n"
+            "wakefulness: <sleeping | watching | wakeful | dreaming>\n"
             "rationale: concise reason grounded in the signal\n"
             "evidence:\n"
             f"  - event_id: {signal_ref}\n"
             f"    source_id: {signal.source_id}\n"
             f"    severity: {signal.severity}\n"
-            "recommended_action: what to do next, or none\n"
-            "action_authority: autonomous\n"
-            "action_capability: none\n"
+            "recommended_action: <next step, or none>\n"
+            "selected_next_action: <one concrete next step, or none>\n"
+            "continuation: <ask_operator | sleep | stop>\n"
+            "next_action_timing: <external_event | scheduled_time | "
+            "operator_input | none>\n"
+            'question: ""\n'
+            "action_authority: <autonomous | yolo_allowed | court_required | "
+            "human_review_required>\n"
+            "action_capability: <required capability, or none>\n"
             "target_surfaces: []\n"
             'expires_at: ""\n'
             "dissent_refs: []\n"
-            "correlation_ids:\n"
-            f"  root: {event.correlation_id or signal.correlation_id or ''}\n"
-            f"  signal: {signal_ref}\n"
-            f"  environment: {signal.environment_id}\n"
             "---end---"
         )
         resident_block = "\n".join(resident_lines)
         context = (
-            f"# Signal investigation — {title}\n\n"
-            "A resident Valkyrie received an environment signal and must decide "
-            "what to do with it.\n\n"
+            f"# Environment signal — {title}\n\n"
+            "A resident Valkyrie received an observation from its environment. "
+            "The signal is context to judge, not a predetermined conclusion or action.\n\n"
             "## Resident\n\n"
             f"{resident_block}\n\n"
             "## Signal\n\n"
@@ -547,16 +718,13 @@ class EnvironmentSignalRuntime:
             f"{learning_section}\n"
             f"{workflow_section}\n"
             "## Your task\n\n"
-            "Decide whether this is noise, needs a **watching** state, or "
-            "**requires action**. Use existing tools, memory, and resident "
-            "skills/runbooks before proposing new tooling; when `skill_list` and "
-            "`skill_run` are available, inspect and load the relevant runbook "
-            "first. If the investigation is blocked because the toolbox lacks a "
-            "reusable instrument, call `build_tool` with a manifest, declared "
-            "reach, and canary input; when a builder backend is configured, pass "
-            "a `build_request` and let that backend produce the tool. Then use "
-            "the newly registered tool before deciding — or note the review item "
-            "when the tool requires approval.\n\n"
+            "Judge what the signal means in this environment and gather any evidence "
+            "needed for a responsible outcome. Available tools and `capability_list` "
+            "are options, not a prescribed route. Reuse a suitable capability when "
+            "one exists; use `build_tool` only after identifying a genuine capability "
+            "gap. Ask the operator when their knowledge, intent, or authority is the "
+            "best available way to progress. "
+            "Do not claim an action or observation absent from the transcript.\n\n"
             "## Required outcome\n\n"
             "Finish with exactly one `valkyrie.judgment.proposed` block in this "
             "shape — keep the `---outcome---` / `---end---` delimiters, valid YAML "
@@ -564,19 +732,31 @@ class EnvironmentSignalRuntime:
             "```text\n"
             f"{outcome_template}\n"
             "```\n"
-            f"{closing_section}"
         )
-        return AgentTask(
-            task_id=f"task_{int(datetime.now(UTC).timestamp() * 1000):x}_{uuid.uuid4().hex[:8]}",
+        task_id = f"task_{int(datetime.now(UTC).timestamp() * 1000):x}_{uuid.uuid4().hex[:8]}"
+        root_id = event.correlation_id or signal.correlation_id or task_id
+        inbox_ref = str(
+            (resident_learning_result or {}).get("residentAutonomySignalRef") or ""
+        ).strip()
+        task = AgentTask(
+            task_id=task_id,
             title=title,
             initiative_context=context,
             triggered_by=f"signal:{event.event_type}",
             output_mode=self._output_mode,
             persona=self._persona,
             priority=3 if signal.severity == "critical" else 8,
-            root_correlation_id=event.correlation_id or signal.correlation_id,
+            root_correlation_id=root_id,
             workflow_parent_event_id=event.event_id,
+            resident_case_id=root_id if inbox_ref else "",
+            resident_turn_index=1 if inbox_ref else 0,
+            resident_started_at=datetime.now(UTC).isoformat() if inbox_ref else "",
+            resident_inbox_refs=[inbox_ref] if inbox_ref else [],
+            trace_context=get_observability().inject(),
         )
+        if inbox_ref:
+            task.resident_mandate = task.initiative_context
+        return task
 
     def _resident_name(self) -> str:
         return (

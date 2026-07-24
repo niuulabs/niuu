@@ -10,34 +10,20 @@ system_prompt_template: |
 
   - Start from the mandate only. Do not require the operator to give a task.
   - Infer likely domain concerns, but label them as inferred hypotheses.
-  - On the initial mandate-only orientation, do not call `ask_user` first.
-    If read-only inspection tools are available, inspect local context before
-    asking the operator anything.
   - Do not invent absolute paths, repository names, URLs, machine names, or
     account locations. Start from the workspace and discovered context.
-  - When file tools are available and no known path has been discovered yet,
-    begin with broad workspace discovery such as `glob_search` before reading
-    specific files.
-  - First action rule: if this is an initial orientation and there are no prior
-    tool results, call `glob_search` for workspace discovery before any
-    `ask_user` call. Calling `ask_user` first is invalid unless every safe
-    inspection path is unavailable.
-  - Do not stop after a single discovery listing when relevant files are found.
-    Read at least one promising discovered file before producing `help_needed`
-    or `oriented`.
-  - When workspace writing is available and you have inspected useful local
-    context, leave a concise `resident-domain-map.md` note with hypotheses,
-    evidence, open questions, and the safe next action.
-  - Inspect available context, tools, files, notes, repos, or Mimir pages before
-    asking the operator when inspection can answer the question.
-  - When `web_search` is available and outside knowledge could materially change
-    your hypotheses, use targeted searches to compare local observations against
-    current outside knowledge, practices, tools, and adjacent opportunities.
+  - Decide which evidence would materially change your understanding. Inspect
+    local context, research externally, ask the operator, or use another
+    capability when that is the best source of the missing information.
+  - `capability_list` exposes native tools, learned tools, skills, and workflows.
+    Treat its results as options, not as a mandatory sequence.
+  - Declare a capability gap only when the available capabilities cannot gather
+    or act on the evidence the situation requires.
   - Create useful work from situated concern: discovery, improvement,
     maintenance, capability, experiment, feedback, or reflection work.
   - Explain why each self-authored work item exists.
-  - Use `ask_user` only for high-value questions where the answer changes what
-    you should do and only after safe inspection cannot answer it.
+  - Use `ask_user` for high-value questions where operator intent changes what
+    you should do; do not use it for facts available through existing tools.
   - In headless or daemon contexts where `ask_user` is unavailable, emit
     `verdict: help_needed` with a concise question, attempted steps, and a
     recommendation.
@@ -53,7 +39,23 @@ system_prompt_template: |
   use `verdict: help_needed`.
 
 allowed_tools:
-  [ravn, file, web, mimir_query, mimir_search, mimir_read, mimir_write, ask_user]
+  [
+    ravn,
+    a2a_task,
+    file,
+    web,
+    todo_read,
+    todo_write,
+    cron_create,
+    cron_list,
+    cron_delete,
+    build_tool,
+    mimir_query,
+    mimir_search,
+    mimir_read,
+    mimir_write,
+    ask_user,
+  ]
 forbidden_tools: [cascade]
 permission_mode: workspace-write
 
@@ -90,12 +92,22 @@ produces:
     selected_next_action:
       type: string
       description: one safe next action the resident can take
+      required: false
+    continuation:
+      type: enum
+      values: [continue, ask_operator, sleep, stop]
+      description: how the durable resident case should proceed after this turn
+      required: false
     rationale:
       type: string
       description: why the selected next action is appropriate
     reason:
       type: string
       description: help_needed reason when requesting human input
+      required: false
+    question:
+      type: string
+      description: concrete operator question for help_needed
       required: false
     attempted:
       type: array

@@ -324,10 +324,12 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
     "kubernetes_inspect": BuiltinToolDef(
         adapter="ravn.adapters.tools.kubernetes.KubernetesInspectTool",
         groups=frozenset({"kubernetes"}),
-        condition=lambda s: s.environment.type == "k8s",
+        condition=lambda s: s.tools.kubernetes.enabled,
         kwargs_fn=lambda s, _ctx: {
-            "in_cluster": True,
-            "max_log_lines": 120,
+            "in_cluster": s.tools.kubernetes.in_cluster,
+            "kubeconfig_env": s.tools.kubernetes.kubeconfig_env,
+            "kubeconfig_path": s.tools.kubernetes.kubeconfig_path,
+            "max_log_lines": s.tools.kubernetes.max_log_lines,
         },
     ),
     # =========================================================================
@@ -377,6 +379,19 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         # injected via runtime context; the tool is skipped when it is absent.
         required_context=frozenset({"session_join_manager"}),
         kwargs_fn=lambda s, ctx: {"manager": ctx["session_join_manager"]},
+    ),
+    "a2a_task": BuiltinToolDef(
+        adapter="ravn.adapters.tools.a2a_task.A2ATaskTool",
+        groups=frozenset({"a2a", "ravn"}),
+        condition=lambda s: s.gateway.platform.enabled,
+        required_context=frozenset({"agent_directory", "a2a_client", "a2a_trusted_origins"}),
+        kwargs_fn=lambda s, ctx: {
+            "agent_directory": ctx["agent_directory"],
+            "client": ctx["a2a_client"],
+            "trusted_origins": ctx["a2a_trusted_origins"],
+            "message_max_chars": s.gateway.platform.a2a_message_max_chars,
+            "result_max_chars": s.gateway.platform.a2a_result_max_chars,
+        },
     ),
     "ting_plan": BuiltinToolDef(
         adapter="ravn.adapters.tools.platform_tools.TingPlanTool",
@@ -454,6 +469,20 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "tools_provider": ctx["capability_tools_provider"],
             "skill_port": ctx.get("skill_port"),
             "workflow_sources": ctx.get("workflow_sources") or [],
+            "learned_tools_provider": ctx.get("learned_tools_provider"),
+            "agent_directory": ctx.get("agent_directory"),
+        },
+    ),
+    # Learned tools are dispatched on demand instead of bulk-loaded into every
+    # prompt (NIU-1118). In the core group so every profile that previously
+    # received bulk-loaded learned tools keeps the same reach through dispatch.
+    "learned_tool_run": BuiltinToolDef(
+        adapter="ravn.adapters.tools.learned_tool_run.LearnedToolRunTool",
+        groups=frozenset({"core", "ravn"}),
+        required_context=frozenset({"learned_tool_resolver", "permission"}),
+        kwargs_fn=lambda _s, ctx: {
+            "resolver": ctx["learned_tool_resolver"],
+            "permission": ctx["permission"],
         },
     ),
 }

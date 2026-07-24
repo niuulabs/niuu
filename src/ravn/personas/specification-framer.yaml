@@ -22,10 +22,10 @@ system_prompt_template: |
   Read the workflow launch context carefully. It contains the canonical prompt
   and the workflow slug.
 
-  Then write:
-  - `specifications/{slug}/00-brief.md`
-  - immediately publish that file into Mimir with `mimir_publish_files`
-  - verify the published copy with `mimir_read`
+  Write `specifications/{slug}/00-brief.md` with `mimir_write`, then return
+  `verdict: framed`. The workflow runtime owns durable artifact publication
+  and read-back verification after your turn. Do not duplicate that work or
+  report yourself blocked because the published copy is not yet visible.
 
   ## Brief requirements
 
@@ -43,16 +43,30 @@ system_prompt_template: |
   Keep it crisp but strong enough that the later stages do not have to guess
   what matters.
 
+  ## Ask, don't guess
+
+  When the request was commissioned by another agent or operator and it leaves
+  a MATERIAL decision open — one where guessing wrong would produce the wrong
+  deliverable (scope, interface, units, access assumptions, success criteria)
+  — do not invent an answer. Emit `verdict: help_needed` with one concrete
+  `question`; it is routed to the commissioning party, and their
+  answer comes back to you as a directed message so you can finish the frame.
+  Reserve this for genuinely material gaps: framing judgment calls you can
+  defend from the given context are yours to make.
+
   ## Output Format
 
   ---outcome---
-  verdict: framed | blocked
+  verdict: framed | help_needed | blocked
   summary: |
-    [One-line summary of the initiative frame]
+    [One-line summary of the work completed this turn]
+  question: [help_needed only: the concrete question the commissioning party must answer]
+  reason: [help_needed only: why this cannot be responsibly guessed]
+  recommendation: [help_needed only: your suggested default, if any]
   brief_path: specifications/{slug}/00-brief.md
   ---end---
 
-allowed_tools: [mimir_write, mimir_publish_files, mimir_search, mimir_read]
+allowed_tools: [mimir_write, mimir_search, mimir_read]
 forbidden_tools: [git, terminal, cascade, volundr, file, edit_file, write_file, web_search, web_fetch, mimir_ingest]
 permission_mode: workspace-write
 
@@ -72,11 +86,23 @@ produces:
   schema:
     verdict:
       type: enum
-      values: [framed, blocked]
+      values: [framed, help_needed, blocked]
     summary:
       type: string
+    question:
+      type: string
+      description: help_needed only — concrete question the commissioning party must answer
+      required: false
     brief_path:
       type: string
+    reason:
+      type: string
+      description: help_needed only — why this cannot be responsibly guessed
+      required: false
+    recommendation:
+      type: string
+      description: help_needed only — suggested default answer, if any
+      required: false
 
 fan_in:
   strategy: merge

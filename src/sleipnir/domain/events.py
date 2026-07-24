@@ -120,6 +120,7 @@ class SleipnirEvent:
     causation_id: str | None = None
     tenant_id: str | None = None
     ttl: int | None = None
+    trace_context: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.urgency <= 1.0:
@@ -150,6 +151,7 @@ class SleipnirEvent:
             "causation_id": self.causation_id,
             "tenant_id": self.tenant_id,
             "ttl": self.ttl,
+            "trace_context": self.trace_context,
         }
 
     @classmethod
@@ -171,4 +173,5 @@ class SleipnirEvent:
             causation_id=data.get("causation_id"),
             tenant_id=data.get("tenant_id"),
             ttl=data.get("ttl"),
+            trace_context=data.get("trace_context", {}) or {},
         )

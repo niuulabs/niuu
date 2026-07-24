@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from skuld.collaboration_adapter import SkuldCollaborationAdapter
 from skuld.config import RoomConfig
-from skuld.room_bridge import RoomBridge
 
 
 class _Clock:
@@ -21,11 +21,13 @@ class _Clock:
         self.now += seconds
 
 
-def _make_bridge(clock: _Clock | None = None) -> tuple[RoomBridge, MagicMock, _Clock]:
+def _make_bridge(
+    clock: _Clock | None = None,
+) -> tuple[SkuldCollaborationAdapter, MagicMock, _Clock]:
     registry = MagicMock()
     registry.broadcast = AsyncMock()
     clock = clock or _Clock()
-    bridge = RoomBridge(
+    bridge = SkuldCollaborationAdapter(
         config=RoomConfig(enabled=True, participant_colors=["p1", "p2", "p3"]),
         channels=registry,
         publish_presence_event=AsyncMock(),

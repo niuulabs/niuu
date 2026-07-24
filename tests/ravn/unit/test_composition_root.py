@@ -270,14 +270,8 @@ class TestBuildTools:
         )
         assert tools == []
 
-    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
-    def test_build_tools_loads_persisted_resident_agent_tools(
-        self,
-        settings: Settings,
-        tmp_path: Path,
-    ) -> None:
-        from ravn.cli.commands import _build_tools
-        from ravn.domain.models import Session
+    @staticmethod
+    def _write_learned_artifact(tmp_path: Path, name: str) -> None:
         from ravn.valkyrie_evolution.learned_tools import (
             write_learned_tool,
             write_learned_tool_artifact,
@@ -285,9 +279,9 @@ class TestBuildTools:
         from ravn.valkyrie_evolution.models import LearnedToolArtifact, LearnedToolManifest
 
         artifact = LearnedToolArtifact(
-            artifact_id="learned-tool:persisted_metric_window",
+            artifact_id=f"learned-tool:{name}",
             manifest=LearnedToolManifest(
-                name="persisted_metric_window",
+                name=name,
                 description="Read a persisted metric window.",
                 input_schema={"type": "object"},
                 required_permission="mimir:read",
@@ -295,10 +289,23 @@ class TestBuildTools:
             ),
             tool_code="def run(input):\n    return {'ok': True}\n",
         )
-        tools_dir = tmp_path / ".ravn" / "learned_tools"
-        artifacts_dir = tmp_path / ".ravn" / "learned_tool_artifacts"
-        write_learned_tool(tools_dir=tools_dir, artifact=artifact)
-        write_learned_tool_artifact(artifacts_dir=artifacts_dir, artifact=artifact)
+        write_learned_tool(tools_dir=tmp_path / ".ravn" / "learned_tools", artifact=artifact)
+        write_learned_tool_artifact(
+            artifacts_dir=tmp_path / ".ravn" / "learned_tool_artifacts",
+            artifact=artifact,
+        )
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_bulk_mode_loads_persisted_resident_agent_tools(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        from ravn.cli.commands import _build_tools
+        from ravn.domain.models import Session
+
+        settings.resident_evolution.learned_tool_injection_mode = "bulk"
+        self._write_learned_artifact(tmp_path, "persisted_metric_window")
 
         tools = _build_tools(
             settings,
@@ -312,6 +319,152 @@ class TestBuildTools:
         )
 
         assert "persisted_metric_window" in {tool.name for tool in tools}
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_dispatch_mode_keeps_learned_tools_out_of_the_toolbox(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        """NIU-1118: the per-turn tool list must not grow with the catalog."""
+        from ravn.cli.commands import _build_tools
+        from ravn.domain.models import Session
+
+        for index in range(50):
+            self._write_learned_artifact(tmp_path, f"persisted_metric_window_{index:02d}")
+
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            no_tools=False,
+            persona_config=None,
+            permission=MagicMock(),
+        )
+
+        tool_names = {tool.name for tool in tools}
+        assert not any(name.startswith("persisted_metric_window") for name in tool_names)
+        assert "learned_tool_run" in tool_names
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_dispatch_mode_tool_count_is_independent_of_catalog_size(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        from ravn.cli.commands import _build_tools
+        from ravn.domain.models import Session
+
+        def _build(workspace: Path) -> list:
+            return _build_tools(
+                settings,
+                workspace,
+                Session(),
+                MagicMock(),
+                None,
+                None,
+                no_tools=False,
+                persona_config=None,
+                permission=MagicMock(),
+            )
+
+        empty_workspace = tmp_path / "empty"
+        empty_workspace.mkdir()
+        loaded_workspace = tmp_path / "loaded"
+        loaded_workspace.mkdir()
+        for index in range(50):
+            self._write_learned_artifact(loaded_workspace, f"tool_{index:02d}")
+
+        assert [t.name for t in _build(empty_workspace)] == [
+            t.name for t in _build(loaded_workspace)
+        ]
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    async def test_learned_tool_is_discoverable_and_runnable_without_preloading(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        """NIU-1118 acceptance: a tool absent from the working set is found via
+        capability_list and executed via learned_tool_run."""
+        import json
+
+        from ravn.adapters.permission.allow_deny import AllowAllPermission
+        from ravn.cli.commands import _build_tools
+        from ravn.domain.models import Session
+
+        # This unit exercises discovery/dispatch, not the OCI boundary. The
+        # contained default is covered by the learned-tool runtime tests.
+        settings.resident_evolution.learned_tool_execution_backend = "local"
+        self._write_learned_artifact(tmp_path, "persisted_metric_window")
+
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            no_tools=False,
+            persona_config=None,
+            permission=AllowAllPermission(),
+        )
+        by_name = {tool.name: tool for tool in tools}
+        assert "persisted_metric_window" not in by_name
+
+        listed = await by_name["capability_list"].execute(
+            {"kind": "tool", "query": "persisted_metric_window"}
+        )
+        assert not listed.is_error
+        payload = json.loads(listed.content)
+        assert payload["count"] == 1
+        entry = payload["capabilities"][0]
+        assert entry["tags"] == ["tool", "learned"]
+        assert entry["metadata"]["invoke_via"] == "learned_tool_run"
+
+        executed = await by_name["learned_tool_run"].execute(
+            {"name": "persisted_metric_window", "input": {}}
+        )
+        assert not executed.is_error
+        assert '"ok": true' in executed.content
+
+    @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
+    def test_learned_tool_run_skipped_without_permission_port(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        from ravn.cli.commands import _build_tools
+        from ravn.domain.models import Session
+
+        tools = _build_tools(
+            settings,
+            tmp_path,
+            Session(),
+            MagicMock(),
+            None,
+            None,
+            no_tools=False,
+            persona_config=None,
+        )
+
+        assert "learned_tool_run" not in {tool.name for tool in tools}
+
+    def test_learned_tool_resolver_skipped_on_unknown_backend(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+    ) -> None:
+        from ravn.cli.tool_builders import _build_learned_tool_resolver
+
+        # The Literal type blocks this via normal config loading; guard the
+        # code path directly for settings objects mutated at runtime.
+        object.__setattr__(settings.resident_evolution, "learned_tool_execution_backend", "qemu")
+
+        assert _build_learned_tool_resolver(settings, tmp_path) is None
 
     @pytest.mark.usefixtures("_api_key", "_mock_anthropic")
     def test_memory_tools_added_when_memory_present(
@@ -1137,7 +1290,6 @@ class TestBuildMimirAuthWorkloadDefaults:
 
         settings.gateway.platform.enabled = False
         auth = _build_mimir_auth(settings, MimirAuthConfig(type="workload"))
-        # None means the HTTP adapter keeps its legacy env-var fallback.
         assert auth.token_file is None
         assert auth.exchange_url is None
 

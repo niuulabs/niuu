@@ -384,6 +384,44 @@ inion-b.md
     assert result.fields["page_path"] == "council/niu-929-local-model-eval/opinions/opinion-b.md"
 
 
+def test_schema_recovery_does_not_replace_structured_yaml_on_equal_error_count() -> None:
+    schema = OutcomeSchema(
+        fields={
+            "runtime_identity": OutcomeField(
+                type="string",
+                description="field supplied after model parsing",
+            ),
+            "question": OutcomeField(type="string", description="operator question"),
+            "working_state": OutcomeField(type="object", description="resident state"),
+            "optional_note": OutcomeField(
+                type="string",
+                description="optional note",
+                required=False,
+            ),
+        }
+    )
+    text = """\
+---outcome---
+question:
+working_state: {observations: [idle], hypotheses: [], unknowns: []}
+---end---
+"""
+
+    result = parse_outcome_block(text, schema)
+
+    assert result is not None
+    assert result.valid is False
+    assert result.fields["working_state"] == {
+        "observations": ["idle"],
+        "hypotheses": [],
+        "unknowns": [],
+    }
+    assert result.errors == [
+        "required field 'runtime_identity' is missing",
+        "field 'question': expected string, got NoneType",
+    ]
+
+
 def test_validate_boolean_field() -> None:
     schema = OutcomeSchema(
         fields={

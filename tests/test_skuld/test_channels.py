@@ -434,7 +434,7 @@ class TestFormatTelegramEvent:
         }
         assert format_telegram_event(event) is None
 
-    def test_room_message_outcome_block_is_pre_rendered(self):
+    def test_room_message_outcome_block_is_left_to_typed_outcome_event(self):
         event = {
             "type": "room_message",
             "participant": {"persona": "claude-mimir-researcher"},
@@ -446,25 +446,24 @@ class TestFormatTelegramEvent:
                 "---end---"
             ),
         }
-        result = format_telegram_event(event)
-        assert "[claude-mimir-researcher] outcome: outcome" in result
-        assert "summary: Wrote research/agent-mimir-page-standards.md" not in result
-        assert "Wrote research/agent-mimir-page-standards.md" in result
-        assert "page_path: research/agent-mimir-page-standards.md" in result
-        assert "---outcome---" not in result
+        assert format_telegram_event(event) is None
 
     def test_room_notification_help_needed(self):
         event = {
             "type": "room_notification",
+            "notificationType": "help_needed",
             "participant": {"persona": "reviewer"},
             "summary": "Need human input",
             "reason": "merge conflict",
+            "attempted": ["replayed the failed merge"],
             "recommendation": "decide which patch to keep",
         }
         result = format_telegram_event(event)
-        assert "[reviewer] Need human input" in result
-        assert "reason: merge conflict" in result
-        assert "next: decide which patch to keep" in result
+        assert "reviewer needs your input" in result
+        assert "Need human input" in result
+        assert "Why: merge conflict" in result
+        assert "Already tried:\n- replayed the failed merge" in result
+        assert "Suggested next step: decide which patch to keep" in result
 
     def test_room_outcome_rendered(self):
         event = {
@@ -476,9 +475,93 @@ class TestFormatTelegramEvent:
             "fields": {"checks_passed": 12, "checks_failed": 1},
         }
         result = format_telegram_event(event)
-        assert "[verifier] outcome: verification.completed" in result
-        assert "verdict: conditional" in result
-        assert "checks_passed: 12" in result
+        assert "verifier — Verification completed" in result
+        assert "Verdict: Conditional" in result
+        assert "Checks passed: 12" in result
+
+    def test_judgment_outcome_is_projected_as_operator_card(self):
+        event = {
+            "type": "room_outcome",
+            "participant": {"persona": "Ivaldi"},
+            "eventType": "valkyrie.judgment.proposed",
+            "verdict": "judged",
+            "fields": {
+                "decision": "investigate",
+                "operational_state": "nominal",
+                "wakefulness": "wakeful",
+                "tier": "present",
+                "action_authority": "autonomous",
+                "action_capability": "none",
+                "signal_refs": ["skuld:directed_message"],
+                "rationale": "One verified learned tool is available.",
+                "evidence": [
+                    "Catalog metadata reports verification=passed.",
+                    "The tool has tests.",
+                ],
+                "recommended_action": "Use the verified tool when its capability matches.",
+                "target_surfaces": ["learned_tools"],
+                "confidence": 0.91,
+                "working_state": {
+                    "attempts": ["This verbose audit state must stay out of Telegram."]
+                },
+            },
+        }
+
+        result = format_telegram_event(event)
+
+        assert result.startswith("🔎 **Ivaldi — Judgment: Investigating**")
+        assert "**Recommended action**" in result
+        assert "**Why**" in result
+        assert ">! One verified learned tool is available." in result
+        assert "**Evidence (2)**" in result
+        assert ">! • Catalog metadata reports verification=passed." in result
+        assert ">! Status: Present · Nominal · Wakeful" in result
+        assert ">! Authority: Autonomous" in result
+        assert ">! Confidence: 91%" in result
+        assert "Verdict: Judged" not in result
+        assert "Action capability: none" not in result
+        assert "working_state" not in result
+        assert "verbose audit state" not in result
+
+    def test_judgment_operator_card_stays_within_one_telegram_message(self):
+        long_text = "diagnostic evidence " * 200
+        event = {
+            "type": "room_outcome",
+            "participant": {"persona": "Ivaldi"},
+            "eventType": "valkyrie.judgment.proposed",
+            "summary": long_text,
+            "fields": {
+                "decision": "investigate",
+                "question": long_text,
+                "recommended_action": long_text,
+                "rationale": long_text,
+                "capability_gap": long_text,
+                "tool_evolution_plan": long_text,
+                "open_questions": [long_text] * 5,
+                "evidence": [long_text] * 5,
+                "target_surfaces": [long_text] * 5,
+            },
+        }
+
+        rendered = render_telegram_html(format_telegram_event(event) or "")
+
+        assert len(rendered) <= 4096
+        assert "<b>Evidence (2 of 5)</b>" in rendered
+
+    def test_non_judgment_outcome_with_rationale_keeps_generic_format(self):
+        event = {
+            "type": "room_outcome",
+            "participant": {"persona": "verifier"},
+            "eventType": "verification.completed",
+            "verdict": "conditional",
+            "fields": {"rationale": "One issue remains."},
+        }
+
+        result = format_telegram_event(event)
+
+        assert result.startswith("verifier — Verification completed")
+        assert "Verdict: Conditional" in result
+        assert "Rationale: One issue remains." in result
 
     def test_room_outcome_serializes_list_fields(self):
         event = {
@@ -487,8 +570,49 @@ class TestFormatTelegramEvent:
             "fields": {"affected_files": ["a.py", "b.py"]},
         }
         result = format_telegram_event(event)
-        assert "[verifier] outcome: outcome" in result
-        assert 'affected_files: ["a.py", "b.py"]' in result
+        assert "verifier — Outcome" in result
+        assert "Affected files:\n- a.py\n- b.py" in result
+        assert '["a.py", "b.py"]' not in result
+
+    def test_room_outcome_renders_nested_fields_without_json(self):
+        event = {
+            "type": "room_outcome",
+            "participant": {"persona": "resident"},
+            "fields": {
+                "working_state": {
+                    "unknowns": ["Whether the service recovered."],
+                }
+            },
+        }
+        result = format_telegram_event(event)
+        assert "Working state:" in result
+        assert "Unknowns:" in result
+        assert "- Whether the service recovered." in result
+        assert '{"unknowns"' not in result
+
+    def test_help_outcome_is_left_to_answerable_notification(self):
+        event = {
+            "type": "room_outcome",
+            "participant": {"persona": "resident"},
+            "verdict": "help_needed",
+            "fields": {
+                "continuation": "ask_operator",
+                "question": "Can you inspect the affected service?",
+            },
+        }
+        assert format_telegram_event(event) is None
+
+    def test_silent_outcome_stays_in_room_instead_of_paging_telegram(self):
+        event = {
+            "type": "room_outcome",
+            "participant": {"persona": "resident"},
+            "fields": {
+                "decision": "watch",
+                "tier": "silent",
+                "state_summary": "No operator attention required.",
+            },
+        }
+        assert format_telegram_event(event) is None
 
     def test_room_outcome_renders_non_dict_fields(self):
         event = {
@@ -535,7 +659,22 @@ class TestFormatTelegramEvent:
         assert "<b>Heading</b>" in rendered
         assert "• bullet" in rendered
         assert "1. ordered" in rendered
-        assert "&gt; quoted" in rendered
+        assert "<blockquote>quoted</blockquote>" in rendered
+
+    def test_render_telegram_html_formats_expandable_details(self):
+        rendered = render_telegram_html(
+            "**Evidence**\n"
+            ">! • First supporting item\n"
+            ">! • Second supporting item\n"
+            "\n"
+            "**Details**\n"
+            ">! Status: Present · Wakeful"
+        )
+        assert "<b>Evidence</b>" in rendered
+        assert (
+            "<blockquote expandable>• First supporting item\n• Second supporting item</blockquote>"
+        ) in rendered
+        assert "<blockquote expandable>Status: Present · Wakeful</blockquote>" in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -619,6 +758,9 @@ class TestTelegramChannelMocked:
             ch._closed = False
             ch._text_buffer = []
             ch._flush_task = None
+            ch._reply_targets = {}
+            ch._delivered_event_ids = {}
+            ch._active_failure_keys = {}
         return ch
 
     def test_channel_type(self, channel):
@@ -674,6 +816,37 @@ class TestTelegramChannelMocked:
         assert '<a href="https://example.com">docs</a>' in kwargs["text"]
 
     @pytest.mark.asyncio
+    async def test_send_event_projects_judgment_as_expandable_operator_card(self, channel):
+        await channel.send_event(
+            {
+                "type": "room_outcome",
+                "participantId": "ivaldi",
+                "participant": {"persona": "Ivaldi"},
+                "eventType": "valkyrie.judgment.proposed",
+                "verdict": "judged",
+                "fields": {
+                    "decision": "investigate",
+                    "tier": "present",
+                    "rationale": "The catalog contains one verified learned tool.",
+                    "recommended_action": "Use it when the capability matches.",
+                    "evidence": ["verification=passed", "has_tests=true"],
+                    "working_state": {"attempts": ["internal detail"]},
+                },
+            }
+        )
+
+        channel._bot.send_message.assert_awaited_once()
+        _, kwargs = channel._bot.send_message.call_args
+        assert kwargs["parse_mode"] == "HTML"
+        assert kwargs["text"].startswith("🔎 <b>Ivaldi — Judgment: Investigating</b>")
+        assert "<b>Recommended action</b>" in kwargs["text"]
+        assert (
+            "<blockquote expandable>The catalog contains one verified learned tool.</blockquote>"
+        ) in kwargs["text"]
+        assert "working_state" not in kwargs["text"]
+        assert "internal detail" not in kwargs["text"]
+
+    @pytest.mark.asyncio
     async def test_send_event_room_message_table_uses_preformatted_block(self, channel):
         event = {
             "type": "room_message",
@@ -707,6 +880,124 @@ class TestTelegramChannelMocked:
         assert kwargs["chat_id"] == "12345"
         assert kwargs["parse_mode"] == "HTML"
         assert "reply_markup" in kwargs
+
+    @pytest.mark.asyncio
+    async def test_exact_source_event_redelivery_is_sent_once(self, channel):
+        event = {
+            "type": "room_notification",
+            "notificationType": "help_needed",
+            "sourceEventId": "help-event-1",
+            "participant": {"persona": "resident"},
+            "summary": "Need operator input",
+        }
+
+        await channel.send_event(event)
+        await channel.send_event(dict(event))
+
+        channel._bot.send_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_repeated_backend_failure_is_sent_once_until_peer_recovers(self, channel):
+        failure = {
+            "type": "room_message",
+            "participantId": "ivaldi",
+            "participant": {"persona": "Ivaldi"},
+            "content": "LLM backend unavailable",
+            "visibility": "public",
+            "error": True,
+            "failureKind": "LLMError",
+        }
+
+        await channel.send_event({**failure, "sourceEventId": "failure-1"})
+        await channel.send_event({**failure, "sourceEventId": "failure-2"})
+
+        assert channel._bot.send_message.await_count == 1
+
+        await channel.send_event(
+            {
+                "type": "room_outcome",
+                "participantId": "ivaldi",
+                "participant": {"persona": "Ivaldi"},
+                "sourceEventId": "outcome-1",
+                "outcome": {"decision": "watch", "state_summary": "Recovered"},
+            }
+        )
+        await channel.send_event({**failure, "sourceEventId": "failure-3"})
+
+        assert channel._bot.send_message.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_help_force_reply_retains_exact_peer_and_trace_context(self, channel):
+        sent = MagicMock()
+        sent.message_id = 321
+        sent.chat.id = 12345
+        channel._bot.send_message.return_value = sent
+        event = {
+            "type": "room_notification",
+            "notificationType": "help_needed",
+            "participantId": "ivaldi",
+            "participant": {"persona": "Ivaldi"},
+            "summary": "Need operator input",
+            "reason": "needs_context",
+            "recommendation": "Reply with the missing facts.",
+            "trace_context": {"traceparent": "00-abc-def-01"},
+        }
+        await channel.send_event(event)
+
+        on_message = AsyncMock()
+        channel._on_message = on_message
+        update = MagicMock()
+        update.effective_chat.id = 12345
+        update.message.text = "The code is a slicer release-count mismatch."
+        update.message.message_id = 400
+        update.message.reply_to_message.message_id = 321
+        update.message.message_thread_id = None
+
+        await channel._handle_text_message(update, None)
+
+        payload = on_message.await_args.args[0]
+        assert payload["reply_to_message_id"] == 321
+        assert payload["target_peer_id"] == "ivaldi"
+        assert payload["trace_context"] == {"traceparent": "00-abc-def-01"}
+        assert payload["reply_context"]["participant_id"] == "ivaldi"
+        assert "Need operator input" in payload["reply_context"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_room_message_reply_retains_peer_trace_and_prior_content(self, channel):
+        sent = MagicMock()
+        sent.message_id = 322
+        sent.chat.id = 12345
+        channel._bot.send_message.return_value = sent
+        await channel.send_event(
+            {
+                "type": "room_message",
+                "participantId": "ivaldi",
+                "participant": {"persona": "Ivaldi"},
+                "content": "**decision:** ignore\nrationale: transport check only",
+                "visibility": "public",
+                "trace_context": {"traceparent": "00-room-parent-01"},
+            }
+        )
+
+        on_message = AsyncMock()
+        channel._on_message = on_message
+        update = MagicMock()
+        update.effective_chat.id = 12345
+        update.message.text = "ignore indeed"
+        update.message.message_id = 401
+        update.message.reply_to_message.message_id = 322
+        update.message.message_thread_id = None
+
+        await channel._handle_text_message(update, None)
+
+        payload = on_message.await_args.args[0]
+        assert payload["target_peer_id"] == "ivaldi"
+        assert payload["trace_context"] == {"traceparent": "00-room-parent-01"}
+        assert payload["reply_context"] == {
+            "event_type": "room_message",
+            "content": "[Ivaldi] **decision:** ignore\nrationale: transport check only",
+            "participant_id": "ivaldi",
+        }
 
     @pytest.mark.asyncio
     async def test_send_event_skips_none_format(self, channel):

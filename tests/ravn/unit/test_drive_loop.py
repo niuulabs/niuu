@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 
@@ -31,9 +31,8 @@ def _make_task(
     output_mode: OutputMode = OutputMode.SILENT,
     deadline: datetime | None = None,
 ) -> AgentTask:
-    hex_ts = hex(int(time.time() * 1000))[2:]
     return AgentTask(
-        task_id=f"task_{hex_ts}_0001",
+        task_id=f"task_{uuid4().hex}_0001",
         title="test task",
         initiative_context="do something useful",
         triggered_by="cron:test",
@@ -154,6 +153,16 @@ def test_build_initiative_prompt_contains_surface_instruction() -> None:
     assert "No human sent this message" in prompt
 
 
+def test_build_initiative_prompt_identifies_human_channel_input_truthfully() -> None:
+    task = _make_task()
+    task.human_initiated = True
+
+    prompt = build_initiative_prompt(task)
+
+    assert "A human sent this message through a communication channel" in prompt
+    assert "No human sent this message" not in prompt
+
+
 # ---------------------------------------------------------------------------
 # DriveLoop — enqueue / priority ordering
 # ---------------------------------------------------------------------------
@@ -165,12 +174,13 @@ async def test_drive_loop_enqueue_respects_priority(tmp_path: Path) -> None:
     high = _make_task(priority=1)
     low = _make_task(priority=20)
 
-    await loop.enqueue(low)
-    await loop.enqueue(high)
+    assert await loop.enqueue(low) is True
+    assert await loop.enqueue(high) is True
+    assert loop._queue.qsize() == 2
 
     # First item dequeued should be the higher-priority task (lower number)
-    prio1, _, task1 = await loop._queue.get()
-    prio2, _, task2 = await loop._queue.get()
+    prio1, _, task1 = loop._queue.get_nowait()
+    prio2, _, task2 = loop._queue.get_nowait()
     assert prio1 < prio2
     assert task1.task_id == high.task_id
     assert task2.task_id == low.task_id
@@ -200,6 +210,155 @@ async def test_drive_loop_enqueue_respects_queue_max(tmp_path: Path) -> None:
     assert loop._queue.qsize() == 2
 
 
+@pytest.mark.asyncio
+async def test_drive_loop_enqueue_rejects_duplicate_task_id(tmp_path: Path) -> None:
+    loop, _ = _make_drive_loop(tmp_path)
+    task = _make_task()
+    task.task_id = "task-duplicate"
+
+    assert await loop.enqueue(task) is True
+    assert await loop.enqueue(task) is False
+
+    assert loop.queued_task_ids() == ["task-duplicate"]
+
+
+@pytest.mark.asyncio
+async def test_executor_leaves_waiting_task_in_durable_journal(tmp_path: Path) -> None:
+    journal = tmp_path / "queue.json"
+    config = _make_initiative_config(
+        max_concurrent_tasks=1,
+        queue_journal_path=str(journal),
+    )
+    loop = DriveLoop(agent_factory=MagicMock(), config=config, settings=Settings())
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def _hold_first(_task: AgentTask) -> None:
+        first_started.set()
+        await release_first.wait()
+
+    loop._run_task = _hold_first  # type: ignore[method-assign]
+    first = _make_task()
+    first.task_id = "task-first"
+    second = _make_task()
+    second.task_id = "task-second"
+    await loop.enqueue(first)
+    await loop.enqueue(second)
+
+    executor = asyncio.create_task(loop._task_executor())
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    await asyncio.sleep(0)
+
+    assert loop.queued_task_ids() == ["task-second"]
+    assert [record["task_id"] for record in json.loads(journal.read_text())["queue"]] == [
+        "task-second"
+    ]
+    assert [record["task_id"] for record in json.loads(journal.read_text())["inflight"]] == [
+        "task-first"
+    ]
+
+    resumed = DriveLoop(agent_factory=MagicMock(), config=config, settings=Settings())
+    resumed._load_journal()
+    assert set(resumed.queued_task_ids()) == {"task-first", "task-second"}
+
+    executor.cancel()
+    with suppress(asyncio.CancelledError):
+        await executor
+    release_first.set()
+    await asyncio.gather(*loop._active_tasks.values())
+
+
+@pytest.mark.asyncio
+async def test_shutdown_interruption_remains_in_journal(tmp_path: Path) -> None:
+    loop, _ = _make_drive_loop(tmp_path)
+    task = _make_task()
+    task.task_id = "task-interrupted"
+    loop._inflight_tasks[task.task_id] = task
+    loop._shutting_down = True
+
+    async def _interrupted() -> str:
+        return "interrupted"
+
+    finished = asyncio.create_task(_interrupted())
+    await finished
+    loop._on_task_done(task.task_id, finished)
+
+    journal = json.loads(loop._journal_path.read_text())
+    assert [record["task_id"] for record in journal["inflight"]] == ["task-interrupted"]
+
+
+@pytest.mark.asyncio
+async def test_run_waits_for_active_task_cancellation_before_returning(tmp_path: Path) -> None:
+    loop, _ = _make_drive_loop(tmp_path)
+    task = _make_task()
+    task.task_id = "task-active-at-shutdown"
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def _run_until_cancelled(_task: AgentTask) -> str:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            return "interrupted"
+
+    loop._run_task = _run_until_cancelled  # type: ignore[method-assign]
+    await loop.enqueue(task)
+    run_task = asyncio.create_task(loop.run())
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    run_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await run_task
+
+    assert cancelled.is_set()
+    assert loop._active_tasks == {}
+    journal = json.loads(loop._journal_path.read_text())
+    assert [record["task_id"] for record in journal["inflight"]] == ["task-active-at-shutdown"]
+
+
+@pytest.mark.asyncio
+async def test_executor_removes_expired_task_from_inflight_journal(tmp_path: Path) -> None:
+    loop, _ = _make_drive_loop(tmp_path)
+    task = _make_task(deadline=datetime.now(UTC) + timedelta(seconds=1))
+    task.task_id = "task-expires-in-queue"
+    await loop.enqueue(task)
+    task.deadline = datetime.now(UTC) - timedelta(seconds=1)
+
+    executor = asyncio.create_task(loop._task_executor())
+    await asyncio.wait_for(loop._queue.join(), timeout=1)
+    executor.cancel()
+    with suppress(asyncio.CancelledError):
+        await executor
+
+    journal = json.loads(loop._journal_path.read_text())
+    assert journal["queue"] == []
+    assert journal["inflight"] == []
+
+
+@pytest.mark.asyncio
+async def test_task_telemetry_uses_runtime_outcome_without_cascade_store(
+    tmp_path: Path,
+) -> None:
+    loop, _ = _make_drive_loop(tmp_path)
+    loop._run_task_observed = AsyncMock(return_value="success")  # type: ignore[method-assign]
+    telemetry = MagicMock()
+    span = MagicMock()
+    telemetry.span.return_value.__enter__.return_value = span
+    telemetry.span.return_value.__exit__.return_value = False
+
+    with patch("ravn.drive_loop.get_observability", return_value=telemetry):
+        outcome = await loop._run_task(_make_task())
+
+    assert outcome == "success"
+    span.set_attribute.assert_called_once_with("ravn.task.outcome", "success")
+    task_metric = next(
+        call for call in telemetry.count.call_args_list if call.args == ("ravn.agent.tasks",)
+    )
+    assert task_metric.kwargs["attributes"]["ravn.task.outcome"] == "success"
+
+
 # ---------------------------------------------------------------------------
 # DriveLoop — queue journal round-trip
 # ---------------------------------------------------------------------------
@@ -214,6 +373,7 @@ async def test_drive_loop_journal_round_trip(tmp_path: Path) -> None:
 
     loop1 = DriveLoop(agent_factory=factory, config=config, settings=settings)
     task = _make_task()
+    task.human_initiated = True
     await loop1.enqueue(task)
 
     assert journal.exists()
@@ -222,6 +382,7 @@ async def test_drive_loop_journal_round_trip(tmp_path: Path) -> None:
     records = raw["queue"] if isinstance(raw, dict) else raw
     assert len(records) == 1
     assert records[0]["task_id"] == task.task_id
+    assert records[0]["human_initiated"] is True
 
     # Simulate restart by creating a new DriveLoop and loading the journal
     loop2 = DriveLoop(agent_factory=factory, config=config, settings=settings)
@@ -229,6 +390,7 @@ async def test_drive_loop_journal_round_trip(tmp_path: Path) -> None:
     assert not loop2._queue.empty()
     _, _, restored = await loop2._queue.get()
     assert restored.task_id == task.task_id
+    assert restored.human_initiated is True
 
 
 @pytest.mark.asyncio
@@ -1005,7 +1167,7 @@ async def test_directed_message_steers_single_active_agent(tmp_path: Path) -> No
     steerable.steer = AsyncMock(return_value=True)
     loop._active_agents["task-1"] = steerable
 
-    await loop._handle_directed_message("Change course")
+    assert await loop.handle_directed_message("Change course") is True
 
     steerable.steer.assert_awaited_once_with("Change course")
     loop.enqueue.assert_not_called()
@@ -1025,7 +1187,7 @@ async def test_directed_message_interceptor_can_consume_reply(tmp_path: Path) ->
     loop._active_agents["task-1"] = steerable
 
     metadata = {"help_context": {"operator_contact_id": "operator-contact-risky"}}
-    await loop._handle_directed_message("Approved", metadata)
+    assert await loop.handle_directed_message("Approved", metadata) is True
 
     interceptor.assert_awaited_once_with("Approved", metadata)
     steerable.steer.assert_not_called()
@@ -1051,7 +1213,7 @@ async def test_directed_message_falls_back_to_enqueue_when_steering_unavailable(
 
     loop._active_agents = {"task-1": first, "task-2": second}
 
-    await loop._handle_directed_message("Queue this instead")
+    await loop.handle_directed_message("Queue this instead")
 
     loop.enqueue.assert_awaited_once()
     first.steer.assert_not_called()
@@ -1211,9 +1373,8 @@ async def test_drive_loop_runs_agent_turn_from_cron(tmp_path: Path) -> None:
 
 
 def _make_thread_task(path: str = "threads/test-thread") -> AgentTask:
-    hex_ts = hex(int(time.time() * 1000))[2:]
     return AgentTask(
-        task_id=f"task_{hex_ts}_thread",
+        task_id=f"task_{uuid4().hex}_thread",
         title="thread task",
         initiative_context="work on thread",
         triggered_by=f"thread:{path}",

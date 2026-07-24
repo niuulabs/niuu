@@ -43,7 +43,7 @@ from ravn.adapters.tools.cascade_tools import (
 )
 from ravn.budget import IterationBudget
 from ravn.domain.events import RavnEvent, RavnEventType
-from ravn.domain.models import AgentTask, OutputMode, SharedContext
+from ravn.domain.models import AgentTask, OutputMode, SharedContext, ToolResult
 from ravn.ports.spawn import SpawnConfig
 from tests.test_ravn.conftest import (
     _FakeDiscovery,
@@ -572,6 +572,9 @@ class TestDriveLoopJournal:
         journal = str(tmp_path / "queue.json")
         dl = _make_drive_loop(journal_path=journal)
         task = _make_agent_task("journal-task")
+        task.trace_context = {
+            "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+        }
         dl._queue.put_nowait((10, 0, task))
         dl._persist_queue()
 
@@ -579,6 +582,39 @@ class TestDriveLoopJournal:
         dl2 = _make_drive_loop(journal_path=journal)
         dl2._load_journal()
         assert dl2.task_status("journal-task") == "queued"
+        restored = dl2._queue._queue[0][2]
+        assert restored.trace_context == task.trace_context
+
+    @pytest.mark.asyncio
+    async def test_restored_inflight_task_recovers_durable_tool_work(self, tmp_path: Path):
+        journal = str(tmp_path / "queue.json")
+        first = _make_drive_loop(journal_path=journal)
+        task = _make_agent_task("interrupted-task")
+        first._inflight_tasks[task.task_id] = task
+        first._persist_queue()
+
+        recovered_tool = MagicMock()
+        recovered_tool.name = "build_tool"
+        recovered_tool.recover_pending = AsyncMock(
+            return_value=[
+                ToolResult(
+                    tool_call_id="",
+                    content="continued task-remote-1",
+                )
+            ]
+        )
+        agent = MagicMock()
+        agent.tools = [recovered_tool]
+        restarted = _make_drive_loop(journal_path=journal)
+        restarted._settings.tools.max_result_chars = 0
+        restarted._load_journal()
+
+        results = await restarted._recover_interrupted_tool_operations(agent, task)
+        repeated = await restarted._recover_interrupted_tool_operations(agent, task)
+
+        assert results == ["### build_tool (completed)\n\ncontinued task-remote-1"]
+        assert repeated == []
+        recovered_tool.recover_pending.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_journal_skips_expired_tasks(self, tmp_path: Path):

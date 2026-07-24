@@ -36,6 +36,8 @@ from ting.adapters.postgres_workflow_campaigns import PostgresWorkflowCampaignRe
 from ting.adapters.postgres_workflows import PostgresWorkflowRepository
 from ting.adapters.tracker_factory import TrackerAdapterFactory
 from ting.adapters.volundr_factory import VolundrAdapterFactory
+from ting.api.a2a import create_a2a_router
+from ting.api.a2a_card import create_agent_card_router
 from ting.api.audit import create_audit_router
 from ting.api.dispatch import (
     create_dispatch_router,
@@ -369,6 +371,8 @@ def create_app(
     app.include_router(create_sessions_router())
     app.include_router(create_settings_router())
     app.include_router(create_workflows_router())
+    app.include_router(create_agent_card_router(settings.a2a))
+    app.include_router(create_a2a_router())
     app.include_router(create_research_router())
     app.include_router(create_specs_router())
     app.include_router(create_flock_flows_router())

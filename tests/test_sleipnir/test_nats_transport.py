@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import ssl
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
 
@@ -40,6 +41,7 @@ from sleipnir.adapters.nats_transport import (
     NatsTransport,
     _BridgeSubscription,
     _build_tls_context,
+    _connect_options,
     _decode_nats_message,
     _DeduplicationCache,
     _durable_name_for_subject,
@@ -355,6 +357,15 @@ def test_tls_context_loads_inline_ca_bundle():
 
     assert result is context
     context.load_verify_locations.assert_called_once_with(cadata="certificate-pem")
+
+
+def test_nats_file_paths_expand_home_directory():
+    with patch("sleipnir.adapters.nats_transport.ssl.create_default_context") as create:
+        _build_tls_context(tls_ca_file="~/.ravn/nats-ca.crt")
+    create.assert_called_once_with(cafile=str(Path.home() / ".ravn/nats-ca.crt"))
+
+    options = _connect_options(nkeys_seed_file="~/.ravn/consumer.nk")
+    assert options["nkeys_seed"] == str(Path.home() / ".ravn/consumer.nk")
 
 
 def test_tls_context_can_accept_legacy_private_ca_without_disabling_verification():

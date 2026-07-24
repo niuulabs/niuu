@@ -596,6 +596,50 @@ def test_ravn_accepts_external_workload_jwks_provider() -> None:
     assert 'address: "yggdrasil.niuu.world"' in result.stdout
 
 
+def test_observatory_accepts_forwarded_workload_identity() -> None:
+    chart_dir = Path(__file__).parent.parent / "charts" / "observatory"
+    result = subprocess.run(
+        [
+            "helm",
+            "template",
+            "test",
+            str(chart_dir),
+            "--set",
+            "envoy.enabled=true",
+            "--set",
+            "envoy.jwt.enabled=true",
+            "--set",
+            "envoy.jwt.issuer=https://keycloak.example/realms/volundr",
+            "--set",
+            "envoy.jwt.jwksUri=https://keycloak.example/certs",
+            "--set",
+            "envoy.jwt.keycloakHost=keycloak.example",
+            "--set",
+            "envoy.jwt.workload.enabled=true",
+            "--set",
+            f"envoy.jwt.workload.issuer={EXCHANGE_ISSUER}",
+            "--set",
+            "envoy.jwt.workload.audiences[0]=volundr-api",
+            "--set",
+            f"envoy.jwt.workload.jwksUri={EXCHANGE_ISSUER}/jwks",
+            "--set",
+            "envoy.jwt.workload.jwksHost=yggdrasil.niuu.world",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.fail(f"helm template failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+
+    assert "workload:" in result.stdout
+    assert "requires_any:" in result.stdout
+    assert "- provider_name: keycloak" in result.stdout
+    assert "- provider_name: workload" in result.stdout
+    assert "cluster: workload_jwks" in result.stdout
+    assert 'address: "yggdrasil.niuu.world"' in result.stdout
+
+
 def _render_chart(chart: str) -> str:
     chart_dir = Path(__file__).parent.parent / "charts" / chart
     result = subprocess.run(

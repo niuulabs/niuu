@@ -1,0 +1,275 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "max(ravn_runtime_up{job=~\"$job\",ravn_environment_id=~\"$environment\"}) or vector(0)", "instant": true, "refId": "A"}],
+      "title": "Resident up",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 10}, {"color": "red", "value": 20}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "id": 2,
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "max(ravn_queue_depth{job=~\"$job\",ravn_environment_id=~\"$environment\"}) or vector(0)", "instant": true, "refId": "A"}],
+      "title": "Queued cases",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+      "id": 3,
+      "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "max(ravn_agent_active_tasks{job=~\"$job\",ravn_environment_id=~\"$environment\"}) or vector(0)", "instant": true, "refId": "A"}],
+      "title": "Active cases",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 0.01}]}, "unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "id": 4,
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "(sum(rate(ravn_agent_tasks{job=~\"$job\",ravn_task_outcome=~\"error|exception\"}[$__rate_interval])) or vector(0)) / clamp_min((sum(rate(ravn_agent_tasks{job=~\"$job\"}[$__rate_interval])) or vector(0)), 1e-9)", "refId": "A"}],
+      "title": "Task failure ratio",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 30}, {"color": "red", "value": 120}]}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "id": 5,
+      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(ravn_agent_task_duration_bucket{job=~\"$job\"}[$__rate_interval])))", "refId": "A"}],
+      "title": "Task latency p95",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2, "showPoints": "never", "stacking": {"group": "A", "mode": "normal"}}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "id": 10,
+      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (ravn_valkyrie_decision,ravn_valkyrie_continuation) (rate(ravn_valkyrie_judgments{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "{{ravn_valkyrie_decision}} / {{ravn_valkyrie_continuation}}", "refId": "A"}],
+      "title": "Judgments and continuation choices",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2, "showPoints": "never", "stacking": {"group": "A", "mode": "normal"}}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "id": 11,
+      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (ravn_task_outcome) (rate(ravn_agent_tasks{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "{{ravn_task_outcome}}", "refId": "A"}],
+      "title": "Task outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never"}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "id": 12,
+      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "max(ravn_queue_depth{job=~\"$job\",ravn_environment_id=~\"$environment\"})", "legendFormat": "queued", "refId": "A"},
+        {"expr": "max(ravn_agent_active_tasks{job=~\"$job\",ravn_environment_id=~\"$environment\"})", "legendFormat": "active", "refId": "B"}
+      ],
+      "title": "Queue pressure and active work",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "bars", "fillOpacity": 35, "lineWidth": 1, "showPoints": "never", "stacking": {"group": "A", "mode": "normal"}}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "id": 13,
+      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (ravn_signal_source,ravn_signal_type,ravn_signal_severity) (rate(ravn_environment_signals{job=~\"$job\",ravn_environment_id=~\"$environment\"}[$__rate_interval]))", "legendFormat": "{{ravn_signal_source}} {{ravn_signal_type}} {{ravn_signal_severity}}", "refId": "A"}],
+      "title": "Accepted environment signals",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "continuous-GrYlRd"}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 8, "x": 0, "y": 20},
+      "id": 20,
+      "options": {"displayMode": "gradient", "orientation": "horizontal", "reduceOptions": {"calcs": ["sum"], "fields": "", "values": false}},
+      "targets": [{"expr": "sum by (gen_ai_tool_name,ravn_learned_tool_name,ravn_tool_outcome) (ravn_agent_tool_calls{job=~\"$job\",ravn_runtime_component=\"resident\"})", "instant": true, "legendFormat": "{{gen_ai_tool_name}} {{ravn_learned_tool_name}} / {{ravn_tool_outcome}}", "refId": "A"}],
+      "title": "Tool calls since daemon start",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "continuous-BlYlRd"}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 8, "x": 8, "y": 20},
+      "id": 21,
+      "options": {"displayMode": "gradient", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le,gen_ai_tool_name) (ravn_agent_tool_duration_bucket{job=~\"$job\",ravn_runtime_component=\"resident\"}))", "instant": true, "legendFormat": "{{gen_ai_tool_name}}", "refId": "A"}],
+      "title": "Tool latency p95 since daemon start",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "continuous-GrYlRd"}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 9, "w": 8, "x": 16, "y": 20},
+      "id": 22,
+      "options": {"displayMode": "gradient", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "max by (ravn_capability_kind) (ravn_capabilities_available{job=~\"$job\"})", "instant": true, "legendFormat": "{{ravn_capability_kind}}", "refId": "A"}],
+      "title": "Capabilities visible to resident",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "description": "The resident's current learned-tool catalog. An artifact envelope carries the manifest, Python source, tests, requirements, provenance, and verification result; installed code is materialized and executed separately.",
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 29},
+      "id": 23,
+      "options": {"cellHeight": "sm", "showHeader": true},
+      "targets": [{"expr": "max by (ravn_learned_tool_name,ravn_learned_tool_artifact_id,ravn_learned_tool_verification,ravn_learned_tool_required_permission) (ravn_learned_tool_installed{job=~\"$job\"})", "format": "table", "instant": true, "refId": "A"}],
+      "title": "Installed learned tools",
+      "type": "table"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never"}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 36},
+      "id": 30,
+      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "sum by (gen_ai_token_type) (rate(gen_ai_client_token_usage_sum{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "{{gen_ai_token_type}} tokens/s", "refId": "A"},
+        {"expr": "sum by (gen_ai_request_model) (rate(ravn_agent_llm_calls{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "{{gen_ai_request_model}} calls/s", "refId": "B"}
+      ],
+      "title": "Model use",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never"}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 36},
+      "id": 31,
+      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "sum by (ravn_signal_transport_outcome) (rate(ravn_signal_transport_messages{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "JetStream {{ravn_signal_transport_outcome}}", "refId": "A"},
+        {"expr": "sum by (ravn_queue_outcome,ravn_queue_reason) (rate(ravn_queue_admissions{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "queue {{ravn_queue_outcome}} / {{ravn_queue_reason}}", "refId": "B"}
+      ],
+      "title": "Durability handoff: receive, ACK/NAK, admission",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "bars", "fillOpacity": 30, "lineWidth": 1, "showPoints": "never"}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 44},
+      "id": 40,
+      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (server_address,url_template,http_response_status_code) (rate(ravn_http_client_requests{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "{{server_address}}{{url_template}} HTTP {{http_response_status_code}}", "refId": "A"}],
+      "title": "Authenticated external dependency calls",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2, "showPoints": "never"}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 44},
+      "id": 41,
+      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "sum by (a2a_operation,a2a_task_state) (rate(ravn_a2a_operations{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "{{a2a_operation}} / {{a2a_task_state}}", "refId": "A"},
+        {"expr": "sum by (ravn_tool_build_outcome) (rate(ravn_tool_build_operations{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "build / {{ravn_tool_build_outcome}}", "refId": "B"},
+        {"expr": "sum by (a2a_task_state) (rate(ravn_a2a_task_polls{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "poll / {{a2a_task_state}}", "refId": "C"},
+        {"expr": "sum by (ravn_tool_build_mode,ravn_tool_build_outcome) (rate(ravn_tool_build_lifecycle_operations{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "lifecycle / {{ravn_tool_build_mode}} / {{ravn_tool_build_outcome}}", "refId": "D"},
+        {"expr": "sum by (ravn_tool_build_verify_outcome,ravn_tool_build_repair_kind) (rate(ravn_tool_build_verifications{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "verify / {{ravn_tool_build_verify_outcome}} / {{ravn_tool_build_repair_kind}}", "refId": "E"},
+        {"expr": "sum by (ravn_review_outcome) (rate(ravn_tool_build_reviews{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "review / {{ravn_review_outcome}}", "refId": "F"},
+        {"expr": "sum by (ravn_tool_build_canary_outcome) (rate(ravn_tool_build_canary_operations{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "canary / {{ravn_tool_build_canary_outcome}}", "refId": "G"},
+        {"expr": "sum(rate(ravn_tool_build_flock_proposals{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "flock proposals", "refId": "H"}
+      ],
+      "title": "A2A and tool evolution",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never"}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 52},
+      "id": 42,
+      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "sum by (ravn_resident_disposition) (rate(ravn_resident_turns{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "resident / {{ravn_resident_disposition}}", "refId": "A"},
+        {"expr": "sum by (ravn_odin_decision,ravn_odin_tier) (rate(ravn_odin_decisions{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "ODIN / {{ravn_odin_decision}} / {{ravn_odin_tier}}", "refId": "B"}
+      ],
+      "title": "Continuation and ODIN decisions",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 8, "lineWidth": 1, "showPoints": "never"}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 52},
+      "id": 43,
+      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (ravn_event_direction,ravn_event_type,ravn_event_handler) (rate(ravn_event_bus_operations{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "{{ravn_event_direction}} {{ravn_event_type}} {{ravn_event_handler}}", "refId": "A"}],
+      "title": "Operator/event-bus activity",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${metrics}"},
+      "description": "Expected causal cuts made explicit by Ravn: MCP tool execution inherits a remote parent, while work recovered after a daemon restart starts a bounded trace linked to the pre-restart trace.",
+      "fieldConfig": {"defaults": {"color": {"mode": "continuous-GrYlRd"}, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 60},
+      "id": 44,
+      "options": {"displayMode": "gradient", "orientation": "horizontal", "reduceOptions": {"calcs": ["sum"], "fields": "", "values": false}},
+      "targets": [{"expr": "sum by (ravn_trace_relationship,ravn_trace_component) (ravn_trace_boundaries{job=~\"$job\",ravn_runtime_component=\"resident\"})", "instant": true, "legendFormat": "{{ravn_trace_relationship}} / {{ravn_trace_component}}", "refId": "A"}],
+      "title": "Trace boundaries since daemon start",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {"type": "tempo", "uid": "${traces}"},
+      "description": "Each row is a real Tempo trace for this resident. Click a Trace ID to open the complete span timeline and inspect the LLM, tool, A2A, state, and event-bus path.",
+      "gridPos": {"h": 14, "w": 12, "x": 0, "y": 67},
+      "id": 50,
+      "options": {},
+      "targets": [{"query": "{ resource.service.name = \"$job\" && span.ravn.task.id != nil }", "queryType": "traceql", "refId": "A"}],
+      "title": "Recent resident task traces",
+      "type": "table"
+    },
+    {
+      "datasource": {"type": "tempo", "uid": "${traces}"},
+      "description": "Tool-development and general A2A traces. Open a row to follow discovery, JSON-RPC, remote workflow dispatch, task polling/input, artifact retrieval, verification, and the exact terminal failure or success.",
+      "gridPos": {"h": 14, "w": 12, "x": 12, "y": 67},
+      "id": 51,
+      "options": {},
+      "targets": [{"query": "{ resource.service.name = \"$job\" && (name =~ \"ravn.a2a.*\" || name =~ \"ravn.tool_build.*\") }", "queryType": "traceql", "refId": "A"}],
+      "title": "A2A and capability-build traces",
+      "type": "table"
+    },
+    {
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 81},
+      "id": 60,
+      "options": {"content": "### How to read one trajectory\nOpen a task trace and follow: JetStream `receive` → signal normalization/publish → queue admission → `invoke_agent` → ordered `chat` and `execute_tool` spans → capability, HTTP/A2A, resident-state, and ODIN child spans → JetStream ACK or NAK. Trace events contain bounded redacted content only when `observability.capture_content=true`; production defaults to metadata-only. `environment_type` is provenance, never a handler selector. A tool launch is not success: require terminal A2A state, verified artifact, adoption, execution, and later reuse evidence.", "mode": "markdown"},
+      "title": "Evidence contract",
+      "type": "text"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["ravn", "valkyrie", "agents", "otel", "tempo"],
+  "templating": {
+    "list": [
+      {"current": {"selected": true, "text": "Mimir (eitri)", "value": "mimir-eitri"}, "hide": 0, "includeAll": false, "label": "Metrics", "multi": false, "name": "metrics", "options": [], "query": "prometheus", "refresh": 1, "type": "datasource"},
+      {"current": {"selected": true, "text": "Tempo (eitri)", "value": "tempo-eitri"}, "hide": 0, "includeAll": false, "label": "Traces", "multi": false, "name": "traces", "options": [], "query": "tempo", "refresh": 1, "type": "datasource"},
+      {"current": {"selected": true, "text": "ravn", "value": "ravn"}, "datasource": {"type": "prometheus", "uid": "${metrics}"}, "definition": "label_values(ravn_runtime_up, job)", "hide": 0, "includeAll": false, "label": "Ravn service", "multi": false, "name": "job", "options": [], "query": {"query": "label_values(ravn_runtime_up, job)", "refId": "StandardVariableQuery"}, "refresh": 1, "sort": 1, "type": "query"},
+      {"allValue": ".*", "current": {"selected": true, "text": "All", "value": "$__all"}, "datasource": {"type": "prometheus", "uid": "${metrics}"}, "definition": "label_values(ravn_runtime_up{job=~\"$job\"}, ravn_environment_id)", "hide": 0, "includeAll": true, "label": "Environment", "multi": true, "name": "environment", "options": [], "query": {"query": "label_values(ravn_runtime_up{job=~\"$job\"}, ravn_environment_id)", "refId": "StandardVariableQuery"}, "refresh": 1, "sort": 1, "type": "query"}
+    ]
+  },
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Valkyrie Runtime and Judgment",
+  "uid": "valkyrie-runtime-judgment",
+  "version": 1,
+  "weekStart": ""
+}

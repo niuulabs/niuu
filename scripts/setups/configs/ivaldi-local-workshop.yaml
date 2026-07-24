@@ -1,0 +1,221 @@
+# --- ivaldi-local-workshop ------------------------------------------------
+#
+# Local-first Ivaldi proof over the running Laevateinn workshop event system.
+# The machinery behind Laevateinn is simulated; its event production, NATS
+# persistence/delivery, resident decisions, model calls, A2A work, learned-tool
+# artifacts, memory, and telemetry are real. No simulator scenario name is
+# mapped to an action here or in the resident persona.
+#
+# Prerequisites:
+#   - a local port-forward from Eitri's nats-eitri service to port 14222
+#   - nats-ca.crt and the Ivaldi Laevateinn consumer seed in the state directory
+#   - a current Ivaldi workload-identity token in the state directory
+#   - RAVN_OPERATOR_TOKEN set for authenticated question/answer endpoints
+#
+# Launch:
+#   ravn daemon --config ~/.ravn/config.yaml --persona ivaldi
+# ---------------------------------------------------------------------------
+
+state_dir: ~/.ravn/ivaldi-local/state
+
+environment:
+  id: workshop
+  name: Workshop
+  type: workshop
+  topology:
+    type_id: printer
+  resident_name: Ivaldi Local
+  resident_personality: Patient, curious workshop steward that makes and revises its own map.
+  charter: >-
+    Understand and steward this workshop from its signals. Resolve material
+    unknowns through investigation, research, peers, or operator questions, and
+    build reusable capabilities when existing ones cannot do the work.
+  flocks:
+    - workshop-valkyries
+  # Follow live events for the autonomy proof. The earlier
+  # ivaldi-local-workshop-v1 durable remains in JetStream with its historical
+  # cursor intact; this consumer starts at events published after it binds.
+  signal_poll_interval_seconds: 5.0
+  signal_dedupe_cache_size: 4096
+  signal_task_severities:
+    - debug
+    - info
+    - warning
+    - critical
+  idle_triage_interval_seconds: 0
+  signal_sources:
+    - id: workshop-laevateinn
+      name: Live Laevateinn workshop events
+      kind: generic
+      adapter: ravn.adapters.environment_signals_nats.NatsJetStreamSignalAdapter
+      enabled: true
+      kwargs:
+        servers:
+          - tls://127.0.0.1:14222
+        stream_name: workshop-laevateinn-events
+        subject: workshop.laevateinn.>
+        durable_name: ivaldi-local-workshop-live-v2
+        deliver_policy: new
+        batch_size: 64
+        fetch_timeout_s: 2.0
+        tls_ca_file: ~/.ravn/ivaldi-local/nats-ca.crt
+        tls_hostname: nats-eitri.nats.svc.cluster.local
+        tls_insecure_skip_verify: true
+        nkeys_seed_file: ~/.ravn/ivaldi-local/laevateinn-consumer.nk
+
+llm:
+  model: nvidia/nemotron-3-super
+  max_tokens: 6144
+  timeout: 180
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: http://192.168.90.168:8000
+      api_key: ""
+
+context_management:
+  max_prompt_tokens: 100000
+
+memory:
+  backend: sqlite
+  path: ~/.ravn/ivaldi-local/memory.db
+  # Keep exact episodes for audit and explicit session search. Do not inject
+  # them into later turns or turn one model narrative into another model's fact.
+  prefetch_limit: 0
+  reflection_model: disabled
+
+skill:
+  backend: file
+
+# Knowledge Mímir is deliberately absent from the clean baseline. Raw episodes,
+# resident state, traces, and source events remain durable without injecting or
+# inviting unverified narrative memory into later judgments.
+mimir:
+  enabled: false
+
+permission:
+  mode: workspace_write
+  workspace_root: /Users/jozefvaneenbergen/.ravn/ivaldi-local/workspace
+
+# A real single-process Sleipnir bus for resident/court/learning events. The
+# workshop source itself remains the external durable NATS JetStream above.
+mesh:
+  enabled: true
+  adapter: in_process
+  own_peer_id: ivaldi-local
+
+skuld:
+  enabled: true
+  broker_url: ws://127.0.0.1:18081/ws/ravn
+  display_name: Ivaldi
+  reconnect_delay_seconds: 2
+  max_reconnect_attempts: 60
+
+discovery:
+  enabled: false
+
+cascade:
+  enabled: false
+
+gateway:
+  enabled: true
+  platform:
+    enabled: true
+    base_url: https://yggdrasil.niuu.world
+    workload_token_file: ~/.ravn/ivaldi-local/workload-token
+    workload_exchange_url: https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange
+    workload_audiences:
+      - volundr-api
+      - forge
+      - ting
+      - mimir
+      - guild
+  channels:
+    http:
+      enabled: true
+      host: 127.0.0.1
+      port: 7478
+      operator_token_env: RAVN_OPERATOR_TOKEN
+
+initiative:
+  enabled: true
+  max_concurrent_tasks: 1
+  task_queue_max: 20
+  # Keep the saturated pre-inbox journal as evidence; this clean journal proves
+  # the coalesced intake behavior without replaying obsolete continuation tasks.
+  queue_journal_path: ~/.ravn/ivaldi-local/queue-coalesced-proof.json
+  default_output_mode: ambient
+  default_persona: ivaldi
+  heartbeat_interval_seconds: 30
+
+resident_inbox:
+  enabled: true
+  # JetStream owns upstream redelivery. The local inbox owns accepted
+  # observations; ResidentHomeTrigger coalesces them into one model wake.
+  adapter: ravn.resident_inbox.backend.LocalResidentInbox
+  environment_signals_enabled: true
+  max_signals_per_wake: 20
+
+resident_state:
+  continuation_max_turns: 8
+  continuation_max_tokens: 80000
+  home_wake_interval_seconds: 5
+
+resident_wakefulness:
+  enabled: true
+  tick_interval_seconds: 5
+  wakeful_window_seconds: 60
+  dream_interval_seconds: 3600
+  dream_min_idle_seconds: 300
+
+resident_evolution:
+  realm_slug: workshop
+  realm_api_base_url: https://yggdrasil.niuu.world
+  autonomy_mode: yolo
+  trust_level_autonomy_table:
+    autonomous: 2
+    yolo: 2
+  tool_build_adapter: ravn.adapters.tool_build.a2a.A2AToolBuildBackend
+  tool_build_kwargs:
+    card_url: https://yggdrasil.niuu.world/.well-known/agent-card.json
+    connection_id: 5bf5d964-1fba-4f8c-9271-a1d34a559b6e
+    max_poll_attempts: 360
+    workload_token_file: ~/.ravn/ivaldi-local/workload-token
+    workload_exchange_url: https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange
+    workload_audiences:
+      - volundr-api
+      - forge
+      - ting
+      - mimir
+      - guild
+  tool_builder_workflow:
+    tags:
+      - tool-builder
+  learned_tool_execution_backend: local
+  build_repair_attempts: 3
+  rollback_consecutive_failures: 3
+
+odin_court:
+  enabled: true
+  quorum_size: 1
+
+reflection:
+  enabled: false
+
+evolution:
+  enabled: false
+
+observability:
+  enabled: true
+  # Local proof explicitly opts into bounded/redacted prompts, model responses,
+  # tool inputs/results, signal payloads, and bus events for trajectory diagnosis.
+  capture_content: true
+  content_max_chars: 20000
+  service_name: ravn
+  trace_endpoint: https://eitri.grpc-tempo.proxy.glitnir.alfheim.niuu.world:443
+  metric_endpoint: https://mimir.proxy.glitnir.alfheim.niuu.world/eitri/otlp/v1/metrics
+  insecure: false
+  metric_export_interval_milliseconds: 5000
+
+logging:
+  level: info

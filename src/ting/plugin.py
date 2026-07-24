@@ -104,6 +104,14 @@ class TingPlugin(ServicePlugin):
                 description="Ting SSE event stream routes.",
             ),
             APIRouteDomain(
+                name="a2a-card-api",
+                prefixes=("/.well-known/agent-card.json",),
+                description=(
+                    "A2A agent-card discovery document served from the origin "
+                    "root, projecting system workflows as skills."
+                ),
+            ),
+            APIRouteDomain(
                 name="ting-api",
                 prefixes=("/api/v1/ting",),
                 description="Ting coordination and run routes.",

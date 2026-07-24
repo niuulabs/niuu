@@ -87,6 +87,22 @@ def test_mimir_probes_use_constant_time_health_endpoint() -> None:
     assert "/mimir/stats" not in deployment
 
 
+def test_agent_chart_can_install_verified_learned_tool_job_contract() -> None:
+    values = _load_values("agent")
+    network_policy = (
+        CHARTS_DIR / "agent" / "templates" / "learned-tool-networkpolicy.yaml"
+    ).read_text()
+    rbac = (CHARTS_DIR / "agent" / "templates" / "rbac.yaml").read_text()
+    config = (CHARTS_DIR / "agent" / "values.yaml").read_text()
+
+    assert values["learnedToolRunner"]["enabled"] is False
+    assert "@sha256:" in values["learnedToolRunner"]["image"]
+    assert "ingress: []" in network_policy
+    assert "egress: []" in network_policy
+    assert "networkpolicies" in rbac
+    assert "learned_tool_execution_backend: k8s_job" in config
+
+
 @pytest.mark.parametrize("chart", CHARTS)
 def test_charts_default_niuu_deployment_cluster_value(chart: str) -> None:
     values = _load_values(chart)

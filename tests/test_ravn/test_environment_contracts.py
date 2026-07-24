@@ -8,9 +8,7 @@ from ravn.domain.environment import (
     Environment,
     apply_environment_metadata,
     example_environments,
-    inbox_environment_fixture,
     k8s_environment_fixture,
-    printer_environment_fixture,
 )
 from sleipnir.domain.catalog import learning_promoted, signal_received
 from sleipnir.domain.events import SleipnirEvent
@@ -21,8 +19,6 @@ def test_environment_examples_share_one_serializable_model() -> None:
 
     assert {environment.type for environment in environments} == {
         "k8s",
-        "host.inbox",
-        "printer.pi",
     }
     for environment in environments:
         dumped = environment.model_dump_json()
@@ -75,18 +71,14 @@ def test_environment_projects_to_existing_ravn_config_and_derived_nats_subjects(
 
 
 def test_environment_projects_to_existing_skuld_participant_metadata() -> None:
-    environment = printer_environment_fixture()
-    participant = environment.to_participant_meta(persona="printer-pi-valkyrie")
+    environment = k8s_environment_fixture()
+    participant = environment.to_participant_meta(persona="k8s-valkyrie")
 
-    assert participant.peer_id == "valkyrie:printer-cell-basement"
+    assert participant.peer_id == "valkyrie:k8s-prod-a"
     assert participant.participant_type == "ravn"
     assert participant.participant_kind == "valkyrie"
-    assert participant.environment_id == "printer-cell-basement"
-    assert participant.wakefulness == "watching"
-    assert participant.authority_role == "autonomous"
-    assert participant.room_ids == ("environment:printer-cell-basement",)
-    assert "printer.pause_print" in participant.capabilities
-    assert "ravn.environment.signal.printer.*" in participant.subscribes_to
+    assert participant.environment_id == "cluster-prod-a"
+    assert "ravn.environment.signal.kubernetes.*" in participant.subscribes_to
 
 
 def test_environment_projects_to_existing_ting_flock_and_mimir_scopes() -> None:
@@ -111,32 +103,32 @@ def test_environment_projects_to_existing_ting_flock_and_mimir_scopes() -> None:
 
 
 def test_environment_metadata_flows_through_sleipnir_event_roundtrip() -> None:
-    environment = inbox_environment_fixture()
+    environment = k8s_environment_fixture()
     event = signal_received(
         environment_id=environment.id,
         environment_type=environment.type,
-        signal_source="gmail.inbox",
-        signal_kind="inbox",
+        signal_source="kubernetes-events",
+        signal_kind="kubernetes",
         severity="info",
-        data={"from": "customer@example.com", "subject": "Renewal"},
-        source="adapter:gmail",
-        correlation_id="corr-inbox-renewal",
+        data={"reason": "Scheduled", "message": "Pod scheduled"},
+        source="adapter:kubernetes-events",
+        correlation_id="corr-k8s-scheduled",
     )
 
     enriched = apply_environment_metadata(
         event,
         environment,
-        root_correlation_id="corr-inbox-renewal",
+        root_correlation_id="corr-k8s-scheduled",
     )
     round_tripped = SleipnirEvent.from_dict(enriched.to_dict())
 
     assert round_tripped.tenant_id == "niuu"
-    assert round_tripped.payload["environment_id"] == "host-jozef-mail"
-    assert round_tripped.payload["environment_type"] == "host.inbox"
-    assert round_tripped.payload["realm_id"] == "personal"
-    assert round_tripped.payload["topology_ref"]["type_id"] == "host"
-    assert round_tripped.payload["nats_subject"] == "ravn.environment.signal.inbox.message"
-    assert round_tripped.payload["root_correlation_id"] == "corr-inbox-renewal"
+    assert round_tripped.payload["environment_id"] == "cluster-prod-a"
+    assert round_tripped.payload["environment_type"] == "k8s"
+    assert round_tripped.payload["realm_id"] == "prod"
+    assert round_tripped.payload["topology_ref"]["type_id"] == "cluster"
+    assert round_tripped.payload["nats_subject"] == "ravn.environment.signal.kubernetes.event"
+    assert round_tripped.payload["root_correlation_id"] == "corr-k8s-scheduled"
 
 
 def test_environment_metadata_covers_learning_provenance() -> None:
@@ -197,18 +189,25 @@ def test_environment_projects_into_existing_observatory_topology_types() -> None
         ]
 
 
-def test_environment_vocabulary_rejects_unknown_values_with_known_list() -> None:
+def test_environment_type_is_an_open_configured_label() -> None:
     import pytest
 
     from ravn.domain.environment import environment_vocabulary
 
     vocabulary = environment_vocabulary()
     try:
-        with pytest.raises(ValueError, match="unknown environment type 'submarine'"):
+        environment = Environment(
+            id="env-x",
+            name="X",
+            type="vendor.example/submarine-v9",
+            topology=k8s_environment_fixture().topology,
+        )
+        assert environment.type == "vendor.example/submarine-v9"
+        with pytest.raises(ValueError, match="environment type must not be empty"):
             Environment(
                 id="env-x",
                 name="X",
-                type="submarine",
+                type=" ",
                 topology=k8s_environment_fixture().topology,
             )
         with pytest.raises(ValueError, match="must not be empty"):
@@ -225,9 +224,8 @@ def test_environment_vocabulary_extends_from_config() -> None:
         EnvironmentConfig(
             id="cnc-cell-1",
             name="CNC Cell",
-            type="local",
+            type="CNC.Cell",
             vocabulary={
-                "environment_types": ["cnc.cell"],
                 "signal_source_kinds": ["cnc_telemetry"],
                 "operational_health_states": ["calibrating"],
             },
@@ -239,7 +237,7 @@ def test_environment_vocabulary_extends_from_config() -> None:
             topology=k8s_environment_fixture().topology,
             signal_sources=[SignalSource(id="cnc", name="CNC Telemetry", kind="cnc_telemetry")],
         )
-        assert environment.type == "cnc.cell"
+        assert environment.type == "CNC.Cell"
         assert environment.signal_sources[0].kind == "cnc_telemetry"
         assert "calibrating" in vocabulary.operational_health_states
     finally:

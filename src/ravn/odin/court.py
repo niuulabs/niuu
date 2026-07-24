@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
+from niuu.observability import get_observability
 from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
 from sleipnir.domain import registry
 from sleipnir.domain.catalog import (
@@ -205,6 +206,22 @@ class OdinCourt:
         return len(case.judgments) + len(case.actions) >= self._quorum_size
 
     async def _resolve_case(self, case: _CourtCase) -> None:
+        telemetry = get_observability()
+        attributes = {
+            "ravn.environment.id": case.environment_id,
+            "ravn.task.root_correlation_id": case.root_correlation_id,
+            "ravn.odin.judgment_count": len(case.judgments),
+            "ravn.odin.action_count": len(case.actions),
+            "ravn.odin.rejected_count": len(case.rejected_judgments),
+        }
+        with telemetry.span("ravn.odin.resolve_case", attributes=attributes) as span:
+            try:
+                await self._resolve_case_observed(case)
+            except Exception as exc:
+                telemetry.mark_error(span, type(exc).__name__)
+                raise
+
+    async def _resolve_case_observed(self, case: _CourtCase) -> None:
         if case.resolved:
             return
         case.resolved = True
@@ -222,6 +239,20 @@ class OdinCourt:
         evidence = _evidence_for(case)
         dissent = _dissent_for(case)
         rationale = _rationale_for(decision, tier, action_authorization, case)
+        telemetry = get_observability()
+        decision_attributes = {
+            "ravn.odin.decision": decision,
+            "ravn.odin.tier": tier,
+            "ravn.odin.action_authorization": action_authorization,
+            "ravn.odin.escalation_path": escalation_path,
+        }
+        telemetry.set_attributes(decision_attributes)
+        telemetry.event(
+            "ravn.odin.decision",
+            attributes=decision_attributes,
+            content={"evidence": evidence, "dissent": dissent, "rationale": rationale},
+        )
+        telemetry.count("ravn.odin.decisions", attributes=decision_attributes)
         judgment_refs = [event.event_id for event in case.judgments]
         action_refs = [event.event_id for event in case.actions]
         rejected_refs = [event.event_id for event in case.rejected_judgments]

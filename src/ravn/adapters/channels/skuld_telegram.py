@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+from ravn.adapters.collaboration import project_ravn_event
 from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.ports.channel import ChannelPort
 from skuld.channels import TelegramChannel
-from skuld.room_bridge import help_needed_frame_to_room_notification
-from skuld.room_models import ParticipantMeta
 
 
 class TelegramRavnChannel(ChannelPort):
@@ -20,24 +19,23 @@ class TelegramRavnChannel(ChannelPort):
         self.sent_events.append(event)
         if event.type != RavnEventType.HELP_NEEDED:
             return
-        persona = str(event.payload.get("persona") or "resident")
-        meta = ParticipantMeta(
-            peer_id=event.source,
-            persona=persona,
-            color="cyan",
-            participant_type="ravn",
-            display_name=persona,
-            participant_kind="ravn",
-            wakefulness="wakeful",
-        )
-        frame = {
-            "session_id": event.session_id,
-            "type": str(event.type),
-            "data": event.payload,
-            "metadata": {"urgency": event.urgency},
-            "source": event.source,
-            "persona": persona,
-            "root_correlation_id": event.root_correlation_id,
-            "correlation_id": event.correlation_id,
+        projected = project_ravn_event(
+            event, persona=str(event.payload.get("persona") or "resident")
+        )[0]
+        notification = {
+            "type": "room_notification",
+            "notificationType": projected["notificationType"],
+            "sourceEventId": projected["sourceEventId"],
+            "participantId": event.source,
+            "persona": projected["persona"],
+            "reason": projected["reason"],
+            "summary": projected["summary"],
+            "attempted": projected["attempted"],
+            "recommendation": projected["recommendation"],
+            "urgency": projected["urgency"],
         }
-        await self._telegram.send_event(help_needed_frame_to_room_notification(meta, frame))
+        if projected.get("context"):
+            notification["context"] = projected["context"]
+        if projected.get("traceContext"):
+            notification["trace_context"] = projected["traceContext"]
+        await self._telegram.send_event(notification)

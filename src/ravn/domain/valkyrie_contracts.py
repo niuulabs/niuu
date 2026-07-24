@@ -27,6 +27,9 @@ VALKYRIE_OUTCOME_EVENTS = frozenset(
         VALKYRIE_ACTION_FAILED,
     }
 )
+VALKYRIE_RUNTIME_OWNED_FIELDS = frozenset(
+    {"environment_id", "environment_type", "valkyrie_id", "correlation_ids"}
+)
 
 _ACTION_AUTHORITY_ALIASES = {
     "court": "court_required",

@@ -16,9 +16,12 @@ import asyncio
 import importlib
 import json
 import logging
+import os
+import secrets
 from collections.abc import AsyncIterator
+from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -45,6 +48,13 @@ class ChatRequest(BaseModel):
     session_id: str = "http:default"
 
 
+class ResidentAnswerRequest(BaseModel):
+    """Free-text answer for one persisted resident continuation."""
+
+    case_id: str
+    answer: str
+
+
 class HttpGateway:
     """FastAPI-based HTTP gateway for Ravn.
 
@@ -63,9 +73,11 @@ class HttpGateway:
         self,
         config: HttpChannelConfig,
         gateway: RavnGateway,
+        resident_runtime: Any | None = None,
     ) -> None:
         self._config = config
         self._gateway = gateway
+        self._resident_runtime = resident_runtime
         self._translator_cls: type[EventTranslatorPort] = _import_class(config.translator)
         self._app = self._build_app()
 
@@ -87,6 +99,26 @@ class HttpGateway:
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+        def require_operator(authorization: str | None = Header(default=None)) -> None:
+            token = os.environ.get(self._config.operator_token_env, "").strip()
+            if not token:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Resident operator endpoints are disabled because "
+                        f"{self._config.operator_token_env} is not configured"
+                    ),
+                )
+            scheme, _, presented = (authorization or "").partition(" ")
+            if scheme.casefold() != "bearer" or not secrets.compare_digest(
+                presented.strip(), token
+            ):
+                raise HTTPException(
+                    status_code=401,
+                    detail="Invalid resident operator bearer token",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
 
         @app.post("/chat")
         async def chat(request: ChatRequest) -> StreamingResponse:
@@ -116,6 +148,31 @@ class HttpGateway:
                     "X-Accel-Buffering": "no",
                 },
             )
+
+        if self._resident_runtime is not None:
+
+            @app.get("/resident/operator-needed")
+            async def resident_operator_needed(
+                _: None = Depends(require_operator),
+            ) -> dict[str, Any]:
+                """List pending resident questions on the authenticated daemon surface."""
+                return {"items": await self._resident_runtime.pending_questions()}
+
+            @app.post("/resident/operator-answer")
+            async def resident_operator_answer(
+                request: ResidentAnswerRequest,
+                _: None = Depends(require_operator),
+            ) -> dict[str, Any]:
+                """Persist an answer and enqueue the same resident case."""
+                try:
+                    return await self._resident_runtime.submit_operator_answer(
+                        case_id=request.case_id,
+                        answer=request.answer,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+                except LookupError as exc:
+                    raise HTTPException(status_code=404, detail=str(exc)) from exc
 
         @app.websocket("/ws")
         async def websocket_chat(ws: WebSocket) -> None:

@@ -12,27 +12,16 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from niuu.collaboration import Participant
 from observatory.contracts import ObservatoryFragment
-from skuld.room_models import ParticipantMeta
 from sleipnir.domain.events import SleipnirEvent
 
 EnvironmentType = str
 SignalSourceKind = str
 OperationalHealth = str
 
-DEFAULT_ENVIRONMENT_TYPES = (
-    "k8s",
-    "host.inbox",
-    "printer.pi",
-    "host",
-    "service",
-    "home_lab",
-    "local",
-)
 DEFAULT_SIGNAL_SOURCE_KINDS = (
     "kubernetes",
-    "email",
-    "printer_telemetry",
     "host",
     "webhook",
     "metrics",
@@ -68,21 +57,17 @@ _VALID_EVENT_METADATA_PREFIXES = (
 
 
 class EnvironmentVocabulary:
-    """Extensible vocabulary for deployment-defined Environment values.
+    """Extensible vocabulary for deployment-defined signal and health values.
 
     The canonical defaults ship with the platform; deployments register extra
-    values through ``EnvironmentConfig.vocabulary`` (or directly via
-    :func:`extend_environment_vocabulary`) instead of editing domain code.
+    values through ``EnvironmentConfig.vocabulary`` instead of editing domain
+    code. Environment types are deliberately not a vocabulary: configuration
+    supplies an opaque, non-empty provenance label.
     """
 
     def __init__(self) -> None:
-        self._environment_types: set[str] = set(DEFAULT_ENVIRONMENT_TYPES)
         self._signal_source_kinds: set[str] = set(DEFAULT_SIGNAL_SOURCE_KINDS)
         self._operational_health_states: set[str] = set(DEFAULT_OPERATIONAL_HEALTH_STATES)
-
-    @property
-    def environment_types(self) -> frozenset[str]:
-        return frozenset(self._environment_types)
 
     @property
     def signal_source_kinds(self) -> frozenset[str]:
@@ -95,11 +80,9 @@ class EnvironmentVocabulary:
     def extend(
         self,
         *,
-        environment_types: list[str] | tuple[str, ...] = (),
         signal_source_kinds: list[str] | tuple[str, ...] = (),
         operational_health_states: list[str] | tuple[str, ...] = (),
     ) -> None:
-        self._environment_types.update(_normalize_vocabulary_values(environment_types))
         self._signal_source_kinds.update(_normalize_vocabulary_values(signal_source_kinds))
         self._operational_health_states.update(
             _normalize_vocabulary_values(operational_health_states)
@@ -107,14 +90,8 @@ class EnvironmentVocabulary:
 
     def reset(self) -> None:
         """Restore the canonical defaults (used by tests)."""
-        self._environment_types = set(DEFAULT_ENVIRONMENT_TYPES)
         self._signal_source_kinds = set(DEFAULT_SIGNAL_SOURCE_KINDS)
         self._operational_health_states = set(DEFAULT_OPERATIONAL_HEALTH_STATES)
-
-    def validate_environment_type(self, value: str) -> str:
-        return _validate_vocabulary_value(
-            value, self._environment_types, field_name="environment type"
-        )
 
     def validate_signal_source_kind(self, value: str) -> str:
         return _validate_vocabulary_value(
@@ -137,13 +114,11 @@ def environment_vocabulary() -> EnvironmentVocabulary:
 
 def extend_environment_vocabulary(
     *,
-    environment_types: list[str] | tuple[str, ...] = (),
     signal_source_kinds: list[str] | tuple[str, ...] = (),
     operational_health_states: list[str] | tuple[str, ...] = (),
 ) -> None:
     """Register deployment-defined vocabulary values for Environment models."""
     _vocabulary.extend(
-        environment_types=environment_types,
         signal_source_kinds=signal_source_kinds,
         operational_health_states=operational_health_states,
     )
@@ -343,7 +318,10 @@ class Environment(BaseModel):
     @field_validator("type")
     @classmethod
     def _validate_type(cls, value: str) -> str:
-        return _vocabulary.validate_environment_type(value)
+        normalized = str(value).strip()
+        if not normalized:
+            raise ValueError("environment type must not be empty")
+        return normalized
 
     @model_validator(mode="after")
     def _normalize_environment(self) -> Environment:
@@ -453,11 +431,11 @@ class Environment(BaseModel):
         valkyrie_id: str | None = None,
         persona: str = "valkyrie",
         color: str = "amber",
-    ) -> ParticipantMeta:
-        """Project a resident Valkyrie into existing Skuld participant metadata."""
+    ) -> Participant:
+        """Project a resident into shared collaboration participant state."""
         default_peer_id = self.resident_valkyrie_ids[0] if self.resident_valkyrie_ids else ""
         peer_id = valkyrie_id or default_peer_id
-        return ParticipantMeta(
+        return Participant(
             peer_id=peer_id or f"valkyrie:{self.id}",
             persona=persona,
             color=color,
@@ -662,144 +640,8 @@ def k8s_environment_fixture() -> Environment:
     )
 
 
-def inbox_environment_fixture() -> Environment:
-    """Representative host/inbox Environment."""
-    return Environment(
-        id="host-jozef-mail",
-        name="Jozef Mail Host",
-        type="host.inbox",
-        tenant_id="niuu",
-        realm_id="personal",
-        topology=TopologyRef(
-            node_id="host:jozef-mail",
-            type_id="host",
-            parent_id="realm:personal",
-            realm_id="personal",
-            host_id="jozef-mac",
-            zone="personal",
-        ),
-        resident_valkyrie_ids=["valkyrie:inbox-host"],
-        signal_sources=[
-            SignalSource(
-                id="gmail-inbox",
-                name="Gmail Inbox",
-                kind="email",
-                adapter="gmail.connector",
-                subject_patterns=["signal.inbox.*"],
-            ),
-            SignalSource(
-                id="host-events",
-                name="Host Events",
-                kind="host",
-                adapter="ravn.adapters.environment.host",
-                subject_patterns=["signal.host.*"],
-            ),
-        ],
-        operational_state=OperationalState(
-            health="nominal",
-            baselines={"expected_important_threads_per_day": 6},
-            learned_normal={"newsletters": "suppress unless sender is pinned"},
-        ),
-        action_capabilities=[
-            ActionCapability(
-                name="email.classify",
-                authority="autonomous",
-                targets=["message"],
-                risk="low",
-            ),
-            ActionCapability(
-                name="email.draft_reply",
-                authority="human_review_required",
-                targets=["thread"],
-                risk="medium",
-            ),
-        ],
-        autonomy=AutonomyPolicy(
-            mode="guarded",
-            escalation_surfaces=["ui:valkyries", "email:drafts"],
-        ),
-        wakefulness=WakefulnessState(state="watching", summary="Watching high-signal mail"),
-        flock_memberships=[
-            FlockMembership(
-                flock_id="personal-host-valkyries",
-                role="host-resident",
-                ting_flow="host-environment-flock",
-            )
-        ],
-    )
-
-
-def printer_environment_fixture() -> Environment:
-    """Representative printer/Pi cell Environment."""
-    return Environment(
-        id="printer-cell-basement",
-        name="Basement Printer Cell",
-        type="printer.pi",
-        tenant_id="niuu",
-        realm_id="home",
-        topology=TopologyRef(
-            node_id="printer:basement-cell",
-            type_id="printer",
-            parent_id="realm:home",
-            realm_id="home",
-            host_id="pi:basement-printer",
-            zone="basement",
-        ),
-        resident_valkyrie_ids=["valkyrie:printer-cell-basement"],
-        signal_sources=[
-            SignalSource(
-                id="moonraker-telemetry",
-                name="Printer Telemetry",
-                kind="printer_telemetry",
-                adapter="moonraker",
-                subject_patterns=["signal.printer.*"],
-            ),
-            SignalSource(
-                id="pi-host-events",
-                name="Pi Host Events",
-                kind="host",
-                adapter="ravn.adapters.environment.host",
-                subject_patterns=["signal.host.*"],
-            ),
-        ],
-        operational_state=OperationalState(
-            health="watching",
-            baselines={"resin_low_threshold": 12, "bed_temp_tolerance_c": 3},
-            learned_normal={"print_complete": "notify only if next queued job waits for resin"},
-        ),
-        action_capabilities=[
-            ActionCapability(
-                name="printer.pause_print",
-                authority="autonomous",
-                targets=["printer"],
-                risk="medium",
-            ),
-            ActionCapability(
-                name="printer.notify_operator",
-                authority="autonomous",
-                targets=["surface", "mobile"],
-                risk="low",
-            ),
-        ],
-        autonomy=AutonomyPolicy(
-            mode="autonomous",
-            escalation_surfaces=["surface:workbench-display", "ui:valkyries"],
-        ),
-        wakefulness=WakefulnessState(state="watching", summary="Watching printer telemetry"),
-        flock_memberships=[
-            FlockMembership(
-                flock_id="printer-cell-valkyries",
-                role="device-resident",
-                ting_flow="printer-environment-flock",
-            )
-        ],
-    )
-
-
 def example_environments() -> list[Environment]:
     """Return deterministic Environment fixtures for tests, docs, and UI mocks."""
     return [
         k8s_environment_fixture(),
-        inbox_environment_fixture(),
-        printer_environment_fixture(),
     ]

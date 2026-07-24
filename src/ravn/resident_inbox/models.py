@@ -55,6 +55,7 @@ class ResidentInboxSignal:
     kind: str
     summary: str
     payload: dict[str, Any] = field(default_factory=dict)
+    trace_context: dict[str, str] = field(default_factory=dict)
     raw_ref: str = ""
     classification: str = ResidentInboxClassification.UNKNOWN.value
     confidence: float = 0.5
@@ -92,6 +93,16 @@ class ResidentInboxRun:
 
 
 class ResidentInboxBackend(Protocol):
+    async def write_event(self, event: Any) -> str: ...
+
+    async def write_directed_message(
+        self,
+        *,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+        source: str = "skuld:directed_message",
+    ) -> str: ...
+
     async def write_signal(self, signal: ResidentInboxSignal) -> str: ...
 
     async def list_signals(
@@ -104,6 +115,14 @@ class ResidentInboxBackend(Protocol):
     async def write_triage(self, triage: ResidentInboxTriage) -> str: ...
 
     async def append_decision(self, entry: str) -> str: ...
+
+    async def acknowledge(
+        self,
+        refs: tuple[str, ...],
+        *,
+        status: str = ResidentInboxStatus.REMEMBERED.value,
+        reason: str = "resident turn recorded",
+    ) -> tuple[str, ...]: ...
 
 
 @dataclass(frozen=True)

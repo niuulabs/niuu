@@ -48,6 +48,7 @@ from ravn.workflow_runtime import (  # noqa: F401
     _workflow_event_matches_filters,
     _workflow_graph,
     _workflow_runtime_for_persona,
+    _workflow_stage_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,7 +95,7 @@ def approvals_main() -> None:
 from ravn.cli.runtime_builders import (  # noqa: E402, F401
     _REALM_CLIENT_CACHE,
     _RealmBuildConfig,
-    _attach_signal_build_tool,
+    _attach_agent_build_tool,
     _build_executor,
     _build_llm,
     _build_memory,
@@ -387,6 +388,7 @@ def _build_agent(
         mimir,
         no_tools=no_tools,
         persona_config=persona_config,
+        permission=permission,
     )
     compressor = None if cli_transport_executor else _build_compressor(settings, llm)
     prompt_builder = _build_prompt_builder(settings)
@@ -436,10 +438,11 @@ def _build_agent(
         auto_checkpoint_before_destructive=cp_cfg.auto_before_destructive,
         budget_milestone_fractions=cp_cfg.budget_milestone_fractions,
         sleipnir_publisher=sleipnir_publisher,
-        reflection_config=settings.effective_post_session_reflection_config(),
         persona=persona_config.name if persona_config else "",
         persona_config=persona_config,
         stop_on_outcome=persona_config.stop_on_outcome if persona_config else False,
+        max_prompt_tokens=settings.context_management.max_prompt_tokens,
+        max_tool_result_chars=settings.tools.max_result_chars,
     )
 
     return agent, channel
@@ -734,6 +737,10 @@ def tool_mcp(
     profile: str = typer.Option(
         "", "--profile", help="Profile name (built-in or from ~/.ravn/profiles/)."
     ),
+    conversation_id: str = typer.Option("", "--conversation-id", hidden=True),
+    task_id: str = typer.Option("", "--task-id", hidden=True),
+    traceparent: str = typer.Option("", "--traceparent", hidden=True),
+    tracestate: str = typer.Option("", "--tracestate", hidden=True),
 ) -> None:
     """Serve the active Ravn ToolPort set over MCP stdio."""
     if config:
@@ -741,15 +748,53 @@ def tool_mcp(
 
     settings = Settings()
     _configure_logging(settings)
-    project_config = ProjectConfig.discover()
-    ravn_profile = _resolve_profile(profile)
-    effective_persona = persona or (ravn_profile.persona if ravn_profile else "")
-    persona_config = _resolve_persona(effective_persona, project_config, settings=settings)
-    tools = _build_tool_mcp_tools(settings, persona_config=persona_config)
+    from niuu.observability import configure_observability, shutdown_observability
 
-    from ravn.adapters.mcp.tool_port_server import ToolPortMcpServer
+    configure_observability(
+        settings.observability,
+        resource_attributes={
+            "service.instance.id": settings.mesh.own_peer_id or settings.environment.id,
+            "deployment.environment.name": settings.environment.id,
+            "ravn.environment.id": settings.environment.id,
+            "ravn.environment.type": settings.environment.type,
+            "ravn.runtime.component": "tool_mcp",
+        },
+    )
+    try:
+        project_config = ProjectConfig.discover()
+        ravn_profile = _resolve_profile(profile)
+        effective_persona = persona or (ravn_profile.persona if ravn_profile else "")
+        persona_config = _resolve_persona(effective_persona, project_config, settings=settings)
+        tools = _build_tool_mcp_tools(settings, persona_config=persona_config)
 
-    asyncio.run(ToolPortMcpServer(tools).run_stdio())
+        from ravn.adapters.mcp.tool_port_server import ToolPortMcpServer
+
+        server = ToolPortMcpServer(
+            tools,
+            agent_name=effective_persona or "ravn",
+            conversation_id=conversation_id,
+            task_id=task_id,
+            trace_carrier={
+                key: value
+                for key, value in (
+                    ("traceparent", traceparent),
+                    ("tracestate", tracestate),
+                )
+                if value
+            },
+        )
+        allowed_tools = _expand_allowed_tools(
+            set(persona_config.allowed_tools or []) if persona_config is not None else set()
+        )
+        _attach_agent_build_tool(
+            server,
+            _resolve_workspace(settings),
+            enabled="build_tool" in allowed_tools,
+            settings=settings,
+        )
+        asyncio.run(server.run_stdio())
+    finally:
+        shutdown_observability()
 
 
 def _build_tool_mcp_tools(settings: Settings, *, persona_config: Any | None) -> list[Any]:
@@ -771,6 +816,12 @@ def _build_tool_mcp_tools(settings: Settings, *, persona_config: Any | None) -> 
         iteration_budget=_build_iteration_budget(settings, max_iterations),
         mimir=mimir,
         persona_config=persona_config,
+        permission=_build_permission(
+            settings,
+            workspace,
+            no_tools=False,
+            persona_config=persona_config,
+        ),
     )
 
 
@@ -1140,6 +1191,7 @@ async def _run_gateway(
             memory,
             budget,
             persona_config=persona_config,
+            permission=permission,
         )
         # Append shared MCP tools to per-session tool list
         tools.extend(mcp_tools)
@@ -1186,6 +1238,8 @@ async def _run_gateway(
             input_token_cost_per_million=settings.memory.input_token_cost_per_million,
             output_token_cost_per_million=settings.memory.output_token_cost_per_million,
             extended_thinking=extended_thinking,
+            max_prompt_tokens=settings.context_management.max_prompt_tokens,
+            max_tool_result_chars=settings.tools.max_result_chars,
         )
 
     gw = RavnGateway(settings.gateway, _agent_factory, profile=profile)
@@ -1228,7 +1282,9 @@ def daemon(
         "", "--profile", help="Profile name (built-in or from ~/.ravn/profiles/)."
     ),
     resume: bool = typer.Option(
-        False, "--resume", help="Resume unfinished tasks from the journal."
+        True,
+        "--resume/--no-resume",
+        help="Resume unfinished tasks from the journal.",
     ),
 ) -> None:
     """Start gateway channels AND drive loop simultaneously.  Never exits.
@@ -1367,6 +1423,9 @@ _run_daemon = _runtime_wrapper(_daemon_runtime, "_run_daemon", _DAEMON_RUNTIME_N
 _RESIDENT_RUNTIME_WIRING_NAMES = frozenset(
     (
         "_build_environment_signal_runtime",
+        "_build_resident_inbox",
+        "_build_resident_state",
+        "_build_resident_runtime",
         "_build_resident_learning_runtime",
         "_build_realm_capability_sync",
         "_build_resident_wakefulness",
@@ -1377,6 +1436,15 @@ _RESIDENT_RUNTIME_WIRING_NAMES = frozenset(
         "_build_environment_signal_publisher",
         "_wire_triggers",
     )
+)
+_build_resident_inbox = _runtime_wrapper(
+    _resident_runtime_wiring, "_build_resident_inbox", _RESIDENT_RUNTIME_WIRING_NAMES
+)
+_build_resident_state = _runtime_wrapper(
+    _resident_runtime_wiring, "_build_resident_state", _RESIDENT_RUNTIME_WIRING_NAMES
+)
+_build_resident_runtime = _runtime_wrapper(
+    _resident_runtime_wiring, "_build_resident_runtime", _RESIDENT_RUNTIME_WIRING_NAMES
 )
 _build_environment_signal_runtime = _runtime_wrapper(
     _resident_runtime_wiring, "_build_environment_signal_runtime", _RESIDENT_RUNTIME_WIRING_NAMES

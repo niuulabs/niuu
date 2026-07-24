@@ -346,6 +346,9 @@ async def test_http_resolver_validates_and_conditionally_revalidates_agent_cards
 
     assert first == second
     assert first.skills == ("code",)
+    assert first.skill_details[0].name == "Code"
+    assert first.skill_details[0].description == "Performs code"
+    assert first.skill_details[0].tags == ["engineering"]
     assert first.signature_verified is None
     assert first.security_schemes["bearer"]["httpAuthSecurityScheme"]["scheme"] == "bearer"
     assert first.security_requirements == ({"schemes": {"bearer": {}}},)

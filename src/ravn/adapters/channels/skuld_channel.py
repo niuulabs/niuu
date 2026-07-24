@@ -1,19 +1,15 @@
 """SkuldChannel — WebSocket channel for browser delivery via the Skuld broker.
 
-Connects to the Skuld broker WebSocket endpoint and forwards
-:class:`~ravn.domain.events.RavnEvent` objects as NDJSON frames,
-matching the existing Skuld event protocol.
+Connects to the Skuld broker WebSocket endpoint and projects
+:class:`~ravn.domain.events.RavnEvent` objects into transport-neutral
+collaboration frames before delivery.
 
 The channel reconnects automatically on disconnect so ephemeral network
 blips do not terminate an in-flight agent turn.
 
 Protocol (NDJSON, one JSON object per line):
 
-    {"type": "thought", "data": "...", "metadata": {}}
-    {"type": "tool_start", "data": "BashTool", "metadata": {"input": {...}}}
-    {"type": "tool_result", "data": "...", "metadata": {"tool_name": "BashTool"}}
-    {"type": "response", "data": "...", "metadata": {}}
-    {"type": "error", "data": "...", "metadata": {}}
+    {"type": "collaboration.events", "events": [{"kind": "activity", ...}]}
 """
 
 from __future__ import annotations
@@ -29,7 +25,10 @@ import websockets
 import websockets.exceptions
 from websockets.protocol import State as WsState
 
-from ravn.domain.events import RavnEvent, RavnEventType
+from niuu.collaboration.room import matches_subscription
+from niuu.observability import get_observability
+from ravn.adapters.collaboration import project_ravn_event
+from ravn.domain.events import RavnEvent
 from ravn.ports.channel import ChannelPort
 
 logger = logging.getLogger(__name__)
@@ -42,30 +41,18 @@ DirectedMessageHandler = Callable[[str, dict[str, Any] | None], Awaitable[None]]
 AuthTokenProvider = Callable[[], Awaitable[str]]
 
 
-def _matches_subscription(event_type: str, subscriptions: list[str]) -> bool:
-    for pattern in subscriptions:
-        if pattern == event_type:
-            return True
-        if pattern.endswith(".*") and event_type.startswith(pattern[:-1]):
-            return True
-        if pattern.endswith("*") and event_type.startswith(pattern[:-1]):
-            return True
-    return False
-
-
-def _render_room_outcome_message(frame: dict[str, Any], event_type: str) -> str:
-    summary = str(frame.get("summary") or "").strip()
-    verdict = str(frame.get("verdict") or "").strip()
-    fields = frame.get("fields") if isinstance(frame.get("fields"), dict) else {}
-    lines = [f"Joined session outcome received: {event_type}"]
-    if summary:
-        lines.append(f"Summary: {summary}")
-    if verdict:
-        lines.append(f"Verdict: {verdict}")
-    if fields:
-        lines.append(f"Fields: {json.dumps(fields, sort_keys=True, default=str)}")
-    lines.append("This matches your subscriptions. Digest the result and update your operator.")
-    return "\n".join(lines)
+def _render_collaboration_observation(frame: dict[str, Any], event_type: str) -> str:
+    """Render neutral evidence without prescribing how Ravn should react."""
+    observation = {
+        "event_type": event_type,
+        "participant_id": frame.get("participantId") or "",
+        "fields": frame.get("fields") or {},
+        "summary": frame.get("summary") or "",
+        "verdict": frame.get("verdict") or "",
+    }
+    return "Collaboration outcome observed:\n" + json.dumps(
+        observation, sort_keys=True, default=str
+    )
 
 
 class SkuldChannel(ChannelPort):
@@ -77,9 +64,9 @@ class SkuldChannel(ChannelPort):
         session_id:    Agent session identifier forwarded in each event frame.
         peer_id:       Stable participant identifier for this Ravn daemon.
                        Included as ``source`` in each NDJSON frame so the
-                       RoomBridge can route events to the correct participant.
+                       the collaboration adapter can route events correctly.
         persona:       Display name for this Ravn in the room UI.  Included
-                       in each frame for late-joining RoomBridge registration.
+                       in each frame for late participant registration.
         reconnect_delay: Seconds to wait between reconnection attempts.
         max_reconnect_attempts: Maximum number of reconnection attempts before
                                giving up and buffering events locally.
@@ -120,12 +107,30 @@ class SkuldChannel(ChannelPort):
 
     async def emit(self, event: RavnEvent) -> None:
         """Emit *event* to the Skuld broker as an NDJSON frame."""
-        payload = self._serialise(event)
-        try:
-            await self._send(payload)
-        except Exception as exc:
-            logger.warning("SkuldChannel: emit failed, buffering event: %r", exc)
-            self._buffer.append(event)
+        telemetry = get_observability()
+        with telemetry.span(
+            "ravn.port.skuld.emit",
+            attributes={
+                "ravn.event.type": str(event.type),
+                "ravn.peer.id": self._peer_id or "",
+                "ravn.session.id": event.session_id or self._session_id,
+            },
+            carrier=event.trace_context,
+        ):
+            payload = self._serialise(event, trace_context=telemetry.inject())
+            try:
+                await self._send(payload)
+                telemetry.count(
+                    "ravn.skuld.events",
+                    attributes={"event_type": str(event.type), "outcome": "sent"},
+                )
+            except Exception as exc:
+                logger.warning("SkuldChannel: emit failed, buffering event: %r", exc)
+                self._buffer.append(event)
+                telemetry.count(
+                    "ravn.skuld.events",
+                    attributes={"event_type": str(event.type), "outcome": "buffered"},
+                )
 
     # ------------------------------------------------------------------
     # Connection management
@@ -205,10 +210,20 @@ class SkuldChannel(ChannelPort):
                     if not isinstance(metadata, dict):
                         metadata = None
                     if content:
-                        await self._on_directed_message(content, metadata)
-                elif frame.get("type") == "room_outcome" and self._on_directed_message:
+                        carrier = (
+                            metadata.get("trace_context", {}) if isinstance(metadata, dict) else {}
+                        )
+                        if not isinstance(carrier, dict):
+                            carrier = {}
+                        with get_observability().span(
+                            "ravn.port.skuld.directed_message.receive",
+                            attributes={"ravn.peer.id": self._peer_id or ""},
+                            carrier=carrier,
+                        ):
+                            await self._on_directed_message(content, metadata)
+                elif frame.get("type") == "collaboration.outcome" and self._on_directed_message:
                     event_type = str(frame.get("eventType") or "").strip()
-                    if event_type and _matches_subscription(event_type, self._subscribes_to):
+                    if event_type and matches_subscription(event_type, self._subscribes_to):
                         metadata = {
                             "room_outcome": True,
                             "event_type": event_type,
@@ -218,7 +233,7 @@ class SkuldChannel(ChannelPort):
                             "verdict": frame.get("verdict") or "",
                         }
                         await self._on_directed_message(
-                            _render_room_outcome_message(frame, event_type),
+                            _render_collaboration_observation(frame, event_type),
                             metadata,
                         )
             except websockets.exceptions.ConnectionClosed:
@@ -311,72 +326,28 @@ class SkuldChannel(ChannelPort):
             if self._ws is not None:
                 await self._ws.send(payload)
 
-    def _serialise(self, event: RavnEvent) -> str:
+    def _serialise(
+        self,
+        event: RavnEvent,
+        *,
+        trace_context: dict[str, str] | None = None,
+    ) -> str:
         """Serialise *event* as an NDJSON line (no trailing newline from caller).
 
-        Reconstructs the legacy ``data``/``metadata`` envelope from the
-        unified ``payload`` dict so downstream Skuld consumers remain
-        compatible.
+        Ravn owns interpretation of its events. Skuld receives only the
+        resulting transport-neutral collaboration event kinds.
         """
-        payload = event.payload
-        match event.type:
-            case RavnEventType.THOUGHT:
-                data = payload["text"]
-                metadata = {"thinking": True} if payload.get("thinking") else {}
-            case RavnEventType.RESPONSE:
-                data = payload["text"]
-                metadata = {}
-            case RavnEventType.TOOL_START:
-                data = payload["tool_name"]
-                metadata = {"input": payload.get("input", {})}
-                if "diff" in payload:
-                    metadata["diff"] = payload["diff"]
-            case RavnEventType.TOOL_RESULT:
-                data = payload["result"]
-                metadata = {
-                    "tool_name": payload.get("tool_name", ""),
-                    "is_error": payload.get("is_error", False),
-                }
-            case RavnEventType.ERROR:
-                data = payload["message"]
-                metadata = {}
-            case RavnEventType.TASK_STARTED:
-                data = payload.get("title", "")
-                metadata = {
-                    "task_id": payload.get("task_id", ""),
-                    "title": payload.get("title", ""),
-                }
-            case RavnEventType.TASK_COMPLETE:
-                data = payload
-                metadata = {
-                    "task_id": event.task_id or "",
-                    "success": payload.get("success", False),
-                }
-            case RavnEventType.OUTCOME:
-                # Mesh outcome event — RoomBridge translates to room_outcome
-                data = payload
-                metadata = {
-                    "event_type": payload.get("event_type", ""),
-                    "task_id": event.task_id or payload.get("task_id", ""),
-                }
-            case RavnEventType.HELP_NEEDED:
-                # Help needed event — RoomBridge translates to room_notification
-                data = payload
-                metadata = {"urgency": event.urgency}
-            case RavnEventType.USAGE:
-                data = payload
-                metadata = {}
-            case _:
-                data = str(payload)
-                metadata = {}
-
+        events = project_ravn_event(event, persona=self._persona or "")
+        propagated_context = trace_context or event.trace_context
+        if propagated_context:
+            for projected in events:
+                projected["traceContext"] = dict(propagated_context)
         frame: dict = {
             "session_id": self._session_id,
-            "type": str(event.type),
-            "data": data,
-            "metadata": metadata,
+            "type": "collaboration.events",
+            "events": events,
         }
-        # Include source/persona for RoomBridge participant identification.
+        # Include source/persona for collaboration participant identification.
         # Existing Skuld deployments that do not understand these fields will
         # ignore them (backward-compatible addition).
         if self._peer_id is not None:
@@ -385,4 +356,6 @@ class SkuldChannel(ChannelPort):
             frame["persona"] = self._persona
         if event.root_correlation_id:
             frame["root_correlation_id"] = event.root_correlation_id
+        if propagated_context:
+            frame["trace_context"] = dict(propagated_context)
         return json.dumps(frame) + "\n"

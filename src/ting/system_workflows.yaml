@@ -994,6 +994,7 @@
   version: 1.0.0
   graph:
     tags: [tool-builder, skill-builder, capability-builder]
+    artifactPaths: ["capabilities/{slug}/learned_tool.json"]
     nodes:
       - id: capability-request
         kind: trigger
@@ -1048,13 +1049,25 @@
           - personaId: coder
             budget: 48
             model: gpt-5.5
-            consumesEventTypes: [specification.ready, review.changes_requested]
+            consumesEventTypes: [spec.framed, review.changes_requested, security.changes_requested]
+            systemPromptExtra: >-
+              This capability workflow may intentionally run without a source
+              repository. When no real repository and remote were supplied, do
+              not initialize Git or invent a local remote. Build and test the
+              canonical learned_tool.json in the workspace; the publisher stage
+              owns durable publication. If a real repository was supplied,
+              retain the normal commit and push discipline.
         position:
           x: 704
           y: 280
       - id: capability-review
         kind: stage
         label: Review capability
+        description: >-
+          Review the implementation, tests, permissions, declared reach, and
+          dependency choices represented by learned_tool.json and the current
+          workspace diff. Request concrete changes when the artifact is unsafe,
+          incomplete, or not independently verifiable.
         executionMode: sequential
         joinMode: any
         stageMembers:
@@ -1062,10 +1075,20 @@
             budget: 24
             model: gpt-5.5
             consumesEventTypes: [code.changed]
+            systemPromptExtra: >-
+              In a capability workspace with no supplied source repository,
+              review learned_tool.json and its executable tests directly. Do
+              not require or invent a Git checkpoint. When a real repository
+              was supplied, retain the normal committed-diff requirement.
           - personaId: security-auditor
             budget: 24
             model: gpt-5.5
             consumesEventTypes: [code.changed]
+            systemPromptExtra: >-
+              In a capability workspace with no supplied source repository,
+              audit learned_tool.json and its executable tests directly. Do
+              not require or invent a Git checkpoint. When a real repository
+              was supplied, retain the normal committed-diff requirement.
         position:
           x: 1056
           y: 280
@@ -1073,17 +1096,17 @@
         kind: stage
         label: Publish capability record
         description: >-
-          Publish the capability record and confirm the canonical
-          learned_tool.json artifact (manifest, tool_code, test_code,
-          requirements) is present at the repo/workspace root so the commissioning
-          Valkyrie can retrieve it structurally rather than by scraping the summary.
+          Publish the canonical learned_tool.json artifact (manifest, tool_code,
+          test_code, requirements) from the repo/workspace root to the durable
+          capabilities/{slug}/learned_tool.json path and verify it can be read
+          back so the commissioning Valkyrie can retrieve it structurally.
         executionMode: sequential
-        joinMode: any
+        joinMode: all
         stageMembers:
-          - personaId: publisher
+          - personaId: capability-publisher
             budget: 16
             model: gpt-5.5
-            consumesEventTypes: [review.passed]
+            consumesEventTypes: [review.passed, security.passed]
         position:
           x: 1408
           y: 280
@@ -1103,7 +1126,7 @@
       - id: edge-capability-frame-to-build
         source: capability-frame
         target: capability-build
-        label: specification.ready -> specification.ready
+        label: spec.framed -> spec.framed
       - id: edge-capability-build-to-review
         source: capability-build
         target: capability-review
@@ -1112,10 +1135,18 @@
         source: capability-review
         target: capability-build
         label: review.changes_requested -> review.changes_requested
+      - id: edge-capability-security-to-build
+        source: capability-review
+        target: capability-build
+        label: security.changes_requested -> security.changes_requested
       - id: edge-capability-review-to-publish
         source: capability-review
         target: capability-publish
         label: review.passed -> review.passed
+      - id: edge-capability-security-to-publish
+        source: capability-review
+        target: capability-publish
+        label: security.passed -> security.passed
       - id: edge-capability-publish-to-end
         source: capability-publish
         target: capability-complete
@@ -1126,5 +1157,5 @@
         targetType: workflow
         targetId: tool-skill-builder
         access: read_write
-        writePrefixes: [capabilities/, skills/, tools/]
+        writePrefixes: [capabilities/, skills/, tools/, specifications/]
         readPriority: 1

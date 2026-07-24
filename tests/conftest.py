@@ -61,7 +61,14 @@ from volundr.domain.ports import (
 # ``./config.yaml`` is ignored, matching CI. A test that needs a specific value
 # sets it explicitly via ``monkeypatch.setenv`` / ``NIUU_CONFIG`` (applied after
 # this fixture, restored before it), so per-test configuration keeps working.
-_AMBIENT_PREFIXES = ("SKULD__", "VOLUNDR__", "VOLUNDR_", "NIUU_", "DATABASE__")
+_AMBIENT_PREFIXES = (
+    "SKULD__",
+    "VOLUNDR__",
+    "VOLUNDR_",
+    "NIUU_",
+    "DATABASE__",
+    "RAVN_",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -69,16 +76,18 @@ def _hermetic_settings_env(tmp_path_factory: pytest.TempPathFactory) -> Iterator
     saved = {k: v for k, v in os.environ.items() if k.startswith(_AMBIENT_PREFIXES)}
     for key in saved:
         del os.environ[key]
-    # Point config discovery at a path that does not exist so an ambient
-    # ./config.yaml or /etc/volundr/config.yaml in the run environment is not
-    # read. _config_paths() honours NIUU_CONFIG ahead of the default locations.
+    # Point config discovery at paths that do not exist so ambient user/repo
+    # configuration is ignored. Both settings stacks honour their explicit
+    # config variable ahead of default locations.
     missing_config = tmp_path_factory.mktemp("hermetic") / "no-such-config.yaml"
     os.environ["NIUU_CONFIG"] = str(missing_config)
+    os.environ["RAVN_CONFIG"] = str(missing_config)
     assert not Path(missing_config).exists()
     try:
         yield
     finally:
         os.environ.pop("NIUU_CONFIG", None)
+        os.environ.pop("RAVN_CONFIG", None)
         for key, value in saved.items():
             os.environ[key] = value
 

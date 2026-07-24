@@ -110,14 +110,18 @@ class LearnedToolManifest:
     def from_dict(cls, data: dict[str, Any] | LearnedToolManifest) -> LearnedToolManifest:
         if isinstance(data, LearnedToolManifest):
             return data
+        raw_declared_reach = data.get("declared_reach") or []
+        if not isinstance(raw_declared_reach, (list, tuple)):
+            raise ValueError(
+                "manifest.declared_reach must be an array of reach grants, "
+                f"got {type(raw_declared_reach).__name__}"
+            )
         return cls(
             name=str(data.get("name") or ""),
             description=str(data.get("description") or ""),
             input_schema=dict(data.get("input_schema") or {"type": "object"}),
             required_permission=str(data.get("required_permission") or ""),
-            declared_reach=[
-                ToolReachGrant.from_dict(item) for item in list(data.get("declared_reach") or [])
-            ],
+            declared_reach=[ToolReachGrant.from_dict(item) for item in raw_declared_reach],
             output_schema=dict(data.get("output_schema") or {}),
             entry_point=str(data.get("entry_point") or "run"),
             artifact_type=str(data.get("artifact_type") or "agent_tool"),

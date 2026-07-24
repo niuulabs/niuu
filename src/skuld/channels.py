@@ -18,6 +18,7 @@ from typing import Any, Literal
 from fastapi import WebSocketDisconnect
 
 from niuu.domain.outcome import parse_outcome_block
+from niuu.observability import get_observability
 
 logger = logging.getLogger("skuld.channels")
 
@@ -27,6 +28,10 @@ TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 # Buffer flush interval for streaming text (seconds)
 TELEGRAM_BUFFER_FLUSH_INTERVAL = 1.5
 TELEGRAM_TOPIC_NAME_MAX_LENGTH = 128
+TELEGRAM_REPLY_CACHE_SIZE = 1024
+TELEGRAM_OUTCOME_SUMMARY_MAX_LENGTH = 450
+TELEGRAM_OUTCOME_DETAIL_MAX_LENGTH = 220
+TELEGRAM_OUTCOME_LIST_LIMIT = 2
 
 TelegramTopicMode = Literal["shared_chat", "fixed_topic", "topic_per_session"]
 
@@ -258,21 +263,322 @@ def _format_outcome_lines(
     summary: str,
     fields: object,
 ) -> str:
-    lines = [f"[{name}] outcome: {outcome_type or 'outcome'}"]
+    if isinstance(fields, dict) and _is_judgment_outcome(outcome_type, fields):
+        return _format_judgment_outcome(
+            name=name,
+            outcome_type=outcome_type,
+            verdict=verdict,
+            summary=summary,
+            fields=fields,
+        )
+
+    outcome_label = _humanize_field_name(outcome_type or "outcome")
+    lines = [f"{name} — {outcome_label}"]
     if verdict:
-        lines.append(f"verdict: {verdict}")
+        lines.append(f"Verdict: {_humanize_field_name(verdict)}")
     if summary:
         lines.append(summary)
     if isinstance(fields, dict):
         for key, value in fields.items():
             if key in {"summary", "verdict"}:
                 continue
-            if isinstance(value, (dict, list)):
-                value = json.dumps(value, default=str)
-            lines.append(f"{key}: {value}")
+            lines.extend(_format_structured_field(str(key), value))
     elif fields:
         lines.append(str(fields))
     return "\n".join(line for line in lines if line)
+
+
+def _is_judgment_outcome(outcome_type: str, fields: dict[str, Any]) -> bool:
+    return "judgment" in outcome_type.casefold() or (
+        "decision" in fields
+        and any(
+            key in fields
+            for key in (
+                "rationale",
+                "recommended_action",
+                "operational_state",
+                "tier",
+            )
+        )
+    )
+
+
+def _format_judgment_outcome(
+    *,
+    name: str,
+    outcome_type: str,
+    verdict: str,
+    summary: str,
+    fields: dict[str, Any],
+) -> str:
+    decision = str(fields.get("decision") or "").strip()
+    title = _judgment_title(decision, outcome_type)
+    lines = [f"{_judgment_emoji(decision, fields)} **{name} — Judgment: {title}**"]
+
+    narrative = _first_meaningful(
+        summary,
+        fields.get("state_summary"),
+        fields.get("evidence_summary"),
+    )
+    if narrative:
+        lines.extend(
+            [
+                "",
+                _bounded_telegram_text(
+                    narrative,
+                    TELEGRAM_OUTCOME_SUMMARY_MAX_LENGTH,
+                ),
+            ]
+        )
+
+    question = _meaningful_text(fields.get("question"))
+    if question:
+        lines.extend(
+            [
+                "",
+                "**Needs your input**",
+                _bounded_telegram_text(question, TELEGRAM_OUTCOME_DETAIL_MAX_LENGTH),
+            ]
+        )
+
+    recommendation = _meaningful_text(fields.get("recommended_action"))
+    if recommendation:
+        lines.extend(
+            [
+                "",
+                "**Recommended action**",
+                _bounded_telegram_text(
+                    recommendation,
+                    TELEGRAM_OUTCOME_DETAIL_MAX_LENGTH,
+                ),
+            ]
+        )
+
+    rationale = _meaningful_text(fields.get("rationale"))
+    if rationale and rationale != narrative:
+        lines.extend(
+            [
+                "",
+                "**Why**",
+                ">! "
+                + _bounded_telegram_text(
+                    rationale,
+                    TELEGRAM_OUTCOME_SUMMARY_MAX_LENGTH,
+                ),
+            ]
+        )
+
+    capability_gap = _meaningful_text(fields.get("capability_gap"))
+    if capability_gap:
+        lines.extend(
+            [
+                "",
+                "**Capability gap**",
+                _bounded_telegram_text(
+                    capability_gap,
+                    TELEGRAM_OUTCOME_DETAIL_MAX_LENGTH,
+                ),
+            ]
+        )
+
+    tool_plan = _meaningful_text(fields.get("tool_evolution_plan"))
+    if tool_plan:
+        lines.extend(
+            [
+                "",
+                "**Tool evolution**",
+                _bounded_telegram_text(
+                    tool_plan,
+                    TELEGRAM_OUTCOME_DETAIL_MAX_LENGTH,
+                ),
+            ]
+        )
+
+    open_questions = _bounded_outcome_items(
+        fields.get("open_questions"),
+        limit=2,
+    )
+    if open_questions:
+        lines.extend(["", "**Open questions**"])
+        lines.extend(f"- {item}" for item in open_questions)
+
+    raw_evidence = fields.get("evidence")
+    evidence = _bounded_outcome_items(raw_evidence)
+    if evidence:
+        evidence_count = _outcome_item_count(raw_evidence)
+        count_label = (
+            str(len(evidence))
+            if evidence_count == len(evidence)
+            else f"{len(evidence)} of {evidence_count}"
+        )
+        lines.extend(["", f"**Evidence ({count_label})**"])
+        lines.extend(f">! • {item}" for item in evidence)
+
+    details = _judgment_details(verdict=verdict, fields=fields)
+    if details:
+        lines.extend(["", "**Details**"])
+        lines.extend(f">! {detail}" for detail in details)
+
+    return "\n".join(lines)
+
+
+def _judgment_title(decision: str, outcome_type: str) -> str:
+    labels = {
+        "ignore": "No action needed",
+        "watch": "Watching",
+        "investigate": "Investigating",
+        "propose_action": "Action proposed",
+        "escalate": "Escalation",
+        "learn": "Learning",
+        "blocked": "Blocked",
+    }
+    return labels.get(decision.casefold(), _humanize_field_name(outcome_type or "judgment"))
+
+
+def _judgment_emoji(decision: str, fields: dict[str, Any]) -> str:
+    tier = str(fields.get("tier") or "").casefold()
+    if tier == "urgent":
+        return "🚨"
+    return {
+        "ignore": "✅",
+        "watch": "👀",
+        "investigate": "🔎",
+        "propose_action": "🛠️",
+        "escalate": "⚠️",
+        "learn": "🧠",
+        "blocked": "⛔",
+    }.get(decision.casefold(), "ℹ️")
+
+
+def _judgment_details(*, verdict: str, fields: dict[str, Any]) -> list[str]:
+    details: list[str] = []
+    status_parts = [
+        _humanize_field_name(fields[key])
+        for key in ("tier", "operational_state", "wakefulness")
+        if _meaningful_text(fields.get(key))
+    ]
+    if status_parts:
+        details.append("Status: " + " · ".join(status_parts))
+
+    authority = _meaningful_text(fields.get("action_authority"))
+    capability = _meaningful_text(fields.get("action_capability"))
+    action_parts: list[str] = []
+    if authority:
+        action_parts.append(_humanize_field_name(authority))
+    if capability:
+        action_parts.append(_bounded_telegram_text(capability, 160))
+    if action_parts:
+        details.append("Authority: " + " · ".join(action_parts))
+
+    if verdict and verdict.casefold() not in {"judged", "success"}:
+        details.append(f"Verdict: {_humanize_field_name(verdict)}")
+
+    confidence = fields.get("confidence")
+    if isinstance(confidence, int | float):
+        percentage = confidence * 100 if 0 <= confidence <= 1 else confidence
+        details.append(f"Confidence: {percentage:.0f}%")
+
+    targets = _bounded_outcome_items(fields.get("target_surfaces"), limit=2, max_length=160)
+    if targets:
+        details.append("Targets: " + ", ".join(targets))
+
+    signal_refs = fields.get("signal_refs")
+    if isinstance(signal_refs, list | tuple) and signal_refs:
+        details.append(f"Signals: {len(signal_refs)}")
+    return details
+
+
+def _first_meaningful(*values: object) -> str:
+    for value in values:
+        text = _meaningful_text(value)
+        if text:
+            return text
+    return ""
+
+
+def _meaningful_text(value: object) -> str:
+    if value is None:
+        return ""
+    text = " ".join(str(value).split())
+    if not text or text.casefold() in {"none", "n/a", "null", "unknown"}:
+        return ""
+    return text
+
+
+def _bounded_telegram_text(value: object, max_length: int) -> str:
+    text = _meaningful_text(value)
+    if len(text) <= max_length:
+        return text
+    return text[: max(0, max_length - 1)].rstrip() + "…"
+
+
+def _bounded_outcome_items(
+    value: object,
+    *,
+    limit: int = TELEGRAM_OUTCOME_LIST_LIMIT,
+    max_length: int = TELEGRAM_OUTCOME_DETAIL_MAX_LENGTH,
+) -> list[str]:
+    if not isinstance(value, list | tuple):
+        return []
+    items = [_bounded_telegram_text(item, max_length) for item in value if _meaningful_text(item)]
+    return items[:limit]
+
+
+def _outcome_item_count(value: object) -> int:
+    if not isinstance(value, list | tuple):
+        return 0
+    return sum(1 for item in value if _meaningful_text(item))
+
+
+def _humanize_field_name(value: object) -> str:
+    text = str(value or "").strip().replace("_", " ").replace(".", " ")
+    return " ".join(text.split()).capitalize()
+
+
+def _format_structured_field(
+    key: str,
+    value: object,
+    *,
+    indent: str = "",
+) -> list[str]:
+    """Render structured outcome data as readable labels and bullets."""
+    label = _humanize_field_name(key)
+    if isinstance(value, dict):
+        if not value:
+            return []
+        lines = [f"{indent}{label}:"]
+        for nested_key, nested_value in value.items():
+            lines.extend(
+                _format_structured_field(
+                    str(nested_key),
+                    nested_value,
+                    indent=f"{indent}  ",
+                )
+            )
+        return lines
+
+    if isinstance(value, list | tuple):
+        if not value:
+            return []
+        lines = [f"{indent}{label}:"]
+        for item in value:
+            if isinstance(item, dict):
+                lines.append(f"{indent}-")
+                for nested_key, nested_value in item.items():
+                    lines.extend(
+                        _format_structured_field(
+                            str(nested_key),
+                            nested_value,
+                            indent=f"{indent}  ",
+                        )
+                    )
+                continue
+            lines.append(f"{indent}- {item}")
+        return lines
+
+    if value is None or value == "":
+        return []
+    return [f"{indent}{label}: {value}"]
 
 
 def format_telegram_event(event: dict) -> str | None:
@@ -360,14 +666,11 @@ def format_telegram_event(event: dict) -> str | None:
             return None
         if isinstance(content, str):
             parsed_outcome = parse_outcome_block(content)
-            if parsed_outcome is not None and parsed_outcome.fields:
-                return _format_outcome_lines(
-                    name=name,
-                    outcome_type="outcome",
-                    verdict=str(parsed_outcome.fields.get("verdict", "") or ""),
-                    summary=str(parsed_outcome.fields.get("summary", "") or ""),
-                    fields=parsed_outcome.fields,
-                )
+            if parsed_outcome is not None:
+                # Ravn emits a typed room_outcome after its response. Sending
+                # both surfaces the same judgment twice and exposes the raw
+                # outcome contract to the operator.
+                return None
         prefix = "[error]" if event.get("error") else f"[{name}]"
         return f"{prefix} {content}"
 
@@ -382,11 +685,23 @@ def format_telegram_event(event: dict) -> str | None:
         summary = event.get("summary", "")
         reason = event.get("reason", "")
         recommendation = event.get("recommendation", "")
-        parts = [f"[{name}] {summary or 'needs attention'}"]
+        attempted = event.get("attempted", [])
+        notification_type = str(event.get("notificationType") or "notice")
+        if notification_type == "help_needed":
+            parts = [f"{name} needs your input"]
+            if summary:
+                parts.append(str(summary))
+        else:
+            parts = [f"{name} — {_humanize_field_name(notification_type)}"]
+            if summary:
+                parts.append(str(summary))
         if reason:
-            parts.append(f"reason: {reason}")
+            parts.append(f"Why: {reason}")
+        if isinstance(attempted, list) and attempted:
+            parts.append("Already tried:")
+            parts.extend(f"- {item}" for item in attempted if str(item).strip())
         if recommendation:
-            parts.append(f"next: {recommendation}")
+            parts.append(f"Suggested next step: {recommendation}")
         return "\n".join(parts)
 
     if event_type == "room_outcome":
@@ -397,12 +712,25 @@ def format_telegram_event(event: dict) -> str | None:
             or event.get("participantId")
             or "agent"
         )
+        raw_fields = event.get("fields", {})
+        fields = raw_fields if isinstance(raw_fields, dict) else {}
+        verdict = str(event.get("verdict") or fields.get("verdict") or "")
+        continuation = str(fields.get("continuation") or "")
+        if verdict.casefold() == "help_needed" or continuation.casefold() == "ask_operator":
+            # The paired help notification is the single answerable operator
+            # message for this judgment.
+            return None
+        tier = str(event.get("tier") or fields.get("tier") or "")
+        if tier.casefold() == "silent":
+            # Silent outcomes remain available in the room and telemetry HUD;
+            # they do not page the operator through Telegram.
+            return None
         return _format_outcome_lines(
             name=name,
             outcome_type=event.get("eventType", "") or "outcome",
-            verdict=str(event.get("verdict", "") or ""),
+            verdict=verdict,
             summary=str(event.get("summary", "") or ""),
-            fields=event.get("fields", {}),
+            fields=raw_fields,
         )
 
     if event_type == "room_mesh_message":
@@ -577,6 +905,17 @@ def render_telegram_html(text: str) -> str:
     while index < len(lines):
         line = lines[index]
 
+        if line.startswith(">! ") or line.startswith("> "):
+            expandable = line.startswith(">! ")
+            prefix = ">! " if expandable else "> "
+            quote_lines: list[str] = []
+            while index < len(lines) and lines[index].startswith(prefix):
+                quote_lines.append(_render_inline_telegram_html(lines[index][len(prefix) :]))
+                index += 1
+            attribute = " expandable" if expandable else ""
+            rendered.append(f"<blockquote{attribute}>{chr(10).join(quote_lines)}</blockquote>")
+            continue
+
         header_cells = _parse_markdown_table_row(line)
         divider_line = lines[index + 1] if index + 1 < len(lines) else None
         if header_cells and divider_line and _is_markdown_table_divider(divider_line):
@@ -610,11 +949,6 @@ def render_telegram_html(text: str) -> str:
             rendered.append(
                 f"{ordered_match.group(1)}. {_render_inline_telegram_html(ordered_match.group(2))}"
             )
-            index += 1
-            continue
-
-        if line.startswith("> "):
-            rendered.append(f"&gt; {_render_inline_telegram_html(line[2:])}")
             index += 1
             continue
 
@@ -699,6 +1033,9 @@ class TelegramChannel(MessageChannel):
         self._text_buffer: list[str] = []
         self._flush_task: asyncio.Task | None = None
         self._last_send_results: list[dict[str, Any]] = []
+        self._reply_targets: dict[int, dict[str, Any]] = {}
+        self._delivered_event_ids: dict[str, None] = {}
+        self._active_failure_keys: dict[str, None] = {}
 
     async def start(self) -> None:
         """Start the Telegram bot (initialize, but don't poll if notify_only)."""
@@ -747,14 +1084,54 @@ class TelegramChannel(MessageChannel):
         if not _telegram_should_send_event(event):
             return
 
+        event_type = event.get("type", "")
+        participant = event.get("participant")
+        if not isinstance(participant, dict):
+            participant = {}
+        participant_id = str(
+            event.get("participantId")
+            or participant.get("peer_id")
+            or participant.get("persona")
+            or ""
+        )
+        if event_type == "room_outcome" and participant_id:
+            prefix = f"{participant_id}:"
+            self._active_failure_keys = {
+                key: None for key in self._active_failure_keys if not key.startswith(prefix)
+            }
+
+        failure_kind = str(event.get("failureKind") or "").strip()
+        failure_key = (
+            f"{participant_id}:{failure_kind}"
+            if event_type == "room_message"
+            and event.get("error")
+            and participant_id
+            and failure_kind
+            else ""
+        )
+        if failure_key and failure_key in self._active_failure_keys:
+            get_observability().count(
+                "skuld.telegram.messages",
+                attributes={"direction": "outbound", "outcome": "coalesced_failure"},
+            )
+            return
+
+        source_event_id = str(event.get("sourceEventId") or "").strip()
+        if source_event_id and source_event_id in self._delivered_event_ids:
+            get_observability().count(
+                "skuld.telegram.messages",
+                attributes={"direction": "outbound", "outcome": "duplicate"},
+            )
+            return
+
         text = format_telegram_event(event)
         if not text:
             return
+        reply_context_text = text
         parse_mode = telegram_parse_mode(event)
         if parse_mode == "HTML":
             text = render_telegram_html(text)
 
-        event_type = event.get("type", "")
         reply_markup = None
         if (
             event_type == "room_notification"
@@ -773,9 +1150,63 @@ class TelegramChannel(MessageChannel):
                 self._flush_task = asyncio.create_task(self._scheduled_flush())
             return
 
-        # Non-delta event: flush buffer first, then send
+        # Non-delta event: flush buffer first, then send. Retain the Telegram
+        # message id and its neutral room context so a reply returns to the exact
+        # peer and the runtime can see which prior message the human answered.
         await self._flush_buffer()
-        await self._send_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+        carrier = event.get("trace_context")
+        if not isinstance(carrier, dict):
+            carrier = {}
+        telemetry = get_observability()
+        with telemetry.span(
+            "skuld.telegram.send",
+            attributes={
+                "skuld.channel": "telegram",
+                "skuld.event.type": str(event_type),
+                "skuld.help.peer_id": str(event.get("participantId") or ""),
+            },
+            carrier=carrier,
+        ):
+            await self._send_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+            if source_event_id and self._last_send_results:
+                self._delivered_event_ids[source_event_id] = None
+                while len(self._delivered_event_ids) > TELEGRAM_REPLY_CACHE_SIZE:
+                    self._delivered_event_ids.pop(next(iter(self._delivered_event_ids)))
+            if failure_key and self._last_send_results:
+                self._active_failure_keys[failure_key] = None
+                while len(self._active_failure_keys) > TELEGRAM_REPLY_CACHE_SIZE:
+                    self._active_failure_keys.pop(next(iter(self._active_failure_keys)))
+            self._remember_reply_targets(event, reply_context_text)
+            telemetry.count(
+                "skuld.telegram.messages",
+                value=len(self._last_send_results),
+                attributes={"direction": "outbound", "event_type": str(event_type)},
+            )
+
+    def _remember_reply_targets(self, event: dict[str, Any], rendered_text: str) -> None:
+        """Correlate Telegram replies with the room message and peer they answer."""
+        peer_id = str(event.get("participantId") or "").strip()
+        if not peer_id:
+            return
+        trace_context = event.get("trace_context")
+        if not isinstance(trace_context, dict):
+            trace_context = {}
+        reply_context = {
+            "event_type": str(event.get("type") or "room_message"),
+            "content": rendered_text[:TELEGRAM_MAX_MESSAGE_LENGTH],
+            "participant_id": peer_id,
+        }
+        for result in self._last_send_results:
+            message_id = result.get("message_id")
+            if not isinstance(message_id, int):
+                continue
+            self._reply_targets[message_id] = {
+                "target_peer_id": peer_id,
+                "trace_context": dict(trace_context),
+                "reply_context": dict(reply_context),
+            }
+        while len(self._reply_targets) > TELEGRAM_REPLY_CACHE_SIZE:
+            self._reply_targets.pop(next(iter(self._reply_targets)))
 
     async def _scheduled_flush(self) -> None:
         """Wait then flush the text buffer."""
@@ -1058,7 +1489,32 @@ class TelegramChannel(MessageChannel):
             thread_id = getattr(message, "message_thread_id", None)
             if isinstance(thread_id, int):
                 payload["message_thread_id"] = thread_id
-            await self._on_message(payload)
+            reply_to = getattr(message, "reply_to_message", None)
+            reply_to_message_id = getattr(reply_to, "message_id", None)
+            if isinstance(reply_to_message_id, int):
+                payload["reply_to_message_id"] = reply_to_message_id
+                target = self._reply_targets.get(reply_to_message_id)
+                if target is not None:
+                    payload.update(target)
+            carrier = payload.get("trace_context")
+            if not isinstance(carrier, dict):
+                carrier = {}
+            telemetry = get_observability()
+            with telemetry.span(
+                "skuld.telegram.reply.receive",
+                attributes={
+                    "skuld.channel": "telegram",
+                    "skuld.help.peer_id": str(payload.get("target_peer_id") or ""),
+                    "skuld.telegram.reply_to_message_id": reply_to_message_id or 0,
+                },
+                carrier=carrier,
+            ):
+                payload["trace_context"] = telemetry.inject() or carrier
+                await self._on_message(payload)
+                telemetry.count(
+                    "skuld.telegram.messages",
+                    attributes={"direction": "inbound", "event_type": "message"},
+                )
 
     async def _handle_callback_query(self, update: object, context: object) -> None:
         """Handle inline keyboard button presses (permission responses)."""

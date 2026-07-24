@@ -395,10 +395,8 @@ class TestBuildReflexInjector:
         cfg = MimirConfig(reflex=MimirReflexConfig(enabled=False))
         assert build_reflex_injector(cfg) is None
 
-    def test_default_config_is_on_but_inert_without_a_url(self):
-        # Enabled by default; without any Mimir HTTP endpoint it resolves
-        # to None (with a warning) instead of erroring.
-        assert MimirConfig().reflex.enabled is True
+    def test_default_config_is_off(self):
+        assert MimirConfig().reflex.enabled is False
         assert build_reflex_injector(MimirConfig()) is None
 
     def test_missing_reflex_attribute_returns_none(self):

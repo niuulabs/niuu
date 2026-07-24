@@ -1,9 +1,9 @@
-"""Daemon wiring that attaches build_tool to signal investigations (NIU-1051)."""
+"""Daemon wiring that exposes build_tool through the persona capability surface."""
 
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -11,7 +11,7 @@ import ravn.cli.commands as commands_mod
 from ravn.adapters.realm.client import BuildGrant
 from ravn.adapters.tools.build_tool import attach_build_tool
 from ravn.cli.commands import (
-    _attach_signal_build_tool,
+    _attach_agent_build_tool,
     _build_tool_build_backend,
     _resolve_realm_build_config,
 )
@@ -36,21 +36,21 @@ class _FakeAgent:
         self.registered.append((tool, replace))
 
 
-def test_attach_signal_build_tool_skips_non_signal_tasks(tmp_path) -> None:
+def test_attach_agent_build_tool_skips_when_persona_disallows_it(tmp_path) -> None:
     agent = _FakeAgent()
-    out = _attach_signal_build_tool(
-        agent, tmp_path, triggered_by="thread:abc", settings=Settings(), publisher=None
+    out = _attach_agent_build_tool(
+        agent, tmp_path, enabled=False, settings=Settings(), publisher=None
     )
     assert out is agent
     assert agent.registered == []
 
 
-def test_attach_signal_build_tool_registers_build_tool_for_signals(tmp_path) -> None:
+def test_attach_agent_build_tool_registers_for_allowed_persona(tmp_path) -> None:
     agent = _FakeAgent()
-    out = _attach_signal_build_tool(
+    out = _attach_agent_build_tool(
         agent,
         tmp_path,
-        triggered_by="signal:signal.host.event",
+        enabled=True,
         settings=Settings(),
         publisher=None,
     )
@@ -58,18 +58,49 @@ def test_attach_signal_build_tool_registers_build_tool_for_signals(tmp_path) -> 
     assert any(getattr(tool, "name", "") == "build_tool" for tool, _ in agent.registered)
 
 
+def test_tool_mcp_attaches_build_tool_for_allowed_persona(tmp_path) -> None:
+    settings = Settings(state_dir=str(tmp_path / "state"))
+    persona = MagicMock(allowed_tools=["build_tool"])
+    server = MagicMock()
+    server.run_stdio = AsyncMock()
+
+    with (
+        patch.object(commands_mod, "Settings", return_value=settings),
+        patch.object(commands_mod, "_configure_logging"),
+        patch.object(commands_mod.ProjectConfig, "discover", return_value=MagicMock()),
+        patch.object(commands_mod, "_resolve_profile", return_value=None),
+        patch.object(commands_mod, "_resolve_persona", return_value=persona),
+        patch.object(commands_mod, "_build_tool_mcp_tools", return_value=[]),
+        patch.object(commands_mod, "_resolve_workspace", return_value=tmp_path),
+        patch.object(commands_mod, "_attach_agent_build_tool") as attach,
+        patch(
+            "ravn.adapters.mcp.tool_port_server.ToolPortMcpServer",
+            return_value=server,
+        ),
+    ):
+        commands_mod.tool_mcp(config="", persona="ivaldi", profile="")
+
+    attach.assert_called_once_with(
+        server,
+        tmp_path,
+        enabled=True,
+        settings=settings,
+    )
+    server.run_stdio.assert_awaited_once()
+
+
 def _registered_build_tool(agent: _FakeAgent) -> Any:
     return next(tool for tool, _ in agent.registered if getattr(tool, "name", "") == "build_tool")
 
 
-def test_attach_signal_build_tool_defaults_preserve_previous_policy_constants(tmp_path) -> None:
+def test_attach_agent_build_tool_defaults_preserve_previous_policy_constants(tmp_path) -> None:
     # P5a: a config-less Settings() must wire the exact old constants —
     # 3 repair attempts and 0.74 flock confidence.
     agent = _FakeAgent()
-    _attach_signal_build_tool(
+    _attach_agent_build_tool(
         agent,
         tmp_path,
-        triggered_by="signal:signal.host.event",
+        enabled=True,
         settings=Settings(),
         publisher=None,
     )
@@ -79,7 +110,7 @@ def test_attach_signal_build_tool_defaults_preserve_previous_policy_constants(tm
     assert tool._flock_confidence == 0.74
 
 
-def test_attach_signal_build_tool_threads_configured_policy_values(tmp_path) -> None:
+def test_attach_agent_build_tool_threads_configured_policy_values(tmp_path) -> None:
     agent = _FakeAgent()
     settings = Settings(
         resident_evolution={
@@ -87,10 +118,10 @@ def test_attach_signal_build_tool_threads_configured_policy_values(tmp_path) -> 
             "self_registered_tool_confidence": 0.9,
         }
     )
-    _attach_signal_build_tool(
+    _attach_agent_build_tool(
         agent,
         tmp_path,
-        triggered_by="signal:signal.host.event",
+        enabled=True,
         settings=settings,
         publisher=None,
     )

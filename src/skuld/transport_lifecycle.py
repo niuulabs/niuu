@@ -213,7 +213,11 @@ class TransportLifecycleMixin:
         if self._settings.mesh.enabled:
             await self._start_mesh_adapter()
             if self._has_workflow_trigger():
-                self._workflow_trigger_task = asyncio.create_task(self._run_workflow_trigger_task())
+                # A workflow session is not ready until its kickoff has an
+                # acknowledged consumer. Propagate terminal dispatch failure
+                # through the ASGI lifespan instead of losing it in a detached
+                # task while the session appears healthy.
+                await self._run_workflow_trigger_task()
         elif self._has_workflow_trigger():
             logger.warning("Workflow trigger configured but mesh is disabled — skipping dispatch")
 
@@ -315,13 +319,13 @@ class TransportLifecycleMixin:
         await self._write_workspace_archive()
 
         # Stop resident relay and room mesh bridge before mesh adapter
-        if self._resident_relay is not None:
-            await self._resident_relay.stop()
-            self._resident_relay = None
+        if self._observation_relay is not None:
+            await self._observation_relay.stop()
+            self._observation_relay = None
 
-        if self._room_mesh_bridge is not None:
-            await self._room_mesh_bridge.stop()
-            self._room_mesh_bridge = None
+        if self._collaboration_mesh_bridge is not None:
+            await self._collaboration_mesh_bridge.stop()
+            self._collaboration_mesh_bridge = None
 
         # Stop mesh adapter before transport (deregister from discovery)
         if self._mesh_adapter is not None:

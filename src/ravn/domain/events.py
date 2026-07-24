@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from uuid import uuid4
 
 
 class RavnEventType(StrEnum):
@@ -36,6 +37,8 @@ class RavnEvent:
     session_id: str
     task_id: str | None = None  # If from a sub-ravn
     root_correlation_id: str = ""  # Traces back to the original trigger across the event chain
+    trace_context: dict[str, str] = field(default_factory=dict)
+    event_id: str = field(default_factory=lambda: uuid4().hex)
 
     @classmethod
     def thought(
@@ -153,11 +156,15 @@ class RavnEvent:
         correlation_id: str,
         session_id: str,
         task_id: str | None = None,
+        failure_kind: str = "",
     ) -> RavnEvent:
+        payload = {"message": message}
+        if failure_kind:
+            payload["failure_kind"] = failure_kind
         return cls(
             type=RavnEventType.ERROR,
             source=source,
-            payload={"message": message},
+            payload=payload,
             timestamp=datetime.now(UTC),
             urgency=0.6,
             correlation_id=correlation_id,
@@ -233,6 +240,7 @@ class RavnEvent:
         session_id: str,
         task_id: str | None = None,
         context: dict | None = None,
+        trace_context: dict[str, str] | None = None,
     ) -> RavnEvent:
         """Emit when a persona needs human input to proceed.
 
@@ -267,6 +275,7 @@ class RavnEvent:
             correlation_id=correlation_id,
             session_id=session_id,
             task_id=task_id,
+            trace_context=dict(trace_context or {}),
         )
 
     @classmethod

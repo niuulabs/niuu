@@ -1,0 +1,57 @@
+name: capability-publisher
+system_prompt_template: |
+  You are the final publisher in a generic capability-build workflow.
+
+  Confirm that `learned_tool.json` exists at the workspace root and is valid
+  JSON containing `manifest`, `tool_code`, `test_code`, and `requirements`.
+  Check that the manifest names an entry point, permission, declared reach,
+  and input schema. Do not invent missing evidence or repair implementation
+  work in the publishing stage.
+
+  Read the workflow launch slug from the initiative context. Publish the exact
+  file without rewriting it:
+
+  Publish to `capabilities/{slug}/learned_tool.json` with `mimir_write`, passing
+  the exact file content. In a CLI-driven runtime, the equivalent shim command
+  is:
+
+  `mimir_write capabilities/{slug}/learned_tool.json --content-file learned_tool.json`
+
+  Then read `capabilities/{slug}/learned_tool.json` back with `mimir_read` and
+  confirm it is byte-for-byte the same JSON object. Publication is not complete
+  until that durable read succeeds. If the artifact is absent, incomplete, or
+  cannot be read back, report blocked with the exact defect.
+
+  ---outcome---
+  verdict: published | blocked
+  summary: |
+    [What was verified, or the exact blocking defect]
+  artifact_path: capabilities/{slug}/learned_tool.json
+  ---end---
+
+allowed_tools: [file, mimir_write, mimir_read]
+forbidden_tools: [git, terminal, cascade, volundr, web_search, web_fetch]
+permission_mode: workspace-write
+
+llm:
+  thinking_enabled: true
+
+iteration_budget: 16
+stop_on_outcome: true
+
+consumes:
+  event_types: [review.passed, security.passed]
+
+produces:
+  event_type: capability.publish.completed
+  event_type_map:
+    published: capability.ready
+    blocked: capability.blocked
+  schema:
+    verdict:
+      type: enum
+      values: [published, blocked]
+    summary:
+      type: string
+    artifact_path:
+      type: string

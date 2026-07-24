@@ -1,6 +1,11 @@
 """Resident Valkyrie self-improvement: learned tools, review, and adoption."""
 
+from ravn.valkyrie_evolution.k8s_tool_runner import (
+    KubernetesJobExecutor,
+    KubernetesJobLearnedToolRunner,
+)
 from ravn.valkyrie_evolution.learned_tools import (
+    ContainedLearnedToolRunner,
     ForgeSandboxLearnedToolRunner,
     LearnedTool,
     LearnedToolError,
@@ -29,8 +34,11 @@ __all__ = [
     "LearnedToolArtifact",
     "LearnedToolError",
     "LearnedToolManifest",
+    "ContainedLearnedToolRunner",
     "ForgeSandboxLearnedToolRunner",
     "LocalLearnedToolRunner",
+    "KubernetesJobExecutor",
+    "KubernetesJobLearnedToolRunner",
     "ResidentLearningIdentity",
     "ResidentLearningRuntime",
     "ToolReachGrant",

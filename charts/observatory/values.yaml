@@ -141,6 +141,21 @@ envoy:
     extraClaimHeaders: []
     bypassPrefixes:
       - /health
+    # Additional verifier for short-lived Niuu workload tokens forwarded by
+    # Guild's Agent Directory aggregation.
+    workload:
+      enabled: false
+      issuer: ""
+      audiences: []
+      jwksUri: ""
+      jwksHost: ""
+      jwksPort: 443
+      jwksTls: true
+      jwksTimeout: "5s"
+      jwksCacheDurationSeconds: 300
+      tenantClaim: "tenant_id"
+      rolesClaim: "resource_access.volundr-api.roles"
+      extraClaimHeaders: []
   extraHttpFilters: []
   extraClusters: []
 

@@ -987,6 +987,13 @@ class WorkflowGateResolveRequest(BaseModel):
     source: str = "human"
 
 
+class HelpAnswerRequest(BaseModel):
+    """Request body answering a session peer's pending help request."""
+
+    answer: str
+    source: str = "external"
+
+
 class ErrorResponse(BaseModel):
     """Response model for errors."""
 
@@ -3266,6 +3273,123 @@ def create_router(
                     f"Session {session_id} is no longer reachable; "
                     f"reconciled to {reconciled.status.value if reconciled else 'unknown'}. "
                     f"Gate not resolved: {e}"
+                ),
+            )
+
+    @router.get(
+        "/sessions/{session_id}/help/requests",
+        tags=["Sessions"],
+        responses={
+            404: {"model": ErrorResponse},
+            502: {"model": ErrorResponse},
+        },
+    )
+    async def get_session_help_requests(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> dict:
+        """Return pending peer help requests (agent questions) for a live session."""
+        session = await forge.get_session(session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+        principal = await _optional_principal(request)
+        try:
+            await forge.ensure_access(session, principal, "view")
+        except SessionAccessDeniedError:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied to session {session_id}",
+            )
+        if not session.chat_endpoint:
+            return {"requests": []}
+        try:
+            _, base_url = await forge.get_session_proxy_target(session_id)
+            headers = {}
+            auth = request.headers.get("authorization")
+            if auth:
+                headers["Authorization"] = auth
+            proxy_url, routing_headers = _http_proxy_target(
+                _session_proxy_url(base_url, "api", "help", "requests")
+            )
+            headers.update(routing_headers)
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(proxy_url, headers=headers)
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to fetch help requests from session pod: {e}",
+            )
+        except (ValueError, httpx.RequestError):
+            return {"requests": []}
+
+    @router.post(
+        "/sessions/{session_id}/help/requests/{request_id}/answer",
+        tags=["Sessions"],
+        responses={
+            400: {"model": ErrorResponse},
+            403: {"model": ErrorResponse},
+            404: {"model": ErrorResponse},
+            502: {"model": ErrorResponse},
+        },
+    )
+    async def answer_session_help_request(
+        request: Request,
+        body: HelpAnswerRequest,
+        session_id: UUID = Path(description="Unique session identifier"),
+        request_id: str = Path(description="Help request identifier"),
+    ) -> dict:
+        """Answer a pending peer help request in a live session."""
+        principal = await extract_principal(request)
+        try:
+            session, base_url = await forge.get_session_proxy_target(session_id)
+        except LookupError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            )
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} has no active endpoint",
+            )
+        if session.owner_id and session.owner_id != principal.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to answer help requests for this session",
+            )
+
+        headers = {}
+        auth = request.headers.get("authorization")
+        if auth:
+            headers["Authorization"] = auth
+        try:
+            proxy_url, routing_headers = _http_proxy_target(
+                _session_proxy_url(base_url, "api", "help", "requests", request_id, "answer")
+            )
+            headers.update(routing_headers)
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    proxy_url,
+                    headers=headers,
+                    json=body.model_dump(),
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=e.response.status_code, detail=e.response.text[:500])
+        except httpx.RequestError as e:
+            reconciled = await forge.reconcile_session(session_id)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Session {session_id} is no longer reachable; "
+                    f"reconciled to {reconciled.status.value if reconciled else 'unknown'}. "
+                    f"Help request not answered: {e}"
                 ),
             )
 

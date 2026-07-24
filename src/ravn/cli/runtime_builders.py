@@ -51,17 +51,17 @@ def _resident_ravn_state_dir(workspace: Path, settings: Settings | None = None) 
     return Path.home() / ".ravn"
 
 
-def _attach_signal_build_tool(
+def _attach_agent_build_tool(
     agent: Any,
     workspace: Path,
     *,
-    triggered_by: str | None,
+    enabled: bool,
     settings: Settings,
     publisher: Any | None = None,
     drive_loop: Any | None = None,
 ) -> Any:
-    """Attach build_tool to RavnAgent signal investigations when supported."""
-    if not triggered_by or not triggered_by.startswith("signal:"):
+    """Attach build_tool when the active persona explicitly allows it."""
+    if not enabled:
         return agent
 
     def _investigation_context() -> str:
@@ -89,6 +89,31 @@ def _attach_signal_build_tool(
         )
         code_dir, artifacts_dir = learned_tool_storage(state_dir)
         realm_config = _resolve_realm_build_config(settings)
+
+        # The resident's own model handles INPUT_REQUIRED on commissioned
+        # builds within the realm autonomy grant: it ANSWERS genuine peer
+        # questions (help_needed) with information, and DECIDES workflow
+        # gates approve/request_changes.
+        gate_reviewer = None
+        question_answerer = None
+        agent_llm = getattr(agent, "llm", None)
+        if agent_llm is not None:
+            from ravn.adapters.tool_build.gate_review import (  # noqa: PLC0415
+                build_llm_gate_reviewer,
+                build_llm_question_answerer,
+            )
+
+            gate_reviewer = build_llm_gate_reviewer(
+                llm=agent_llm,
+                model=settings.effective_model(),
+                valkyrie_id=valkyrie_id,
+            )
+            question_answerer = build_llm_question_answerer(
+                llm=agent_llm,
+                model=settings.effective_model(),
+                valkyrie_id=valkyrie_id,
+            )
+
         attach_build_tool(
             agent,
             tools_dir=code_dir,
@@ -101,9 +126,17 @@ def _attach_signal_build_tool(
             flock_id=settings.environment.flocks[0] if settings.environment.flocks else "",
             domain=settings.environment.type,
             execution_backend=settings.resident_evolution.learned_tool_execution_backend,
+            execution_backend_kwargs=(
+                settings.resident_evolution.learned_tool_k8s.model_dump()
+                if settings.resident_evolution.learned_tool_execution_backend == "k8s_job"
+                else None
+            ),
             workspace_root=workspace,
             build_backend=_build_tool_build_backend(
-                settings, workflow_selector=realm_config.workflow_selector
+                settings,
+                workflow_selector=realm_config.workflow_selector,
+                gate_reviewer=gate_reviewer,
+                question_answerer=question_answerer,
             ),
             investigation_context=_investigation_context,
             max_repair_attempts=settings.resident_evolution.build_repair_attempts,
@@ -120,11 +153,16 @@ def _build_tool_build_backend(
     settings: Settings,
     *,
     workflow_selector: dict[str, Any] | None = None,
+    gate_reviewer: Any | None = None,
+    question_answerer: Any | None = None,
 ) -> Any | None:
     """Construct the configured tool build adapter, or None for inline authoring.
 
     ``workflow_selector``, when provided (resolved from a realm build grant),
     overrides the static ``tool_builder_workflow`` config for this backend.
+    ``gate_reviewer`` / ``question_answerer`` (the resident's LLM-backed
+    judgment and knowledge) are passed to backends that accept them so
+    INPUT_REQUIRED tasks can be handled over A2A.
     """
     cfg = settings.resident_evolution
     if not cfg.tool_build_adapter:
@@ -138,6 +176,10 @@ def _build_tool_build_backend(
             selector_dict = static_selector.model_dump()
     if selector_dict and _constructor_accepts_kwarg(cls, "workflow_selector"):
         kwargs["workflow_selector"] = selector_dict
+    if gate_reviewer is not None and _constructor_accepts_kwarg(cls, "gate_reviewer"):
+        kwargs["gate_reviewer"] = gate_reviewer
+    if question_answerer is not None and _constructor_accepts_kwarg(cls, "question_answerer"):
+        kwargs["question_answerer"] = question_answerer
     return cls(**kwargs)
 
 
@@ -622,8 +664,7 @@ def _mimir_workload_platform_defaults(settings: Settings) -> tuple[str | None, s
     uses ``type: workload`` auth without an explicit ``token_file`` /
     ``exchange_url``, the values configured for the platform tools are the
     canonical source. Returns ``(token_file, exchange_url)`` — either may be
-    ``None`` when the platform section is disabled or empty, in which case
-    the HTTP adapter keeps its legacy env-var fallback for compatibility.
+    ``None`` when the platform section is disabled or empty.
     """
     platform = settings.gateway.platform
     if not platform.enabled:

@@ -10,6 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from ravn.adapters.tool_build import (
+    A2AToolBuildBackend,
     ForgeSessionToolBuildBackend,
     HttpResponse,
     TingWorkflowToolBuildBackend,
@@ -467,3 +468,92 @@ def test_cli_failure_exits_nonzero() -> None:
 
     assert result.exit_code == 1
     assert "FAIL" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# A2A backend
+# ---------------------------------------------------------------------------
+
+
+_A2A_CARD_URL = "http://ting/.well-known/agent-card.json"
+
+
+def _a2a_doctor_backend(
+    client: _FakeHttpClient,
+    *,
+    workflow_id: str = "",
+    workflow_selector: dict[str, Any] | None = None,
+) -> A2AToolBuildBackend:
+    return A2AToolBuildBackend(
+        client=client,
+        card_url=_A2A_CARD_URL,
+        workflow_id=workflow_id,
+        workflow_selector=workflow_selector,
+    )
+
+
+def _a2a_doctor_card(skills: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "name": "Niuu Workflows",
+        "supportedInterfaces": [
+            {"url": "http://ting/api/v1/ting/a2a", "protocolBinding": "JSONRPC"}
+        ],
+        "skills": skills,
+    }
+
+
+async def test_a2a_happy_path_all_pass() -> None:
+    card = _a2a_doctor_card(
+        [
+            {"id": "wf-research", "name": "Research", "tags": ["research"]},
+            {"id": "wf-builder", "name": "Tool Builder", "tags": ["tool-builder"]},
+        ]
+    )
+    client = _FakeHttpClient({("GET", "/.well-known/agent-card.json"): HttpResponse(200, card)})
+    backend = _a2a_doctor_backend(client, workflow_selector={"tags": ["tool-builder"]})
+    settings = _settings(adapter="ravn.adapters.tool_build.a2a.A2AToolBuildBackend")
+
+    with patch("ravn.cli.commands._build_tool_build_backend", return_value=backend):
+        report = await diagnose_tool_build(settings)
+
+    statuses = _statuses(report)
+    assert statuses == {
+        1: HopStatus.PASS,
+        2: HopStatus.PASS,
+        3: HopStatus.PASS,
+        4: HopStatus.PASS,
+        5: HopStatus.PASS,
+    }
+    assert report.ok is True
+    # Reachability probes the card URL itself.
+    assert _A2A_CARD_URL in report.hops[3].reason
+    assert "Tool Builder" in report.hops[4].reason
+
+
+async def test_a2a_selector_without_matching_skill_fails() -> None:
+    card = _a2a_doctor_card([{"id": "wf-deploy", "name": "Deploy", "tags": ["deploy"]}])
+    client = _FakeHttpClient({("GET", "/.well-known/agent-card.json"): HttpResponse(200, card)})
+    backend = _a2a_doctor_backend(client, workflow_selector={"tags": ["tool-builder"]})
+    settings = _settings(adapter="ravn.adapters.tool_build.a2a.A2AToolBuildBackend")
+
+    with patch("ravn.cli.commands._build_tool_build_backend", return_value=backend):
+        report = await diagnose_tool_build(settings)
+
+    statuses = _statuses(report)
+    assert statuses[4] is HopStatus.PASS
+    assert statuses[5] is HopStatus.FAIL
+    assert "zero workflows" in report.hops[4].reason
+    assert report.ok is False
+
+
+async def test_a2a_unreachable_card_fails_and_skips_discovery() -> None:
+    client = _FakeHttpClient(raise_on_get=ConnectionError("dns failure"))
+    backend = _a2a_doctor_backend(client, workflow_id="wf-1")
+    settings = _settings(adapter="ravn.adapters.tool_build.a2a.A2AToolBuildBackend")
+
+    with patch("ravn.cli.commands._build_tool_build_backend", return_value=backend):
+        report = await diagnose_tool_build(settings)
+
+    statuses = _statuses(report)
+    assert statuses[4] is HopStatus.FAIL
+    assert report.ok is False

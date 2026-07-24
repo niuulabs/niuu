@@ -5,13 +5,17 @@ Supports two transport modes (selected via config):
 - "subprocess": spawns claude -p per message, reads stdout (legacy fallback)
 """
 
+from __future__ import annotations
+
 import asyncio
 import collections
 import json
 import logging
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import asdict, dataclass
+from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -35,9 +39,15 @@ from niuu.domain.transcript_reducer import (
     steering_state_from_frame,
     steering_target_id,
 )
+from niuu.domain.workflow_kickoff import (
+    WORKFLOW_KICKOFF_ID_KEY,
+    WORKFLOW_KICKOFF_REDELIVERY_KEY,
+    is_workflow_kickoff_ack_payload,
+)
 from niuu.mesh.cluster import read_cluster_pub_addresses
 from niuu.mesh.discovery_builder import build_discovery_adapters
 from niuu.mesh.identity import MeshIdentity
+from niuu.observability import get_observability
 from niuu.ports.cli import CLITransport
 from niuu.utils import import_class
 from skuld.activity_reporting import ActivityReportingMixin
@@ -71,9 +81,6 @@ from skuld.file_routes import (  # noqa: F401
     upload_file_raw,
     upload_files,
 )
-from skuld.resident_relay import ResidentRelay
-from skuld.room_bridge import RoomBridge
-from skuld.room_mesh_bridge import RoomMeshBridge
 from skuld.service_manager import (  # noqa: F401
     ServiceCreateRequest,
     ServiceManager,
@@ -185,15 +192,23 @@ def _non_empty_str(value: object) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else ""
 
 
-def _telegram_directed_metadata(data: dict) -> dict[str, str]:
+def _telegram_directed_metadata(data: dict) -> dict[str, Any]:
     """Build the directed-room-message metadata for an inbound Telegram payload."""
-    return {
+    metadata: dict[str, Any] = {
         "source": "telegram",
         "telegram_message_id": str(data.get("message_id") or ""),
+        "telegram_reply_to_message_id": str(data.get("reply_to_message_id") or ""),
         "telegram_chat_id": str(data.get("chat_id") or ""),
         "telegram_message_thread_id": str(data.get("message_thread_id") or ""),
         "telegram_date": str(data.get("date") or ""),
     }
+    trace_context = data.get("trace_context")
+    if isinstance(trace_context, dict) and trace_context:
+        metadata["trace_context"] = dict(trace_context)
+    reply_context = data.get("reply_context")
+    if isinstance(reply_context, dict) and reply_context:
+        metadata["reply_context"] = dict(reply_context)
+    return metadata
 
 
 def _describe_browser_content_block(block: dict[str, Any]) -> str | None:
@@ -259,6 +274,49 @@ class PeerWatchState:
     last_progress_at: float
     last_status: str = "busy"
     warned: bool = False
+
+
+@dataclass
+class WorkflowKickoffAckTracker:
+    """Acks received for one logical workflow kickoff dispatch.
+
+    Populated by :meth:`Broker._consume_workflow_kickoff_ack` as flock peers
+    acknowledge the kickoff over the mesh; awaited by
+    :meth:`Broker._publish_workflow_trigger` between redelivery attempts.
+    """
+
+    kickoff_id: str
+    acked_peer_ids: set[str] = dataclass_field(default_factory=set)
+    acked_personas: set[str] = dataclass_field(default_factory=set)
+    ack_received: asyncio.Event = dataclass_field(default_factory=asyncio.Event)
+
+
+@dataclass
+class PendingHelpRequest:
+    """A peer's genuine question, awaiting an answer from the commissioner.
+
+    Recorded when a room peer emits a ``help_needed`` frame — the peer is
+    blocked on information it cannot responsibly guess. The answer is
+    delivered back to the asking peer as a directed room message.
+    """
+
+    id: str
+    peer_id: str
+    persona: str
+    summary: str
+    reason: str
+    recommendation: str
+    context: dict[str, Any]
+    attempted: list[str]
+    source_event_id: str
+    task_id: str
+    correlation_id: str
+    root_correlation_id: str
+    requested_at: str
+    status: str = "pending"  # pending | answered
+    answered_at: str = ""
+    answer: str = ""
+    answer_source: str = ""
 
 
 def _workflow_terminal_requirements_satisfied(
@@ -366,6 +424,7 @@ class Broker(
         self._chronicle_watcher: ChronicleWatcher | None = None
         self._peer_watchdog_task: asyncio.Task[None] | None = None
         self._workflow_trigger_task: asyncio.Task[None] | None = None
+        self._workflow_kickoff_tracker: WorkflowKickoffAckTracker | None = None
         self._peer_watches: dict[str, PeerWatchState] = {}
         self._peer_pending_commands: dict[str, list[str]] = {}
         self._git_workspace_checkpoint: GitWorkspaceCheckpoint | None = None
@@ -378,6 +437,12 @@ class Broker(
         self._workflow_gate_attempts: dict[tuple[str, str], int] = {}
         self._workflow_gate_state_ids_by_key: dict[tuple[str, str], str] = {}
         self._workflow_gate_states: dict[str, WorkflowGateState] = {}
+        # Genuine agent questions: a peer that emits help_needed is asking the
+        # party that commissioned this session for information it cannot
+        # responsibly guess. Tracked like gate states so callers (Volundr
+        # proxy -> Ting -> A2A) can list them and deliver an answer back to
+        # the asking peer as a directed room message.
+        self._pending_help_requests: dict[str, PendingHelpRequest] = {}
         self._workflow_terminal_nodes = _workflow_terminal_nodes(self._settings.workflow.graph)
         self._workflow_terminal_index: dict[str, list[WorkflowTerminalNode]] = {}
         for node in self._workflow_terminal_nodes:
@@ -425,24 +490,27 @@ class Broker(
         # Mesh adapter — only active when mesh.enabled is True
         self._mesh_adapter: Any = None
 
-        # Room mesh bridge — translates ravn.mesh.* Sleipnir events to room wire events.
-        # Active when both mesh.enabled and room.enabled are True.
-        self._room_mesh_bridge: RoomMeshBridge | None = None
-        self._resident_relay: ResidentRelay | None = None
+        # Optional mesh-to-collaboration bridge.
+        self._collaboration_mesh_bridge: Any = None
+        self._observation_relay: Any = None
 
-        # Room bridge — only active when room.enabled is True
-        self._room_bridge: RoomBridge | None = (
-            RoomBridge(
+        # Collaboration is an optional surface. Keep its implementation out of
+        # the ordinary ephemeral-session import path.
+        self._room_bridge: Any = None
+        if self._settings.room.enabled:
+            from skuld.collaboration_adapter import (  # noqa: PLC0415
+                SkuldCollaborationAdapter,
+            )
+
+            self._room_bridge = SkuldCollaborationAdapter(
                 config=self._settings.room,
                 channels=self._channels,
                 append_turn=self._append_turn,
                 report_timeline_event=self._report_timeline_event,
                 observe_peer_event=self._observe_room_peer_event,
                 publish_presence_event=self._publish_room_presence_event,
+                report_usage=self._report_usage,
             )
-            if self._settings.room.enabled
-            else None
-        )
 
         # Retrieval reflex (NIU-1059) — lazily built from settings.reflex on
         # first forwarded user message; None when disabled.
@@ -785,8 +853,8 @@ class Broker(
                 for peer in discovery.peers().values():
                     await _register_discovered_peer(peer)
 
-            # Start room mesh bridge so outcomes from any mesh peer flow to the
-            # room UI via Sleipnir — eliminates the dual-publish pattern.
+            # Forward already-projected collaboration events from mesh peers
+            # through the one configured Skuld surface adapter.
             if self._room_bridge is not None:
                 from sleipnir.ports.events import SleipnirSubscriber
 
@@ -799,24 +867,35 @@ class Broker(
                     else:
                         logger.warning(
                             "Sleipnir publisher does not implement SleipnirSubscriber"
-                            " — RoomMeshBridge disabled"
+                            " — collaboration mesh bridge disabled"
                         )
                 if sleipnir_subscriber is not None:
-                    self._room_mesh_bridge = RoomMeshBridge(
-                        subscriber=sleipnir_subscriber,
-                        room_bridge=self._room_bridge,
+                    from niuu.collaboration.mesh import (  # noqa: PLC0415
+                        MeshCollaborationBridge,
+                    )
+
+                    self._collaboration_mesh_bridge = MeshCollaborationBridge(
+                        sleipnir_subscriber,
+                        handle_frame=self._room_bridge.handle_collaboration_frame,
+                        register_peer=self._room_bridge.register_mesh_peer,
+                        has_participant=self._room_bridge.has_participant,
                         session_id=self.session_id,
                         environment_id=mesh_cfg.realm_id,
-                        report_usage=self._report_usage,
                     )
-                    await self._room_mesh_bridge.start()
-                    logger.info("RoomMeshBridge started (session_id=%s)", self.session_id)
+                    await self._collaboration_mesh_bridge.start()
+                    logger.info(
+                        "Collaboration mesh bridge started (session_id=%s)",
+                        self.session_id,
+                    )
 
                     # Resident sessions: relay platform events (research/spec/
                     # plan completions, gates) to the resident so the chat
                     # resumes itself when its launched work lands.
                     resident_peer = self._room_default_target_peer_id()
-                    if resident_peer and self._settings.resident_relay.enabled:
+                    if resident_peer and self._settings.observation_relay.enabled:
+                        from niuu.collaboration.observation_relay import (  # noqa: PLC0415
+                            ObservationRelay,
+                        )
 
                         async def _relay_directed(
                             target: str,
@@ -830,18 +909,17 @@ class Broker(
                                 metadata=metadata,
                             )
 
-                        self._resident_relay = ResidentRelay(
+                        self._observation_relay = ObservationRelay(
                             sleipnir_subscriber,
-                            self._room_bridge,
-                            resident_peer_id=resident_peer,
-                            patterns=self._settings.resident_relay.event_patterns,
+                            participant=lambda: self._room_bridge.participant(resident_peer),
+                            patterns=self._settings.observation_relay.event_patterns,
                             send_directed=_relay_directed,
                             broadcast_notification=self._emit_broker_frame,
                             payload_preview_chars=(
-                                self._settings.resident_relay.payload_preview_chars
+                                self._settings.observation_relay.payload_preview_chars
                             ),
                         )
-                        await self._resident_relay.start()
+                        await self._observation_relay.start()
 
         except Exception as exc:
             logger.error("Mesh adapter start failed: %r", exc, exc_info=True)
@@ -954,7 +1032,17 @@ class Broker(
         return True
 
     async def _publish_workflow_trigger(self) -> None:
-        """Publish the initial Ting task into the flock as a mesh outcome event."""
+        """Publish the initial Ting task into the flock as a mesh outcome event.
+
+        The mesh retains nothing for late subscribers, so a kickoff published
+        while a cold-starting persona is still arming its subscription simply
+        evaporates — participant registration only proves the peer exists, not
+        that it can receive events yet. Each dispatch therefore carries a
+        kickoff id and is republished until a consuming persona acknowledges
+        it with a ``workflow.kickoff.acknowledged`` mesh event; after the
+        configured redelivery budget the session fails loudly instead of
+        idling forever.
+        """
         if self._mesh_adapter is None or not self._has_workflow_trigger():
             return
 
@@ -967,7 +1055,6 @@ class Broker(
         consumers_ready = await self._wait_for_event_consumers(
             cfg.event_type,
             wait_timeout_s,
-            settle_s=5.0,
         )
         if not consumers_ready:
             raise RuntimeError(f"workflow trigger consumers for {cfg.event_type} did not connect")
@@ -979,23 +1066,153 @@ class Broker(
                 delay_s,
             )
             await asyncio.sleep(delay_s)
-        await self._publish_mesh_event(
-            cfg.event_type,
-            self._settings.session.initial_prompt,
-            source=cfg.source,
-            correlation_id=self.session_id,
-            extra_payload={
-                "summary": f"Workflow dispatch: {cfg.label or cfg.event_type}",
-                "workflow_trigger_label": cfg.label,
-                "workflow_trigger_node_id": cfg.node_id,
-                "workspace_path": self.workspace_dir,
-            },
+
+        tracker = WorkflowKickoffAckTracker(kickoff_id=str(uuid.uuid4()))
+        self._workflow_kickoff_tracker = tracker
+        attempts = 1 + max(0, int(cfg.ack_max_redeliveries))
+        for attempt in range(attempts):
+            await self._publish_mesh_event(
+                cfg.event_type,
+                self._settings.session.initial_prompt,
+                source=cfg.source,
+                correlation_id=self.session_id,
+                extra_payload={
+                    "summary": f"Workflow dispatch: {cfg.label or cfg.event_type}",
+                    "workflow_trigger_label": cfg.label,
+                    "workflow_trigger_node_id": cfg.node_id,
+                    "workspace_path": self.workspace_dir,
+                    WORKFLOW_KICKOFF_ID_KEY: tracker.kickoff_id,
+                    WORKFLOW_KICKOFF_REDELIVERY_KEY: attempt,
+                },
+            )
+            logger.info(
+                "Workflow trigger dispatched onto mesh event_type=%s node_id=%s attempt=%d/%d",
+                cfg.event_type,
+                cfg.node_id,
+                attempt + 1,
+                attempts,
+            )
+            if self._room_bridge is None:
+                # Kickoff acks travel through the room mesh bridge; without a
+                # room there is no way to observe them, so the legacy
+                # fire-and-forget dispatch is all this session can get.
+                logger.info("Workflow trigger published without ack tracking (room disabled)")
+                return
+            if await self._wait_for_workflow_kickoff_acks(
+                tracker, timeout_s=float(cfg.ack_timeout_s)
+            ):
+                logger.info(
+                    "Workflow kickoff acknowledged event_type=%s peers=%s",
+                    cfg.event_type,
+                    sorted(tracker.acked_peer_ids),
+                )
+                return
+            if attempt + 1 < attempts:
+                logger.warning(
+                    "Workflow kickoff unacknowledged after %.1fs "
+                    "(attempt %d/%d, missing=%s) — republishing",
+                    float(cfg.ack_timeout_s),
+                    attempt + 1,
+                    attempts,
+                    sorted(self._missing_workflow_kickoff_ack_peers(tracker)),
+                )
+
+        missing = sorted(self._missing_workflow_kickoff_ack_peers(tracker))
+        raise RuntimeError(
+            f"workflow kickoff for {cfg.event_type} was never acknowledged by "
+            f"{missing or 'any flock peer'} after {attempts} attempts"
         )
+
+    def _missing_workflow_kickoff_ack_peers(self, tracker: WorkflowKickoffAckTracker) -> set[str]:
+        """Required kickoff consumers that have not acknowledged yet.
+
+        Peers are matched by their room participant id, falling back to the
+        persona name the ack carries — flock personas derive both from the
+        same configuration, but the fallback keeps a cosmetic id mismatch
+        from failing an otherwise healthy session.
+        """
+        cfg = self._settings.workflow_trigger
+        required = self._workflow_trigger_consumer_peer_ids(cfg.event_type)
+        missing: set[str] = set()
+        for peer_id in required:
+            if peer_id in tracker.acked_peer_ids:
+                continue
+            participant = (
+                self._room_bridge.participants.get(peer_id)
+                if self._room_bridge is not None
+                else None
+            )
+            persona = str(getattr(participant, "persona", "") or "").strip()
+            if persona and persona in tracker.acked_personas:
+                continue
+            missing.add(peer_id)
+        return missing
+
+    def _workflow_kickoff_acks_satisfied(self, tracker: WorkflowKickoffAckTracker) -> bool:
+        """True when every required consumer acked (or anyone, if none are known)."""
+        cfg = self._settings.workflow_trigger
+        required = self._workflow_trigger_consumer_peer_ids(cfg.event_type)
+        if not required:
+            return bool(tracker.acked_peer_ids or tracker.acked_personas)
+        return not self._missing_workflow_kickoff_ack_peers(tracker)
+
+    async def _wait_for_workflow_kickoff_acks(
+        self,
+        tracker: WorkflowKickoffAckTracker,
+        *,
+        timeout_s: float,
+    ) -> bool:
+        """Wait until the kickoff is acknowledged or *timeout_s* elapses."""
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while not self._workflow_kickoff_acks_satisfied(tracker):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            tracker.ack_received.clear()
+            with suppress(TimeoutError):
+                await asyncio.wait_for(tracker.ack_received.wait(), timeout=remaining)
+        return True
+
+    def _consume_workflow_kickoff_ack(self, peer_id: str, frame: dict[str, Any]) -> bool:
+        """Absorb a ``workflow.kickoff.acknowledged`` outcome frame from a peer.
+
+        Returns True when the frame was a kickoff ack — acks are handshake
+        signals and must never reach the outcome pipeline or gate machinery.
+        Acks for a stale kickoff id (an earlier dispatch of this session) are
+        consumed without being recorded.
+        """
+        data = frame.get("data")
+        if not isinstance(data, dict) or not is_workflow_kickoff_ack_payload(data):
+            return False
+
+        tracker = self._workflow_kickoff_tracker
+        if tracker is None:
+            logger.info(
+                "Ignoring workflow kickoff ack without an active kickoff peer=%s",
+                peer_id,
+            )
+            return True
+        ack_kickoff_id = str(data.get(WORKFLOW_KICKOFF_ID_KEY) or "").strip()
+        if ack_kickoff_id and ack_kickoff_id != tracker.kickoff_id:
+            logger.info(
+                "Ignoring stale workflow kickoff ack peer=%s kickoff_id=%s",
+                peer_id,
+                ack_kickoff_id,
+            )
+            return True
+
+        tracker.acked_peer_ids.add(peer_id)
+        persona = str(data.get("persona") or "").strip()
+        if persona:
+            tracker.acked_personas.add(persona)
+        tracker.ack_received.set()
         logger.info(
-            "Workflow trigger dispatched onto mesh event_type=%s node_id=%s",
-            cfg.event_type,
-            cfg.node_id,
+            "Workflow kickoff ack received peer=%s persona=%s duplicate=%s",
+            peer_id,
+            persona or "-",
+            bool(data.get("duplicate")),
         )
+        return True
 
     async def _publish_mesh_event(
         self,
@@ -1031,6 +1248,9 @@ class Broker(
             session_id=self.session_id,
             task_id=None if correlation_id else event_id,
             root_correlation_id=self.session_id,
+            trace_context=(
+                get_observability().inject() or dict(self._settings.workflow.trace_context)
+            ),
         )
         await self._mesh_adapter.publish(event, event_type)
         return event_id
@@ -1082,6 +1302,7 @@ class Broker(
     async def _run_workflow_trigger_task(self) -> None:
         """Dispatch the initial workflow trigger after broker startup completes."""
         cfg = self._settings.workflow_trigger
+        telemetry = get_observability()
         workflow_name = (
             str(getattr(self._settings.workflow, "name", "") or "").strip()
             or cfg.label
@@ -1101,19 +1322,37 @@ class Broker(
                     "source": cfg.source,
                 },
             )
-        try:
-            await self._publish_workflow_trigger()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            await self._finish_trace_span(
-                self._trace_workflow_span_id,
-                status="failed",
-                attributes={"reason": "workflow_trigger_failed"},
-            )
-            self._trace_workflow_span_id = None
-            logger.exception("Workflow trigger dispatch failed")
-            raise
+        attributes = {
+            "skuld.workflow.id": str(self._settings.workflow.workflow_id or ""),
+            "skuld.workflow.name": workflow_name,
+            "skuld.workflow.trigger.event_type": cfg.event_type,
+            "skuld.workflow.trigger.node_id": cfg.node_id,
+        }
+        with telemetry.span(
+            "skuld.workflow.dispatch",
+            attributes=attributes,
+            carrier=dict(self._settings.workflow.trace_context),
+        ) as span:
+            try:
+                await self._publish_workflow_trigger()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                telemetry.mark_error(span, type(exc).__name__, str(exc))
+                telemetry.event(
+                    "skuld.workflow.dispatch.failed",
+                    attributes={**attributes, "error.type": type(exc).__name__},
+                    content={"error": str(exc)},
+                )
+                await self._finish_trace_span(
+                    self._trace_workflow_span_id,
+                    status="failed",
+                    attributes={"reason": "workflow_trigger_failed"},
+                )
+                self._trace_workflow_span_id = None
+                logger.exception("Workflow trigger dispatch failed")
+                raise
+            telemetry.event("skuld.workflow.dispatched", attributes=attributes)
 
     def _observer_peer_id(self) -> str:
         """Return Skuld's room participant id when available."""
@@ -1146,6 +1385,8 @@ class Broker(
         observer_peer_id = self._observer_peer_id()
         if peer_id == observer_peer_id:
             return
+        if event_type == "outcome" and self._consume_workflow_kickoff_ack(peer_id, frame):
+            return
         participant = self._room_bridge.participants.get(peer_id)
         peer_label = (
             participant.persona
@@ -1156,6 +1397,8 @@ class Broker(
         if event_type == "outcome":
             await self._emit_peer_outcome_pipeline_event(peer_id, frame)
         elif event_type == "help_needed":
+            if not self._record_pending_help_request(peer_id, frame):
+                return
             await self._report_peer_help_needed_activity(peer_id, frame)
             await self._emit_peer_help_needed_sleipnir_event(peer_id, frame)
 
@@ -1416,6 +1659,10 @@ class Broker(
         ).strip()
         payload: dict[str, Any] = {
             "session_id": session_id,
+            "source_event_id": str(frame.get("source_event_id") or ""),
+            "task_id": str(frame.get("task_id") or ""),
+            "correlation_id": str(frame.get("correlation_id") or ""),
+            "root_correlation_id": str(frame.get("root_correlation_id") or ""),
             "persona": persona,
             "summary": str(data.get("summary") or "Agent requested human feedback."),
             "reason": str(data.get("reason") or "needs_context"),
@@ -1440,6 +1687,109 @@ class Broker(
             reverse=True,
         )
         return [asdict(state) for state in states]
+
+    def _record_pending_help_request(self, peer_id: str, frame: dict[str, Any]) -> bool:
+        """Track a peer's help_needed question so a remote caller can answer it."""
+        payload = self._build_peer_help_needed_payload(peer_id, frame)
+        if payload is None:
+            return False
+        source_event_id = str(payload.get("source_event_id") or "")
+        if source_event_id and any(
+            request.peer_id == peer_id and request.source_event_id == source_event_id
+            for request in self._pending_help_requests.values()
+        ):
+            return False
+        request = PendingHelpRequest(
+            id=uuid.uuid4().hex[:12],
+            peer_id=peer_id,
+            persona=str(payload.get("persona") or ""),
+            summary=str(payload.get("summary") or ""),
+            reason=str(payload.get("reason") or ""),
+            recommendation=str(payload.get("recommendation") or ""),
+            context=dict(payload.get("context") or {}),
+            attempted=[str(item) for item in payload.get("attempted") or []],
+            source_event_id=source_event_id,
+            task_id=str(payload.get("task_id") or ""),
+            correlation_id=str(payload.get("correlation_id") or ""),
+            root_correlation_id=str(payload.get("root_correlation_id") or ""),
+            requested_at=datetime.now(UTC).isoformat(),
+        )
+        self._pending_help_requests[request.id] = request
+        logger.info(
+            "Pending help request recorded: id=%s peer=%s persona=%s summary=%s",
+            request.id,
+            peer_id,
+            request.persona,
+            request.summary[:200],
+        )
+        return True
+
+    def list_help_requests(self) -> list[dict[str, Any]]:
+        """Return help requests ordered from newest to oldest."""
+        ordered = sorted(
+            self._pending_help_requests.values(),
+            key=lambda request: request.requested_at,
+            reverse=True,
+        )
+        return [asdict(request) for request in ordered]
+
+    @staticmethod
+    def _complete_help_request(
+        request: PendingHelpRequest,
+        answer: str,
+        source: str,
+    ) -> None:
+        request.status = "answered"
+        request.answered_at = datetime.now(UTC).isoformat()
+        request.answer = answer
+        request.answer_source = source
+
+    def _mark_pending_help_answered(self, peer_id: str, answer: str, source: str) -> None:
+        candidates = [
+            request
+            for request in self._pending_help_requests.values()
+            if request.peer_id == peer_id and request.status == "pending"
+        ]
+        if not candidates:
+            return
+        request = max(candidates, key=lambda item: item.requested_at)
+        self._complete_help_request(request, answer, source)
+
+    async def answer_help_request(
+        self,
+        request_id: str,
+        answer: str,
+        *,
+        source: str = "external",
+    ) -> str:
+        """Deliver an answer to a pending help request's asking peer.
+
+        The answer travels as a directed room message to the peer that asked,
+        so it lands in that agent's conversation exactly like a human reply
+        would. Returns the routed message id.
+        """
+        request = self._pending_help_requests.get(request_id)
+        if request is None:
+            raise ValueError(f"unknown help request: {request_id}")
+        if request.status != "pending":
+            raise ValueError(f"help request {request_id} is already {request.status}")
+        if not answer.strip():
+            raise ValueError("answer must not be empty")
+        message_id = await self.handle_directed_room_message(
+            request.peer_id,
+            answer,
+            source=source,
+            metadata={"help_request_id": request.id},
+        )
+        self._complete_help_request(request, answer, source)
+        logger.info(
+            "Help request %s answered by %s -> peer=%s message=%s",
+            request.id,
+            source,
+            request.peer_id,
+            message_id,
+        )
+        return message_id
 
     def _workflow_activation_id_from_frame(self, frame: dict[str, Any]) -> str:
         data = frame.get("data", {})
@@ -1741,6 +2091,8 @@ class Broker(
         payload: dict[str, Any],
     ) -> None:
         """Evaluate deterministic end nodes against bubbled-up peer outcomes."""
+        if str(peer_id).startswith("workflow-stop:"):
+            return
         event_type = str(payload.get("event_type") or "").strip()
         if not event_type or event_type == "ravn.task.completed":
             return
@@ -1878,7 +2230,18 @@ class Broker(
                 participant_kind="workflow",
                 heartbeat_ttl_s=0.0,
             )
-            await self._room_bridge.handle_ravn_frame(terminal_peer_id, frame)
+            await self._room_bridge.handle_collaboration_frame(
+                terminal_peer_id,
+                {
+                    "kind": "outcome",
+                    "sourceEventType": "outcome",
+                    "eventType": node.completion_event_type,
+                    "fields": fields,
+                    "valid": True,
+                    "verdict": payload.get("verdict"),
+                    "summary": payload.get("summary"),
+                },
+            )
         await self._maybe_report_flock_completion(terminal_peer_id, frame)
 
     async def _maybe_report_flock_completion(
@@ -2999,6 +3362,18 @@ class Broker(
                 message = data.get("content", "")
                 if not message:
                     return
+                content_str = _normalize_browser_message_content(message)
+                if not content_str:
+                    return
+
+                # Telegram carries peer targeting, reply correlation, and W3C
+                # trace context outside the browser's nested metadata object.
+                # Give the channel adapter first refusal before the resident's
+                # default browser route so that context is not discarded.
+                if await self._try_route_pending_help_reply(data, content_str):
+                    return
+                if await self._try_route_single_room_peer_message(data, content_str):
+                    return
 
                 # Resident sessions: untargeted messages route to the
                 # configured default participant as directed messages. Normalize
@@ -3009,17 +3384,21 @@ class Broker(
                 if default_target:
                     request_id = data.get("request_id")
                     request_id = request_id if isinstance(request_id, str) and request_id else None
+                    incoming_source = str(data.get("source") or "").strip().lower()
+                    source = "telegram" if incoming_source == "telegram" else "browser"
+                    if source == "telegram":
+                        metadata = _telegram_directed_metadata(data)
+                    else:
+                        metadata = (
+                            data.get("metadata") if isinstance(data.get("metadata"), dict) else None
+                        )
                     try:
                         await self.handle_directed_room_message(
                             default_target,
-                            _normalize_browser_message_content(message),
-                            source="browser",
+                            content_str,
+                            source=source,
                             request_id=request_id,
-                            metadata=(
-                                data.get("metadata")
-                                if isinstance(data.get("metadata"), dict)
-                                else None
-                            ),
+                            metadata=metadata,
                         )
                     except LookupError as exc:
                         if sender_ws:
@@ -3041,13 +3420,6 @@ class Broker(
                     return
 
                 # Record user turn in conversation history
-                content_str = _normalize_browser_message_content(message)
-                if not content_str:
-                    return
-                if await self._try_route_pending_help_reply(data, content_str):
-                    return
-                if await self._try_route_single_room_peer_message(data, content_str):
-                    return
                 msg_id = str(uuid.uuid4())
                 request_id = data.get("request_id")
                 request_id = request_id if isinstance(request_id, str) and request_id else None
@@ -3144,21 +3516,46 @@ class Broker(
         candidates: tuple[str, ...],
         log_message: str,
     ) -> bool:
-        """Deliver a Telegram payload to a peer when exactly one candidate exists."""
+        """Deliver Telegram input to its ForceReply target or sole candidate."""
         if str(data.get("source") or "").strip().lower() != "telegram":
             return False
-        if len(candidates) != 1:
+        requested_peer_id = str(data.get("target_peer_id") or "").strip()
+        if requested_peer_id and requested_peer_id in candidates:
+            target_peer_id = requested_peer_id
+        elif len(candidates) == 1:
+            target_peer_id = candidates[0]
+        else:
             return False
+        carrier = data.get("trace_context")
+        if not isinstance(carrier, dict):
+            carrier = {}
+        telemetry = get_observability()
         try:
-            await self.handle_directed_room_message(
-                candidates[0],
-                content,
-                source="telegram",
-                metadata=_telegram_directed_metadata(data),
-            )
+            with telemetry.span(
+                "skuld.operator.reply.route",
+                attributes={
+                    "skuld.help.peer_id": target_peer_id,
+                    "skuld.help.pending_candidates": len(candidates),
+                    "skuld.operator.source": "telegram",
+                },
+                carrier=carrier,
+            ):
+                metadata = _telegram_directed_metadata(data)
+                metadata["trace_context"] = telemetry.inject() or carrier
+                await self.handle_directed_room_message(
+                    target_peer_id,
+                    content,
+                    source="telegram",
+                    metadata=metadata,
+                )
+                self._mark_pending_help_answered(target_peer_id, content, "telegram")
+                telemetry.count(
+                    "skuld.operator.replies",
+                    attributes={"source": "telegram", "outcome": "routed"},
+                )
         except LookupError:
             return False
-        logger.info(log_message, _sanitize_log(candidates[0]))
+        logger.info(log_message, _sanitize_log(target_peer_id))
         return True
 
     async def _safe_transport_control(
@@ -3702,6 +4099,10 @@ class Broker(
         if self.session_id:
             routing_metadata.setdefault("session_id", self.session_id)
             routing_metadata.setdefault("root_correlation_id", self.session_id)
+        if "reply_context" not in routing_metadata:
+            recent_context = self._recent_room_message_context(target_peer_id)
+            if recent_context:
+                routing_metadata["recent_room_context"] = recent_context
         rendered_content = (
             content if content.lstrip().startswith(target_prefix) else f"{target_prefix} {content}"
         )
@@ -3725,23 +4126,36 @@ class Broker(
             and participant.participant_kind == "mesh"
             and self._mesh_adapter is not None
         ):
+            telemetry = get_observability()
+            carrier = routing_metadata.get("trace_context")
+            if not isinstance(carrier, dict):
+                carrier = {}
+            attributes = {
+                "skuld.room.target_peer_id": target_peer_id,
+                "skuld.room.source": source,
+                "skuld.room.message_id": msg_id,
+            }
             try:
-                response = await self._mesh_adapter.request_work(
-                    target_peer_id,
-                    content,
-                    request_id=request_id or msg_id,
-                )
-                status = str(response.get("status") or "error")
-                output = str(response.get("output") or response.get("error") or status)
-                await self._room_bridge.handle_ravn_frame(
-                    target_peer_id,
-                    {
-                        "type": "response" if status == "complete" else "error",
-                        "data": output,
-                        "metadata": routing_metadata,
-                    },
-                )
-                delivered = True
+                with telemetry.span(
+                    "skuld.room.directed_message",
+                    attributes=attributes,
+                    carrier=carrier,
+                ):
+                    routing_metadata["trace_context"] = telemetry.inject() or carrier
+                    response = await self._mesh_adapter.send_directed_message(
+                        target_peer_id,
+                        content,
+                        metadata=routing_metadata,
+                    )
+                    status = str(response.get("status") or "error").strip().lower()
+                    telemetry.set_attributes({**attributes, "skuld.room.status": status})
+                    if status != "accepted":
+                        error = str(response.get("error") or status)
+                        raise RuntimeError(
+                            f"Mesh-directed room message was not accepted by "
+                            f"{target_peer_id}: {error}"
+                        )
+                    delivered = True
             except Exception as exc:
                 logger.warning(
                     "Mesh-directed room message failed target=%s: %s",
@@ -3749,9 +4163,27 @@ class Broker(
                     exc,
                     exc_info=True,
                 )
+                raise RuntimeError(
+                    f"Mesh-directed room message failed for {target_peer_id}: {exc}"
+                ) from exc
         if not delivered:
             raise LookupError(f"Unknown room participant: {target_peer_id}")
         return msg_id
+
+    def _recent_room_message_context(self, target_peer_id: str) -> dict[str, str]:
+        """Return one bounded prior message from the addressed room participant."""
+        for turn in reversed(self._conversation_turns):
+            if turn.role != "assistant" or turn.participant_id != target_peer_id:
+                continue
+            content = turn.content.strip()
+            if not content:
+                continue
+            return {
+                "message_id": turn.id,
+                "participant_id": target_peer_id,
+                "content": content[:4096],
+            }
+        return {}
 
     async def handle_resend_initial_prompt(
         self,

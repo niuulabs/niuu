@@ -1,0 +1,219 @@
+# --- eitri-local-valkyrie -------------------------------------------------
+#
+# A local resident Valkyrie whose inputs and effects are real:
+#   - reads current Warning events from Eitri through the operator's kubeconfig
+#   - lets Nemotron judge each complete normalized event and choose its tools
+#   - inspects Eitri through the read-only Kubernetes adapter
+#   - discovers and contacts peers through authenticated Guild/A2A APIs
+#   - commissions missing tools through the platform's A2A tool-builder workflow
+#   - exports actual execution spans and metrics to Glitnir's Eitri tenant
+#
+# This setup deliberately contains no fixture input, canned model output, mock
+# adapter, signal-name action routing, or embedded credential.  Before launch:
+#
+#   export KUBECONFIG="$HOME/.kube/kubeconfigs/eitri.yaml"
+#   mkdir -p "$HOME/.ravn/eitri-local"
+#   kubectl -n nats create token ivaldi --audience=volundr-api --duration=1h \
+#     > "$HOME/.ravn/eitri-local/workload-token"
+#   chmod 600 "$HOME/.ravn/eitri-local/workload-token"
+#   export RAVN_OPERATOR_TOKEN="$(openssl rand -hex 24)"
+#   ravn daemon --config ~/.ravn/config.yaml --persona k8s-valkyrie
+#
+# The service-account token is short-lived. Refresh it before a later run.
+# ---------------------------------------------------------------------------
+
+state_dir: ~/.ravn/eitri-local/state
+
+environment:
+  id: eitri
+  name: Eitri
+  type: k8s
+  topology:
+    type_id: cluster
+    cluster_id: eitri
+  resident_name: Eitri Local Valkyrie
+  resident_personality: Curious cluster steward; gathers evidence before deciding.
+  charter: >-
+    Learn Eitri from its live signals, preserve uncertainty, investigate with the
+    least authority needed, and improve reusable diagnostic capability only when
+    evidence exposes a genuine gap.
+  flocks:
+    - eitri-valkyries
+  signal_poll_interval_seconds: 30.0
+  signal_dedupe_cache_size: 4096
+  signal_task_severities:
+    - warning
+    - critical
+  idle_triage_interval_seconds: 0
+  signal_sources:
+    - id: kubernetes-events
+      name: Live Eitri Kubernetes events
+      kind: kubernetes
+      adapter: ravn.adapters.environment_signals.KubernetesSignalAdapter
+      enabled: true
+      kwargs:
+        in_cluster: false
+        kubeconfig_env: KUBECONFIG
+        namespaces: []
+        field_selector: type=Warning
+        max_event_age_seconds: 14400
+
+llm:
+  model: nvidia/nemotron-3-super
+  max_tokens: 8192
+  timeout: 180
+  provider:
+    adapter: ravn.adapters.llm.openai.OpenAICompatibleAdapter
+    kwargs:
+      base_url: http://192.168.90.168:8000
+      api_key: ""
+
+context_management:
+  max_prompt_tokens: 100000
+
+memory:
+  backend: sqlite
+  path: ~/.ravn/eitri-local/memory.db
+  # Keep exact episodes for audit and explicit session search. Do not inject
+  # them into later turns or turn one model narrative into another model's fact.
+  prefetch_limit: 0
+  reflection_model: disabled
+
+skill:
+  backend: file
+
+mimir:
+  enabled: true
+  path: ~/.ravn/eitri-local/mimir
+  auto_distill: false
+  categories:
+    - operations
+    - incidents
+    - tools
+    - learnings
+  source_trigger:
+    enabled: false
+  staleness_trigger:
+    enabled: false
+  ingest:
+    entity_detection: false
+
+tools:
+  kubernetes:
+    enabled: true
+    in_cluster: false
+    kubeconfig_env: KUBECONFIG
+    max_log_lines: 120
+
+permission:
+  mode: workspace_write
+
+# A real single-process Sleipnir event bus. This preserves the same event
+# contracts as clustered transports without requiring a local broker.
+mesh:
+  enabled: true
+  adapter: in_process
+  own_peer_id: eitri-local-valkyrie
+
+discovery:
+  enabled: false
+
+cascade:
+  enabled: false
+
+gateway:
+  enabled: true
+  platform:
+    enabled: true
+    base_url: https://yggdrasil.niuu.world
+    workload_token_file: ~/.ravn/eitri-local/workload-token
+    workload_exchange_url: https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange
+    workload_audiences:
+      - volundr-api
+      - forge
+      - ting
+      - mimir
+      - guild
+  channels:
+    http:
+      enabled: true
+      host: 127.0.0.1
+      port: 7477
+      operator_token_env: RAVN_OPERATOR_TOKEN
+
+initiative:
+  enabled: true
+  max_concurrent_tasks: 1
+  task_queue_max: 20
+  queue_journal_path: ~/.ravn/eitri-local/queue.json
+  default_output_mode: ambient
+  default_persona: k8s-valkyrie
+  heartbeat_interval_seconds: 30
+
+resident_inbox:
+  enabled: true
+  # The local inbox owns accepted observations and the home trigger coalesces
+  # them independently of model latency.
+  adapter: ravn.resident_inbox.backend.LocalResidentInbox
+  environment_signals_enabled: true
+
+resident_state:
+  continuation_max_turns: 6
+  continuation_max_tokens: 50000
+  home_wake_interval_seconds: 30
+
+resident_wakefulness:
+  enabled: true
+  tick_interval_seconds: 5
+  wakeful_window_seconds: 60
+  dream_interval_seconds: 3600
+  dream_min_idle_seconds: 300
+
+resident_evolution:
+  realm_slug: workshop
+  realm_api_base_url: https://yggdrasil.niuu.world
+  autonomy_mode: guarded
+  tool_build_adapter: ravn.adapters.tool_build.a2a.A2AToolBuildBackend
+  tool_build_kwargs:
+    card_url: https://yggdrasil.niuu.world/.well-known/agent-card.json
+    connection_id: 5bf5d964-1fba-4f8c-9271-a1d34a559b6e
+    max_poll_attempts: 360
+    workload_token_file: ~/.ravn/eitri-local/workload-token
+    workload_exchange_url: https://yggdrasil.niuu.world/api/v1/tokens/workload/exchange
+    workload_audiences:
+      - volundr-api
+      - forge
+      - ting
+      - mimir
+      - guild
+  tool_builder_workflow:
+    tags:
+      - tool-builder
+  # Local execution is explicit for this local-first setup. Verification,
+  # review, provenance, and rollback remain active; only OCI isolation is absent.
+  learned_tool_execution_backend: local
+  build_repair_attempts: 3
+  rollback_consecutive_failures: 3
+
+odin_court:
+  enabled: true
+  quorum_size: 1
+
+reflection:
+  enabled: false
+
+evolution:
+  enabled: false
+
+observability:
+  enabled: true
+  capture_content: true
+  content_max_chars: 20000
+  service_name: ravn
+  trace_endpoint: https://eitri.grpc-tempo.proxy.glitnir.alfheim.niuu.world:443
+  metric_endpoint: https://mimir.proxy.glitnir.alfheim.niuu.world/eitri/otlp/v1/metrics
+  insecure: false
+  metric_export_interval_milliseconds: 5000
+
+logging:
+  level: info

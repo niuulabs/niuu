@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from niuu.domain.agent_directory import AgentDirectoryPage
 from ravn.adapters.tools.capability_catalog import CapabilityListTool
 from ravn.domain.capability_catalog import WorkflowCapability
 from ravn.domain.models import Skill, ToolResult
@@ -65,6 +66,56 @@ class FakeWorkflowSource:
         raise AssertionError("capability_list must not launch workflows")
 
 
+class FakeAgentDirectory:
+    async def list_agents(self) -> AgentDirectoryPage:
+        return AgentDirectoryPage.model_validate(
+            {
+                "items": [
+                    {
+                        "id": "agent-1",
+                        "canonicalId": "source:observatory-a:agent-a",
+                        "sourceAgentId": "agent-a",
+                        "sourceInstanceId": "observatory-a",
+                        "clusterId": "cluster-a",
+                        "topologyNodeId": "runtime:agent-a",
+                        "name": "Research peer",
+                        "description": "Researches unfamiliar environments.",
+                        "kind": "resident",
+                        "cardUrl": "https://peer.example/card",
+                        "cardVersion": "1.2",
+                        "cardHash": "card-hash",
+                        "skillIds": ["research"],
+                        "skills": [
+                            {
+                                "id": "research",
+                                "name": "Research environment",
+                                "description": "Gather source-backed context.",
+                                "tags": ["research"],
+                            }
+                        ],
+                        "defaultInputModes": ["text/plain"],
+                        "defaultOutputModes": ["application/json"],
+                        "supportedInterfaces": [
+                            {
+                                "url": "https://peer.example/a2a",
+                                "protocolBinding": "JSONRPC",
+                                "protocolVersion": "1.0",
+                            }
+                        ],
+                        "securityRequirements": [{"schemes": {"bearer": {}}}],
+                        "observedStatus": "healthy",
+                        "lastSeen": "2026-07-20T12:00:00Z",
+                        "visibility": "tenant",
+                    }
+                ]
+            }
+        )
+
+    async def get_agent(self, agent_id: str):
+        page = await self.list_agents()
+        return next((item for item in page.items if item.id == agent_id), None)
+
+
 @pytest.mark.asyncio
 async def test_capability_list_aggregates_tools_skills_and_workflows() -> None:
     tool = CapabilityListTool(
@@ -98,6 +149,59 @@ async def test_capability_list_filters_catalog_without_routing() -> None:
     payload = json.loads(result.content)
     assert payload["count"] == 1
     assert payload["capabilities"][0]["id"] == "workflow:wf-build"
+    assert payload["catalog_total"] == 3
+    assert payload["catalog_counts"] == {"tool": 1, "skill": 1, "workflow": 1}
+
+
+@pytest.mark.asyncio
+async def test_capability_list_distinguishes_no_match_from_empty_catalog() -> None:
+    tool = CapabilityListTool(
+        tools_provider=lambda: [FakeTool()],
+        agent_directory=FakeAgentDirectory(),
+    )
+
+    result = await tool.execute({"query": "unknown machine protocol"})
+
+    payload = json.loads(result.content)
+    assert payload["capabilities"] == []
+    assert payload["total"] == 0
+    assert payload["catalog_total"] == 2
+    assert payload["catalog_counts"] == {"tool": 1, "agent_skill": 1}
+    assert payload["catalog_preview"] == [
+        {
+            "id": "tool:mimir_search",
+            "kind": "tool",
+            "name": "mimir_search",
+            "source": "ravn",
+        },
+        {
+            "id": "agent:agent-1:research",
+            "kind": "agent_skill",
+            "name": "Research environment",
+            "source": "agent-card",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_capability_list_projects_agent_card_skills_with_invocation_metadata() -> None:
+    tool = CapabilityListTool(
+        tools_provider=lambda: [FakeTool()],
+        agent_directory=FakeAgentDirectory(),
+    )
+
+    result = await tool.execute({"kind": "agent_skill", "query": "research"})
+
+    assert not result.is_error
+    payload = json.loads(result.content)
+    assert payload["count"] == 1
+    capability = payload["capabilities"][0]
+    assert capability["id"] == "agent:agent-1:research"
+    assert capability["source"] == "agent-card"
+    assert capability["metadata"]["invoke_via"] == "a2a_task"
+    assert capability["metadata"]["agent_id"] == "agent-1"
+    assert capability["metadata"]["skill_id"] == "research"
+    assert capability["metadata"]["last_seen"] == "2026-07-20T12:00:00Z"
 
 
 @pytest.mark.asyncio
@@ -108,3 +212,77 @@ async def test_capability_list_rejects_unknown_kind() -> None:
 
     assert result.is_error
     assert "Unsupported capability kind" in result.content
+
+
+def _learned_artifact(name: str, description: str = "Read a metric window."):
+    from ravn.valkyrie_evolution.models import LearnedToolArtifact, LearnedToolManifest
+
+    return LearnedToolArtifact(
+        artifact_id=f"learned-tool:{name}",
+        manifest=LearnedToolManifest(
+            name=name,
+            description=description,
+            input_schema={"type": "object"},
+            required_permission="mimir:read",
+            declared_reach=[],
+        ),
+        tool_code="def run(input):\n    return {'ok': True}\n",
+    )
+
+
+@pytest.mark.asyncio
+async def test_capability_list_includes_learned_tools_without_loading_them() -> None:
+    tool = CapabilityListTool(
+        tools_provider=lambda: [FakeTool()],
+        learned_tools_provider=lambda: [_learned_artifact("metric_window")],
+    )
+
+    result = await tool.execute({"kind": "tool"})
+
+    assert not result.is_error
+    payload = json.loads(result.content)
+    learned = [item for item in payload["capabilities"] if item["name"] == "metric_window"]
+    assert len(learned) == 1
+    assert learned[0]["tags"] == ["tool", "learned"]
+    assert learned[0]["metadata"]["invoke_via"] == "learned_tool_run"
+    assert learned[0]["metadata"] == {
+        "invoke_via": "learned_tool_run",
+        "artifact_id": "learned-tool:metric_window",
+        "artifact_type": "agent_tool",
+        "verification": "unknown",
+        "has_tests": False,
+        "requirements_count": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_capability_list_dedupes_learned_tools_against_native_names() -> None:
+    # A learned tool already registered natively (legacy bulk mode, or freshly
+    # built in-session) must not appear twice in the catalog.
+    tool = CapabilityListTool(
+        tools_provider=lambda: [FakeTool()],
+        learned_tools_provider=lambda: [_learned_artifact("mimir_search")],
+    )
+
+    result = await tool.execute({"kind": "tool"})
+
+    payload = json.loads(result.content)
+    names = [item["name"] for item in payload["capabilities"]]
+    assert names.count("mimir_search") == 1
+    assert payload["capabilities"][0]["tags"] != ["tool", "learned"]
+
+
+@pytest.mark.asyncio
+async def test_capability_list_records_learned_source_errors() -> None:
+    def _boom():
+        raise RuntimeError("artifact dir unreadable")
+
+    tool = CapabilityListTool(
+        tools_provider=lambda: [FakeTool()],
+        learned_tools_provider=_boom,
+    )
+
+    result = await tool.execute({})
+
+    payload = json.loads(result.content)
+    assert {"kind": "learned_tool", "error": "artifact dir unreadable"} in payload["errors"]

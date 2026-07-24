@@ -8,10 +8,10 @@ Monorepo for the Niuu agent platform. The detailed, binding conventions live in
 | Package | Role |
 |---|---|
 | `volundr` | Forge backend — session lifecycle, workspaces, chronicles, REST API (`/api/v1/forge`) |
-| `skuld` | Per-session broker — wraps the Claude/Codex/OpenCode CLIs, WebSocket chat, file manager |
-| `niuu` | Shared host/gateway — mounts plugin APIs, instance registry, the forge aggregate router |
+| `skuld` | Runtime session gateway — runs Codex/Claude/Ravn sessions and adapts shared collaboration to channels/WebSockets |
+| `niuu` | Shared platform libraries and host/gateway — collaboration/mesh mechanics, plugin APIs, registries, aggregate routing |
 | `ting` | Autonomous dispatcher — sagas, runs, tracker integration (must never import `volundr`) |
-| `ravn` | Agent runtime — personas, flocks, Valkyries, mesh |
+| `ravn` | Agent runtime — wraps models/runtimes and owns judgment, learning, tools, A2A, and resident autonomy when enabled |
 | `bifrost` | Model gateway and catalog |
 | `sleipnir` | Event bus / event-type registry |
 | `cli` | `niuu` CLI — `niuu platform up` runs the whole stack in mini mode |
@@ -38,6 +38,7 @@ cd web-next && pnpm test          # web tests (coverage-gated)
 - 85% coverage gates on backend and web; never lower them — `.claude/rules/testing.md`
 - Conventional commits — `.claude/rules/commits.md`
 - New adapters use dynamic `adapter:` + kwargs config — `.claude/rules/dynamic-adapters.md`
+- Preserve the Ravn/Niuu ownership and communication boundaries — `.claude/rules/ravn-niuu-boundary.md`
 - No placeholders or incomplete implementations outside tests — `.claude/rules/implementation-completeness.md`
 - `web-next/` is Tailwind + tokens and has its own `web-next/CLAUDE.md`; legacy `web/` rules differ
 

@@ -11,6 +11,8 @@ import pytest
 from niuu.domain.mimir import MimirPage, MimirPageMeta
 from ravn.adapters.reflection.post_session import (
     PostSessionReflectionService,
+    _build_candidate_content,
+    _build_candidate_path,
     _build_page_content,
     _build_page_path,
     _insert_timeline_entry,
@@ -22,6 +24,7 @@ from ravn.adapters.reflection.post_session import (
 from ravn.config import PostSessionReflectionConfig
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.catalog import ravn_session_ended
+from sleipnir.domain.events import SleipnirEvent
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -109,7 +112,7 @@ async def test_stop_clears_subscription():
 
 
 @pytest.mark.asyncio
-async def test_process_calls_mimir_write_on_valid_learning():
+async def test_process_writes_valid_reflection_as_untrusted_candidate():
     bus = InProcessBus()
     mimir = AsyncMock()
     mimir.search.return_value = []
@@ -142,8 +145,10 @@ async def test_process_calls_mimir_write_on_valid_learning():
     call_args = mimir.upsert_page.call_args
     path = call_args[0][0]
     content = call_args[0][1]
-    assert "learnings/" in path
+    assert path.startswith("learning-candidates/")
     assert "asyncio_mode" in content or "pytest" in content
+    assert "category: learning-candidates" in content
+    assert "status: candidate" in content
 
 
 @pytest.mark.asyncio
@@ -237,6 +242,78 @@ async def test_process_skips_on_null_learning():
     await svc._process(payload)
 
     mimir.upsert_page.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_non_repo_reflection_prompt_is_session_neutral_and_evidence_bounded():
+    bus = InProcessBus()
+    mimir = AsyncMock()
+    llm = AsyncMock()
+    llm.generate.return_value = _make_llm_response("null")
+    svc = PostSessionReflectionService(bus, mimir, llm, _make_config())
+
+    await svc._run_reflection(
+        {
+            "persona": "workshop-steward",
+            "outcome": "watch",
+            "token_count": 400,
+            "duration_s": 2.0,
+            "repo_slug": "",
+        }
+    )
+
+    prompt = llm.generate.await_args.kwargs["messages"][0]["content"]
+    assert "coding session" not in prompt
+    assert "repository" not in prompt
+    assert "environment or subject" in prompt
+    assert "no subject-matter context was recorded" in prompt
+    assert "Do not infer facts absent from the record" in prompt
+
+
+@pytest.mark.asyncio
+async def test_reflection_prompt_includes_recorded_outcome_context():
+    bus = InProcessBus()
+    mimir = AsyncMock()
+    llm = AsyncMock()
+    llm.generate.return_value = _make_llm_response("null")
+    svc = PostSessionReflectionService(bus, mimir, llm, _make_config())
+
+    await svc._run_reflection(
+        {
+            "persona": "k8s-valkyrie",
+            "outcome": "success",
+            "token_count": 400,
+            "duration_s": 2.0,
+            "repo_slug": "niuulabs/volundr",
+            "outcome_event_type": "valkyrie.judgment.proposed",
+            "structured_outcome": {"decision": "watch", "rationale": "pod recovered"},
+        }
+    )
+
+    prompt = llm.generate.await_args.kwargs["messages"][0]["content"]
+    assert "repo_slug:   niuulabs/volundr" in prompt
+    assert '"decision": "watch"' in prompt
+    assert "future decision in this repository" in prompt
+
+
+@pytest.mark.asyncio
+async def test_reflection_prompt_bounds_recorded_outcome_context():
+    bus = InProcessBus()
+    mimir = AsyncMock()
+    llm = AsyncMock()
+    llm.generate.return_value = _make_llm_response("null")
+    svc = PostSessionReflectionService(bus, mimir, llm, _make_config())
+
+    await svc._run_reflection(
+        {
+            "structured_outcome": {"evidence": "x" * 20_000},
+            "outcome": "success",
+        }
+    )
+
+    prompt = llm.generate.await_args.kwargs["messages"][0]["content"]
+    assert "recorded context truncated" in prompt
+    assert "x" * 13_000 not in prompt
 
 
 @pytest.mark.asyncio
@@ -407,7 +484,7 @@ async def test_process_skips_on_malformed_json():
 
 
 @pytest.mark.asyncio
-async def test_process_updates_existing_page_instead_of_creating():
+async def test_reflection_cannot_mutate_an_existing_trusted_learning():
     existing = _make_mimir_page(
         "learnings/niuulabs-volundr/use-asyncio-mode-auto-in-pytest",
         "Learning: Use asyncio_mode auto in pytest",
@@ -442,10 +519,114 @@ async def test_process_updates_existing_page_instead_of_creating():
         }
     )
 
-    # Should update the existing path, not create a new one.
-    mimir.upsert_page.assert_awaited_once()
-    updated_path = mimir.upsert_page.call_args[0][0]
-    assert updated_path == existing.meta.path
+    mimir.upsert_page.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_third_distinct_candidate_observation_promotes_to_learning():
+    candidate_content = _build_candidate_content(
+        title="Use asyncio_mode auto in pytest",
+        learning="pytest-asyncio requires asyncio_mode=auto.",
+        page_type="observation",
+        tags=["pytest"],
+        evidence="First occurrence.",
+        repo_slug="niuulabs/volundr",
+        session_id="sess-1",
+        date=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    candidate_content = _merge_timeline_entry(
+        candidate_content,
+        session_id="sess-2",
+        evidence="Second occurrence.",
+        date=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+    candidate = MimirPage(
+        meta=MimirPageMeta(
+            path="learning-candidates/niuulabs-volundr/use-asyncio-mode-auto-in-pytest.md",
+            title="Learning candidate: Use asyncio_mode auto in pytest",
+            summary="",
+            category="learning-candidates",
+            updated_at=datetime(2026, 1, 2, tzinfo=UTC),
+        ),
+        content=candidate_content,
+    )
+    mimir = AsyncMock()
+    mimir.search.return_value = [candidate]
+    svc = PostSessionReflectionService(InProcessBus(), mimir, AsyncMock(), _make_config())
+
+    await svc._write_learning(
+        {
+            "title": "Use asyncio_mode auto in pytest",
+            "learning": "pytest-asyncio requires asyncio_mode=auto.",
+            "type": "observation",
+            "tags": ["pytest"],
+            "evidence": "Third occurrence.",
+        },
+        {
+            "session_id": "sess-3",
+            "repo_slug": "niuulabs/volundr",
+            "outcome_valid": True,
+        },
+    )
+
+    writes = mimir.upsert_page.await_args_list
+    promoted = next(call for call in writes if call.args[0].startswith("learnings/"))
+    assert 'promotion_reason: "repeated_evidence:3"' in promoted.args[1]
+    assert "category: learnings" in promoted.args[1]
+    assert "confidence: high" in promoted.args[1]
+
+
+@pytest.mark.asyncio
+async def test_verified_outcome_can_promote_first_candidate_with_reference():
+    mimir = AsyncMock()
+    mimir.search.return_value = []
+    svc = PostSessionReflectionService(InProcessBus(), mimir, AsyncMock(), _make_config())
+
+    await svc._write_learning(
+        {
+            "title": "Probe reports actual disk pressure",
+            "learning": "Use the read-only probe before escalating.",
+            "type": "observation",
+            "tags": ["disk"],
+            "evidence": "The probe result matched the incident outcome.",
+        },
+        {
+            "session_id": "sess-verified",
+            "repo_slug": "",
+            "outcome_verified": True,
+            "verification_refs": ["ci:run-42"],
+        },
+    )
+
+    writes = mimir.upsert_page.await_args_list
+    promoted = next(call for call in writes if call.args[0].startswith("learnings/"))
+    assert 'promotion_reason: "verified_outcome"' in promoted.args[1]
+
+
+@pytest.mark.asyncio
+async def test_schema_valid_outcome_alone_does_not_promote_candidate():
+    mimir = AsyncMock()
+    mimir.search.return_value = []
+    svc = PostSessionReflectionService(InProcessBus(), mimir, AsyncMock(), _make_config())
+
+    await svc._write_learning(
+        {
+            "title": "One model observation",
+            "learning": "A model inferred this once.",
+            "type": "observation",
+            "tags": [],
+            "evidence": "The outcome block was syntactically valid.",
+        },
+        {
+            "session_id": "sess-valid-only",
+            "repo_slug": "",
+            "outcome_valid": True,
+        },
+    )
+
+    assert [call.args[0] for call in mimir.upsert_page.await_args_list] == [
+        "learning-candidates/general/one-model-observation.md"
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -548,6 +729,30 @@ def test_build_page_path_without_repo_slug():
     assert path.startswith("learnings/general/")
 
 
+def test_build_candidate_path_is_outside_trusted_learning_namespace():
+    path = _build_candidate_path("Generic learning", "")
+    assert path.startswith("learning-candidates/general/")
+    assert not path.startswith("learnings/")
+
+
+def test_build_candidate_content_is_explicitly_untrusted():
+    content = _build_candidate_content(
+        title="Possible pattern",
+        learning="This may help.",
+        page_type="observation",
+        tags=["candidate"],
+        evidence="One session suggested it.",
+        repo_slug="",
+        session_id="session-one",
+        date=datetime(2026, 4, 12, tzinfo=UTC),
+    )
+
+    assert "category: learning-candidates" in content
+    assert "status: candidate" in content
+    assert "evidence_count: 1" in content
+    assert "do not inject as operational context" in content
+
+
 def test_build_page_content_has_required_fields():
     content = _build_page_content(
         title="Test learning",
@@ -624,6 +829,54 @@ async def test_service_receives_ravn_session_ended_event():
 
     # LLM was called (reflection ran).
     llm.generate.assert_awaited_once()
+    await svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_positive_feedback_promotes_referenced_candidate_without_reflection_call():
+    bus = InProcessBus()
+    candidate_path = "learning-candidates/general/evidence-backed-probe.md"
+    candidate = _build_candidate_content(
+        title="Evidence-backed probe",
+        learning="Use the probe before escalation.",
+        page_type="observation",
+        tags=["probe"],
+        evidence="One session observed the pattern.",
+        repo_slug="",
+        session_id="sess-one",
+        date=datetime(2026, 7, 20, tzinfo=UTC),
+    )
+    mimir = AsyncMock()
+    mimir.read_page.return_value = candidate
+    llm = AsyncMock()
+    svc = PostSessionReflectionService(bus, mimir, llm, _make_config())
+    await svc.start()
+
+    await bus.publish(
+        SleipnirEvent(
+            event_type="feedback.recorded",
+            source="operator",
+            payload={
+                "feedback_type": "useful",
+                "learning_candidate_path": candidate_path,
+                "notes": "The probe prevented a false escalation.",
+            },
+            summary="Operator confirmed the candidate.",
+            urgency=0.2,
+            domain="code",
+            timestamp=datetime(2026, 7, 20, tzinfo=UTC),
+        )
+    )
+    await bus.flush()
+
+    promoted = next(
+        call
+        for call in mimir.upsert_page.await_args_list
+        if call.args[0] == "learnings/general/evidence-backed-probe.md"
+    )
+    assert 'promotion_reason: "external_feedback"' in promoted.args[1]
+    assert "event_id:" in promoted.args[1]
+    llm.generate.assert_not_awaited()
     await svc.stop()
 
 

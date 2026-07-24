@@ -11,17 +11,31 @@ import sys
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from niuu.adapters.cli import CliTurnRunner
+from niuu.observability import get_observability
 from niuu.ports.cli import CLITransport
 from niuu.utils import import_class
 from ravn.domain.checkpoint import InterruptReason
 from ravn.domain.events import RavnEvent
-from ravn.domain.models import Message, Session, TokenUsage, ToolCall, ToolResult, TurnResult
+from ravn.domain.models import (
+    Episode,
+    Message,
+    Outcome,
+    Session,
+    TokenUsage,
+    ToolCall,
+    ToolResult,
+    TurnResult,
+)
 from ravn.ports.channel import ChannelPort
 from ravn.ports.checkpoint import CheckpointPort
 from ravn.ports.executor import ExecutionAgentPort, ExecutorPort
+from ravn.tool_observability import tool_argument_attributes
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +92,35 @@ def _is_ting_workflow_tool(tool_name: str) -> bool:
     name = tool_name.replace("-", "_")
     return name.startswith("ting_") or any(
         marker in name for marker in ("__ting_", "/ting_", ".ting_")
+    )
+
+
+def _episode_for_cli_turn(
+    *,
+    session_id: str,
+    user_input: str,
+    response_text: str,
+    tool_calls: list[ToolCall],
+    tool_results: list[ToolResult],
+) -> Episode:
+    """Create the episode envelope later decorated by the drive-loop contract parser."""
+    errors = [result for result in tool_results if result.is_error]
+    outcome = Outcome.SUCCESS
+    if errors:
+        outcome = Outcome.FAILURE if len(errors) == len(tool_results) else Outcome.PARTIAL
+    summary = response_text[:500]
+    if len(response_text) > 500:
+        summary = summary.rstrip() + "…"
+    return Episode(
+        episode_id=str(uuid.uuid4()),
+        session_id=session_id,
+        timestamp=datetime.now(UTC),
+        summary=summary or f"Completed task with {len(tool_calls)} tool(s) used.",
+        task_description=user_input[:200],
+        tools_used=list(dict.fromkeys(call.name for call in tool_calls)),
+        outcome=outcome,
+        tags=[],
+        errors=[result.content for result in errors],
     )
 
 
@@ -146,6 +189,7 @@ class CliTransportAgent(ExecutionAgentPort):
         self._session_join_manager = session_join_manager
         self._interrupt_reason: InterruptReason | None = None
         self._current_tool_names: dict[str, str] = {}
+        self._tool_started_at: dict[str, float] = {}
         self._turn_tool_calls: list[ToolCall] = []
         self._turn_tool_results: list[ToolResult] = []
 
@@ -204,9 +248,123 @@ class CliTransportAgent(ExecutionAgentPort):
         await transport.send_control("steer", content=content)
         return True
 
+    async def close(self) -> None:
+        """Release the per-task CLI transport and any child process it owns."""
+        transport, self._transport = self._transport, None
+        self._turn_runner = None
+        self._started = False
+        if transport is not None:
+            await transport.stop()
+
     async def run_turn(self, user_input: str) -> TurnResult:
         if self._interrupt_reason is not None:
             raise RuntimeError(f"turn interrupted: {self._interrupt_reason}")
+
+        telemetry = get_observability()
+        attributes = {
+            "gen_ai.operation.name": "chat",
+            "gen_ai.provider.name": self._transport_binding.cls.__name__,
+            "gen_ai.request.model": self._model,
+            "gen_ai.conversation.id": str(self._session.id),
+            "gen_ai.agent.name": self._persona or "ravn",
+            "gen_ai.agent.id": self._source_id,
+            "ravn.task.id": self._task_id,
+            "ravn.executor.kind": "cli_transport",
+        }
+        metric_attributes = {
+            key: attributes[key]
+            for key in (
+                "gen_ai.operation.name",
+                "gen_ai.provider.name",
+                "gen_ai.request.model",
+                "gen_ai.agent.name",
+            )
+        }
+        started = monotonic()
+        with telemetry.span(f"chat {self._model}", attributes=attributes) as span:
+            telemetry.event(
+                "gen_ai.request",
+                attributes={"gen_ai.request.message_count": 1},
+                content={"system_prompt": self._system_prompt, "user_input": user_input},
+            )
+            try:
+                result = await self._run_turn_observed(user_input)
+            except Exception:
+                telemetry.count(
+                    "ravn.agent.llm.calls",
+                    attributes={**metric_attributes, "error.type": "exception"},
+                )
+                telemetry.duration(
+                    "gen_ai.client.operation.duration",
+                    monotonic() - started,
+                    attributes={**metric_attributes, "error.type": "exception"},
+                )
+                raise
+
+            span.set_attribute("gen_ai.usage.input_tokens", result.usage.input_tokens)
+            span.set_attribute("gen_ai.usage.output_tokens", result.usage.output_tokens)
+            span.set_attribute("ravn.llm.tool_call_count", len(result.tool_calls))
+            for call in result.tool_calls:
+                telemetry.event(
+                    "gen_ai.tool.request",
+                    attributes={
+                        "gen_ai.tool.name": call.name,
+                        "gen_ai.tool.call.id": call.id,
+                    },
+                    content=call.input,
+                )
+            results_by_id = {
+                tool_result.tool_call_id: tool_result for tool_result in result.tool_results
+            }
+            for call in result.tool_calls:
+                tool_result = results_by_id.get(call.id)
+                if tool_result is None:
+                    continue
+                telemetry.event(
+                    "gen_ai.tool.response",
+                    attributes={
+                        "gen_ai.tool.name": call.name,
+                        "gen_ai.tool.call.id": call.id,
+                        "ravn.tool.outcome": "error" if tool_result.is_error else "success",
+                    },
+                    content=tool_result.content,
+                )
+            telemetry.event(
+                "gen_ai.response",
+                attributes={
+                    "gen_ai.response.tool_call_count": len(result.tool_calls),
+                    "gen_ai.response.tool_names": [call.name for call in result.tool_calls],
+                },
+                content={
+                    "content": result.response,
+                    "tool_calls": [
+                        {"id": call.id, "name": call.name, "input": call.input}
+                        for call in result.tool_calls
+                    ],
+                },
+            )
+            telemetry.count("ravn.agent.llm.calls", attributes=metric_attributes)
+            telemetry.duration(
+                "gen_ai.client.operation.duration",
+                monotonic() - started,
+                attributes=metric_attributes,
+                description="Duration of a generative AI CLI transport operation.",
+            )
+            for token_type, value in (
+                ("input", result.usage.input_tokens),
+                ("output", result.usage.output_tokens),
+            ):
+                telemetry.record(
+                    "gen_ai.client.token.usage",
+                    value,
+                    unit="{token}",
+                    attributes={**metric_attributes, "gen_ai.token.type": token_type},
+                    description="Number of input and output tokens used.",
+                )
+            return result
+
+    async def _run_turn_observed(self, user_input: str) -> TurnResult:
+        """Execute one CLI turn inside the caller-owned telemetry span."""
 
         await self._ensure_transport()
         assert self._transport is not None
@@ -214,6 +372,7 @@ class CliTransportAgent(ExecutionAgentPort):
 
         correlation_id = str(self._session.id)
         self._current_tool_names.clear()
+        self._tool_started_at.clear()
         self._turn_tool_calls = []
         self._turn_tool_results = []
         self._session.add_message(Message(role="user", content=user_input))
@@ -238,11 +397,20 @@ class CliTransportAgent(ExecutionAgentPort):
             )
         )
 
+        tool_calls = list(self._turn_tool_calls)
+        tool_results = list(self._turn_tool_results)
         return TurnResult(
             response=response_text,
-            tool_calls=list(self._turn_tool_calls),
-            tool_results=list(self._turn_tool_results),
+            tool_calls=tool_calls,
+            tool_results=tool_results,
             usage=usage,
+            episode=_episode_for_cli_turn(
+                session_id=correlation_id,
+                user_input=user_input,
+                response_text=response_text,
+                tool_calls=tool_calls,
+                tool_results=tool_results,
+            ),
         )
 
     async def _ensure_transport(self) -> None:
@@ -405,12 +573,17 @@ class CliTransportAgent(ExecutionAgentPort):
 
     async def _record_tool_result_block(self, block: dict, correlation_id: str) -> None:
         tool_use_id = str(block.get("tool_use_id", ""))
+        if tool_use_id and any(
+            result.tool_call_id == tool_use_id for result in self._turn_tool_results
+        ):
+            return
         tool_name = self._current_tool_names.get(tool_use_id, "")
         result = str(block.get("content", ""))
         is_error = bool(block.get("is_error", False))
         self._turn_tool_results.append(
             ToolResult(tool_call_id=tool_use_id, content=result, is_error=is_error)
         )
+        self._record_tool_metric(tool_use_id, tool_name, is_error=is_error)
         if not is_error:
             await self._join_launched_workflow_session(tool_name, result)
         await self._channel.emit(
@@ -479,11 +652,25 @@ class CliTransportAgent(ExecutionAgentPort):
         tool_name = str(block.get("name", ""))
         tool_input = block.get("input", {})
         tool_use_id = str(block.get("id", f"tool_{len(self._turn_tool_calls) + 1}"))
+        if tool_use_id in self._current_tool_names:
+            return
         normalized_input = tool_input if isinstance(tool_input, dict) else {}
         self._current_tool_names[tool_use_id] = tool_name
+        self._tool_started_at[tool_use_id] = monotonic()
         self._turn_tool_calls.append(
             ToolCall(id=tool_use_id, name=tool_name, input=normalized_input)
         )
+        metric_name = self._metric_tool_name(tool_name)
+        if metric_name in self._tools:
+            get_observability().count(
+                "ravn.trace.boundaries",
+                attributes={
+                    "ravn.trace.relationship": "remote_parent",
+                    "ravn.trace.component": "tool_execution",
+                    "ravn.runtime.component": "resident",
+                },
+                description="Explicit cross-process and restart trace boundaries.",
+            )
         await self._channel.emit(
             RavnEvent.tool_start(
                 source=self._source_id,
@@ -495,6 +682,40 @@ class CliTransportAgent(ExecutionAgentPort):
             )
         )
 
+    def _record_tool_metric(self, tool_use_id: str, tool_name: str, *, is_error: bool) -> None:
+        telemetry = get_observability()
+        metric_name = self._metric_tool_name(tool_name)
+        call = next(
+            (item for item in self._turn_tool_calls if item.id == tool_use_id),
+            None,
+        )
+        attributes = {
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.tool.name": metric_name,
+            "gen_ai.agent.name": self._persona or "ravn",
+            "ravn.tool.outcome": "error" if is_error else "success",
+            "ravn.tool.telemetry_source": "cli_transport",
+            "ravn.runtime.component": "resident",
+            **tool_argument_attributes(metric_name, call.input if call is not None else {}),
+        }
+        if is_error:
+            attributes["error.type"] = "tool_error"
+        telemetry.count("ravn.agent.tool.calls", attributes=attributes)
+        started = self._tool_started_at.pop(tool_use_id, None)
+        if started is not None:
+            telemetry.duration(
+                "ravn.agent.tool.duration",
+                monotonic() - started,
+                attributes=attributes,
+                description="Duration of a resident tool execution.",
+            )
+
+    def _metric_tool_name(self, tool_name: str) -> str:
+        if tool_name in self._tools:
+            return tool_name
+        suffix = tool_name.rsplit("__", 1)[-1]
+        return suffix if suffix in self._tools else tool_name
+
 
 class CliTransportExecutor(ExecutorPort):
     """Build a persona execution agent backed by a CLI transport."""
@@ -504,9 +725,14 @@ class CliTransportExecutor(ExecutorPort):
         *,
         transport_adapter: str = "skuld.transports.subprocess.SubprocessTransport",
         transport_kwargs: dict[str, Any] | None = None,
+        ravn_tool_mcp_timeout_seconds: float = 3600.0,
     ) -> None:
         self._transport_adapter = transport_adapter
         self._transport_kwargs = dict(transport_kwargs or {})
+        self._ravn_tool_mcp_timeout_seconds = max(
+            1.0,
+            float(ravn_tool_mcp_timeout_seconds),
+        )
         cls = import_class(transport_adapter)
         sig = inspect.signature(cls)
         self._binding = _TransportBinding(
@@ -534,6 +760,10 @@ class CliTransportExecutor(ExecutorPort):
                 list(kwargs["mcp_servers"]),
                 persona=str(kwargs.get("persona", "")),
                 tools=tools,
+                tool_timeout_seconds=self._ravn_tool_mcp_timeout_seconds,
+                conversation_id=str(session.id),
+                task_id=task_id,
+                trace_carrier=get_observability().inject(),
             )
         transport_kwargs.update(self._transport_kwargs)
 
@@ -558,19 +788,39 @@ def _with_ravn_tool_mcp_server(
     *,
     persona: str,
     tools: list[object],
+    tool_timeout_seconds: float,
+    conversation_id: str = "",
+    task_id: str = "",
+    trace_carrier: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     if not tools or any(str(server.get("name") or "") == "ravn-tools" for server in mcp_servers):
         return mcp_servers
 
     env: dict[str, str] = {}
+    config_path = ""
     if config := os.environ.get("RAVN_CONFIG"):
-        env["RAVN_CONFIG"] = config
+        path = Path(config).expanduser()
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        config_path = str(path.resolve())
+        env["RAVN_CONFIG"] = config_path
     if pythonpath := os.environ.get("PYTHONPATH"):
         env["PYTHONPATH"] = pythonpath
 
     args = ["-m", "ravn", "tool-mcp"]
+    if config_path:
+        args.extend(["--config", config_path])
     if persona:
         args.extend(["--persona", persona])
+    if conversation_id:
+        args.extend(["--conversation-id", conversation_id])
+    if task_id:
+        args.extend(["--task-id", task_id])
+    trace_carrier = trace_carrier or {}
+    if traceparent := trace_carrier.get("traceparent"):
+        args.extend(["--traceparent", traceparent])
+    if tracestate := trace_carrier.get("tracestate"):
+        args.extend(["--tracestate", tracestate])
 
     return [
         *mcp_servers,
@@ -580,5 +830,9 @@ def _with_ravn_tool_mcp_server(
             "command": sys.executable,
             "args": args,
             "env": env,
+            # Commissioned builds can remain in a real A2A workflow for
+            # minutes. Codex's short MCP default would cancel the local waiter
+            # while leaving that remote task running.
+            "tool_timeout_sec": tool_timeout_seconds,
         },
     ]

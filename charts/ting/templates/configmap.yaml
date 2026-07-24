@@ -82,6 +82,16 @@ data:
       in_process:
         llm_config: {{ .Values.dispatch.inProcess.llmConfig | toJson }}
       {{- end }}
+      {{- if .Values.dispatch.flock }}
+      flock:
+        enabled: {{ .Values.dispatch.flock.enabled | default false }}
+        {{- if .Values.dispatch.flock.ravnConfig }}
+        ravn_config: {{ .Values.dispatch.flock.ravnConfig | toJson }}
+        {{- end }}
+        {{- if .Values.dispatch.flock.observability }}
+        observability: {{ .Values.dispatch.flock.observability | toJson }}
+        {{- end }}
+      {{- end }}
 
     {{- if and .Values.planner (or .Values.planner.plannerSystemPrompt .Values.planner.finalizePrompt) }}
     planner:
@@ -111,6 +121,28 @@ data:
       auto_approve_threshold: {{ .Values.review.autoApproveThreshold }}
       {{- end }}
     {{- end }}
+    {{- if or .Values.a2a.agentName .Values.a2a.agentDescription .Values.a2a.cardMaxAgeSeconds .Values.a2a.inlineArtifactMaxChars .Values.a2a.extraArtifactFiles .Values.a2a.publicBaseUrl }}
+    a2a:
+      {{- if .Values.a2a.agentName }}
+      agent_name: {{ .Values.a2a.agentName | quote }}
+      {{- end }}
+      {{- if .Values.a2a.agentDescription }}
+      agent_description: {{ .Values.a2a.agentDescription | quote }}
+      {{- end }}
+      {{- if .Values.a2a.cardMaxAgeSeconds }}
+      card_max_age_seconds: {{ .Values.a2a.cardMaxAgeSeconds }}
+      {{- end }}
+      {{- if .Values.a2a.inlineArtifactMaxChars }}
+      inline_artifact_max_chars: {{ .Values.a2a.inlineArtifactMaxChars }}
+      {{- end }}
+      {{- if .Values.a2a.extraArtifactFiles }}
+      extra_artifact_files: {{ .Values.a2a.extraArtifactFiles | toJson }}
+      {{- end }}
+      {{- if .Values.a2a.publicBaseUrl }}
+      public_base_url: {{ .Values.a2a.publicBaseUrl | quote }}
+      {{- end }}
+    {{- end }}
+
     cerbos:
       url: {{ .Values.cerbos.url | default "http://localhost:3592" | quote }}
 

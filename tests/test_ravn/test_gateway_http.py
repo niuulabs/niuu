@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -204,6 +204,35 @@ def test_chat_request_default_session_id():
 def test_chat_request_custom_session_id():
     req = ChatRequest(message="hi", session_id="my-session")
     assert req.session_id == "my-session"
+
+
+def test_resident_operator_endpoints_require_token_and_resume_case(monkeypatch):
+    runtime = MagicMock()
+    runtime.pending_questions = AsyncMock(
+        return_value=[{"case_id": "case-1", "question": "Which environment?"}]
+    )
+    runtime.submit_operator_answer = AsyncMock(return_value={"case_id": "case-1", "queued": True})
+    ht = HttpGateway(_make_http_config(), _make_gateway_mock(), resident_runtime=runtime)
+    client = TestClient(ht.app)
+
+    assert client.get("/resident/operator-needed").status_code == 503
+    monkeypatch.setenv("RAVN_OPERATOR_TOKEN", "operator-secret")
+    assert client.get("/resident/operator-needed").status_code == 401
+
+    headers = {"Authorization": "Bearer operator-secret"}
+    pending = client.get("/resident/operator-needed", headers=headers)
+    assert pending.status_code == 200
+    assert pending.json()["items"][0]["case_id"] == "case-1"
+    answer = client.post(
+        "/resident/operator-answer",
+        headers=headers,
+        json={"case_id": "case-1", "answer": "Use staging."},
+    )
+    assert answer.status_code == 200
+    runtime.submit_operator_answer.assert_awaited_once_with(
+        case_id="case-1",
+        answer="Use staging.",
+    )
 
 
 # ---------------------------------------------------------------------------

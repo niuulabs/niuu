@@ -6,6 +6,7 @@ Uses ``respx`` to mock HTTPX calls so no network is required.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 import respx
@@ -323,6 +324,34 @@ async def test_bearer_auth_header_is_sent(adapter_bearer: HttpMimirAdapter) -> N
     assert route.called
     auth_header = route.calls[0].request.headers.get("authorization", "")
     assert auth_header == "Bearer test-token"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_workload_auth_uses_configured_identity_endpoints(
+    tmp_path: Path,
+) -> None:
+    proof_file = tmp_path / "workload-token"
+    proof_file.write_text("projected-proof", encoding="utf-8")
+    exchange = respx.post("http://identity.test/exchange").mock(
+        return_value=Response(200, json={"token": "mimir-token"})
+    )
+    request = respx.get("http://mimir.test/mimir/pages").mock(return_value=Response(200, json=[]))
+    adapter = HttpMimirAdapter(
+        base_url="http://mimir.test",
+        auth=MimirAuth(
+            type="workload",
+            token_file=str(proof_file),
+            exchange_url="http://identity.test/exchange",
+        ),
+    )
+
+    await adapter.list_pages()
+
+    assert exchange.calls[0].request.content == (
+        b'{"token":"projected-proof","audiences":["mimir"]}'
+    )
+    assert request.calls[0].request.headers["authorization"] == "Bearer mimir-token"
 
 
 # ---------------------------------------------------------------------------

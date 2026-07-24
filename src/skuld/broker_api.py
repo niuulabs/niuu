@@ -63,14 +63,41 @@ def bind_broker(getter: Callable[[], Any], log_buffer: deque[dict]) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    # Attach JWT redaction filter after uvicorn has configured its loggers
-    _redact_filter = _TokenRedactFilter()
-    for name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
-        logging.getLogger(name).addFilter(_redact_filter)
+    from niuu.observability import configure_observability, shutdown_observability
 
-    await broker.startup()
-    yield
-    await broker.shutdown()
+    # Telegram embeds the bot credential in every Bot API URL. Suppress httpx's
+    # request-level INFO records so the credential never enters a log record;
+    # retain value redaction for Skuld/uvicorn-owned access-token messages.
+    _redact_filter = _TokenRedactFilter()
+    filtered_loggers = [
+        logging.getLogger(name) for name in ("uvicorn", "uvicorn.access", "uvicorn.error")
+    ]
+    httpx_logger = logging.getLogger("httpx")
+    filtered_loggers.append(httpx_logger)
+    for filtered_logger in filtered_loggers:
+        filtered_logger.addFilter(_redact_filter)
+    previous_httpx_level = httpx_logger.level
+    httpx_logger.setLevel(logging.WARNING)
+
+    configure_observability(
+        broker._settings.observability,
+        resource_attributes={
+            "service.namespace": "skuld",
+            "service.instance.id": broker.session_id,
+            "niuu.session.id": broker.session_id,
+        },
+    )
+    try:
+        await broker.startup()
+        yield
+    finally:
+        try:
+            await broker.shutdown()
+        finally:
+            shutdown_observability()
+            httpx_logger.setLevel(previous_httpx_level)
+            for filtered_logger in filtered_loggers:
+                filtered_logger.removeFilter(_redact_filter)
 
 
 app = FastAPI(
@@ -910,6 +937,35 @@ async def get_workflow_gates() -> dict:
     return {"gates": broker.list_workflow_gates()}
 
 
+class _HelpAnswerRequest(BaseModel):
+    """Request body answering a peer's pending help request."""
+
+    answer: str
+    source: str = "external"
+
+
+@app.get("/api/help/requests")
+async def get_help_requests() -> dict:
+    """Return peer help requests (genuine agent questions) for this session."""
+    return {"requests": broker.list_help_requests()}
+
+
+@app.post("/api/help/requests/{request_id}/answer")
+async def answer_help_request(request_id: str, body: _HelpAnswerRequest) -> dict:
+    """Answer a pending help request; the answer routes to the asking peer."""
+    try:
+        message_id = await broker.answer_help_request(
+            request_id,
+            body.answer,
+            source=body.source,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"status": "answered", "message_id": message_id}
+
+
 @app.post("/api/workflow/gates/{gate_id}/resolve")
 async def resolve_workflow_gate(
     request: Request,
@@ -946,14 +1002,22 @@ async def get_communication_routes() -> dict:
 
 
 class _TokenRedactFilter(logging.Filter):
-    """Redact access_token values from log messages to prevent JWT leaks."""
+    """Redact bearer and channel credentials from log messages."""
 
-    _pattern = re.compile(r"access_token=[^\s\"&]+")
+    _patterns = (
+        (re.compile(r"access_token=[^\s\"&]+"), "access_token=[REDACTED]"),
+        (
+            re.compile(r"(https?://api\.telegram\.org/bot)[^/\s\"]+"),
+            r"\1[REDACTED]",
+        ),
+    )
 
     def _redact(self, value: object) -> object:
-        if isinstance(value, str):
-            return self._pattern.sub("access_token=[REDACTED]", value)
-        return value
+        original = value if isinstance(value, str) else str(value)
+        redacted = original
+        for pattern, replacement in self._patterns:
+            redacted = pattern.sub(replacement, redacted)
+        return redacted if redacted != original or isinstance(value, str) else value
 
     def filter(self, record: logging.LogRecord) -> bool:
         if hasattr(record, "msg"):

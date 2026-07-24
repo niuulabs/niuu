@@ -457,6 +457,7 @@ class TestWorkflowCatalogAPI:
                         "readPriority": 5,
                     }
                 ],
+                "artifactPaths": ["project/{slug}/result.json"],
             },
         )
 
@@ -473,6 +474,7 @@ class TestWorkflowCatalogAPI:
                 "readPriority": 5,
             }
         ]
+        assert body["artifactPaths"] == ["project/{slug}/result.json"]
 
     def test_owner_can_update_user_workflow(self) -> None:
         workflow = _make_workflow(owner_id="user-1")

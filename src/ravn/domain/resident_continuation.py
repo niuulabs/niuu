@@ -7,6 +7,8 @@ behind ``ExecutionAgentPort``.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -102,6 +104,8 @@ class ResidentBudgetSnapshot:
     elapsed_seconds: float = 0.0
     usage: TokenUsage = field(default_factory=lambda: TokenUsage(input_tokens=0, output_tokens=0))
     cost_usd: float = 0.0
+    case_id: str = ""
+    root_correlation_id: str = ""
 
     @property
     def total_tokens(self) -> int:
@@ -124,8 +128,91 @@ class ResidentTurnRecord:
     outcome_fields: dict[str, Any]
     tool_names: tuple[str, ...]
     usage: TokenUsage
+    tool_results: tuple[str, ...] = ()
+    mandate: str = ""
+    cumulative_usage: TokenUsage = field(
+        default_factory=lambda: TokenUsage(input_tokens=0, output_tokens=0)
+    )
     selected_next_action: ResidentActionCandidate | None = None
+    case_id: str = ""
+    root_correlation_id: str = ""
+    task_id: str = ""
+    persona: str = ""
+    evidence_refs: tuple[str, ...] = ()
+    inbox_refs: tuple[str, ...] = ()
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass(frozen=True)
+class ResidentWorkingStateRecord:
+    """The resident's explicit, revisable model of its current reality."""
+
+    resident_id: str
+    state: dict[str, Any]
+    source_turn_ref: str
+    source_case_id: str
+    source_task_id: str
+    signal_refs: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+RESIDENT_WORKING_STATE_FIELDS = (
+    "observations",
+    "hypotheses",
+    "unknowns",
+    "capability_gaps",
+    "attempts",
+)
+RESIDENT_WORKING_STATE_MAX_ENTRIES = 5
+RESIDENT_WORKING_STATE_MAX_ENTRY_CHARS = 500
+
+
+def validate_resident_working_state(value: Any) -> list[str]:
+    """Validate snapshot structure without judging or rewriting model-authored content."""
+    if not isinstance(value, Mapping):
+        return ["working_state must be a mapping"]
+    errors: list[str] = []
+    for field_name in RESIDENT_WORKING_STATE_FIELDS:
+        entries = value.get(field_name)
+        if not isinstance(entries, list):
+            errors.append(f"working_state.{field_name} must be a list")
+            continue
+        for index, entry in enumerate(entries):
+            if isinstance(entry, str):
+                valid = bool(entry.strip())
+            else:
+                valid = isinstance(entry, Mapping) and bool(entry)
+            if not valid:
+                errors.append(
+                    f"working_state.{field_name}[{index}] must be a non-empty string or mapping"
+                )
+                continue
+            rendered = (
+                entry
+                if isinstance(entry, str)
+                else json.dumps(entry, ensure_ascii=False, sort_keys=True, default=str)
+            )
+            if len(rendered) > RESIDENT_WORKING_STATE_MAX_ENTRY_CHARS:
+                errors.append(
+                    f"working_state.{field_name}[{index}] exceeds "
+                    f"{RESIDENT_WORKING_STATE_MAX_ENTRY_CHARS} characters"
+                )
+        if len(entries) > RESIDENT_WORKING_STATE_MAX_ENTRIES:
+            errors.append(
+                f"working_state.{field_name} has {len(entries)} entries; "
+                f"maximum is {RESIDENT_WORKING_STATE_MAX_ENTRIES}"
+            )
+    return errors
+
+
+def resident_working_state_from_outcome(fields: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return a complete model-authored snapshot, or None when absent/invalid."""
+    state = fields.get("working_state")
+    if validate_resident_working_state(state):
+        return None
+    assert isinstance(state, Mapping)
+    return {str(key): value for key, value in state.items() if str(key).strip()}
 
 
 @dataclass(frozen=True)
@@ -182,6 +269,9 @@ class ResidentMemoryPort(Protocol):
     async def recall(self, mandate: str, *, limit: int = 5) -> list[ResidentMemoryEntry]:
         """Return recent relevant resident memory."""
 
+    async def read(self, ref: str) -> ResidentMemoryEntry | None:
+        """Read one exact durable resident record by reference."""
+
     async def write_turn(self, record: ResidentTurnRecord) -> str:
         """Persist one compact turn record and return its reference."""
 
@@ -203,20 +293,28 @@ class ResidentMemoryPort(Protocol):
         question: str,
         reason: str,
         turn: ResidentTurnRecord,
+        case_id: str = "",
+        turn_ref: str = "",
     ) -> str:
         """Persist the latest pending operator question."""
 
-    async def read_operator_needed(self) -> ResidentMemoryEntry | None:
+    async def read_operator_needed(self, case_id: str = "") -> ResidentMemoryEntry | None:
         """Return the latest pending operator question when one exists."""
 
-    async def write_operator_answer(self, answer: str) -> str:
+    async def write_operator_answer(self, answer: str, *, case_id: str = "") -> str:
         """Persist the latest operator answer and mark the pending question answered."""
 
-    async def read_operator_answer(self) -> ResidentMemoryEntry | None:
+    async def read_operator_answer(self, case_id: str = "") -> ResidentMemoryEntry | None:
         """Return the latest operator answer when one exists."""
 
     async def consume_operator_answer(self, answer: ResidentMemoryEntry) -> str:
         """Mark an operator answer as consumed after it has resumed resident work."""
+
+    async def list_operator_needed(self) -> list[ResidentMemoryEntry]:
+        """Return every pending operator question."""
+
+    async def list_operator_answers(self) -> list[ResidentMemoryEntry]:
+        """Return every unconsumed operator answer."""
 
 
 class ResidentPolicyPort(Protocol):
@@ -272,7 +370,7 @@ def selected_action_from_outcome(fields: dict[str, Any]) -> ResidentActionCandid
         )
 
     text = str(raw).strip()
-    if not text:
+    if not text or text.casefold() in {"none", "n/a", "no action", "stop"}:
         return None
     return ResidentActionCandidate(
         title=text[:80],

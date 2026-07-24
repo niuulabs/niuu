@@ -14,6 +14,7 @@ from ravn.cli.commands import _log_effective_config, app
 from ravn.config import Settings
 
 runner = CliRunner()
+_LOG_NAME = "ravn.cli.runtime_config"
 
 
 @pytest.fixture
@@ -29,7 +30,7 @@ class TestStartupEcho:
     def test_log_contains_required_fields(self, caplog):
         """The startup log line must contain persona, llm_alias, thinking, budget, source."""
         settings = Settings()
-        with caplog.at_level(logging.INFO, logger="ravn.cli.commands"):
+        with caplog.at_level(logging.INFO, logger=_LOG_NAME):
             _log_effective_config(settings)
 
         assert len(caplog.records) == 1
@@ -45,7 +46,7 @@ class TestStartupEcho:
         """When RAVN_CONFIG is set, source= shows that path."""
         monkeypatch.setenv("RAVN_CONFIG", "/etc/ravn/config.yaml")
         settings = Settings()
-        with caplog.at_level(logging.INFO, logger="ravn.cli.commands"):
+        with caplog.at_level(logging.INFO, logger=_LOG_NAME):
             _log_effective_config(settings)
 
         assert "source=/etc/ravn/config.yaml" in caplog.records[0].message
@@ -54,7 +55,7 @@ class TestStartupEcho:
     def test_source_defaults_when_no_env(self, caplog):
         """Without RAVN_CONFIG, source=defaults."""
         settings = Settings()
-        with caplog.at_level(logging.INFO, logger="ravn.cli.commands"):
+        with caplog.at_level(logging.INFO, logger=_LOG_NAME):
             _log_effective_config(settings)
 
         assert "source=defaults" in caplog.records[0].message
@@ -64,7 +65,7 @@ class TestStartupEcho:
         """RAVN_PERSONA env var is reflected in the log."""
         monkeypatch.setenv("RAVN_PERSONA", "coordinator")
         settings = Settings()
-        with caplog.at_level(logging.INFO, logger="ravn.cli.commands"):
+        with caplog.at_level(logging.INFO, logger=_LOG_NAME):
             _log_effective_config(settings)
 
         assert "persona=coordinator" in caplog.records[0].message
@@ -73,7 +74,7 @@ class TestStartupEcho:
     def test_default_persona(self, caplog):
         """Without RAVN_PERSONA, persona=default."""
         settings = Settings()
-        with caplog.at_level(logging.INFO, logger="ravn.cli.commands"):
+        with caplog.at_level(logging.INFO, logger=_LOG_NAME):
             _log_effective_config(settings)
 
         assert "persona=default" in caplog.records[0].message
@@ -82,7 +83,7 @@ class TestStartupEcho:
     def test_llm_alias_from_settings(self, caplog):
         """llm_alias reflects the effective model from settings."""
         settings = Settings()
-        with caplog.at_level(logging.INFO, logger="ravn.cli.commands"):
+        with caplog.at_level(logging.INFO, logger=_LOG_NAME):
             _log_effective_config(settings)
 
         expected = settings.effective_model()
@@ -92,7 +93,7 @@ class TestStartupEcho:
     def test_thinking_and_budget_from_settings(self, caplog):
         """thinking and budget reflect extended_thinking config."""
         settings = Settings()
-        with caplog.at_level(logging.INFO, logger="ravn.cli.commands"):
+        with caplog.at_level(logging.INFO, logger=_LOG_NAME):
             _log_effective_config(settings)
 
         msg = caplog.records[0].message
@@ -121,6 +122,19 @@ class TestDaemonCallsConfigEcho:
             runner.invoke(app, ["daemon"])
 
         mock_log.assert_called_once()
+
+    @pytest.mark.usefixtures("_clean_env")
+    def test_daemon_resumes_interrupted_tasks_by_default(self):
+        captured: dict[str, object] = {}
+
+        async def _record_run(_settings, **kwargs):
+            captured.update(kwargs)
+
+        with patch("ravn.cli.commands._run_daemon", side_effect=_record_run):
+            result = runner.invoke(app, ["daemon"])
+
+        assert result.exit_code == 0
+        assert captured["resume"] is True
 
     @pytest.mark.usefixtures("_clean_env")
     def test_listen_emits_config_log(self):

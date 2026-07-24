@@ -200,6 +200,29 @@ class VolundrPort(ABC):
         """Resolve a workflow gate for a running Volundr session."""
         raise NotImplementedError
 
+    async def get_help_requests(
+        self,
+        session_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> list[dict]:
+        """Return peer help requests (agent questions) for a running session."""
+        return []
+
+    async def answer_help_request(
+        self,
+        session_id: str,
+        request_id: str,
+        answer: str,
+        *,
+        source: str = "ting",
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> dict:
+        """Answer a pending peer help request in a running session."""
+        raise NotImplementedError
+
     @abstractmethod
     async def stop_session(
         self,
@@ -279,6 +302,14 @@ class VolundrFactory(Protocol):
 
     async def primary_for_owner(self, owner_id: str) -> VolundrPort | None:
         """Return the primary (first) authenticated adapter, or ``None``."""
+        raise NotImplementedError
+
+    async def for_connection(self, owner_id: str, connection_id: str) -> VolundrPort | None:
+        """Return the owner's adapter for a specific connection id or name.
+
+        Campaign-scoped reads must target the Volundr instance the session
+        was launched on; ``None`` when the connection no longer resolves.
+        """
         raise NotImplementedError
 
     async def for_principal(self, principal: Principal) -> list[VolundrPort]:

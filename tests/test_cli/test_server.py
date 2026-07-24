@@ -364,6 +364,7 @@ class TestRouteDomainSelection:
 
     def test_available_route_domains_lists_known_domains(self) -> None:
         assert available_route_domains() == {
+            "a2a-card-api",
             "admin-api",
             "audit-api",
             "bifrost-api",

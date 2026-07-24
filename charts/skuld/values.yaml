@@ -484,6 +484,10 @@ mimir:
 resident:
   # -- Deploy this release as a resident ravn (broker room mode + ravn sidecar)
   enabled: false
+  # -- Exact collaboration-event redeliveries retained by the room adapter.
+  roomDeliveryDedupeMaxEntries: 4096
+  # -- Stable environment identity shared by the resident Ravn and its room.
+  environmentId: "local"
   # -- Display identity of the resident (e.g. "Muninn"); defaults to persona
   name: ""
   # -- Ravn persona the resident runs as (required when enabled)

@@ -10,3 +10,6 @@ class HttpAuthPort(Protocol):
 
     def headers(self) -> dict[str, str]:
         """Return HTTP headers to merge into an outbound request."""
+
+    def invalidate(self) -> bool:
+        """Discard a refreshable credential after an authentication rejection."""

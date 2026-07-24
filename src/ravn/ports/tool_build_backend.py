@@ -20,6 +20,30 @@ class ToolBuildError(RuntimeError):
     """A commissioned build failed, timed out, or returned an unusable result."""
 
 
+class ToolBuildInputRequiredError(ToolBuildError):
+    """A commissioned build paused for a durable remote input.
+
+    ``continuation`` is an opaque backend-owned envelope.  The build tool
+    persists it and returns the peer's question or gate to the resident.  A
+    later resident turn supplies the operator/model answer with the same
+    envelope so the backend can resume the original remote task.
+    """
+
+    def __init__(
+        self,
+        *,
+        task_id: str,
+        input_kind: str,
+        prompt: str,
+        continuation: dict[str, Any],
+    ) -> None:
+        self.task_id = task_id
+        self.input_kind = input_kind
+        self.prompt = prompt
+        self.continuation = continuation
+        super().__init__(f"A2A task {task_id} requires {input_kind} input: {prompt}")
+
+
 @dataclass(frozen=True)
 class ToolBuildRequest:
     """What a resident wants built, handed to a build backend."""
@@ -37,6 +61,10 @@ class ToolBuildRequest:
     domain: str = ""
     #: The signal/investigation context that motivated the tool.
     signal_context: str = ""
+    #: Stable local operation identifier used to recover a lost remote response.
+    operation_id: str = ""
+    #: Opaque backend-owned state used to resume a durable remote build.
+    continuation: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -59,6 +87,11 @@ class ToolBuildResult:
 
 class ToolBuildBackend(ABC):
     """Produce a learned tool's manifest + code from a build request."""
+
+    @property
+    def supports_restart_recovery(self) -> bool:
+        """Whether repeated builds with the same operation_id resume one task."""
+        return False
 
     @property
     @abstractmethod

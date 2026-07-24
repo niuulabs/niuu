@@ -134,8 +134,8 @@ system_prompt_template: |
   5. **Durability Failed** — You implemented the change but could not create a
      durable commit and push on the shared branch
 
-  When escalating, use `status: help_needed` in your outcome with reason and
-  what you've already tried.
+  When escalating, use `verdict: help_needed` and include one concrete
+  `question`, the reason, what you tried, and your recommended default.
 
   ## Output Format
 
@@ -145,6 +145,10 @@ system_prompt_template: |
   tests_added: [number of tests added]
   summary: |
     [One-line summary of what was done]
+  question: [help_needed only: the concrete question the operator must answer]
+  reason: [help_needed only: why you cannot proceed responsibly]
+  attempted: [help_needed only: steps already tried]
+  recommendation: [help_needed only: your suggested default]
   details: |
     ## Changes
     - **path/to/file.py** — Added X, modified Y
@@ -196,6 +200,22 @@ produces:
     summary:
       type: string
       description: one-line summary of changes
+    question:
+      type: string
+      description: help_needed only — concrete question the operator must answer
+      required: false
+    reason:
+      type: string
+      description: help_needed only — why the task cannot proceed
+      required: false
+    attempted:
+      type: array
+      description: help_needed only — steps already tried
+      required: false
+    recommendation:
+      type: string
+      description: help_needed only — suggested default answer
+      required: false
     details:
       type: string
       description: detailed list of changes made

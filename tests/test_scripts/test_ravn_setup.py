@@ -42,8 +42,6 @@ def test_environment_nats_profile_generates_config(tmp_path: Path) -> None:
     assert "signal_sources:" in config
     assert "signal_subjects:" not in config
     assert "KubernetesSignalAdapter" in config
-    assert "HostSignalAdapter" in config
-    assert "PrinterPiSignalAdapter" in config
     assert "kwargs:" in config
     assert "adapter: nats" in config
     assert "servers:" in config
@@ -56,22 +54,14 @@ def test_environment_nats_profile_generates_config(tmp_path: Path) -> None:
     assert settings.environment.type == "local"
     assert [source.id for source in settings.environment.signal_sources] == [
         "kubernetes-events",
-        "host-events",
-        "printer-telemetry",
-        "operator-events",
     ]
     assert [source.kind for source in settings.environment.signal_sources] == [
         "kubernetes",
-        "host",
-        "printer_telemetry",
-        "host",
     ]
     assert settings.environment.signal_sources[0].adapter == (
         "ravn.adapters.environment_signals.KubernetesSignalAdapter"
     )
     assert settings.environment.signal_sources[0].kwargs["kubeconfig_env"] == "KUBECONFIG"
-    assert settings.environment.signal_sources[2].enabled is False
-    assert settings.environment.signal_sources[2].kwargs == {"moonraker_url_env": "MOONRAKER_URL"}
     assert settings.environment.signal_subjects == []
     assert settings.mesh.adapter == "nats"
     assert settings.mesh.nats.servers == ["nats://localhost:4222"]

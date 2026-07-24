@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from ravn.domain.events import RavnEvent, RavnEventType
 
 # Dependencies are supplied by the CLI compatibility facade immediately before
@@ -346,6 +348,16 @@ def _wire_cascade(
             await drive_loop.cancel(task_id)
             return {"status": "cancelled", "task_id": task_id}
 
+        if msg_type == "directed_message":
+            content = str(message.get("content") or "")
+            metadata = message.get("metadata")
+            if not content.strip():
+                return {"status": "rejected", "error": "empty content"}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            accepted = await drive_loop.handle_directed_message(content, metadata)
+            return {"status": "accepted" if accepted else "rejected"}
+
         if msg_type == "task_result":
             task_id = message.get("task_id", "")
             result = drive_loop.get_result(task_id)
@@ -432,6 +444,14 @@ def _wire_cascade(
 
     # Subscribe to event types this persona consumes
     if mesh is not None and persona_config is not None:
+        from niuu.mesh import resolve_peer_id  # noqa: PLC0415
+        from ravn.workflow_kickoff import WorkflowKickoffAcknowledger  # noqa: PLC0415
+
+        kickoff_acknowledger = WorkflowKickoffAcknowledger(
+            mesh=mesh,
+            peer_id=resolve_peer_id(settings.mesh.own_peer_id),
+            persona=persona_config.name,
+        )
         consumes = getattr(persona_config, "consumes", None)
         event_types = list(getattr(consumes, "event_types", []) if consumes else [])
         workflow_consumer_groups: list[dict[str, Any]] = []
@@ -497,6 +517,8 @@ def _wire_cascade(
             source_persona = payload.get("persona", "")
             source_task_id = event.task_id or event.correlation_id
             root_corr = event.root_correlation_id or event.correlation_id
+            source_event_id = event.event_id or source_task_id
+            cycle_corr = str(payload.get("workflow_parent_event_id") or root_corr)
 
             logger.info(
                 "mesh: received outcome event_type=%s from=%s task_id=%s root=%s",
@@ -505,6 +527,20 @@ def _wire_cascade(
                 source_task_id,
                 root_corr,
             )
+
+            # --- Workflow kickoff handshake ---
+            # Ack the kickoff before any LLM work so Skuld stops redelivering;
+            # a redelivery means our previous ack was lost, so re-ack it but
+            # never enqueue the same kickoff twice.
+            if kickoff_acknowledger.is_kickoff(event):
+                first_delivery = await kickoff_acknowledger.acknowledge(event)
+                if not first_delivery:
+                    logger.info(
+                        "mesh: ignoring redelivered workflow kickoff event_type=%s root=%s",
+                        event_type,
+                        root_corr,
+                    )
+                    return
 
             # --- Producer aggregation ---
             # If the source persona contributes_to a target, check if all
@@ -516,6 +552,7 @@ def _wire_cascade(
                     event_type=event_type,
                     event_payload=payload,
                     root_correlation_id=root_corr,
+                    cycle_correlation_id=cycle_corr,
                 )
                 if agg_result is not None:
                     logger.info(
@@ -570,6 +607,7 @@ def _wire_cascade(
                     consumes_event_types=group_event_types,
                     strategy=group_strategy,
                     consumer_key=group_id,
+                    cycle_correlation_id=cycle_corr,
                 )
 
                 if result is None:
@@ -578,10 +616,16 @@ def _wire_cascade(
 
                 task_id_suffix = (root_corr or "unknown")[:8]
                 safe_group_id = group_id.replace(".", "_").replace("-", "_")
+                stage_context = _workflow_stage_context(settings, node_id=group_id)
+                initiative_context = (
+                    f"{stage_context}\n\n{result.merged_context}"
+                    if stage_context
+                    else result.merged_context
+                )
                 task = AgentTask(
                     task_id=f"event_{safe_group_id}_{task_id_suffix}",
                     title=f"Handle {result.triggered_by}",
-                    initiative_context=result.merged_context,
+                    initiative_context=initiative_context,
                     triggered_by=result.triggered_by,
                     output_mode=OutputMode.SILENT,
                     persona=(
@@ -589,20 +633,28 @@ def _wire_cascade(
                     ),
                     priority=5,
                     root_correlation_id=result.root_correlation_id,
-                    workflow_parent_event_id=source_task_id,
+                    workflow_parent_event_id=source_event_id,
                     workflow_node_id=group_id,
                 )
                 task.session_id = event.session_id or task.session_id
+                task.trace_context = dict(event.trace_context)
 
                 try:
-                    await drive_loop.enqueue(task)
-                    logger.info(
-                        "mesh: enqueued task %s for %s (fan-in: %s group=%s)",
-                        task.task_id,
-                        result.triggered_by,
-                        group_strategy,
-                        group_id,
-                    )
+                    accepted = await drive_loop.enqueue(task)
+                    if accepted:
+                        logger.info(
+                            "mesh: enqueued task %s for %s (fan-in: %s group=%s)",
+                            task.task_id,
+                            result.triggered_by,
+                            group_strategy,
+                            group_id,
+                        )
+                    else:
+                        logger.info(
+                            "mesh: task %s for %s was already queued or active",
+                            task.task_id,
+                            result.triggered_by,
+                        )
                 except Exception as exc:
                     logger.error("mesh: failed to enqueue task for event: %s", exc)
 

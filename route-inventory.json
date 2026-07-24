@@ -1,8 +1,17 @@
 [
   {
+    "name": "a2a-card-api",
+    "prefixes": [
+      "/.well-known/agent-card.json"
+    ],
+    "source": "plugin",
+    "plugin": "ting"
+  },
+  {
     "name": "admin-api",
     "prefixes": [
-      "/api/v1/forge/admin"
+      "/api/v1/forge/admin",
+      "/api/v1/forge/settings"
     ],
     "source": "plugin",
     "plugin": "volundr"
@@ -81,10 +90,17 @@
   {
     "name": "forge-api",
     "prefixes": [
-      "/api/v1/forge/sessions",
-      "/api/v1/forge/chronicles",
-      "/api/v1/forge/stats",
-      "/api/v1/forge/cluster"
+      "/api/v1/forge"
+    ],
+    "source": "plugin",
+    "plugin": "guild"
+  },
+  {
+    "name": "guild-instances-api",
+    "prefixes": [
+      "/api/v1/niuu/instances",
+      "/api/v1/niuu/targets",
+      "/api/v1/niuu/observatory"
     ],
     "source": "plugin",
     "plugin": "guild"
@@ -131,25 +147,37 @@
     "plugin": "mimir"
   },
   {
-    "name": "niuu-api",
+    "name": "niuu-repos-api",
     "prefixes": [
-      "/api/v1/niuu"
+      "/api/v1/niuu/repos"
     ],
     "source": "plugin",
     "plugin": "niuu"
   },
   {
-    "name": "observatory-api",
+    "name": "niuu-shared-api",
     "prefixes": [
-      "/api/v1/observatory"
+      "/api/v1/tokens",
+      "/api/v1/identity",
+      "/api/v1/features",
+      "/api/v1/personas",
+      "/api/v1/ravn/personas"
     ],
     "source": "plugin",
-    "plugin": "observatory"
+    "plugin": "niuu"
   },
   {
     "name": "observatory-agents-api",
     "prefixes": [
       "/api/v1/observatory/agents"
+    ],
+    "source": "plugin",
+    "plugin": "observatory"
+  },
+  {
+    "name": "observatory-api",
+    "prefixes": [
+      "/api/v1/observatory"
     ],
     "source": "plugin",
     "plugin": "observatory"
@@ -190,6 +218,15 @@
     "plugin": "personas"
   },
   {
+    "name": "ravn-aggregate-api",
+    "prefixes": [
+      "/api/v1/ravn/ravens",
+      "/api/v1/ravn/sessions"
+    ],
+    "source": "plugin",
+    "plugin": "guild"
+  },
+  {
     "name": "ravn-api",
     "prefixes": [
       "/api/v1/ravn"
@@ -201,6 +238,14 @@
     "name": "ravn-budget-api",
     "prefixes": [
       "/api/v1/ravn/budget"
+    ],
+    "source": "plugin",
+    "plugin": "ravn"
+  },
+  {
+    "name": "ravn-odin-api",
+    "prefixes": [
+      "/api/v1/ravn/odin"
     ],
     "source": "plugin",
     "plugin": "ravn"
@@ -227,6 +272,14 @@
     "name": "ravn-trigger-api",
     "prefixes": [
       "/api/v1/ravn/triggers"
+    ],
+    "source": "plugin",
+    "plugin": "ravn"
+  },
+  {
+    "name": "ravn-valkyrie-api",
+    "prefixes": [
+      "/api/v1/ravn/valkyrie"
     ],
     "source": "plugin",
     "plugin": "ravn"
@@ -277,6 +330,8 @@
     "name": "skuld-proxy",
     "prefixes": [
       "/s/{session_id}/session",
+      "/s/{ravn_id}/sessions/{session_id}/session",
+      "/s/{session_id}/ws/ravn/{peer_id}",
       "/s/{session_id}/api/{path:path}",
       "/s/{session_id}/health"
     ],
@@ -290,6 +345,22 @@
     ],
     "source": "plugin",
     "plugin": "identity"
+  },
+  {
+    "name": "ting-api",
+    "prefixes": [
+      "/api/v1/ting"
+    ],
+    "source": "plugin",
+    "plugin": "ting"
+  },
+  {
+    "name": "ting-channel-api",
+    "prefixes": [
+      "/api/v1/ting/telegram"
+    ],
+    "source": "plugin",
+    "plugin": "ting"
   },
   {
     "name": "tokens-api",
@@ -319,23 +390,6 @@
     "plugin": "ting"
   },
   {
-    "name": "ting-api",
-    "prefixes": [
-      "/api/v1/ting"
-    ],
-    "source": "plugin",
-    "plugin": "ting"
-  },
-  {
-    "name": "ting-channel-api",
-    "prefixes": [
-      "/api/v1/ting/integrations",
-      "/api/v1/ting/telegram"
-    ],
-    "source": "plugin",
-    "plugin": "ting"
-  },
-  {
     "name": "web-ui",
     "prefixes": [
       "/assets",
@@ -352,7 +406,8 @@
     "prefixes": [
       "/api/v1/ting/flock",
       "/api/v1/ting/flock_flows",
-      "/api/v1/ting/pipelines"
+      "/api/v1/ting/research",
+      "/api/v1/ting/specs"
     ],
     "source": "plugin",
     "plugin": "ting"

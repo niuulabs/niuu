@@ -285,6 +285,19 @@ class TestFluxPodManagerStatus:
 
         assert result == SessionStatus.STARTING
 
+    async def test_status_failed_when_release_vanishes_mid_provisioning(
+        self, pod_manager: FluxPodManager, sample_session: Session, mock_api
+    ):
+        # The release was created (session is PROVISIONING) and is now gone:
+        # Flux remediation uninstalled it after a failed install. STARTING
+        # would spin forever and STOPPED would read as a clean completion.
+        provisioning = sample_session.with_status(SessionStatus.PROVISIONING)
+        mock_api.get_namespaced_custom_object.side_effect = Exception("404 NotFound")
+        with patch.object(pod_manager, "_get_api", return_value=mock_api):
+            result = await pod_manager.status(provisioning)
+
+        assert result == SessionStatus.FAILED
+
 
 class TestFluxPodManagerWaitForReady:
     async def test_wait_returns_immediately_when_running(
@@ -311,6 +324,38 @@ class TestFluxPodManagerWaitForReady:
             },
         }
         with patch.object(pod_manager, "_get_api", return_value=mock_api):
+            result = await pod_manager.wait_for_ready(sample_session, timeout=10)
+
+        assert result == SessionStatus.FAILED
+
+    async def test_wait_fails_fast_when_release_is_deleted(
+        self, pod_manager: FluxPodManager, sample_session: Session, mock_api
+    ):
+        # Flux uninstalling the release mid-provision surfaces as a DELETED
+        # watch event — terminal, no waiting out the timeout.
+        mock_api.get_namespaced_custom_object.return_value = {"status": {}}
+
+        class _FakeWatch:
+            async def stream(self, *args, **kwargs):
+                yield {"type": "DELETED", "object": {"status": {}}}
+
+            def stop(self) -> None:
+                return None
+
+        import sys
+        from types import SimpleNamespace
+
+        fake_watch_module = SimpleNamespace(Watch=_FakeWatch)
+        with (
+            patch.object(pod_manager, "_get_api", return_value=mock_api),
+            patch.dict(
+                sys.modules,
+                {
+                    "kubernetes_asyncio": SimpleNamespace(watch=fake_watch_module),
+                    "kubernetes_asyncio.watch": fake_watch_module,
+                },
+            ),
+        ):
             result = await pod_manager.wait_for_ready(sample_session, timeout=10)
 
         assert result == SessionStatus.FAILED

@@ -6,6 +6,7 @@ import sqlite3
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -532,6 +533,19 @@ class TestWALConcurrency:
 
         result = await adapter.prefetch("any context query")
         assert result == ""
+
+    async def test_zero_prefetch_limit_disables_automatic_episode_query(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        adapter = SqliteMemoryAdapter(
+            path=str(tmp_path / "memory.db"),
+            prefetch_limit=0,
+        )
+        adapter.query_episodes = AsyncMock(side_effect=AssertionError("must not query"))
+
+        assert await adapter.prefetch("a later resident turn") == ""
+        adapter.query_episodes.assert_not_awaited()
 
     async def test_empty_database_search_sessions_returns_empty(self, tmp_path: Path) -> None:
         """Session search on an empty database returns empty list."""

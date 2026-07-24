@@ -603,7 +603,7 @@ class MimirPublishFilesTool(ToolPort):
     def required_permission(self) -> str:
         return _PERMISSION
 
-    def _resolve_workspace_file(self, path: str) -> Path | None:
+    def resolve_workspace_file(self, path: str) -> Path | None:
         """Resolve a markdown artifact path from the session root or checked-out repo root."""
         candidate = Path(path)
         if candidate.is_absolute():
@@ -648,7 +648,7 @@ class MimirPublishFilesTool(ToolPort):
                     content=f"path must end with .md: {path}",
                     is_error=True,
                 )
-            safe_path = self._resolve_workspace_file(path)
+            safe_path = self.resolve_workspace_file(path)
             if safe_path is None:
                 return ToolResult(
                     tool_call_id="",

@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from niuu.domain.outcome import OutcomeField
+from ravn.adapters.personas.loader import PersonaConfig, PersonaProduces
 from ravn.adapters.tools.build_tool import attach_build_tool
 from ravn.agent import RavnAgent, _build_assistant_content
 from ravn.domain.events import RavnEventType
@@ -23,6 +25,7 @@ from ravn.domain.models import (
 )
 from ravn.odin.review import JsonReviewStore, ReviewRequester
 from ravn.ports.llm import LLMPort
+from ravn.prompt_builder import PromptBuilder
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain import registry
 from sleipnir.domain.events import SleipnirEvent
@@ -43,6 +46,7 @@ def make_agent(
     channel: InMemoryChannel | None = None,
     permission=None,
     max_iterations: int = 10,
+    **agent_kwargs,
 ) -> tuple[RavnAgent, InMemoryChannel]:
     ch = channel or InMemoryChannel()
     perm = permission or AllowAllPermission()
@@ -55,6 +59,7 @@ def make_agent(
         model="claude-sonnet-4-6",
         max_tokens=1024,
         max_iterations=max_iterations,
+        **agent_kwargs,
     )
     return agent, ch
 
@@ -116,6 +121,20 @@ class TestRavnAgentSimpleTurn:
         assert agent.session.turn_count == 2
         assert agent.session.total_usage.input_tokens == 20
 
+    async def test_mimir_learnings_are_not_injected_automatically(self) -> None:
+        mimir = AsyncMock()
+        prompt_builder = PromptBuilder()
+        agent, _ = make_agent(
+            make_simple_llm("done"),
+            mimir=mimir,
+            prompt_builder=prompt_builder,
+        )
+
+        await agent.run_turn("judge current evidence")
+
+        mimir.list_pages.assert_not_called()
+        assert "learnings_context" not in prompt_builder.section_texts()
+
 
 class TestRavnAgentToolUse:
     async def test_tool_executed_and_result_fed_back(self) -> None:
@@ -154,6 +173,59 @@ class TestRavnAgentToolUse:
         assert result.tool_calls[0].name == "echo"
         assert len(result.tool_results) == 1
         assert result.tool_results[0].content == "ping"
+
+    async def test_tool_executes_before_draft_outcome_can_finish_turn(self) -> None:
+        tool = EchoTool()
+        tool_call = ToolCall(id="tc1", name="echo", input={"message": "evidence"})
+        draft = "---outcome---\nverdict: watch\n---end---\n"
+        final = "Evidence received.\n---outcome---\nverdict: act\n---end---\n"
+        calls = 0
+
+        async def _stream(*args, **kwargs) -> AsyncIterator[StreamEvent]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                yield StreamEvent(type=StreamEventType.TEXT_DELTA, text=draft)
+                yield StreamEvent(type=StreamEventType.TOOL_CALL, tool_call=tool_call)
+                yield StreamEvent(
+                    type=StreamEventType.MESSAGE_DONE,
+                    usage=TokenUsage(input_tokens=5, output_tokens=2),
+                )
+                return
+            yield StreamEvent(type=StreamEventType.TEXT_DELTA, text=final)
+            yield StreamEvent(
+                type=StreamEventType.MESSAGE_DONE,
+                usage=TokenUsage(input_tokens=8, output_tokens=3),
+            )
+
+        persona = PersonaConfig(
+            name="resident",
+            produces=PersonaProduces(
+                event_type="resident.judged",
+                schema={
+                    "verdict": OutcomeField(
+                        type="string",
+                        description="judgment",
+                        enum_values=["watch", "act"],
+                    )
+                },
+            ),
+        )
+        llm = AsyncMock(spec=LLMPort)
+        llm.stream = _stream
+        agent, _ = make_agent(
+            llm,
+            tools=[tool],
+            persona_config=persona,
+            stop_on_outcome=True,
+        )
+
+        result = await agent.run_turn("judge this signal")
+
+        assert calls == 2
+        assert result.response == final
+        assert [call.name for call in result.tool_calls] == ["echo"]
+        assert result.tool_results[0].content == "evidence"
 
     async def test_build_tool_commissions_via_build_backend_and_installs(self, tmp_path) -> None:
         """A build_request with no inline code is developed by the build backend,
@@ -237,6 +309,95 @@ class TestRavnAgentToolUse:
         assert persisted["test_code"].startswith("def test_run")
         assert persisted["requirements"] == []
         assert persisted["provenance"]["build_evidence"] == {"retrieval": "canonical_file"}
+
+    async def test_build_tool_reuses_persisted_commission_after_restart(self, tmp_path) -> None:
+        from ravn.ports.tool_build_backend import (
+            ToolBuildBackend,
+            ToolBuildError,
+            ToolBuildRequest,
+            ToolBuildResult,
+        )
+
+        class _Backend(ToolBuildBackend):
+            def __init__(self, *, interrupted: bool) -> None:
+                self.interrupted = interrupted
+                self.requests: list[ToolBuildRequest] = []
+
+            @property
+            def name(self) -> str:
+                return "recoverable"
+
+            @property
+            def supports_restart_recovery(self) -> bool:
+                return True
+
+            async def build(self, request: ToolBuildRequest) -> ToolBuildResult:
+                self.requests.append(request)
+                if self.interrupted:
+                    raise ToolBuildError("connection closed before task response")
+                return ToolBuildResult(
+                    manifest={
+                        "name": "restart_probe",
+                        "description": "Recovered build.",
+                        "input_schema": {"type": "object"},
+                        "required_permission": "probe:read",
+                        "declared_reach": [{"kind": "pure_compute", "access": "none"}],
+                        "entry_point": "run",
+                    },
+                    tool_code="def run(input):\n    return {'recovered': True}\n",
+                    test_code=(
+                        "def test_run():\n"
+                        "    import restart_probe\n"
+                        "    assert restart_probe.run({})['recovered'] is True\n"
+                        "\n"
+                        "test_run()\n"
+                    ),
+                )
+
+        build_input = {
+            "manifest": {"name": "restart_probe", "required_permission": "probe:read"},
+            "build_request": "Build a reusable read-only probe.",
+            "canary_input": {},
+        }
+        artifacts_dir = tmp_path / "artifacts"
+
+        interrupted = _Backend(interrupted=True)
+        first_agent, _ = make_agent(make_simple_llm("unused"))
+        first_tool = attach_build_tool(
+            first_agent,
+            tools_dir=tmp_path / "tools",
+            artifacts_dir=artifacts_dir,
+            build_backend=interrupted,
+            environment_id="cluster-a",
+            valkyrie_id="resident-a",
+        )
+
+        first_result = await first_tool.execute(build_input)
+
+        assert first_result.is_error
+        operation_id = interrupted.requests[0].operation_id
+        pending = list((artifacts_dir / "pending-commissions").glob("*.json"))
+        assert len(pending) == 1
+        assert json.loads(pending[0].read_text())["state"] == "submitting"
+
+        recovered = _Backend(interrupted=False)
+        second_agent, _ = make_agent(make_simple_llm("unused"))
+        second_tool = attach_build_tool(
+            second_agent,
+            tools_dir=tmp_path / "tools",
+            artifacts_dir=artifacts_dir,
+            build_backend=recovered,
+            environment_id="cluster-a",
+            valkyrie_id="resident-a",
+        )
+
+        recovered_results = await second_tool.recover_pending()
+
+        assert len(recovered_results) == 1
+        second_result = recovered_results[0]
+        assert not second_result.is_error
+        assert recovered.requests[0].operation_id == operation_id
+        assert list((artifacts_dir / "pending-commissions").glob("*.json")) == []
 
     async def test_build_tool_rejects_build_request_without_backend(self, tmp_path) -> None:
         agent, _ = make_agent(make_simple_llm("unused"))

@@ -255,15 +255,16 @@ async def test_domain_drive_persona_runs_tools_and_produces_observed_outcome(
 
 
 @pytest.mark.asyncio
-async def test_domain_drive_defers_initial_ask_user_until_after_inspection(
+async def test_domain_drive_allows_model_selected_operator_question(
     tmp_path: Path,
 ) -> None:
     _seed_workspace(tmp_path)
     persona = FilesystemPersonaAdapter().load("domain-drive")
     assert persona is not None
 
-    async def _unexpected_user_input(question: str) -> str:
-        raise AssertionError(f"ask_user should have been deferred: {question}")
+    async def _operator_input(question: str) -> str:
+        assert question == "What should I focus on?"
+        return "Focus on the product catalog."
 
     llm = RecordingLLM(
         [
@@ -276,7 +277,7 @@ async def test_domain_drive_defers_initial_ask_user_until_after_inspection(
                 ),
             ),
             _tool_response(
-                "I will inspect the workspace first.",
+                "I will inspect the workspace with that intent.",
                 ToolCall(
                     id="tc-glob-after-defer",
                     name="glob_search",
@@ -304,7 +305,7 @@ async def test_domain_drive_defers_initial_ask_user_until_after_inspection(
         model="claude-sonnet-4-6",
         max_tokens=4096,
         max_iterations=persona.iteration_budget,
-        user_input_fn=_unexpected_user_input,
+        user_input_fn=_operator_input,
         persona_config=persona,
         stop_on_outcome=persona.stop_on_outcome,
     )
@@ -312,8 +313,8 @@ async def test_domain_drive_defers_initial_ask_user_until_after_inspection(
     result = await agent.run_turn(KANUCK_MANDATE)
 
     tool_results = [event for event in channel.events if event.type == RavnEventType.TOOL_RESULT]
-    assert "ask_user deferred" in tool_results[0].payload["result"]
-    assert tool_results[0].payload["is_error"] is True
+    assert tool_results[0].payload["result"] == "Focus on the product catalog."
+    assert tool_results[0].payload["is_error"] is False
     assert tool_results[1].payload["tool_name"] == "glob_search"
     assert "catalog/models.md" in tool_results[1].payload["result"]
     assert tool_results[2].payload["tool_name"] == "read_file"
@@ -322,7 +323,7 @@ async def test_domain_drive_defers_initial_ask_user_until_after_inspection(
 
 
 @pytest.mark.asyncio
-async def test_domain_drive_defers_initial_non_discovery_tool(
+async def test_domain_drive_does_not_enforce_tool_order(
     tmp_path: Path,
 ) -> None:
     _seed_workspace(tmp_path)
@@ -340,7 +341,7 @@ async def test_domain_drive_defers_initial_non_discovery_tool(
                 ),
             ),
             _tool_response(
-                "The runtime told me to discover the workspace first.",
+                "I will now broaden the workspace search.",
                 ToolCall(
                     id="tc-glob-after-defer",
                     name="glob_search",
@@ -390,8 +391,9 @@ async def test_domain_drive_defers_initial_non_discovery_tool(
     result = await agent.run_turn(KANUCK_MANDATE)
 
     tool_results = [event for event in channel.events if event.type == RavnEventType.TOOL_RESULT]
-    assert "tool deferred" in tool_results[0].payload["result"]
-    assert tool_results[0].payload["is_error"] is True
+    assert tool_results[0].payload["tool_name"] == "read_file"
+    assert "Forest barricade STL" in tool_results[0].payload["result"]
+    assert tool_results[0].payload["is_error"] is False
     assert tool_results[1].payload["tool_name"] == "glob_search"
     assert "catalog/models.md" in tool_results[1].payload["result"]
     assert tool_results[2].payload["tool_name"] == "read_file"
@@ -401,7 +403,7 @@ async def test_domain_drive_defers_initial_non_discovery_tool(
 
 
 @pytest.mark.asyncio
-async def test_domain_drive_rejects_shallow_outcome_after_listing_only(
+async def test_domain_drive_runtime_accepts_model_judgment_without_recipe(
     tmp_path: Path,
 ) -> None:
     _seed_workspace(tmp_path)
@@ -462,12 +464,8 @@ async def test_domain_drive_rejects_shallow_outcome_after_listing_only(
     result = await agent.run_turn(KANUCK_MANDATE)
 
     tool_starts = [event for event in channel.events if event.type == RavnEventType.TOOL_START]
-    assert [event.payload["tool_name"] for event in tool_starts] == [
-        "glob_search",
-        "read_file",
-        "write_file",
-    ]
-    assert len(llm.calls) == 5
-    assert "domain-drive response rejected" in repr(llm.calls[2]["messages"])
-    assert (tmp_path / "resident-domain-map.md").exists()
+    assert [event.payload["tool_name"] for event in tool_starts] == ["glob_search"]
+    assert len(llm.calls) == 2
+    assert "domain-drive response rejected" not in repr(llm.calls[-1]["messages"])
+    assert not (tmp_path / "resident-domain-map.md").exists()
     assert "verdict: oriented" in result.response

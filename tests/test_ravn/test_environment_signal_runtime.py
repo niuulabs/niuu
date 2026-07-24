@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from mimir.adapters.markdown import MarkdownMimirAdapter
 from ravn.cli.commands import _build_environment_signal_runtime
 from ravn.config import (
     CapabilitySourceConfig,
@@ -23,7 +22,7 @@ from ravn.ports.capability import (
     WorkflowLaunchRequest,
     WorkflowLaunchResult,
 )
-from ravn.resident_inbox import MimirResidentInbox
+from ravn.resident_inbox import LocalResidentInbox
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain.events import SleipnirEvent
 
@@ -44,8 +43,8 @@ def _settings() -> Settings:
                 SignalSourceConfig(
                     id="host-events",
                     name="Host Events",
-                    kind="host",
-                    adapter="ravn.adapters.environment_signals.HostSignalAdapter",
+                    kind="generic",
+                    adapter="ravn.adapters.environment_signals.GenericSignalAdapter",
                     kwargs={
                         "raw_items": [
                             {
@@ -115,6 +114,35 @@ def test_build_runtime_environment_reuses_configured_flocks_and_sources() -> Non
     assert [source.id for source in environment.signal_sources] == ["host-events"]
 
 
+def test_build_runtime_environment_does_not_interpret_environment_type() -> None:
+    settings = Settings(
+        environment={
+            "id": "cell-7",
+            "type": "vendor.example/cnc-v9",
+            "topology": {
+                "node_id": "machine:cell-7",
+                "type_id": "printer",
+                "parent_id": "room:workshop",
+                "realm_id": "factory",
+                "zone": "west",
+            },
+        }
+    )
+
+    environment = build_runtime_environment(settings)
+
+    assert environment.type == "vendor.example/cnc-v9"
+    assert environment.topology.model_dump() == {
+        "node_id": "machine:cell-7",
+        "type_id": "printer",
+        "parent_id": "room:workshop",
+        "realm_id": "factory",
+        "cluster_id": "",
+        "host_id": "",
+        "zone": "west",
+    }
+
+
 @pytest.mark.asyncio
 async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
     bus = InProcessBus()
@@ -136,7 +164,7 @@ async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
 
     assert first_count == 1
     assert second_count == 0
-    assert [event.event_type for event in received] == ["signal.host.event"]
+    assert [event.event_type for event in received] == ["signal.received"]
     assert received[0].payload["environment_id"] == "host-jozef"
     assert [event.event_type for event in telemetry] == [
         "valkyrie.signal_poll.completed",
@@ -163,24 +191,27 @@ async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
     assert telemetry[1].payload["published_count"] == 0
     assert telemetry[1].payload["enqueued_task_count"] == 0
     assert len(enqueued) == 1
-    assert enqueued[0].triggered_by == "signal:signal.host.event"
+    assert enqueued[0].triggered_by == "signal:signal.received"
     assert enqueued[0].root_correlation_id == received[0].correlation_id
     # The prompt is structured markdown: a heading, sections, fenced payload +
     # outcome schema. Assert the durable contract, not exact prose.
     context = enqueued[0].initiative_context
-    assert context.startswith("# Signal investigation")
+    assert context.startswith("# Environment signal")
+    assert "not a predetermined conclusion or action" in context
     assert "**Valkyrie:** Sigrun" in context
     assert "**Peer id:** `valkyrie-host-jozef`" in context
     assert "Quietly skeptical and evidence-first" in context
-    assert "skill_list" in context and "skill_run" in context
+    assert "`capability_list`" in context
     assert "`build_tool`" in context
-    assert "use the newly registered tool" in context
+    assert "options, not a prescribed route" in context
+    assert "decision: watch" not in context
+    assert "operational_state: watching" not in context
     assert "## Required outcome" in context
     assert "```json" in context  # the signal payload is a fenced code block
     assert "---outcome---" in context and "---end---" in context  # response contract
-    assert "environment_id: host-jozef" in context
-    assert "valkyrie_id: valkyrie-host-jozef" in context
-    assert "correlation_ids:" in context
+    assert "environment_id: host-jozef" not in context
+    assert "valkyrie_id: valkyrie-host-jozef" not in context
+    assert "correlation_ids:" not in context
 
 
 @pytest.mark.asyncio
@@ -212,14 +243,48 @@ async def test_runtime_runs_resident_learning_before_enqueueing_signal_task() ->
 
     assert count == 1
     assert len(processed) == 1
-    assert processed[0].event_type == "signal.host.event"
+    assert processed[0].event_type == "signal.received"
     assert len(enqueued) == 1
     context = enqueued[0].initiative_context
-    assert "## Resident learning" in context
-    assert "Use the adopted skill context before proposing new tooling" in context
-    assert "**Skill:** `valkyrie-inspect-host-host-disk-pressure`" in context
+    assert "## Capability lookup hints" in context
+    assert "cheap catalog hint, not a prior judgment" in context
+    assert '"skillName": "valkyrie-inspect-host-host-disk-pressure"' in context
     assert telemetry[0].payload["resident_learning_checked_count"] == 1
     assert telemetry[0].payload["resident_learning_used_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_durable_home_holds_routine_signals_but_keeps_urgent_wakes() -> None:
+    settings = _settings()
+    settings.environment.signal_sources[0].kwargs["raw_items"][0]["severity"] = "info"
+    bus = InProcessBus()
+    enqueued: list[AgentTask] = []
+
+    async def persisted(_event: SleipnirEvent) -> dict:
+        return {"residentAutonomySignalRef": "resident/inbox/signals/info.md"}
+
+    routine = EnvironmentSignalRuntime(
+        settings=settings,
+        publisher=bus,
+        enqueue=lambda task: _enqueue(enqueued, task),
+        resident_signal_processor=persisted,
+        durable_home_enabled=True,
+    )
+    await routine.collect_once()
+    assert enqueued == []
+    assert routine._untriaged == []
+
+    urgent_settings = _settings()
+    urgent = EnvironmentSignalRuntime(
+        settings=urgent_settings,
+        publisher=bus,
+        enqueue=lambda task: _enqueue(enqueued, task),
+        resident_signal_processor=persisted,
+        durable_home_enabled=True,
+    )
+    await urgent.collect_once()
+    assert len(enqueued) == 1
+    assert enqueued[0].resident_inbox_refs == ["resident/inbox/signals/info.md"]
 
 
 @pytest.mark.asyncio
@@ -227,27 +292,25 @@ async def test_daemon_environment_signal_is_recorded_into_resident_inbox(
     tmp_path,
 ) -> None:
     settings = _settings()
-    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    settings.state_dir = str(tmp_path / "state")
+    settings.resident_inbox.environment_signals_enabled = True
     bus = InProcessBus()
     runtime = _build_environment_signal_runtime(
         settings,
         publisher=bus,
-        mimir=mimir,
         owns_publisher=False,
     )
 
     assert runtime is not None
     count = await runtime.collect_once()
-    source = MimirResidentInbox(mimir)
+    source = LocalResidentInbox(tmp_path / "state" / "resident-inbox")
     rows = await source.list_signals(status="", limit=5)
-    pages = await mimir.list_pages(prefix="resident/inbox/signals")
 
     assert count == 1
-    assert len(pages) == 1
     assert len(rows) == 1
     _path, signal = rows[0]
     assert signal.source == "host-events"
-    assert signal.kind == "signal.host.event"
+    assert signal.kind == "signal.received"
     assert "Disk usage crossed 95%" in signal.summary
 
 
@@ -256,13 +319,13 @@ async def test_daemon_environment_signal_recording_notifies_wakefulness(
     tmp_path,
 ) -> None:
     settings = _settings()
-    mimir = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    settings.state_dir = str(tmp_path / "state")
+    settings.resident_inbox.environment_signals_enabled = True
     bus = InProcessBus()
     wakefulness = WakefulnessProbe()
     runtime = _build_environment_signal_runtime(
         settings,
         publisher=bus,
-        mimir=mimir,
         resident_wakefulness=wakefulness,
         owns_publisher=False,
     )
@@ -337,14 +400,14 @@ async def test_resident_learning_failure_is_published_and_recovered() -> None:
 
 
 @pytest.mark.asyncio
-async def test_defer_to_investigation_appends_the_build_mandate() -> None:
+async def test_capability_lookup_miss_is_only_a_hint_not_a_build_mandate() -> None:
     bus = InProcessBus()
     enqueued: list[AgentTask] = []
 
     async def _resident_process(event: SleipnirEvent) -> dict:
         return {
             "usedAdoptedLearning": False,
-            "decision": "defer_to_investigation_with_build_tool",
+            "decision": "capability_lookup_miss",
             "capabilityName": "inspect.host.host.disk-pressure",
             "skillName": "",
         }
@@ -360,13 +423,11 @@ async def test_defer_to_investigation_appends_the_build_mandate() -> None:
 
     assert len(enqueued) == 1
     context = enqueued[0].initiative_context
-    # The capability-gap mandate is the prompt's closing directive.
-    assert "## Resident learning" in context
-    assert "## Required before you finish" in context
-    assert "`inspect.host.host.disk-pressure`" in context
-    assert "If no suitable capability exists, use `build_tool`" in context
-    # It lands after the outcome schema so the model weights it.
-    assert context.index("## Required before you finish") > context.index("---end---")
+    assert "## Capability lookup hints" in context
+    assert '"capabilityName": "inspect.host.host.disk-pressure"' in context
+    assert "not a prior judgment" in context
+    assert "## Required before you finish" not in context
+    assert "Only if no suitable capability exists" not in context
 
 
 @pytest.mark.asyncio
@@ -393,7 +454,7 @@ async def test_runtime_start_publishes_configuration_telemetry() -> None:
         "Quietly skeptical and evidence-first; escalate only with crisp context."
     )
     assert payload["source_count"] == 1
-    assert payload["sources"] == [{"id": "host-events", "signal_type": "host"}]
+    assert payload["sources"] == [{"id": "host-events", "signal_type": "generic"}]
     assert payload["poll_interval_seconds"] == 0.01
     assert payload["signal_task_severities"] == ["warning", "critical"]
     assert payload["drive_loop_enabled"] is False
@@ -451,15 +512,55 @@ async def test_below_threshold_signals_accumulate_for_idle_triage() -> None:
     assert enqueued == []
     task = runtime._triage_task(runtime._untriaged)
     assert task.triggered_by == "signal:idle_triage"
-    assert task.title == "Idle triage: 1 routine signal(s)"
+    assert task.title == "Signal window: 1 observation(s)"
     context = task.initiative_context
-    assert "# Idle triage" in context
-    assert "signal_task_severities" in context
+    assert "# Signals since your last look" in context
+    assert "without a predetermined interpretation" in context
+    assert "signal_task_severities" not in context
     assert "**critical**: 1" in context
-    assert "## Sample signals" in context
+    assert "## Observed signals" in context
     assert "(critical, host-events)" in context
     assert "---outcome---" in context and "---end---" in context
-    assert "operational_state: watching" in context
+    assert "decision: watch" not in context
+    assert "operational_state: watching" not in context
+    assert "decision: <ignore | watch | investigate" in context
+    assert "selected_next_action: <one concrete next step, or none>" in context
+    assert "continuation: <ask_operator | sleep | stop>" in context
+    assert "next_action_timing: <external_event | scheduled_time" in context
+
+
+def test_idle_triage_prompt_is_bounded_regardless_of_batch_size() -> None:
+    """NIU-1118: a huge signal batch must render a bounded triage prompt."""
+    settings = _settings()
+    settings.environment.idle_triage_sample_signals = 4
+    settings.environment.idle_triage_sample_summary_max_chars = 40
+    settings.environment.idle_triage_max_signal_refs = 6
+    runtime = EnvironmentSignalRuntime(settings=settings, publisher=InProcessBus())
+    long_summary = "very long signal summary " * 50
+    batch = [
+        {
+            "signal_ref": f"sig-{index}",
+            "signal_type": "generic",
+            "severity": "info",
+            "source_id": "host-events",
+            "summary": long_summary,
+        }
+        for index in range(40)
+    ]
+
+    task = runtime._triage_task(batch)
+    context = task.initiative_context
+
+    assert task.title == "Signal window: 40 observation(s)"
+    # Sample lines are capped and each summary is truncated, never verbatim.
+    assert long_summary not in context
+    assert context.count("(info, host-events)") == 4
+    assert "…and 36 more signal(s) not shown" in context
+    # The outcome template lists a bounded number of refs.
+    assert "  - sig-5" in context
+    assert "  - sig-6" not in context
+    # The severity breakdown still summarizes the whole batch.
+    assert "**info**: 40" in context
 
 
 @pytest.mark.asyncio
@@ -499,14 +600,14 @@ def test_untriaged_buffer_is_capped() -> None:
         runtime._untriaged.append(
             {
                 "signal_ref": f"sig-{index}",
-                "signal_type": "host",
+                "signal_type": "generic",
                 "severity": "info",
                 "source_id": "host-events",
                 "summary": f"signal {index}",
             }
         )
     event = SleipnirEvent(
-        event_type="signal.host.event",
+        event_type="signal.received",
         source="test",
         payload={},
         summary="s",

@@ -244,6 +244,9 @@ def _build_tls_context(
     tls_insecure_skip_verify: bool = False,
 ) -> ssl.SSLContext | None:
     """Build an SSL context for NATS TLS, or return None when TLS files are unset."""
+    tls_ca_file = str(Path(tls_ca_file).expanduser()) if tls_ca_file else ""
+    tls_cert_file = str(Path(tls_cert_file).expanduser()) if tls_cert_file else ""
+    tls_key_file = str(Path(tls_key_file).expanduser()) if tls_key_file else ""
     if (
         not tls_ca_file
         and not tls_ca_pem
@@ -315,7 +318,7 @@ def _connect_options(
     if token:
         options["token"] = token
     if nkeys_seed_file:
-        options["nkeys_seed"] = nkeys_seed_file
+        options["nkeys_seed"] = str(Path(nkeys_seed_file).expanduser())
     elif nkeys_seed:
         options["nkeys_seed_str"] = nkeys_seed
     return options
@@ -1411,3 +1414,14 @@ class NatsBridgeAdapter(SleipnirPublisher, SleipnirSubscriber):
         local_sub = await self._local_sub.subscribe(event_types, _dedup_handler)
         nats_sub = await self._nats_sub.subscribe(event_types, _dedup_handler)
         return _BridgeSubscription(local_sub, nats_sub)
+
+
+# ---------------------------------------------------------------------------
+# Public connection helpers
+# ---------------------------------------------------------------------------
+
+#: Public aliases so other packages (e.g. Ravn signal transports) reuse the
+#: same proxy-aware connect path and TLS/auth option handling instead of
+#: duplicating them per adapter.
+connect_nats = _connect_nats
+build_connect_options = _connect_options

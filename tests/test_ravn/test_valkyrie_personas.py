@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from niuu.domain.outcome import OutcomeSchema, parse_outcome_block
 from ravn.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter, PersonaConfig
+from ravn.agent import _parse_outcome_block_for_persona
 from ravn.api.personas import create_personas_router
 from ravn.domain.events import RavnEvent, RavnEventType
 from sleipnir.domain import registry
@@ -29,18 +30,6 @@ RESIDENT_VALKYRIES = {
         "signal": registry.SIGNAL_KUBERNETES_EVENT,
         "action": "k8s.inspect_pod",
         "state": "investigating",
-    },
-    "inbox-host-valkyrie": {
-        "environment_type": "host",
-        "signal": registry.SIGNAL_INBOX_MESSAGE,
-        "action": "inbox.draft_reply",
-        "state": "drafting",
-    },
-    "printer-pi-valkyrie": {
-        "environment_type": "printer_pi",
-        "signal": registry.SIGNAL_PRINTER_EVENT,
-        "action": "printer.inspect_material",
-        "state": "needs_material",
     },
 }
 
@@ -153,12 +142,90 @@ def test_resident_valkyrie_contracts_load_and_inject_outcome(name: str) -> None:
     assert persona.produces.schema["evidence"].type == "array"
     assert persona.produces.schema["correlation_ids"].type == "object"
     assert "---outcome---" in persona.system_prompt_template
+    assert "\nenvironment_id:" not in persona.system_prompt_template
+    assert "\nenvironment_type:" not in persona.system_prompt_template
+    assert "\nvalkyrie_id:" not in persona.system_prompt_template
+    assert "\ncorrelation_ids:" not in persona.system_prompt_template
     assert "Environment binding" in persona.system_prompt_template
     assert "ODIN/court" in persona.system_prompt_template
     assert "Flock/NATS mesh" in persona.system_prompt_template
     assert spec["action"] in persona.system_prompt_template
     assert "ravn" in persona.allowed_tools
     assert "workflow" in persona.allowed_tools
+    assert "web" in persona.allowed_tools
+    assert "todo_read" in persona.allowed_tools
+    assert "todo_write" in persona.allowed_tools
+    assert "cron_create" in persona.allowed_tools
+    assert "cron_list" in persona.allowed_tools
+    assert "cron_delete" in persona.allowed_tools
+    assert "build_tool" in persona.allowed_tools
+
+
+def test_ivaldi_model_contract_excludes_runtime_owned_event_envelope() -> None:
+    persona = _load("ivaldi")
+    prompt = persona.system_prompt_template
+
+    assert "\nenvironment_id:" not in prompt
+    assert "\nenvironment_type:" not in prompt
+    assert "\nvalkyrie_id:" not in prompt
+    assert "\ncorrelation_ids:" not in prompt
+
+    response = """---outcome---
+decision: watch
+operational_state: watching
+wakefulness: wakeful
+tier: silent
+action_authority: autonomous
+action_capability: none
+signal_refs: [evt-real]
+rationale: One observation is insufficient to infer a stable pattern.
+evidence: [{event_id: evt-real}]
+target_surfaces: []
+expires_at: ""
+dissent_refs: []
+recommended_action: Observe another event.
+selected_next_action: Observe another event.
+continuation: sleep
+next_action_timing: external_event
+question: ""
+open_questions: []
+confidence: 0.5
+evidence_summary: One observation.
+state_summary: Watching for repetition.
+learned_pattern: none
+capability_gap: none
+tool_evolution_plan: none
+working_state:
+  observations: ["evt-real: one observation"]
+  hypotheses: []
+  unknowns: ["whether the observation repeats"]
+  capability_gaps: []
+  attempts: []
+---end---"""
+
+    parsed = _parse_outcome_block_for_persona(response, persona)
+
+    assert parsed is not None
+    assert parsed.valid is True
+    assert "environment_type" not in parsed.fields
+
+
+def test_ivaldi_can_investigate_and_work_in_its_configured_environment() -> None:
+    persona = _load("ivaldi")
+
+    assert "build_tool" in persona.allowed_tools
+    assert {"a2a_task", "workflow", "web"}.issubset(persona.allowed_tools)
+    assert {
+        "file",
+        "terminal",
+        "todo_read",
+        "todo_write",
+        "volundr",
+    }.issubset(persona.allowed_tools)
+    assert persona.forbidden_tools == []
+    assert persona.iteration_budget == 80
+    assert persona.stop_on_outcome is False
+    assert "Uncertainty is work to assess, not a reason to stop" in persona.system_prompt_template
 
 
 @pytest.mark.parametrize("name", sorted(RESIDENT_VALKYRIES))
@@ -288,8 +355,6 @@ async def test_valkyrie_outcomes_publish_over_existing_mesh_path() -> None:
 
     for name, decision in [
         ("k8s-valkyrie", "propose_action"),
-        ("inbox-host-valkyrie", "escalate"),
-        ("printer-pi-valkyrie", "watch"),
     ]:
         persona = _load(name)
         event_type = _event_type_for_decision(persona, decision)
@@ -321,9 +386,6 @@ async def test_valkyrie_outcomes_publish_over_existing_mesh_path() -> None:
             topic=event_type,
         )
 
-    assert [event.payload["persona"] for event in received_judgments] == [
-        "inbox-host-valkyrie",
-        "printer-pi-valkyrie",
-    ]
+    assert [event.payload["persona"] for event in received_judgments] == []
     assert [event.payload["persona"] for event in received_actions] == ["k8s-valkyrie"]
     assert received_actions[0].payload["outcome"]["action_capability"] == "k8s.inspect_pod"

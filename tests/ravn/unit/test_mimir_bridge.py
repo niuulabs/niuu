@@ -69,6 +69,12 @@ type: topic
 """
 
 
+@pytest.fixture(autouse=True)
+def _use_bridge_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These bridge tests exercise RAVN_MIMIR_PATH, not a daemon config."""
+    monkeypatch.delenv("RAVN_CONFIG", raising=False)
+
+
 @pytest.fixture()
 def mimir_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root = tmp_path / "mimir"

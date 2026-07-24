@@ -32,6 +32,7 @@ from volundr.adapters.inbound.rest import (
 from volundr.config import LocalMountsConfig
 from volundr.domain.models import GitProviderType, GitSource, RepoInfo, Session, SessionStatus
 from volundr.domain.services import RepoService, SessionService, StatsService
+from volundr.domain.services.session import SessionAccessDeniedError
 
 _SIGNING_KEY = "test-only-signing-key-32-bytes-long!"
 
@@ -1439,6 +1440,180 @@ class TestWorkflowGateProxy:
 
         assert response.status_code == 503
         assert response.json()["detail"] == "Session archive service not available"
+
+
+class TestHelpRequestProxy:
+    """Peer help requests (agent questions) proxy to the session pod."""
+
+    @pytest.mark.asyncio
+    async def test_get_help_requests_proxies_to_session_pod(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            f"file:///tmp/{session.id}",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+
+        request = httpx.Request("GET", f"http://localhost:8080/s/{session.id}/api/help/requests")
+        payload = {
+            "requests": [
+                {
+                    "id": "help-1",
+                    "status": "pending",
+                    "persona": "specification-framer",
+                    "summary": "Which namespaces are in scope?",
+                }
+            ]
+        }
+
+        with patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = httpx.Response(200, json=payload, request=request)
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.get(f"/api/v1/forge/sessions/{session.id}/help/requests")
+
+        assert response.status_code == 200
+        assert response.json() == payload
+        proxied_url = str(mock_client.get.call_args.args[0])
+        assert proxied_url.endswith("/api/help/requests")
+
+    @pytest.mark.asyncio
+    async def test_get_help_requests_unknown_session_404s(self, client: TestClient) -> None:
+        response = client.get(
+            "/api/v1/forge/sessions/00000000-0000-0000-0000-000000000000/help/requests"
+        )
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_get_help_requests_enforces_session_access(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        session = await service.create_session(
+            "private",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        with patch.object(
+            service,
+            "_check_access",
+            new=AsyncMock(side_effect=SessionAccessDeniedError(session.id, "other-user")),
+        ):
+            response = client.get(f"/api/v1/forge/sessions/{session.id}/help/requests")
+
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_answer_help_request_proxies_post(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            f"file:///tmp/{session.id}",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+
+        request = httpx.Request(
+            "POST", f"http://localhost:8080/s/{session.id}/api/help/requests/help-1/answer"
+        )
+
+        with (
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(
+                    return_value=Principal(
+                        user_id="dev-user",
+                        email="dev@example.com",
+                        tenant_id="default",
+                        roles=[],
+                    )
+                ),
+            ),
+            patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.return_value = httpx.Response(
+                200,
+                json={"status": "answered", "message_id": "msg-1"},
+                request=request,
+            )
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/help/requests/help-1/answer",
+                json={"answer": "All namespaces, read-only.", "source": "a2a"},
+            )
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "answered", "message_id": "msg-1"}
+        assert mock_client.post.call_args.kwargs["json"] == {
+            "answer": "All namespaces, read-only.",
+            "source": "a2a",
+        }
+
+    @pytest.mark.asyncio
+    async def test_answer_help_request_unreachable_pod_409s(
+        self,
+        client: TestClient,
+        service: SessionService,
+    ) -> None:
+        session = await service.create_session(
+            "test",
+            "claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+        )
+        session = session.with_endpoints(
+            f"ws://localhost:8080/s/{session.id}/session",
+            f"file:///tmp/{session.id}",
+        ).with_status(SessionStatus.RUNNING)
+        await service._repository.update(session)
+
+        request = httpx.Request(
+            "POST", f"http://localhost:8080/s/{session.id}/api/help/requests/help-1/answer"
+        )
+
+        with (
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(
+                    return_value=Principal(
+                        user_id="dev-user",
+                        email="dev@example.com",
+                        tenant_id="default",
+                        roles=[],
+                    )
+                ),
+            ),
+            patch("volundr.adapters.inbound.rest.httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.post.side_effect = httpx.ConnectError("refused", request=request)
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/help/requests/help-1/answer",
+                json={"answer": "answer", "source": "a2a"},
+            )
+
+        assert response.status_code == 409
+        assert "not answered" in response.json()["detail"].lower()
 
 
 class TestFeatureFlags:

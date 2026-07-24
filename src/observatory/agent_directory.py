@@ -283,6 +283,7 @@ class AgentDirectoryService:
             signatureKeyIds=list(card.signature_key_ids),
             signatureKeyFingerprints=list(card.signature_key_fingerprints),
             skillIds=list(card.skills),
+            skills=list(card.skill_details),
             tags=list(card.tags),
             defaultInputModes=list(card.default_input_modes),
             defaultOutputModes=list(card.default_output_modes),

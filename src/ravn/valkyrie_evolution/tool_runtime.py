@@ -45,10 +45,9 @@ TOOL_VENV_REQUIREMENTS_STAMP = ".requirements.txt"
 #: failure mode), proven by test to keep secrets out of the child env. It is
 #: NOT a wall against a deliberately malicious tool: the subprocess runs as
 #: the same user, so files (mounted token paths, state dirs) remain readable.
-#: Containment of a hostile tool comes from the layers around execution —
-#: review gating on declared reach, independent verification, least-privilege
-#: short-lived credentials, audit, rollback — and, for a hard runtime wall,
-#: pod-per-run isolation (future runner adapter).
+#: Containment of hostile learned code comes from
+#: ``ContainedLearnedToolRunner``. This environment remains only the explicit
+#: local compatibility path and independent verifier hygiene.
 #:
 #: The TLS/proxy entries are non-secret transport config a corporate
 #: deployment needs for any outbound call. This is the ONE env policy —

@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from niuu.domain.agent_directory import AgentInterface
+from niuu.domain.agent_directory import AgentInterface, AgentSkill
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,7 @@ class ResolvedAgentCard:
     default_input_modes: tuple[str, ...]
     default_output_modes: tuple[str, ...]
     supported_interfaces: tuple[AgentInterface, ...]
+    skill_details: tuple[AgentSkill, ...] = ()
     capabilities: dict[str, Any] = field(default_factory=dict)
     security_schemes: dict[str, Any] = field(default_factory=dict)
     security_requirements: tuple[dict[str, Any], ...] = ()

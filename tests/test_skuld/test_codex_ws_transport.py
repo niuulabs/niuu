@@ -174,6 +174,29 @@ class TestConstruction:
         ) in t._mcp_overrides
         assert not any(key == "mcp_servers.ravn-tools.env" for key, _ in t._mcp_overrides)
 
+    def test_init_with_mcp_server_timeouts_uses_codex_overrides(self, tmp_path):
+        t = _make_transport(
+            tmp_path,
+            mcp_servers=[
+                {
+                    "name": "ravn-tools",
+                    "command": "python3",
+                    "args": ["-m", "ravn", "tool-mcp"],
+                    "startup_timeout_sec": 30,
+                    "tool_timeout_sec": 3600,
+                }
+            ],
+        )
+
+        assert (
+            "mcp_servers.ravn-tools.startup_timeout_sec",
+            "30.0",
+        ) in t._mcp_overrides
+        assert (
+            "mcp_servers.ravn-tools.tool_timeout_sec",
+            "3600.0",
+        ) in t._mcp_overrides
+
     @pytest.mark.asyncio
     async def test_connect_ws_uses_configured_large_message_limit(self, tmp_path):
         t = _make_transport(tmp_path, max_ws_message_bytes=12 * 1024 * 1024)
@@ -296,6 +319,7 @@ class TestHandshake:
 
         thread_params = params_captured[1][1]
         assert thread_params["baseInstructions"] == "Be helpful"
+        assert thread_params["experimentalRawEvents"] is True
 
     @pytest.mark.asyncio
     async def test_handshake_skip_permissions(self, tmp_path):
@@ -1105,11 +1129,27 @@ class TestItemLifecycle:
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
-        await t._handle_item_started({"type": "webSearch", "id": "ws-1", "query": "python async"})
+        await t._handle_item_started(
+            {
+                "type": "webSearch",
+                "id": "ws-1",
+                "query": "python async",
+                "action": {
+                    "type": "search",
+                    "queries": ["python async", "python asyncio"],
+                },
+            }
+        )
 
         assistant_events = _events_of_type(emit, "assistant")
         assert assistant_events[0]["message"]["content"][0]["name"] == "WebSearch"
-        assert assistant_events[0]["message"]["content"][0]["input"]["query"] == "python async"
+        assert assistant_events[0]["message"]["content"][0]["input"] == {
+            "query": "python async",
+            "action": {
+                "type": "search",
+                "queries": ["python async", "python asyncio"],
+            },
+        }
 
     @pytest.mark.asyncio
     async def test_block_index_increments(self, tmp_path):
@@ -1579,6 +1619,57 @@ class TestApprovals:
         assert sent["result"]["decision"] == "accept"
 
     @pytest.mark.asyncio
+    async def test_mcp_elicitation_is_auto_accepted_with_protocol_shape(self, tmp_path):
+        t = _make_transport(tmp_path, approval_policy="never")
+        t._ws = FakeWebSocket()
+        _collect_emits(t)
+
+        await t._handle_server_request(
+            {
+                "id": 78,
+                "method": "mcpServer/elicitation/request",
+                "params": {
+                    "serverName": "ravn-tools",
+                    "threadId": "thread-1",
+                    "mode": "form",
+                    "message": "Approve capability_list",
+                    "requestedSchema": {"type": "object", "properties": {}},
+                },
+            }
+        )
+
+        sent = json.loads(t._ws.sent[0])
+        assert sent["id"] == 78
+        assert sent["result"] == {"action": "accept", "content": {}}
+
+    @pytest.mark.asyncio
+    async def test_mcp_elicitation_uses_control_channel_when_approval_is_required(self, tmp_path):
+        t = _make_transport(tmp_path, approval_policy="on-request")
+        t._ws = FakeWebSocket()
+        emit = _collect_emits(t)
+
+        await t._handle_server_request(
+            {
+                "id": 79,
+                "method": "mcpServer/elicitation/request",
+                "params": {
+                    "serverName": "ravn-tools",
+                    "threadId": "thread-1",
+                    "mode": "form",
+                    "message": "Approve capability_list",
+                    "requestedSchema": {"type": "object", "properties": {}},
+                },
+            }
+        )
+
+        event = emit.call_args[0][0]
+        assert event["type"] == "control_request"
+        assert event["tool"] == "MCP"
+        await t.send_control_response("79", {"behavior": "allow"})
+        sent = json.loads(t._ws.sent[0])
+        assert sent["result"] == {"action": "accept", "content": {}}
+
+    @pytest.mark.asyncio
     async def test_dynamic_shell_command_call_executes_via_command_exec(self, tmp_path):
         t = _make_transport(tmp_path)
         t._ws = FakeWebSocket()
@@ -1768,6 +1859,60 @@ class TestApprovals:
         )
         assert calls[1][0] == "thread/inject_items"
         assert calls[1][1]["items"][0]["call_id"] == "call-response-1"
+
+    @pytest.mark.asyncio
+    async def test_raw_custom_tool_call_emits_observable_tool_lifecycle(self, tmp_path):
+        t = _make_transport(tmp_path)
+        emits = _collect_emits(t)
+
+        await t._handle_server_message(
+            {
+                "method": "rawResponseItem/completed",
+                "params": {
+                    "item": {
+                        "type": "custom_tool_call",
+                        "call_id": "call-exec-1",
+                        "name": "exec",
+                        "input": "const r = await tools.exec_command({cmd: 'pwd'});",
+                    }
+                },
+            }
+        )
+        await t._handle_server_message(
+            {
+                "method": "rawResponseItem/completed",
+                "params": {
+                    "item": {
+                        "type": "custom_tool_call_output",
+                        "call_id": "call-exec-1",
+                        "output": [
+                            {"type": "input_text", "text": "Script completed\nOutput:\n/tmp"}
+                        ],
+                    }
+                },
+            }
+        )
+
+        events = _emitted_events(emits)
+        tool_use = next(
+            event["message"]["content"][0]
+            for event in events
+            if event.get("type") == "assistant" and event.get("message", {}).get("content")
+        )
+        assert tool_use == {
+            "type": "tool_use",
+            "id": "call-exec-1",
+            "name": "exec",
+            "input": {"input": "const r = await tools.exec_command({cmd: 'pwd'});"},
+        }
+        tool_result = next(
+            event["content_block"]
+            for event in events
+            if event.get("type") == "content_block_start"
+            and event.get("content_block", {}).get("type") == "tool_result"
+        )
+        assert tool_result["tool_use_id"] == "call-exec-1"
+        assert tool_result["content"] == "Script completed\nOutput:\n/tmp"
 
 
 # ---------------------------------------------------------------------------
@@ -2431,40 +2576,82 @@ class TestEmitToolUse:
 class TestItemCompletedEdgeCases:
     @pytest.mark.asyncio
     async def test_file_change_completed_emits_stop(self, tmp_path):
-        """fileChange completion should emit content_block_stop."""
+        """fileChange completion should close both use and result blocks."""
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
         await t._handle_item_completed({"type": "fileChange", "id": "fc-1", "changes": []})
 
         stops = _events_of_type(emit, "content_block_stop")
-        assert len(stops) == 1
+        assert len(stops) == 2
+        results = [
+            event["content_block"]
+            for event in _events_of_type(emit, "content_block_start")
+            if event["content_block"]["type"] == "tool_result"
+        ]
+        assert results == [{"type": "tool_result", "tool_use_id": "fc-1", "content": ""}]
 
     @pytest.mark.asyncio
-    async def test_web_search_completed_emits_stop(self, tmp_path):
-        """webSearch completion should emit content_block_stop."""
+    async def test_web_search_completed_preserves_query(self, tmp_path):
+        """webSearch completion should remain observable without a result body."""
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
         await t._handle_item_completed({"type": "webSearch", "id": "ws-1", "query": "test"})
 
         stops = _events_of_type(emit, "content_block_stop")
-        assert len(stops) == 1
+        assert len(stops) == 2
+        results = [
+            event["content_block"]
+            for event in _events_of_type(emit, "content_block_start")
+            if event["content_block"]["type"] == "tool_result"
+        ]
+        assert json.loads(results[0]["content"]) == {"query": "test"}
+
+    @pytest.mark.asyncio
+    async def test_web_search_completed_preserves_activity(self, tmp_path):
+        t = _make_transport(tmp_path)
+        emit = _collect_emits(t)
+
+        await t._handle_item_completed(
+            {
+                "type": "webSearch",
+                "id": "ws-1",
+                "query": "NIST RM 8047",
+                "action": {
+                    "type": "openPage",
+                    "url": "https://www.nist.gov/example",
+                },
+            }
+        )
+
+        results = [
+            event["content_block"]
+            for event in _events_of_type(emit, "content_block_start")
+            if event["content_block"]["type"] == "tool_result"
+        ]
+        assert json.loads(results[0]["content"]) == {
+            "query": "NIST RM 8047",
+            "action": {
+                "type": "openPage",
+                "url": "https://www.nist.gov/example",
+            },
+        }
 
     @pytest.mark.asyncio
     async def test_mcp_tool_call_completed_emits_stop(self, tmp_path):
-        """mcpToolCall completion should emit content_block_stop."""
+        """mcpToolCall completion should close both use and result blocks."""
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
         await t._handle_item_completed({"type": "mcpToolCall", "id": "mcp-1", "tool": "read_file"})
 
         stops = _events_of_type(emit, "content_block_stop")
-        assert len(stops) == 1
+        assert len(stops) == 2
 
     @pytest.mark.asyncio
-    async def test_command_completed_no_output_no_text_block(self, tmp_path):
-        """Command with empty output should still emit stop but no text block."""
+    async def test_command_completed_no_output_emits_empty_tool_result(self, tmp_path):
+        """Command completion remains observable when stdout is empty."""
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
@@ -2474,8 +2661,13 @@ class TestItemCompletedEdgeCases:
 
         events = _emitted_events(emit)
         stops = _events_of_type(emit, "content_block_stop")
-        # Only one stop (for the tool_use block), no text block started
-        assert len(stops) == 1
+        assert len(stops) == 2
+        results = [
+            event["content_block"]
+            for event in _events_of_type(emit, "content_block_start")
+            if event["content_block"]["type"] == "tool_result"
+        ]
+        assert results == [{"type": "tool_result", "tool_use_id": "cmd-1", "content": ""}]
         # No text delta emitted
         text_deltas = [
             e
@@ -2486,8 +2678,8 @@ class TestItemCompletedEdgeCases:
         assert len(text_deltas) == 0
 
     @pytest.mark.asyncio
-    async def test_command_completed_none_output_no_text_block(self, tmp_path):
-        """Command with null aggregated output should still emit stop and not crash."""
+    async def test_command_completed_none_output_emits_empty_tool_result(self, tmp_path):
+        """Command with null output should still expose its completion."""
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
@@ -2497,7 +2689,13 @@ class TestItemCompletedEdgeCases:
 
         events = _emitted_events(emit)
         stops = _events_of_type(emit, "content_block_stop")
-        assert len(stops) == 1
+        assert len(stops) == 2
+        results = [
+            event["content_block"]
+            for event in _events_of_type(emit, "content_block_start")
+            if event["content_block"]["type"] == "tool_result"
+        ]
+        assert results == [{"type": "tool_result", "tool_use_id": "cmd-1", "content": ""}]
         text_deltas = [
             e
             for e in events

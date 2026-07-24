@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from ravn.domain.resident_continuation import (
     ResidentPolicyDecisionRecord,
     ResidentPolicyObservation,
     ResidentTurnRecord,
+    ResidentWorkingStateRecord,
 )
 from ravn.resident_text import (
     compact_line as _compact_line,
@@ -31,6 +33,11 @@ from ravn.resident_text import (
 
 _OPERATOR_NEEDED_PATH = "operator-needed/latest.md"
 _OPERATOR_ANSWER_PATH = "operator-answers/latest.md"
+
+
+def _case_path(case_id: str, leaf: str) -> Path:
+    case_slug = _slug(case_id)
+    return Path("cases") / case_slug / leaf if case_slug else Path(leaf)
 
 
 class ResidentRunBudget:
@@ -102,7 +109,16 @@ class NullResidentMemory(ResidentMemoryPort):
     async def recall(self, mandate: str, *, limit: int = 5) -> list[ResidentMemoryEntry]:
         return []
 
+    async def read(self, ref: str) -> ResidentMemoryEntry | None:
+        return None
+
+    async def read_working_state(self, resident_id: str) -> ResidentMemoryEntry | None:
+        return None
+
     async def write_turn(self, record: ResidentTurnRecord) -> str:
+        return ""
+
+    async def write_working_state(self, record: ResidentWorkingStateRecord) -> str:
         return ""
 
     async def write_budget(self, snapshot: ResidentBudgetSnapshot) -> str:
@@ -123,20 +139,28 @@ class NullResidentMemory(ResidentMemoryPort):
         question: str,
         reason: str,
         turn: ResidentTurnRecord,
+        case_id: str = "",
+        turn_ref: str = "",
     ) -> str:
         return ""
 
-    async def read_operator_needed(self) -> ResidentMemoryEntry | None:
+    async def read_operator_needed(self, case_id: str = "") -> ResidentMemoryEntry | None:
         return None
 
-    async def write_operator_answer(self, answer: str) -> str:
+    async def write_operator_answer(self, answer: str, *, case_id: str = "") -> str:
         return ""
 
-    async def read_operator_answer(self) -> ResidentMemoryEntry | None:
+    async def read_operator_answer(self, case_id: str = "") -> ResidentMemoryEntry | None:
         return None
 
     async def consume_operator_answer(self, answer: ResidentMemoryEntry) -> str:
         return ""
+
+    async def list_operator_needed(self) -> list[ResidentMemoryEntry]:
+        return []
+
+    async def list_operator_answers(self) -> list[ResidentMemoryEntry]:
+        return []
 
 
 class LocalResidentMemory(ResidentMemoryPort):
@@ -163,13 +187,35 @@ class LocalResidentMemory(ResidentMemoryPort):
             )
         return entries
 
+    async def read(self, ref: str) -> ResidentMemoryEntry | None:
+        path = self._root / ref
+        if not path.is_file():
+            return None
+        content = path.read_text(encoding="utf-8")
+        return ResidentMemoryEntry(
+            path=ref,
+            summary=_first_heading_or_line(content),
+            content=content,
+        )
+
+    async def read_working_state(self, resident_id: str) -> ResidentMemoryEntry | None:
+        return await self.read(str(self._working_state_path(resident_id)))
+
     async def write_turn(self, record: ResidentTurnRecord) -> str:
         stamp = record.created_at.strftime("%Y%m%dT%H%M%SZ")
-        rel = self._prefix / "turns" / f"{stamp}-{record.turn_index}.md"
+        rel = self._prefix / _case_path(
+            record.case_id,
+            f"turns/{stamp}-{record.turn_index}.md",
+        )
         return self._write(rel, _render_turn_record(record))
 
+    async def write_working_state(self, record: ResidentWorkingStateRecord) -> str:
+        return self._write(
+            self._working_state_path(record.resident_id), _render_working_state(record)
+        )
+
     async def write_budget(self, snapshot: ResidentBudgetSnapshot) -> str:
-        rel = self._prefix / "budget" / "latest.md"
+        rel = self._prefix / _case_path(snapshot.case_id, "budget/latest.md")
         return self._write(rel, _render_budget_snapshot(snapshot, updated_at=datetime.now(UTC)))
 
     async def write_policy_observation(self, observation: ResidentPolicyObservation) -> str:
@@ -199,8 +245,11 @@ class LocalResidentMemory(ResidentMemoryPort):
         question: str,
         reason: str,
         turn: ResidentTurnRecord,
+        case_id: str = "",
+        turn_ref: str = "",
     ) -> str:
-        rel = self._prefix / _OPERATOR_NEEDED_PATH
+        resolved_case = case_id or turn.case_id
+        rel = self._prefix / _case_path(resolved_case, _OPERATOR_NEEDED_PATH)
         return self._write(
             rel,
             _render_operator_needed(
@@ -208,11 +257,12 @@ class LocalResidentMemory(ResidentMemoryPort):
                 reason=reason,
                 turn=turn,
                 status="pending",
+                turn_ref=turn_ref,
             ),
         )
 
-    async def read_operator_needed(self) -> ResidentMemoryEntry | None:
-        rel = self._prefix / _OPERATOR_NEEDED_PATH
+    async def read_operator_needed(self, case_id: str = "") -> ResidentMemoryEntry | None:
+        rel = self._prefix / _case_path(case_id, _OPERATOR_NEEDED_PATH)
         path = self._root / rel
         if not path.exists():
             return None
@@ -225,23 +275,42 @@ class LocalResidentMemory(ResidentMemoryPort):
             content=content,
         )
 
-    async def write_operator_answer(self, answer: str) -> str:
+    async def write_operator_answer(self, answer: str, *, case_id: str = "") -> str:
         now = datetime.now(UTC)
-        answer_rel = self._prefix / _OPERATOR_ANSWER_PATH
-        answer_ref = self._write(answer_rel, _render_operator_answer(answer, answered_at=now))
-        history_rel = self._prefix / "operator-answers" / f"{_timestamp_slug(now)}.md"
-        self._write(history_rel, _render_operator_answer(answer, answered_at=now))
-        marker_rel = self._prefix / _OPERATOR_NEEDED_PATH
+        answer_rel = self._prefix / _case_path(case_id, _OPERATOR_ANSWER_PATH)
+        marker_rel = self._prefix / _case_path(case_id, _OPERATOR_NEEDED_PATH)
         marker_path = self._root / marker_rel
         prior = marker_path.read_text(encoding="utf-8") if marker_path.exists() else ""
+        answer_ref = self._write(
+            answer_rel,
+            _render_operator_answer(
+                answer,
+                answered_at=now,
+                case_id=case_id,
+                pending_context=prior,
+            ),
+        )
+        history_rel = self._prefix / _case_path(
+            case_id,
+            f"operator-answers/{_timestamp_slug(now)}.md",
+        )
+        self._write(
+            history_rel,
+            _render_operator_answer(
+                answer,
+                answered_at=now,
+                case_id=case_id,
+                pending_context=prior,
+            ),
+        )
         self._write(
             marker_rel,
             _render_answered_operator_needed(prior, answer_path=answer_ref, answered_at=now),
         )
         return answer_ref
 
-    async def read_operator_answer(self) -> ResidentMemoryEntry | None:
-        rel = self._prefix / _OPERATOR_ANSWER_PATH
+    async def read_operator_answer(self, case_id: str = "") -> ResidentMemoryEntry | None:
+        rel = self._prefix / _case_path(case_id, _OPERATOR_ANSWER_PATH)
         path = self._root / rel
         if not path.exists():
             return None
@@ -263,11 +332,46 @@ class LocalResidentMemory(ResidentMemoryPort):
             _render_consumed_operator_answer(prior, consumed_at=datetime.now(UTC)),
         )
 
+    async def list_operator_needed(self) -> list[ResidentMemoryEntry]:
+        return self._list_case_entries(_OPERATOR_NEEDED_PATH, pending=True)
+
+    async def list_operator_answers(self) -> list[ResidentMemoryEntry]:
+        return self._list_case_entries(_OPERATOR_ANSWER_PATH, pending=False)
+
+    def _list_case_entries(self, leaf: str, *, pending: bool) -> list[ResidentMemoryEntry]:
+        base = self._root / self._prefix / "cases"
+        if not base.exists():
+            return []
+        entries: list[ResidentMemoryEntry] = []
+        for path in sorted(base.glob(f"*/{leaf}")):
+            content = path.read_text(encoding="utf-8")
+            available = (
+                _operator_marker_is_pending(content)
+                if pending
+                else not _operator_answer_is_consumed(content)
+            )
+            if available:
+                entries.append(
+                    ResidentMemoryEntry(
+                        path=str(path.relative_to(self._root)),
+                        summary=_first_heading_or_line(content),
+                        content=content,
+                    )
+                )
+        return entries
+
     def _write(self, rel: Path, content: str) -> str:
         path = self._root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Local resident pages are deliberately operator-inspectable Markdown,
+        # not a credential store. Keep them private to the owning OS account.
         path.write_text(content, encoding="utf-8")
+        path.chmod(0o600)
         return str(rel)
+
+    def _working_state_path(self, resident_id: str) -> Path:
+        resident_slug = _slug(resident_id) or "resident"
+        return self._prefix / "working-state" / f"{resident_slug}.md"
 
 
 def _render_turn_record(record: ResidentTurnRecord) -> str:
@@ -277,18 +381,58 @@ def _render_turn_record(record: ResidentTurnRecord) -> str:
         f"- {key}: {value!r}" for key, value in sorted(record.outcome_fields.items())
     )
     tools = ", ".join(record.tool_names) if record.tool_names else "none"
+    tool_results = "\n\n".join(record.tool_results) or "none"
+    evidence = "\n".join(f"- {ref}" for ref in record.evidence_refs) or "- none"
+    inbox = "\n".join(f"- {ref}" for ref in record.inbox_refs) or "- none"
     return (
         f"# Resident Turn {record.turn_index}\n\n"
         f"- updated_at: {record.created_at.isoformat()}\n"
+        f"- case_id: {record.case_id}\n"
+        f"- root_correlation_id: {record.root_correlation_id}\n"
+        f"- task_id: {record.task_id}\n"
+        f"- persona: {record.persona}\n"
         f"- tools_used: {tools}\n"
         f"- input_tokens: {record.usage.input_tokens}\n"
         f"- output_tokens: {record.usage.output_tokens}\n\n"
-        "## Summary\n\n"
-        f"{_compact_line(record.response, limit=700)}\n\n"
+        f"- case_input_tokens: {record.cumulative_usage.input_tokens}\n"
+        f"- case_output_tokens: {record.cumulative_usage.output_tokens}\n\n"
+        "## Prompt\n\n"
+        f"{record.prompt}\n\n"
+        "## Response\n\n"
+        f"{record.response}\n\n"
+        "## Tool Results\n\n"
+        f"{tool_results}\n\n"
+        "## Mandate\n\n"
+        f"{record.mandate[:4000]}\n\n"
         "## Outcome Fields\n\n"
         f"{fields or '- none'}\n\n"
         "## Selected Next Action\n\n"
-        f"{action_text or 'none'}\n"
+        f"{action_text or 'none'}\n\n"
+        "## Evidence References\n\n"
+        f"{evidence}\n\n"
+        "## Inbox References\n\n"
+        f"{inbox}\n"
+    )
+
+
+def _render_working_state(record: ResidentWorkingStateRecord) -> str:
+    state_json = json.dumps(record.state, indent=2, sort_keys=True, ensure_ascii=False, default=str)
+    signal_refs = "\n".join(f"- {ref}" for ref in record.signal_refs) or "- none"
+    evidence_refs = "\n".join(f"- {ref}" for ref in record.evidence_refs) or "- none"
+    return (
+        "# Resident Working State\n\n"
+        f"- updated_at: {record.updated_at.isoformat()}\n"
+        f"- source_turn_ref: {record.source_turn_ref}\n"
+        f"- source_case_id: {record.source_case_id}\n"
+        f"- source_task_id: {record.source_task_id}\n\n"
+        "## State\n\n"
+        "```json\n"
+        f"{state_json}\n"
+        "```\n\n"
+        "## Source Signal References\n\n"
+        f"{signal_refs}\n\n"
+        "## Evidence References\n\n"
+        f"{evidence_refs}\n"
     )
 
 
@@ -298,25 +442,50 @@ def _render_operator_needed(
     reason: str,
     turn: ResidentTurnRecord,
     status: str,
+    turn_ref: str = "",
 ) -> str:
     return (
         "# Operator Input Needed\n\n"
         f"- status: {status}\n"
+        f"- case_id: {turn.case_id}\n"
+        f"- root_correlation_id: {turn.root_correlation_id}\n"
+        f"- task_id: {turn.task_id}\n"
+        f"- persona: {turn.persona}\n"
         f"- turn: {turn.turn_index}\n"
+        f"- turn_ref: {turn_ref}\n"
+        f"- input_tokens: {turn.usage.input_tokens}\n"
+        f"- output_tokens: {turn.usage.output_tokens}\n"
+        f"- case_input_tokens: {turn.cumulative_usage.input_tokens}\n"
+        f"- case_output_tokens: {turn.cumulative_usage.output_tokens}\n"
         f"- reason: {_compact_line(reason, limit=500)}\n"
         f"- question: {_compact_line(question, limit=1000)}\n"
         f"- created_at: {datetime.now(UTC).isoformat()}\n\n"
         "## Selected Next Action\n\n"
-        f"{turn.selected_next_action.action if turn.selected_next_action else 'none'}\n"
+        f"{turn.selected_next_action.action if turn.selected_next_action else 'none'}\n\n"
+        "## Mandate\n\n"
+        f"{turn.mandate[:4000]}\n"
     )
 
 
-def _render_operator_answer(answer: str, *, answered_at: datetime) -> str:
+def _render_operator_answer(
+    answer: str,
+    *,
+    answered_at: datetime,
+    case_id: str = "",
+    pending_context: str = "",
+) -> str:
     return (
         "# Operator Answer\n\n"
         "- status: available\n"
+        f"- case_id: {case_id}\n"
         f"- answered_at: {answered_at.isoformat()}\n\n"
+        "## Answer\n\n"
         f"{str(answer).strip()}\n"
+        + (
+            f"\n## Pending Context\n\n{pending_context.strip()}\n"
+            if pending_context.strip()
+            else ""
+        )
     )
 
 
@@ -391,6 +560,8 @@ def _render_budget_snapshot(snapshot: ResidentBudgetSnapshot, *, updated_at: dat
     return (
         "# Resident Continuation Budget\n\n"
         f"- updated_at: {updated_at.isoformat()}\n"
+        f"- case_id: {snapshot.case_id}\n"
+        f"- root_correlation_id: {snapshot.root_correlation_id}\n"
         f"- turns_used: {snapshot.turns_used}\n"
         f"- elapsed_seconds: {snapshot.elapsed_seconds:.2f}\n"
         f"- input_tokens: {snapshot.usage.input_tokens}\n"

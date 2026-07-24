@@ -46,6 +46,8 @@ SETUPS=(
   "flock-mdns|flock|Mesh peers with nng transport + mDNS discovery"
   "flock-sleipnir|flock|Mesh peers with Sleipnir transport + discovery"
   "environment-nats|flock|Environment-resident Valkyries over NATS JetStream"
+  "eitri-local-valkyrie|deployment|Local resident over live Eitri signals, A2A, and Glitnir telemetry"
+  "ivaldi-local-workshop|deployment|Local Ivaldi learning from the live Laevateinn workshop stream"
   "pi|deployment|Raspberry Pi: Bifrost Ollama + daemon + Telegram"
   "kitchen-sink|deployment|Everything enabled — the full monty"
   "vaka-full|vaka|All MF features + daemon + Qwen3 on Valaskjalf vLLM (zero Anthropic)"

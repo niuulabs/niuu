@@ -15,6 +15,7 @@ from ravn.domain.models import TokenUsage, TurnResult
 from ravn.domain.valkyrie_contracts import normalize_valkyrie_outcome
 from ravn.drive_loop import (
     _build_resident_valkyrie_schema_repair_prompt,
+    _build_workflow_outcome_repair_prompt,
     _default_success_verdict,
     _extract_mimir_dream_counts,
     _infer_tool_written_verdict,
@@ -22,6 +23,7 @@ from ravn.drive_loop import (
     _normalize_outcome_verdict,
     _parse_outcome_for_persona,
     _resident_valkyrie_validation_result,
+    _validate_resident_continuation_contract,
 )
 from sleipnir.domain import registry
 from tests.test_ravn.conftest import _make_agent_task, _make_drive_loop
@@ -241,6 +243,122 @@ class TestDriveLoopOutcomeContract:
         )
         assert validation_errors == []
 
+    @pytest.mark.asyncio
+    async def test_repair_unroutable_workflow_outcome_reuses_same_agent(self) -> None:
+        dl = _make_drive_loop()
+        dl._persona_config = SimpleNamespace(
+            name="specification-framer",
+            produces=SimpleNamespace(
+                event_type="spec.frame.completed",
+                event_type_map={
+                    "framed": "spec.framed",
+                    "blocked": "spec.blocked",
+                },
+            ),
+        )
+        dl.set_workflow_allowed_outcomes_resolver(lambda _task, _persona: {"spec.framed"})
+        task = _make_agent_task(task_id="task-workflow-repair")
+        task.workflow_node_id = "capability-frame"
+
+        class RepairAgent:
+            def __init__(self) -> None:
+                self.prompts: list[str] = []
+
+            async def run_turn(self, prompt: str) -> TurnResult:
+                self.prompts.append(prompt)
+                return TurnResult(
+                    response=(
+                        "---outcome---\nverdict: framed\nsummary: brief is ready\n---end---\n"
+                    ),
+                    tool_calls=[],
+                    tool_results=[],
+                    usage=TokenUsage(input_tokens=8, output_tokens=12),
+                )
+
+        agent = RepairAgent()
+        repair_result = await dl._maybe_repair_unroutable_workflow_outcome(
+            agent=agent,
+            task=task,
+            response_text=(
+                "---outcome---\n"
+                "verdict: blocked\n"
+                "summary: artifact store was temporarily unavailable\n"
+                "---end---\n"
+            ),
+        )
+
+        assert repair_result is not None
+        assert repair_result.response.startswith("---outcome---\nverdict: framed")
+        assert agent.prompts
+        assert 'Routable event types: ["spec.framed"]' in agent.prompts[0]
+        assert "verdict: help_needed" in agent.prompts[0]
+
+    @pytest.mark.asyncio
+    async def test_does_not_repair_routable_workflow_outcome(self) -> None:
+        dl = _make_drive_loop()
+        dl._persona_config = SimpleNamespace(
+            name="specification-framer",
+            produces=SimpleNamespace(
+                event_type="spec.frame.completed",
+                event_type_map={"framed": "spec.framed"},
+            ),
+        )
+        dl.set_workflow_allowed_outcomes_resolver(lambda _task, _persona: {"spec.framed"})
+        task = _make_agent_task(task_id="task-workflow-routable")
+        task.workflow_node_id = "capability-frame"
+        agent = AsyncMock()
+
+        result = await dl._maybe_repair_unroutable_workflow_outcome(
+            agent=agent,
+            task=task,
+            response_text=("---outcome---\nverdict: framed\nsummary: brief is ready\n---end---\n"),
+        )
+
+        assert result is None
+        agent.run_turn.assert_not_awaited()
+
+    def test_workflow_outcome_repair_prompt_preserves_original_evidence(self) -> None:
+        task = _make_agent_task(task_id="task-workflow-prompt")
+        task.workflow_node_id = "capability-frame"
+
+        prompt = _build_workflow_outcome_repair_prompt(
+            task=task,
+            original_response="verdict: blocked\nreason: transient failure",
+            allowed_topics={"spec.framed"},
+        )
+
+        assert "capability-frame" in prompt
+        assert "transient failure" in prompt
+        assert "Do not claim success without evidence" in prompt
+
+    def test_resident_control_fields_do_not_depend_on_an_episode(self) -> None:
+        dl = _make_drive_loop()
+        dl._persona_config = SimpleNamespace(
+            name="k8s-valkyrie",
+            produces=_valkyrie_judgment_produces(),
+        )
+        dl._settings = SimpleNamespace(
+            environment=SimpleNamespace(id="cluster-a", type="k8s"),
+            mesh=SimpleNamespace(own_peer_id="k8s-valkyrie"),
+        )
+        result = TurnResult(
+            response=_valid_valkyrie_judgment_text(),
+            tool_calls=[],
+            tool_results=[],
+            usage=TokenUsage(input_tokens=8, output_tokens=12),
+        )
+
+        fields, valid = dl._decorate_turn_result_outcome(
+            _make_agent_task(task_id="task-no-episode"),
+            result,
+            result.response,
+        )
+
+        assert result.episode is None
+        assert valid is True
+        assert fields["decision"] == "propose_action"
+        assert fields["environment_id"] == "cluster-a"
+
     def test_schema_repair_prompt_includes_required_resident_contract_shape(self) -> None:
         task = _make_agent_task(task_id="task-valkyrie-repair-prompt")
         prompt = _build_resident_valkyrie_schema_repair_prompt(
@@ -253,6 +371,61 @@ class TestDriveLoopOutcomeContract:
         assert "decision: ignore | watch | investigate" in prompt
         assert "confidence: <number from 0.0 to 1.0>" in prompt
         assert "action_authority: autonomous | yolo_allowed" in prompt
+        assert "only a real event/time/operator answer wakes a turn" in prompt
+        assert "working_state` must be a mapping" in prompt
+        assert "empty list as `field: []`" in prompt
+        assert "at most five entries per list" in prompt
+
+        working_state_prompt = _build_resident_valkyrie_schema_repair_prompt(
+            task=task,
+            original_response="partial state",
+            validation_errors=["working_state.hypotheses must be a list"],
+            outcome_fields={"working_state": {"observations": ["signal-a"]}},
+        )
+        assert "working_state:\n  observations: []\n  hypotheses: []" in working_state_prompt
+        assert "preserve valid prior entries" in working_state_prompt
+
+    def test_free_text_continue_is_not_a_supported_wake_source(self) -> None:
+        unsupported = (
+            "continuation 'continue' is unsupported; call available tools before the final "
+            "outcome, or use sleep/ask_operator for a real wake source"
+        )
+        assert _validate_resident_continuation_contract(
+            {
+                "continuation": "continue",
+                "selected_next_action": "continue",
+                "next_action_timing": "immediate",
+            }
+        ) == [unsupported]
+        assert (
+            _validate_resident_continuation_contract(
+                {
+                    "continuation": "sleep",
+                    "selected_next_action": "continue",
+                    "next_action_timing": "external_event",
+                }
+            )
+            == []
+        )
+        assert _validate_resident_continuation_contract(
+            {
+                "continuation": "continue",
+                "selected_next_action": "inspect the source",
+                "next_action_timing": "external_event",
+            }
+        ) == [unsupported]
+        assert _validate_resident_continuation_contract(
+            {
+                "continuation": "continue",
+                "selected_next_action": "inspect the source",
+            }
+        ) == [unsupported]
+        assert _validate_resident_continuation_contract(
+            {
+                "selected_next_action": "inspect the source",
+                "next_action_timing": "immediate",
+            }
+        ) == ["selected_next_action requires explicit continuation control"]
 
     @pytest.mark.asyncio
     async def test_canonical_and_alias_outcomes_are_split(self) -> None:
@@ -294,7 +467,7 @@ comments: fix the null branch
         assert canonical_topic == "review.completed"
         assert canonical_event.payload["event_type"] == "review.completed"
         assert canonical_event.payload["bubble_up"] is True
-        assert canonical_event.payload["room_bridge_skip"] is True
+        assert canonical_event.payload["collaboration_routing_only"] is True
         assert canonical_event.payload["verdict"] == "needs_changes"
         assert canonical_event.payload["workflow_parent_event_id"] == "code-task-123"
 
@@ -305,7 +478,7 @@ comments: fix the null branch
         assert alias_event.payload["canonical_event_type"] == "review.completed"
         assert alias_event.payload["routing_only"] is True
         assert alias_event.payload["bubble_up"] is False
-        assert "room_bridge_skip" not in alias_event.payload
+        assert "collaboration_routing_only" not in alias_event.payload
 
         assert skuld_channel.emit.await_count == 2
         emitted = skuld_channel.emit.await_args_list[0].args[0]
@@ -349,7 +522,7 @@ files_changed: 2
         assert canonical_topic == "code.completed"
         assert canonical_event.payload["event_type"] == "code.completed"
         assert canonical_event.payload["bubble_up"] is True
-        assert canonical_event.payload["room_bridge_skip"] is False
+        assert "collaboration_routing_only" not in canonical_event.payload
 
         alias_event = mesh.publish.await_args_list[1].args[0]
         alias_topic = mesh.publish.await_args_list[1].kwargs["topic"]
@@ -367,6 +540,9 @@ files_changed: 2
         dl._skuld_channel = None
         dl._sleipnir_publisher = SimpleNamespace(publish=AsyncMock(side_effect=published.append))
         dl._source_id = "drive_loop"
+        dl._settings.environment.id = "cluster-runtime"
+        dl._settings.environment.type = "k8s"
+        dl._settings.mesh.own_peer_id = "runtime-valkyrie"
         dl._persona_config = SimpleNamespace(
             name="k8s-valkyrie",
             produces=_valkyrie_judgment_produces(),
@@ -374,6 +550,8 @@ files_changed: 2
 
         task = _make_agent_task(task_id="task-k8s-1")
         task.session_id = "sess-k8s-1"
+        task.root_correlation_id = "corr-runtime"
+        task.workflow_parent_event_id = "evt-runtime"
 
         await dl._emit_mesh_outcome_event(
             task,
@@ -392,7 +570,16 @@ files_changed: 2
             {"event_id": "evt-k8s-1", "kind": "kubernetes"}
         ]
         assert canonical_event.payload["outcome"]["target_surfaces"] == ["surface:ops"]
-        assert canonical_event.payload["outcome"]["correlation_ids"]["root"] == "corr-k8s-1"
+        outcome = canonical_event.payload["outcome"]
+        assert outcome["environment_id"] == "cluster-runtime"
+        assert outcome["environment_type"] == "k8s"
+        assert outcome["valkyrie_id"] == "runtime-valkyrie"
+        assert outcome["correlation_ids"] == {
+            "root": "corr-runtime",
+            "task": "task-k8s-1",
+            "environment": "cluster-runtime",
+            "signal": "evt-runtime",
+        }
 
         alias_topic = mesh.publish.await_args_list[1].kwargs["topic"]
         alias_event = mesh.publish.await_args_list[1].args[0]
@@ -401,8 +588,60 @@ files_changed: 2
         assert alias_event.payload["routing_only"] is True
         assert [event.event_type for event in published] == [registry.VALKYRIE_JUDGMENT_PROPOSED]
         assert published[0].payload["task_id"] == "task-k8s-1"
-        assert published[0].payload["environment_id"] == "cluster-a"
+        assert published[0].payload["environment_id"] == "cluster-runtime"
         assert published[0].payload["valid"] is True
+
+    def test_runtime_identity_overrides_model_environment_claim(self) -> None:
+        produces = _valkyrie_judgment_produces()
+        produces.schema["environment_type"] = OutcomeField(
+            type="string",
+            description="runtime environment type",
+        )
+        response = _valid_valkyrie_judgment_text().replace(
+            "environment_id: cluster-a",
+            "environment_id: claimed-environment\nenvironment_type: k8s",
+        )
+
+        _, fields, errors = _resident_valkyrie_validation_result(
+            response,
+            SimpleNamespace(produces=produces),
+            authoritative_fields={
+                "environment_id": "workshop",
+                "environment_type": "workshop",
+                "valkyrie_id": "ivaldi-local",
+                "correlation_ids": {
+                    "root": "runtime-root",
+                    "task": "runtime-task",
+                    "environment": "workshop",
+                },
+            },
+        )
+
+        assert errors == []
+        assert fields["environment_id"] == "workshop"
+        assert fields["environment_type"] == "workshop"
+        assert fields["valkyrie_id"] == "ivaldi-local"
+        assert fields["correlation_ids"]["root"] == "runtime-root"
+
+    def test_optional_null_outcome_field_is_omitted_without_repair(self) -> None:
+        produces = _valkyrie_judgment_produces()
+        produces.schema["question"] = OutcomeField(
+            type="string",
+            description="operator question",
+            required=False,
+        )
+        response = _valid_valkyrie_judgment_text().replace(
+            "---end---",
+            "question: null\n---end---",
+        )
+
+        _, fields, errors = _resident_valkyrie_validation_result(
+            response,
+            SimpleNamespace(produces=produces),
+        )
+
+        assert errors == []
+        assert "question" not in fields
 
     @pytest.mark.asyncio
     async def test_resident_valkyrie_judgment_normalizes_local_model_yaml_drift(self) -> None:
@@ -841,6 +1080,50 @@ brief_path: research/campaigns/example/brief.md
         assert event.payload["fields"]["workspace_paths"] == ["research/campaigns/example/brief.md"]
 
     @pytest.mark.asyncio
+    async def test_workflow_artifact_publish_failure_blocks_routing_alias(
+        self,
+        tmp_path,
+    ) -> None:
+        dl = _make_drive_loop()
+        mesh = AsyncMock()
+        skuld_channel = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = skuld_channel
+        dl._source_id = "drive_loop"
+        dl._settings.permission.workspace_root = str(tmp_path)
+        dl._mimir = AsyncMock()
+        dl._mimir.upsert_page.side_effect = RuntimeError("unauthorized")
+        artifact = tmp_path / "research" / "campaigns" / "example" / "brief.md"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("# Brief\n\nReady.", encoding="utf-8")
+        dl._persona_config = SimpleNamespace(
+            name="research-framer",
+            produces=SimpleNamespace(
+                event_type="research.frame.completed",
+                event_type_map={"framed": "research.framed"},
+            ),
+        )
+
+        task = _make_agent_task(task_id="task-missing-artifact")
+        task.workflow_node_id = "research-framer"
+        response_text = """\
+---outcome---
+verdict: framed
+summary: Research brief framed.
+brief_path: research/campaigns/example/brief.md
+---end---
+"""
+
+        await dl._emit_mesh_outcome_event(task, response_text, success=True)
+
+        mesh.publish.assert_not_awaited()
+        canonical = skuld_channel.emit.await_args.args[0]
+        assert canonical.payload["event_type"] == "research.frame.completed"
+        assert canonical.payload["success"] is False
+        assert canonical.payload["valid"] is False
+        assert "unauthorized" in canonical.payload["artifact_publish_error"]
+
+    @pytest.mark.asyncio
     async def test_split_outcome_markers_still_route_alias_for_wrapped_codex_output(self) -> None:
         dl = _make_drive_loop()
         mesh = AsyncMock()
@@ -1095,11 +1378,36 @@ summary: post-mortem source captured
                 "help_attempted": ["compared cost", "compared quality"],
                 "help_recommendation": "Choose latency or quality",
                 "help_context": {"workflow_node_id": "chair"},
+                "reply_context": {
+                    "event_type": "room_notification",
+                    "content": "[chair] Need a product trade-off",
+                },
             },
         )
         assert "Pending help summary: Need a product trade-off" in context
         assert "Already attempted:" in context
+        assert "The human replied to this prior room message:" in context
+        assert "[chair] Need a product trade-off" in context
         assert "Human reply: Please prefer the lower-latency option." in context
+
+        direct_context = dl._directed_message_context("Please inspect this", None)
+        assert direct_context == (
+            "This is a directed message from a human.\nHuman message: Please inspect this"
+        )
+
+        recent_context = dl._directed_message_context(
+            "makes sense, ignore",
+            {
+                "recent_room_context": {
+                    "content": (
+                        "I ignored the transport-only check and preserved the printer concern."
+                    )
+                }
+            },
+        )
+        assert "the human did not explicitly reply to it" in recent_context
+        assert "ignored the transport-only check" in recent_context
+        assert recent_context.endswith("Human message: makes sense, ignore")
 
     def test_record_tool_outcome_fields_merges_existing_values(self) -> None:
         dl = _make_drive_loop()
@@ -1125,22 +1433,31 @@ summary: post-mortem source captured
         dl.enqueue = AsyncMock()
         dl._persona_config = SimpleNamespace(name="council-chair")
 
-        await dl._handle_directed_message(
+        await dl.handle_directed_message(
             "Please continue with option A",
             {
                 "root_correlation_id": "root-1",
                 "workflow_parent_event_id": "parent-1",
                 "workflow_node_id": "chair-node",
                 "session_id": "session-1",
+                "trace_context": {"traceparent": "00-room-parent-01"},
+                "reply_context": {
+                    "event_type": "room_message",
+                    "content": "[Ivaldi] decision: ignore transport check only",
+                },
             },
         )
 
         enqueued = dl.enqueue.await_args.args[0]
+        assert enqueued.human_initiated is True
         assert enqueued.persona == "council-chair"
         assert enqueued.root_correlation_id == "root-1"
         assert enqueued.workflow_parent_event_id == "parent-1"
         assert enqueued.workflow_node_id == "chair-node"
         assert enqueued.session_id == "session-1"
+        assert enqueued.trace_context == {"traceparent": "00-room-parent-01"}
+        assert "The human replied to this prior room message:" in enqueued.initiative_context
+        assert "transport check only" in enqueued.initiative_context
 
     @pytest.mark.asyncio
     async def test_handle_directed_message_steers_active_agent_when_available(self) -> None:
@@ -1153,7 +1470,7 @@ summary: post-mortem source captured
         )
         dl._active_agents["task-1"] = steering_agent
 
-        await dl._handle_directed_message("Please switch to option B")
+        await dl.handle_directed_message("Please switch to option B")
 
         steering_agent.steer.assert_awaited_once_with("Please switch to option B")
         dl.enqueue.assert_not_called()
@@ -1356,7 +1673,7 @@ summary: post-mortem source captured
         published = dl._mesh.publish.await_args.args[0]
         assert published.payload["summary"] == "page written"
         assert published.payload["workflow_parent_event_id"] == "parent-tool-event"
-        assert published.payload["room_bridge_skip"] is True
+        assert published.payload["collaboration_routing_only"] is True
 
     @pytest.mark.asyncio
     async def test_emit_tool_outcome_event_respects_workflow_allowed_topics(self) -> None:
@@ -1441,6 +1758,7 @@ files_changed:
 ---outcome---
 verdict: help_needed
 summary: need a tie-breaker
+question: Which option should I use?
 reason: ambiguous
 ---end---
 """
@@ -1472,6 +1790,7 @@ reason: ambiguous
 ---outcome---
 verdict: help_needed
 summary: need the user's preference between the top two options
+question: Should I optimize for latency or quality?
 reason: uncertain
 attempted:
   - compared the strongest evidence
@@ -1488,13 +1807,11 @@ recommendation: choose whether to optimize for latency or quality
         alias_event = mesh.publish.await_args_list[2].args[0]
 
         assert help_topic == "help_needed"
-        assert (
-            help_event.payload["summary"]
-            == "need the user's preference between the top two options"
-        )
+        assert help_event.payload["summary"] == "Should I optimize for latency or quality?"
         assert help_event.payload["context"]["root_correlation_id"] == "root-help"
         assert help_event.payload["context"]["workflow_parent_event_id"] == "parent-help"
         assert help_event.payload["context"]["workflow_node_id"] == "chair-synthesis"
+        assert help_event.payload["collaboration_routing_only"] is True
         assert alias_event.payload["event_type"] == "council.human_input.requested"
 
         emitted_types = [call.args[0].type for call in skuld_channel.emit.await_args_list]
@@ -1503,6 +1820,39 @@ recommendation: choose whether to optimize for latency or quality
             skuld_channel.emit.await_args_list[2].args[0].payload["event_type"]
             == "council.human_input.requested"
         )
+
+    @pytest.mark.asyncio
+    async def test_help_needed_without_question_is_failed_without_help_or_alias(self) -> None:
+        dl = _make_drive_loop()
+        mesh = AsyncMock()
+        skuld_channel = AsyncMock()
+        dl._mesh = mesh
+        dl._skuld_channel = skuld_channel
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(
+            name="coder",
+            produces=SimpleNamespace(
+                event_type="code.completed",
+                event_type_map={"help_needed": "code.blocked"},
+            ),
+        )
+
+        task = _make_agent_task(task_id="task-empty-help")
+        response_text = """\
+---outcome---
+verdict: help_needed
+summary: Created the requested artifact.
+reason: pytest was unavailable
+---end---
+"""
+
+        await dl._emit_mesh_outcome_event(task, response_text, success=True)
+
+        mesh.publish.assert_not_awaited()
+        canonical = skuld_channel.emit.await_args.args[0]
+        assert canonical.payload["success"] is False
+        assert canonical.payload["valid"] is False
+        assert canonical.payload["errors"] == ["help_needed requires a non-empty question"]
 
     @pytest.mark.asyncio
     async def test_help_needed_bypasses_node_outcome_filter_for_human_intervention(self) -> None:
@@ -1530,6 +1880,7 @@ recommendation: choose whether to optimize for latency or quality
 ---outcome---
 verdict: help_needed
 summary: need an operator tie-break
+question: Which tradeoff should I prefer?
 reason: the final two opinions remain split
 attempted:
   - compared the submitted reviews
@@ -1543,3 +1894,27 @@ recommendation: reply with the preferred tradeoff
         assert "council.chair.turn.completed" in published_topics
         assert "council.human_input.requested" in published_topics
         assert "help_needed" in published_topics
+
+    @pytest.mark.asyncio
+    async def test_help_event_uses_configured_channel_without_platform_fallback(self) -> None:
+        dl = _make_drive_loop()
+        sleipnir_publisher = AsyncMock()
+        skuld_channel = AsyncMock()
+        dl._sleipnir_publisher = sleipnir_publisher
+        dl._skuld_channel = skuld_channel
+        dl._source_id = "drive_loop"
+        dl._persona_config = SimpleNamespace(name="council-chair")
+        task = _make_agent_task(task_id="task-room-help")
+
+        await dl._emit_resident_help_needed(
+            task,
+            SimpleNamespace(
+                case_id="case-room-help",
+                reason="needs_context",
+                question="Which rollout should I choose?",
+                operator_ref="operator-needed/case-room-help.json",
+            ),
+        )
+
+        skuld_channel.emit.assert_awaited_once()
+        sleipnir_publisher.publish.assert_not_awaited()

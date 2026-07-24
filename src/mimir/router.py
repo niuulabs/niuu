@@ -1822,6 +1822,15 @@ class MimirRouter:
         ) -> None:
             await adapter.upsert_page(request.path, request.content, mimir=request.mount)
 
+        @router.delete("/page", status_code=204)
+        async def delete_page(
+            path: str = Query(),
+            mount: str | None = Query(default=None),
+            _auth: None = Depends(_require_write_auth),
+        ) -> None:
+            if not await adapter.delete_page(path, mimir=mount):
+                raise HTTPException(status_code=404, detail=f"Page not found: {path}")
+
         @router.post("/ingest", response_model=IngestResponse)
         async def ingest_source(
             request: IngestRequest,

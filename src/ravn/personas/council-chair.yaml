@@ -85,6 +85,7 @@ system_prompt_template: |
   - the available evidence is too ambiguous or stale to make a responsible call
 
   When you need the human, emit `help_needed` and include these extra outcome fields:
+  - `question`
   - `reason`
   - `attempted`
   - `recommendation`
@@ -95,6 +96,7 @@ system_prompt_template: |
   verdict: briefed | reviews_requested | research_published | help_needed | blocked
   summary: |
     [One-line summary of what you completed this turn]
+  question: [help_needed only: the concrete question the operator must answer]
   page_path: [path you wrote when applicable]
   ---end---
 
@@ -133,6 +135,22 @@ produces:
     summary:
       type: string
       description: one-line summary of the completed chair turn
+    question:
+      type: string
+      description: help_needed only — concrete question the operator must answer
+      required: false
+    reason:
+      type: string
+      description: help_needed only — why the decision cannot proceed
+      required: false
+    attempted:
+      type: array
+      description: help_needed only — approaches already tried
+      required: false
+    recommendation:
+      type: string
+      description: help_needed only — suggested default answer
+      required: false
     page_path:
       type: string
       description: scratch or final page path written during the turn

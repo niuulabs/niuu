@@ -203,7 +203,7 @@ def test_nats_transport_kwargs_include_flock_extra_subscription(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_resident_installs_relevant_flock_learning_and_uses_next_signal(tmp_path) -> None:
+async def test_resident_installs_learning_and_exposes_it_as_a_signal_hint(tmp_path) -> None:
     bus = InProcessBus()
     events: list[SleipnirEvent] = []
     await _subscribe_recorder(
@@ -275,15 +275,13 @@ async def test_resident_installs_relevant_flock_learning_and_uses_next_signal(tm
     result = await peer.process_signal(signal)
     await bus.flush()
 
-    assert result["usedAdoptedLearning"] is True
+    assert result["usedAdoptedLearning"] is False
+    assert result["decision"] == "capability_hint_available"
     assert result["skillName"] == "valkyrie-inspect-kubernetes-pod-oomkilled"
+    assert result["capabilityCandidates"][0]["match"] == "exact_capability_name"
     refreshed = await peer_skills.show("valkyrie-inspect-kubernetes-pod-oomkilled")
-    assert refreshed["metadata"]["run_count"] == 1
-    assert any(
-        event.event_type == registry.VALKYRIE_JUDGMENT_PROPOSED
-        and event.payload["recommended_action"] == "inspect_with_adopted_learning"
-        for event in events
-    )
+    assert refreshed["metadata"]["run_count"] == 0
+    assert not any(event.event_type == registry.VALKYRIE_JUDGMENT_PROPOSED for event in events)
     projection = ValkyrieDashboardProjection()
     for event in events:
         projection.record_event(event)

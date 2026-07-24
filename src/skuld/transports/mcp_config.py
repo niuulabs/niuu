@@ -33,6 +33,10 @@ def normalize_mcp_servers(raw_servers: object) -> list[dict[str, Any]]:
             entry["description"] = str(raw["description"])
         if raw.get("cwd"):
             entry["cwd"] = str(raw["cwd"])
+        for timeout_key in ("startup_timeout_sec", "tool_timeout_sec"):
+            timeout = raw.get(timeout_key)
+            if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0:
+                entry[timeout_key] = float(timeout)
         servers.append(entry)
     return servers
 
@@ -102,4 +106,7 @@ def build_codex_mcp_overrides(raw_servers: object) -> list[tuple[str, str]]:
                     overrides.append((f"{base}.env.{env_key}", json.dumps(env_value)))
             if server.get("cwd"):
                 overrides.append((f"{base}.cwd", json.dumps(server["cwd"])))
+        for timeout_key in ("startup_timeout_sec", "tool_timeout_sec"):
+            if timeout_key in server:
+                overrides.append((f"{base}.{timeout_key}", json.dumps(server[timeout_key])))
     return overrides

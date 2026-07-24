@@ -26,6 +26,8 @@ def _make_runtime_ctx(tmp_path: Path, memory: object = None) -> dict:
         "memory": memory,
         "iteration_budget": None,
         "persona_prefix": "",
+        "permission": MagicMock(),
+        "learned_tool_resolver": MagicMock(),
     }
 
 
@@ -56,6 +58,7 @@ class TestRegistryStructure:
             "ravn",
             "kubernetes",
             "workflow",
+            "a2a",
         }
         for key, val in BUILTIN_TOOLS.items():
             unknown = val.groups - valid_groups
@@ -126,6 +129,32 @@ class TestRegistryStructure:
     def test_terminal_docker_entry_exists(self) -> None:
         assert "terminal_docker" in BUILTIN_TOOLS
         assert BUILTIN_TOOLS["terminal_docker"].condition is not None
+
+    def test_kubernetes_tool_uses_configured_connection(self) -> None:
+        settings = Settings()
+        settings.tools.kubernetes.enabled = True
+        settings.tools.kubernetes.in_cluster = False
+        settings.tools.kubernetes.kubeconfig_env = "EITRI_KUBECONFIG"
+        settings.tools.kubernetes.max_log_lines = 80
+
+        kwargs = BUILTIN_TOOLS["kubernetes_inspect"].kwargs_fn(settings, {})
+
+        assert kwargs == {
+            "in_cluster": False,
+            "kubeconfig_env": "EITRI_KUBECONFIG",
+            "kubeconfig_path": "",
+            "max_log_lines": 80,
+        }
+
+    def test_kubernetes_tool_is_enabled_explicitly_not_by_environment_type(self) -> None:
+        settings = Settings(environment={"type": "k8s"})
+        condition = BUILTIN_TOOLS["kubernetes_inspect"].condition
+
+        assert condition is not None
+        assert not condition(settings)
+        settings.environment.type = "anything-at-all"
+        settings.tools.kubernetes.enabled = True
+        assert condition(settings)
 
     def test_memory_tools_have_required_context(self) -> None:
         for key in ("ravn_memory_search", "session_search"):

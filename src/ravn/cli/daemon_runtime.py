@@ -16,11 +16,23 @@ async def _run_daemon(
     resume: bool = False,
 ) -> None:
     """Build and run the gateway + drive loop until interrupted."""
+    from niuu.observability import configure_observability, shutdown_observability
     from ravn.adapters.channels.gateway import RavnGateway
     from ravn.adapters.channels.gateway_http import HttpGateway
     from ravn.adapters.channels.gateway_telegram import TelegramGateway
     from ravn.drive_loop import DriveLoop
     from ravn.ports.channel import ChannelPort
+
+    configure_observability(
+        settings.observability,
+        resource_attributes={
+            "service.instance.id": settings.mesh.own_peer_id or settings.environment.id,
+            "deployment.environment.name": settings.environment.id,
+            "ravn.environment.id": settings.environment.id,
+            "ravn.environment.type": settings.environment.type,
+            "ravn.runtime.component": "resident",
+        },
+    )
 
     if profile is not None:
         system_prompt, max_iterations, _max_tokens_d = _apply_profile(
@@ -37,11 +49,13 @@ async def _run_daemon(
     base_model = _resolve_persona_model(settings, persona_config)
 
     workspace = _resolve_workspace(settings)
+    from ravn.cli.tool_builders import _build_learned_tool_resolver  # noqa: PLC0415
+
+    _build_learned_tool_resolver(settings, workspace)
     cli_transport_executor = _uses_cli_transport_executor(persona_config)
     llm = None if cli_transport_executor else _build_llm(settings)
     memory = _build_memory(settings)
     compressor = None if cli_transport_executor else _build_compressor(settings, llm)
-    prompt_builder = _build_prompt_builder(settings)
     pre_hooks, post_hooks = _build_hooks(settings)
 
     extended_thinking = (
@@ -56,6 +70,25 @@ async def _run_daemon(
     # Build Mímir adapter early so _agent_factory closure can capture it.
     daemon_mimir = _build_mimir(settings)
     drive_loop: Any | None = None
+    resident_inbox: Any | None = None
+    resident_state: Any | None = None
+    resident_runtime: Any | None = None
+    if settings.initiative.enabled or task_dispatch:
+        resident_inbox = _build_resident_inbox(
+            settings,
+            workspace=workspace,
+            mimir=daemon_mimir,
+        )
+        resident_state = await _build_resident_state(
+            settings,
+            workspace=workspace,
+            mimir=daemon_mimir,
+        )
+        resident_runtime = _build_resident_runtime(
+            settings,
+            state=resident_state,
+            inbox=resident_inbox,
+        )
 
     # Populated by _wire_cron after drive_loop is created; captured by _agent_factory.
     cron_tools: list[Any] = []
@@ -68,6 +101,10 @@ async def _run_daemon(
         from sleipnir.adapters.in_process import InProcessBus
 
         daemon_bus = InProcessBus()
+        if settings.observability.enabled:
+            from ravn.adapters.observability import ObservedSleipnirBus  # noqa: PLC0415
+
+            daemon_bus = ObservedSleipnirBus(daemon_bus)
 
     def _agent_factory(
         channel: ChannelPort,
@@ -149,6 +186,7 @@ async def _run_daemon(
             session_join_manager=(
                 drive_loop._session_join_manager if drive_loop is not None else None
             ),
+            permission=permission,
         )
         if profile_cfg.include_mcp:
             tools.extend(_filter_tools(mcp_tools, settings, resolved_persona))
@@ -160,12 +198,10 @@ async def _run_daemon(
             cascade_tools = getattr(drive_loop, "_cascade_tools", [])
             tools.extend(_filter_tools(cascade_tools, settings, resolved_persona))
 
-            # Add cron scheduling tools (also filtered by persona)
-            if cron_tools:
-                tools.extend(_filter_tools(cron_tools, settings, resolved_persona))
-
-        # NIU-571: Apply trust gradient constraints for thread-triggered tasks
-        tools = _apply_trust_filter(tools, settings, triggered_by)
+        # Cron is temporal agency, not a cascade capability. Exact persona tool
+        # names still control which scheduler operations enter this task.
+        if cron_tools:
+            tools.extend(_filter_tools(cron_tools, settings, resolved_persona))
 
         # NIU-571: Apply trust gradient constraints for thread-triggered tasks
         tools = _apply_trust_filter(tools, settings, triggered_by)
@@ -192,20 +228,24 @@ async def _run_daemon(
             episode_task_max_chars=settings.agent.episode_task_max_chars,
             iteration_budget=budget,
             compressor=compressor,
-            prompt_builder=prompt_builder,
+            prompt_builder=_build_prompt_builder(settings),
             reflection_model=settings.effective_memory_reflection_model(),
             reflection_max_tokens=settings.memory.reflection_max_tokens,
             task_summary_max_chars=settings.memory.task_summary_max_chars,
             input_token_cost_per_million=settings.memory.input_token_cost_per_million,
             output_token_cost_per_million=settings.memory.output_token_cost_per_million,
             extended_thinking=extended_thinking,
-            # NIU-598: session lifecycle events + learnings injection
+            # NIU-598: session lifecycle events for optional reflection storage
             sleipnir_publisher=daemon_bus,
-            reflection_config=settings.effective_post_session_reflection_config(),
             persona=resolved_persona.name if resolved_persona else "",
-            # NIU-612: persona config for outcome parsing + early termination
+            # Persona config drives outcome parsing; stop_on_outcome is retained
+            # only for compatibility and cannot suppress tool execution.
             persona_config=resolved_persona,
             stop_on_outcome=resolved_persona.stop_on_outcome if resolved_persona else False,
+            # NIU-1118: hard per-call prompt budget (0 disables)
+            max_prompt_tokens=settings.context_management.max_prompt_tokens,
+            # NIU-1118: bound one tool result's contribution to history
+            max_tool_result_chars=settings.tools.max_result_chars,
             session_join_manager=(
                 drive_loop._session_join_manager if drive_loop is not None else None
             ),
@@ -214,10 +254,13 @@ async def _run_daemon(
         # daemon's in-process reflection bus — same precedence as the drive
         # loop's sleipnir publisher (closure binds late; the signal publisher
         # is built during daemon boot, before any task runs).
-        return _attach_signal_build_tool(
+        allowed_tools = _expand_allowed_tools(
+            set(resolved_persona.allowed_tools or []) if resolved_persona else set()
+        )
+        return _attach_agent_build_tool(
             agent,
             workspace,
-            triggered_by=triggered_by,
+            enabled="build_tool" in allowed_tools,
             settings=settings,
             publisher=environment_signal_publisher or sleipnir_catalog_publisher or daemon_bus,
             drive_loop=drive_loop,
@@ -256,7 +299,7 @@ async def _run_daemon(
             gw_tasks.append("telegram")
 
         if channels_cfg.http.enabled:
-            ht = HttpGateway(channels_cfg.http, gw)
+            ht = HttpGateway(channels_cfg.http, gw, resident_runtime=resident_runtime)
             tasks.append(asyncio.create_task(ht.run(), name="http"))
             gw_tasks.append("http")
 
@@ -293,6 +336,12 @@ async def _run_daemon(
                         url=amqp_url,
                         exchange_name=settings.sleipnir.exchange,
                     )
+                    if settings.observability.enabled:
+                        from ravn.adapters.observability import (  # noqa: PLC0415
+                            ObservedSleipnirBus,
+                        )
+
+                        sleipnir_catalog_publisher = ObservedSleipnirBus(sleipnir_catalog_publisher)
                     await sleipnir_catalog_publisher.start()
                 except Exception as exc:
                     logger.warning(
@@ -318,6 +367,35 @@ async def _run_daemon(
             or sleipnir_catalog_publisher
             or daemon_bus,
         )
+        if hasattr(drive_loop, "set_persona_config"):
+            drive_loop.set_persona_config(persona_config)
+        if resident_runtime is not None:
+            from ravn.resident_runtime import ResidentHomeTrigger  # noqa: PLC0415
+
+            if hasattr(drive_loop, "set_resident_runtime"):
+                drive_loop.set_resident_runtime(resident_runtime)
+            if hasattr(drive_loop, "register_directed_message_interceptor"):
+                drive_loop.register_directed_message_interceptor(
+                    resident_runtime.consume_directed_message
+                )
+            if resident_inbox is not None and hasattr(drive_loop, "register_trigger"):
+                try:
+                    resident_output_mode = OutputMode(settings.initiative.default_output_mode)
+                except ValueError:
+                    resident_output_mode = OutputMode.AMBIENT
+                drive_loop.register_trigger(
+                    ResidentHomeTrigger(
+                        resident_runtime,
+                        interval_seconds=settings.resident_state.home_wake_interval_seconds,
+                        max_signals=settings.resident_inbox.max_signals_per_wake,
+                        persona=(
+                            persona_config.name
+                            if persona_config is not None
+                            else settings.initiative.default_persona or None
+                        ),
+                        output_mode=resident_output_mode,
+                    )
+                )
         _cron_jobs = _wire_triggers(drive_loop, settings.initiative)
         cron_tools[:] = _wire_cron(drive_loop, _cron_jobs, settings.initiative)
 
@@ -449,6 +527,7 @@ async def _run_daemon(
         mimir=daemon_mimir,
         resident_learning_runtime=resident_learning_runtime,
         resident_wakefulness=resident_wakefulness,
+        resident_inbox=resident_inbox,
         owns_publisher=not environment_signal_publisher_started,
     )
     if environment_signal_runtime is not None:
@@ -555,6 +634,7 @@ async def _run_daemon(
             await resident_learning_runtime.stop()
         if environment_signal_publisher_started and environment_signal_publisher is not None:
             await environment_signal_publisher.stop()
+        shutdown_observability()
         return
 
     try:
@@ -593,3 +673,4 @@ async def _run_daemon(
             await daemon_reflection_svc.stop()
         if sleipnir_catalog_publisher is not None:
             await sleipnir_catalog_publisher.stop()
+        shutdown_observability()

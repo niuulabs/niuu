@@ -139,20 +139,21 @@ async def test_mesh_outcome_subscription_enqueues_work():
     topic, handler = mesh._pending_outcome_subscriptions[0]
     assert topic == "code.requested"
 
-    await handler(
-        RavnEvent(
-            type=RavnEventType.OUTCOME,
-            source="skuld",
-            payload={"event_type": "code.requested", "persona": "skuld"},
-            timestamp=datetime.now(UTC),
-            urgency=0.5,
-            correlation_id="session-123",
-            session_id="session-123",
-            root_correlation_id="session-123",
-        )
+    source_event = RavnEvent(
+        type=RavnEventType.OUTCOME,
+        source="skuld",
+        payload={"event_type": "code.requested", "persona": "skuld"},
+        timestamp=datetime.now(UTC),
+        urgency=0.5,
+        correlation_id="session-123",
+        session_id="session-123",
+        root_correlation_id="session-123",
     )
+    await handler(source_event)
 
     assert dl.queued_task_ids() == ["event_coder_session-"]
+    queued = list(dl._queue._queue)  # type: ignore[attr-defined]
+    assert queued[0][2].workflow_parent_event_id == source_event.event_id
 
 
 @pytest.mark.asyncio
@@ -191,6 +192,78 @@ async def test_mesh_rpc_task_dispatch():
     assert reply["status"] == "accepted"
     assert reply["task_id"] == "rpc-task-1"
     assert dl.task_status("rpc-task-1") == "queued"
+
+
+@pytest.mark.asyncio
+async def test_mesh_rpc_work_request_generates_request_id():
+    """A directed human reply can resume work without supplying an RPC request id."""
+    dl = _make_drive_loop()
+    dl.enqueue = AsyncMock()
+    dl.wait_for_result = AsyncMock(return_value=MagicMock(output="continued"))
+
+    from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
+
+    settings = MagicMock(spec=Settings)
+    settings.cascade = MagicMock()
+    settings.cascade.enabled = True
+    settings.mesh = MagicMock()
+    settings.mesh.enabled = False
+    settings.discovery = MagicMock()
+    settings.discovery.enabled = False
+
+    with patch("ravn.cli.commands._build_mesh", side_effect=RuntimeError("disabled")):
+        with patch("ravn.cli.commands._build_discovery", side_effect=RuntimeError("disabled")):
+            _wire_cascade(dl, settings)
+
+    reply = await dl.handle_rpc(
+        {
+            "type": "work_request",
+            "prompt": "Continue with the local artifact.",
+            "event_type": "human.reply",
+        }
+    )
+
+    assert reply["status"] == "complete"
+    assert reply["request_id"]
+    assert reply["output"] == "continued"
+    dl.enqueue.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_mesh_rpc_directed_message_queues_without_waiting_for_result():
+    """Operator input is acknowledged when Ravn accepts it, not when its turn ends."""
+    dl = _make_drive_loop()
+    dl.handle_directed_message = AsyncMock(return_value=True)
+
+    from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
+
+    settings = MagicMock(spec=Settings)
+    settings.cascade = MagicMock()
+    settings.cascade.enabled = True
+    settings.mesh = MagicMock()
+    settings.mesh.enabled = False
+    settings.discovery = MagicMock()
+    settings.discovery.enabled = False
+
+    with patch("ravn.cli.commands._build_mesh", side_effect=RuntimeError("disabled")):
+        with patch("ravn.cli.commands._build_discovery", side_effect=RuntimeError("disabled")):
+            _wire_cascade(dl, settings)
+
+    metadata = {
+        "help_request_id": "help-1",
+        "session_id": "session-1",
+        "trace_context": {"traceparent": "00-a-b-01"},
+    }
+    reply = await dl.handle_rpc(
+        {
+            "type": "directed_message",
+            "content": "Use the local artifact.",
+            "metadata": metadata,
+        }
+    )
+
+    assert reply == {"status": "accepted"}
+    dl.handle_directed_message.assert_awaited_once_with("Use the local artifact.", metadata)
 
 
 @pytest.mark.asyncio
