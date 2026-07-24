@@ -797,8 +797,7 @@ class A2AToolBuildBackend(ToolBuildBackend):
                 item
                 for item in tasks
                 if isinstance(item, dict)
-                and str(item.get("contextId") or item.get("context_id") or "")
-                == operation_id
+                and str(item.get("contextId") or item.get("context_id") or "") == operation_id
             ),
             None,
         )

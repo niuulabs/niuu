@@ -115,9 +115,7 @@ async def test_environment_event_becomes_resident_inbox_signal(tmp_path) -> None
         event_id="evt-1",
         event_type="environment.signal",
         correlation_id="corr-1",
-        trace_context={
-            "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
-        },
+        trace_context={"traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"},
         timestamp="2026-06-22T12:33:00Z",
         summary="Printer queue stalled",
         payload={

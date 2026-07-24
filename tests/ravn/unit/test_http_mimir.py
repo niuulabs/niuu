@@ -342,9 +342,7 @@ async def test_workload_auth_uses_environment_fallbacks(
     exchange = respx.post("http://identity.test/exchange").mock(
         return_value=Response(200, json={"token": "mimir-token"})
     )
-    request = respx.get("http://mimir.test/mimir/pages").mock(
-        return_value=Response(200, json=[])
-    )
+    request = respx.get("http://mimir.test/mimir/pages").mock(return_value=Response(200, json=[]))
     adapter = HttpMimirAdapter(
         base_url="http://mimir.test",
         auth=MimirAuth(type="workload"),

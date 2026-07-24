@@ -520,11 +520,7 @@ def _bounded_outcome_items(
 ) -> list[str]:
     if not isinstance(value, list | tuple):
         return []
-    items = [
-        _bounded_telegram_text(item, max_length)
-        for item in value
-        if _meaningful_text(item)
-    ]
+    items = [_bounded_telegram_text(item, max_length) for item in value if _meaningful_text(item)]
     return items[:limit]
 
 
@@ -914,14 +910,10 @@ def render_telegram_html(text: str) -> str:
             prefix = ">! " if expandable else "> "
             quote_lines: list[str] = []
             while index < len(lines) and lines[index].startswith(prefix):
-                quote_lines.append(
-                    _render_inline_telegram_html(lines[index][len(prefix) :])
-                )
+                quote_lines.append(_render_inline_telegram_html(lines[index][len(prefix) :]))
                 index += 1
             attribute = " expandable" if expandable else ""
-            rendered.append(
-                f"<blockquote{attribute}>{chr(10).join(quote_lines)}</blockquote>"
-            )
+            rendered.append(f"<blockquote{attribute}>{chr(10).join(quote_lines)}</blockquote>")
             continue
 
         header_cells = _parse_markdown_table_row(line)

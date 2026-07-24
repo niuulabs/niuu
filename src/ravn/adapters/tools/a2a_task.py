@@ -319,9 +319,7 @@ class A2ATaskTool(ToolPort):
                 raise error from exc
             span.set_attribute("http.response.status_code", response.status_code)
             if response.status_code != 200 or not isinstance(response.body, dict):
-                error = _A2ATaskError(
-                    f"A2A {method} returned HTTP {response.status_code}"
-                )
+                error = _A2ATaskError(f"A2A {method} returned HTTP {response.status_code}")
                 telemetry.mark_error(span, type(error).__name__, str(error))
                 raise error
             rpc_error = response.body.get("error")

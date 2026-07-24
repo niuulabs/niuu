@@ -942,9 +942,7 @@ async def test_a2a_backend_recovers_existing_task_by_context_id() -> None:
     )
     backend = _a2a_backend(client, workflow_id="wf-1")
 
-    result = await backend.build(
-        replace(_request(), operation_id="operation-resident-1")
-    )
+    result = await backend.build(replace(_request(), operation_id="operation-resident-1"))
 
     assert result.provenance["a2a_task_id"] == "task-1"
     assert [body["method"] for body in client.post_bodies] == ["ListTasks", "GetTask"]

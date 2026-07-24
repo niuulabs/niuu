@@ -1998,9 +1998,7 @@ class DriveLoop:
                         "ravn.tool.recovery.failed",
                         attributes={
                             "ravn.task.id": task.task_id,
-                            "gen_ai.tool.name": str(
-                                getattr(tool, "name", type(tool).__name__)
-                            ),
+                            "gen_ai.tool.name": str(getattr(tool, "name", type(tool).__name__)),
                             "error.type": type(exc).__name__,
                         },
                         content={"error": str(exc)},
@@ -2016,8 +2014,7 @@ class DriveLoop:
                         content = content[:max_chars].rstrip() + "\n… (truncated)"
                     status = "error" if bool(getattr(result, "is_error", False)) else "completed"
                     recovered.append(
-                        f"### {getattr(tool, 'name', type(tool).__name__)} ({status})\n\n"
-                        f"{content}"
+                        f"### {getattr(tool, 'name', type(tool).__name__)} ({status})\n\n{content}"
                     )
         finally:
             self._current_task_var.reset(token)
@@ -2121,9 +2118,7 @@ class DriveLoop:
                 )
                 prompt_task = replace(
                     prompt_task,
-                    initiative_context=(
-                        f"{prompt_task.initiative_context}\n\n{recovery_context}"
-                    ),
+                    initiative_context=(f"{prompt_task.initiative_context}\n\n{recovery_context}"),
                 )
             prompt = build_initiative_prompt(prompt_task)
             prompt = await self._apply_retrieval_reflex(prompt, task)
@@ -2231,8 +2226,8 @@ class DriveLoop:
                     )
                     turn_result = workflow_repair_result
                     response_text = workflow_repair_result.response
-                structured_outcome, resident_outcome_valid = (
-                    self._decorate_turn_result_outcome(task, turn_result, response_text)
+                structured_outcome, resident_outcome_valid = self._decorate_turn_result_outcome(
+                    task, turn_result, response_text
                 )
                 if isinstance(structured_outcome, Mapping):
                     judgment_attributes = {

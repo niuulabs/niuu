@@ -256,9 +256,7 @@ class TestDriveLoopOutcomeContract:
                 },
             ),
         )
-        dl.set_workflow_allowed_outcomes_resolver(
-            lambda _task, _persona: {"spec.framed"}
-        )
+        dl.set_workflow_allowed_outcomes_resolver(lambda _task, _persona: {"spec.framed"})
         task = _make_agent_task(task_id="task-workflow-repair")
         task.workflow_node_id = "capability-frame"
 
@@ -270,10 +268,7 @@ class TestDriveLoopOutcomeContract:
                 self.prompts.append(prompt)
                 return TurnResult(
                     response=(
-                        "---outcome---\n"
-                        "verdict: framed\n"
-                        "summary: brief is ready\n"
-                        "---end---\n"
+                        "---outcome---\nverdict: framed\nsummary: brief is ready\n---end---\n"
                     ),
                     tool_calls=[],
                     tool_results=[],
@@ -295,7 +290,7 @@ class TestDriveLoopOutcomeContract:
         assert repair_result is not None
         assert repair_result.response.startswith("---outcome---\nverdict: framed")
         assert agent.prompts
-        assert "Routable event types: [\"spec.framed\"]" in agent.prompts[0]
+        assert 'Routable event types: ["spec.framed"]' in agent.prompts[0]
         assert "verdict: help_needed" in agent.prompts[0]
 
     @pytest.mark.asyncio
@@ -308,9 +303,7 @@ class TestDriveLoopOutcomeContract:
                 event_type_map={"framed": "spec.framed"},
             ),
         )
-        dl.set_workflow_allowed_outcomes_resolver(
-            lambda _task, _persona: {"spec.framed"}
-        )
+        dl.set_workflow_allowed_outcomes_resolver(lambda _task, _persona: {"spec.framed"})
         task = _make_agent_task(task_id="task-workflow-routable")
         task.workflow_node_id = "capability-frame"
         agent = AsyncMock()
@@ -318,12 +311,7 @@ class TestDriveLoopOutcomeContract:
         result = await dl._maybe_repair_unroutable_workflow_outcome(
             agent=agent,
             task=task,
-            response_text=(
-                "---outcome---\n"
-                "verdict: framed\n"
-                "summary: brief is ready\n"
-                "---end---\n"
-            ),
+            response_text=("---outcome---\nverdict: framed\nsummary: brief is ready\n---end---\n"),
         )
 
         assert result is None

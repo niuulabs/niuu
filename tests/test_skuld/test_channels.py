@@ -672,8 +672,7 @@ class TestFormatTelegramEvent:
         )
         assert "<b>Evidence</b>" in rendered
         assert (
-            "<blockquote expandable>• First supporting item\n"
-            "• Second supporting item</blockquote>"
+            "<blockquote expandable>• First supporting item\n• Second supporting item</blockquote>"
         ) in rendered
         assert "<blockquote expandable>Status: Present · Wakeful</blockquote>" in rendered
 
@@ -842,8 +841,7 @@ class TestTelegramChannelMocked:
         assert kwargs["text"].startswith("🔎 <b>Ivaldi — Judgment: Investigating</b>")
         assert "<b>Recommended action</b>" in kwargs["text"]
         assert (
-            "<blockquote expandable>The catalog contains one verified learned tool."
-            "</blockquote>"
+            "<blockquote expandable>The catalog contains one verified learned tool.</blockquote>"
         ) in kwargs["text"]
         assert "working_state" not in kwargs["text"]
         assert "internal detail" not in kwargs["text"]

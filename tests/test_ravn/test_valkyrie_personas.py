@@ -225,10 +225,7 @@ def test_ivaldi_can_investigate_and_work_in_its_configured_environment() -> None
     assert persona.forbidden_tools == []
     assert persona.iteration_budget == 80
     assert persona.stop_on_outcome is False
-    assert (
-        "Uncertainty is work to assess, not a reason to stop"
-        in persona.system_prompt_template
-    )
+    assert "Uncertainty is work to assess, not a reason to stop" in persona.system_prompt_template
 
 
 @pytest.mark.parametrize("name", sorted(RESIDENT_VALKYRIES))

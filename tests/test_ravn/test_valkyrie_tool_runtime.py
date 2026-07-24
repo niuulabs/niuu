@@ -1062,7 +1062,7 @@ async def test_contained_runner_fails_closed_for_unenforceable_reach(tmp_path) -
     async def record(argv, stdin, timeout, name):
         nonlocal calls
         calls += 1
-        return _ContainerProcessResult(returncode=0, stdout=b'{}')
+        return _ContainerProcessResult(returncode=0, stdout=b"{}")
 
     tool_path = write_tool(
         tools_dir=tmp_path / "tools",
@@ -1092,9 +1092,7 @@ async def test_contained_runner_fails_closed_for_unenforceable_reach(tmp_path) -
         {},
         entry_point="run",
         timeout_seconds=5,
-        declared_reach=[
-            ToolReachGrant(kind="filesystem", target="/var/run", access="read_write")
-        ],
+        declared_reach=[ToolReachGrant(kind="filesystem", target="/var/run", access="read_write")],
     )
 
     assert not targeted_network.ok

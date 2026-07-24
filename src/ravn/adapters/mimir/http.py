@@ -110,9 +110,10 @@ class HttpMimirAdapter(MimirPort):
         if not proof:
             return ""
 
-        exchange_url = self._auth.exchange_url or os.environ.get(
-            "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", ""
-        ).strip()
+        exchange_url = (
+            self._auth.exchange_url
+            or os.environ.get("NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL", "").strip()
+        )
         if not exchange_url:
             return ""
         audiences = list(self._auth.audiences or ("mimir",))

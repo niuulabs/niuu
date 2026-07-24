@@ -224,11 +224,7 @@ def capability_from_agent_skill(
             "required": ["prompt"],
         },
         required_permission="a2a:task",
-        tags=list(
-            dict.fromkeys(
-                ["agent-skill", agent.kind, *agent.tags, *skill.tags]
-            )
-        ),
+        tags=list(dict.fromkeys(["agent-skill", agent.kind, *agent.tags, *skill.tags])),
         source="agent-card",
         version=agent.card_version,
         metadata={

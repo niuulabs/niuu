@@ -182,9 +182,7 @@ async def test_a2a_task_preserves_task_state_questions_artifacts_and_provenance(
 
 @pytest.mark.asyncio
 async def test_a2a_task_propagates_active_trace_in_message_metadata(monkeypatch) -> None:
-    client = _Client(
-        [{"task": {"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}}}]
-    )
+    client = _Client([{"task": {"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}}}])
     telemetry = MagicMock()
     telemetry.inject.return_value = {
         "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"

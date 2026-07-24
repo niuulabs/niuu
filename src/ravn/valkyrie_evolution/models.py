@@ -121,9 +121,7 @@ class LearnedToolManifest:
             description=str(data.get("description") or ""),
             input_schema=dict(data.get("input_schema") or {"type": "object"}),
             required_permission=str(data.get("required_permission") or ""),
-            declared_reach=[
-                ToolReachGrant.from_dict(item) for item in raw_declared_reach
-            ],
+            declared_reach=[ToolReachGrant.from_dict(item) for item in raw_declared_reach],
             output_schema=dict(data.get("output_schema") or {}),
             entry_point=str(data.get("entry_point") or "run"),
             artifact_type=str(data.get("artifact_type") or "agent_tool"),

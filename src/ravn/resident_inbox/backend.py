@@ -344,9 +344,7 @@ class MimirResidentInbox(ResidentInboxBackend):
             and now - self._last_retention_sweep < self._retention_sweep_interval_seconds
         ):
             if self._retention_sweep_task is None or self._retention_sweep_task.done():
-                delay = self._retention_sweep_interval_seconds - (
-                    now - self._last_retention_sweep
-                )
+                delay = self._retention_sweep_interval_seconds - (now - self._last_retention_sweep)
                 self._retention_sweep_task = asyncio.create_task(
                     self._delayed_retention_sweep(delay)
                 )

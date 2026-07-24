@@ -805,9 +805,7 @@ class TestProtocolSurface:
             metadata={"a2a_context_id": "resident-operation-1"},
         )
         client, _, _ = _make_client(
-            campaign_repo=InMemoryCampaignRepository(
-                [mine, other_context, other_owner]
-            )
+            campaign_repo=InMemoryCampaignRepository([mine, other_context, other_owner])
         )
 
         response = _rpc(

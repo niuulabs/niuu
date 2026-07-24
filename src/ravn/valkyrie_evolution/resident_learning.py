@@ -635,9 +635,7 @@ class ResidentLearningRuntime:
             "signalId": operational_signal.signal_id,
             "capabilityName": capability,
             "decision": (
-                "inspect_with_adopted_learning"
-                if tool_succeeded
-                else "adopted_learning_failed"
+                "inspect_with_adopted_learning" if tool_succeeded else "adopted_learning_failed"
             ),
             "usedAdoptedLearning": True,
             "skillName": skill.name,
@@ -645,9 +643,7 @@ class ResidentLearningRuntime:
             "consecutiveFailures": lifecycle.consecutive_failures,
         }
         if tool_run is not None:
-            result["toolResult"] = (
-                tool_run.result if tool_run.ok else {"error": tool_run.error}
-            )
+            result["toolResult"] = tool_run.result if tool_run.ok else {"error": tool_run.error}
         return result
 
     async def _rollback_regressed_skill(

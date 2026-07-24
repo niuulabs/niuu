@@ -34,8 +34,7 @@ def _signal_from_record(record: dict[str, Any], *, default_kind: str) -> Residen
         summary=summary,
         payload=dict(record),
         trace_context={
-            str(key): str(value)
-            for key, value in dict(record.get("trace_context") or {}).items()
+            str(key): str(value) for key, value in dict(record.get("trace_context") or {}).items()
         },
         raw_ref=str(record.get("evidence_ref") or ""),
         classification=classification,
@@ -236,8 +235,7 @@ def _signal_from_dict(data: dict[str, Any]) -> ResidentInboxSignal:
         summary=str(data.get("summary") or "Resident inbox signal"),
         payload=dict(data.get("payload") or {}),
         trace_context={
-            str(key): str(value)
-            for key, value in dict(data.get("trace_context") or {}).items()
+            str(key): str(value) for key, value in dict(data.get("trace_context") or {}).items()
         },
         raw_ref=str(data.get("raw_ref") or ""),
         classification=str(data.get("classification") or ResidentInboxClassification.UNKNOWN.value),

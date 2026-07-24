@@ -211,9 +211,7 @@ def test_resident_operator_endpoints_require_token_and_resume_case(monkeypatch):
     runtime.pending_questions = AsyncMock(
         return_value=[{"case_id": "case-1", "question": "Which environment?"}]
     )
-    runtime.submit_operator_answer = AsyncMock(
-        return_value={"case_id": "case-1", "queued": True}
-    )
+    runtime.submit_operator_answer = AsyncMock(return_value={"case_id": "case-1", "queued": True})
     ht = HttpGateway(_make_http_config(), _make_gateway_mock(), resident_runtime=runtime)
     client = TestClient(ht.app)
 

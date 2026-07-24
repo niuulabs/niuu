@@ -281,9 +281,7 @@ async def test_resident_installs_learning_and_exposes_it_as_a_signal_hint(tmp_pa
     assert result["capabilityCandidates"][0]["match"] == "exact_capability_name"
     refreshed = await peer_skills.show("valkyrie-inspect-kubernetes-pod-oomkilled")
     assert refreshed["metadata"]["run_count"] == 0
-    assert not any(
-        event.event_type == registry.VALKYRIE_JUDGMENT_PROPOSED for event in events
-    )
+    assert not any(event.event_type == registry.VALKYRIE_JUDGMENT_PROPOSED for event in events)
     projection = ValkyrieDashboardProjection()
     for event in events:
         projection.record_event(event)

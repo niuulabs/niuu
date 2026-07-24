@@ -8,11 +8,7 @@ from pathlib import Path
 
 def test_runtime_dashboard_covers_judgment_and_causal_dependencies() -> None:
     dashboard_path = (
-        Path(__file__).parents[2]
-        / "docs"
-        / "operator"
-        / "grafana"
-        / "valkyrie-runtime.json"
+        Path(__file__).parents[2] / "docs" / "operator" / "grafana" / "valkyrie-runtime.json"
     )
     dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
     panels = dashboard["panels"]
