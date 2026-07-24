@@ -48,6 +48,9 @@ async def _run_daemon(
     base_model = _resolve_persona_model(settings, persona_config)
 
     workspace = _resolve_workspace(settings)
+    from ravn.cli.tool_builders import _build_learned_tool_resolver  # noqa: PLC0415
+
+    _build_learned_tool_resolver(settings, workspace)
     cli_transport_executor = _uses_cli_transport_executor(persona_config)
     llm = None if cli_transport_executor else _build_llm(settings)
     memory = _build_memory(settings)

@@ -1433,6 +1433,10 @@ class TestDaemonAgentFactory:
 
         with (
             patch("ravn.cli.commands._resolve_workspace", return_value=Path("/tmp/workspace")),
+            patch(
+                "ravn.cli.tool_builders._build_learned_tool_resolver",
+                return_value=MagicMock(),
+            ) as publish_inventory,
             patch("ravn.cli.commands._build_llm", return_value=MagicMock()),
             patch("ravn.cli.commands._build_memory", return_value=MagicMock()),
             patch("ravn.cli.commands._build_compressor", return_value=MagicMock()),
@@ -1462,6 +1466,7 @@ class TestDaemonAgentFactory:
             "/tmp/workspace",
             "/tmp/workspace",
         ]
+        publish_inventory.assert_called_once_with(settings, Path("/tmp/workspace"))
         assert recorded[0]["prompt_builder"] is not recorded[1]["prompt_builder"]
         assert recorded[0]["mcp_servers"] == [
             {
