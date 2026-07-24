@@ -1313,7 +1313,11 @@ class CodexWebSocketTransport(CLITransport):
             return
 
         if item_type == "webSearch":
-            await self._emit_tool_use(item_id, "WebSearch", {"query": item.get("query", "")})
+            await self._emit_tool_use(
+                item_id,
+                "WebSearch",
+                self._web_search_activity(item),
+            )
             return
 
     async def _handle_item_completed(self, item: dict) -> None:
@@ -1350,6 +1354,10 @@ class CodexWebSocketTransport(CLITransport):
             result_text = self._extract_item_result_text(item)
             if not result_text:
                 result_text = self._consume_buffered_item_output(item_id)
+            if item_type == "webSearch" and not result_text:
+                activity = self._web_search_activity(item)
+                if activity:
+                    result_text = json.dumps(activity)
             is_error = bool(item.get("isError") or item.get("is_error"))
             await self._emit_tool_result(item_id, result_text, is_error=is_error)
             return
@@ -1395,6 +1403,18 @@ class CodexWebSocketTransport(CLITransport):
             except (TypeError, ValueError):
                 return str(val)
         return ""
+
+    @staticmethod
+    def _web_search_activity(item: dict) -> dict:
+        """Preserve the app-server's truthful search/open/find descriptor."""
+        activity: dict = {}
+        query = item.get("query")
+        if isinstance(query, str) and query:
+            activity["query"] = query
+        action = item.get("action")
+        if isinstance(action, dict):
+            activity["action"] = action
+        return activity
 
     def _buffer_item_output(self, item_id: object, delta: object) -> None:
         """Accumulate incremental tool output until the item completes."""

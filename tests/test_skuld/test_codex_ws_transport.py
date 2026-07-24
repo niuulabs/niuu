@@ -1129,11 +1129,27 @@ class TestItemLifecycle:
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
 
-        await t._handle_item_started({"type": "webSearch", "id": "ws-1", "query": "python async"})
+        await t._handle_item_started(
+            {
+                "type": "webSearch",
+                "id": "ws-1",
+                "query": "python async",
+                "action": {
+                    "type": "search",
+                    "queries": ["python async", "python asyncio"],
+                },
+            }
+        )
 
         assistant_events = _events_of_type(emit, "assistant")
         assert assistant_events[0]["message"]["content"][0]["name"] == "WebSearch"
-        assert assistant_events[0]["message"]["content"][0]["input"]["query"] == "python async"
+        assert assistant_events[0]["message"]["content"][0]["input"] == {
+            "query": "python async",
+            "action": {
+                "type": "search",
+                "queries": ["python async", "python asyncio"],
+            },
+        }
 
     @pytest.mark.asyncio
     async def test_block_index_increments(self, tmp_path):
@@ -2576,7 +2592,7 @@ class TestItemCompletedEdgeCases:
         assert results == [{"type": "tool_result", "tool_use_id": "fc-1", "content": ""}]
 
     @pytest.mark.asyncio
-    async def test_web_search_completed_emits_stop(self, tmp_path):
+    async def test_web_search_completed_preserves_query(self, tmp_path):
         """webSearch completion should remain observable without a result body."""
         t = _make_transport(tmp_path)
         emit = _collect_emits(t)
@@ -2590,7 +2606,37 @@ class TestItemCompletedEdgeCases:
             for event in _events_of_type(emit, "content_block_start")
             if event["content_block"]["type"] == "tool_result"
         ]
-        assert results == [{"type": "tool_result", "tool_use_id": "ws-1", "content": ""}]
+        assert json.loads(results[0]["content"]) == {"query": "test"}
+
+    @pytest.mark.asyncio
+    async def test_web_search_completed_preserves_activity(self, tmp_path):
+        t = _make_transport(tmp_path)
+        emit = _collect_emits(t)
+
+        await t._handle_item_completed(
+            {
+                "type": "webSearch",
+                "id": "ws-1",
+                "query": "NIST RM 8047",
+                "action": {
+                    "type": "openPage",
+                    "url": "https://www.nist.gov/example",
+                },
+            }
+        )
+
+        results = [
+            event["content_block"]
+            for event in _events_of_type(emit, "content_block_start")
+            if event["content_block"]["type"] == "tool_result"
+        ]
+        assert json.loads(results[0]["content"]) == {
+            "query": "NIST RM 8047",
+            "action": {
+                "type": "openPage",
+                "url": "https://www.nist.gov/example",
+            },
+        }
 
     @pytest.mark.asyncio
     async def test_mcp_tool_call_completed_emits_stop(self, tmp_path):
