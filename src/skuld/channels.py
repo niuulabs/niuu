@@ -313,7 +313,7 @@ def _format_judgment_outcome(
 ) -> str:
     decision = str(fields.get("decision") or "").strip()
     title = _judgment_title(decision, outcome_type)
-    lines = [f"{_judgment_emoji(decision, fields)} **{name} — {title}**"]
+    lines = [f"{_judgment_emoji(decision, fields)} **{name} — Judgment: {title}**"]
 
     narrative = _first_meaningful(
         summary,

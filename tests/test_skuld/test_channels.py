@@ -509,7 +509,7 @@ class TestFormatTelegramEvent:
 
         result = format_telegram_event(event)
 
-        assert result.startswith("🔎 **Ivaldi — Investigating**")
+        assert result.startswith("🔎 **Ivaldi — Judgment: Investigating**")
         assert "**Recommended action**" in result
         assert "**Why**" in result
         assert ">! One verified learned tool is available." in result
@@ -839,7 +839,7 @@ class TestTelegramChannelMocked:
         channel._bot.send_message.assert_awaited_once()
         _, kwargs = channel._bot.send_message.call_args
         assert kwargs["parse_mode"] == "HTML"
-        assert kwargs["text"].startswith("🔎 <b>Ivaldi — Investigating</b>")
+        assert kwargs["text"].startswith("🔎 <b>Ivaldi — Judgment: Investigating</b>")
         assert "<b>Recommended action</b>" in kwargs["text"]
         assert (
             "<blockquote expandable>The catalog contains one verified learned tool."
