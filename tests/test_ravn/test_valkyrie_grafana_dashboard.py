@@ -43,4 +43,5 @@ def test_runtime_dashboard_covers_judgment_and_causal_dependencies() -> None:
     assert "ravn_event_bus_operations" in queries
     assert "ravn_trace_boundaries" in queries
     assert "ravn_trace_relationship" in queries
+    assert 'ravn_runtime_component="resident"' in queries
     assert "span.ravn.task.id" in queries

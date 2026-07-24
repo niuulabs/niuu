@@ -35,6 +35,7 @@ from ravn.domain.models import (
 from ravn.ports.channel import ChannelPort
 from ravn.ports.checkpoint import CheckpointPort
 from ravn.ports.executor import ExecutionAgentPort, ExecutorPort
+from ravn.tool_observability import tool_argument_attributes
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,7 @@ class CliTransportAgent(ExecutionAgentPort):
         self._session_join_manager = session_join_manager
         self._interrupt_reason: InterruptReason | None = None
         self._current_tool_names: dict[str, str] = {}
+        self._tool_started_at: dict[str, float] = {}
         self._turn_tool_calls: list[ToolCall] = []
         self._turn_tool_results: list[ToolResult] = []
 
@@ -370,6 +372,7 @@ class CliTransportAgent(ExecutionAgentPort):
 
         correlation_id = str(self._session.id)
         self._current_tool_names.clear()
+        self._tool_started_at.clear()
         self._turn_tool_calls = []
         self._turn_tool_results = []
         self._session.add_message(Message(role="user", content=user_input))
@@ -580,6 +583,7 @@ class CliTransportAgent(ExecutionAgentPort):
         self._turn_tool_results.append(
             ToolResult(tool_call_id=tool_use_id, content=result, is_error=is_error)
         )
+        self._record_tool_metric(tool_use_id, tool_name, is_error=is_error)
         if not is_error:
             await self._join_launched_workflow_session(tool_name, result)
         await self._channel.emit(
@@ -652,9 +656,20 @@ class CliTransportAgent(ExecutionAgentPort):
             return
         normalized_input = tool_input if isinstance(tool_input, dict) else {}
         self._current_tool_names[tool_use_id] = tool_name
+        self._tool_started_at[tool_use_id] = monotonic()
         self._turn_tool_calls.append(
             ToolCall(id=tool_use_id, name=tool_name, input=normalized_input)
         )
+        metric_name = self._metric_tool_name(tool_name)
+        if metric_name in self._tools:
+            get_observability().count(
+                "ravn.trace.boundaries",
+                attributes={
+                    "ravn.trace.relationship": "remote_parent",
+                    "ravn.trace.component": "tool_execution",
+                },
+                description="Explicit cross-process and restart trace boundaries.",
+            )
         await self._channel.emit(
             RavnEvent.tool_start(
                 source=self._source_id,
@@ -665,6 +680,39 @@ class CliTransportAgent(ExecutionAgentPort):
                 task_id=self._task_id,
             )
         )
+
+    def _record_tool_metric(self, tool_use_id: str, tool_name: str, *, is_error: bool) -> None:
+        telemetry = get_observability()
+        metric_name = self._metric_tool_name(tool_name)
+        call = next(
+            (item for item in self._turn_tool_calls if item.id == tool_use_id),
+            None,
+        )
+        attributes = {
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.tool.name": metric_name,
+            "gen_ai.agent.name": self._persona or "ravn",
+            "ravn.tool.outcome": "error" if is_error else "success",
+            "ravn.tool.telemetry_source": "cli_transport",
+            **tool_argument_attributes(metric_name, call.input if call is not None else {}),
+        }
+        if is_error:
+            attributes["error.type"] = "tool_error"
+        telemetry.count("ravn.agent.tool.calls", attributes=attributes)
+        started = self._tool_started_at.pop(tool_use_id, None)
+        if started is not None:
+            telemetry.duration(
+                "ravn.agent.tool.duration",
+                monotonic() - started,
+                attributes=attributes,
+                description="Duration of a resident tool execution.",
+            )
+
+    def _metric_tool_name(self, tool_name: str) -> str:
+        if tool_name in self._tools:
+            return tool_name
+        suffix = tool_name.rsplit("__", 1)[-1]
+        return suffix if suffix in self._tools else tool_name
 
 
 class CliTransportExecutor(ExecutorPort):

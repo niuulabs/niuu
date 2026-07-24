@@ -102,8 +102,8 @@
       "gridPos": {"h": 9, "w": 8, "x": 0, "y": 20},
       "id": 20,
       "options": {"displayMode": "gradient", "orientation": "horizontal", "reduceOptions": {"calcs": ["sum"], "fields": "", "values": false}},
-      "targets": [{"expr": "sum by (gen_ai_tool_name,ravn_learned_tool_name,ravn_tool_outcome) (increase(ravn_agent_tool_calls{job=~\"$job\"}[$__range]))", "instant": true, "legendFormat": "{{gen_ai_tool_name}} {{ravn_learned_tool_name}} / {{ravn_tool_outcome}}", "refId": "A"}],
-      "title": "Tool calls in range",
+      "targets": [{"expr": "sum by (gen_ai_tool_name,ravn_learned_tool_name,ravn_tool_outcome) (ravn_agent_tool_calls{job=~\"$job\",ravn_runtime_component=\"resident\"})", "instant": true, "legendFormat": "{{gen_ai_tool_name}} {{ravn_learned_tool_name}} / {{ravn_tool_outcome}}", "refId": "A"}],
+      "title": "Tool calls since daemon start",
       "type": "bargauge"
     },
     {
@@ -112,8 +112,8 @@
       "gridPos": {"h": 9, "w": 8, "x": 8, "y": 20},
       "id": 21,
       "options": {"displayMode": "gradient", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
-      "targets": [{"expr": "histogram_quantile(0.95, sum by (le,gen_ai_tool_name) (rate(ravn_agent_tool_duration_bucket{job=~\"$job\"}[$__rate_interval])))", "instant": true, "legendFormat": "{{gen_ai_tool_name}}", "refId": "A"}],
-      "title": "Tool latency p95",
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le,gen_ai_tool_name) (ravn_agent_tool_duration_bucket{job=~\"$job\",ravn_runtime_component=\"resident\"}))", "instant": true, "legendFormat": "{{gen_ai_tool_name}}", "refId": "A"}],
+      "title": "Tool latency p95 since daemon start",
       "type": "bargauge"
     },
     {
@@ -222,8 +222,8 @@
       "gridPos": {"h": 7, "w": 24, "x": 0, "y": 60},
       "id": 44,
       "options": {"displayMode": "gradient", "orientation": "horizontal", "reduceOptions": {"calcs": ["sum"], "fields": "", "values": false}},
-      "targets": [{"expr": "sum by (ravn_trace_relationship,ravn_trace_component) (increase(ravn_trace_boundaries{job=~\"$job\"}[$__range]))", "instant": true, "legendFormat": "{{ravn_trace_relationship}} / {{ravn_trace_component}}", "refId": "A"}],
-      "title": "Trace boundaries in range",
+      "targets": [{"expr": "sum by (ravn_trace_relationship,ravn_trace_component) (ravn_trace_boundaries{job=~\"$job\",ravn_runtime_component=\"resident\"})", "instant": true, "legendFormat": "{{ravn_trace_relationship}} / {{ravn_trace_component}}", "refId": "A"}],
+      "title": "Trace boundaries since daemon start",
       "type": "bargauge"
     },
     {

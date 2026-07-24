@@ -169,8 +169,10 @@ through its existing dashboard sidecar and GitOps configuration. Open the live
 dashboard, select a resident service, and click a Trace ID in **Recent resident
 task traces** to inspect its complete Tempo span timeline. **Installed learned
 tools** distinguishes the durable artifact envelope from the separately
-materialized Python tool. **Trace boundaries in range** shows the remote-parent
-MCP crossings and restart-recovery links where a trajectory crosses a process
-or lifetime boundary. Tempo collector warning metrics are not ingested into the
-`eitri` Mimir tenant, so the dashboard does not fabricate a zero-valued warning
-panel.
+materialized Python tool. **Trace boundaries since daemon start** shows the
+remote-parent MCP crossings and restart-recovery links where a trajectory
+crosses a process or lifetime boundary. Tool totals and latency are also scoped
+to the current daemon lifetime: the resident process records the completed
+Codex tool event while the short-lived MCP process records the exact child
+span. Tempo collector warning metrics are not ingested into the `eitri` Mimir
+tenant, so the dashboard does not fabricate a zero-valued warning panel.

@@ -30,6 +30,7 @@ async def _run_daemon(
             "deployment.environment.name": settings.environment.id,
             "ravn.environment.id": settings.environment.id,
             "ravn.environment.type": settings.environment.type,
+            "ravn.runtime.component": "resident",
         },
     )
 

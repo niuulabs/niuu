@@ -28,7 +28,7 @@ async def execute_observed_tool[T](
         "gen_ai.tool.name": name,
         "gen_ai.tool.type": "function",
         "gen_ai.agent.name": agent_name or "ravn",
-        **_argument_attributes(name, arguments),
+        **tool_argument_attributes(name, arguments),
     }
     if conversation_id:
         attributes["gen_ai.conversation.id"] = conversation_id
@@ -154,7 +154,8 @@ def publish_learned_tool_inventory(artifacts: Iterable[Any]) -> int:
     return count
 
 
-def _argument_attributes(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def tool_argument_attributes(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Return bounded identity attributes derived from one tool invocation."""
     attributes: dict[str, Any] = {}
     for input_name, attribute_name in (
         ("action", "ravn.tool.action"),
@@ -180,4 +181,8 @@ def _argument_attributes(name: str, arguments: dict[str, Any]) -> dict[str, Any]
     return attributes
 
 
-__all__ = ["execute_observed_tool", "publish_learned_tool_inventory"]
+__all__ = [
+    "execute_observed_tool",
+    "publish_learned_tool_inventory",
+    "tool_argument_attributes",
+]

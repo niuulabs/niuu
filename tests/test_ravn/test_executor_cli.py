@@ -495,6 +495,63 @@ async def test_cli_transport_agent_emits_event_variants_and_filters_transport_kw
 
 
 @pytest.mark.asyncio
+async def test_cli_transport_agent_records_durable_tool_metrics(monkeypatch) -> None:
+    pytest.importorskip("opentelemetry.sdk")
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.trace import TracerProvider
+
+    import niuu.observability as observability_module
+    from niuu.observability import Observability
+
+    metric_reader = InMemoryMetricReader()
+    telemetry = Observability(
+        tracer_provider=TracerProvider(),
+        meter_provider=MeterProvider(metric_readers=[metric_reader]),
+    )
+    monkeypatch.setattr(observability_module, "_active", telemetry)
+    agent, _ = _make_agent()
+
+    await agent._emit_content_block(
+        {
+            "type": "tool_use",
+            "id": "tool-1",
+            "name": "mcp__ravn_tools__alpha",
+            "input": {"value": "hello"},
+        },
+        "conversation-1",
+    )
+    await agent._record_tool_result_block(
+        {
+            "type": "tool_result",
+            "tool_use_id": "tool-1",
+            "content": "ok",
+            "is_error": False,
+        },
+        "conversation-1",
+    )
+
+    metrics = {
+        metric.name: metric
+        for resource in metric_reader.get_metrics_data().resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+    }
+    assert {
+        "ravn.agent.tool.calls",
+        "ravn.agent.tool.duration",
+        "ravn.trace.boundaries",
+    } <= metrics.keys()
+    call_point = metrics["ravn.agent.tool.calls"].data.data_points[0]
+    assert call_point.attributes["gen_ai.tool.name"] == "alpha"
+    assert call_point.attributes["ravn.tool.outcome"] == "success"
+    assert call_point.attributes["ravn.tool.telemetry_source"] == "cli_transport"
+    boundary_point = metrics["ravn.trace.boundaries"].data.data_points[0]
+    assert boundary_point.attributes["ravn.trace.relationship"] == "remote_parent"
+    telemetry.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_cli_transport_agent_joins_ting_workflow_result() -> None:
     class JoinManager:
         def __init__(self) -> None:
