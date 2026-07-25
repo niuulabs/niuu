@@ -1127,6 +1127,13 @@ class PlatformToolsConfig(BaseModel):
         ge=1_000,
         description="Maximum model-facing A2A task snapshot size.",
     )
+    a2a_default_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Default metadata for new A2A tasks. Explicit tool input overrides these "
+            "values; Ravn always sets skillId and traceContext itself."
+        ),
+    )
     workflow_aliases: dict[str, PlatformWorkflowAliasConfig] = Field(
         default_factory=dict,
         description=(

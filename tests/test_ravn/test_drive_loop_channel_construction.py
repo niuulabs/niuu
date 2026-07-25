@@ -206,6 +206,8 @@ Determine whether the observations require action.
         ]
         assert status["queue_capacity"] == 10
         assert status["queued_tasks"] == []
+        assert status["a2a_count"] == 0
+        assert status["a2a_tasks"] == []
         assert status["model"] == "test-model"
 
     def test_resident_hud_status_describes_waiting_tasks(self):
@@ -230,6 +232,110 @@ Determine whether the observations require action.
                 "input_summary": "Signals since your last look — 3 observation(s)",
             }
         ]
+
+    def test_resident_hud_status_projects_latest_non_terminal_a2a_task(self):
+        dl, _ = _make_drive_loop_with_mesh(cascade_enabled=True)
+        parent = _make_task("parent-task")
+        dl._active_tasks[parent.task_id] = MagicMock()
+        dl._inflight_tasks[parent.task_id] = parent
+        dl._result_store.start(parent.task_id, parent.triggered_by)
+        started_at = datetime(2026, 7, 25, 10, 0, tzinfo=UTC)
+        observed_at = datetime(2026, 7, 25, 10, 1, tzinfo=UTC)
+        dl._result_store.append_event(
+            parent.task_id,
+            CapturedEvent(
+                type="tool_start",
+                summary="tool: a2a_task(...)",
+                timestamp=started_at,
+                details={
+                    "tool_name": "a2a_task",
+                    "input": {
+                        "operation": "start",
+                        "agent_id": "agent-1",
+                        "skill_id": "research",
+                        "prompt": "Investigate the observed fault.",
+                    },
+                },
+            ),
+        )
+        dl._result_store.append_event(
+            parent.task_id,
+            CapturedEvent(
+                type="tool_result",
+                summary="→ working",
+                timestamp=observed_at,
+                details={
+                    "tool_name": "a2a_task",
+                    "result": {
+                        "operation": "start",
+                        "agent_id": "agent-1",
+                        "task_id": "task-1",
+                        "state": "TASK_STATE_INPUT_REQUIRED",
+                        "input_required": True,
+                        "pending_questions": [{"question": "Which firmware version?"}],
+                    },
+                    "is_error": False,
+                },
+            ),
+        )
+
+        status = dl.resident_hud_status()
+
+        assert status["a2a_count"] == 1
+        assert status["a2a_tasks"] == [
+            {
+                "agent_id": "agent-1",
+                "skill_id": "research",
+                "task_id": "task-1",
+                "state": "TASK_STATE_INPUT_REQUIRED",
+                "operation": "start",
+                "input_required": True,
+                "question": "Which firmware version?",
+                "prompt": "Investigate the observed fault.",
+                "status_message": "",
+                "parent_task_id": "parent-task",
+                "parent_active": True,
+                "started_at": started_at.isoformat(),
+                "observed_at": observed_at.isoformat(),
+            }
+        ]
+
+        dl._result_store.append_event(
+            parent.task_id,
+            CapturedEvent(
+                type="tool_start",
+                summary="tool: a2a_task(...)",
+                timestamp=observed_at,
+                details={
+                    "tool_name": "a2a_task",
+                    "input": {
+                        "operation": "get",
+                        "agent_id": "agent-1",
+                        "task_id": "task-1",
+                    },
+                },
+            ),
+        )
+        dl._result_store.append_event(
+            parent.task_id,
+            CapturedEvent(
+                type="tool_result",
+                summary="→ complete",
+                timestamp=datetime(2026, 7, 25, 10, 2, tzinfo=UTC),
+                details={
+                    "tool_name": "a2a_task",
+                    "result": {
+                        "operation": "get",
+                        "agent_id": "agent-1",
+                        "task_id": "task-1",
+                        "state": "TASK_STATE_COMPLETED",
+                    },
+                    "is_error": False,
+                },
+            ),
+        )
+
+        assert dl.resident_hud_status()["a2a_tasks"] == []
 
     @pytest.mark.asyncio
     async def test_no_cascade_skuld_and_mesh_uses_composite(self):
