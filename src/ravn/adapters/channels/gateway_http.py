@@ -100,6 +100,21 @@ class HttpGateway:
             allow_headers=["*"],
         )
 
+        # KNOWN DEBT (NIU-TBD): this is a static shared secret compared with
+        # compare_digest, not a standard token flow, and it contradicts
+        # .claude/rules/architecture.md ("never build custom auth/token layers —
+        # always delegate to standard OIDC/OAuth2 flows"). It is not one of the
+        # sanctioned exceptions (PATs, scoped Valkyrie build tokens).
+        #
+        # The primitives to replace it already exist and need no new auth code:
+        # niuu.adapters.workload_identity.jwt.JwtWorkloadIdentityVerifier for
+        # workload JWTs, or niuu.domain.services.pat_validator.PATValidator for
+        # PATs. Both return trusted claims, so the guard becomes a claims check
+        # rather than a secret comparison.
+        #
+        # Retained deliberately for now: it predates this endpoint and is the
+        # only thing gating the resident operator surface. Do not extend it to
+        # further endpoints without replacing it first.
         def require_operator(authorization: str | None = Header(default=None)) -> None:
             token = os.environ.get(self._config.operator_token_env, "").strip()
             if not token:
