@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from ravn.adapters.resident_state.gbrain import GBrainResidentStateAdapter
 from ravn.adapters.resident_state.mimir import LocalResidentState, MimirResidentState
 from ravn.domain.models import TokenUsage
 from ravn.domain.resident_continuation import (
+    ResidentMemoryEntry,
     ResidentPolicyObservation,
+    ResidentScheduledWakeRecord,
     ResidentTurnRecord,
     ResidentWorkingStateRecord,
 )
+from ravn.resident_continuation import _scheduled_wake_at
 
 
 class RecordingGBrainResidentState(GBrainResidentStateAdapter):
@@ -186,3 +191,59 @@ async def test_gbrain_availability_gates_selection(tmp_path) -> None:
     assert await present.available() is True
     assert await select_resident_state(present, fallback) is present
     assert await fallback.available() is True
+
+
+@pytest.mark.parametrize("adapter", ["local", "mimir"])
+@pytest.mark.asyncio
+async def test_scheduled_wakes_round_trip_through_either_store(tmp_path, adapter):
+    """Both stores must persist, list, and retire a wake identically.
+
+    The resident's wake source cannot depend on which memory backend a
+    deployment happens to have configured.
+    """
+    from mimir.adapters.markdown import MarkdownMimirAdapter
+
+    if adapter == "local":
+        state = LocalResidentState(tmp_path)
+    else:
+        state = MimirResidentState(MarkdownMimirAdapter(root=tmp_path / "mimir"))
+
+    wake_at = datetime(2026, 8, 1, 9, 0, tzinfo=UTC)
+    ref = await state.write_scheduled_wake(
+        ResidentScheduledWakeRecord(
+            case_id="case-filament",
+            root_correlation_id="root-filament",
+            wake_at=wake_at,
+            reason="re-check filament stock",
+            mandate="steward the workshop",
+            turn_index=2,
+        )
+    )
+
+    assert ref
+    pending = await state.list_scheduled_wakes()
+    assert len(pending) == 1
+    assert _scheduled_wake_at(pending[0].content) == wake_at
+    assert "re-check filament stock" in pending[0].content
+
+    consumed_ref = await state.consume_scheduled_wake(pending[0])
+
+    assert consumed_ref == pending[0].path
+    # A consumed wake must never be listed again, or the case re-fires forever.
+    assert await state.list_scheduled_wakes() == []
+
+
+@pytest.mark.asyncio
+async def test_consuming_a_wake_whose_page_vanished_still_retires_it(tmp_path):
+    """A wake page deleted out from under the runtime must still be retired."""
+    from mimir.adapters.markdown import MarkdownMimirAdapter
+
+    state = MimirResidentState(MarkdownMimirAdapter(root=tmp_path / "mimir"))
+    missing = ResidentMemoryEntry(
+        path="resident/continuation/cases/case-gone/scheduled-wake/latest.md",
+        summary="Resident Scheduled Wake",
+        content="# Resident Scheduled Wake\n\n- status: pending\n- case_id: case-gone\n",
+    )
+
+    assert await state.consume_scheduled_wake(missing) == missing.path
+    assert await state.list_scheduled_wakes() == []
