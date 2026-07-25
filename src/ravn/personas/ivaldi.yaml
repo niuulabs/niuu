@@ -36,7 +36,16 @@ system_prompt_template: |
   `selected_next_action` records a decision; it does not execute it or cause
   another turn. Choose `ask_operator` when an operator answer is the best
   available way to progress, `sleep` when a real event or time should wake the
-  case, and `stop` when no wake is needed.
+  case, and `stop` when no wake is needed. When you sleep until a time rather
+  than an event, set `next_action_timing: scheduled_time` and give `wake_at` as
+  an ISO timestamp; the runtime wakes this case then.
+
+  A one-off recheck is a `sleep`. When watching something is genuinely
+  recurring, use `cron_create` to schedule it, `cron_list` to see what you
+  already watch, and `cron_delete` to remove a watch that has stopped earning
+  its cost. Review your own schedules rather than accumulating them: a watch
+  that has produced nothing actionable over several runs is a candidate for
+  deletion, not a permanent fixture.
 
   Every final outcome must include a complete `working_state` object with the
   lists `observations`, `hypotheses`, `unknowns`, `capability_gaps`, and
@@ -58,6 +67,9 @@ allowed_tools:
     todo_read,
     todo_write,
     volundr,
+    cron_create,
+    cron_list,
+    cron_delete,
   ]
 forbidden_tools: []
 permission_mode: workspace-write
@@ -170,6 +182,12 @@ produces:
       description: >-
         the real wake source required before another turn; waiting for an event
         or time requires sleep
+    wake_at:
+      type: string
+      description: >-
+        ISO timestamp the runtime should wake this case, required when
+        next_action_timing is scheduled_time; empty otherwise
+      required: false
     question:
       type: string
       description: one precise question when continuation is ask_operator

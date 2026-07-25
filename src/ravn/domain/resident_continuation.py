@@ -158,6 +158,30 @@ class ResidentWorkingStateRecord:
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
+@dataclass(frozen=True)
+class ResidentScheduledWakeRecord:
+    """A resident-requested wake for one durable case at a future time.
+
+    Written when a turn selects ``sleep`` with ``next_action_timing:
+    scheduled_time``.  Without it the case has no wake source and the runtime
+    would silently forget a decision the model actually made.
+    """
+
+    case_id: str
+    root_correlation_id: str
+    wake_at: datetime
+    reason: str
+    mandate: str = ""
+    turn_index: int = 0
+    turn_ref: str = ""
+    persona: str = ""
+    task_id: str = ""
+    case_input_tokens: int = 0
+    case_output_tokens: int = 0
+    case_started_at: str = ""
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
 RESIDENT_WORKING_STATE_FIELDS = (
     "observations",
     "hypotheses",

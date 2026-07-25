@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -10,12 +12,14 @@ from ravn.config import InitiativeConfig, Settings
 from ravn.domain.models import AgentTask, OutputMode, TokenUsage, ToolCall, ToolResult, TurnResult
 from ravn.domain.resident_continuation import (
     ContinuationDecisionKind,
+    ResidentScheduledWakeRecord,
     ResidentWorkingStateRecord,
     validate_resident_working_state,
 )
 from ravn.drive_loop import DriveLoop
+from ravn.resident_continuation import _scheduled_wake_at
 from ravn.resident_inbox import MimirResidentInbox, ResidentInboxStatus
-from ravn.resident_runtime import ResidentRuntime
+from ravn.resident_runtime import ResidentHomeTrigger, ResidentRuntime, _metadata
 
 
 def _result(
@@ -173,8 +177,11 @@ async def test_sleep_waits_for_an_external_wake_without_queueing(tmp_path) -> No
     )
 
     assert disposition.kind is ContinuationDecisionKind.SLEEP
-    assert disposition.reason == "model selected sleep"
+    assert disposition.reason == "model selected sleep pending an external event"
     assert queued == []
+    # An external-event sleep already has a wake source: the next observation.
+    assert disposition.wake_ref == ""
+    assert await state.list_scheduled_wakes() == []
 
 
 @pytest.mark.asyncio
@@ -827,3 +834,442 @@ async def test_drive_loop_sends_completed_turn_to_resident_runtime(tmp_path) -> 
     assert any("/turns/" in ref for ref in refs)
     assert any(ref.endswith("/budget/latest.md") for ref in refs)
     assert "prior state reaches the execution prompt" in prompts[0]
+
+
+# ---------------------------------------------------------------------------
+# Scheduled wakes: a sleeping case must actually come back.
+# ---------------------------------------------------------------------------
+
+
+async def _sleep_turn(runtime: ResidentRuntime, fields: dict) -> object:
+    return await runtime.handle_completed_turn(
+        task=_task(),
+        prompt="recheck later",
+        result=_result({"continuation": "sleep", **fields}),
+        response_text="nothing more to do until the recheck",
+    )
+
+
+@pytest.mark.asyncio
+async def test_scheduled_sleep_persists_a_durable_wake(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state)
+    wake_at = datetime.now(UTC) + timedelta(hours=6)
+
+    disposition = await _sleep_turn(
+        runtime,
+        {"next_action_timing": "scheduled_time", "wake_at": wake_at.isoformat()},
+    )
+
+    assert disposition.kind is ContinuationDecisionKind.SLEEP
+    assert disposition.wake_ref
+    assert disposition.wake_at == wake_at.isoformat()
+    pending = await state.list_scheduled_wakes()
+    assert len(pending) == 1
+    assert _scheduled_wake_at(pending[0].content) == wake_at
+    assert _metadata(pending[0].content, "case_input_tokens") == "10"
+    assert _metadata(pending[0].content, "case_output_tokens") == "5"
+
+
+@pytest.mark.asyncio
+async def test_scheduled_sleep_without_a_timestamp_uses_the_configured_default(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state, scheduled_wake_default_seconds=120)
+    before = datetime.now(UTC)
+
+    disposition = await _sleep_turn(runtime, {"next_action_timing": "scheduled_time"})
+
+    # The case still gets a real wake source rather than being silently dropped.
+    assert disposition.wake_ref
+    wake_at = _scheduled_wake_at((await state.list_scheduled_wakes())[0].content)
+    assert before + timedelta(seconds=119) <= wake_at <= before + timedelta(seconds=125)
+
+
+@pytest.mark.asyncio
+async def test_a_wake_time_in_the_past_is_pushed_forward(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state, scheduled_wake_default_seconds=60)
+    stale = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+
+    await _sleep_turn(runtime, {"next_action_timing": "scheduled_time", "wake_at": stale})
+
+    wake_at = _scheduled_wake_at((await state.list_scheduled_wakes())[0].content)
+    assert wake_at > datetime.now(UTC)
+
+
+@pytest.mark.asyncio
+async def test_a_due_wake_is_consumed_only_after_the_resumed_turn_succeeds(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state)
+    queued: list[AgentTask] = []
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime.bind_enqueue(enqueue)
+    await state.write_scheduled_wake(
+        ResidentScheduledWakeRecord(
+            case_id="case-recheck",
+            root_correlation_id="root-recheck",
+            wake_at=datetime.now(UTC) - timedelta(minutes=1),
+            reason="recheck the filament stock",
+            mandate="steward the workshop",
+            turn_index=2,
+        )
+    )
+
+    assert await runtime.resume_due_wakes() == 1
+    assert len(queued) == 1
+    assert queued[0].resident_case_id == "case-recheck"
+    assert queued[0].triggered_by == "resident:scheduled_wake"
+    assert queued[0].resident_turn_index == 3
+    assert queued[0].resident_wake_ref
+    assert "recheck the filament stock" in queued[0].initiative_context
+    # Queue admission is not completion. Keep the marker pending so a failed
+    # execution can be retried, while the in-flight case suppresses duplicates.
+    assert len(await state.list_scheduled_wakes()) == 1
+    assert await runtime.resume_due_wakes() == 0
+
+    await runtime.handle_completed_turn(
+        task=queued[0],
+        prompt="scheduled recheck",
+        result=_result({"continuation": "stop"}),
+        response_text="recheck completed",
+    )
+
+    assert await state.list_scheduled_wakes() == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_resumed_turn_leaves_the_wake_pending_for_retry(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state)
+    queued: list[AgentTask] = []
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime.bind_enqueue(enqueue)
+    await state.write_scheduled_wake(
+        ResidentScheduledWakeRecord(
+            case_id="case-retry",
+            root_correlation_id="root-retry",
+            wake_at=datetime.now(UTC) - timedelta(minutes=1),
+            reason="retry after an executor failure",
+        )
+    )
+
+    assert await runtime.resume_due_wakes() == 1
+    runtime.release_failed_task(queued[0])
+
+    assert len(await state.list_scheduled_wakes()) == 1
+    assert await runtime.resume_due_wakes() == 1
+    assert len(queued) == 2
+
+
+@pytest.mark.asyncio
+async def test_scheduled_resume_preserves_and_enforces_the_turn_budget(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state, max_turns=3)
+    queued: list[AgentTask] = []
+    started_at = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime.bind_enqueue(enqueue)
+    await state.write_scheduled_wake(
+        ResidentScheduledWakeRecord(
+            case_id="case-budgeted",
+            root_correlation_id="root-budgeted",
+            wake_at=datetime.now(UTC) - timedelta(minutes=1),
+            reason="bounded recheck",
+            turn_index=2,
+            case_input_tokens=40,
+            case_output_tokens=20,
+            case_started_at=started_at,
+        )
+    )
+
+    assert await runtime.resume_due_wakes() == 1
+    resumed = queued[0]
+    assert resumed.resident_turn_index == 3
+    assert resumed.resident_input_tokens == 40
+    assert resumed.resident_output_tokens == 20
+    assert resumed.resident_started_at == started_at
+
+    disposition = await runtime.handle_completed_turn(
+        task=resumed,
+        prompt="schedule another recheck",
+        result=_result(
+            {
+                "continuation": "sleep",
+                "next_action_timing": "scheduled_time",
+                "wake_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+            }
+        ),
+        response_text="another recheck would exceed the case budget",
+    )
+
+    assert disposition.kind is ContinuationDecisionKind.STOP
+    assert "turn budget" in disposition.reason
+    assert await state.list_scheduled_wakes() == []
+
+
+@pytest.mark.asyncio
+async def test_scheduled_resume_enforces_the_cumulative_token_budget(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state, max_turns=5, max_tokens=100)
+    queued: list[AgentTask] = []
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime.bind_enqueue(enqueue)
+    await state.write_scheduled_wake(
+        ResidentScheduledWakeRecord(
+            case_id="case-token-budget",
+            root_correlation_id="root-token-budget",
+            wake_at=datetime.now(UTC) - timedelta(minutes=1),
+            reason="token-bounded recheck",
+            turn_index=1,
+            case_input_tokens=80,
+            case_output_tokens=10,
+        )
+    )
+
+    assert await runtime.resume_due_wakes() == 1
+    disposition = await runtime.handle_completed_turn(
+        task=queued[0],
+        prompt="schedule another recheck",
+        result=_result(
+            {
+                "continuation": "sleep",
+                "next_action_timing": "scheduled_time",
+                "wake_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+            }
+        ),
+        response_text="another recheck would exceed the token budget",
+    )
+
+    assert disposition.kind is ContinuationDecisionKind.STOP
+    assert "token budget" in disposition.reason
+    assert await state.list_scheduled_wakes() == []
+
+
+@pytest.mark.asyncio
+async def test_a_future_wake_is_left_pending(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state)
+    queued: list[AgentTask] = []
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime.bind_enqueue(enqueue)
+    await state.write_scheduled_wake(
+        ResidentScheduledWakeRecord(
+            case_id="case-later",
+            root_correlation_id="root-later",
+            wake_at=datetime.now(UTC) + timedelta(hours=3),
+            reason="not yet",
+        )
+    )
+
+    assert await runtime.resume_due_wakes() == 0
+    assert queued == []
+    assert len(await state.list_scheduled_wakes()) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_wake_stays_pending_for_the_next_poll(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state)
+
+    async def enqueue(task: AgentTask) -> bool:
+        return False
+
+    runtime.bind_enqueue(enqueue)
+    await state.write_scheduled_wake(
+        ResidentScheduledWakeRecord(
+            case_id="case-busy",
+            root_correlation_id="root-busy",
+            wake_at=datetime.now(UTC) - timedelta(minutes=5),
+            reason="queue was full",
+        )
+    )
+
+    assert await runtime.resume_due_wakes() == 0
+    # A wake dropped by a full queue must not be lost.
+    assert len(await state.list_scheduled_wakes()) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_wake_time_is_consumed_rather_than_retried_forever(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state)
+    queued: list[AgentTask] = []
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime.bind_enqueue(enqueue)
+    ref = await state.write_scheduled_wake(
+        ResidentScheduledWakeRecord(
+            case_id="case-broken",
+            root_correlation_id="root-broken",
+            wake_at=datetime.now(UTC),
+            reason="malformed",
+        )
+    )
+    path = tmp_path / ref
+    path.write_text(
+        re.sub(
+            r"^- wake_at: .*$",
+            "- wake_at: not-a-timestamp",
+            path.read_text(encoding="utf-8"),
+            flags=re.MULTILINE,
+        ),
+        encoding="utf-8",
+    )
+
+    assert await runtime.resume_due_wakes() == 0
+    assert queued == []
+    assert await state.list_scheduled_wakes() == []
+
+
+# ---------------------------------------------------------------------------
+# Stewardship wakes: charter-driven turns when nothing was observed.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stewardship_is_disabled_by_default(tmp_path) -> None:
+    runtime = ResidentRuntime(state=LocalResidentState(tmp_path), charter="steward the workshop")
+
+    task = await runtime.next_stewardship_task(persona=None, output_mode=OutputMode.AMBIENT)
+
+    assert task is None
+
+
+@pytest.mark.asyncio
+async def test_stewardship_fires_for_a_resident_that_has_never_run(tmp_path) -> None:
+    runtime = ResidentRuntime(
+        state=LocalResidentState(tmp_path),
+        charter="keep the workshop printing reliably",
+        resident_personality="careful",
+        stewardship_interval_seconds=60,
+    )
+
+    task = await runtime.next_stewardship_task(persona="ivaldi", output_mode=OutputMode.AMBIENT)
+
+    assert task is not None
+    assert task.triggered_by == "resident:stewardship"
+    assert task.resident_case_id.startswith("resident-stewardship-")
+    assert "keep the workshop printing reliably" in task.initiative_context
+    assert "careful" in task.initiative_context
+    # The turn must not push the model toward manufacturing work.
+    assert "nothing warrants action is a correct" in task.initiative_context
+
+
+@pytest.mark.asyncio
+async def test_stewardship_defers_while_the_resident_is_still_recently_active(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    await state.write_working_state(
+        ResidentWorkingStateRecord(
+            resident_id="resident",
+            state={"observations": ["just looked"]},
+            source_turn_ref="turn-1",
+            source_case_id="case-1",
+            source_task_id="task-1",
+        )
+    )
+    runtime = ResidentRuntime(
+        state=state,
+        resident_id="resident",
+        charter="steward the workshop",
+        stewardship_interval_seconds=3600,
+    )
+
+    assert await runtime.next_stewardship_task(persona=None, output_mode=OutputMode.AMBIENT) is None
+
+
+@pytest.mark.asyncio
+async def test_stewardship_fires_once_the_working_state_has_gone_stale(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    await state.write_working_state(
+        ResidentWorkingStateRecord(
+            resident_id="resident",
+            state={"observations": ["looked a while ago"]},
+            source_turn_ref="turn-1",
+            source_case_id="case-1",
+            source_task_id="task-1",
+            updated_at=datetime.now(UTC) - timedelta(hours=9),
+        )
+    )
+    runtime = ResidentRuntime(
+        state=state,
+        resident_id="resident",
+        charter="steward the workshop",
+        stewardship_interval_seconds=3600,
+    )
+
+    task = await runtime.next_stewardship_task(persona=None, output_mode=OutputMode.AMBIENT)
+
+    assert task is not None
+    assert "9.0h" in task.initiative_context
+
+
+@pytest.mark.asyncio
+async def test_stewardship_defers_while_another_case_is_in_flight(tmp_path) -> None:
+    runtime = ResidentRuntime(
+        state=LocalResidentState(tmp_path),
+        charter="steward the workshop",
+        stewardship_interval_seconds=60,
+    )
+    runtime.track_task(_task(resident_case_id="case-running"))
+
+    assert await runtime.next_stewardship_task(persona=None, output_mode=OutputMode.AMBIENT) is None
+
+
+@pytest.mark.asyncio
+async def test_home_trigger_falls_through_to_stewardship_on_an_empty_inbox(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    inbox = MimirResidentInbox(MarkdownMimirAdapter(tmp_path / "inbox"))
+    runtime = ResidentRuntime(
+        state=state,
+        inbox=inbox,
+        charter="steward the workshop",
+        stewardship_interval_seconds=60,
+    )
+    trigger = ResidentHomeTrigger(
+        runtime,
+        interval_seconds=60,
+        max_signals=5,
+        persona="ivaldi",
+        output_mode=OutputMode.AMBIENT,
+    )
+    queued: list[AgentTask] = []
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    assert await trigger.run_once(enqueue) is True
+    assert len(queued) == 1
+    assert queued[0].triggered_by == "resident:stewardship"
+
+
+def test_empty_metadata_does_not_absorb_the_next_line() -> None:
+    content = "# Marker\n\n- turn_ref: \n- wake_at: 2026-07-25T09:00:00+00:00\n"
+
+    # A blank value must read as blank; otherwise a case resumes against an
+    # unrelated reference and the runtime raises on a ref that never existed.
+    assert _metadata(content, "turn_ref") == ""
+    assert _metadata(content, "wake_at") == "2026-07-25T09:00:00+00:00"

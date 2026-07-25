@@ -9,7 +9,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from niuu.observability import get_observability
@@ -18,6 +18,7 @@ from ravn.domain.resident_continuation import (
     ContinuationDecisionKind,
     ResidentBudgetSnapshot,
     ResidentMemoryEntry,
+    ResidentScheduledWakeRecord,
     ResidentTurnRecord,
     ResidentWorkingStateRecord,
     resident_working_state_from_outcome,
@@ -26,6 +27,7 @@ from ravn.domain.resident_continuation import (
 )
 from ravn.domain.resident_state import ResidentStatePort
 from ravn.ports.trigger import TriggerPort
+from ravn.resident_continuation import _scheduled_wake_at
 from ravn.resident_inbox import ResidentInboxBackend, ResidentInboxStatus
 from ravn.resident_text import compact_line
 
@@ -59,7 +61,12 @@ useful progress requires a future external event or passage of time, use `sleep`
 observation or configured schedule will wake the resident. Use `ask_operator` when an operator's
 knowledge, intent, or authority is the best available way to progress, and `stop` when no wake
 is required. Declare `next_action_timing` as `external_event` or `scheduled_time` for sleep,
-`operator_input` for ask_operator, and `none` for stop."""
+`operator_input` for ask_operator, and `none` for stop.
+
+When you sleep with `scheduled_time`, also give `wake_at` as an ISO timestamp. The runtime
+persists it and wakes this same case at that time; without a usable `wake_at` it falls back to
+its configured default delay. Sleeping with `external_event` schedules nothing — the next
+observation is the wake source."""
 
 
 @dataclass(frozen=True)
@@ -74,6 +81,8 @@ class ResidentTurnDisposition:
     continuation_task_id: str = ""
     operator_ref: str = ""
     question: str = ""
+    wake_ref: str = ""
+    wake_at: str = ""
 
 
 class ResidentRuntime:
@@ -91,6 +100,8 @@ class ResidentRuntime:
         max_tokens: int = 0,
         context_max_chars: int = 12000,
         tool_result_max_chars: int = 2000,
+        scheduled_wake_default_seconds: float = 3600.0,
+        stewardship_interval_seconds: float = 0.0,
     ) -> None:
         self._state = state
         self._inbox = inbox
@@ -101,6 +112,8 @@ class ResidentRuntime:
         self._max_tokens = max(0, int(max_tokens))
         self._context_max_chars = max(1000, int(context_max_chars))
         self._tool_result_max_chars = max(100, int(tool_result_max_chars))
+        self._scheduled_wake_default_seconds = max(1.0, float(scheduled_wake_default_seconds))
+        self._stewardship_interval_seconds = max(0.0, float(stewardship_interval_seconds))
         self._enqueue: EnqueueResidentTask | None = None
         self._inflight_cases: set[str] = set()
         self._inflight_refs: set[str] = set()
@@ -365,21 +378,69 @@ class ResidentRuntime:
             answer = await self._state.read_operator_answer(case_id)
             if answer is not None and answer.path == task.resident_answer_ref:
                 await self._state.consume_operator_answer(answer)
+        if task.resident_wake_ref:
+            wake = await self._state.read(task.resident_wake_ref)
+            if wake is not None and wake.path == task.resident_wake_ref:
+                with telemetry.span(
+                    "ravn.port.resident_state.consume_scheduled_wake",
+                    attributes={
+                        "ravn.resident.case_id": case_id,
+                        "ravn.resident.wake_ref": task.resident_wake_ref,
+                    },
+                ):
+                    await self._state.consume_scheduled_wake(wake)
 
         self._inflight_cases.discard(case_id)
         self._inflight_refs.difference_update(task.resident_inbox_refs)
         control = str(fields.get("continuation") or "").strip().casefold()
-        if control in {"sleep", "stop"}:
+        if control == "sleep":
+            timing = str(fields.get("next_action_timing") or "").strip().casefold()
+            if timing == "scheduled_time":
+                budget_reason = _budget_stop_reason(
+                    turn_index=turn_index,
+                    total_tokens=cumulative.total_tokens,
+                    max_turns=self._max_turns,
+                    max_tokens=self._max_tokens,
+                )
+                if budget_reason:
+                    return ResidentTurnDisposition(
+                        kind=ContinuationDecisionKind.STOP,
+                        case_id=case_id,
+                        turn_ref=turn_ref,
+                        budget_ref=budget_ref,
+                        reason=budget_reason,
+                    )
+            wake_ref, wake_at = await self._schedule_wake(
+                task=task,
+                fields=fields,
+                case_id=case_id,
+                root_id=root_id,
+                turn_ref=turn_ref,
+                turn_index=turn_index,
+                mandate=mandate,
+                cumulative=cumulative,
+            )
             return ResidentTurnDisposition(
-                kind=(
-                    ContinuationDecisionKind.SLEEP
-                    if control == "sleep"
-                    else ContinuationDecisionKind.STOP
-                ),
+                kind=ContinuationDecisionKind.SLEEP,
                 case_id=case_id,
                 turn_ref=turn_ref,
                 budget_ref=budget_ref,
-                reason=f"model selected {control}",
+                reason=(
+                    f"model selected sleep until {wake_at}"
+                    if wake_at
+                    else "model selected sleep pending an external event"
+                ),
+                wake_ref=wake_ref,
+                wake_at=wake_at,
+            )
+
+        if control == "stop":
+            return ResidentTurnDisposition(
+                kind=ContinuationDecisionKind.STOP,
+                case_id=case_id,
+                turn_ref=turn_ref,
+                budget_ref=budget_ref,
+                reason="model selected stop",
             )
 
         if _asks_operator(fields, control):
@@ -429,6 +490,155 @@ class ResidentRuntime:
                 else "no selected next action"
             ),
         )
+
+    async def _schedule_wake(
+        self,
+        *,
+        task: AgentTask,
+        fields: Mapping[str, Any],
+        case_id: str,
+        root_id: str,
+        turn_ref: str,
+        turn_index: int,
+        mandate: str,
+        cumulative: TokenUsage,
+    ) -> tuple[str, str]:
+        """Persist a durable wake when a sleeping turn expects time to pass.
+
+        A turn sleeping on ``external_event`` already has a wake source: the next
+        observation. Only ``scheduled_time`` needs the runtime to remember it.
+        """
+        timing = str(fields.get("next_action_timing") or "").strip().casefold()
+        if timing != "scheduled_time":
+            return "", ""
+        telemetry = get_observability()
+        now = datetime.now(UTC)
+        wake_at, fallback_reason = self._resolve_wake_at(fields.get("wake_at"), now)
+        if fallback_reason:
+            telemetry.event(
+                "ravn.resident.scheduled_wake_defaulted",
+                attributes={
+                    "ravn.resident.case_id": case_id,
+                    "ravn.resident.wake_fallback_reason": fallback_reason,
+                },
+                content={"wake_at": str(fields.get("wake_at") or "")},
+            )
+        with telemetry.span(
+            "ravn.port.resident_state.write_scheduled_wake",
+            attributes={"ravn.resident.case_id": case_id},
+        ) as span:
+            wake_ref = await self._state.write_scheduled_wake(
+                ResidentScheduledWakeRecord(
+                    case_id=case_id,
+                    root_correlation_id=root_id,
+                    wake_at=wake_at,
+                    reason=str(
+                        fields.get("selected_next_action")
+                        or fields.get("recommended_action")
+                        or "scheduled recheck"
+                    ),
+                    mandate=mandate,
+                    turn_index=turn_index,
+                    turn_ref=turn_ref,
+                    persona=task.persona or "",
+                    task_id=task.task_id,
+                    case_input_tokens=cumulative.input_tokens,
+                    case_output_tokens=cumulative.output_tokens,
+                    case_started_at=task.resident_started_at or task.created_at.isoformat(),
+                )
+            )
+            span.set_attribute("ravn.resident.wake_ref", wake_ref)
+        telemetry.count(
+            "ravn.resident.scheduled_wakes",
+            attributes={"ravn.resident.id": self._resident_id},
+            description="Durable resident wakes scheduled for a future time.",
+        )
+        return wake_ref, wake_at.isoformat()
+
+    def _resolve_wake_at(self, raw: Any, now: datetime) -> tuple[datetime, str]:
+        """Resolve the requested wake time, falling back to the configured delay."""
+        default = now + timedelta(seconds=self._scheduled_wake_default_seconds)
+        text = str(raw or "").strip()
+        if not text:
+            return default, "no wake_at supplied"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return default, "wake_at was not a valid ISO timestamp"
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        if parsed <= now:
+            return default, "wake_at was already in the past"
+        return parsed, ""
+
+    async def resume_due_wakes(self) -> int:
+        """Re-enqueue durable cases whose scheduled wake time has arrived."""
+        telemetry = get_observability()
+        now = datetime.now(UTC)
+        queued = 0
+        with telemetry.span(
+            "ravn.port.resident_state.list_scheduled_wakes",
+            attributes={"ravn.resident.id": self._resident_id},
+        ) as span:
+            wakes = await self._state.list_scheduled_wakes()
+            span.set_attribute("ravn.resident.scheduled_wake.pending_count", len(wakes))
+        telemetry.gauge(
+            "ravn.resident.scheduled_wakes.pending",
+            len(wakes),
+            attributes={"ravn.resident.id": self._resident_id},
+            description="Durable scheduled resident wakes still pending.",
+        )
+        for wake in wakes:
+            case_id = _metadata(wake.content, "case_id") or _case_from_path(wake.path)
+            if not case_id or case_id in self._inflight_cases:
+                continue
+            wake_at = _scheduled_wake_at(wake.content)
+            if wake_at is None:
+                # A wake with no readable time can never become due; consume it so
+                # it cannot accumulate as permanent invisible backlog.
+                telemetry.event(
+                    "ravn.resident.scheduled_wake_unreadable",
+                    attributes={
+                        "ravn.resident.case_id": case_id,
+                        "ravn.resident.wake_ref": wake.path,
+                    },
+                )
+                with telemetry.span(
+                    "ravn.port.resident_state.consume_scheduled_wake",
+                    attributes={"ravn.resident.wake_ref": wake.path},
+                ):
+                    await self._state.consume_scheduled_wake(wake)
+                continue
+            if wake_at > now:
+                continue
+            task = _scheduled_wake_task(
+                wake,
+                wake_at=wake_at,
+                prior_turn_handoff=await self._read_parent_handoff(wake),
+            )
+            accepted = await self._enqueue_task(task)
+            telemetry.event(
+                "ravn.resident.scheduled_wake_resumed",
+                attributes={
+                    "ravn.resident.case_id": case_id,
+                    "ravn.resident.wake_ref": wake.path,
+                    "ravn.resident.wake_queued": accepted,
+                    "ravn.resident.wake_lag_seconds": max(
+                        0.0,
+                        (now - wake_at).total_seconds(),
+                    ),
+                },
+            )
+            if not accepted:
+                continue
+            self._inflight_cases.add(case_id)
+            telemetry.count(
+                "ravn.resident.scheduled_wake_resumptions",
+                attributes={"ravn.resident.id": self._resident_id},
+                description="Due scheduled resident wakes accepted by the task queue.",
+            )
+            queued += 1
+        return queued
 
     async def _ask_operator(
         self,
@@ -641,6 +851,104 @@ class ResidentRuntime:
         self._inflight_refs.update(refs)
         return task
 
+    async def next_stewardship_task(
+        self,
+        *,
+        persona: str | None,
+        output_mode: OutputMode,
+    ) -> AgentTask | None:
+        """Ask the resident to reconsider its environment when nothing woke it.
+
+        Every other wake path requires an inbound observation, so a quiet
+        environment produces no turns at all. This is the charter-driven wake: it
+        runs only when the resident has been idle longer than the configured
+        interval, and only when the deployment opts in.
+        """
+        if self._stewardship_interval_seconds <= 0:
+            return None
+        if self._inflight_cases:
+            # Any queued or running case means the resident is not idle. Waiting
+            # also keeps a stewardship turn from racing the case that is about to
+            # refresh the working state this turn reads.
+            return None
+        now = datetime.now(UTC)
+        quiet_seconds, last_examined = await self._quiet_seconds(now)
+        if quiet_seconds < self._stewardship_interval_seconds:
+            return None
+        telemetry = get_observability()
+        case_id = f"resident-stewardship-{now.strftime('%Y%m%dT%H%M%SZ')}"
+        context_lines = [
+            "Resident stewardship turn. No new observation prompted this; the "
+            "environment has simply gone unexamined for a while.",
+            "",
+            f"Time since the resident last recorded working state: {_duration(quiet_seconds)}.",
+            f"Last examined: {last_examined or 'never — this is the first stewardship turn'}.",
+            "",
+        ]
+        if self._resident_personality or self._charter:
+            context_lines.append("Configured resident context:")
+            if self._resident_personality:
+                context_lines.append(f"- Personality: {self._resident_personality}")
+            if self._charter:
+                context_lines.append(f"- Charter: {self._charter}")
+            context_lines.append("")
+        context_lines.extend(
+            (
+                "Judge, against the charter and your durable working state, whether "
+                "anything in this environment now deserves attention: a stale belief "
+                "worth re-checking, an unknown worth resolving, a risk worth "
+                "investigating, or an improvement worth proposing.",
+                "",
+                "Deciding that nothing warrants action is a correct and expected "
+                "outcome. Do not manufacture work to justify this turn. Prefer "
+                "`stop` or `sleep` over acting on a hypothesis you cannot ground in "
+                "evidence you actually have or can obtain now.",
+            )
+        )
+        task = AgentTask(
+            task_id=_task_id("resident_stewardship"),
+            title="Resident stewardship turn",
+            initiative_context="\n".join(context_lines),
+            triggered_by="resident:stewardship",
+            output_mode=output_mode,
+            persona=persona,
+            root_correlation_id=case_id,
+            resident_case_id=case_id,
+            resident_turn_index=1,
+            resident_started_at=now.isoformat(),
+        )
+        task.resident_mandate = task.initiative_context
+        self._inflight_cases.add(case_id)
+        telemetry.event(
+            "ravn.resident.stewardship_wake",
+            attributes={
+                "ravn.resident.id": self._resident_id,
+                "ravn.resident.case_id": case_id,
+                "ravn.resident.quiet_seconds": quiet_seconds,
+            },
+            content={"last_examined": last_examined},
+        )
+        return task
+
+    async def _quiet_seconds(self, now: datetime) -> tuple[float, str]:
+        """Seconds since the resident last recorded working state.
+
+        The working state is rewritten on every completed turn, so its age is
+        already an accurate idle clock — no separate stewardship bookkeeping is
+        needed. A resident that has never run is treated as maximally overdue.
+        """
+        prior = await self._state.read_working_state(self._resident_id)
+        if prior is None:
+            return float("inf"), ""
+        updated_at = _metadata(prior.content, "updated_at")
+        try:
+            parsed = datetime.fromisoformat(updated_at)
+        except ValueError:
+            return float("inf"), updated_at
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return max(0.0, (now - parsed).total_seconds()), updated_at
+
     async def retry_unconsumed_answers(self) -> int:
         queued = 0
         for answer in await self._state.list_operator_answers():
@@ -724,11 +1032,19 @@ class ResidentHomeTrigger(TriggerPort):
     async def run_once(self, enqueue: EnqueueResidentTask) -> bool:
         self._runtime.bind_enqueue(enqueue)
         await self._runtime.retry_unconsumed_answers()
+        await self._runtime.resume_due_wakes()
         task = await self._runtime.next_home_task(
             limit=self._max_signals,
             persona=self._persona,
             output_mode=self._output_mode,
         )
+        if task is None:
+            # Nothing observed. The charter is still a standing responsibility, so
+            # give the resident a turn to reconsider it when it has gone quiet.
+            task = await self._runtime.next_stewardship_task(
+                persona=self._persona,
+                output_mode=self._output_mode,
+            )
         if task is None:
             return False
         accepted = await enqueue(task)
@@ -776,6 +1092,50 @@ def _operator_resume_task(
         resident_output_tokens=_int_metadata(pending.content, "case_output_tokens", 0),
         resident_started_at=_metadata(pending.content, "created_at"),
         resident_answer_ref=answer_ref,
+    )
+
+
+def _scheduled_wake_task(
+    wake: ResidentMemoryEntry,
+    *,
+    wake_at: datetime,
+    prior_turn_handoff: str = "",
+) -> AgentTask:
+    case_id = _metadata(wake.content, "case_id") or _case_from_path(wake.path)
+    root_id = _metadata(wake.content, "root_correlation_id") or case_id
+    prior_turn_index = _int_metadata(wake.content, "turn", 0)
+    mandate = _section(wake.content, "Mandate") or wake.content
+    reason = _metadata(wake.content, "reason")
+    context = (
+        f"Resume resident case {case_id}: the scheduled wake time has arrived.\n"
+        f"Scheduled for: {wake_at.isoformat()}\n"
+        f"Reason recorded when sleeping: {reason or 'scheduled recheck'}\n"
+        f"Durable wake reference: {wake.path}\n\n"
+        "## Prior-turn handoff\n\n"
+        f"{prior_turn_handoff or '(no relevant prior-turn details)'}\n\n"
+        "Time passing is not evidence. Re-check what you intended to re-check, revise "
+        "the working state against what you actually find, and continue the same case "
+        "with the normal structured outcome. Stopping is a valid outcome when the "
+        "recheck shows nothing further is warranted."
+    )
+    return AgentTask(
+        task_id=_task_id("resident_wake"),
+        title=f"Resume resident case {case_id}",
+        initiative_context=context,
+        triggered_by="resident:scheduled_wake",
+        output_mode=OutputMode.SURFACE,
+        persona=_metadata(wake.content, "persona") or None,
+        priority=1,
+        root_correlation_id=root_id,
+        resident_case_id=case_id,
+        resident_mandate=mandate,
+        resident_turn_index=prior_turn_index + 1,
+        resident_input_tokens=_int_metadata(wake.content, "case_input_tokens", 0),
+        resident_output_tokens=_int_metadata(wake.content, "case_output_tokens", 0),
+        resident_started_at=(
+            _metadata(wake.content, "case_started_at") or _metadata(wake.content, "created_at")
+        ),
+        resident_wake_ref=wake.path,
     )
 
 
@@ -876,7 +1236,13 @@ def _pending_view(entry: ResidentMemoryEntry) -> dict[str, str]:
 
 
 def _metadata(content: str, key: str) -> str:
-    match = re.search(rf"^- {re.escape(key)}:\s*(.*?)\s*$", content, flags=re.MULTILINE)
+    # Horizontal whitespace only: a plain ``\s*`` crosses the newline after an
+    # empty value and captures the *next* metadata line's value instead.
+    match = re.search(
+        rf"^- {re.escape(key)}:[^\S\n]*(.*?)[^\S\n]*$",
+        content,
+        flags=re.MULTILINE,
+    )
     return match.group(1).strip().strip("'\"") if match else ""
 
 
@@ -932,6 +1298,19 @@ def _elapsed(started_at: str) -> float:
         return max(0.0, (datetime.now(UTC) - started).total_seconds())
     except (TypeError, ValueError):
         return 0.0
+
+
+def _duration(seconds: float) -> str:
+    """Render an idle span for the prompt without implying false precision."""
+    if seconds == float("inf"):
+        return "unknown (no prior working state)"
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.0f}m"
+    if seconds < 86400:
+        return f"{seconds / 3600:.1f}h"
+    return f"{seconds / 86400:.1f}d"
 
 
 __all__ = ["ResidentHomeTrigger", "ResidentRuntime", "ResidentTurnDisposition"]
