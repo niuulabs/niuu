@@ -87,6 +87,19 @@ class TestIngressTemplate:
         assert _service_for_path(rendered, "/s") == "niuu-test-volundr"
 
 
+def test_observatory_image_tag_overrides_global_default() -> None:
+    rendered = _render_niuu_chart(
+        "--set",
+        "global.image.tag=global-tag",
+        "--set",
+        "observatory.image.tag=observatory-tag",
+    )
+
+    assert _deployment_image(rendered, "niuu-test-observatory") == (
+        "ghcr.io/niuulabs/niuu:observatory-tag"
+    )
+
+
 def test_guild_envoy_accepts_websocket_upgrades() -> None:
     envoy_template = (GUILD_CHART_DIR / "templates" / "envoy-configmap.yaml").read_text()
 
@@ -142,3 +155,14 @@ def _service_for_path(rendered_yaml: str, path: str) -> str:
                 if route["path"] == path:
                     return route["backend"]["service"]["name"]
     raise AssertionError(f"route path not found: {path}")
+
+
+def _deployment_image(rendered_yaml: str, name: str) -> str:
+    for document in yaml.safe_load_all(rendered_yaml):
+        if (
+            isinstance(document, dict)
+            and document.get("kind") == "Deployment"
+            and document.get("metadata", {}).get("name") == name
+        ):
+            return document["spec"]["template"]["spec"]["containers"][0]["image"]
+    raise AssertionError(f"deployment not found: {name}")
