@@ -91,6 +91,15 @@ _DREAM_CYCLE_TRIGGER = "dream_cycle:cron"
 _DREAM_COUNT_FIELDS = ("pages_updated", "entities_created", "lint_fixes")
 _RAVN_TASK_STARTED = "ravn.task.started"
 _TRACEPARENT_PATTERN = re.compile(r"^[\da-fA-F]{2}-([\da-fA-F]{32})-[\da-fA-F]{16}-[\da-fA-F]{2}$")
+_A2A_TERMINAL_STATES = frozenset(
+    {
+        "TASK_STATE_CANCELED",
+        "TASK_STATE_CANCELLED",
+        "TASK_STATE_COMPLETED",
+        "TASK_STATE_FAILED",
+        "TASK_STATE_REJECTED",
+    }
+)
 
 
 def _bounded_hud_text(value: str, limit: int) -> str:
@@ -133,6 +142,120 @@ def _resident_hud_task_input(task: AgentTask, limit: int) -> dict[str, str]:
         "observations": _bounded_hud_text(observations, limit),
         "objective": _bounded_hud_text(objective, limit),
     }
+
+
+def _resident_hud_a2a_tasks(
+    results: tuple[TaskResult, ...],
+    *,
+    active_parent_ids: set[str],
+) -> list[dict[str, object]]:
+    """Project the latest observed state of non-terminal A2A tasks."""
+    sessions: dict[str, dict[str, object]] = {}
+    for result in results:
+        pending_input: dict[str, object] | None = None
+        pending_started_at: datetime | None = None
+        for event in result.events:
+            details = event.details if isinstance(event.details, dict) else {}
+            if details.get("tool_name") != "a2a_task":
+                continue
+            if event.type == "tool_start":
+                supplied = details.get("input")
+                pending_input = dict(supplied) if isinstance(supplied, dict) else {}
+                pending_started_at = event.timestamp
+                continue
+            if event.type != "tool_result":
+                continue
+            payload = details.get("result")
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except ValueError:
+                    payload = {}
+            if not isinstance(payload, dict):
+                pending_input = None
+                pending_started_at = None
+                continue
+
+            agent_id = str(payload.get("agent_id") or (pending_input or {}).get("agent_id") or "")
+            task_id = str(payload.get("task_id") or (pending_input or {}).get("task_id") or "")
+            if not agent_id or not task_id:
+                pending_input = None
+                pending_started_at = None
+                continue
+            state = str(payload.get("state") or "TASK_STATE_UNSPECIFIED")
+            key = f"{agent_id}:{task_id}"
+            if state in _A2A_TERMINAL_STATES:
+                sessions.pop(key, None)
+            else:
+                prior = sessions.get(key, {})
+                questions = payload.get("pending_questions")
+                if isinstance(questions, str):
+                    try:
+                        questions = json.loads(questions)
+                    except ValueError:
+                        questions = []
+                question = ""
+                if isinstance(questions, list) and questions and isinstance(questions[0], dict):
+                    question = str(questions[0].get("question") or "")
+                task_input = pending_input or {}
+                sessions[key] = {
+                    "agent_id": agent_id,
+                    "skill_id": str(task_input.get("skill_id") or prior.get("skill_id") or ""),
+                    "task_id": task_id,
+                    "state": state,
+                    "operation": str(payload.get("operation") or task_input.get("operation") or ""),
+                    "input_required": bool(payload.get("input_required")),
+                    "question": _bounded_hud_text(question, 500),
+                    "prompt": _bounded_hud_text(
+                        str(task_input.get("prompt") or prior.get("prompt") or ""),
+                        500,
+                    ),
+                    "status_message": _bounded_hud_text(
+                        str(payload.get("status_message") or ""),
+                        500,
+                    ),
+                    "parent_task_id": result.task_id,
+                    "parent_active": result.task_id in active_parent_ids,
+                    "started_at": prior.get("started_at")
+                    or (pending_started_at or event.timestamp).isoformat(),
+                    "observed_at": event.timestamp.isoformat(),
+                }
+            pending_input = None
+            pending_started_at = None
+
+        if pending_input is not None and pending_started_at is not None:
+            agent_id = str(pending_input.get("agent_id") or "")
+            if agent_id:
+                supplied_task_id = str(pending_input.get("task_id") or "")
+                key = (
+                    supplied_task_id
+                    and f"{agent_id}:{supplied_task_id}"
+                    or (f"call:{result.task_id}:{pending_started_at.isoformat()}")
+                )
+                prior = sessions.get(key, {})
+                sessions[key] = {
+                    "agent_id": agent_id,
+                    "skill_id": str(pending_input.get("skill_id") or prior.get("skill_id") or ""),
+                    "task_id": supplied_task_id,
+                    "state": "CALL_IN_PROGRESS",
+                    "operation": str(pending_input.get("operation") or ""),
+                    "input_required": False,
+                    "question": "",
+                    "prompt": _bounded_hud_text(
+                        str(pending_input.get("prompt") or prior.get("prompt") or ""),
+                        500,
+                    ),
+                    "status_message": "",
+                    "parent_task_id": result.task_id,
+                    "parent_active": result.task_id in active_parent_ids,
+                    "started_at": prior.get("started_at") or pending_started_at.isoformat(),
+                    "observed_at": pending_started_at.isoformat(),
+                }
+    return sorted(
+        sessions.values(),
+        key=lambda item: str(item.get("observed_at") or ""),
+        reverse=True,
+    )
 
 
 def _trace_id_from_carrier(carrier: Mapping[str, str]) -> str:
@@ -1222,8 +1345,10 @@ class DriveLoop:
     def resident_hud_status(self) -> dict[str, object]:
         """Return factual, bounded-by-store runtime state for the resident HUD."""
         context_limit = self._settings.gateway.channels.http.resident_hud_task_context_max_chars
+        active_task_ids = self.active_task_ids()
+        active_parent_ids = set(active_task_ids)
         active: list[dict[str, object]] = []
-        for task_id in self.active_task_ids():
+        for task_id in active_task_ids:
             task = self._inflight_tasks.get(task_id) or self._active_task_contexts.get(task_id)
             result = self._result_store.get(task_id)
             events = list(result.events if result is not None else [])
@@ -1289,12 +1414,18 @@ class DriveLoop:
                 list(self._queue._queue)  # type: ignore[attr-defined]
             )
         ]
+        a2a_tasks = _resident_hud_a2a_tasks(
+            self._result_store.results(),
+            active_parent_ids=active_parent_ids,
+        )
         return {
             "active_tasks": active,
             "active_count": len(active),
             "queued_count": self._queue.qsize(),
             "queue_capacity": self._config.task_queue_max,
             "queued_tasks": queued,
+            "a2a_tasks": a2a_tasks,
+            "a2a_count": len(a2a_tasks),
             "model": self._settings.effective_model(),
         }
 

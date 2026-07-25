@@ -112,6 +112,24 @@
   .activity-event.tool_start{border-color:var(--obs)}
   .activity-event.error,.activity-event.warning{border-color:var(--gap)}
   .activity-event.error .event-main,.activity-event.warning .event-result{color:var(--gap)}
+  .a2a-panel{border:1px solid var(--line2);background:rgba(168,112,245,.05);
+    margin-bottom:10px}
+  .a2a-panel[hidden]{display:none}
+  .a2a-panel>header{display:flex;align-items:center;justify-content:space-between;
+    padding:6px 8px;border-bottom:1px solid var(--line);color:var(--unk);
+    font-size:9px;letter-spacing:.16em;text-transform:uppercase}
+  .a2a-list{display:flex;flex-direction:column;gap:1px}
+  .a2a-task{padding:8px;border-left:2px solid var(--unk);background:var(--panel2)}
+  .a2a-task.input-required{border-left-color:var(--hyp)}
+  .a2a-task .a2a-title{display:flex;align-items:center;justify-content:space-between;
+    gap:8px;color:var(--tx);font-size:10px}
+  .a2a-task .a2a-state{color:var(--unk);font-size:8.5px;letter-spacing:.08em;
+    text-transform:uppercase;white-space:nowrap}
+  .a2a-task.input-required .a2a-state{color:var(--hyp)}
+  .a2a-task .a2a-detail{color:var(--dim);font-size:9px;margin-top:4px;
+    white-space:pre-wrap;overflow-wrap:anywhere}
+  .a2a-task .a2a-meta{color:var(--dim2);font-size:8px;margin-top:4px;
+    overflow-wrap:anywhere}
   .queue-card h2{color:var(--hyp)}
   .queue-list{display:flex;flex-direction:column;gap:6px}
   .queue-item{padding:7px 8px;border:1px solid var(--line);background:var(--panel2)}
@@ -247,6 +265,7 @@
     </div>
     <div class="runtime-meta">
       <span>ACTIVE <b id="ractive">0</b></span>
+      <span>A2A <b id="ra2a">0</b></span>
       <span>QUEUED <b id="rqueued">0</b></span>
       <span>UPDATED <b id="rupdated">—</b></span>
     </div>
@@ -287,6 +306,13 @@
         </div>
       </header>
       <div class="live-body">
+        <section class="a2a-panel" id="a2a-panel" hidden>
+          <header>
+            <span>Open A2A tasks</span>
+            <b id="a2a-count">0</b>
+          </header>
+          <div class="a2a-list" id="a2a-list"></div>
+        </section>
         <div class="activity-list" id="activity-list"></div>
       </div>
     </section>
@@ -634,6 +660,41 @@ function renderActivity(events){
   }
 }
 
+function a2aState(value){
+  return String(value||"unknown").replace(/^TASK_STATE_/,"").replace(/_/g," ");
+}
+
+function renderA2A(runtime){
+  const tasks=runtime.a2a_tasks||[], panel=document.getElementById("a2a-panel"),
+        list=document.getElementById("a2a-list");
+  document.getElementById("ra2a").textContent=runtime.a2a_count||tasks.length;
+  document.getElementById("a2a-count").textContent=tasks.length;
+  panel.hidden=!tasks.length;
+  list.replaceChildren();
+  tasks.forEach(task=>{
+    const item=document.createElement("article");
+    item.className=`a2a-task${task.input_required?" input-required":""}`;
+    const title=document.createElement("div");
+    title.className="a2a-title";
+    const identity=document.createElement("b");
+    identity.textContent=task.skill_id||task.agent_id||"Peer task";
+    const state=document.createElement("span");
+    state.className="a2a-state";
+    state.textContent=a2aState(task.state);
+    title.append(identity,state);
+    const detail=document.createElement("div");
+    detail.className="a2a-detail";
+    detail.textContent=task.question||task.status_message||task.prompt||"No status detail returned.";
+    const meta=document.createElement("div");
+    meta.className="a2a-meta";
+    const taskId=task.task_id||"awaiting task id";
+    const parent=task.parent_active?"parent running":"parent turn complete";
+    meta.textContent=`${task.agent_id||"unknown peer"} · ${taskId} · ${parent} · observed ${elapsedSince(task.observed_at)} ago`;
+    item.append(title,detail,meta);
+    list.appendChild(item);
+  });
+}
+
 function renderQueue(runtime){
   const queued=runtime.queued_tasks||[], count=runtime.queued_count||0,
         capacity=runtime.queue_capacity||0, list=document.getElementById("queue-list");
@@ -703,7 +764,10 @@ function renderRuntime(d){
 
   const live=document.getElementById("live-layout"), input=task?.input||{},
         progress=task?.progress||{}, events=task?.events||[];
-  live.classList.toggle("on",Boolean(task)||(runtime.queued_count||0)>0);
+  live.classList.toggle(
+    "on",
+    Boolean(task)||(runtime.queued_count||0)>0||(runtime.a2a_count||0)>0
+  );
   document.getElementById("input-summary").textContent=input.summary||task?.title||"Waiting to start";
   renderObservations(input.observations||(
     task?"":"The next queued task has not started."
@@ -721,6 +785,7 @@ function renderRuntime(d){
     ? `${progress.iteration||0} / ${progress.iteration_budget}`:`${progress.iteration||0}`;
   document.getElementById("live-tools").textContent=progress.tool_calls||0;
   document.getElementById("live-warnings").textContent=progress.warnings||0;
+  renderA2A(runtime);
   renderActivity(events);
   renderQueue(runtime);
 
