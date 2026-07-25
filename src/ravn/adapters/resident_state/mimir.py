@@ -303,12 +303,16 @@ class LocalResidentState(LocalResidentMemory, ResidentStatePort):
         return True
 
     async def list_refs(self, prefix: str = "") -> list[str]:
-        base = self._root / (Path(prefix) if prefix else self._prefix)
+        root = self._root.resolve()
+        relative = Path(prefix) if prefix else self._prefix
+        if relative.is_absolute():
+            return []
+        base = (root / relative).resolve()
+        if not base.is_relative_to(root):
+            return []
         if not base.exists():
             return []
-        return sorted(
-            str(path.relative_to(self._root)) for path in base.rglob("*.md") if path.is_file()
-        )
+        return sorted(str(path.relative_to(root)) for path in base.rglob("*.md") if path.is_file())
 
     async def write_scheduled_wake(self, record: ResidentScheduledWakeRecord) -> str:
         rel = self._prefix / _case_path(record.case_id, _SCHEDULED_WAKE_PATH)

@@ -252,13 +252,22 @@ const RAW=JSON.parse(document.getElementById("data").textContent);
 // more than one environment without a second build.
 const RESIDENTS=Array.isArray(RAW.residents)&&RAW.residents.length?RAW.residents:[RAW];
 
-let D=RESIDENTS[0], FIELDS=[], HUE={}, i=0, timer=null;
+let D=RESIDENTS[0], FIELDS=[], HUE={}, FIELD_BODY={}, FIELD_COUNT={}, i=0, timer=null;
 const cols=document.getElementById("cols"), track=document.getElementById("track"),
       evo=document.getElementById("evo");
 let lastSuccess=0, staleTimer=null;
 
-function esc(s){return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>(
+  {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]
+))}
 function label(k){return k.replace(/_/g," ").replace(/\b\w/g,c=>c.toUpperCase())}
+function safeHttpUrl(template, traceId){
+  if(!template.includes("{trace_id}")) return "";
+  try{
+    const url=new URL(template.replace("{trace_id}",encodeURIComponent(traceId)),location.origin);
+    return ["http:","https:"].includes(url.protocol)?url.href:"";
+  }catch{return ""}
+}
 
 function fieldsOf(d){
   if(Array.isArray(d.fields)&&d.fields.length) return d.fields.slice();
@@ -281,11 +290,26 @@ function mount(d){
   renderRuntime(d);
 
   cols.style.gridTemplateColumns=`1.45fr repeat(${Math.max(0,FIELDS.length-1)},1fr)`;
-  cols.innerHTML=FIELDS.map(k=>
-   `<section class="col" data-k="${k}" style="--k:var(${HUE[k]})">
-      <h2><span>${esc(label(k))}</span><span class="n" id="n-${k}">0</span></h2>
-      <div class="body" id="b-${k}"></div>
-    </section>`).join("");
+  FIELD_BODY={}; FIELD_COUNT={}; cols.replaceChildren();
+  FIELDS.forEach(k=>{
+    const section=document.createElement("section");
+    section.className="col";
+    section.dataset.k=k;
+    section.style.setProperty("--k",`var(${HUE[k]})`);
+    const heading=document.createElement("h2");
+    const name=document.createElement("span");
+    name.textContent=label(k);
+    const count=document.createElement("span");
+    count.className="n";
+    count.textContent="0";
+    const body=document.createElement("div");
+    body.className="body";
+    heading.append(name,count);
+    section.append(heading,body);
+    cols.appendChild(section);
+    FIELD_BODY[k]=body;
+    FIELD_COUNT[k]=count;
+  });
 
   track.innerHTML='<div class="rail"></div>';
   (d.turns||[]).forEach((t,n)=>{
@@ -351,9 +375,16 @@ function renderRuntime(d){
 
   const activity=document.getElementById("activity"), events=task?.events||[];
   activity.classList.toggle("on",events.length>0);
-  document.getElementById("activity-list").innerHTML=events.map(event=>
-    `<div class="activity-event ${esc(event.type||"")}">${esc(event.summary||event.type||"")}</div>`
-  ).join("");
+  const activityList=document.getElementById("activity-list");
+  activityList.replaceChildren();
+  events.forEach(event=>{
+    const row=document.createElement("div");
+    row.className="activity-event";
+    const eventType=String(event.type||"").replace(/[^a-z0-9_-]/gi,"-");
+    if(eventType) row.classList.add(eventType);
+    row.textContent=event.summary||event.type||"";
+    activityList.appendChild(row);
+  });
 }
 
 function renderEmpty(){
@@ -386,8 +417,8 @@ function render(n){
     const rows=cur.map(e=>
       `<div class="e ${added.has(e)?"new":""}">${added.has(e)?'<span class="tag">new</span>':""}${esc(e)}</div>`);
     (c.removed||[]).forEach(e=>rows.push(`<div class="e gone"><span class="tag">dropped</span>${esc(e)}</div>`));
-    document.getElementById("b-"+k).innerHTML=rows.length?rows.join(""):'<div class="empty">— none —</div>';
-    document.getElementById("n-"+k).textContent=cur.length;
+    FIELD_BODY[k].innerHTML=rows.length?rows.join(""):'<div class="empty">— none —</div>';
+    FIELD_COUNT[k].textContent=cur.length;
   });
 
   [...track.querySelectorAll(".tick")].forEach((d,x)=>{
@@ -400,8 +431,10 @@ function render(n){
     : (n+1)+" / "+turns.length;
   const traceId=j.correlation_ids?.trace||"", template=D.hud?.trace_url_template||"";
   const trace=document.getElementById("trace");
-  trace.hidden=!(traceId&&template.includes("{trace_id}"));
-  if(!trace.hidden) trace.href=template.replace("{trace_id}",encodeURIComponent(traceId));
+  const traceUrl=traceId?safeHttpUrl(template,traceId):"";
+  trace.hidden=!traceUrl;
+  if(traceUrl) trace.href=traceUrl;
+  else trace.removeAttribute("href");
 }
 
 function stop(){ if(timer){clearInterval(timer);timer=null;} document.getElementById("play").textContent="▶ Play"; }

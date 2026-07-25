@@ -52,6 +52,29 @@ async def test_local_resident_state_is_single_memory_boundary(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_local_resident_state_rejects_refs_outside_root(tmp_path):
+    root = tmp_path / "resident-state"
+    state = LocalResidentState(root)
+    await state.write_turn(
+        ResidentTurnRecord(
+            turn_index=1,
+            prompt="inspect resident state",
+            response="resident state recorded",
+            outcome_fields={},
+            tool_names=(),
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "private.md").write_text("not resident state", encoding="utf-8")
+
+    assert await state.list_refs("../outside") == []
+    assert await state.list_refs(str(outside)) == []
+    assert len(await state.list_refs()) == 1
+
+
+@pytest.mark.asyncio
 async def test_mimir_resident_state_is_single_memory_boundary(tmp_path):
     from mimir.adapters.markdown import MarkdownMimirAdapter
 
