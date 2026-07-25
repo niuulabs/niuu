@@ -266,12 +266,10 @@ def filter_capabilities(
     *,
     kind: CapabilityKind | None = None,
     tags: list[str] | None = None,
-    query: str = "",
     require_all_tags: bool = False,
 ) -> list[Capability]:
     """Filter portable capability entries without changing routing behavior."""
     wanted_tags = {_norm(item) for item in tags or [] if _norm(item)}
-    normalized_query = _norm(query)
     filtered: list[Capability] = []
     for capability in capabilities:
         if kind is not None and capability.kind is not kind:
@@ -281,18 +279,6 @@ def filter_capabilities(
             if require_all_tags and not wanted_tags.issubset(capability_tags):
                 continue
             if not require_all_tags and not (wanted_tags & capability_tags):
-                continue
-        if normalized_query:
-            haystack = " ".join(
-                [
-                    capability.capability_id,
-                    capability.kind.value,
-                    capability.name,
-                    capability.description,
-                    " ".join(capability.tags),
-                ]
-            ).casefold()
-            if normalized_query not in haystack:
                 continue
         filtered.append(capability)
     return filtered

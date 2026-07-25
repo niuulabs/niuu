@@ -142,6 +142,59 @@ async def test_kubernetes_discovery_projects_valkyrie_type(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_kubernetes_discovery_projects_a2a_agent_annotations(tmp_path, monkeypatch) -> None:
+    service_account = tmp_path / "sa"
+    service_account.mkdir()
+    (service_account / "token").write_text("token", encoding="utf-8")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "metadata": {
+                            "name": "niuu-ting",
+                            "namespace": "volundr",
+                            "uid": "uid-ting",
+                            "labels": {
+                                "niuu.world/cluster": "ymir",
+                                "app.kubernetes.io/name": "ting",
+                                "app.kubernetes.io/component": "saga-coordinator",
+                            },
+                            "annotations": {
+                                "observatory.niuu.world/a2a-card-url": (
+                                    "https://yggdrasil.example/.well-known/agent-card.json"
+                                ),
+                                "observatory.niuu.world/a2a-visibility": "system",
+                            },
+                        },
+                        "status": {
+                            "phase": "Running",
+                        },
+                    }
+                ]
+            },
+        )
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        include_kinds=["pods"],
+        service_account_root=str(service_account),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    assert len(result.entities) == 1
+    assert result.entities[0].endpoints == {
+        "a2aCard": "https://yggdrasil.example/.well-known/agent-card.json"
+    }
+    assert result.entities[0].metadata["visibility"] == "system"
+
+
+@pytest.mark.asyncio
 async def test_kubernetes_discovery_collapses_resources_to_logical_entities(
     tmp_path, monkeypatch
 ) -> None:
