@@ -209,38 +209,6 @@ async def test_a2a_task_propagates_active_trace_in_message_metadata(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_a2a_task_merges_configured_start_metadata_with_explicit_input() -> None:
-    client = _Client([{"task": {"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}}}])
-    tool = A2ATaskTool(
-        agent_directory=_Directory(_agent()),
-        client=client,
-        default_start_metadata={
-            "connectionId": "configured-target",
-            "model": "configured-model",
-            "skillId": "must-not-win",
-        },
-    )
-
-    result = await tool.execute(
-        {
-            "operation": "start",
-            "agent_id": _agent().id,
-            "skill_id": "review",
-            "prompt": "Review the change.",
-            "metadata": {"model": "requested-model"},
-        }
-    )
-
-    assert not result.is_error
-    metadata = client.posts[0][1]["params"]["message"]["metadata"]
-    assert metadata == {
-        "connectionId": "configured-target",
-        "model": "requested-model",
-        "skillId": "review",
-    }
-
-
-@pytest.mark.asyncio
 async def test_a2a_task_rejects_unknown_agent_and_unpublished_skill() -> None:
     unknown = A2ATaskTool(agent_directory=_Directory(), client=_Client([]))
     missing_agent = await unknown.execute(

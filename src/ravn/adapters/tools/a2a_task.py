@@ -31,7 +31,6 @@ class A2ATaskTool(ToolPort):
         trusted_origins: list[str] | None = None,
         result_max_chars: int = _DEFAULT_RESULT_MAX_CHARS,
         message_max_chars: int = _DEFAULT_MESSAGE_MAX_CHARS,
-        default_start_metadata: dict[str, Any] | None = None,
     ) -> None:
         self._directory = agent_directory
         self._client = client
@@ -40,7 +39,6 @@ class A2ATaskTool(ToolPort):
         )
         self._result_max_chars = max(1_000, result_max_chars)
         self._message_max_chars = max(1_000, message_max_chars)
-        self._default_start_metadata = dict(default_start_metadata or {})
 
     @property
     def name(self) -> str:
@@ -227,14 +225,12 @@ class A2ATaskTool(ToolPort):
             if skill_id not in agent.skill_ids:
                 raise _A2ATaskError(f"Agent {agent.id!r} does not publish skill {skill_id!r}")
             supplied_metadata = input.get("metadata")
-            metadata = dict(self._default_start_metadata)
-            if isinstance(supplied_metadata, dict):
-                metadata.update(supplied_metadata)
+            metadata = dict(supplied_metadata) if isinstance(supplied_metadata, dict) else {}
+            self._validate_metadata(metadata)
             metadata["skillId"] = skill_id
             trace_context = get_observability().inject()
             if trace_context:
                 metadata["traceContext"] = trace_context
-            self._validate_metadata(metadata)
             return await self._rpc(
                 endpoint,
                 "SendMessage",
