@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from ravn.adapters.resident_pages import collect_pages
 from ravn.domain.resident_continuation import (
@@ -304,15 +304,19 @@ class LocalResidentState(LocalResidentMemory, ResidentStatePort):
 
     async def list_refs(self, prefix: str = "") -> list[str]:
         root = self._root.resolve()
-        relative = Path(prefix) if prefix else self._prefix
-        if relative.is_absolute():
+        base = (root / self._prefix).resolve()
+        if not base.is_relative_to(root) or not base.exists():
             return []
-        base = (root / relative).resolve()
-        if not base.is_relative_to(root):
+
+        requested = PurePosixPath(prefix.replace("\\", "/")) if prefix else None
+        if requested and (requested.is_absolute() or ".." in requested.parts):
             return []
-        if not base.exists():
-            return []
-        return sorted(str(path.relative_to(root)) for path in base.rglob("*.md") if path.is_file())
+
+        refs = sorted(str(path.relative_to(root)) for path in base.rglob("*.md") if path.is_file())
+        if requested is None:
+            return refs
+        requested_ref = requested.as_posix().rstrip("/")
+        return [ref for ref in refs if ref == requested_ref or ref.startswith(f"{requested_ref}/")]
 
     async def write_scheduled_wake(self, record: ResidentScheduledWakeRecord) -> str:
         rel = self._prefix / _case_path(record.case_id, _SCHEDULED_WAKE_PATH)

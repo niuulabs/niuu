@@ -72,6 +72,8 @@ async def test_local_resident_state_rejects_refs_outside_root(tmp_path):
     assert await state.list_refs("../outside") == []
     assert await state.list_refs(str(outside)) == []
     assert len(await state.list_refs()) == 1
+    assert len(await state.list_refs("resident/continuation/turns")) == 1
+    assert await state.list_refs("resident/continuation/policy") == []
 
 
 @pytest.mark.asyncio
