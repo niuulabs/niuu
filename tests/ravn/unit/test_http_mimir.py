@@ -78,6 +78,17 @@ async def test_ingest_returns_page_paths(adapter: HttpMimirAdapter) -> None:
     assert result == ["technical/test.md"]
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_ingest_rejects_source_id_contract_mismatch(adapter: HttpMimirAdapter) -> None:
+    respx.post("http://mimir.test/mimir/ingest").mock(
+        return_value=Response(200, json={"source_id": "src_different", "pages_updated": []})
+    )
+
+    with pytest.raises(RuntimeError, match="source ID contract mismatch"):
+        await adapter.ingest(_source())
+
+
 # ---------------------------------------------------------------------------
 # HttpMimirAdapter.search
 # ---------------------------------------------------------------------------

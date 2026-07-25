@@ -1114,8 +1114,9 @@ brief_path: research/campaigns/example/brief.md
 ---end---
 """
 
-        await dl._emit_mesh_outcome_event(task, response_text, success=True)
+        accepted = await dl._emit_mesh_outcome_event(task, response_text, success=True)
 
+        assert accepted is False
         mesh.publish.assert_not_awaited()
         canonical = skuld_channel.emit.await_args.args[0]
         assert canonical.payload["event_type"] == "research.frame.completed"

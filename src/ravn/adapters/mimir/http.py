@@ -150,6 +150,12 @@ class HttpMimirAdapter(MimirPort):
         response = await self._request("POST", "/mimir/ingest", json=payload)
         response.raise_for_status()
         data = response.json()
+        returned_source_id = str(data.get("source_id") or "")
+        if returned_source_id != source.source_id:
+            raise RuntimeError(
+                "Mímir source ID contract mismatch: "
+                f"expected {source.source_id}, received {returned_source_id or '<missing>'}"
+            )
         return data.get("pages_updated", [])
 
     async def query(self, question: str) -> MimirQueryResult:

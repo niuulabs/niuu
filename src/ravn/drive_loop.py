@@ -2618,6 +2618,11 @@ class DriveLoop:
                     )
                 )
 
+            if success:
+                success = await self._emit_mesh_outcome_event(task, response_text, success=True)
+                if not success:
+                    self._result_store.set_status(task.task_id, "failed")
+
             outcome = "success" if success else "error"
             telemetry.event(
                 "ravn.task.lifecycle",
@@ -2637,9 +2642,6 @@ class DriveLoop:
             await self._emit_sleipnir_task_completed(task, outcome, response_text=response_text)
             if success:
                 await self._emit_sleipnir_mimir_dream_completed(task, response_text=response_text)
-
-            # Publish outcome event to mesh for other agents to consume
-            await self._emit_mesh_outcome_event(task, response_text, success)
 
             await self._event_publisher.publish(
                 RavnEvent(
@@ -3151,7 +3153,7 @@ class DriveLoop:
 
     async def _emit_mesh_outcome_event(
         self, task: AgentTask, response_text: str, success: bool
-    ) -> None:
+    ) -> bool:
         """Publish persona outcomes for both routing and outward visibility.
 
         Canonical outcome events always keep the persona's declared
@@ -3164,21 +3166,21 @@ class DriveLoop:
         react without replacing the canonical outward event.
         """
         if self._persona_config is None:
-            return
+            return success
         if not success:
             logger.info(
                 "drive_loop: skipping mesh outcome publish for failed task_id=%s persona=%s",
                 task.task_id,
                 self._persona_config.name,
             )
-            return
+            return False
 
         # Parse outcome block from response
         parsed = _parse_outcome_for_persona(response_text, self._persona_config)
         outcome_fields = dict(parsed.fields) if parsed is not None else {}
         canonical_event_type = self._persona_config.produces.event_type
         if not canonical_event_type:
-            return
+            return True
         tool_fields = task.tool_outcomes.get(canonical_event_type) or {}
         for key, value in tool_fields.items():
             outcome_fields.setdefault(key, value)
@@ -3306,7 +3308,7 @@ class DriveLoop:
                     errors=validation_errors,
                     canonical_event_type=canonical_event_type,
                 )
-                return
+                return False
             valid = True
 
         outcome_errors: list[str] = []
@@ -3363,7 +3365,7 @@ class DriveLoop:
                     task.workflow_node_id or "-",
                     sorted(allowed_topics),
                 )
-                return
+                return False
 
         canonical_payload = dict(base_payload)
         canonical_payload["event_type"] = canonical_event_type
@@ -3416,7 +3418,7 @@ class DriveLoop:
             )
 
         if outcome_errors:
-            return
+            return False
 
         if self._mesh is None:
             mesh_available = False
@@ -3456,10 +3458,10 @@ class DriveLoop:
             await self._publish_help_needed(task, help_event)
 
         if not mesh_available:
-            return
+            return True
 
         if not alias_event_type or alias_event_type == canonical_event_type:
-            return
+            return True
 
         alias_payload = dict(base_payload)
         alias_payload["event_type"] = alias_event_type
@@ -3500,6 +3502,7 @@ class DriveLoop:
                     "Failed to emit routing outcome alias to skuld; continuing.",
                     exc_info=True,
                 )
+        return True
 
     async def _emit_sleipnir_valkyrie_outcome(
         self,

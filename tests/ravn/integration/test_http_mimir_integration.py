@@ -15,6 +15,7 @@ network required.  Covers:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -23,6 +24,7 @@ from fastapi import FastAPI
 
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.router import MimirRouter
+from niuu.domain.mimir import MimirSource, compute_content_hash, compute_source_id
 from ravn.adapters.mimir.composite import CompositeMimirAdapter
 from ravn.adapters.mimir.http import HttpMimirAdapter
 from ravn.domain.mimir import MimirMount, WriteRouting
@@ -54,6 +56,29 @@ def _http_adapter_over_asgi(app: FastAPI) -> HttpMimirAdapter:
 # ---------------------------------------------------------------------------
 # Integration: round-trip via HttpMimirAdapter + ASGI Mimir service
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_round_trip_ingest_preserves_canonical_source_id(tmp_path: Path) -> None:
+    app = _make_mimir_app(tmp_path / "hosted")
+    adapter = _http_adapter_over_asgi(app)
+    content = "Canonical provenance survives the HTTP boundary."
+    source_id = compute_source_id(content)
+    source = MimirSource(
+        source_id=source_id,
+        title="Provenance",
+        content=content,
+        source_type="research",
+        ingested_at=datetime.now(UTC),
+        content_hash=compute_content_hash(content),
+    )
+
+    await adapter.ingest(source)
+
+    stored = await adapter.read_source(source_id)
+    assert stored is not None
+    assert stored.source_id == source_id
+    assert stored.content == content
 
 
 @pytest.mark.asyncio
