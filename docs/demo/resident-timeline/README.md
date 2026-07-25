@@ -30,7 +30,36 @@ Callouts fire on the transitions worth noticing: a hypothesis falsified, a
 capability gap closed, the operator consulted, and a turn taken with no task,
 no signal and no human involved.
 
-## Regenerating from a real resident
+## Pointing it at any resident
+
+It is not Ivaldi-specific and not workshop-specific. Columns, labels and accent
+colours come from the payload, so a resident declaring different working-state
+fields still renders. A payload may also carry several residents
+(`{"residents": [...]}`), which adds a switcher — the same core against more
+than one environment.
+
+From a resident running in Kubernetes:
+
+```bash
+python scripts/export_resident_timeline.py \
+    --pod <pod> --namespace <ns> --container ravn \
+    --resident <name> --out /tmp/<name>
+```
+
+Add `--watch 30` to re-export on an interval. Serve the output directory and
+the page polls its own `timeline.json`, so new turns appear without a reload
+and a `● LIVE` badge shows in the footer:
+
+```bash
+python scripts/export_resident_timeline.py --pod <pod> --namespace <ns> \
+    --resident <name> --out /tmp/<name> --watch 30 &
+cd /tmp/<name> && python3 -m http.server 8777
+```
+
+Opened from `file://` there is no polling — the embedded payload stands and the
+page is a self-contained snapshot, which is what you want on stage.
+
+## Regenerating from a local state directory
 
 The committed page ships an **illustrative** trajectory — the renderer and the
 data shape are real, the content is not from a live run, and the page labels
@@ -48,5 +77,12 @@ python scripts/export_resident_timeline.py \
 
 `--state-root` is the directory containing `resident/continuation/`. The script
 writes `timeline.json` and rewrites `index.html` with the data embedded, so the
-result stays self-contained. Once real data is in, delete the
-`ILLUSTRATIVE TRAJECTORY` note in the page footer.
+result stays self-contained. Live exports set their own provenance note, so
+they never inherit the template's `ILLUSTRATIVE TRAJECTORY` label; `--note`
+overrides it.
+
+## What it is built with
+
+Plain HTML and vanilla JavaScript in one file — no TypeScript, no framework, no
+build step, no runtime dependencies, no network requests except the optional
+same-origin poll of `timeline.json`.

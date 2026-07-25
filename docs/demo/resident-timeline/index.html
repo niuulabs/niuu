@@ -128,6 +128,7 @@
   .tick .lb{font-size:8.5px;color:var(--dim2);letter-spacing:.1em;margin-top:5px}
   .tick.on .lb{color:var(--obs)}
   .stamp{font-size:10px;color:var(--dim);letter-spacing:.14em;white-space:nowrap}
+  .note.live{color:var(--obs);border-color:var(--obs)}
   .note{font-size:9px;color:var(--dim2);letter-spacing:.14em;text-transform:uppercase;white-space:nowrap;
     border:1px solid var(--line); padding:4px 9px}
   @media (max-width:1100px){ .cols{grid-template-columns:1fr 1fr}  .charter{display:none} }
@@ -179,6 +180,7 @@
     <div class="track" id="track"><div class="rail"></div></div>
     <span class="stamp" id="stamp">—</span>
     <span class="note" id="note">Illustrative trajectory</span>
+    <span class="note live" id="live" hidden>● LIVE</span>
   </div>
 </div>
 
@@ -766,6 +768,29 @@ if(RESIDENTS.length>1){
   };
 }
 mount(RESIDENTS[0]);
+
+// When this page is served (rather than opened from file://), poll the sibling
+// timeline.json so new turns appear without a reload. On file:// the fetch is
+// blocked and the embedded payload simply stands.
+let lastSeen=document.getElementById("data").textContent.length;
+async function poll(){
+  try{
+    const r=await fetch("timeline.json?t="+Date.now(),{cache:"no-store"});
+    if(!r.ok) return;
+    const text=await r.text();
+    document.getElementById("live").hidden=false;
+    if(text.length===lastSeen) return;
+    lastSeen=text.length;
+    const next=JSON.parse(text);
+    const list=Array.isArray(next.residents)&&next.residents.length?next.residents:[next];
+    const wasLast=i>=(D.turns||[]).length-1;
+    RESIDENTS.length=0; RESIDENTS.push(...list);
+    mount(RESIDENTS[0]);
+    // Following the live edge is the useful default while watching.
+    if(wasLast) render((D.turns||[]).length-1);
+  }catch(e){ /* file:// or transient: keep the embedded snapshot */ }
+}
+if(location.protocol!=="file:"){ poll(); setInterval(poll,5000); }
 </script>
 </body>
 </html>
