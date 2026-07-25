@@ -90,9 +90,7 @@ _MIMIR_PAGE_WRITTEN_OUTCOME = "mimir.page.written"
 _DREAM_CYCLE_TRIGGER = "dream_cycle:cron"
 _DREAM_COUNT_FIELDS = ("pages_updated", "entities_created", "lint_fixes")
 _RAVN_TASK_STARTED = "ravn.task.started"
-_TRACEPARENT_PATTERN = re.compile(
-    r"^[\da-fA-F]{2}-([\da-fA-F]{32})-[\da-fA-F]{16}-[\da-fA-F]{2}$"
-)
+_TRACEPARENT_PATTERN = re.compile(r"^[\da-fA-F]{2}-([\da-fA-F]{32})-[\da-fA-F]{16}-[\da-fA-F]{2}$")
 
 
 def _bounded_hud_text(value: str, limit: int) -> str:
@@ -144,6 +142,8 @@ def _trace_id_from_carrier(carrier: Mapping[str, str]) -> str:
     traceparent = str(carrier.get("traceparent") or "").strip()
     match = _TRACEPARENT_PATTERN.fullmatch(traceparent)
     return match.group(1).lower() if match else ""
+
+
 _RAVN_TASK_DROPPED = "ravn.task.dropped"
 _RESIDENT_VALKYRIE_SCHEMA_REPAIR_TRIGGER = "schema_repair:resident_valkyrie"
 

@@ -185,8 +185,7 @@ Determine whether the observations require action.
                 "input": {
                     "summary": "Signals since your last look — 4 observation(s)",
                     "observations": (
-                        "- `status` (warning, workshop): "
-                        "payload=Muninn paused with ErrorCode 3"
+                        "- `status` (warning, workshop): payload=Muninn paused with ErrorCode 3"
                     ),
                     "objective": "Determine whether the observations require action.",
                 },
