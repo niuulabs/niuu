@@ -58,9 +58,7 @@ class CapabilityListTool(ToolPort):
             "resident learned tools, resident skills, configured remote workflows, "
             "and peer Agent Card skills. Use this before building new tools so existing "
             "capabilities are not duplicated. Entries tagged 'learned' are not native "
-            "tools — execute them by name with learned_tool_run. A filtered miss includes "
-            "a compact catalog_preview; use it to choose a broader query or kind before "
-            "concluding that no relevant capability exists."
+            "tools — execute them by name with learned_tool_run."
         )
 
     @property
@@ -72,10 +70,6 @@ class CapabilityListTool(ToolPort):
                     "type": "string",
                     "enum": [kind.value for kind in CapabilityKind],
                     "description": "Optional capability kind filter.",
-                },
-                "query": {
-                    "type": "string",
-                    "description": "Optional case-insensitive text filter.",
                 },
                 "tags": {
                     "type": "array",
@@ -112,7 +106,6 @@ class CapabilityListTool(ToolPort):
             capabilities,
             kind=kind,
             tags=_string_list(input.get("tags")),
-            query=str(input.get("query") or ""),
             require_all_tags=bool(input.get("require_all_tags") or False),
         )
         limit = _int_in_range(input.get("limit"), default=100, minimum=1, maximum=500)

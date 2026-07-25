@@ -1079,6 +1079,21 @@ class KubernetesDiscoveryAdapter:
         entity_id = (
             f"runtime:{_slug(cluster)}:{_slug(namespace)}:{_slug(type_id)}:{_slug(logical_name)}"
         )
+        entity_metadata: dict[str, Any] = {
+            "component": component or "",
+            "app": app_name or "",
+            "resources": [
+                {
+                    "kind": resource_kind,
+                    "name": name,
+                    "uid": str(metadata.get("uid") or ""),
+                    "generation": metadata.get("generation"),
+                }
+            ],
+        }
+        visibility = annotations.get("observatory.niuu.world/a2a-visibility")
+        if visibility:
+            entity_metadata["visibility"] = visibility
         return DiscoveredEntity(
             id=entity_id,
             kind=type_id if type_id in _KNOWN_TYPE_IDS else "service",
@@ -1091,19 +1106,8 @@ class KubernetesDiscoveryAdapter:
             source_adapter=self.__class__.__name__,
             source_kind="kubernetes",
             source_uid=str(metadata.get("uid") or ""),
-            endpoints=_endpoints_for_k8s(resource_kind, item, labels),
-            metadata={
-                "component": component or "",
-                "app": app_name or "",
-                "resources": [
-                    {
-                        "kind": resource_kind,
-                        "name": name,
-                        "uid": str(metadata.get("uid") or ""),
-                        "generation": metadata.get("generation"),
-                    }
-                ],
-            },
+            endpoints=_endpoints_for_k8s(resource_kind, item, labels, annotations),
+            metadata=entity_metadata,
         )
 
 
@@ -1535,6 +1539,7 @@ def _endpoints_for_k8s(
     resource_kind: str,
     item: dict[str, Any],
     labels: dict[str, str],
+    annotations: dict[str, str],
 ) -> dict[str, str]:
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     spec = item.get("spec") if isinstance(item.get("spec"), dict) else {}
@@ -1544,6 +1549,9 @@ def _endpoints_for_k8s(
     public = labels.get("niuu.world/public-url")
     if public:
         endpoints["public"] = public
+    a2a_card = annotations.get("observatory.niuu.world/a2a-card-url")
+    if a2a_card:
+        endpoints["a2aCard"] = a2a_card
     if resource_kind == "service" and namespace and name:
         endpoints["internal"] = f"http://{name}.{namespace}.svc.cluster.local"
     if resource_kind == "ingress":

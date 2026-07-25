@@ -415,9 +415,7 @@ class TestBuildTools:
         by_name = {tool.name: tool for tool in tools}
         assert "persisted_metric_window" not in by_name
 
-        listed = await by_name["capability_list"].execute(
-            {"kind": "tool", "query": "persisted_metric_window"}
-        )
+        listed = await by_name["capability_list"].execute({"kind": "tool", "tags": ["learned"]})
         assert not listed.is_error
         payload = json.loads(listed.content)
         assert payload["count"] == 1
