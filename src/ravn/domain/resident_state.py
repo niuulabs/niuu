@@ -9,6 +9,7 @@ from ravn.domain.resident_continuation import (
     ResidentMemoryEntry,
     ResidentPolicyDecisionRecord,
     ResidentPolicyObservation,
+    ResidentScheduledWakeRecord,
     ResidentTurnRecord,
     ResidentWorkingStateRecord,
 )
@@ -68,5 +69,11 @@ class ResidentStatePort(Protocol):
     async def list_operator_needed(self) -> list[ResidentMemoryEntry]: ...
 
     async def list_operator_answers(self) -> list[ResidentMemoryEntry]: ...
+
+    async def write_scheduled_wake(self, record: ResidentScheduledWakeRecord) -> str: ...
+
+    async def list_scheduled_wakes(self) -> list[ResidentMemoryEntry]: ...
+
+    async def consume_scheduled_wake(self, wake: ResidentMemoryEntry) -> str: ...
 
     async def list_refs(self, prefix: str = "") -> list[str]: ...

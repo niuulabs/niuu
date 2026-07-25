@@ -206,6 +206,8 @@ def _build_resident_runtime(
         max_tokens=cfg.continuation_max_tokens,
         context_max_chars=cfg.continuation_context_max_chars,
         tool_result_max_chars=cfg.continuation_tool_result_max_chars,
+        scheduled_wake_default_seconds=cfg.scheduled_wake_default_seconds,
+        stewardship_interval_seconds=cfg.stewardship_interval_seconds,
     )
 
 

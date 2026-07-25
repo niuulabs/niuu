@@ -18,6 +18,7 @@ from ravn.domain.resident_continuation import (
     ResidentMemoryPort,
     ResidentPolicyDecisionRecord,
     ResidentPolicyObservation,
+    ResidentScheduledWakeRecord,
     ResidentTurnRecord,
     ResidentWorkingStateRecord,
 )
@@ -33,6 +34,7 @@ from ravn.resident_text import (
 
 _OPERATOR_NEEDED_PATH = "operator-needed/latest.md"
 _OPERATOR_ANSWER_PATH = "operator-answers/latest.md"
+_SCHEDULED_WAKE_PATH = "scheduled-wake/latest.md"
 
 
 def _case_path(case_id: str, leaf: str) -> Path:
@@ -534,6 +536,62 @@ def _render_answered_operator_needed(
         + f"- answered_at: {answered_at.isoformat()}\n"
         + f"- answer_ref: {answer_path}\n"
     )
+
+
+def _render_scheduled_wake(record: ResidentScheduledWakeRecord) -> str:
+    """Render a pending wake using the same status convention as operator markers.
+
+    Sharing ``- status: pending`` lets both adapters list due wakes through the
+    existing ``_list_case_entries`` helper instead of a second listing path.
+    """
+    return (
+        "# Resident Scheduled Wake\n\n"
+        "- status: pending\n"
+        f"- case_id: {record.case_id}\n"
+        f"- root_correlation_id: {record.root_correlation_id}\n"
+        f"- task_id: {record.task_id}\n"
+        f"- persona: {record.persona}\n"
+        f"- turn: {record.turn_index}\n"
+        f"- turn_ref: {record.turn_ref}\n"
+        f"- wake_at: {record.wake_at.isoformat()}\n"
+        f"- reason: {_compact_line(record.reason, limit=500)}\n"
+        f"- created_at: {record.created_at.isoformat()}\n\n"
+        "## Mandate\n\n"
+        f"{record.mandate[:4000]}\n"
+    )
+
+
+def _render_consumed_scheduled_wake(content: str, *, consumed_at: datetime) -> str:
+    if content.strip():
+        rendered = re.sub(r"^- status: .*$", "- status: consumed", content, flags=re.MULTILINE)
+        if "- status: consumed" not in rendered:
+            # No status line to replace; inject one so a fired wake is never
+            # re-enqueued on the next poll.
+            if "# Resident Scheduled Wake\n" in rendered:
+                rendered = rendered.replace(
+                    "# Resident Scheduled Wake\n",
+                    "# Resident Scheduled Wake\n\n- status: consumed\n",
+                    1,
+                )
+            else:
+                rendered = "- status: consumed\n" + rendered
+    else:
+        rendered = "# Resident Scheduled Wake\n\n- status: consumed\n"
+    return rendered.rstrip() + "\n" + f"- consumed_at: {consumed_at.isoformat()}\n"
+
+
+def _scheduled_wake_at(content: str) -> datetime | None:
+    """Parse the durable wake time, or None when it is absent or malformed."""
+    match = re.search(r"^- wake_at:\s*(.+?)\s*$", content, flags=re.MULTILINE)
+    if match is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(_unquote(match.group(1).strip()))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 def _operator_marker_is_pending(content: str) -> bool:

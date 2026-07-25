@@ -2893,6 +2893,23 @@ class ResidentStateConfig(BaseModel):
         gt=0,
         description="Seconds between routine resident home turns over the durable inbox.",
     )
+    scheduled_wake_default_seconds: float = Field(
+        default=3600.0,
+        gt=0,
+        description=(
+            "Delay applied when a resident turn sleeps for a scheduled time without "
+            "naming an explicit wake_at timestamp."
+        ),
+    )
+    stewardship_interval_seconds: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "Seconds of resident quiet after which a charter-driven stewardship turn "
+            "runs even though no new observation arrived. 0 disables stewardship wakes, "
+            "leaving the resident purely signal-driven."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
