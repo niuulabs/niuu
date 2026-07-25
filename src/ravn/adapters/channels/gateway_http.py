@@ -158,6 +158,27 @@ class HttpGateway:
                 """List pending resident questions on the authenticated daemon surface."""
                 return {"items": await self._resident_runtime.pending_questions()}
 
+            @app.get("/resident/timeline")
+            async def resident_timeline(
+                _: None = Depends(require_operator),
+                prefix: str = "",
+            ) -> dict[str, Any]:
+                """Serve the resident's working-state history from its own state store.
+
+                Ravn owns resident state, so it serves it. Reading the durable
+                records out of band cannot see residents whose state lives behind
+                a non-filesystem adapter, and cannot be trusted to be current.
+                """
+                from ravn.resident_timeline import build_resident_timeline  # noqa: PLC0415
+
+                timeline = await build_resident_timeline(
+                    self._resident_runtime.state,
+                    resident_id=self._resident_runtime.resident_id,
+                    charter=self._resident_runtime.charter,
+                    prefix=prefix,
+                )
+                return timeline.as_dict()
+
             @app.post("/resident/operator-answer")
             async def resident_operator_answer(
                 request: ResidentAnswerRequest,

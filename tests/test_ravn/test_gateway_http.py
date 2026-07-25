@@ -433,3 +433,60 @@ def test_ws_endpoint_ignores_non_user_messages():
 
     # Should get events only from the user message
     assert any(e["type"] == "result" for e in events)
+
+
+def test_resident_timeline_is_served_from_the_residents_own_state(monkeypatch, tmp_path):
+    """The timeline must come from the resident's state store, over the API.
+
+    Reading durable records out of band cannot see residents whose state lives
+    behind a non-filesystem adapter, and cannot be trusted to be current.
+    """
+    import asyncio as _asyncio
+
+    from ravn.adapters.resident_state.mimir import LocalResidentState
+    from ravn.domain.models import TokenUsage
+    from ravn.domain.resident_continuation import ResidentTurnRecord
+    from ravn.resident_runtime import ResidentRuntime
+
+    state = LocalResidentState(tmp_path)
+    _asyncio.run(
+        state.write_turn(
+            ResidentTurnRecord(
+                turn_index=1,
+                prompt="p",
+                response="r",
+                outcome_fields={
+                    "continuation": "sleep",
+                    "working_state": {
+                        "observations": ["printer is idle (octoprint.log)"],
+                        "hypotheses": [],
+                        "unknowns": ["reorder lead time"],
+                        "capability_gaps": [],
+                        "attempts": [],
+                    },
+                },
+                tool_names=("read_file",),
+                usage=TokenUsage(input_tokens=5, output_tokens=2),
+                case_id="case-api",
+            )
+        )
+    )
+    runtime = ResidentRuntime(state=state, resident_id="ivaldi", charter="steward the workshop")
+    ht = HttpGateway(_make_http_config(), _make_gateway_mock(), resident_runtime=runtime)
+    client = TestClient(ht.app)
+
+    assert client.get("/resident/timeline").status_code == 503
+    monkeypatch.setenv("RAVN_OPERATOR_TOKEN", "operator-secret")
+    assert client.get("/resident/timeline").status_code == 401
+
+    body = client.get(
+        "/resident/timeline", headers={"Authorization": "Bearer operator-secret"}
+    ).json()
+
+    assert body["resident_id"] == "ivaldi"
+    assert body["charter"] == "steward the workshop"
+    assert len(body["turns"]) == 1
+    turn = body["turns"][0]
+    assert turn["working_state"]["observations"] == ["printer is idle (octoprint.log)"]
+    assert turn["changes"]["observations"]["added"] == ["printer is idle (octoprint.log)"]
+    assert turn["tools_used"] == ["read_file"]

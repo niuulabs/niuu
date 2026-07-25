@@ -50,11 +50,27 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--state-root", type=Path, help="Directory holding resident/continuation/.")
-    source.add_argument("--pod", help="Kubernetes pod to copy resident state out of.")
+    source.add_argument("--pod", help="Kubernetes pod to read the resident timeline from.")
     parser.add_argument("--namespace", default="default")
     parser.add_argument("--context", default="", help="kubectl context.")
     parser.add_argument("--container", default="", help="Container within the pod.")
     parser.add_argument("--pod-state-path", default=_DEFAULT_POD_STATE)
+    parser.add_argument(
+        "--via",
+        choices=("api", "files"),
+        default="api",
+        help=(
+            "How to read a pod's timeline. 'api' calls the resident's own "
+            "/resident/timeline endpoint from inside the pod and is authoritative; "
+            "'files' copies the state directory out and only sees filesystem-backed state."
+        ),
+    )
+    parser.add_argument("--api-port", type=int, default=8080)
+    parser.add_argument(
+        "--token-env",
+        default="RAVN_OPERATOR_TOKEN",
+        help="Env var inside the pod holding the operator bearer token.",
+    )
     parser.add_argument("--resident", default="resident")
     parser.add_argument("--charter", default="")
     parser.add_argument("--environment-name", default="")
@@ -67,17 +83,50 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _copy_state_from_pod(args: argparse.Namespace, destination: Path) -> Path:
-    """Stream the resident state directory out of a pod, read-only."""
-    state_path = args.pod_state_path.rstrip("/")
-    parent, _, leaf = state_path.rpartition("/")
+def _kubectl(args: argparse.Namespace) -> list[str]:
     command = ["kubectl"]
     if args.context:
         command += ["--context", args.context]
     command += ["-n", args.namespace, "exec", args.pod]
     if args.container:
         command += ["-c", args.container]
-    command += ["--", "tar", "cf", "-", "-C", parent or "/", leaf]
+    return command
+
+
+def _timeline_from_pod_api(args: argparse.Namespace) -> dict:
+    """Ask the resident for its own timeline over its HTTP gateway.
+
+    Run from inside the pod so the operator token never leaves it and no
+    port-forward is needed. This is authoritative: it reads through whichever
+    resident-state adapter the resident is actually configured with, rather
+    than assuming state sits on the filesystem.
+    """
+    url = f"http://127.0.0.1:{args.api_port}/resident/timeline"
+    if args.prefix:
+        url = f"{url}?prefix={args.prefix}"
+    auth = f'-H "Authorization: Bearer ${args.token_env}"'
+    script = f'curl -sS -f {auth} "{url}"'
+    result = subprocess.run(
+        [*_kubectl(args), "--", "sh", "-lc", script],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"resident timeline API failed on {args.namespace}/{args.pod}: "
+            f"{result.stderr.decode(errors='replace').strip()}"
+        )
+    try:
+        return json.loads(result.stdout.decode())
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"resident timeline API returned non-JSON: {exc}") from exc
+
+
+def _copy_state_from_pod(args: argparse.Namespace, destination: Path) -> Path:
+    """Stream the resident state directory out of a pod, read-only."""
+    state_path = args.pod_state_path.rstrip("/")
+    parent, _, leaf = state_path.rpartition("/")
+    command = [*_kubectl(args), "--", "tar", "cf", "-", "-C", parent or "/", leaf]
 
     archive = destination / "state.tar"
     with archive.open("wb") as handle:
@@ -92,7 +141,7 @@ def _copy_state_from_pod(args: argparse.Namespace, destination: Path) -> Path:
     return destination / leaf
 
 
-async def _export_once(args: argparse.Namespace, state_root: Path) -> int:
+async def _payload_from_files(args: argparse.Namespace, state_root: Path) -> dict:
     timeline = await build_resident_timeline(
         LocalResidentState(state_root),
         resident_id=args.resident,
@@ -101,14 +150,27 @@ async def _export_once(args: argparse.Namespace, state_root: Path) -> int:
         environment_type=args.environment_type,
         prefix=args.prefix,
     )
-    payload = timeline.as_dict()
+    return timeline.as_dict()
+
+
+def _write(args: argparse.Namespace, payload: dict) -> int:
+    # The resident names itself over the API; only fill gaps from the CLI.
+    payload.setdefault("environment", {})
+    if args.environment_name:
+        payload["environment"]["name"] = args.environment_name
+    if args.environment_type:
+        payload["environment"]["type"] = args.environment_type
+    payload["environment"].setdefault("name", payload.get("resident_id", "resident"))
+    payload["environment"].setdefault("type", "")
+    if args.charter and not payload.get("charter"):
+        payload["charter"] = args.charter
+    turns = payload.get("turns") or []
     # A live export must not inherit the template's "illustrative" provenance note.
-    payload["note"] = args.note or f"Live export · {args.resident} · {len(timeline.turns)} turns"
-    if not payload["turns"]:
-        print(
-            f"no durable resident turns found under {state_root}. Has this resident run yet?",
-            file=sys.stderr,
-        )
+    payload["note"] = (
+        args.note or f"Live · {payload.get('resident_id', 'resident')} · {len(turns)} turns"
+    )
+    if not turns:
+        print("no durable resident turns yet. Has this resident run?", file=sys.stderr)
         return 0
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -122,7 +184,7 @@ async def _export_once(args: argparse.Namespace, state_root: Path) -> int:
         template_html[:start] + json_text + template_html[end:],
         encoding="utf-8",
     )
-    return len(payload["turns"])
+    return len(turns)
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -131,19 +193,21 @@ async def _run(args: argparse.Namespace) -> int:
         return 2
 
     while True:
-        with tempfile.TemporaryDirectory() as tmp:
-            if args.pod:
-                try:
-                    state_root = _copy_state_from_pod(args, Path(tmp))
-                except RuntimeError as exc:
-                    print(exc, file=sys.stderr)
-                    if not args.watch:
-                        return 2
-                    time.sleep(args.watch)
-                    continue
+        try:
+            if args.pod and args.via == "api":
+                payload = _timeline_from_pod_api(args)
+            elif args.pod:
+                with tempfile.TemporaryDirectory() as tmp:
+                    payload = await _payload_from_files(args, _copy_state_from_pod(args, Path(tmp)))
             else:
-                state_root = args.state_root
-            turns = await _export_once(args, state_root)
+                payload = await _payload_from_files(args, args.state_root)
+        except RuntimeError as exc:
+            print(exc, file=sys.stderr)
+            if not args.watch:
+                return 2
+            time.sleep(args.watch)
+            continue
+        turns = _write(args, payload)
         print(f"[{time.strftime('%H:%M:%S')}] {turns} turns -> {args.out / 'index.html'}")
         if not args.watch:
             return 0 if turns else 1

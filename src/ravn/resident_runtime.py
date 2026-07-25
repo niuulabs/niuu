@@ -109,6 +109,14 @@ class ResidentRuntime:
     def state(self) -> ResidentStatePort:
         return self._state
 
+    @property
+    def resident_id(self) -> str:
+        return self._resident_id
+
+    @property
+    def charter(self) -> str:
+        return self._charter
+
     def bind_enqueue(self, enqueue: EnqueueResidentTask) -> None:
         self._enqueue = enqueue
 
