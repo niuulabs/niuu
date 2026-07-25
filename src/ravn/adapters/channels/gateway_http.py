@@ -100,7 +100,7 @@ class HttpGateway:
             allow_headers=["*"],
         )
 
-        # KNOWN DEBT (NIU-TBD): this is a static shared secret compared with
+        # KNOWN DEBT (NIU-1121): this is a static shared secret compared with
         # compare_digest, not a standard token flow, and it contradicts
         # .claude/rules/architecture.md ("never build custom auth/token layers —
         # always delegate to standard OIDC/OAuth2 flows"). It is not one of the
