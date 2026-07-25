@@ -16,7 +16,7 @@
   html,body{height:100%}
   body{
     background:var(--bg); color:var(--tx); font-family:var(--mono);
-    font-size:13px; line-height:1.45; overflow:hidden;
+    font-size:13px; line-height:1.45; overflow:auto;
     -webkit-font-smoothing:antialiased;
   }
   body::before{
@@ -28,7 +28,7 @@
     content:""; position:fixed; inset:0; pointer-events:none; z-index:99;
     background:radial-gradient(ellipse at 50% 42%,transparent 52%,rgba(0,0,0,.72) 100%);
   }
-  .app{height:100vh; display:flex; flex-direction:column; padding:14px 18px 12px; gap:10px}
+  .app{min-height:100vh; display:flex; flex-direction:column; padding:14px 18px 12px; gap:10px}
 
   /* ── header ─────────────────────────────────────────── */
   .top{display:flex; align-items:flex-start; gap:22px; border-bottom:1px solid var(--line); padding-bottom:10px}
@@ -66,16 +66,55 @@
   .current span{color:var(--dim);font-size:10px;letter-spacing:.08em}
   .runtime-meta{display:flex;gap:14px;color:var(--dim);font-size:10px;white-space:nowrap}
   .runtime-meta b{color:var(--tx);font-weight:500}
-  .activity{display:none;grid-template-columns:auto 1fr;gap:12px;background:var(--panel);
-    border:1px solid var(--line);padding:8px 12px;min-height:38px}
-  .activity.on{display:grid}
-  .activity h2{font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--obs);
-    font-weight:500;padding-top:2px}
-  .activity-list{display:flex;gap:8px;overflow-x:auto}
-  .activity-event{border-left:2px solid var(--line2);padding:2px 8px;color:var(--dim);
-    font-size:10px;min-width:160px;max-width:300px}
-  .activity-event.tool_start{border-color:var(--obs);color:var(--tx)}
-  .activity-event.error{border-color:var(--gap);color:var(--gap)}
+  .live-layout{display:none;grid-template-columns:minmax(300px,1.05fr) minmax(380px,1.4fr)
+    minmax(250px,.8fr);gap:9px;min-height:250px;max-height:390px}
+  .live-layout.on{display:grid}
+  .live-card{background:var(--panel);border:1px solid var(--line);min-height:0;
+    display:flex;flex-direction:column}
+  .live-card>header{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:8px 11px;border-bottom:1px solid var(--line);min-height:34px}
+  .live-card h2{font-size:9.5px;letter-spacing:.24em;text-transform:uppercase;color:var(--obs);
+    font-weight:500}
+  .live-meta{display:flex;gap:12px;color:var(--dim2);font-size:9px;letter-spacing:.08em;
+    white-space:nowrap}
+  .live-meta b{color:var(--tx);font-weight:500}
+  .live-body{padding:10px;overflow-y:auto;min-height:0}
+  .live-body::-webkit-scrollbar{width:4px}
+  .live-body::-webkit-scrollbar-thumb{background:var(--line2)}
+  .context-summary{display:block;color:var(--tx);font-size:14px;line-height:1.45;
+    margin-bottom:10px}
+  .context-block{margin-top:9px;padding-top:9px;border-top:1px solid var(--line)}
+  .context-block .lb{display:block;color:var(--dim2);font-size:8.5px;letter-spacing:.22em;
+    text-transform:uppercase;margin-bottom:5px}
+  .context-block pre,.context-block .text{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--dim);
+    font:10.5px/1.55 var(--mono)}
+  .judgment-state{display:flex;justify-content:space-between;gap:12px;color:var(--dim);
+    font-size:10px}
+  .judgment-state b{color:var(--hyp);font-weight:500}
+  .identity-line{color:var(--dim2);font-size:8.5px;overflow-wrap:anywhere}
+  .activity-list{display:flex;flex-direction:column;gap:7px}
+  .activity-event{display:grid;grid-template-columns:62px 72px minmax(0,1fr);gap:8px;
+    border-left:2px solid var(--line2);padding:7px 9px;background:var(--panel2);
+    color:var(--dim);font-size:10px}
+  .activity-event .at{color:var(--dim2)}
+  .activity-event .kind{color:var(--dim);letter-spacing:.08em;text-transform:uppercase}
+  .activity-event .event-main{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--tx)}
+  .activity-event .event-result{margin-top:5px;padding-top:5px;border-top:1px solid var(--line);
+    color:var(--dim);white-space:pre-wrap}
+  .activity-event .duration{color:var(--dim2);margin-left:7px}
+  .activity-event.tool_start{border-color:var(--obs)}
+  .activity-event.error,.activity-event.warning{border-color:var(--gap)}
+  .activity-event.error .event-main,.activity-event.warning .event-result{color:var(--gap)}
+  .queue-card h2{color:var(--hyp)}
+  .queue-list{display:flex;flex-direction:column;gap:6px}
+  .queue-item{padding:7px 8px;border:1px solid var(--line);background:var(--panel2)}
+  .queue-item b{display:block;color:var(--tx);font-size:10px;font-weight:500;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .queue-item span{display:block;color:var(--dim2);font-size:8.5px;margin-top:3px}
+  .queue-pressure{color:var(--hyp)}
+  .active-trace{font-size:8.5px;color:var(--obs);text-decoration:none;border:1px solid var(--obs);
+    padding:3px 7px;letter-spacing:.1em;text-transform:uppercase;white-space:nowrap}
+  .active-trace[hidden]{display:none}
 
   /* ── wake bar ───────────────────────────────────────── */
   .wake{display:flex; align-items:center; gap:16px; background:var(--panel);
@@ -98,7 +137,7 @@
 
   /* ── columns ────────────────────────────────────────── */
   .cols{flex:1 1 auto; display:grid; grid-template-columns:1.45fr 1fr 1fr .95fr 1.05fr;
-    gap:9px; min-height:0}
+    gap:9px; min-height:320px}
   .col{background:var(--panel); border:1px solid var(--line); display:flex; flex-direction:column; min-height:0}
   .col>h2{font-size:9.5px; letter-spacing:.26em; text-transform:uppercase; padding:8px 11px;
     border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; font-weight:500}
@@ -162,7 +201,12 @@
   .trace{font-size:9px;color:var(--obs);letter-spacing:.12em;text-transform:uppercase;
     text-decoration:none;border:1px solid var(--obs);padding:4px 9px}
   .trace[hidden]{display:none}
-  @media (max-width:1100px){ .cols{grid-template-columns:1fr 1fr}  .charter{display:none} }
+  @media (max-width:1100px){
+    .live-layout{grid-template-columns:1fr;max-height:none}
+    .live-card{max-height:360px}
+    .cols{grid-template-columns:1fr 1fr}
+    .charter{display:none}
+  }
 </style>
 </head>
 <body>
@@ -199,9 +243,54 @@
     </div>
   </div>
 
-  <div class="activity" id="activity">
-    <h2>Current activity</h2>
-    <div class="activity-list" id="activity-list"></div>
+  <div class="live-layout" id="live-layout">
+    <section class="live-card">
+      <header>
+        <h2>What happened</h2>
+        <a class="active-trace" id="active-trace" target="_blank" rel="noreferrer" hidden>Open trace</a>
+      </header>
+      <div class="live-body">
+        <strong class="context-summary" id="input-summary">—</strong>
+        <div class="context-block">
+          <span class="lb">Observed input</span>
+          <pre id="input-observations">—</pre>
+        </div>
+        <div class="context-block">
+          <span class="lb">Current objective</span>
+          <div class="text" id="input-objective">—</div>
+        </div>
+        <div class="context-block judgment-state">
+          <span>Current judgment</span>
+          <b id="current-judgment">Not emitted yet</b>
+        </div>
+        <div class="context-block identity-line" id="task-identity">—</div>
+      </div>
+    </section>
+
+    <section class="live-card">
+      <header>
+        <h2>Current progress</h2>
+        <div class="live-meta">
+          <span>ELAPSED <b id="live-elapsed">—</b></span>
+          <span>ITERATION <b id="live-iteration">—</b></span>
+          <span>TOOLS <b id="live-tools">0</b></span>
+          <span>WARNINGS <b id="live-warnings">0</b></span>
+        </div>
+      </header>
+      <div class="live-body">
+        <div class="activity-list" id="activity-list"></div>
+      </div>
+    </section>
+
+    <section class="live-card queue-card">
+      <header>
+        <h2>Waiting work</h2>
+        <span class="queue-pressure" id="queue-pressure">0 queued</span>
+      </header>
+      <div class="live-body">
+        <div class="queue-list" id="queue-list"></div>
+      </div>
+    </section>
   </div>
 
   <div class="wake">
@@ -355,6 +444,109 @@ function judgmentFacts(t){
   return facts;
 }
 
+function clockTime(value){
+  const d=value?new Date(value):null;
+  return d&&!isNaN(d)?d.toISOString().slice(11,19):"—";
+}
+
+function elapsedSince(value){
+  const started=value?new Date(value):null;
+  if(!started||isNaN(started)) return "—";
+  const seconds=Math.max(0,Math.floor((Date.now()-started.getTime())/1000));
+  if(seconds<60) return seconds+"s";
+  const minutes=Math.floor(seconds/60), rest=seconds%60;
+  if(minutes<60) return minutes+"m "+rest+"s";
+  return Math.floor(minutes/60)+"h "+(minutes%60)+"m";
+}
+
+function activityRows(events){
+  const useful=(events||[]).filter(event=>
+    !(event.type==="thought"&&/^thinking:\s*$/i.test(event.summary||""))
+  );
+  const rows=[];
+  for(let x=0;x<useful.length;x++){
+    const event=useful[x], next=useful[x+1];
+    if(event.type==="tool_start"&&next?.type==="tool_result"){
+      rows.push({...event,result:next.summary||"",resultTimestamp:next.timestamp});
+      x++;
+      continue;
+    }
+    rows.push(event);
+  }
+  return rows;
+}
+
+function renderActivity(events){
+  const list=document.getElementById("activity-list");
+  list.replaceChildren();
+  const rows=activityRows(events);
+  if(!rows.length){
+    const empty=document.createElement("div");
+    empty.className="empty";
+    empty.textContent="Waiting for the first observable action";
+    list.appendChild(empty);
+    return;
+  }
+  rows.forEach(event=>{
+    const row=document.createElement("div");
+    const type=String(event.type||"event").replace(/[^a-z0-9_-]/gi,"-");
+    const warning=/\[warning\]/i.test(event.result||event.summary||"");
+    row.className=`activity-event ${type}${warning?" warning":""}`;
+
+    const at=document.createElement("span");
+    at.className="at";
+    at.textContent=clockTime(event.timestamp);
+    const kind=document.createElement("span");
+    kind.className="kind";
+    kind.textContent=type.replace(/_/g," ");
+    const main=document.createElement("div");
+    main.className="event-main";
+    main.textContent=event.summary||type;
+    if(event.result){
+      const result=document.createElement("div");
+      result.className="event-result";
+      result.textContent=event.result.replace(/^→\s*/,"");
+      if(event.resultTimestamp&&event.timestamp){
+        const duration=document.createElement("span");
+        duration.className="duration";
+        const ms=Math.max(0,new Date(event.resultTimestamp)-new Date(event.timestamp));
+        duration.textContent=`${ms<1000?ms+"ms":(ms/1000).toFixed(1)+"s"}`;
+        result.appendChild(duration);
+      }
+      main.appendChild(result);
+    }
+    row.append(at,kind,main);
+    list.appendChild(row);
+  });
+  const viewport=list.parentElement;
+  if(viewport) viewport.scrollTop=viewport.scrollHeight;
+}
+
+function renderQueue(runtime){
+  const queued=runtime.queued_tasks||[], count=runtime.queued_count||0,
+        capacity=runtime.queue_capacity||0, list=document.getElementById("queue-list");
+  document.getElementById("queue-pressure").textContent=capacity
+    ? `${count} / ${capacity} queued`:`${count} queued`;
+  list.replaceChildren();
+  if(!queued.length){
+    const empty=document.createElement("div");
+    empty.className="empty";
+    empty.textContent="No work waiting";
+    list.appendChild(empty);
+    return;
+  }
+  queued.forEach(task=>{
+    const item=document.createElement("div");
+    item.className="queue-item";
+    const title=document.createElement("b");
+    title.textContent=task.input_summary||task.title||task.task_id||"Queued task";
+    const meta=document.createElement("span");
+    meta.textContent=`${elapsedSince(task.created_at)} waiting · ${task.triggered_by||"unknown trigger"}`;
+    item.append(title,meta);
+    list.appendChild(item);
+  });
+}
+
 function renderRuntime(d){
   const runtime=d.runtime||{}, active=runtime.active_tasks||[], task=active[0]||null;
   const state=runtime.state||"idle", stateEl=document.getElementById("rstate");
@@ -365,7 +557,9 @@ function renderRuntime(d){
   document.getElementById("rtitle").textContent=task?.title||(
     state==="waiting_operator"?"Waiting for an operator answer":"No task is executing"
   );
-  document.getElementById("rtrigger").textContent=task?.triggered_by||(
+  document.getElementById("rtrigger").textContent=task
+    ? `${task.triggered_by||"unknown trigger"}${runtime.model?" · "+runtime.model:""}`
+    : (
     runtime.pending_questions?.[0]?.question||
     "The resident is waiting for a signal, schedule, or operator answer."
   );
@@ -373,18 +567,35 @@ function renderRuntime(d){
   document.getElementById("rupdated").textContent=generated&&!isNaN(generated)
     ? generated.toISOString().slice(11,19)+"Z":"—";
 
-  const activity=document.getElementById("activity"), events=task?.events||[];
-  activity.classList.toggle("on",events.length>0);
-  const activityList=document.getElementById("activity-list");
-  activityList.replaceChildren();
-  events.forEach(event=>{
-    const row=document.createElement("div");
-    row.className="activity-event";
-    const eventType=String(event.type||"").replace(/[^a-z0-9_-]/gi,"-");
-    if(eventType) row.classList.add(eventType);
-    row.textContent=event.summary||event.type||"";
-    activityList.appendChild(row);
-  });
+  const live=document.getElementById("live-layout"), input=task?.input||{},
+        progress=task?.progress||{}, events=task?.events||[];
+  live.classList.toggle("on",Boolean(task)||(runtime.queued_count||0)>0);
+  document.getElementById("input-summary").textContent=input.summary||task?.title||"Waiting to start";
+  document.getElementById("input-observations").textContent=input.observations||(
+    task?"No bounded input excerpt was captured.":"The next queued task has not started."
+  );
+  document.getElementById("input-objective").textContent=input.objective||(
+    task?"No objective excerpt was captured.":"—"
+  );
+  document.getElementById("current-judgment").textContent=task
+    ?"Not emitted yet":"Waiting to start";
+  document.getElementById("task-identity").textContent=task
+    ? `TASK ${task.task_id||"—"} · ROOT ${task.root_correlation_id||"—"}`
+    :"—";
+  document.getElementById("live-elapsed").textContent=task?elapsedSince(task.started_at):"—";
+  document.getElementById("live-iteration").textContent=progress.iteration_budget
+    ? `${progress.iteration||0} / ${progress.iteration_budget}`:`${progress.iteration||0}`;
+  document.getElementById("live-tools").textContent=progress.tool_calls||0;
+  document.getElementById("live-warnings").textContent=progress.warnings||0;
+  renderActivity(events);
+  renderQueue(runtime);
+
+  const activeTrace=document.getElementById("active-trace"),
+        activeTraceUrl=task?.trace_id
+          ? safeHttpUrl(d.hud?.trace_url_template||"",task.trace_id):"";
+  activeTrace.hidden=!activeTraceUrl;
+  if(activeTraceUrl) activeTrace.href=activeTraceUrl;
+  else activeTrace.removeAttribute("href");
 }
 
 function renderEmpty(){

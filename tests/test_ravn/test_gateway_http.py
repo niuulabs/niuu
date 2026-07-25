@@ -560,6 +560,9 @@ def test_resident_hud_serves_live_durable_and_inflight_state_without_operator_to
     page = client.get("/resident/hud")
     assert page.status_code == 200
     assert "RESIDENT · HUD" in page.text
+    assert "What happened" in page.text
+    assert "Current progress" in page.text
+    assert "Waiting work" in page.text
     assert "octoprint_job_stats" not in page.text
 
     payload = client.get("/resident/hud-data").json()

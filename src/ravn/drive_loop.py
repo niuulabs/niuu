@@ -90,6 +90,60 @@ _MIMIR_PAGE_WRITTEN_OUTCOME = "mimir.page.written"
 _DREAM_CYCLE_TRIGGER = "dream_cycle:cron"
 _DREAM_COUNT_FIELDS = ("pages_updated", "entities_created", "lint_fixes")
 _RAVN_TASK_STARTED = "ravn.task.started"
+_TRACEPARENT_PATTERN = re.compile(
+    r"^[\da-fA-F]{2}-([\da-fA-F]{32})-[\da-fA-F]{16}-[\da-fA-F]{2}$"
+)
+
+
+def _bounded_hud_text(value: str, limit: int) -> str:
+    text = value.strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 1)].rstrip()}…"
+
+
+def _markdown_section(value: str, heading_prefix: str) -> str:
+    """Return one Markdown section without coupling the HUD to task semantics."""
+    collecting = False
+    collected: list[str] = []
+    wanted = heading_prefix.casefold()
+    for line in value.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            heading = stripped.lstrip("#").strip().casefold()
+            if collecting:
+                break
+            collecting = heading.startswith(wanted)
+            continue
+        if collecting:
+            collected.append(line)
+    return "\n".join(collected).strip()
+
+
+def _resident_hud_task_input(task: AgentTask, limit: int) -> dict[str, str]:
+    context = task.initiative_context.strip()
+    first_line = next((line.strip() for line in context.splitlines() if line.strip()), task.title)
+    summary = first_line.lstrip("#").strip() or task.title
+    observations = _markdown_section(context, "observed signals")
+    if not observations:
+        observations = _markdown_section(context, "signal")
+    if not observations:
+        observations = context
+    objective = _markdown_section(context, "your task")
+    return {
+        "summary": _bounded_hud_text(summary, limit),
+        "observations": _bounded_hud_text(observations, limit),
+        "objective": _bounded_hud_text(objective, limit),
+    }
+
+
+def _trace_id_from_carrier(carrier: Mapping[str, str]) -> str:
+    direct = str(carrier.get("trace_id") or "").strip()
+    if re.fullmatch(r"[\da-fA-F]{32}", direct):
+        return direct.lower()
+    traceparent = str(carrier.get("traceparent") or "").strip()
+    match = _TRACEPARENT_PATTERN.fullmatch(traceparent)
+    return match.group(1).lower() if match else ""
 _RAVN_TASK_DROPPED = "ravn.task.dropped"
 _RESIDENT_VALKYRIE_SCHEMA_REPAIR_TRIGGER = "schema_repair:resident_valkyrie"
 
@@ -1167,20 +1221,32 @@ class DriveLoop:
 
     def resident_hud_status(self) -> dict[str, object]:
         """Return factual, bounded-by-store runtime state for the resident HUD."""
+        context_limit = self._settings.gateway.channels.http.resident_hud_task_context_max_chars
         active: list[dict[str, object]] = []
         for task_id in self.active_task_ids():
             task = self._inflight_tasks.get(task_id) or self._active_task_contexts.get(task_id)
             result = self._result_store.get(task_id)
+            events = list(result.events if result is not None else [])
+            agent = self._active_agents.get(task_id)
+            iteration_budget = getattr(agent, "iteration_budget", None)
             active.append(
                 {
                     "task_id": task_id,
                     "title": task.title if task is not None else "",
                     "triggered_by": task.triggered_by if task is not None else "",
+                    "persona": (
+                        task.persona
+                        if task is not None and task.persona
+                        else getattr(self._persona_config, "name", "")
+                    ),
                     "root_correlation_id": (
                         task.root_correlation_id or task.task_id if task is not None else task_id
                     ),
                     "case_id": task.resident_case_id if task is not None else "",
                     "turn_index": task.resident_turn_index if task is not None else 0,
+                    "trace_id": (
+                        _trace_id_from_carrier(task.trace_context) if task is not None else ""
+                    ),
                     "started_at": (
                         result.started_at.isoformat()
                         if result is not None
@@ -1188,20 +1254,48 @@ class DriveLoop:
                         if task is not None
                         else ""
                     ),
+                    "input": (
+                        _resident_hud_task_input(task, context_limit) if task is not None else {}
+                    ),
+                    "progress": {
+                        "iteration": int(getattr(iteration_budget, "consumed", 0) or 0),
+                        "iteration_budget": int(getattr(iteration_budget, "total", 0) or 0),
+                        "tool_calls": sum(event.type == "tool_start" for event in events),
+                        "warnings": sum(
+                            event.type == "error" or "[warning]" in event.summary.casefold()
+                            for event in events
+                        ),
+                    },
                     "events": [
                         {
                             "type": event.type,
                             "summary": event.summary,
                             "timestamp": event.timestamp.isoformat(),
                         }
-                        for event in (result.events if result is not None else [])
+                        for event in events
                     ],
                 }
             )
+        queued = [
+            {
+                "task_id": task.task_id,
+                "title": task.title,
+                "triggered_by": task.triggered_by,
+                "root_correlation_id": task.root_correlation_id or task.task_id,
+                "created_at": task.created_at.isoformat(),
+                "input_summary": _resident_hud_task_input(task, context_limit)["summary"],
+            }
+            for _priority, _counter, task in sorted(
+                list(self._queue._queue)  # type: ignore[attr-defined]
+            )
+        ]
         return {
             "active_tasks": active,
             "active_count": len(active),
             "queued_count": self._queue.qsize(),
+            "queue_capacity": self._config.task_queue_max,
+            "queued_tasks": queued,
+            "model": self._settings.effective_model(),
         }
 
     def queued_task_ids(self) -> list[str]:
