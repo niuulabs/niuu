@@ -24,7 +24,7 @@ WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 COPY pyproject.toml uv.lock README.md /app/
 COPY src/ /app/src/
-RUN uv sync --frozen --no-dev --no-editable --extra k8s --extra nats --extra openshell \
+RUN uv sync --frozen --no-dev --no-editable --extra k8s --extra nats --extra openshell --extra otel \
     && mkdir -p /dist-root/data/mimir
 
 FROM python:3.14-slim-trixie@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
