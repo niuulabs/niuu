@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from mimir.compiled_truth import parse_page as parse_compiled_truth_page
-from niuu.domain.mimir import MimirSource, compute_content_hash
+from niuu.domain.mimir import MimirSource, compute_content_hash, compute_source_id
 from ravn.adapters.tools.entity_extractor import EntityExtractor
 from ravn.adapters.tools.file_security import PathSecurityError, resolve_safe
 from ravn.domain.models import ToolResult
@@ -32,10 +32,6 @@ logger = logging.getLogger(__name__)
 _PERMISSION = "mimir:write"
 _PERMISSION_READ = "mimir:read"
 _MIMIR_SOURCE_INGESTED_EVENT = "mimir.source.ingested"
-
-
-def _source_id_from_content(title: str, content: str) -> str:
-    return "src_" + compute_content_hash(f"{title}:{content}")[:16]
 
 
 def _is_provenance_optional_research_path(path: str) -> bool:
@@ -196,7 +192,7 @@ class MimirIngestTool(ToolPort):
             return ToolResult(tool_call_id="", content="title is required", is_error=True)
 
         source = MimirSource(
-            source_id=_source_id_from_content(title, content),
+            source_id=compute_source_id(content),
             title=title,
             content=content,
             source_type=source_type,
