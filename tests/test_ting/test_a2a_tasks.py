@@ -364,13 +364,13 @@ def _rpc(
     )
 
 
-def _send_params(workflow_id: str, *, prompt: str = "Build the widget tool") -> dict[str, Any]:
+def _send_params(skill_id: str, *, prompt: str = "Build the widget tool") -> dict[str, Any]:
     return {
         "message": {
             "messageId": "msg-1",
             "role": "ROLE_USER",
             "parts": [{"text": prompt}],
-            "metadata": {"workflowId": workflow_id, "model": "gpt-5.5"},
+            "metadata": {"skillId": skill_id, "model": "gpt-5.5"},
         }
     }
 
@@ -393,7 +393,7 @@ class TestSendMessage:
         assert response.status_code == 200
         result = response.json()["result"]["task"]
         assert result["status"]["state"] == "TASK_STATE_SUBMITTED"
-        assert result["metadata"]["workflowId"] == str(workflow.id)
+        assert result["metadata"]["skillId"] == str(workflow.id)
         assert result["metadata"]["sessionId"] == "session-123"
 
         assert len(port.spawned) == 1
@@ -427,26 +427,27 @@ class TestSendMessage:
         assert retried["contextId"] == "resident-operation-1"
         assert len(port.spawned) == 1
 
-    def test_missing_workflow_id_is_invalid_params(self) -> None:
+    def test_workflow_id_does_not_select_an_a2a_skill(self) -> None:
         client, _, _ = _make_client()
         params = _send_params(str(uuid4()))
-        del params["message"]["metadata"]["workflowId"]
+        skill_id = params["message"]["metadata"].pop("skillId")
+        params["message"]["metadata"]["workflowId"] = skill_id
 
         response = _rpc(client, "SendMessage", params)
 
         assert response.status_code == 200
         error = response.json()["error"]
         assert error["code"] == -32602
-        assert "workflowId" in error["message"]
+        assert "skillId" in error["message"]
 
-    def test_unknown_workflow_is_invalid_params(self) -> None:
+    def test_unknown_skill_is_invalid_params(self) -> None:
         client, _, _ = _make_client()
 
         response = _rpc(client, "SendMessage", _send_params(str(uuid4())))
 
         error = response.json()["error"]
         assert error["code"] == -32602
-        assert "unknown workflow" in error["message"]
+        assert "unknown skill" in error["message"]
 
     def test_empty_prompt_is_invalid_params(self) -> None:
         workflow = _make_workflow()
