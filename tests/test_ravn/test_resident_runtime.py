@@ -867,6 +867,8 @@ async def test_scheduled_sleep_persists_a_durable_wake(tmp_path) -> None:
     pending = await state.list_scheduled_wakes()
     assert len(pending) == 1
     assert _scheduled_wake_at(pending[0].content) == wake_at
+    assert _metadata(pending[0].content, "case_input_tokens") == "10"
+    assert _metadata(pending[0].content, "case_output_tokens") == "5"
 
 
 @pytest.mark.asyncio
@@ -896,7 +898,7 @@ async def test_a_wake_time_in_the_past_is_pushed_forward(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_due_wake_resumes_the_case_and_is_consumed(tmp_path) -> None:
+async def test_a_due_wake_is_consumed_only_after_the_resumed_turn_succeeds(tmp_path) -> None:
     state = LocalResidentState(tmp_path)
     runtime = ResidentRuntime(state=state)
     queued: list[AgentTask] = []
@@ -922,10 +924,141 @@ async def test_a_due_wake_resumes_the_case_and_is_consumed(tmp_path) -> None:
     assert queued[0].resident_case_id == "case-recheck"
     assert queued[0].triggered_by == "resident:scheduled_wake"
     assert queued[0].resident_turn_index == 3
+    assert queued[0].resident_wake_ref
     assert "recheck the filament stock" in queued[0].initiative_context
-    # Consumed, so the same wake cannot fire again on the next poll.
-    assert await state.list_scheduled_wakes() == []
+    # Queue admission is not completion. Keep the marker pending so a failed
+    # execution can be retried, while the in-flight case suppresses duplicates.
+    assert len(await state.list_scheduled_wakes()) == 1
     assert await runtime.resume_due_wakes() == 0
+
+    await runtime.handle_completed_turn(
+        task=queued[0],
+        prompt="scheduled recheck",
+        result=_result({"continuation": "stop"}),
+        response_text="recheck completed",
+    )
+
+    assert await state.list_scheduled_wakes() == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_resumed_turn_leaves_the_wake_pending_for_retry(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state)
+    queued: list[AgentTask] = []
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime.bind_enqueue(enqueue)
+    await state.write_scheduled_wake(
+        ResidentScheduledWakeRecord(
+            case_id="case-retry",
+            root_correlation_id="root-retry",
+            wake_at=datetime.now(UTC) - timedelta(minutes=1),
+            reason="retry after an executor failure",
+        )
+    )
+
+    assert await runtime.resume_due_wakes() == 1
+    runtime.release_failed_task(queued[0])
+
+    assert len(await state.list_scheduled_wakes()) == 1
+    assert await runtime.resume_due_wakes() == 1
+    assert len(queued) == 2
+
+
+@pytest.mark.asyncio
+async def test_scheduled_resume_preserves_and_enforces_the_turn_budget(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state, max_turns=3)
+    queued: list[AgentTask] = []
+    started_at = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime.bind_enqueue(enqueue)
+    await state.write_scheduled_wake(
+        ResidentScheduledWakeRecord(
+            case_id="case-budgeted",
+            root_correlation_id="root-budgeted",
+            wake_at=datetime.now(UTC) - timedelta(minutes=1),
+            reason="bounded recheck",
+            turn_index=2,
+            case_input_tokens=40,
+            case_output_tokens=20,
+            case_started_at=started_at,
+        )
+    )
+
+    assert await runtime.resume_due_wakes() == 1
+    resumed = queued[0]
+    assert resumed.resident_turn_index == 3
+    assert resumed.resident_input_tokens == 40
+    assert resumed.resident_output_tokens == 20
+    assert resumed.resident_started_at == started_at
+
+    disposition = await runtime.handle_completed_turn(
+        task=resumed,
+        prompt="schedule another recheck",
+        result=_result(
+            {
+                "continuation": "sleep",
+                "next_action_timing": "scheduled_time",
+                "wake_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+            }
+        ),
+        response_text="another recheck would exceed the case budget",
+    )
+
+    assert disposition.kind is ContinuationDecisionKind.STOP
+    assert "turn budget" in disposition.reason
+    assert await state.list_scheduled_wakes() == []
+
+
+@pytest.mark.asyncio
+async def test_scheduled_resume_enforces_the_cumulative_token_budget(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state, max_turns=5, max_tokens=100)
+    queued: list[AgentTask] = []
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime.bind_enqueue(enqueue)
+    await state.write_scheduled_wake(
+        ResidentScheduledWakeRecord(
+            case_id="case-token-budget",
+            root_correlation_id="root-token-budget",
+            wake_at=datetime.now(UTC) - timedelta(minutes=1),
+            reason="token-bounded recheck",
+            turn_index=1,
+            case_input_tokens=80,
+            case_output_tokens=10,
+        )
+    )
+
+    assert await runtime.resume_due_wakes() == 1
+    disposition = await runtime.handle_completed_turn(
+        task=queued[0],
+        prompt="schedule another recheck",
+        result=_result(
+            {
+                "continuation": "sleep",
+                "next_action_timing": "scheduled_time",
+                "wake_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+            }
+        ),
+        response_text="another recheck would exceed the token budget",
+    )
+
+    assert disposition.kind is ContinuationDecisionKind.STOP
+    assert "token budget" in disposition.reason
+    assert await state.list_scheduled_wakes() == []
 
 
 @pytest.mark.asyncio

@@ -369,11 +369,38 @@ class ResidentRuntime:
             answer = await self._state.read_operator_answer(case_id)
             if answer is not None and answer.path == task.resident_answer_ref:
                 await self._state.consume_operator_answer(answer)
+        if task.resident_wake_ref:
+            wake = await self._state.read(task.resident_wake_ref)
+            if wake is not None and wake.path == task.resident_wake_ref:
+                with telemetry.span(
+                    "ravn.port.resident_state.consume_scheduled_wake",
+                    attributes={
+                        "ravn.resident.case_id": case_id,
+                        "ravn.resident.wake_ref": task.resident_wake_ref,
+                    },
+                ):
+                    await self._state.consume_scheduled_wake(wake)
 
         self._inflight_cases.discard(case_id)
         self._inflight_refs.difference_update(task.resident_inbox_refs)
         control = str(fields.get("continuation") or "").strip().casefold()
         if control == "sleep":
+            timing = str(fields.get("next_action_timing") or "").strip().casefold()
+            if timing == "scheduled_time":
+                budget_reason = _budget_stop_reason(
+                    turn_index=turn_index,
+                    total_tokens=cumulative.total_tokens,
+                    max_turns=self._max_turns,
+                    max_tokens=self._max_tokens,
+                )
+                if budget_reason:
+                    return ResidentTurnDisposition(
+                        kind=ContinuationDecisionKind.STOP,
+                        case_id=case_id,
+                        turn_ref=turn_ref,
+                        budget_ref=budget_ref,
+                        reason=budget_reason,
+                    )
             wake_ref, wake_at = await self._schedule_wake(
                 task=task,
                 fields=fields,
@@ -382,6 +409,7 @@ class ResidentRuntime:
                 turn_ref=turn_ref,
                 turn_index=turn_index,
                 mandate=mandate,
+                cumulative=cumulative,
             )
             return ResidentTurnDisposition(
                 kind=ContinuationDecisionKind.SLEEP,
@@ -464,6 +492,7 @@ class ResidentRuntime:
         turn_ref: str,
         turn_index: int,
         mandate: str,
+        cumulative: TokenUsage,
     ) -> tuple[str, str]:
         """Persist a durable wake when a sleeping turn expects time to pass.
 
@@ -504,6 +533,9 @@ class ResidentRuntime:
                     turn_ref=turn_ref,
                     persona=task.persona or "",
                     task_id=task.task_id,
+                    case_input_tokens=cumulative.input_tokens,
+                    case_output_tokens=cumulative.output_tokens,
+                    case_started_at=task.resident_started_at or task.created_at.isoformat(),
                 )
             )
             span.set_attribute("ravn.resident.wake_ref", wake_ref)
@@ -532,9 +564,22 @@ class ResidentRuntime:
 
     async def resume_due_wakes(self) -> int:
         """Re-enqueue durable cases whose scheduled wake time has arrived."""
+        telemetry = get_observability()
         now = datetime.now(UTC)
         queued = 0
-        for wake in await self._state.list_scheduled_wakes():
+        with telemetry.span(
+            "ravn.port.resident_state.list_scheduled_wakes",
+            attributes={"ravn.resident.id": self._resident_id},
+        ) as span:
+            wakes = await self._state.list_scheduled_wakes()
+            span.set_attribute("ravn.resident.scheduled_wake.pending_count", len(wakes))
+        telemetry.gauge(
+            "ravn.resident.scheduled_wakes.pending",
+            len(wakes),
+            attributes={"ravn.resident.id": self._resident_id},
+            description="Durable scheduled resident wakes still pending.",
+        )
+        for wake in wakes:
             case_id = _metadata(wake.content, "case_id") or _case_from_path(wake.path)
             if not case_id or case_id in self._inflight_cases:
                 continue
@@ -542,7 +587,18 @@ class ResidentRuntime:
             if wake_at is None:
                 # A wake with no readable time can never become due; consume it so
                 # it cannot accumulate as permanent invisible backlog.
-                await self._state.consume_scheduled_wake(wake)
+                telemetry.event(
+                    "ravn.resident.scheduled_wake_unreadable",
+                    attributes={
+                        "ravn.resident.case_id": case_id,
+                        "ravn.resident.wake_ref": wake.path,
+                    },
+                )
+                with telemetry.span(
+                    "ravn.port.resident_state.consume_scheduled_wake",
+                    attributes={"ravn.resident.wake_ref": wake.path},
+                ):
+                    await self._state.consume_scheduled_wake(wake)
                 continue
             if wake_at > now:
                 continue
@@ -551,12 +607,27 @@ class ResidentRuntime:
                 wake_at=wake_at,
                 prior_turn_handoff=await self._read_parent_handoff(wake),
             )
-            # Enqueue before consuming: a wake that is dropped on a full queue must
-            # remain pending rather than be silently lost.
-            if not await self._enqueue_task(task):
+            accepted = await self._enqueue_task(task)
+            telemetry.event(
+                "ravn.resident.scheduled_wake_resumed",
+                attributes={
+                    "ravn.resident.case_id": case_id,
+                    "ravn.resident.wake_ref": wake.path,
+                    "ravn.resident.wake_queued": accepted,
+                    "ravn.resident.wake_lag_seconds": max(
+                        0.0,
+                        (now - wake_at).total_seconds(),
+                    ),
+                },
+            )
+            if not accepted:
                 continue
             self._inflight_cases.add(case_id)
-            await self._state.consume_scheduled_wake(wake)
+            telemetry.count(
+                "ravn.resident.scheduled_wake_resumptions",
+                attributes={"ravn.resident.id": self._resident_id},
+                description="Due scheduled resident wakes accepted by the task queue.",
+            )
             queued += 1
         return queued
 
@@ -1050,7 +1121,12 @@ def _scheduled_wake_task(
         resident_case_id=case_id,
         resident_mandate=mandate,
         resident_turn_index=prior_turn_index + 1,
-        resident_started_at=_metadata(wake.content, "created_at"),
+        resident_input_tokens=_int_metadata(wake.content, "case_input_tokens", 0),
+        resident_output_tokens=_int_metadata(wake.content, "case_output_tokens", 0),
+        resident_started_at=(
+            _metadata(wake.content, "case_started_at") or _metadata(wake.content, "created_at")
+        ),
+        resident_wake_ref=wake.path,
     )
 
 

@@ -175,6 +175,9 @@ class ResidentScheduledWakeRecord:
     turn_ref: str = ""
     persona: str = ""
     task_id: str = ""
+    case_input_tokens: int = 0
+    case_output_tokens: int = 0
+    case_started_at: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
