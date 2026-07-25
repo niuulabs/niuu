@@ -44,6 +44,13 @@
   .envbox{text-align:right; flex-shrink:0; font-size:10px; color:var(--dim); letter-spacing:.1em}
   .envbox b{display:block; color:var(--tx); font-size:12px; letter-spacing:.16em; font-weight:600}
 
+  /* ── resident switcher (multi-resident payloads) ────── */
+  .switch{display:flex; gap:6px}
+  .sw{font-family:var(--mono); background:var(--panel); color:var(--dim);
+    border:1px solid var(--line); padding:5px 13px; font-size:10px; letter-spacing:.16em;
+    text-transform:uppercase; cursor:pointer}
+  .sw.on{color:var(--obs); border-color:var(--obs); background:rgba(47,214,195,.07)}
+
   /* ── wake bar ───────────────────────────────────────── */
   .wake{display:flex; align-items:center; gap:16px; background:var(--panel);
     border:1px solid var(--line); border-left:2px solid var(--obs); padding:9px 14px}
@@ -72,11 +79,8 @@
   .col .body{overflow-y:auto; padding:8px; display:flex; flex-direction:column; gap:6px; flex:1}
   .col .body::-webkit-scrollbar{width:4px}
   .col .body::-webkit-scrollbar-thumb{background:var(--line2)}
-  .c-observations>h2{color:var(--obs)} .c-observations{border-top:2px solid var(--obs)}
-  .c-hypotheses>h2{color:var(--hyp)}   .c-hypotheses{border-top:2px solid var(--hyp)}
-  .c-unknowns>h2{color:var(--unk)}     .c-unknowns{border-top:2px solid var(--unk)}
-  .c-capability_gaps>h2{color:var(--gap)} .c-capability_gaps{border-top:2px solid var(--gap)}
-  .c-attempts>h2{color:var(--att)}     .c-attempts{border-top:2px solid var(--att)}
+  .col{--k:var(--dim); border-top:2px solid var(--k)}
+  .col>h2{color:var(--k)}
 
   .e{position:relative; padding:7px 9px 7px 11px; background:var(--panel2);
     border:1px solid var(--line); font-size:11.5px; line-height:1.5; color:var(--tx)}
@@ -88,11 +92,8 @@
   @keyframes fadeout{from{opacity:.85}to{opacity:.3}}
   .e .tag{position:absolute; top:-1px; right:-1px; font-size:8px; letter-spacing:.14em;
     padding:1px 5px; text-transform:uppercase; font-weight:600}
-  .c-observations .e.new::before{background:var(--obs)} .c-observations .e.new .tag{background:var(--obs);color:#04120f}
-  .c-hypotheses .e.new::before{background:var(--hyp)}   .c-hypotheses .e.new .tag{background:var(--hyp);color:#140d02}
-  .c-unknowns .e.new::before{background:var(--unk)}     .c-unknowns .e.new .tag{background:var(--unk);color:#0e0518}
-  .c-capability_gaps .e.new::before{background:var(--gap)} .c-capability_gaps .e.new .tag{background:var(--gap);color:#160402}
-  .c-attempts .e.new::before{background:var(--att)}     .c-attempts .e.new .tag{background:var(--att);color:#04090d}
+  .e.new::before{background:var(--k)}
+  .e.new .tag{background:var(--k); color:var(--bg)}
   .e.gone::before{background:var(--dim2)}
   .e.gone .tag{background:var(--dim2); color:var(--bg)}
   .empty{color:var(--dim2); font-size:10.5px; letter-spacing:.12em; padding:10px 4px; text-transform:uppercase}
@@ -151,6 +152,8 @@
       <span id="envtype">—</span>
     </div>
   </div>
+
+  <div class="switch" id="switch" hidden></div>
 
   <div class="wake">
     <span class="src" id="wsrc">—</span>
@@ -601,95 +604,127 @@
   ]
 }</script>
 <script>
-const FIELDS=[["observations","Observations"],["hypotheses","Hypotheses"],["unknowns","Unknowns"],
-              ["capability_gaps","Capability Gaps"],["attempts","Attempts"]];
+// Canonical resident fields get their established colours; anything else a
+// deployment declares still renders, using a rotating palette.
+const KNOWN={observations:"--obs",hypotheses:"--hyp",unknowns:"--unk",
+             capability_gaps:"--gap",attempts:"--att"};
+const PALETTE=["--obs","--hyp","--unk","--gap","--att"];
 const WAKE={
  "resident:stewardship":["STEWARDSHIP WAKE","Nothing was observed. It woke against its charter because time had passed."],
  "resident:scheduled_wake":["SCHEDULED WAKE","It decided when to look again, and the runtime brought the case back."],
  "resident:operator_answer":["OPERATOR ANSWER","A human answered the question it asked. The same case resumed."],
  "resident:home":["OBSERVATION","New durable observations arrived in the inbox."]
 };
-const D=JSON.parse(document.getElementById("data").textContent);
-let i=0, timer=null;
 
-document.getElementById("rname").textContent=(D.resident_id||"resident").toUpperCase();
-document.getElementById("charter").textContent=D.charter||"—";
-document.getElementById("envname").textContent=(D.environment?.name||"—");
-document.getElementById("envtype").textContent=(D.environment?.type||"").toUpperCase();
+const RAW=JSON.parse(document.getElementById("data").textContent);
+// One page may carry several residents, so the same core can be shown against
+// more than one environment without a second build.
+const RESIDENTS=Array.isArray(RAW.residents)&&RAW.residents.length?RAW.residents:[RAW];
 
-const cols=document.getElementById("cols");
-cols.innerHTML=FIELDS.map(([k,l])=>
- `<section class="col c-${k}"><h2><span>${l}</span><span class="n" id="n-${k}">0</span></h2>
-  <div class="body" id="b-${k}"></div></section>`).join("");
-
-const track=document.getElementById("track");
-D.turns.forEach((t,n)=>{
-  const d=document.createElement("div"); d.className="tick"; d.dataset.n=n;
-  d.innerHTML=`<div class="dot"></div><div class="lb">T${t.turn_index}</div>`;
-  d.onclick=()=>{stop();render(n)};
-  track.appendChild(d);
-});
+let D=RESIDENTS[0], FIELDS=[], HUE={}, i=0, timer=null;
+const cols=document.getElementById("cols"), track=document.getElementById("track"),
+      evo=document.getElementById("evo");
 
 function esc(s){return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}
+function label(k){return k.replace(/_/g," ").replace(/\b\w/g,c=>c.toUpperCase())}
 
-const HUE={observations:"--obs",hypotheses:"--hyp",unknowns:"--unk",capability_gaps:"--gap",attempts:"--att"};
-const evo=document.getElementById("evo");
-evo.style.gridTemplateColumns=`minmax(96px,auto) repeat(${D.turns.length},1fr)`;
+function fieldsOf(d){
+  if(Array.isArray(d.fields)&&d.fields.length) return d.fields.slice();
+  const seen=[];
+  (d.turns||[]).forEach(t=>Object.keys(t.working_state||{}).forEach(k=>{
+    if(!seen.includes(k)) seen.push(k);
+  }));
+  return seen;
+}
+
+function mount(d){
+  D=d; i=0;
+  document.getElementById("note").textContent=d.note||"Illustrative trajectory";
+  FIELDS=fieldsOf(d);
+  HUE={}; FIELDS.forEach((k,x)=>{HUE[k]=KNOWN[k]||PALETTE[x%PALETTE.length]});
+
+  document.getElementById("rname").textContent=(d.resident_id||"resident").toUpperCase();
+  document.getElementById("charter").textContent=d.charter||"—";
+  document.getElementById("envname").textContent=d.environment?.name||d.resident_id||"—";
+  document.getElementById("envtype").textContent=(d.environment?.type||"").toUpperCase();
+
+  cols.style.gridTemplateColumns=`1.45fr repeat(${Math.max(0,FIELDS.length-1)},1fr)`;
+  cols.innerHTML=FIELDS.map(k=>
+   `<section class="col" data-k="${k}" style="--k:var(${HUE[k]})">
+      <h2><span>${esc(label(k))}</span><span class="n" id="n-${k}">0</span></h2>
+      <div class="body" id="b-${k}"></div>
+    </section>`).join("");
+
+  track.innerHTML='<div class="rail"></div>';
+  (d.turns||[]).forEach((t,n)=>{
+    const el=document.createElement("div"); el.className="tick";
+    el.innerHTML=`<div class="dot"></div><div class="lb">${n+1}</div>`;
+    el.onclick=()=>{stop();render(n)};
+    track.appendChild(el);
+  });
+
+  buildEvo();
+  render(0);
+}
+
 function buildEvo(){
-  const max=Math.max(1,...D.turns.flatMap(t=>FIELDS.map(([k])=>(t.working_state?.[k]||[]).length)));
-  let html=`<div></div>`+D.turns.map(t=>`<div class="hd" data-h="${t.turn_index}">T${t.turn_index}</div>`).join("");
-  FIELDS.forEach(([k,l])=>{
-    html+=`<div class="rl">${l}</div>`;
-    D.turns.forEach((t,n)=>{
+  const turns=D.turns||[];
+  evo.style.gridTemplateColumns=`minmax(96px,auto) repeat(${turns.length},1fr)`;
+  const max=Math.max(1,...turns.flatMap(t=>FIELDS.map(k=>(t.working_state?.[k]||[]).length)));
+  let html=`<div></div>`+turns.map((t,n)=>`<div class="hd">${n+1}</div>`).join("");
+  FIELDS.forEach(k=>{
+    html+=`<div class="rl">${esc(label(k))}</div>`;
+    turns.forEach((t,n)=>{
       const c=(t.working_state?.[k]||[]).length;
-      const a=c?(.22+.78*(c/max)).toFixed(2):0;
-      html+=`<div class="cell ${c?"":"z"}" data-c="${n}" style="${c?`background:color-mix(in srgb,var(${HUE[k]}) ${Math.round(a*100)}%,transparent)`:""}">${c||"·"}</div>`;
+      const a=c?Math.round((.22+.78*(c/max))*100):0;
+      html+=`<div class="cell ${c?"":"z"}" data-c="${n}" style="${c?`background:color-mix(in srgb,var(${HUE[k]}) ${a}%,transparent)`:""}">${c||"·"}</div>`;
     });
   });
   evo.innerHTML=html;
 }
-buildEvo();
 function markEvo(n){
   evo.querySelectorAll(".cell").forEach(c=>c.classList.toggle("cur",+c.dataset.c===n));
   evo.querySelectorAll(".hd").forEach((h,x)=>h.classList.toggle("cur",x===n));
 }
 
 function flagsFor(t,prev){
-  const f=[], ch=t.changes||{};
-  if((ch.hypotheses?.removed||[]).length && (ch.observations?.added||[]).length)
-    f.push(["falsified","Hypothesis falsified — belief revised"]);
-  else if((ch.hypotheses?.removed||[]).length) f.push(["falsified","Hypothesis dropped"]);
-  const gapsNow=(t.working_state?.capability_gaps||[]).length;
-  const gapsBefore=prev?(prev.working_state?.capability_gaps||[]).length:0;
-  if(prev && gapsBefore>0 && gapsNow===0) f.push(["acquired","Capability acquired — gap closed"]);
+  const f=[], ch=t.changes||{}, ws=t.working_state||{};
+  const has=k=>FIELDS.includes(k);
+  if(has("hypotheses")){
+    const dropped=(ch.hypotheses?.removed||[]).length;
+    if(dropped&&(ch.observations?.added||[]).length) f.push(["falsified","Hypothesis falsified — belief revised"]);
+    else if(dropped) f.push(["falsified","Hypothesis dropped"]);
+  }
+  if(has("capability_gaps")&&prev){
+    const now=(ws.capability_gaps||[]).length;
+    const before=(prev.working_state?.capability_gaps||[]).length;
+    if(before>0&&now===0) f.push(["acquired","Capability acquired — gap closed"]);
+  }
   if(t.continuation==="ask_operator") f.push(["asked","Operator consulted — it knew to ask"]);
-  if(!prev && !(t.working_state?.observations||[]).length)
+  if(!prev&&!(ws.observations||[]).length&&has("observations"))
     f.push(["unprompted","Unprompted — no task, no signal, no human"]);
   return f;
 }
 
 function render(n){
   i=n;
-  const t=D.turns[n], prev=n>0?D.turns[n-1]:null, ch=t.changes||{};
+  const turns=D.turns||[], t=turns[n], prev=n>0?turns[n-1]:null, ch=t.changes||{};
   const w=WAKE[t.triggered_by]||["WAKE",""];
   document.getElementById("wsrc").textContent=w[0];
   document.getElementById("wwhy").textContent=t.question?("Asked: “"+t.question+"”"):(t.rationale||w[1]);
   document.getElementById("wtools").textContent=(t.tools_used||[]).join(" · ")||"none";
   document.getElementById("wtok").textContent=((t.input_tokens||0)+(t.output_tokens||0)).toLocaleString();
   document.getElementById("wnext").textContent=(t.continuation||"—").toUpperCase();
-
   document.getElementById("flags").innerHTML=flagsFor(t,prev)
     .map(([c,l])=>`<span class="flag ${c}">${l}</span>`).join("");
 
-  FIELDS.forEach(([k])=>{
-    const cur=t.working_state?.[k]||[], c=ch[k]||{added:[],retained:[],removed:[]};
+  FIELDS.forEach(k=>{
+    const cur=t.working_state?.[k]||[], c=ch[k]||{};
     const added=new Set(c.added||[]);
     const rows=cur.map(e=>
       `<div class="e ${added.has(e)?"new":""}">${added.has(e)?'<span class="tag">new</span>':""}${esc(e)}</div>`);
-    (c.removed||[]).forEach(e=>rows.push(
-      `<div class="e gone"><span class="tag">dropped</span>${esc(e)}</div>`));
-    const b=document.getElementById("b-"+k);
-    b.innerHTML=rows.length?rows.join(""):'<div class="empty">— none —</div>';
+    (c.removed||[]).forEach(e=>rows.push(`<div class="e gone"><span class="tag">dropped</span>${esc(e)}</div>`));
+    document.getElementById("b-"+k).innerHTML=rows.length?rows.join(""):'<div class="empty">— none —</div>';
     document.getElementById("n-"+k).textContent=cur.length;
   });
 
@@ -699,23 +734,38 @@ function render(n){
   markEvo(n);
   const ts=t.updated_at?new Date(t.updated_at):null;
   document.getElementById("stamp").textContent= ts
-    ? ts.toISOString().slice(0,16).replace("T"," ")+"Z · TURN "+t.turn_index+"/"+D.turns.length
-    : "TURN "+t.turn_index+"/"+D.turns.length;
+    ? ts.toISOString().slice(0,16).replace("T"," ")+"Z · "+(n+1)+" / "+turns.length
+    : (n+1)+" / "+turns.length;
 }
 
 function stop(){ if(timer){clearInterval(timer);timer=null;} document.getElementById("play").textContent="▶ Play"; }
 document.getElementById("play").onclick=()=>{
   if(timer){stop();return}
   document.getElementById("play").textContent="❚❚ Pause";
-  if(i>=D.turns.length-1) render(0);
-  timer=setInterval(()=>{ i<D.turns.length-1?render(i+1):stop(); },3400);
+  if(i>=(D.turns||[]).length-1) render(0);
+  timer=setInterval(()=>{ i<(D.turns||[]).length-1?render(i+1):stop(); },3400);
 };
 addEventListener("keydown",e=>{
-  if(e.key==="ArrowRight"){stop();render(Math.min(i+1,D.turns.length-1))}
+  const last=(D.turns||[]).length-1;
+  if(e.key==="ArrowRight"){stop();render(Math.min(i+1,last))}
   if(e.key==="ArrowLeft"){stop();render(Math.max(i-1,0))}
   if(e.key===" "){e.preventDefault();document.getElementById("play").click()}
 });
-render(0);
+
+if(RESIDENTS.length>1){
+  const sw=document.getElementById("switch");
+  sw.hidden=false;
+  sw.innerHTML=RESIDENTS.map((r,x)=>
+    `<button class="sw${x===0?" on":""}" data-x="${x}">${esc(r.environment?.name||r.resident_id||("Resident "+(x+1)))}</button>`).join("");
+  sw.onclick=e=>{
+    const b=e.target.closest(".sw"); if(!b) return;
+    stop();
+    sw.querySelectorAll(".sw").forEach(x=>x.classList.remove("on"));
+    b.classList.add("on");
+    mount(RESIDENTS[+b.dataset.x]);
+  };
+}
+mount(RESIDENTS[0]);
 </script>
 </body>
 </html>

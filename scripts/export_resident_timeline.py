@@ -42,6 +42,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--environment-type", default="")
     parser.add_argument("--prefix", default="", help="Limit to one case prefix.")
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--note", default="", help="Provenance label shown in the page footer.")
     parser.add_argument(
         "--template",
         type=Path,
@@ -70,6 +71,8 @@ async def _run(args: argparse.Namespace) -> int:
         prefix=args.prefix,
     )
     payload = timeline.as_dict()
+    # A live export must not inherit the template's "illustrative" provenance note.
+    payload["note"] = args.note or f"Live export · {args.resident} · {len(timeline.turns)} turns"
     if not payload["turns"]:
         print(
             f"no durable resident turns found under {args.state_root}. Has this resident run yet?",
