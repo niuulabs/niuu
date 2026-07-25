@@ -67,7 +67,7 @@
   .runtime-meta{display:flex;gap:14px;color:var(--dim);font-size:10px;white-space:nowrap}
   .runtime-meta b{color:var(--tx);font-weight:500}
   .live-layout{display:none;grid-template-columns:minmax(300px,1.05fr) minmax(380px,1.4fr)
-    minmax(250px,.8fr);gap:9px;min-height:250px;max-height:390px}
+    minmax(250px,.8fr);gap:9px;height:clamp(360px,calc(100vh - 250px),680px)}
   .live-layout.on{display:grid}
   .live-card{background:var(--panel);border:1px solid var(--line);min-height:0;
     display:flex;flex-direction:column}
@@ -88,6 +88,13 @@
     text-transform:uppercase;margin-bottom:5px}
   .context-block pre,.context-block .text{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--dim);
     font:10.5px/1.55 var(--mono)}
+  .observation-list{display:flex;flex-direction:column;gap:6px}
+  .observation{border:1px solid var(--line);background:var(--panel2);padding:7px 8px}
+  .observation summary{cursor:pointer;color:var(--tx);font-size:10px;line-height:1.45;
+    list-style-position:outside;margin-left:13px}
+  .observation pre{margin-top:7px;padding-top:7px;border-top:1px solid var(--line);
+    max-height:210px;overflow:auto;color:var(--dim2)}
+  .observation-note{color:var(--dim2);font-size:9px;line-height:1.45;padding:3px 1px}
   .judgment-state{display:flex;justify-content:space-between;gap:12px;color:var(--dim);
     font-size:10px}
   .judgment-state b{color:var(--hyp);font-weight:500}
@@ -108,8 +115,10 @@
   .queue-card h2{color:var(--hyp)}
   .queue-list{display:flex;flex-direction:column;gap:6px}
   .queue-item{padding:7px 8px;border:1px solid var(--line);background:var(--panel2)}
-  .queue-item b{display:block;color:var(--tx);font-size:10px;font-weight:500;
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .queue-item b{display:flex;align-items:center;justify-content:space-between;gap:8px;
+    color:var(--tx);font-size:10px;font-weight:500}
+  .queue-item .queue-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .queue-item .queue-count{flex:none;color:var(--hyp);font-size:9px}
   .queue-item span{display:block;color:var(--dim2);font-size:8.5px;margin-top:3px}
   .queue-pressure{color:var(--hyp)}
   .active-trace{font-size:8.5px;color:var(--obs);text-decoration:none;border:1px solid var(--obs);
@@ -202,8 +211,8 @@
     text-decoration:none;border:1px solid var(--obs);padding:4px 9px}
   .trace[hidden]{display:none}
   @media (max-width:1100px){
-    .live-layout{grid-template-columns:1fr;max-height:none}
-    .live-card{max-height:360px}
+    .live-layout{grid-template-columns:1fr;height:auto}
+    .live-card{height:320px}
     .cols{grid-template-columns:1fr 1fr}
     .charter{display:none}
   }
@@ -252,10 +261,6 @@
       <div class="live-body">
         <strong class="context-summary" id="input-summary">—</strong>
         <div class="context-block">
-          <span class="lb">Observed input</span>
-          <pre id="input-observations">—</pre>
-        </div>
-        <div class="context-block">
           <span class="lb">Current objective</span>
           <div class="text" id="input-objective">—</div>
         </div>
@@ -264,6 +269,10 @@
           <b id="current-judgment">Not emitted yet</b>
         </div>
         <div class="context-block identity-line" id="task-identity">—</div>
+        <div class="context-block">
+          <span class="lb">Observed input</span>
+          <div class="observation-list" id="input-observations">—</div>
+        </div>
       </div>
     </section>
 
@@ -459,10 +468,99 @@ function elapsedSince(value){
   return Math.floor(minutes/60)+"h "+(minutes%60)+"m";
 }
 
+function observationEntries(value){
+  const entries=[];
+  let current=[];
+  String(value||"").split("\n").forEach(line=>{
+    if(/^\s*-\s+/.test(line)){
+      if(current.length) entries.push(current.join("\n").trim());
+      current=[line.replace(/^\s*-\s+/,"")];
+    }else if(line.trim()){
+      current.push(line);
+    }
+  });
+  if(current.length) entries.push(current.join("\n").trim());
+  return entries.length?entries:[String(value||"").trim()].filter(Boolean);
+}
+
+function prettyPayload(value){
+  const text=String(value||"").trim();
+  if(!text) return "";
+  try{return JSON.stringify(JSON.parse(text),null,2)}
+  catch{
+    let formatted="", indent=0, inString=false, escaped=false;
+    const pad=()=> "  ".repeat(Math.max(0,indent));
+    for(const char of text){
+      if(inString){
+        formatted+=char;
+        if(escaped) escaped=false;
+        else if(char==="\\") escaped=true;
+        else if(char==='"') inString=false;
+        continue;
+      }
+      if(char==='"'){
+        inString=true;
+        formatted+=char;
+      }else if(char==="{"||char==="["){
+        indent++;
+        formatted+=char+"\n"+pad();
+      }else if(char==="}"||char==="]"){
+        indent--;
+        formatted+="\n"+pad()+char;
+      }else if(char===","){
+        formatted+=",\n"+pad();
+      }else if(char===":"){
+        formatted+=": ";
+      }else if(!/\s/.test(char)){
+        formatted+=char;
+      }
+    }
+    return formatted.trim();
+  }
+}
+
+function renderObservations(value){
+  const list=document.getElementById("input-observations");
+  list.replaceChildren();
+  const entries=observationEntries(value);
+  if(!entries.length){
+    const empty=document.createElement("div");
+    empty.className="observation-note";
+    empty.textContent="No bounded input excerpt was captured.";
+    list.appendChild(empty);
+    return;
+  }
+  const visible=entries.slice(0,6);
+  visible.forEach(entry=>{
+    const marker=" payload=", splitAt=entry.indexOf(marker);
+    const heading=(splitAt>=0?entry.slice(0,splitAt):entry).trim();
+    const payload=splitAt>=0?entry.slice(splitAt+marker.length).trim():"";
+    if(!payload){
+      const row=document.createElement("div");
+      row.className="observation";
+      row.textContent=heading;
+      list.appendChild(row);
+      return;
+    }
+    const details=document.createElement("details");
+    details.className="observation";
+    const summary=document.createElement("summary");
+    summary.textContent=heading||"Observed signal";
+    const pre=document.createElement("pre");
+    pre.textContent=prettyPayload(payload);
+    details.append(summary,pre);
+    list.appendChild(details);
+  });
+  if(entries.length>visible.length){
+    const note=document.createElement("div");
+    note.className="observation-note";
+    note.textContent=`Showing ${visible.length} of ${entries.length} observations. Open the trace for the complete input.`;
+    list.appendChild(note);
+  }
+}
+
 function activityRows(events){
-  const useful=(events||[]).filter(event=>
-    !(event.type==="thought"&&/^thinking:\s*$/i.test(event.summary||""))
-  );
+  const all=events||[], useful=all.filter(event=>event.type!=="thought");
   const rows=[];
   for(let x=0;x<useful.length;x++){
     const event=useful[x], next=useful[x+1];
@@ -473,11 +571,22 @@ function activityRows(events){
     }
     rows.push(event);
   }
+  const last=all[all.length-1];
+  if(last?.type==="thought"){
+    rows.push({
+      type:"model_activity",
+      summary:"Model reasoning is in progress",
+      timestamp:last.timestamp,
+    });
+  }
   return rows;
 }
 
 function renderActivity(events){
   const list=document.getElementById("activity-list");
+  const viewport=list.parentElement, previousScroll=viewport?.scrollTop||0;
+  const stickToBottom=!viewport||
+    viewport.scrollHeight-viewport.scrollTop-viewport.clientHeight<24;
   list.replaceChildren();
   const rows=activityRows(events);
   if(!rows.length){
@@ -501,7 +610,7 @@ function renderActivity(events){
     kind.textContent=type.replace(/_/g," ");
     const main=document.createElement("div");
     main.className="event-main";
-    main.textContent=event.summary||type;
+    main.textContent=type==="task_started"?"Task accepted":(event.summary||type);
     if(event.result){
       const result=document.createElement("div");
       result.className="event-result";
@@ -518,8 +627,11 @@ function renderActivity(events){
     row.append(at,kind,main);
     list.appendChild(row);
   });
-  const viewport=list.parentElement;
-  if(viewport) viewport.scrollTop=viewport.scrollHeight;
+  if(viewport){
+    viewport.scrollTop=stickToBottom
+      ? viewport.scrollHeight
+      : Math.min(previousScroll,viewport.scrollHeight-viewport.clientHeight);
+  }
 }
 
 function renderQueue(runtime){
@@ -535,16 +647,38 @@ function renderQueue(runtime){
     list.appendChild(empty);
     return;
   }
+  const groups=new Map();
   queued.forEach(task=>{
+    const title=task.input_summary||task.title||task.task_id||"Queued task";
+    const trigger=task.triggered_by||"unknown trigger";
+    const key=`${title}\n${trigger}`;
+    const group=groups.get(key)||{title,trigger,count:0,oldest:task.created_at};
+    group.count++;
+    if(new Date(task.created_at)<new Date(group.oldest)) group.oldest=task.created_at;
+    groups.set(key,group);
+  });
+  [...groups.values()].slice(0,8).forEach(group=>{
     const item=document.createElement("div");
     item.className="queue-item";
     const title=document.createElement("b");
-    title.textContent=task.input_summary||task.title||task.task_id||"Queued task";
+    const titleText=document.createElement("span");
+    titleText.className="queue-title";
+    titleText.textContent=group.title;
+    const groupCount=document.createElement("span");
+    groupCount.className="queue-count";
+    groupCount.textContent=group.count>1?`${group.count} windows`:"1 window";
+    title.append(titleText,groupCount);
     const meta=document.createElement("span");
-    meta.textContent=`${elapsedSince(task.created_at)} waiting · ${task.triggered_by||"unknown trigger"}`;
+    meta.textContent=`oldest ${elapsedSince(group.oldest)} · ${group.trigger}`;
     item.append(title,meta);
     list.appendChild(item);
   });
+  if(groups.size>8){
+    const note=document.createElement("div");
+    note.className="observation-note";
+    note.textContent=`${groups.size-8} additional work groups`;
+    list.appendChild(note);
+  }
 }
 
 function renderRuntime(d){
@@ -571,9 +705,9 @@ function renderRuntime(d){
         progress=task?.progress||{}, events=task?.events||[];
   live.classList.toggle("on",Boolean(task)||(runtime.queued_count||0)>0);
   document.getElementById("input-summary").textContent=input.summary||task?.title||"Waiting to start";
-  document.getElementById("input-observations").textContent=input.observations||(
-    task?"No bounded input excerpt was captured.":"The next queued task has not started."
-  );
+  renderObservations(input.observations||(
+    task?"":"The next queued task has not started."
+  ));
   document.getElementById("input-objective").textContent=input.objective||(
     task?"No objective excerpt was captured.":"—"
   );
