@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from ravn.adapters.resident_state.mimir import LocalResidentState
 from ravn.domain.models import TokenUsage
-from ravn.domain.resident_continuation import ResidentTurnRecord
+from ravn.domain.resident_continuation import ResidentActionCandidate, ResidentTurnRecord
 from ravn.resident_timeline import build_resident_timeline
 
 
@@ -97,13 +99,27 @@ async def test_retained_entries_are_not_reported_as_new(tmp_path):
 @pytest.mark.asyncio
 async def test_turn_metadata_and_outcome_control_survive_the_round_trip(tmp_path):
     state = LocalResidentState(tmp_path)
-    await state.write_turn(
-        _turn(
-            1,
-            _state(capability_gaps=["cannot read the printer's job queue"]),
-            selected_next_action="build a queue reader",
-        )
+    record = _turn(
+        1,
+        _state(capability_gaps=["cannot read the printer's job queue"]),
+        decision="investigate",
+        operational_state="nominal",
+        correlation_ids={"trace": "trace-123"},
     )
+    record = replace(
+        record,
+        selected_next_action=ResidentActionCandidate(
+            title="Queue diagnostics",
+            action="build a queue reader",
+            reason="The queue is otherwise opaque",
+        ),
+        root_correlation_id="root-123",
+        task_id="task-123",
+        triggered_by="nats:printer.signal",
+        evidence_refs=("signal:printer-7",),
+        inbox_refs=("inbox:event-9",),
+    )
+    await state.write_turn(record)
 
     timeline = await build_resident_timeline(state)
 
@@ -114,6 +130,14 @@ async def test_turn_metadata_and_outcome_control_survive_the_round_trip(tmp_path
     assert turn.continuation == "sleep"
     assert turn.next_action_timing == "scheduled_time"
     assert turn.selected_next_action == "build a queue reader"
+    assert turn.root_correlation_id == "root-123"
+    assert turn.task_id == "task-123"
+    assert turn.triggered_by == "nats:printer.signal"
+    assert turn.judgment["decision"] == "investigate"
+    assert turn.judgment["operational_state"] == "nominal"
+    assert turn.judgment["correlation_ids"]["trace"] == "trace-123"
+    assert turn.evidence_refs == ("signal:printer-7",)
+    assert turn.inbox_refs == ("inbox:event-9",)
     assert turn.working_state["capability_gaps"] == ["cannot read the printer's job queue"]
     assert turn.updated_at
 

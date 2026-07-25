@@ -1165,6 +1165,45 @@ class DriveLoop:
         """Return task IDs that are currently executing."""
         return list(self._active_tasks.keys())
 
+    def resident_hud_status(self) -> dict[str, object]:
+        """Return factual, bounded-by-store runtime state for the resident HUD."""
+        active: list[dict[str, object]] = []
+        for task_id in self.active_task_ids():
+            task = self._inflight_tasks.get(task_id) or self._active_task_contexts.get(task_id)
+            result = self._result_store.get(task_id)
+            active.append(
+                {
+                    "task_id": task_id,
+                    "title": task.title if task is not None else "",
+                    "triggered_by": task.triggered_by if task is not None else "",
+                    "root_correlation_id": (
+                        task.root_correlation_id or task.task_id if task is not None else task_id
+                    ),
+                    "case_id": task.resident_case_id if task is not None else "",
+                    "turn_index": task.resident_turn_index if task is not None else 0,
+                    "started_at": (
+                        result.started_at.isoformat()
+                        if result is not None
+                        else task.created_at.isoformat()
+                        if task is not None
+                        else ""
+                    ),
+                    "events": [
+                        {
+                            "type": event.type,
+                            "summary": event.summary,
+                            "timestamp": event.timestamp.isoformat(),
+                        }
+                        for event in (result.events if result is not None else [])
+                    ],
+                }
+            )
+        return {
+            "active_tasks": active,
+            "active_count": len(active),
+            "queued_count": self._queue.qsize(),
+        }
+
     def queued_task_ids(self) -> list[str]:
         """Return task IDs waiting in the priority queue (not yet started)."""
         return [
@@ -2055,7 +2094,9 @@ class DriveLoop:
                 "ravn.task.lifecycle",
                 attributes={"ravn.task.phase": "setup_started"},
             )
-            # Track the capture channel separately for response_text access
+            # Track the capture channel separately for response_text access.
+            # Residents with cascade enabled already capture bounded activity;
+            # do not change channel behaviour merely to feed the HUD.
             capture_channel: CaptureChannel | None = None
             peer_id = self._settings.mesh.own_peer_id if self._settings.mesh.enabled else ""
             logger.info("drive_loop: task %s setting up channels", task.task_id)

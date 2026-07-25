@@ -24,8 +24,12 @@ _SID = "sess-1"
 # ---------------------------------------------------------------------------
 
 
-def _make_http_config(host: str = "127.0.0.1", port: int = 7477) -> HttpChannelConfig:
-    return HttpChannelConfig(enabled=True, host=host, port=port)
+def _make_http_config(
+    host: str = "127.0.0.1",
+    port: int = 7477,
+    **overrides,
+) -> HttpChannelConfig:
+    return HttpChannelConfig(enabled=True, host=host, port=port, **overrides)
 
 
 def _make_gateway_mock(response: str = "agent reply") -> RavnGateway:
@@ -490,3 +494,96 @@ def test_resident_timeline_is_served_from_the_residents_own_state(monkeypatch, t
     assert turn["working_state"]["observations"] == ["printer is idle (octoprint.log)"]
     assert turn["changes"]["observations"]["added"] == ["printer is idle (octoprint.log)"]
     assert turn["tools_used"] == ["read_file"]
+
+
+def test_resident_hud_serves_live_durable_and_inflight_state_without_operator_token(tmp_path):
+    import asyncio as _asyncio
+
+    from ravn.adapters.resident_state.mimir import LocalResidentState
+    from ravn.domain.models import TokenUsage
+    from ravn.domain.resident_continuation import ResidentTurnRecord
+    from ravn.resident_runtime import ResidentRuntime
+
+    state = LocalResidentState(tmp_path)
+    _asyncio.run(
+        state.write_turn(
+            ResidentTurnRecord(
+                turn_index=1,
+                prompt="p",
+                response="r",
+                outcome_fields={
+                    "decision": "investigate",
+                    "correlation_ids": {"trace": "trace-123"},
+                    "working_state": {
+                        "observations": ["machine reported a fault"],
+                        "hypotheses": [],
+                        "unknowns": ["fault provenance"],
+                        "capability_gaps": [],
+                        "attempts": [],
+                    },
+                },
+                tool_names=("research",),
+                usage=TokenUsage(input_tokens=5, output_tokens=2),
+                case_id="case-hud",
+                root_correlation_id="root-123",
+                task_id="task-completed",
+                triggered_by="nats:machine.signal",
+            )
+        )
+    )
+    runtime = ResidentRuntime(state=state, resident_id="ivaldi", charter="Steward the space")
+    config = _make_http_config(
+        resident_hud_enabled=True,
+        resident_hud_activity_max_events=1,
+        resident_hud_trace_url_template="https://grafana.example/trace/{trace_id}",
+    )
+    gateway = HttpGateway(config, _make_gateway_mock(), resident_runtime=runtime)
+    gateway.bind_resident_status_provider(
+        lambda: {
+            "active_count": 1,
+            "queued_count": 2,
+            "active_tasks": [
+                {
+                    "task_id": "task-active",
+                    "title": "Inspect the new signal",
+                    "triggered_by": "nats:machine.signal",
+                    "events": [
+                        {"type": "thought", "summary": "Considering provenance"},
+                        {"type": "tool_start", "summary": "Calling research"},
+                    ],
+                }
+            ],
+        }
+    )
+    client = TestClient(gateway.app)
+
+    page = client.get("/resident/hud")
+    assert page.status_code == 200
+    assert "RESIDENT · HUD" in page.text
+    assert "octoprint_job_stats" not in page.text
+
+    payload = client.get("/resident/hud-data").json()
+    assert payload["runtime"]["state"] == "working"
+    assert payload["runtime"]["active_count"] == 1
+    assert payload["runtime"]["queued_count"] == 2
+    assert payload["runtime"]["active_tasks"][0]["events"] == [
+        {"type": "tool_start", "summary": "Calling research"}
+    ]
+    turn = payload["turns"][0]
+    assert turn["judgment"]["decision"] == "investigate"
+    assert turn["judgment"]["correlation_ids"]["trace"] == "trace-123"
+    assert turn["root_correlation_id"] == "root-123"
+    assert turn["triggered_by"] == "nats:machine.signal"
+    assert payload["hud"]["trace_url_template"].endswith("/{trace_id}")
+
+
+def test_resident_hud_is_not_registered_unless_enabled(tmp_path):
+    from ravn.adapters.resident_state.mimir import LocalResidentState
+    from ravn.resident_runtime import ResidentRuntime
+
+    runtime = ResidentRuntime(state=LocalResidentState(tmp_path), resident_id="ivaldi")
+    gateway = HttpGateway(_make_http_config(), _make_gateway_mock(), resident_runtime=runtime)
+
+    client = TestClient(gateway.app)
+    assert client.get("/resident/hud").status_code == 404
+    assert client.get("/resident/hud-data").status_code == 404

@@ -263,6 +263,7 @@ class ResidentRuntime:
             case_id=case_id,
             root_correlation_id=root_id,
             task_id=task.task_id,
+            triggered_by=task.triggered_by,
             persona=task.persona or "",
             evidence_refs=evidence_refs,
             inbox_refs=tuple(task.resident_inbox_refs),

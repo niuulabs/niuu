@@ -7,10 +7,12 @@ correctly when mesh is not available.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from ravn.adapters.channels.capture import CapturedEvent
 from ravn.adapters.channels.composite import CompositeChannel
 from ravn.adapters.channels.mesh_channel import MeshActivityChannel
 from ravn.adapters.channels.silent import SilentChannel
@@ -133,6 +135,44 @@ class TestDriveLoopChannelConstruction:
 
         # With cascade and no mesh/skuld_channel, channel is capture_channel alone
         assert isinstance(captured[0], CaptureChannel)
+
+    def test_resident_hud_status_reports_factual_active_task_and_bounded_activity(self):
+        dl, _ = _make_drive_loop_with_mesh(cascade_enabled=True)
+        task = _make_task("active-task")
+        dl._active_tasks[task.task_id] = MagicMock()
+        dl._inflight_tasks[task.task_id] = task
+        dl._result_store.start(task.task_id, task.triggered_by)
+        dl._result_store.append_event(
+            task.task_id,
+            CapturedEvent(
+                type="tool_start",
+                summary="tool: research()",
+                timestamp=datetime(2026, 7, 25, tzinfo=UTC),
+            ),
+        )
+
+        status = dl.resident_hud_status()
+
+        assert status["active_count"] == 1
+        assert status["queued_count"] == 0
+        assert status["active_tasks"] == [
+            {
+                "task_id": "active-task",
+                "title": "test",
+                "triggered_by": "test",
+                "root_correlation_id": "active-task",
+                "case_id": "",
+                "turn_index": 0,
+                "started_at": dl._result_store.get("active-task").started_at.isoformat(),
+                "events": [
+                    {
+                        "type": "tool_start",
+                        "summary": "tool: research()",
+                        "timestamp": "2026-07-25T00:00:00+00:00",
+                    }
+                ],
+            }
+        ]
 
     @pytest.mark.asyncio
     async def test_no_cascade_skuld_and_mesh_uses_composite(self):

@@ -137,6 +137,7 @@ class ResidentTurnRecord:
     case_id: str = ""
     root_correlation_id: str = ""
     task_id: str = ""
+    triggered_by: str = ""
     persona: str = ""
     evidence_refs: tuple[str, ...] = ()
     inbox_refs: tuple[str, ...] = ()

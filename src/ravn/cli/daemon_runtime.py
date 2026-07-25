@@ -276,6 +276,7 @@ async def _run_daemon(
 
     # Gateway channels (human-initiated turns)
     gw_tasks: list[str] = []
+    http_gateway: Any | None = None
     channels_cfg = settings.gateway.channels
     _any_channel = (
         channels_cfg.telegram.enabled
@@ -299,8 +300,12 @@ async def _run_daemon(
             gw_tasks.append("telegram")
 
         if channels_cfg.http.enabled:
-            ht = HttpGateway(channels_cfg.http, gw, resident_runtime=resident_runtime)
-            tasks.append(asyncio.create_task(ht.run(), name="http"))
+            http_gateway = HttpGateway(
+                channels_cfg.http,
+                gw,
+                resident_runtime=resident_runtime,
+            )
+            tasks.append(asyncio.create_task(http_gateway.run(), name="http"))
             gw_tasks.append("http")
 
         for task, name in _make_channel_tasks(channels_cfg, gw):
@@ -374,6 +379,8 @@ async def _run_daemon(
 
             if hasattr(drive_loop, "set_resident_runtime"):
                 drive_loop.set_resident_runtime(resident_runtime)
+            if http_gateway is not None:
+                http_gateway.bind_resident_status_provider(drive_loop.resident_hud_status)
             if hasattr(drive_loop, "register_directed_message_interceptor"):
                 drive_loop.register_directed_message_interceptor(
                     resident_runtime.consume_directed_message

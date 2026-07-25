@@ -51,6 +51,9 @@ class ResidentTimelineTurn:
     turn_ref: str
     turn_index: int
     case_id: str
+    root_correlation_id: str
+    task_id: str
+    triggered_by: str
     updated_at: str
     persona: str
     tools_used: tuple[str, ...]
@@ -60,6 +63,9 @@ class ResidentTimelineTurn:
     next_action_timing: str
     selected_next_action: str
     rationale: str
+    judgment: dict[str, Any] = field(default_factory=dict)
+    evidence_refs: tuple[str, ...] = ()
+    inbox_refs: tuple[str, ...] = ()
     working_state: dict[str, list[str]] = field(default_factory=dict)
     changes: dict[str, ResidentStateChange] = field(default_factory=dict)
 
@@ -68,6 +74,9 @@ class ResidentTimelineTurn:
             "turn_ref": self.turn_ref,
             "turn_index": self.turn_index,
             "case_id": self.case_id,
+            "root_correlation_id": self.root_correlation_id,
+            "task_id": self.task_id,
+            "triggered_by": self.triggered_by,
             "updated_at": self.updated_at,
             "persona": self.persona,
             "tools_used": list(self.tools_used),
@@ -77,6 +86,9 @@ class ResidentTimelineTurn:
             "next_action_timing": self.next_action_timing,
             "selected_next_action": self.selected_next_action,
             "rationale": self.rationale,
+            "judgment": self.judgment,
+            "evidence_refs": list(self.evidence_refs),
+            "inbox_refs": list(self.inbox_refs),
             "working_state": {key: list(value) for key, value in self.working_state.items()},
             "changes": {key: value.as_dict() for key, value in self.changes.items()},
         }
@@ -164,6 +176,9 @@ def _with_changes(turns: list[ResidentTimelineTurn]) -> list[ResidentTimelineTur
                 turn_ref=turn.turn_ref,
                 turn_index=turn.turn_index,
                 case_id=turn.case_id,
+                root_correlation_id=turn.root_correlation_id,
+                task_id=turn.task_id,
+                triggered_by=turn.triggered_by,
                 updated_at=turn.updated_at,
                 persona=turn.persona,
                 tools_used=turn.tools_used,
@@ -173,6 +188,9 @@ def _with_changes(turns: list[ResidentTimelineTurn]) -> list[ResidentTimelineTur
                 next_action_timing=turn.next_action_timing,
                 selected_next_action=turn.selected_next_action,
                 rationale=turn.rationale,
+                judgment=turn.judgment,
+                evidence_refs=turn.evidence_refs,
+                inbox_refs=turn.inbox_refs,
                 working_state=turn.working_state,
                 changes=changes,
             )
@@ -187,10 +205,14 @@ def _with_changes(turns: list[ResidentTimelineTurn]) -> list[ResidentTimelineTur
 def _turn_from_content(ref: str, content: str) -> ResidentTimelineTurn | None:
     fields = _outcome_fields(content)
     working_state = _normalized_working_state(fields.get("working_state"))
+    judgment = {key: value for key, value in fields.items() if key != "working_state"}
     return ResidentTimelineTurn(
         turn_ref=ref,
         turn_index=_int_line(content, "turn", _index_from_ref(ref)),
         case_id=_line(content, "case_id"),
+        root_correlation_id=_line(content, "root_correlation_id"),
+        task_id=_line(content, "task_id"),
+        triggered_by=_line(content, "triggered_by"),
         updated_at=_line(content, "updated_at"),
         persona=_line(content, "persona"),
         tools_used=_tools(content),
@@ -198,8 +220,13 @@ def _turn_from_content(ref: str, content: str) -> ResidentTimelineTurn | None:
         output_tokens=_int_line(content, "output_tokens", 0),
         continuation=str(fields.get("continuation") or ""),
         next_action_timing=str(fields.get("next_action_timing") or ""),
-        selected_next_action=str(fields.get("selected_next_action") or ""),
+        selected_next_action=str(
+            fields.get("selected_next_action") or _section(content, "Selected Next Action") or ""
+        ),
         rationale=str(fields.get("rationale") or ""),
+        judgment=judgment,
+        evidence_refs=_section_items(content, "Evidence References"),
+        inbox_refs=_section_items(content, "Inbox References"),
         working_state=working_state,
     )
 
@@ -249,6 +276,14 @@ def _section(content: str, heading: str) -> str:
         flags=re.MULTILINE | re.DOTALL,
     )
     return match.group(1).strip() if match else ""
+
+
+def _section_items(content: str, heading: str) -> tuple[str, ...]:
+    return tuple(
+        line.removeprefix("- ").strip()
+        for line in _section(content, heading).splitlines()
+        if line.startswith("- ") and line.removeprefix("- ").strip() != "none"
+    )
 
 
 def _line(content: str, key: str) -> str:

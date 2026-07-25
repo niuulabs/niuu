@@ -970,6 +970,32 @@ class HttpChannelConfig(BaseModel):
             "operator-question and answer endpoints. Missing tokens disable those endpoints."
         ),
     )
+    resident_hud_enabled: bool = Field(
+        default=False,
+        description="Expose the resident's read-only HUD and live data endpoints.",
+    )
+    resident_hud_poll_interval_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        description="Seconds between resident HUD data refreshes.",
+    )
+    resident_hud_stale_after_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        description="Seconds without a successful refresh before the resident HUD reports stale.",
+    )
+    resident_hud_activity_max_events: int = Field(
+        default=20,
+        ge=1,
+        description="Maximum recent in-flight activity events returned per resident task.",
+    )
+    resident_hud_trace_url_template: str = Field(
+        default="",
+        description=(
+            "Optional operator UI URL containing {trace_id}; the HUD links factual "
+            "judgments to their distributed trace when configured."
+        ),
+    )
 
 
 class SkuldChannelConfig(BaseModel):

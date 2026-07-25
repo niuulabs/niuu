@@ -40,7 +40,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from ravn.adapters.resident_state.mimir import LocalResidentState  # noqa: E402
 from ravn.resident_timeline import build_resident_timeline  # noqa: E402
 
-_TEMPLATE = REPO_ROOT / "docs" / "demo" / "resident-timeline" / "index.html"
+_TEMPLATE = REPO_ROOT / "src" / "ravn" / "static" / "resident-hud.html"
 _MARKER_START = '<script id="data" type="application/json">'
 _MARKER_END = "</script>"
 _DEFAULT_POD_STATE = "/home/niuu/.ravn/resident-state"
