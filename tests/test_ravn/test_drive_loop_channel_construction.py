@@ -66,6 +66,8 @@ def _make_drive_loop_with_mesh(
     settings.budget.warn_at_percent = 80
     settings.budget.input_token_cost_per_million = 3.0
     settings.budget.output_token_cost_per_million = 15.0
+    settings.gateway.channels.http.resident_hud_task_context_max_chars = 4000
+    settings.effective_model.return_value = "test-model"
 
     dl = DriveLoop(agent_factory=_agent_factory, config=cfg, settings=settings)
     return dl, captured
@@ -139,6 +141,20 @@ class TestDriveLoopChannelConstruction:
     def test_resident_hud_status_reports_factual_active_task_and_bounded_activity(self):
         dl, _ = _make_drive_loop_with_mesh(cascade_enabled=True)
         task = _make_task("active-task")
+        task.initiative_context = """\
+# Signals since your last look — 4 observation(s)
+
+## Observed signals (bounded payload excerpts)
+
+- `status` (warning, workshop): payload=Muninn paused with ErrorCode 3
+
+## Your task
+
+Determine whether the observations require action.
+"""
+        task.trace_context = {
+            "traceparent": "00-56ca7fcf3496a1e9fe7136f55a110c2a-0123456789abcdef-01"
+        }
         dl._active_tasks[task.task_id] = MagicMock()
         dl._inflight_tasks[task.task_id] = task
         dl._result_store.start(task.task_id, task.triggered_by)
@@ -160,10 +176,25 @@ class TestDriveLoopChannelConstruction:
                 "task_id": "active-task",
                 "title": "test",
                 "triggered_by": "test",
+                "persona": "",
                 "root_correlation_id": "active-task",
                 "case_id": "",
                 "turn_index": 0,
+                "trace_id": "56ca7fcf3496a1e9fe7136f55a110c2a",
                 "started_at": dl._result_store.get("active-task").started_at.isoformat(),
+                "input": {
+                    "summary": "Signals since your last look — 4 observation(s)",
+                    "observations": (
+                        "- `status` (warning, workshop): payload=Muninn paused with ErrorCode 3"
+                    ),
+                    "objective": "Determine whether the observations require action.",
+                },
+                "progress": {
+                    "iteration": 0,
+                    "iteration_budget": 0,
+                    "tool_calls": 1,
+                    "warnings": 0,
+                },
                 "events": [
                     {
                         "type": "tool_start",
@@ -171,6 +202,32 @@ class TestDriveLoopChannelConstruction:
                         "timestamp": "2026-07-25T00:00:00+00:00",
                     }
                 ],
+            }
+        ]
+        assert status["queue_capacity"] == 10
+        assert status["queued_tasks"] == []
+        assert status["model"] == "test-model"
+
+    def test_resident_hud_status_describes_waiting_tasks(self):
+        dl, _ = _make_drive_loop_with_mesh(cascade_enabled=True)
+        task = _make_task("queued-task")
+        task.title = "Resident signal window: 3 observation(s)"
+        task.triggered_by = "signal:durable_window"
+        task.root_correlation_id = "signal-window:workshop:abc"
+        task.initiative_context = "# Signals since your last look — 3 observation(s)"
+        dl._queue.put_nowait((task.priority, 1, task))
+
+        status = dl.resident_hud_status()
+
+        assert status["queued_count"] == 1
+        assert status["queued_tasks"] == [
+            {
+                "task_id": "queued-task",
+                "title": "Resident signal window: 3 observation(s)",
+                "triggered_by": "signal:durable_window",
+                "root_correlation_id": "signal-window:workshop:abc",
+                "created_at": task.created_at.isoformat(),
+                "input_summary": "Signals since your last look — 3 observation(s)",
             }
         ]
 
