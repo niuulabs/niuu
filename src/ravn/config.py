@@ -989,6 +989,11 @@ class HttpChannelConfig(BaseModel):
         ge=1,
         description="Maximum recent in-flight activity events returned per resident task.",
     )
+    resident_hud_recent_tasks: int = Field(
+        default=5,
+        ge=1,
+        description="Maximum completed tasks retained in the resident HUD progress history.",
+    )
     resident_hud_task_context_max_chars: int = Field(
         default=4000,
         ge=200,

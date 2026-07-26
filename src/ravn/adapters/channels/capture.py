@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -63,6 +63,7 @@ class TaskResult:
     triggered_by: str
     started_at: datetime
     completed_at: datetime | None
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 class TaskResultStore:
@@ -79,7 +80,13 @@ class TaskResultStore:
         self._store: dict[str, TaskResult] = {}
         self._insertion_order: list[str] = []
 
-    def start(self, task_id: str, triggered_by: str) -> None:
+    def start(
+        self,
+        task_id: str,
+        triggered_by: str,
+        *,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
         """Register a new running task.  Evicts oldest if at capacity."""
         result = TaskResult(
             task_id=task_id,
@@ -89,6 +96,7 @@ class TaskResultStore:
             triggered_by=triggered_by,
             started_at=datetime.now(UTC),
             completed_at=None,
+            metadata=dict(metadata or {}),
         )
         if task_id in self._store:
             self._store[task_id] = result

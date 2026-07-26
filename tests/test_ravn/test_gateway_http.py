@@ -553,6 +553,17 @@ def test_resident_hud_serves_live_durable_and_inflight_state_without_operator_to
                     ],
                 }
             ],
+            "recent_tasks": [
+                {
+                    "task_id": "task-completed",
+                    "title": "Completed inspection",
+                    "status": "complete",
+                    "events": [
+                        {"type": "thought", "summary": "Considering evidence"},
+                        {"type": "response", "summary": "No action required"},
+                    ],
+                }
+            ],
         }
     )
     client = TestClient(gateway.app)
@@ -562,6 +573,9 @@ def test_resident_hud_serves_live_durable_and_inflight_state_without_operator_to
     assert "RESIDENT · HUD" in page.text
     assert "What happened" in page.text
     assert "Current progress" in page.text
+    assert 'id="progress-status"' in page.text
+    assert 'id="task-history"' in page.text
+    assert "function durableTasks(d)" in page.text
     assert "Waiting work" in page.text
     assert 'class="track-scroll"' in page.text
     assert "function newestFirst(turns)" in page.text
@@ -575,6 +589,10 @@ def test_resident_hud_serves_live_durable_and_inflight_state_without_operator_to
     assert payload["runtime"]["active_tasks"][0]["events"] == [
         {"type": "tool_start", "summary": "Calling research"}
     ]
+    assert payload["runtime"]["recent_tasks"][0]["events"] == [
+        {"type": "response", "summary": "No action required"}
+    ]
+    assert payload["hud"]["recent_task_limit"] == 5
     turn = payload["turns"][0]
     assert turn["judgment"]["decision"] == "investigate"
     assert turn["judgment"]["correlation_ids"]["trace"] == "trace-123"
