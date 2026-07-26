@@ -24,8 +24,12 @@ _SID = "sess-1"
 # ---------------------------------------------------------------------------
 
 
-def _make_http_config(host: str = "127.0.0.1", port: int = 7477) -> HttpChannelConfig:
-    return HttpChannelConfig(enabled=True, host=host, port=port)
+def _make_http_config(
+    host: str = "127.0.0.1",
+    port: int = 7477,
+    **overrides,
+) -> HttpChannelConfig:
+    return HttpChannelConfig(enabled=True, host=host, port=port, **overrides)
 
 
 def _make_gateway_mock(response: str = "agent reply") -> RavnGateway:
@@ -433,3 +437,179 @@ def test_ws_endpoint_ignores_non_user_messages():
 
     # Should get events only from the user message
     assert any(e["type"] == "result" for e in events)
+
+
+def test_resident_timeline_is_served_from_the_residents_own_state(monkeypatch, tmp_path):
+    """The timeline must come from the resident's state store, over the API.
+
+    Reading durable records out of band cannot see residents whose state lives
+    behind a non-filesystem adapter, and cannot be trusted to be current.
+    """
+    import asyncio as _asyncio
+
+    from ravn.adapters.resident_state.mimir import LocalResidentState
+    from ravn.domain.models import TokenUsage
+    from ravn.domain.resident_continuation import ResidentTurnRecord
+    from ravn.resident_runtime import ResidentRuntime
+
+    state = LocalResidentState(tmp_path)
+    _asyncio.run(
+        state.write_turn(
+            ResidentTurnRecord(
+                turn_index=1,
+                prompt="p",
+                response="r",
+                outcome_fields={
+                    "continuation": "sleep",
+                    "working_state": {
+                        "observations": ["printer is idle (octoprint.log)"],
+                        "hypotheses": [],
+                        "unknowns": ["reorder lead time"],
+                        "capability_gaps": [],
+                        "attempts": [],
+                    },
+                },
+                tool_names=("read_file",),
+                usage=TokenUsage(input_tokens=5, output_tokens=2),
+                case_id="case-api",
+            )
+        )
+    )
+    runtime = ResidentRuntime(state=state, resident_id="ivaldi", charter="steward the workshop")
+    ht = HttpGateway(_make_http_config(), _make_gateway_mock(), resident_runtime=runtime)
+    client = TestClient(ht.app)
+
+    assert client.get("/resident/timeline").status_code == 503
+    monkeypatch.setenv("RAVN_OPERATOR_TOKEN", "operator-secret")
+    assert client.get("/resident/timeline").status_code == 401
+
+    body = client.get(
+        "/resident/timeline", headers={"Authorization": "Bearer operator-secret"}
+    ).json()
+
+    assert body["resident_id"] == "ivaldi"
+    assert body["charter"] == "steward the workshop"
+    assert len(body["turns"]) == 1
+    turn = body["turns"][0]
+    assert turn["working_state"]["observations"] == ["printer is idle (octoprint.log)"]
+    assert turn["changes"]["observations"]["added"] == ["printer is idle (octoprint.log)"]
+    assert turn["tools_used"] == ["read_file"]
+
+
+def test_resident_hud_serves_live_durable_and_inflight_state_without_operator_token(tmp_path):
+    import asyncio as _asyncio
+
+    from ravn.adapters.resident_state.mimir import LocalResidentState
+    from ravn.domain.models import TokenUsage
+    from ravn.domain.resident_continuation import ResidentTurnRecord
+    from ravn.resident_runtime import ResidentRuntime
+
+    state = LocalResidentState(tmp_path)
+    _asyncio.run(
+        state.write_turn(
+            ResidentTurnRecord(
+                turn_index=1,
+                prompt="p",
+                response="r",
+                outcome_fields={
+                    "decision": "investigate",
+                    "correlation_ids": {"trace": "trace-123"},
+                    "working_state": {
+                        "observations": ["machine reported a fault"],
+                        "hypotheses": [],
+                        "unknowns": ["fault provenance"],
+                        "capability_gaps": [],
+                        "attempts": [],
+                    },
+                },
+                tool_names=("research",),
+                usage=TokenUsage(input_tokens=5, output_tokens=2),
+                case_id="case-hud",
+                root_correlation_id="root-123",
+                task_id="task-completed",
+                triggered_by="nats:machine.signal",
+            )
+        )
+    )
+    runtime = ResidentRuntime(state=state, resident_id="ivaldi", charter="Steward the space")
+    config = _make_http_config(
+        resident_hud_enabled=True,
+        resident_hud_activity_max_events=1,
+        resident_hud_trace_url_template="https://grafana.example/trace/{trace_id}",
+    )
+    gateway = HttpGateway(config, _make_gateway_mock(), resident_runtime=runtime)
+    gateway.bind_resident_status_provider(
+        lambda: {
+            "active_count": 1,
+            "queued_count": 2,
+            "active_tasks": [
+                {
+                    "task_id": "task-active",
+                    "title": "Inspect the new signal",
+                    "triggered_by": "nats:machine.signal",
+                    "events": [
+                        {"type": "thought", "summary": "Considering provenance"},
+                        {"type": "tool_start", "summary": "Calling research"},
+                    ],
+                }
+            ],
+            "recent_tasks": [
+                {
+                    "task_id": "task-completed",
+                    "title": "Completed inspection",
+                    "status": "complete",
+                    "events": [
+                        {"type": "thought", "summary": "Considering evidence"},
+                        {"type": "response", "summary": "No action required"},
+                    ],
+                }
+            ],
+        }
+    )
+    client = TestClient(gateway.app)
+
+    page = client.get("/resident/hud")
+    assert page.status_code == 200
+    assert "RESIDENT · HUD" in page.text
+    assert "What happened" in page.text
+    assert "Current progress" in page.text
+    assert 'id="live-context"' in page.text
+    assert '"objectives", "observations"' in page.text
+    assert 'id="progress-status"' in page.text
+    assert 'id="task-history"' in page.text
+    assert "function durableTasks(d)" in page.text
+    assert "Waiting work" in page.text
+    assert 'class="track-scroll"' in page.text
+    assert "function newestFirst(turns)" in page.text
+    assert "render(d.turns.length-1)" in page.text
+    assert "octoprint_job_stats" not in page.text
+
+    payload = client.get("/resident/hud-data").json()
+    assert payload["runtime"]["state"] == "working"
+    assert payload["runtime"]["active_count"] == 1
+    assert payload["runtime"]["queued_count"] == 2
+    assert payload["runtime"]["active_tasks"][0]["events"] == [
+        {"type": "tool_start", "summary": "Calling research"}
+    ]
+    assert payload["runtime"]["recent_tasks"][0]["events"] == [
+        {"type": "response", "summary": "No action required"}
+    ]
+    assert payload["hud"]["recent_task_limit"] == 5
+    turn = payload["turns"][0]
+    assert turn["judgment"]["decision"] == "investigate"
+    assert turn["judgment"]["correlation_ids"]["trace"] == "trace-123"
+    assert turn["root_correlation_id"] == "root-123"
+    assert turn["triggered_by"] == "nats:machine.signal"
+    assert payload["hud"]["trace_url_template"].endswith("/{trace_id}")
+
+
+def test_resident_hud_is_not_registered_unless_enabled(tmp_path):
+    from ravn.adapters.resident_state.mimir import LocalResidentState
+    from ravn.resident_runtime import ResidentRuntime
+
+    runtime = ResidentRuntime(state=LocalResidentState(tmp_path), resident_id="ivaldi")
+    gateway = HttpGateway(_make_http_config(), _make_gateway_mock(), resident_runtime=runtime)
+
+    client = TestClient(gateway.app)
+    assert client.get("/resident/hud").status_code == 404
+    assert client.get("/resident/hud-data").status_code == 404

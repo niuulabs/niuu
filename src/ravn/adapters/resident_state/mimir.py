@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from ravn.adapters.resident_pages import collect_pages
 from ravn.domain.resident_continuation import (
@@ -11,6 +11,7 @@ from ravn.domain.resident_continuation import (
     ResidentMemoryEntry,
     ResidentPolicyDecisionRecord,
     ResidentPolicyObservation,
+    ResidentScheduledWakeRecord,
     ResidentTurnRecord,
     ResidentWorkingStateRecord,
 )
@@ -19,6 +20,7 @@ from ravn.ports.mimir import MimirPort
 from ravn.resident_continuation import (
     _OPERATOR_ANSWER_PATH,
     _OPERATOR_NEEDED_PATH,
+    _SCHEDULED_WAKE_PATH,
     LocalResidentMemory,
     _case_path,
     _compact_line,
@@ -29,10 +31,12 @@ from ravn.resident_continuation import (
     _render_answered_operator_needed,
     _render_budget_snapshot,
     _render_consumed_operator_answer,
+    _render_consumed_scheduled_wake,
     _render_operator_answer,
     _render_operator_needed,
     _render_policy_decision,
     _render_policy_observation,
+    _render_scheduled_wake,
     _render_turn_record,
     _render_working_state,
     _slug,
@@ -255,6 +259,26 @@ class MimirResidentState(ResidentStatePort):
                 )
         return sorted(entries, key=lambda item: item.path)
 
+    async def write_scheduled_wake(self, record: ResidentScheduledWakeRecord) -> str:
+        path = str(Path(self._prefix) / _case_path(record.case_id, _SCHEDULED_WAKE_PATH))
+        await self._mimir.upsert_page(path, _render_scheduled_wake(record))
+        return path
+
+    async def list_scheduled_wakes(self) -> list[ResidentMemoryEntry]:
+        return await self._list_case_entries(_SCHEDULED_WAKE_PATH, pending=True)
+
+    async def consume_scheduled_wake(self, wake: ResidentMemoryEntry) -> str:
+        path = wake.path or f"{self._prefix}/{_SCHEDULED_WAKE_PATH}"
+        try:
+            prior = await self._mimir.read_page(path)
+        except FileNotFoundError:
+            prior = wake.content
+        await self._mimir.upsert_page(
+            path,
+            _render_consumed_scheduled_wake(prior, consumed_at=datetime.now(UTC)),
+        )
+        return path
+
     async def list_refs(self, prefix: str = "") -> list[str]:
         pages = await self._mimir.list_pages(prefix=prefix or self._prefix)
         return sorted(str(getattr(page, "path", "")) for page in pages if getattr(page, "path", ""))
@@ -279,9 +303,33 @@ class LocalResidentState(LocalResidentMemory, ResidentStatePort):
         return True
 
     async def list_refs(self, prefix: str = "") -> list[str]:
-        base = self._root / (Path(prefix) if prefix else self._prefix)
-        if not base.exists():
+        root = self._root.resolve()
+        base = (root / self._prefix).resolve()
+        if not base.is_relative_to(root) or not base.exists():
             return []
-        return sorted(
-            str(path.relative_to(self._root)) for path in base.rglob("*.md") if path.is_file()
+
+        requested = PurePosixPath(prefix.replace("\\", "/")) if prefix else None
+        if requested and (requested.is_absolute() or ".." in requested.parts):
+            return []
+
+        refs = sorted(str(path.relative_to(root)) for path in base.rglob("*.md") if path.is_file())
+        if requested is None:
+            return refs
+        requested_ref = requested.as_posix().rstrip("/")
+        return [ref for ref in refs if ref == requested_ref or ref.startswith(f"{requested_ref}/")]
+
+    async def write_scheduled_wake(self, record: ResidentScheduledWakeRecord) -> str:
+        rel = self._prefix / _case_path(record.case_id, _SCHEDULED_WAKE_PATH)
+        return self._write(rel, _render_scheduled_wake(record))
+
+    async def list_scheduled_wakes(self) -> list[ResidentMemoryEntry]:
+        return self._list_case_entries(_SCHEDULED_WAKE_PATH, pending=True)
+
+    async def consume_scheduled_wake(self, wake: ResidentMemoryEntry) -> str:
+        rel = Path(wake.path) if wake.path else self._prefix / _SCHEDULED_WAKE_PATH
+        path = self._root / rel
+        prior = path.read_text(encoding="utf-8") if path.exists() else wake.content
+        return self._write(
+            rel,
+            _render_consumed_scheduled_wake(prior, consumed_at=datetime.now(UTC)),
         )

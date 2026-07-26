@@ -260,7 +260,15 @@ class TestAgentContextCompressor:
 
         captured_calls: list[dict] = []
 
-        async def _capture_compress(messages, *, system_tokens=0, todos=None, memory_summary=None):
+        async def _capture_compress(
+            messages,
+            *,
+            system_tokens=0,
+            tool_tokens=0,
+            prompt_budget_tokens=0,
+            todos=None,
+            memory_summary=None,
+        ):
             captured_calls.append({"memory_summary": memory_summary})
             return messages, CompressionResult(
                 original_count=len(messages), final_count=len(messages)

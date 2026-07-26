@@ -1,7 +1,7 @@
 """Context compression for long Ravn sessions.
 
-When a session's estimated token count exceeds a threshold (default 80% of the
-model's context window — leaving <20% remaining), the ContextCompressor performs
+When a session's conservative estimated token count exceeds a threshold
+(default 80% of the configured safe prompt budget), the ContextCompressor performs
 *intelligent compaction*: rather than summarising the full conversation, it
 produces a structured state document that preserves decision-relevant information
 while discarding redundant content.
@@ -46,7 +46,7 @@ Protected regions
 
 Trigger
 -------
-- Automatic: when remaining context budget < 20% of max_tokens
+- Automatic: when estimated prompt use exceeds 80% of the safe prompt budget
   (``compression_threshold`` defaults to 0.8).
 - Manual: callers may call ``maybe_compress`` at any time.
 
@@ -111,15 +111,6 @@ _FALLBACK_DOCUMENT = (
     "- None"
 )
 
-# Default context window sizes for well-known models.
-_MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    "claude-sonnet-4-6": 200_000,
-    "claude-opus-4-6": 200_000,
-    "claude-haiku-4-5-20251001": 200_000,
-}
-_DEFAULT_CONTEXT_WINDOW = 200_000
-
-
 # ---------------------------------------------------------------------------
 # Result dataclass
 # ---------------------------------------------------------------------------
@@ -157,8 +148,7 @@ class ContextCompressor:
     llm:
         LLM port used to generate compaction documents.
     model:
-        Model identifier (used to look up context window size and for
-        generating compaction documents).
+        Model identifier used for generating compaction documents.
     max_tokens:
         Max tokens for compaction document generation (default 1024).
     protect_first:
@@ -167,11 +157,12 @@ class ContextCompressor:
         Number of messages at the end of history to preserve unchanged
         (the verbatim recent turns).  Defaults to 6 (≈ 3 turns).
     compression_threshold:
-        Fraction of the model's context window that triggers compaction
-        (default 0.8 — fires when <20% of the context window remains).
+        Fraction of the safe prompt budget that triggers compaction.
     context_window:
-        Override context window size in tokens.  When 0 (default), the known
-        table is consulted and falls back to 200 000.
+        Configured context-window size. Zero means unknown.
+    output_reserve:
+        Tokens reserved for model output when deriving a prompt budget from
+        ``context_window``.
     """
 
     def __init__(
@@ -184,6 +175,8 @@ class ContextCompressor:
         protect_last: int = 6,
         compression_threshold: float = 0.8,
         context_window: int = 0,
+        output_reserve: int = 0,
+        token_estimate_safety_factor: float = 1.0,
     ) -> None:
         self._llm = llm
         self._model = model
@@ -191,8 +184,9 @@ class ContextCompressor:
         self._protect_first = protect_first
         self._protect_last = protect_last
         self._threshold = compression_threshold
-        window = context_window or _MODEL_CONTEXT_WINDOWS.get(model, _DEFAULT_CONTEXT_WINDOW)
-        self._context_window = window
+        self._context_window = max(0, context_window)
+        self._output_reserve = max(0, output_reserve)
+        self._token_estimate_safety_factor = max(1.0, token_estimate_safety_factor)
 
     # ------------------------------------------------------------------
     # Public
@@ -203,6 +197,8 @@ class ContextCompressor:
         messages: list[Message],
         *,
         system_tokens: int = 0,
+        tool_tokens: int = 0,
+        prompt_budget_tokens: int = 0,
         todos: list[TodoItem] | None = None,
         memory_summary: str | None = None,
     ) -> tuple[list[Message], CompressionResult]:
@@ -225,9 +221,17 @@ class ContextCompressor:
         list is returned unchanged.
         """
         original_count = len(messages)
-        threshold_tokens = int(self._context_window * self._threshold)
+        configured_budget = max(0, self._context_window - self._output_reserve)
+        budget = prompt_budget_tokens or configured_budget
+        if budget <= 0:
+            return messages, CompressionResult(
+                original_count=original_count, final_count=original_count
+            )
+        threshold_tokens = int(budget * self._threshold)
 
-        estimated = TokenEstimator.rough_messages(messages) + system_tokens
+        estimated = self._estimate(
+            TokenEstimator.rough_messages(messages) + system_tokens + tool_tokens
+        )
         if estimated <= threshold_tokens:
             return messages, CompressionResult(
                 original_count=original_count, final_count=original_count
@@ -247,7 +251,9 @@ class ContextCompressor:
             compression_count += 1
             removed_count += removed
             result_messages = new_messages
-            new_estimated = TokenEstimator.rough_messages(result_messages) + system_tokens
+            new_estimated = self._estimate(
+                TokenEstimator.rough_messages(result_messages) + system_tokens + tool_tokens
+            )
             if new_estimated <= threshold_tokens:
                 break
 
@@ -257,6 +263,9 @@ class ContextCompressor:
             compression_count=compression_count,
             removed_message_count=removed_count,
         )
+
+    def _estimate(self, tokens: int) -> int:
+        return TokenEstimator.conservative(tokens, self._token_estimate_safety_factor)
 
     # ------------------------------------------------------------------
     # Internal

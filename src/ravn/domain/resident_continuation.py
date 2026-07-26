@@ -137,6 +137,7 @@ class ResidentTurnRecord:
     case_id: str = ""
     root_correlation_id: str = ""
     task_id: str = ""
+    triggered_by: str = ""
     persona: str = ""
     evidence_refs: tuple[str, ...] = ()
     inbox_refs: tuple[str, ...] = ()
@@ -157,7 +158,32 @@ class ResidentWorkingStateRecord:
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
+@dataclass(frozen=True)
+class ResidentScheduledWakeRecord:
+    """A resident-requested wake for one durable case at a future time.
+
+    Written when a turn selects ``sleep`` with ``next_action_timing:
+    scheduled_time``.  Without it the case has no wake source and the runtime
+    would silently forget a decision the model actually made.
+    """
+
+    case_id: str
+    root_correlation_id: str
+    wake_at: datetime
+    reason: str
+    mandate: str = ""
+    turn_index: int = 0
+    turn_ref: str = ""
+    persona: str = ""
+    task_id: str = ""
+    case_input_tokens: int = 0
+    case_output_tokens: int = 0
+    case_started_at: str = ""
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
 RESIDENT_WORKING_STATE_FIELDS = (
+    "objectives",
     "observations",
     "hypotheses",
     "unknowns",
@@ -174,6 +200,8 @@ def validate_resident_working_state(value: Any) -> list[str]:
         return ["working_state must be a mapping"]
     errors: list[str] = []
     for field_name in RESIDENT_WORKING_STATE_FIELDS:
+        if field_name == "objectives" and field_name not in value:
+            continue
         entries = value.get(field_name)
         if not isinstance(entries, list):
             errors.append(f"working_state.{field_name} must be a list")

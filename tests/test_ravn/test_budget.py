@@ -41,20 +41,32 @@ class TestTokenEstimatorRoughMessages:
         assert TokenEstimator.rough_messages(msgs) == total_chars // _CHARS_PER_TOKEN
 
     def test_list_content_message(self):
-        # Counts ALL string values in each block dict (type key values too).
-        # {"type": "text", "text": "abcd"} → "text"(4) + "abcd"(4) = 8 chars
-        # {"type": "other", "value": "efgh"} → "other"(5) + "efgh"(4) = 9 chars
-        # Total 17 chars / 4 = 4 tokens
+        # Structured content is serialized in full, including JSON syntax.
         content = [{"type": "text", "text": "abcd"}, {"type": "other", "value": "efgh"}]
         msgs = [Message(role="user", content=content)]
-        assert TokenEstimator.rough_messages(msgs) == 4
+        assert TokenEstimator.rough_messages(msgs) == 15
 
-    def test_nested_non_string_ignored(self):
-        # {"type": "number", "val": 42} → "number"(6 chars), 42 is int (ignored)
-        # 6 chars / 4 = 1 token
+    def test_nested_non_string_is_counted(self):
         content = [{"type": "number", "val": 42}]
         msgs = [Message(role="user", content=content)]
-        assert TokenEstimator.rough_messages(msgs) == 1
+        assert TokenEstimator.rough_messages(msgs) == 7
+
+    def test_nested_tool_input_is_counted(self):
+        small = Message(
+            role="assistant",
+            content=[{"type": "tool_use", "name": "bash", "input": {"command": "pwd"}}],
+        )
+        large = Message(
+            role="assistant",
+            content=[
+                {
+                    "type": "tool_use",
+                    "name": "bash",
+                    "input": {"command": "x" * 400},
+                }
+            ],
+        )
+        assert TokenEstimator.rough_messages([large]) > TokenEstimator.rough_messages([small]) + 90
 
 
 class TestTokenEstimatorRoughApiMessages:

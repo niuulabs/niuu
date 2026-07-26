@@ -589,6 +589,8 @@ def _build_agent(
         persona_config=persona_config,
         stop_on_outcome=persona_config.stop_on_outcome if persona_config else False,
         max_prompt_tokens=settings.context_management.max_prompt_tokens,
+        context_window_tokens=settings.context_management.context_window_tokens,
+        token_estimate_safety_factor=settings.context_management.token_estimate_safety_factor,
         max_tool_result_chars=settings.tools.max_result_chars,
     )
 
@@ -1386,6 +1388,8 @@ async def _run_gateway(
             output_token_cost_per_million=settings.memory.output_token_cost_per_million,
             extended_thinking=extended_thinking,
             max_prompt_tokens=settings.context_management.max_prompt_tokens,
+            context_window_tokens=settings.context_management.context_window_tokens,
+            token_estimate_safety_factor=(settings.context_management.token_estimate_safety_factor),
             max_tool_result_chars=settings.tools.max_result_chars,
         )
 

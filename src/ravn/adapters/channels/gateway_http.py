@@ -14,16 +14,19 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import json
 import logging
 import os
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import UTC, datetime
+from importlib.resources import files
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from ravn.adapters.channels.gateway import RavnGateway
@@ -78,6 +81,9 @@ class HttpGateway:
         self._config = config
         self._gateway = gateway
         self._resident_runtime = resident_runtime
+        self._resident_status_provider: (
+            Callable[[], dict[str, Any] | Awaitable[dict[str, Any]]] | None
+        ) = None
         self._translator_cls: type[EventTranslatorPort] = _import_class(config.translator)
         self._app = self._build_app()
 
@@ -85,6 +91,13 @@ class HttpGateway:
     def app(self) -> FastAPI:
         """The underlying FastAPI application (useful for testing)."""
         return self._app
+
+    def bind_resident_status_provider(
+        self,
+        provider: Callable[[], dict[str, Any] | Awaitable[dict[str, Any]]],
+    ) -> None:
+        """Bind the drive loop's factual runtime snapshot after composition."""
+        self._resident_status_provider = provider
 
     # ------------------------------------------------------------------
     # FastAPI application
@@ -100,6 +113,21 @@ class HttpGateway:
             allow_headers=["*"],
         )
 
+        # KNOWN DEBT (NIU-1121): this is a static shared secret compared with
+        # compare_digest, not a standard token flow, and it contradicts
+        # .claude/rules/architecture.md ("never build custom auth/token layers —
+        # always delegate to standard OIDC/OAuth2 flows"). It is not one of the
+        # sanctioned exceptions (PATs, scoped Valkyrie build tokens).
+        #
+        # The primitives to replace it already exist and need no new auth code:
+        # niuu.adapters.workload_identity.jwt.JwtWorkloadIdentityVerifier for
+        # workload JWTs, or niuu.domain.services.pat_validator.PATValidator for
+        # PATs. Both return trusted claims, so the guard becomes a claims check
+        # rather than a secret comparison.
+        #
+        # Retained deliberately for now: it predates this endpoint and is the
+        # only thing gating the resident operator surface. Do not extend it to
+        # further endpoints without replacing it first.
         def require_operator(authorization: str | None = Header(default=None)) -> None:
             token = os.environ.get(self._config.operator_token_env, "").strip()
             if not token:
@@ -150,6 +178,18 @@ class HttpGateway:
             )
 
         if self._resident_runtime is not None:
+            if self._config.resident_hud_enabled:
+
+                @app.get("/resident/hud", response_class=HTMLResponse)
+                async def resident_hud() -> HTMLResponse:
+                    """Serve the packaged, read-only resident HUD."""
+                    template = files("ravn").joinpath("static/resident-hud.html")
+                    return HTMLResponse(template.read_text(encoding="utf-8"))
+
+                @app.get("/resident/hud-data")
+                async def resident_hud_data(prefix: str = "") -> dict[str, Any]:
+                    """Serve factual durable and in-flight state to the resident HUD."""
+                    return await self._resident_hud_payload(prefix=prefix)
 
             @app.get("/resident/operator-needed")
             async def resident_operator_needed(
@@ -157,6 +197,27 @@ class HttpGateway:
             ) -> dict[str, Any]:
                 """List pending resident questions on the authenticated daemon surface."""
                 return {"items": await self._resident_runtime.pending_questions()}
+
+            @app.get("/resident/timeline")
+            async def resident_timeline(
+                _: None = Depends(require_operator),
+                prefix: str = "",
+            ) -> dict[str, Any]:
+                """Serve the resident's working-state history from its own state store.
+
+                Ravn owns resident state, so it serves it. Reading the durable
+                records out of band cannot see residents whose state lives behind
+                a non-filesystem adapter, and cannot be trusted to be current.
+                """
+                from ravn.resident_timeline import build_resident_timeline  # noqa: PLC0415
+
+                timeline = await build_resident_timeline(
+                    self._resident_runtime.state,
+                    resident_id=self._resident_runtime.resident_id,
+                    charter=self._resident_runtime.charter,
+                    prefix=prefix,
+                )
+                return timeline.as_dict()
 
             @app.post("/resident/operator-answer")
             async def resident_operator_answer(
@@ -199,6 +260,56 @@ class HttpGateway:
                 logger.exception("WebSocket error (session=%s).", session_id)
 
         return app
+
+    async def _resident_hud_payload(self, *, prefix: str = "") -> dict[str, Any]:
+        from ravn.resident_timeline import build_resident_timeline  # noqa: PLC0415
+
+        timeline = await build_resident_timeline(
+            self._resident_runtime.state,
+            resident_id=self._resident_runtime.resident_id,
+            charter=self._resident_runtime.charter,
+            prefix=prefix,
+        )
+        payload = timeline.as_dict()
+        runtime: dict[str, Any] = {}
+        if self._resident_status_provider is not None:
+            supplied = self._resident_status_provider()
+            runtime = await supplied if inspect.isawaitable(supplied) else supplied
+        active_tasks = runtime.get("active_tasks")
+        if not isinstance(active_tasks, list):
+            active_tasks = []
+        recent_tasks = runtime.get("recent_tasks")
+        if not isinstance(recent_tasks, list):
+            recent_tasks = []
+        event_limit = self._config.resident_hud_activity_max_events
+        for task in [*active_tasks, *recent_tasks]:
+            if isinstance(task, dict) and isinstance(task.get("events"), list):
+                task["events"] = task["events"][-event_limit:]
+
+        pending = await self._resident_runtime.pending_questions()
+        active_count = int(runtime.get("active_count") or len(active_tasks))
+        queued_count = int(runtime.get("queued_count") or 0)
+        state = "working" if active_count else "queued" if queued_count else "idle"
+        if pending and not active_count:
+            state = "waiting_operator"
+        generated_at = datetime.now(UTC).isoformat()
+        payload["generated_at"] = generated_at
+        payload["runtime"] = {
+            **runtime,
+            "state": state,
+            "active_tasks": active_tasks,
+            "recent_tasks": recent_tasks,
+            "active_count": active_count,
+            "queued_count": queued_count,
+            "pending_questions": pending,
+        }
+        payload["hud"] = {
+            "poll_interval_seconds": self._config.resident_hud_poll_interval_seconds,
+            "stale_after_seconds": self._config.resident_hud_stale_after_seconds,
+            "recent_task_limit": self._config.resident_hud_recent_tasks,
+            "trace_url_template": self._config.resident_hud_trace_url_template,
+        }
+        return payload
 
     # ------------------------------------------------------------------
     # Stream generators

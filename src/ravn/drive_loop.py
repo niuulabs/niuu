@@ -37,10 +37,16 @@ from ravn.adapters.channels.silent import SilentChannel
 from ravn.adapters.channels.skuld_channel import SkuldChannel
 from ravn.adapters.channels.task_context import TaskContextChannel
 from ravn.adapters.events.noop_publisher import NoOpEventPublisher
-from ravn.config import BudgetConfig, InitiativeConfig, Settings
+from ravn.config import (
+    BudgetConfig,
+    HttpChannelConfig,
+    InitiativeConfig,
+    ResidentStateConfig,
+    Settings,
+)
 from ravn.domain.budget import DailyBudgetTracker, compute_cost
 from ravn.domain.events import RavnEvent, RavnEventType
-from ravn.domain.exceptions import LLMError
+from ravn.domain.exceptions import LLMError, PromptBudgetExceededError
 from ravn.domain.help_needed import build_help_needed_event
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.domain.resident_continuation import validate_resident_working_state
@@ -90,6 +96,270 @@ _MIMIR_PAGE_WRITTEN_OUTCOME = "mimir.page.written"
 _DREAM_CYCLE_TRIGGER = "dream_cycle:cron"
 _DREAM_COUNT_FIELDS = ("pages_updated", "entities_created", "lint_fixes")
 _RAVN_TASK_STARTED = "ravn.task.started"
+_TRACEPARENT_PATTERN = re.compile(r"^[\da-fA-F]{2}-([\da-fA-F]{32})-[\da-fA-F]{16}-[\da-fA-F]{2}$")
+_A2A_TERMINAL_STATES = frozenset(
+    {
+        "TASK_STATE_CANCELED",
+        "TASK_STATE_CANCELLED",
+        "TASK_STATE_COMPLETED",
+        "TASK_STATE_FAILED",
+        "TASK_STATE_REJECTED",
+    }
+)
+_HTTP_DEFAULTS = HttpChannelConfig()
+_RESIDENT_STATE_DEFAULTS = ResidentStateConfig()
+
+
+def _bounded_hud_text(value: str, limit: int) -> str:
+    text = value.strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 1)].rstrip()}…"
+
+
+def _bounded_room_context(value: str, limit: int) -> str:
+    text = value.strip()
+    if len(text) <= limit:
+        return text
+    dropped = len(text) - limit
+    return f"{text[:limit].rstrip()}\n[prior room context truncated: {dropped} characters omitted]"
+
+
+def _integer_setting(value: object, default: int) -> int:
+    """Use validated integer settings while tolerating loose test doubles."""
+    return value if isinstance(value, int) else default
+
+
+def _markdown_section(value: str, heading_prefix: str) -> str:
+    """Return one Markdown section without coupling the HUD to task semantics."""
+    collecting = False
+    collected: list[str] = []
+    wanted = heading_prefix.casefold()
+    for line in value.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            heading = stripped.lstrip("#").strip().casefold()
+            if collecting:
+                break
+            collecting = heading.startswith(wanted)
+            continue
+        if collecting:
+            collected.append(line)
+    return "\n".join(collected).strip()
+
+
+def _resident_hud_task_input(task: AgentTask, limit: int) -> dict[str, str]:
+    context = task.initiative_context.strip()
+    first_line = next((line.strip() for line in context.splitlines() if line.strip()), task.title)
+    summary = first_line.lstrip("#").strip() or task.title
+    observations = _markdown_section(context, "observed signals")
+    if not observations:
+        observations = _markdown_section(context, "signal")
+    if not observations:
+        observations = context
+    objective = _markdown_section(context, "your task")
+    return {
+        "summary": _bounded_hud_text(summary, limit),
+        "observations": _bounded_hud_text(observations, limit),
+        "objective": _bounded_hud_text(objective, limit),
+    }
+
+
+def _resident_hud_task_metadata(
+    task: AgentTask,
+    *,
+    context_limit: int,
+    persona: str,
+) -> dict[str, object]:
+    """Capture stable task facts needed after the live task object is released."""
+    return {
+        "resident_hud": True,
+        "title": task.title,
+        "persona": task.persona or persona,
+        "root_correlation_id": task.root_correlation_id or task.task_id,
+        "case_id": task.resident_case_id,
+        "turn_index": task.resident_turn_index,
+        "trace_id": _trace_id_from_carrier(task.trace_context),
+        "input": _resident_hud_task_input(task, context_limit),
+    }
+
+
+def _resident_hud_result(
+    result: TaskResult,
+    *,
+    iteration: int | None = None,
+    iteration_budget: int | None = None,
+    prompt_budget: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Project one captured task into the stable HUD task shape."""
+    metadata = result.metadata
+    return {
+        "task_id": result.task_id,
+        "title": str(metadata.get("title") or ""),
+        "triggered_by": result.triggered_by,
+        "persona": str(metadata.get("persona") or ""),
+        "root_correlation_id": str(metadata.get("root_correlation_id") or result.task_id),
+        "case_id": str(metadata.get("case_id") or ""),
+        "turn_index": int(metadata.get("turn_index") or 0),
+        "trace_id": str(metadata.get("trace_id") or ""),
+        "status": result.status,
+        "started_at": result.started_at.isoformat(),
+        "completed_at": result.completed_at.isoformat() if result.completed_at else "",
+        "input": metadata.get("input") if isinstance(metadata.get("input"), dict) else {},
+        "progress": {
+            "iteration": int(metadata.get("iteration") or 0) if iteration is None else iteration,
+            "iteration_budget": (
+                int(metadata.get("iteration_budget") or 0)
+                if iteration_budget is None
+                else iteration_budget
+            ),
+            "tool_calls": sum(event.type == "tool_start" for event in result.events),
+            "warnings": sum(
+                event.type == "error" or "[warning]" in event.summary.casefold()
+                for event in result.events
+            ),
+            "prompt": (
+                dict(prompt_budget)
+                if prompt_budget is not None
+                else dict(metadata["prompt_budget"])
+                if isinstance(metadata.get("prompt_budget"), dict)
+                else {}
+            ),
+        },
+        "events": [
+            {
+                "type": event.type,
+                "summary": event.summary,
+                "timestamp": event.timestamp.isoformat(),
+            }
+            for event in result.events
+        ],
+    }
+
+
+def _resident_hud_a2a_tasks(
+    results: tuple[TaskResult, ...],
+    *,
+    active_parent_ids: set[str],
+) -> list[dict[str, object]]:
+    """Project the latest observed state of non-terminal A2A tasks."""
+    sessions: dict[str, dict[str, object]] = {}
+    for result in results:
+        pending_input: dict[str, object] | None = None
+        pending_started_at: datetime | None = None
+        for event in result.events:
+            details = event.details if isinstance(event.details, dict) else {}
+            if details.get("tool_name") != "a2a_task":
+                continue
+            if event.type == "tool_start":
+                supplied = details.get("input")
+                pending_input = dict(supplied) if isinstance(supplied, dict) else {}
+                pending_started_at = event.timestamp
+                continue
+            if event.type != "tool_result":
+                continue
+            payload = details.get("result")
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except ValueError:
+                    payload = {}
+            if not isinstance(payload, dict):
+                pending_input = None
+                pending_started_at = None
+                continue
+
+            agent_id = str(payload.get("agent_id") or (pending_input or {}).get("agent_id") or "")
+            task_id = str(payload.get("task_id") or (pending_input or {}).get("task_id") or "")
+            if not agent_id or not task_id:
+                pending_input = None
+                pending_started_at = None
+                continue
+            state = str(payload.get("state") or "TASK_STATE_UNSPECIFIED")
+            key = f"{agent_id}:{task_id}"
+            if state in _A2A_TERMINAL_STATES:
+                sessions.pop(key, None)
+            else:
+                prior = sessions.get(key, {})
+                questions = payload.get("pending_questions")
+                if isinstance(questions, str):
+                    try:
+                        questions = json.loads(questions)
+                    except ValueError:
+                        questions = []
+                question = ""
+                if isinstance(questions, list) and questions and isinstance(questions[0], dict):
+                    question = str(questions[0].get("question") or "")
+                task_input = pending_input or {}
+                sessions[key] = {
+                    "agent_id": agent_id,
+                    "skill_id": str(task_input.get("skill_id") or prior.get("skill_id") or ""),
+                    "task_id": task_id,
+                    "state": state,
+                    "operation": str(payload.get("operation") or task_input.get("operation") or ""),
+                    "input_required": bool(payload.get("input_required")),
+                    "question": _bounded_hud_text(question, 500),
+                    "prompt": _bounded_hud_text(
+                        str(task_input.get("prompt") or prior.get("prompt") or ""),
+                        500,
+                    ),
+                    "status_message": _bounded_hud_text(
+                        str(payload.get("status_message") or ""),
+                        500,
+                    ),
+                    "parent_task_id": result.task_id,
+                    "parent_active": result.task_id in active_parent_ids,
+                    "started_at": prior.get("started_at")
+                    or (pending_started_at or event.timestamp).isoformat(),
+                    "observed_at": event.timestamp.isoformat(),
+                }
+            pending_input = None
+            pending_started_at = None
+
+        if pending_input is not None and pending_started_at is not None:
+            agent_id = str(pending_input.get("agent_id") or "")
+            if agent_id:
+                supplied_task_id = str(pending_input.get("task_id") or "")
+                key = (
+                    supplied_task_id
+                    and f"{agent_id}:{supplied_task_id}"
+                    or (f"call:{result.task_id}:{pending_started_at.isoformat()}")
+                )
+                prior = sessions.get(key, {})
+                sessions[key] = {
+                    "agent_id": agent_id,
+                    "skill_id": str(pending_input.get("skill_id") or prior.get("skill_id") or ""),
+                    "task_id": supplied_task_id,
+                    "state": "CALL_IN_PROGRESS",
+                    "operation": str(pending_input.get("operation") or ""),
+                    "input_required": False,
+                    "question": "",
+                    "prompt": _bounded_hud_text(
+                        str(pending_input.get("prompt") or prior.get("prompt") or ""),
+                        500,
+                    ),
+                    "status_message": "",
+                    "parent_task_id": result.task_id,
+                    "parent_active": result.task_id in active_parent_ids,
+                    "started_at": prior.get("started_at") or pending_started_at.isoformat(),
+                    "observed_at": pending_started_at.isoformat(),
+                }
+    return sorted(
+        sessions.values(),
+        key=lambda item: str(item.get("observed_at") or ""),
+        reverse=True,
+    )
+
+
+def _trace_id_from_carrier(carrier: Mapping[str, str]) -> str:
+    direct = str(carrier.get("trace_id") or "").strip()
+    if re.fullmatch(r"[\da-fA-F]{32}", direct):
+        return direct.lower()
+    traceparent = str(carrier.get("traceparent") or "").strip()
+    match = _TRACEPARENT_PATTERN.fullmatch(traceparent)
+    return match.group(1).lower() if match else ""
+
+
 _RAVN_TASK_DROPPED = "ravn.task.dropped"
 _RESIDENT_VALKYRIE_SCHEMA_REPAIR_TRIGGER = "schema_repair:resident_valkyrie"
 
@@ -442,6 +712,7 @@ def _build_resident_valkyrie_schema_repair_prompt(
     ):
         working_state_shape = (
             "working_state:\n"
+            "  objectives: []\n"
             "  observations: []\n"
             "  hypotheses: []\n"
             "  unknowns: []\n"
@@ -1167,6 +1438,116 @@ class DriveLoop:
         """Return task IDs that are currently executing."""
         return list(self._active_tasks.keys())
 
+    def resident_hud_status(self) -> dict[str, object]:
+        """Return factual, bounded-by-store runtime state for the resident HUD."""
+        http_config = self._settings.gateway.channels.http
+        context_limit = _integer_setting(
+            http_config.resident_hud_task_context_max_chars,
+            _HTTP_DEFAULTS.resident_hud_task_context_max_chars,
+        )
+        active_task_ids = self.active_task_ids()
+        active_parent_ids = set(active_task_ids)
+        active: list[dict[str, object]] = []
+        for task_id in active_task_ids:
+            task = self._inflight_tasks.get(task_id) or self._active_task_contexts.get(task_id)
+            result = self._result_store.get(task_id)
+            agent = self._active_agents.get(task_id)
+            iteration_budget = getattr(agent, "iteration_budget", None)
+            prompt_budget = getattr(agent, "prompt_budget_status", {})
+            if result is not None:
+                if task is not None and result.metadata.get("resident_hud") is not True:
+                    result.metadata.update(
+                        _resident_hud_task_metadata(
+                            task,
+                            context_limit=context_limit,
+                            persona=getattr(self._persona_config, "name", ""),
+                        )
+                    )
+                active.append(
+                    _resident_hud_result(
+                        result,
+                        iteration=int(getattr(iteration_budget, "consumed", 0) or 0),
+                        iteration_budget=int(getattr(iteration_budget, "total", 0) or 0),
+                        prompt_budget=(
+                            dict(prompt_budget) if isinstance(prompt_budget, dict) else {}
+                        ),
+                    )
+                )
+                continue
+            active.append(
+                {
+                    "task_id": task_id,
+                    "title": task.title if task is not None else "",
+                    "triggered_by": task.triggered_by if task is not None else "",
+                    "persona": (
+                        task.persona
+                        if task is not None and task.persona
+                        else getattr(self._persona_config, "name", "")
+                    ),
+                    "root_correlation_id": (
+                        task.root_correlation_id or task.task_id if task is not None else task_id
+                    ),
+                    "case_id": task.resident_case_id if task is not None else "",
+                    "turn_index": task.resident_turn_index if task is not None else 0,
+                    "trace_id": (
+                        _trace_id_from_carrier(task.trace_context) if task is not None else ""
+                    ),
+                    "status": "running",
+                    "started_at": task.created_at.isoformat() if task is not None else "",
+                    "completed_at": "",
+                    "input": (
+                        _resident_hud_task_input(task, context_limit) if task is not None else {}
+                    ),
+                    "progress": {
+                        "iteration": int(getattr(iteration_budget, "consumed", 0) or 0),
+                        "iteration_budget": int(getattr(iteration_budget, "total", 0) or 0),
+                        "tool_calls": 0,
+                        "warnings": 0,
+                        "prompt": (dict(prompt_budget) if isinstance(prompt_budget, dict) else {}),
+                    },
+                    "events": [],
+                }
+            )
+        recent_task_limit = _integer_setting(
+            http_config.resident_hud_recent_tasks,
+            _HTTP_DEFAULTS.resident_hud_recent_tasks,
+        )
+        recent = [
+            _resident_hud_result(result)
+            for result in reversed(self._result_store.results())
+            if result.status != "running"
+            and result.task_id not in active_parent_ids
+            and result.metadata.get("resident_hud") is True
+        ][:recent_task_limit]
+        queued = [
+            {
+                "task_id": task.task_id,
+                "title": task.title,
+                "triggered_by": task.triggered_by,
+                "root_correlation_id": task.root_correlation_id or task.task_id,
+                "created_at": task.created_at.isoformat(),
+                "input_summary": _resident_hud_task_input(task, context_limit)["summary"],
+            }
+            for _priority, _counter, task in sorted(
+                list(self._queue._queue)  # type: ignore[attr-defined]
+            )
+        ]
+        a2a_tasks = _resident_hud_a2a_tasks(
+            self._result_store.results(),
+            active_parent_ids=active_parent_ids,
+        )
+        return {
+            "active_tasks": active,
+            "active_count": len(active),
+            "recent_tasks": recent,
+            "queued_count": self._queue.qsize(),
+            "queue_capacity": self._config.task_queue_max,
+            "queued_tasks": queued,
+            "a2a_tasks": a2a_tasks,
+            "a2a_count": len(a2a_tasks),
+            "model": self._settings.effective_model(),
+        }
+
     def queued_task_ids(self) -> list[str]:
         """Return task IDs waiting in the priority queue (not yet started)."""
         return [
@@ -1534,8 +1915,8 @@ class DriveLoop:
             logger.error("drive_loop: rpc handler raised: %s", exc)
             return {"error": str(exc)}
 
-    @staticmethod
     def _directed_message_context(
+        self,
         content: str,
         metadata: dict[str, Any] | None,
     ) -> str:
@@ -1556,6 +1937,14 @@ class DriveLoop:
         context = metadata.get("help_context")
         reply_context = metadata.get("reply_context")
         recent_room_context = metadata.get("recent_room_context")
+        context_limit = _integer_setting(
+            getattr(
+                getattr(self._settings, "resident_state", None),
+                "directed_message_context_max_chars",
+                None,
+            ),
+            _RESIDENT_STATE_DEFAULTS.directed_message_context_max_chars,
+        )
         has_help_context = bool(
             help_summary
             or help_reason
@@ -1587,7 +1976,7 @@ class DriveLoop:
                 parts.extend(
                     [
                         "The human replied to this prior room message:",
-                        prior_content,
+                        _bounded_room_context(prior_content, context_limit),
                     ]
                 )
         elif isinstance(recent_room_context, dict) and recent_room_context:
@@ -1597,7 +1986,7 @@ class DriveLoop:
                     [
                         "Most recent message from this participant in the room "
                         "(context only; the human did not explicitly reply to it):",
-                        prior_content,
+                        _bounded_room_context(prior_content, context_limit),
                     ]
                 )
         label = "Human reply" if has_help_context or reply_context else "Human message"
@@ -1666,6 +2055,16 @@ class DriveLoop:
 
         import time
 
+        inbox_ref = ""
+        capture = getattr(self._resident_runtime, "capture_directed_message", None)
+        if capture is not None:
+            try:
+                inbox_ref = await capture(content, metadata)
+            except Exception:
+                logger.exception(
+                    "drive_loop: failed to persist directed message; continuing live delivery"
+                )
+
         task_id = f"task_{int(time.time() * 1000):x}_{self._next_counter()}"
         persona = self._persona_config.name if self._persona_config else None
         task = AgentTask(
@@ -1677,6 +2076,7 @@ class DriveLoop:
             persona=persona,
             priority=1,  # high priority — user is waiting
             human_initiated=True,
+            resident_inbox_refs=[inbox_ref] if inbox_ref else [],
         )
         if metadata:
             root_correlation_id = str(metadata.get("root_correlation_id") or "").strip()
@@ -2057,12 +2457,30 @@ class DriveLoop:
                 "ravn.task.lifecycle",
                 attributes={"ravn.task.phase": "setup_started"},
             )
-            # Track the capture channel separately for response_text access
+            # Track the capture channel separately for response_text access.
+            # Residents with cascade enabled already capture bounded activity;
+            # do not change channel behaviour merely to feed the HUD.
             capture_channel: CaptureChannel | None = None
             peer_id = self._settings.mesh.own_peer_id if self._settings.mesh.enabled else ""
             logger.info("drive_loop: task %s setting up channels", task.task_id)
             if self._settings.cascade.enabled:
-                self._result_store.start(task.task_id, task.triggered_by)
+                http_config = self._settings.gateway.channels.http
+                metadata = None
+                if http_config.resident_hud_enabled is True:
+                    context_limit = _integer_setting(
+                        http_config.resident_hud_task_context_max_chars,
+                        _HTTP_DEFAULTS.resident_hud_task_context_max_chars,
+                    )
+                    metadata = _resident_hud_task_metadata(
+                        task,
+                        context_limit=context_limit,
+                        persona=getattr(self._persona_config, "name", ""),
+                    )
+                self._result_store.start(
+                    task.task_id,
+                    task.triggered_by,
+                    metadata=metadata,
+                )
                 capture_channel = CaptureChannel(task.task_id, self._result_store)
                 extra: list[ChannelPort] = []
                 if self._skuld_channel is not None:
@@ -2354,6 +2772,11 @@ class DriveLoop:
                     )
                 )
 
+            if success:
+                success = await self._emit_mesh_outcome_event(task, response_text, success=True)
+                if not success:
+                    self._result_store.set_status(task.task_id, "failed")
+
             outcome = "success" if success else "error"
             telemetry.event(
                 "ravn.task.lifecycle",
@@ -2373,9 +2796,6 @@ class DriveLoop:
             await self._emit_sleipnir_task_completed(task, outcome, response_text=response_text)
             if success:
                 await self._emit_sleipnir_mimir_dream_completed(task, response_text=response_text)
-
-            # Publish outcome event to mesh for other agents to consume
-            await self._emit_mesh_outcome_event(task, response_text, success)
 
             await self._event_publisher.publish(
                 RavnEvent(
@@ -2413,6 +2833,16 @@ class DriveLoop:
                 await self._finalise_thread(thread_path, success)
             return outcome
         finally:
+            result = self._result_store.get(task.task_id)
+            if result is not None:
+                iteration_budget = getattr(agent, "iteration_budget", None)
+                result.metadata["iteration"] = int(getattr(iteration_budget, "consumed", 0) or 0)
+                result.metadata["iteration_budget"] = int(
+                    getattr(iteration_budget, "total", 0) or 0
+                )
+                prompt_budget = getattr(agent, "prompt_budget_status", {})
+                if isinstance(prompt_budget, dict) and prompt_budget:
+                    result.metadata["prompt_budget"] = dict(prompt_budget)
             if not success and self._resident_runtime is not None:
                 release = getattr(self._resident_runtime, "release_failed_task", None)
                 if release is not None:
@@ -2433,10 +2863,15 @@ class DriveLoop:
 
     def _format_task_error(self, task: AgentTask, exc: Exception) -> str:
         """Render a user-visible task failure message for live room chat."""
+        if isinstance(exc, PromptBudgetExceededError):
+            return (
+                f"Context limit reached while handling `{task.title}`: {exc}. "
+                "The turn stopped before another model request was sent."
+            )
         if isinstance(exc, LLMError):
             return (
-                f"LLM backend unavailable while handling `{task.title}`: {exc}. "
-                "The task will not make progress until the upstream model/service recovers."
+                f"LLM request failed while handling `{task.title}`: {exc}. "
+                "No successful judgment was recorded for this turn."
             )
         return f"{type(exc).__name__}: {exc}"
 
@@ -2887,7 +3322,7 @@ class DriveLoop:
 
     async def _emit_mesh_outcome_event(
         self, task: AgentTask, response_text: str, success: bool
-    ) -> None:
+    ) -> bool:
         """Publish persona outcomes for both routing and outward visibility.
 
         Canonical outcome events always keep the persona's declared
@@ -2900,21 +3335,21 @@ class DriveLoop:
         react without replacing the canonical outward event.
         """
         if self._persona_config is None:
-            return
+            return success
         if not success:
             logger.info(
                 "drive_loop: skipping mesh outcome publish for failed task_id=%s persona=%s",
                 task.task_id,
                 self._persona_config.name,
             )
-            return
+            return False
 
         # Parse outcome block from response
         parsed = _parse_outcome_for_persona(response_text, self._persona_config)
         outcome_fields = dict(parsed.fields) if parsed is not None else {}
         canonical_event_type = self._persona_config.produces.event_type
         if not canonical_event_type:
-            return
+            return True
         tool_fields = task.tool_outcomes.get(canonical_event_type) or {}
         for key, value in tool_fields.items():
             outcome_fields.setdefault(key, value)
@@ -3042,7 +3477,7 @@ class DriveLoop:
                     errors=validation_errors,
                     canonical_event_type=canonical_event_type,
                 )
-                return
+                return False
             valid = True
 
         outcome_errors: list[str] = []
@@ -3099,7 +3534,7 @@ class DriveLoop:
                     task.workflow_node_id or "-",
                     sorted(allowed_topics),
                 )
-                return
+                return False
 
         canonical_payload = dict(base_payload)
         canonical_payload["event_type"] = canonical_event_type
@@ -3152,7 +3587,7 @@ class DriveLoop:
             )
 
         if outcome_errors:
-            return
+            return False
 
         if self._mesh is None:
             mesh_available = False
@@ -3192,10 +3627,10 @@ class DriveLoop:
             await self._publish_help_needed(task, help_event)
 
         if not mesh_available:
-            return
+            return True
 
         if not alias_event_type or alias_event_type == canonical_event_type:
-            return
+            return True
 
         alias_payload = dict(base_payload)
         alias_payload["event_type"] = alias_event_type
@@ -3236,6 +3671,7 @@ class DriveLoop:
                     "Failed to emit routing outcome alias to skuld; continuing.",
                     exc_info=True,
                 )
+        return True
 
     async def _emit_sleipnir_valkyrie_outcome(
         self,
@@ -3587,6 +4023,7 @@ class DriveLoop:
             "resident_parent_turn_ref": task.resident_parent_turn_ref,
             "resident_inbox_refs": task.resident_inbox_refs,
             "resident_answer_ref": task.resident_answer_ref,
+            "resident_wake_ref": task.resident_wake_ref,
             "resident_help_published": task.resident_help_published,
             "trace_context": task.trace_context,
             "created_at": task.created_at.isoformat(),
@@ -3652,6 +4089,7 @@ class DriveLoop:
                     resident_parent_turn_ref=rec.get("resident_parent_turn_ref", ""),
                     resident_inbox_refs=rec.get("resident_inbox_refs", []) or [],
                     resident_answer_ref=rec.get("resident_answer_ref", ""),
+                    resident_wake_ref=rec.get("resident_wake_ref", ""),
                     resident_help_published=rec.get("resident_help_published", False),
                     trace_context=rec.get("trace_context", {}) or {},
                     created_at=created_at,

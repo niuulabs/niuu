@@ -1314,6 +1314,24 @@ async def test_run_task_swallows_emit_session_ended_errors(tmp_path: Path) -> No
     assert task.task_id not in loop._active_agents
 
 
+@pytest.mark.asyncio
+async def test_run_task_fails_when_workflow_outcome_is_rejected(tmp_path: Path) -> None:
+    loop, factory = _make_drive_loop(tmp_path)
+    loop._settings.cascade.enabled = True
+    mock_agent = AsyncMock()
+    mock_agent.run_turn = AsyncMock(return_value=None)
+    mock_agent.emit_session_ended = AsyncMock()
+    factory.return_value = mock_agent
+    loop._emit_mesh_outcome_event = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+    task = _make_task()
+    result = await loop._run_task_observed(task)
+
+    assert result == "error"
+    mock_agent.emit_session_ended.assert_awaited_once_with("error")
+    assert loop._result_store.get(task.task_id).status == "failed"
+
+
 # ---------------------------------------------------------------------------
 # DriveLoop — integration: cron trigger fires run_turn
 # ---------------------------------------------------------------------------

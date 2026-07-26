@@ -85,7 +85,7 @@ def _workflow_skill(workflow: WorkflowDefinition) -> AgentSkill:
         id=str(workflow.id),
         name=workflow.name,
         description=workflow.description,
-        tags=tags,
+        tags=tags or ["workflow"],
     )
 
 
