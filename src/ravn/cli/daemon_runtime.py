@@ -106,6 +106,18 @@ async def _run_daemon(
 
             daemon_bus = ObservedSleipnirBus(daemon_bus)
 
+    # This publisher is shared by gateways, the drive loop, and the resident
+    # learning services. Start it before constructing any of those producers so
+    # an immediately-ready trigger cannot publish against an unstarted adapter.
+    environment_signal_publisher_started = False
+    environment_signal_publisher: Any | None = _build_environment_signal_publisher(settings)
+    if environment_signal_publisher is not None and hasattr(
+        environment_signal_publisher,
+        "start",
+    ):
+        await environment_signal_publisher.start()
+        environment_signal_publisher_started = True
+
     def _agent_factory(
         channel: ChannelPort,
         task_id: str | None = None,
@@ -343,8 +355,6 @@ async def _run_daemon(
     odin_court: Any | None = None
     feedback_recorder: Any | None = None
     huddle_archiver: Any | None = None
-    environment_signal_publisher_started = False
-    environment_signal_publisher: Any | None = _build_environment_signal_publisher(settings)
     if settings.initiative.enabled or task_dispatch:
         if settings.sleipnir.enabled:
             event_publisher = RabbitMQEventPublisher(settings.sleipnir)
@@ -459,13 +469,6 @@ async def _run_daemon(
 
         trigger_names = [t.name for t in drive_loop._triggers]
         tasks.append(asyncio.create_task(drive_loop.run(), name="drive_loop"))
-
-    if environment_signal_publisher is not None and hasattr(
-        environment_signal_publisher,
-        "start",
-    ):
-        await environment_signal_publisher.start()
-        environment_signal_publisher_started = True
 
     resident_learning_runtime = _build_resident_learning_runtime(
         settings,
