@@ -192,12 +192,18 @@
   .empty{color:var(--dim2); font-size:10.5px; letter-spacing:.12em; padding:10px 4px; text-transform:uppercase}
 
   /* ── trajectory heatmap ─────────────────────────────── */
-  .evo{flex:0 0 auto; border:1px solid var(--line); background:var(--panel); padding:9px 11px}
+  .evo{flex:0 0 auto; border:1px solid var(--line); background:var(--panel); padding:9px 11px;
+    overflow-x:auto; scrollbar-color:var(--line2) var(--panel); scrollbar-width:thin}
+  .evo::-webkit-scrollbar,.track-scroll::-webkit-scrollbar{height:7px}
+  .evo::-webkit-scrollbar-track,.track-scroll::-webkit-scrollbar-track{background:var(--panel)}
+  .evo::-webkit-scrollbar-thumb,.track-scroll::-webkit-scrollbar-thumb{background:var(--line2)}
   .evo h3{font-size:9px; letter-spacing:.3em; text-transform:uppercase; color:var(--dim2);
     font-weight:500; margin-bottom:7px}
-  .grid{display:grid; gap:3px; align-items:center}
+  .grid{display:grid; gap:3px; align-items:center; min-width:100%; width:max-content}
+  .grid .corner{position:sticky;left:0;z-index:3;background:var(--panel)}
   .grid .rl{font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim);
-    text-align:right; padding-right:8px; white-space:nowrap}
+    text-align:right; padding-right:8px; white-space:nowrap;position:sticky;left:0;z-index:2;
+    background:var(--panel)}
   .cell{height:17px; display:flex; align-items:center; justify-content:center;
     font-size:10px; font-weight:600; border:1px solid transparent; color:var(--bg)}
   .cell.z{color:var(--dim2); background:transparent!important; border-color:var(--line)}
@@ -211,9 +217,13 @@
     border:1px solid var(--line2); padding:6px 15px; font-size:10px; letter-spacing:.18em;
     text-transform:uppercase; cursor:pointer}
   button:hover{border-color:var(--obs); color:var(--obs)}
-  .track{flex:1; display:flex; align-items:center; gap:0; position:relative; height:26px}
+  .track-scroll{flex:1;overflow-x:auto;overflow-y:hidden;scrollbar-color:var(--line2) var(--panel);
+    scrollbar-width:thin}
+  .track{display:flex;align-items:center;gap:0;position:relative;height:26px;
+    min-width:100%;width:max-content}
   .track .rail{position:absolute; left:0; right:0; top:50%; height:1px; background:var(--line2)}
-  .tick{position:relative; flex:1; display:flex; flex-direction:column; align-items:center; cursor:pointer; z-index:1}
+  .tick{position:relative;flex:0 0 22px;display:flex;flex-direction:column;align-items:center;
+    cursor:pointer;z-index:1}
   .tick .dot{width:9px;height:9px;border:1px solid var(--line2);background:var(--bg);
     transform:rotate(45deg); transition:all .25s}
   .tick.done .dot{background:var(--dim2);border-color:var(--dim2)}
@@ -349,7 +359,7 @@
 
   <div class="bot">
     <button id="play">▶ Play</button>
-    <div class="track" id="track"><div class="rail"></div></div>
+    <div class="track-scroll"><div class="track" id="track"><div class="rail"></div></div></div>
     <span class="stamp" id="stamp">—</span>
     <a class="trace" id="trace" target="_blank" rel="noreferrer" hidden>Open trace</a>
     <span class="note" id="note">Waiting for resident data</span>
@@ -402,6 +412,10 @@ function fieldsOf(d){
   return seen;
 }
 
+function newestFirst(turns){
+  return turns.map((_,n)=>n).reverse();
+}
+
 function mount(d){
   D=d; i=0;
   document.getElementById("note").textContent=d.note||"Resident state";
@@ -436,26 +450,30 @@ function mount(d){
   });
 
   track.innerHTML='<div class="rail"></div>';
-  (d.turns||[]).forEach((t,n)=>{
+  newestFirst(d.turns||[]).forEach(n=>{
     const el=document.createElement("div"); el.className="tick";
     el.innerHTML=`<div class="dot"></div><div class="lb">${n+1}</div>`;
+    el.dataset.c=n;
     el.onclick=()=>{stop();render(n)};
     track.appendChild(el);
   });
 
   buildEvo();
-  if((d.turns||[]).length) render(0);
+  if((d.turns||[]).length) render(d.turns.length-1);
   else renderEmpty();
 }
 
 function buildEvo(){
   const turns=D.turns||[];
-  evo.style.gridTemplateColumns=`minmax(96px,auto) repeat(${turns.length},1fr)`;
+  const indexes=newestFirst(turns);
+  evo.style.gridTemplateColumns=`minmax(96px,auto) repeat(${turns.length},minmax(22px,1fr))`;
   const max=Math.max(1,...turns.flatMap(t=>FIELDS.map(k=>(t.working_state?.[k]||[]).length)));
-  let html=`<div></div>`+turns.map((t,n)=>`<div class="hd">${n+1}</div>`).join("");
+  let html=`<div class="corner"></div>`+
+    indexes.map(n=>`<div class="hd" data-c="${n}">${n+1}</div>`).join("");
   FIELDS.forEach(k=>{
     html+=`<div class="rl">${esc(label(k))}</div>`;
-    turns.forEach((t,n)=>{
+    indexes.forEach(n=>{
+      const t=turns[n];
       const c=(t.working_state?.[k]||[]).length;
       const a=c?Math.round((.22+.78*(c/max))*100):0;
       html+=`<div class="cell ${c?"":"z"}" data-c="${n}" style="${c?`background:color-mix(in srgb,var(${HUE[k]}) ${a}%,transparent)`:""}">${c||"·"}</div>`;
@@ -465,7 +483,7 @@ function buildEvo(){
 }
 function markEvo(n){
   evo.querySelectorAll(".cell").forEach(c=>c.classList.toggle("cur",+c.dataset.c===n));
-  evo.querySelectorAll(".hd").forEach((h,x)=>h.classList.toggle("cur",x===n));
+  evo.querySelectorAll(".hd").forEach(h=>h.classList.toggle("cur",+h.dataset.c===n));
 }
 
 function judgmentFacts(t){
@@ -831,8 +849,9 @@ function render(n){
     FIELD_COUNT[k].textContent=cur.length;
   });
 
-  [...track.querySelectorAll(".tick")].forEach((d,x)=>{
-    d.classList.toggle("on",x===n); d.classList.toggle("done",x<n);
+  [...track.querySelectorAll(".tick")].forEach(d=>{
+    const turn=+d.dataset.c;
+    d.classList.toggle("on",turn===n); d.classList.toggle("done",turn<n);
   });
   markEvo(n);
   const ts=t.updated_at?new Date(t.updated_at):null;
@@ -856,8 +875,8 @@ document.getElementById("play").onclick=()=>{
 };
 addEventListener("keydown",e=>{
   const last=(D.turns||[]).length-1;
-  if(e.key==="ArrowRight"){stop();render(Math.min(i+1,last))}
-  if(e.key==="ArrowLeft"){stop();render(Math.max(i-1,0))}
+  if(e.key==="ArrowRight"){stop();render(Math.max(i-1,0))}
+  if(e.key==="ArrowLeft"){stop();render(Math.min(i+1,last))}
   if(e.key===" "){e.preventDefault();document.getElementById("play").click()}
 });
 

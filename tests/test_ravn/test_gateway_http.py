@@ -563,6 +563,9 @@ def test_resident_hud_serves_live_durable_and_inflight_state_without_operator_to
     assert "What happened" in page.text
     assert "Current progress" in page.text
     assert "Waiting work" in page.text
+    assert 'class="track-scroll"' in page.text
+    assert "function newestFirst(turns)" in page.text
+    assert "render(d.turns.length-1)" in page.text
     assert "octoprint_job_stats" not in page.text
 
     payload = client.get("/resident/hud-data").json()
