@@ -278,8 +278,11 @@ class HttpGateway:
         active_tasks = runtime.get("active_tasks")
         if not isinstance(active_tasks, list):
             active_tasks = []
+        recent_tasks = runtime.get("recent_tasks")
+        if not isinstance(recent_tasks, list):
+            recent_tasks = []
         event_limit = self._config.resident_hud_activity_max_events
-        for task in active_tasks:
+        for task in [*active_tasks, *recent_tasks]:
             if isinstance(task, dict) and isinstance(task.get("events"), list):
                 task["events"] = task["events"][-event_limit:]
 
@@ -295,6 +298,7 @@ class HttpGateway:
             **runtime,
             "state": state,
             "active_tasks": active_tasks,
+            "recent_tasks": recent_tasks,
             "active_count": active_count,
             "queued_count": queued_count,
             "pending_questions": pending,
@@ -302,6 +306,7 @@ class HttpGateway:
         payload["hud"] = {
             "poll_interval_seconds": self._config.resident_hud_poll_interval_seconds,
             "stale_after_seconds": self._config.resident_hud_stale_after_seconds,
+            "recent_task_limit": self._config.resident_hud_recent_tasks,
             "trace_url_template": self._config.resident_hud_trace_url_template,
         }
         return payload

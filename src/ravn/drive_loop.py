@@ -37,7 +37,7 @@ from ravn.adapters.channels.silent import SilentChannel
 from ravn.adapters.channels.skuld_channel import SkuldChannel
 from ravn.adapters.channels.task_context import TaskContextChannel
 from ravn.adapters.events.noop_publisher import NoOpEventPublisher
-from ravn.config import BudgetConfig, InitiativeConfig, Settings
+from ravn.config import BudgetConfig, HttpChannelConfig, InitiativeConfig, Settings
 from ravn.domain.budget import DailyBudgetTracker, compute_cost
 from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.exceptions import LLMError
@@ -100,6 +100,7 @@ _A2A_TERMINAL_STATES = frozenset(
         "TASK_STATE_REJECTED",
     }
 )
+_HTTP_DEFAULTS = HttpChannelConfig()
 
 
 def _bounded_hud_text(value: str, limit: int) -> str:
@@ -107,6 +108,11 @@ def _bounded_hud_text(value: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return f"{text[: max(0, limit - 1)].rstrip()}…"
+
+
+def _integer_setting(value: object, default: int) -> int:
+    """Use validated integer settings while tolerating loose test doubles."""
+    return value if isinstance(value, int) else default
 
 
 def _markdown_section(value: str, heading_prefix: str) -> str:
@@ -141,6 +147,70 @@ def _resident_hud_task_input(task: AgentTask, limit: int) -> dict[str, str]:
         "summary": _bounded_hud_text(summary, limit),
         "observations": _bounded_hud_text(observations, limit),
         "objective": _bounded_hud_text(objective, limit),
+    }
+
+
+def _resident_hud_task_metadata(
+    task: AgentTask,
+    *,
+    context_limit: int,
+    persona: str,
+) -> dict[str, object]:
+    """Capture stable task facts needed after the live task object is released."""
+    return {
+        "resident_hud": True,
+        "title": task.title,
+        "persona": task.persona or persona,
+        "root_correlation_id": task.root_correlation_id or task.task_id,
+        "case_id": task.resident_case_id,
+        "turn_index": task.resident_turn_index,
+        "trace_id": _trace_id_from_carrier(task.trace_context),
+        "input": _resident_hud_task_input(task, context_limit),
+    }
+
+
+def _resident_hud_result(
+    result: TaskResult,
+    *,
+    iteration: int | None = None,
+    iteration_budget: int | None = None,
+) -> dict[str, object]:
+    """Project one captured task into the stable HUD task shape."""
+    metadata = result.metadata
+    return {
+        "task_id": result.task_id,
+        "title": str(metadata.get("title") or ""),
+        "triggered_by": result.triggered_by,
+        "persona": str(metadata.get("persona") or ""),
+        "root_correlation_id": str(metadata.get("root_correlation_id") or result.task_id),
+        "case_id": str(metadata.get("case_id") or ""),
+        "turn_index": int(metadata.get("turn_index") or 0),
+        "trace_id": str(metadata.get("trace_id") or ""),
+        "status": result.status,
+        "started_at": result.started_at.isoformat(),
+        "completed_at": result.completed_at.isoformat() if result.completed_at else "",
+        "input": metadata.get("input") if isinstance(metadata.get("input"), dict) else {},
+        "progress": {
+            "iteration": int(metadata.get("iteration") or 0) if iteration is None else iteration,
+            "iteration_budget": (
+                int(metadata.get("iteration_budget") or 0)
+                if iteration_budget is None
+                else iteration_budget
+            ),
+            "tool_calls": sum(event.type == "tool_start" for event in result.events),
+            "warnings": sum(
+                event.type == "error" or "[warning]" in event.summary.casefold()
+                for event in result.events
+            ),
+        },
+        "events": [
+            {
+                "type": event.type,
+                "summary": event.summary,
+                "timestamp": event.timestamp.isoformat(),
+            }
+            for event in result.events
+        ],
     }
 
 
@@ -1344,16 +1414,36 @@ class DriveLoop:
 
     def resident_hud_status(self) -> dict[str, object]:
         """Return factual, bounded-by-store runtime state for the resident HUD."""
-        context_limit = self._settings.gateway.channels.http.resident_hud_task_context_max_chars
+        http_config = self._settings.gateway.channels.http
+        context_limit = _integer_setting(
+            http_config.resident_hud_task_context_max_chars,
+            _HTTP_DEFAULTS.resident_hud_task_context_max_chars,
+        )
         active_task_ids = self.active_task_ids()
         active_parent_ids = set(active_task_ids)
         active: list[dict[str, object]] = []
         for task_id in active_task_ids:
             task = self._inflight_tasks.get(task_id) or self._active_task_contexts.get(task_id)
             result = self._result_store.get(task_id)
-            events = list(result.events if result is not None else [])
             agent = self._active_agents.get(task_id)
             iteration_budget = getattr(agent, "iteration_budget", None)
+            if result is not None:
+                if task is not None and result.metadata.get("resident_hud") is not True:
+                    result.metadata.update(
+                        _resident_hud_task_metadata(
+                            task,
+                            context_limit=context_limit,
+                            persona=getattr(self._persona_config, "name", ""),
+                        )
+                    )
+                active.append(
+                    _resident_hud_result(
+                        result,
+                        iteration=int(getattr(iteration_budget, "consumed", 0) or 0),
+                        iteration_budget=int(getattr(iteration_budget, "total", 0) or 0),
+                    )
+                )
+                continue
             active.append(
                 {
                     "task_id": task_id,
@@ -1372,35 +1462,32 @@ class DriveLoop:
                     "trace_id": (
                         _trace_id_from_carrier(task.trace_context) if task is not None else ""
                     ),
-                    "started_at": (
-                        result.started_at.isoformat()
-                        if result is not None
-                        else task.created_at.isoformat()
-                        if task is not None
-                        else ""
-                    ),
+                    "status": "running",
+                    "started_at": task.created_at.isoformat() if task is not None else "",
+                    "completed_at": "",
                     "input": (
                         _resident_hud_task_input(task, context_limit) if task is not None else {}
                     ),
                     "progress": {
                         "iteration": int(getattr(iteration_budget, "consumed", 0) or 0),
                         "iteration_budget": int(getattr(iteration_budget, "total", 0) or 0),
-                        "tool_calls": sum(event.type == "tool_start" for event in events),
-                        "warnings": sum(
-                            event.type == "error" or "[warning]" in event.summary.casefold()
-                            for event in events
-                        ),
+                        "tool_calls": 0,
+                        "warnings": 0,
                     },
-                    "events": [
-                        {
-                            "type": event.type,
-                            "summary": event.summary,
-                            "timestamp": event.timestamp.isoformat(),
-                        }
-                        for event in events
-                    ],
+                    "events": [],
                 }
             )
+        recent_task_limit = _integer_setting(
+            http_config.resident_hud_recent_tasks,
+            _HTTP_DEFAULTS.resident_hud_recent_tasks,
+        )
+        recent = [
+            _resident_hud_result(result)
+            for result in reversed(self._result_store.results())
+            if result.status != "running"
+            and result.task_id not in active_parent_ids
+            and result.metadata.get("resident_hud") is True
+        ][:recent_task_limit]
         queued = [
             {
                 "task_id": task.task_id,
@@ -1421,6 +1508,7 @@ class DriveLoop:
         return {
             "active_tasks": active,
             "active_count": len(active),
+            "recent_tasks": recent,
             "queued_count": self._queue.qsize(),
             "queue_capacity": self._config.task_queue_max,
             "queued_tasks": queued,
@@ -2326,7 +2414,23 @@ class DriveLoop:
             peer_id = self._settings.mesh.own_peer_id if self._settings.mesh.enabled else ""
             logger.info("drive_loop: task %s setting up channels", task.task_id)
             if self._settings.cascade.enabled:
-                self._result_store.start(task.task_id, task.triggered_by)
+                http_config = self._settings.gateway.channels.http
+                metadata = None
+                if http_config.resident_hud_enabled is True:
+                    context_limit = _integer_setting(
+                        http_config.resident_hud_task_context_max_chars,
+                        _HTTP_DEFAULTS.resident_hud_task_context_max_chars,
+                    )
+                    metadata = _resident_hud_task_metadata(
+                        task,
+                        context_limit=context_limit,
+                        persona=getattr(self._persona_config, "name", ""),
+                    )
+                self._result_store.start(
+                    task.task_id,
+                    task.triggered_by,
+                    metadata=metadata,
+                )
                 capture_channel = CaptureChannel(task.task_id, self._result_store)
                 extra: list[ChannelPort] = []
                 if self._skuld_channel is not None:
@@ -2679,6 +2783,13 @@ class DriveLoop:
                 await self._finalise_thread(thread_path, success)
             return outcome
         finally:
+            result = self._result_store.get(task.task_id)
+            if result is not None:
+                iteration_budget = getattr(agent, "iteration_budget", None)
+                result.metadata["iteration"] = int(getattr(iteration_budget, "consumed", 0) or 0)
+                result.metadata["iteration_budget"] = int(
+                    getattr(iteration_budget, "total", 0) or 0
+                )
             if not success and self._resident_runtime is not None:
                 release = getattr(self._resident_runtime, "release_failed_task", None)
                 if release is not None:

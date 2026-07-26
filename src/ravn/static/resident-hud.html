@@ -112,6 +112,25 @@
   .activity-event.tool_start{border-color:var(--obs)}
   .activity-event.error,.activity-event.warning{border-color:var(--gap)}
   .activity-event.error .event-main,.activity-event.warning .event-result{color:var(--gap)}
+  .progress-heading{display:flex;align-items:center;gap:8px}
+  .progress-status{border:1px solid var(--line2);padding:2px 5px;color:var(--dim);
+    font-size:8px;letter-spacing:.12em;text-transform:uppercase}
+  .progress-status.running{color:var(--obs);border-color:var(--obs)}
+  .progress-status.complete{color:var(--att);border-color:var(--att)}
+  .progress-status.failed,.progress-status.cancelled{color:var(--gap);border-color:var(--gap)}
+  .task-history{display:flex;gap:5px;overflow-x:auto;padding-bottom:8px;margin-bottom:9px;
+    border-bottom:1px solid var(--line)}
+  .task-history[hidden]{display:none}
+  .task-choice{flex:0 0 160px;min-width:0;text-align:left;font:9px/1.35 var(--mono);
+    color:var(--dim);background:var(--panel2);border:1px solid var(--line);
+    padding:6px 7px;cursor:pointer}
+  .task-choice b{display:block;color:var(--tx);font-weight:500;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis}
+  .task-choice span{display:block;margin-top:2px;color:var(--dim2);text-transform:uppercase;
+    letter-spacing:.08em}
+  .task-choice.on{border-color:var(--obs);background:rgba(47,214,195,.05)}
+  .task-choice.running span{color:var(--obs)}
+  .task-choice.failed span,.task-choice.cancelled span{color:var(--gap)}
   .a2a-panel{border:1px solid var(--line2);background:rgba(168,112,245,.05);
     margin-bottom:10px}
   .a2a-panel[hidden]{display:none}
@@ -307,7 +326,10 @@
 
     <section class="live-card">
       <header>
-        <h2>Current progress</h2>
+        <div class="progress-heading">
+          <h2>Current progress</h2>
+          <span class="progress-status" id="progress-status">waiting</span>
+        </div>
         <div class="live-meta">
           <span>ELAPSED <b id="live-elapsed">—</b></span>
           <span>ITERATION <b id="live-iteration">—</b></span>
@@ -316,6 +338,7 @@
         </div>
       </header>
       <div class="live-body">
+        <div class="task-history" id="task-history" hidden></div>
         <section class="a2a-panel" id="a2a-panel" hidden>
           <header>
             <span>Open A2A tasks</span>
@@ -390,6 +413,7 @@ let D=RESIDENTS[0], FIELDS=[], HUE={}, FIELD_BODY={}, FIELD_COUNT={}, i=0, timer
 const cols=document.getElementById("cols"), track=document.getElementById("track"),
       evo=document.getElementById("evo");
 let lastSuccess=0, staleTimer=null;
+let selectedTaskId="", lastActiveTaskId="";
 
 function esc(s){return String(s).replace(/[&<>"']/g,c=>(
   {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]
@@ -512,6 +536,18 @@ function elapsedSince(value){
   return Math.floor(minutes/60)+"h "+(minutes%60)+"m";
 }
 
+function taskDuration(task){
+  if(!task?.started_at) return "—";
+  if(!task.completed_at) return elapsedSince(task.started_at);
+  const started=new Date(task.started_at), completed=new Date(task.completed_at);
+  if(isNaN(started)||isNaN(completed)) return "—";
+  const seconds=Math.max(0,Math.floor((completed-started)/1000));
+  if(seconds<60) return seconds+"s";
+  const minutes=Math.floor(seconds/60), rest=seconds%60;
+  if(minutes<60) return minutes+"m "+rest+"s";
+  return Math.floor(minutes/60)+"h "+(minutes%60)+"m";
+}
+
 function observationEntries(value){
   const entries=[];
   let current=[];
@@ -626,7 +662,7 @@ function activityRows(events){
   return rows;
 }
 
-function renderActivity(events){
+function renderActivity(events, emptyMessage="Waiting for the first observable action"){
   const list=document.getElementById("activity-list");
   const viewport=list.parentElement, previousScroll=viewport?.scrollTop||0;
   const stickToBottom=!viewport||
@@ -636,7 +672,7 @@ function renderActivity(events){
   if(!rows.length){
     const empty=document.createElement("div");
     empty.className="empty";
-    empty.textContent="Waiting for the first observable action";
+    empty.textContent=emptyMessage;
     list.appendChild(empty);
     return;
   }
@@ -760,18 +796,101 @@ function renderQueue(runtime){
   }
 }
 
+function renderTaskHistory(tasks, selected, d){
+  const history=document.getElementById("task-history");
+  history.replaceChildren();
+  history.hidden=!tasks.length;
+  tasks.forEach(task=>{
+    const button=document.createElement("button");
+    const status=String(task.status||"unknown").toLowerCase();
+    button.type="button";
+    button.className=`task-choice ${status}${task.task_id===selected?" on":""}`;
+    button.title=task.task_id||"";
+    const title=document.createElement("b");
+    title.textContent=task.title||task.task_id||"Resident task";
+    const meta=document.createElement("span");
+    meta.textContent=`${status} · ${status==="running"?taskDuration(task):clockTime(task.completed_at)}`;
+    button.append(title,meta);
+    button.onclick=()=>{
+      selectedTaskId=task.task_id||"";
+      renderRuntime(d);
+    };
+    history.appendChild(button);
+  });
+}
+
+function durableTasks(d){
+  const limit=d.hud?.recent_task_limit||5;
+  return [...(d.turns||[])].reverse()
+    .filter(turn=>turn.task_id)
+    .slice(0,limit)
+    .map(turn=>{
+      const judgment=turn.judgment||turn;
+      return {
+        task_id:turn.task_id,
+        title:turn.triggered_by
+          ?label(turn.triggered_by.replaceAll(":","_"))
+          :`Resident turn ${turn.turn_index??"—"}`,
+        triggered_by:turn.triggered_by||"",
+        persona:turn.persona||"",
+        root_correlation_id:turn.root_correlation_id||turn.task_id,
+        case_id:turn.case_id||"",
+        turn_index:turn.turn_index||0,
+        trace_id:judgment.correlation_ids?.trace||"",
+        status:"complete",
+        started_at:"",
+        completed_at:turn.updated_at||"",
+        input:{
+          summary:turn.triggered_by
+            ? label(turn.triggered_by.replace(/:/g,"_"))
+            :"Completed resident judgment",
+          observations:"",
+          objective:turn.selected_next_action||"",
+        },
+        progress:{
+          iteration:0,
+          iteration_budget:0,
+          tool_calls:(turn.tools_used||[]).length,
+          warnings:0,
+        },
+        events:[],
+        durable:true,
+      };
+    });
+}
+
 function renderRuntime(d){
-  const runtime=d.runtime||{}, active=runtime.active_tasks||[], task=active[0]||null;
+  const runtime=d.runtime||{},
+        active=(runtime.active_tasks||[]).map(task=>({
+          ...task,status:task.status||"running"
+        })),
+        recent=runtime.recent_tasks||[], history=[],
+        historyLimit=d.hud?.recent_task_limit||5;
+  [...recent,...durableTasks(d)].forEach(item=>{
+    if(history.length>=historyLimit) return;
+    if(active.some(current=>current.task_id===item.task_id)) return;
+    if(!history.some(current=>current.task_id===item.task_id)) history.push(item);
+  });
+  const tasks=[...active,...history];
+  const activeTask=active[0]||null, activeTaskId=activeTask?.task_id||"";
+  if(activeTaskId&&(!selectedTaskId||selectedTaskId===lastActiveTaskId)){
+    selectedTaskId=activeTaskId;
+  }
+  if(!tasks.some(task=>task.task_id===selectedTaskId)){
+    selectedTaskId=activeTaskId||tasks[0]?.task_id||"";
+  }
+  lastActiveTaskId=activeTaskId;
+  const task=tasks.find(item=>item.task_id===selectedTaskId)||null;
   const state=runtime.state||"idle", stateEl=document.getElementById("rstate");
   stateEl.className="state "+state;
   stateEl.textContent=state.replace(/_/g," ").toUpperCase();
   document.getElementById("ractive").textContent=runtime.active_count||0;
   document.getElementById("rqueued").textContent=runtime.queued_count||0;
-  document.getElementById("rtitle").textContent=task?.title||(
+  document.getElementById("rtitle").textContent=activeTask?.title||(
     state==="waiting_operator"?"Waiting for an operator answer":"No task is executing"
   );
-  document.getElementById("rtrigger").textContent=task
-    ? `${task.triggered_by||"unknown trigger"}${runtime.model?" · "+runtime.model:""}`
+  document.getElementById("rtrigger").textContent=activeTask
+    ? `${activeTask.triggered_by||"unknown trigger"}${runtime.model?" · "+runtime.model:""}`
     : (
     runtime.pending_questions?.[0]?.question||
     "The resident is waiting for a signal, schedule, or operator answer."
@@ -786,6 +905,7 @@ function renderRuntime(d){
     "on",
     Boolean(task)||(runtime.queued_count||0)>0||(runtime.a2a_count||0)>0
   );
+  renderTaskHistory(tasks,selectedTaskId,d);
   document.getElementById("input-summary").textContent=input.summary||task?.title||"Waiting to start";
   renderObservations(input.observations||(
     task?"":"The next queued task has not started."
@@ -793,18 +913,34 @@ function renderRuntime(d){
   document.getElementById("input-objective").textContent=input.objective||(
     task?"No objective excerpt was captured.":"—"
   );
-  document.getElementById("current-judgment").textContent=task
-    ?"Not emitted yet":"Waiting to start";
+  const matchingTurn=(d.turns||[]).find(turn=>turn.task_id===task?.task_id),
+        judgment=matchingTurn?.judgment||matchingTurn||{},
+        status=String(task?.status||"waiting").toLowerCase(),
+        statusEl=document.getElementById("progress-status");
+  statusEl.className=`progress-status ${status}`;
+  statusEl.textContent=status;
+  document.getElementById("current-judgment").textContent=!task
+    ?"Waiting to start"
+    :status==="running"
+      ?"Not emitted yet"
+      :(judgment.decision||judgment.verdict||status).toString().replace(/_/g," ");
   document.getElementById("task-identity").textContent=task
     ? `TASK ${task.task_id||"—"} · ROOT ${task.root_correlation_id||"—"}`
     :"—";
-  document.getElementById("live-elapsed").textContent=task?elapsedSince(task.started_at):"—";
+  document.getElementById("live-elapsed").textContent=task?taskDuration(task):"—";
   document.getElementById("live-iteration").textContent=progress.iteration_budget
     ? `${progress.iteration||0} / ${progress.iteration_budget}`:`${progress.iteration||0}`;
   document.getElementById("live-tools").textContent=progress.tool_calls||0;
   document.getElementById("live-warnings").textContent=progress.warnings||0;
   renderA2A(runtime);
-  renderActivity(events);
+  renderActivity(
+    events,
+    task?.durable
+      ?task.trace_id
+        ?"This task was restored from its durable turn record. Detailed activity remains available through the trace."
+        :"This task was restored from its durable turn record; detailed live activity was not retained."
+      :"Waiting for the first observable action"
+  );
   renderQueue(runtime);
 
   const activeTrace=document.getElementById("active-trace"),

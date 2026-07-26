@@ -168,13 +168,14 @@ class TestTaskResultStore:
 
     def test_restarting_same_task_id_overwrites(self):
         store = TaskResultStore()
-        store.start("t1", "first")
+        store.start("t1", "first", metadata={"title": "first task"})
         store.set_output("t1", "first output")
-        store.start("t1", "second")
+        store.start("t1", "second", metadata={"title": "second task"})
         result = store.get("t1")
         assert result.output == ""
         assert result.status == "running"
         assert result.triggered_by == "second"
+        assert result.metadata == {"title": "second task"}
 
 
 # ---------------------------------------------------------------------------

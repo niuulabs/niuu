@@ -62,6 +62,9 @@ def _make_drive_loop_with_mesh(
     settings.cascade.enabled = cascade_enabled
     settings.mesh.enabled = mesh_enabled
     settings.mesh.own_peer_id = peer_id
+    settings.gateway.channels.http.resident_hud_enabled = True
+    settings.gateway.channels.http.resident_hud_task_context_max_chars = 4000
+    settings.gateway.channels.http.resident_hud_recent_tasks = 5
     settings.budget.daily_cap_usd = 100.0
     settings.budget.warn_at_percent = 80
     settings.budget.input_token_cost_per_million = 3.0
@@ -181,7 +184,9 @@ Determine whether the observations require action.
                 "case_id": "",
                 "turn_index": 0,
                 "trace_id": "56ca7fcf3496a1e9fe7136f55a110c2a",
+                "status": "running",
                 "started_at": dl._result_store.get("active-task").started_at.isoformat(),
+                "completed_at": "",
                 "input": {
                     "summary": "Signals since your last look — 4 observation(s)",
                     "observations": (
@@ -204,10 +209,70 @@ Determine whether the observations require action.
                 ],
             }
         ]
+        assert status["recent_tasks"] == []
         assert status["queue_capacity"] == 10
         assert status["queued_tasks"] == []
         assert status["a2a_count"] == 0
         assert status["a2a_tasks"] == []
+
+    def test_resident_hud_status_retains_recent_completed_task(self):
+        from datetime import UTC, datetime
+
+        from ravn.adapters.channels.capture import CapturedEvent
+
+        dl, _ = _make_drive_loop_with_mesh(cascade_enabled=True)
+        dl._result_store.start(
+            "completed-task",
+            "resident:scheduled_wake",
+            metadata={
+                "resident_hud": True,
+                "title": "Review the workshop",
+                "persona": "Ivaldi",
+                "root_correlation_id": "root-completed",
+                "case_id": "case-completed",
+                "turn_index": 3,
+                "trace_id": "trace-completed",
+                "input": {
+                    "summary": "Review the workshop",
+                    "observations": "Printer is idle",
+                    "objective": "Decide whether to act",
+                },
+                "iteration": 2,
+                "iteration_budget": 8,
+            },
+        )
+        dl._result_store.append_event(
+            "completed-task",
+            CapturedEvent(
+                type="tool_start",
+                summary="tool: research()",
+                timestamp=datetime(2026, 7, 26, tzinfo=UTC),
+            ),
+        )
+        dl._result_store.set_output("completed-task", "No action required")
+
+        status = dl.resident_hud_status()
+
+        assert status["active_tasks"] == []
+        assert len(status["recent_tasks"]) == 1
+        recent = status["recent_tasks"][0]
+        assert recent["task_id"] == "completed-task"
+        assert recent["title"] == "Review the workshop"
+        assert recent["status"] == "complete"
+        assert recent["completed_at"]
+        assert recent["progress"] == {
+            "iteration": 2,
+            "iteration_budget": 8,
+            "tool_calls": 1,
+            "warnings": 0,
+        }
+        assert recent["events"] == [
+            {
+                "type": "tool_start",
+                "summary": "tool: research()",
+                "timestamp": "2026-07-26T00:00:00+00:00",
+            }
+        ]
         assert status["model"] == "test-model"
 
     def test_resident_hud_status_describes_waiting_tasks(self):
