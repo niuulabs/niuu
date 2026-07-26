@@ -38,6 +38,11 @@ import typer
 
 from niuu.mesh import nng_gateway_port_for, nng_ports_for
 from niuu.mesh.ipc import cleanup_ravn_mesh_sockets, flock_socket_dir, ravn_mesh_addresses
+from ravn.cli.daemon_config import (
+    quiet_overlay_yaml,
+    render_skuld_yaml,
+    room_broker_ws_url,
+)
 from ravn.cli.process_supervision import (
     DEFAULT_STOP_TIMEOUT_S,
     is_alive,
@@ -264,8 +269,15 @@ def _write_node_config(
     discovery: str = "mdns",
     mesh_transport: str = "tcp",
     http_gateway_enabled: bool = True,
+    room_broker_url: str = "",
+    autonomous: bool = True,
 ) -> None:
-    """Write the per-node ravn daemon config file."""
+    """Write the per-node ravn daemon config file.
+
+    When *room_broker_url* is set, every node also joins that room — the node's
+    ``peer_id`` becomes its member handle, so a flock and a room roster are the
+    same set of ravens rather than two disconnected concepts.
+    """
     config_path = Path(node.config_path)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     flock_socket_dir(flock_dir).mkdir(parents=True, exist_ok=True)
@@ -286,12 +298,15 @@ def _write_node_config(
             f"      poll_interval_s: 5\n"
         )
     else:
+        # The adapters list is the form the discovery builder reads; the older
+        # `adapter: mdns` + `mdns:` shape parsed fine but built nothing, so
+        # nodes never discovered each other.
         discovery_block = (
             f"discovery:\n"
             f"  enabled: true\n"
-            f"  adapter: mdns\n"
-            f"  mdns:\n"
-            f"    handshake_port: {node.handshake_port}\n"
+            f"  adapters:\n"
+            f"    - adapter: ravn.adapters.discovery.mdns.MdnsDiscoveryAdapter\n"
+            f"      handshake_port: {node.handshake_port}\n"
         )
 
     config_path.write_text(
@@ -343,6 +358,8 @@ memory:
 logging:
   level: INFO
 """
+        + (render_skuld_yaml(room_broker_url, display_name=node.persona) if room_broker_url else "")
+        + ("" if autonomous else quiet_overlay_yaml())
     )
 
 
@@ -402,6 +419,30 @@ def _stop_pids(pids: list[int], *, timeout_s: float = DEFAULT_STOP_TIMEOUT_S) ->
 # ---------------------------------------------------------------------------
 
 
+def _resolve_room_broker_url(room: str, rooms_dir: str) -> str:
+    """Return the Ravn WebSocket URL for *room*, or "" when no room was named.
+
+    Resolved against the room registry so a typo fails here rather than
+    producing a flock of nodes that quietly never join anything.
+    """
+    name = room.strip()
+    if not name:
+        return ""
+
+    from ravn.cli.room import _load_room_def, _rooms_dir_default  # noqa: PLC0415
+
+    resolved_dir = Path(rooms_dir) if rooms_dir else _rooms_dir_default()
+    room_def = _load_room_def(name, resolved_dir)
+    if room_def is None:
+        typer.echo(
+            f"Unknown room {name!r}. Run 'ravn room ls' to see rooms, "
+            f"or 'ravn room create {name}' to make one.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    return room_broker_ws_url(room_def.host, room_def.port)
+
+
 @flock_app.command("init")
 def flock_init(
     personas: list[str] = typer.Argument(
@@ -430,6 +471,21 @@ def flock_init(
         "--http-gateway/--no-http-gateway",
         help="Enable per-node HTTP/WebSocket gateways.",
     ),
+    room: str = typer.Option(
+        "",
+        "--room",
+        envvar="RAVN_ROOM",
+        help="Join every node to this room (see 'ravn room ls').",
+    ),
+    rooms_dir: str = typer.Option("", "--rooms-dir", help="Override the rooms state directory."),
+    autonomous: bool = typer.Option(
+        False,
+        "--autonomous/--responsive",
+        help=(
+            "With --room, keep the self-driving triggers on. Responsive (the "
+            "default) makes room nodes answer what is addressed to them."
+        ),
+    ),
 ) -> None:
     """Initialise a flock definition without starting any processes.
 
@@ -446,8 +502,10 @@ def flock_init(
       ravn flock init --discovery static   # use cluster.yaml instead of mDNS
       ravn flock init --base-port 8480 coordinator coding-agent
       ravn flock init --force   # regenerate from defaults
+      ravn flock init --room desk reviewer coder   # nodes join room 'desk'
     """
     resolved_dir = Path(flock_dir) if flock_dir else _flock_dir_default()
+    room_broker_url = _resolve_room_broker_url(room, rooms_dir)
     resolved_personas = list(personas) if personas else list(_DEFAULT_PERSONAS)
 
     if mesh_transport not in {"tcp", "ipc"}:
@@ -517,12 +575,16 @@ def flock_init(
             discovery=discovery,
             mesh_transport=mesh_transport,
             http_gateway_enabled=http_gateway,
+            room_broker_url=room_broker_url,
+            autonomous=autonomous or not room_broker_url,
         )
 
     if discovery == "static":
         _write_cluster_yaml(nodes, resolved_dir, mesh_transport=mesh_transport)
 
     typer.echo(f"Flock initialised at {resolved_dir}")
+    if room_broker_url:
+        typer.echo(f"Every node joins room {room!r} at {room_broker_url}")
     typer.echo("")
     for node in nodes:
         summary = f"  [{node.index}] {node.persona:<22} mesh={mesh_transport}"

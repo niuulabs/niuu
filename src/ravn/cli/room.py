@@ -81,6 +81,22 @@ _REQUEST_TIMEOUT_S = 10.0
 # Longest error body echoed back to the operator.
 _ERROR_BODY_LIMIT = 300
 
+# Suffix marking a member's state record; the handle is everything before it.
+_MEMBER_STATE_SUFFIX = ".member.json"
+
+# First nng port for a room member's mesh sockets. Offset from the flock
+# supervisor's base so a room and a flock can run side by side.
+_MEMBER_MESH_BASE_PORT = 7600
+
+# Turns of history fetched when tailing or resolving the last speaker.
+_HISTORY_SCAN_LIMIT = 50
+
+# Seconds between polls while following a room.
+_TAIL_POLL_INTERVAL_S = 1.0
+
+# Longest message preview rendered on one tail line.
+_TURN_PREVIEW_LIMIT = 120
+
 
 def _rooms_dir_default() -> Path:
     return Path.home() / ".ravn" / "rooms"
@@ -194,6 +210,77 @@ def _live_pid(name: str, rooms_dir: Path) -> int | None:
     if pid is None or not is_alive(pid):
         return None
     return pid
+
+
+# ---------------------------------------------------------------------------
+# Member state  (one subdirectory per joined member)
+# ---------------------------------------------------------------------------
+
+
+def _members_dir(name: str, rooms_dir: Path) -> Path:
+    return _room_dir(name, rooms_dir) / "members"
+
+
+def _member_config_path(name: str, rooms_dir: Path, handle: str) -> Path:
+    return _members_dir(name, rooms_dir) / f"{handle}.yaml"
+
+
+def _member_state_path(name: str, rooms_dir: Path, handle: str) -> Path:
+    return _members_dir(name, rooms_dir) / f"{handle}{_MEMBER_STATE_SUFFIX}"
+
+
+def _member_runtime_dir(name: str, rooms_dir: Path, handle: str) -> Path:
+    """Per-member scratch (queue journal, memory db).
+
+    Kept out of the members directory so a member's runtime files can never be
+    mistaken for another member's state record.
+    """
+    return _room_dir(name, rooms_dir) / "runtime" / handle
+
+
+def _member_log_path(name: str, rooms_dir: Path, handle: str) -> Path:
+    return _room_dir(name, rooms_dir) / "logs" / f"member-{handle}.log"
+
+
+def _list_member_handles(name: str, rooms_dir: Path) -> list[str]:
+    members = _members_dir(name, rooms_dir)
+    if not members.is_dir():
+        return []
+    return sorted(
+        p.name[: -len(_MEMBER_STATE_SUFFIX)] for p in members.glob(f"*{_MEMBER_STATE_SUFFIX}")
+    )
+
+
+def _load_member_state(name: str, rooms_dir: Path, handle: str) -> dict | None:
+    path = _member_state_path(name, rooms_dir, handle)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _save_member_state(name: str, rooms_dir: Path, handle: str, state: dict) -> None:
+    path = _member_state_path(name, rooms_dir, handle)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _member_live_pid(name: str, rooms_dir: Path, handle: str) -> int | None:
+    state = _load_member_state(name, rooms_dir, handle)
+    if state is None:
+        return None
+    try:
+        pid = int(state["pid"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return pid if is_alive(pid) else None
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +467,9 @@ def room_create(
     pid = _start_room(room_def, resolved_dir)
     typer.echo(f"  Broker pid:    {pid}")
     typer.echo("")
-    typer.echo("Join it with:")
+    typer.echo("Put a ravn in it:")
+    typer.echo(f"  ravn join --persona reviewer --room {name}")
+    typer.echo("Join it yourself:")
     typer.echo(f"  ravn room join --participant human:you --environment {name} --role owner")
 
 
@@ -518,7 +607,13 @@ def _resolve_broker_url(broker_url: str, environment: str, rooms_dir: str) -> st
 def _post(base: str, path: str, payload: dict) -> dict:
     import httpx  # noqa: PLC0415
 
-    response = httpx.post(f"{base}{path}", json=payload, timeout=_REQUEST_TIMEOUT_S)
+    try:
+        response = httpx.post(f"{base}{path}", json=payload, timeout=_REQUEST_TIMEOUT_S)
+    except httpx.HTTPError as exc:
+        # A transport-level failure is an operator-facing error, not a stack
+        # trace: report what could not be reached and stop.
+        typer.echo(f"error: {base}{path} unreachable: {exc}", err=True)
+        raise typer.Exit(1) from exc
     if response.status_code >= 400:
         typer.echo(
             f"error {response.status_code}: {response.text[:_ERROR_BODY_LIMIT]}",
@@ -646,3 +741,531 @@ def room_participants(
             f"- {entry.get('peer_id')} [{entry.get('participant_type')}] "
             f"{entry.get('authority_role') or ''} {entry.get('status') or ''}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Membership  (a persona-typed Ravn daemon resident in a room)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_room_for_membership(room: str, rooms_dir: Path) -> RoomDef:
+    """Resolve the target room, defaulting to the only room when unambiguous."""
+    name = room.strip()
+    if not name:
+        names = _list_room_names(rooms_dir)
+        if len(names) == 1:
+            name = names[0]
+        elif not names:
+            typer.echo(
+                "No rooms exist. Create one with 'ravn room create <name>'.",
+                err=True,
+            )
+            raise typer.Exit(1)
+        else:
+            typer.echo(
+                f"Several rooms exist ({', '.join(names)}); pass --room to choose one.",
+                err=True,
+            )
+            raise typer.Exit(2)
+    return _require_room_def(name, rooms_dir)
+
+
+def _await_member_registration(room_def: RoomDef, handle: str, pid: int) -> bool:
+    """Poll the room until *handle* appears among its participants."""
+    import httpx  # noqa: PLC0415
+
+    deadline = time.monotonic() + _STARTUP_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if not is_alive(pid):
+            return False
+        try:
+            response = httpx.get(
+                f"{room_def.broker_url}/api/room/participants",
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+            if response.status_code < 400:
+                peers = {p.get("peer_id") for p in response.json().get("participants", [])}
+                if handle in peers:
+                    return True
+        except httpx.HTTPError:
+            pass
+        time.sleep(_STARTUP_POLL_INTERVAL_S)
+    return False
+
+
+def _spawn_member(
+    room_def: RoomDef, rooms_dir: Path, handle: str, persona: str, config_path: Path
+) -> int:
+    """Start a member's ``ravn daemon`` process detached and return its pid."""
+    log_path = _member_log_path(room_def.name, rooms_dir, handle)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "a") as log_fd:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "ravn", "daemon", "--persona", persona],
+            env={**os.environ, "RAVN_CONFIG": str(config_path)},
+            stdout=log_fd,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    return proc.pid
+
+
+@room_app.command("members")
+def room_members(
+    room: str = typer.Option("", "--room", "-r", envvar="RAVN_ROOM", help="Room name."),
+    rooms_dir: str = _ROOMS_DIR_OPTION,
+) -> None:
+    """List the ravens joined to a room and whether each is live.
+
+    Local membership records are cross-checked against the room's live
+    participant roster, so a member whose process died is visible as such
+    rather than silently missing.
+    """
+    import httpx  # noqa: PLC0415
+
+    resolved_dir = Path(rooms_dir) if rooms_dir else _rooms_dir_default()
+    room_def = _resolve_room_for_membership(room, resolved_dir)
+
+    handles = _list_member_handles(room_def.name, resolved_dir)
+    if not handles:
+        typer.echo(
+            f"No ravens joined to {room_def.name!r}. "
+            f"Add one with 'ravn join --persona <name> --room {room_def.name}'."
+        )
+        return
+
+    registered: set[str] = set()
+    try:
+        response = httpx.get(
+            f"{room_def.broker_url}/api/room/participants", timeout=_REQUEST_TIMEOUT_S
+        )
+        if response.status_code < 400:
+            registered = {p.get("peer_id") for p in response.json().get("participants", [])}
+    except httpx.HTTPError:
+        typer.echo(f"(room broker at {room_def.broker_url} is unreachable)", err=True)
+
+    typer.echo(f"{'HANDLE':<24} {'PERSONA':<24} {'PROCESS':<10} {'IN ROOM':<8} PID")
+    for handle in handles:
+        state = _load_member_state(room_def.name, resolved_dir, handle) or {}
+        pid = _member_live_pid(room_def.name, resolved_dir, handle)
+        process = "running" if pid is not None else "stopped"
+        in_room = "yes" if handle in registered else "no"
+        persona = str(state.get("persona", "-"))
+        typer.echo(f"{handle:<24} {persona:<24} {process:<10} {in_room:<8} {pid or '-'}")
+
+
+def _cluster_file_path(name: str, rooms_dir: Path) -> Path:
+    return _room_dir(name, rooms_dir) / "cluster.yaml"
+
+
+def _allocate_mesh_ports(name: str, rooms_dir: Path, handle: str) -> tuple[int, int]:
+    """Return this member's (pub, rep) nng ports, allocating on first join.
+
+    Ports are persisted with the member rather than derived from its position
+    in the roster: a handle's sort order shifts as others join and leave, and
+    a member whose ports moved underneath it would be unreachable.
+    """
+    from niuu.mesh import nng_ports_for  # noqa: PLC0415
+
+    recorded = _load_member_state(name, rooms_dir, handle) or {}
+    if "pub_port" in recorded and "rep_port" in recorded:
+        return int(recorded["pub_port"]), int(recorded["rep_port"])
+
+    taken = set()
+    for other in _list_member_handles(name, rooms_dir):
+        state = _load_member_state(name, rooms_dir, other) or {}
+        if "pub_port" in state:
+            taken.add(int(state["pub_port"]))
+
+    index = 0
+    while True:
+        pub, rep, _ = nng_ports_for(index, _MEMBER_MESH_BASE_PORT)
+        if pub not in taken:
+            return pub, rep
+        index += 1
+
+
+def _rewrite_cluster_file(name: str, rooms_dir: Path) -> Path:
+    """Regenerate the room's static peer table from its recorded members.
+
+    Every member reads this file, so each join or leave makes the whole room
+    converge on the new roster without any of them being restarted.
+    """
+    from ravn.cli.daemon_config import render_cluster_yaml  # noqa: PLC0415
+
+    members = []
+    for handle in _list_member_handles(name, rooms_dir):
+        state = _load_member_state(name, rooms_dir, handle) or {}
+        if "pub_port" not in state:
+            continue
+        members.append(
+            {
+                "handle": handle,
+                "persona": str(state.get("persona", handle)),
+                "pub_port": int(state["pub_port"]),
+                "rep_port": int(state["rep_port"]),
+            }
+        )
+
+    path = _cluster_file_path(name, rooms_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_cluster_yaml(members), encoding="utf-8")
+    return path
+
+
+def join_room(
+    persona: str,
+    room: str,
+    handle: str,
+    profile: str,
+    base_config: str,
+    rooms_dir: str,
+    here: bool,
+    force: bool,
+    autonomous: bool = False,
+) -> None:
+    """Implementation behind ``ravn join`` — see that command for the contract."""
+    from ravn.cli.commands import _require_persona, _require_profile  # noqa: PLC0415
+    from ravn.cli.daemon_config import (  # noqa: PLC0415
+        load_base_config,
+        render_member_config,
+        room_broker_ws_url,
+    )
+
+    resolved_dir = Path(rooms_dir) if rooms_dir else _rooms_dir_default()
+    room_def = _resolve_room_for_membership(room, resolved_dir)
+
+    if _live_pid(room_def.name, resolved_dir) is None:
+        typer.echo(
+            f"Room {room_def.name!r} is not running. Start it with "
+            f"'ravn room start {room_def.name}'.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    # Resolve identity before spawning anything: an unknown persona or profile
+    # must fail here, not inside a detached daemon's log.
+    ravn_profile = _require_profile(profile)
+    effective_persona = persona or (ravn_profile.persona if ravn_profile else "")
+    if not effective_persona:
+        typer.echo("Nothing to join as — pass --persona or a --profile that names one.", err=True)
+        raise typer.Exit(2)
+    persona_config = _require_persona(effective_persona, None)
+
+    resolved_handle = (handle or getattr(persona_config, "name", "") or effective_persona).strip()
+    existing_pid = _member_live_pid(room_def.name, resolved_dir, resolved_handle)
+    if existing_pid is not None and not force:
+        typer.echo(
+            f"{resolved_handle!r} is already in {room_def.name!r} (pid {existing_pid}). "
+            f"Use --force to replace it, or --as to pick another handle.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if existing_pid is not None:
+        stop_pids([existing_pid])
+
+    try:
+        base = load_base_config(Path(base_config).expanduser() if base_config else None)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    members = _members_dir(room_def.name, resolved_dir)
+    members.mkdir(parents=True, exist_ok=True)
+    mesh_ports = _allocate_mesh_ports(room_def.name, resolved_dir, resolved_handle)
+    runtime = _member_runtime_dir(room_def.name, resolved_dir, resolved_handle)
+    runtime.mkdir(parents=True, exist_ok=True)
+    config_path = _member_config_path(room_def.name, resolved_dir, resolved_handle)
+    config_path.write_text(
+        render_member_config(
+            handle=resolved_handle,
+            room_name=room_def.name,
+            persona=effective_persona,
+            broker_url=room_broker_ws_url(room_def.host, room_def.port),
+            display_name=resolved_handle,
+            memory_db_path=runtime / "memory.db",
+            queue_journal_path=runtime / "queue.json",
+            autonomous=autonomous,
+            mesh_ports=mesh_ports,
+            cluster_file=_cluster_file_path(room_def.name, resolved_dir),
+            base=base,
+        ),
+        encoding="utf-8",
+    )
+
+    if here:
+        # The operator's terminal becomes the member: run in the foreground so
+        # Ctrl+C ends the membership, and record no pid to supervise.
+        typer.echo(
+            f"Joining {room_def.name!r} as {resolved_handle!r} "
+            f"(persona {effective_persona}) in this terminal. Ctrl+C to leave."
+        )
+        os.environ["RAVN_CONFIG"] = str(config_path)
+        from ravn.cli.commands import daemon as _daemon  # noqa: PLC0415
+
+        _daemon(config=str(config_path), persona=effective_persona, profile=profile, resume=True)
+        return
+
+    member_state = {
+        "handle": resolved_handle,
+        "persona": effective_persona,
+        "profile": profile,
+        "pid": 0,
+        "config": str(config_path),
+        "pub_port": mesh_ports[0],
+        "rep_port": mesh_ports[1],
+        "joined_at": datetime.now(UTC).isoformat(),
+    }
+    # Record the member and refresh the roster before starting it, so the
+    # process finds itself and its peers in the cluster file at startup
+    # rather than waiting for the next poll.
+    _save_member_state(room_def.name, resolved_dir, resolved_handle, member_state)
+    _rewrite_cluster_file(room_def.name, resolved_dir)
+
+    pid = _spawn_member(room_def, resolved_dir, resolved_handle, effective_persona, config_path)
+    _save_member_state(room_def.name, resolved_dir, resolved_handle, {**member_state, "pid": pid})
+
+    if not _await_member_registration(room_def, resolved_handle, pid):
+        stop_pids([pid])
+        with suppress(FileNotFoundError):
+            _member_state_path(room_def.name, resolved_dir, resolved_handle).unlink()
+        _rewrite_cluster_file(room_def.name, resolved_dir)
+        log_path = _member_log_path(room_def.name, resolved_dir, resolved_handle)
+        typer.echo(
+            f"{resolved_handle!r} did not register in room {room_def.name!r}.",
+            err=True,
+        )
+        if log_path.is_file():
+            tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-15:]
+            typer.echo(f"--- {log_path} ---", err=True)
+            for line in tail:
+                typer.echo(line, err=True)
+        raise typer.Exit(1)
+
+    typer.echo(
+        f"{resolved_handle!r} joined {room_def.name!r} as persona {effective_persona} (pid {pid})"
+    )
+    typer.echo(f"  Config: {config_path}")
+    typer.echo(f"  Log:    {_member_log_path(room_def.name, resolved_dir, resolved_handle)}")
+
+
+def leave_room(handle: str, room: str, rooms_dir: str) -> None:
+    """Implementation behind ``ravn leave`` — see that command for the contract."""
+    resolved_dir = Path(rooms_dir) if rooms_dir else _rooms_dir_default()
+    room_def = _resolve_room_for_membership(room, resolved_dir)
+
+    resolved_handle = handle.strip()
+    if not resolved_handle:
+        typer.echo("Pass --as to say which member should leave.", err=True)
+        raise typer.Exit(2)
+
+    state = _load_member_state(room_def.name, resolved_dir, resolved_handle)
+    if state is None:
+        typer.echo(
+            f"{resolved_handle!r} is not a member of {room_def.name!r}. "
+            f"Run 'ravn room members --room {room_def.name}' to see who is.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    pid = _member_live_pid(room_def.name, resolved_dir, resolved_handle)
+    if pid is not None:
+        stop_pids([pid])
+
+    with suppress(FileNotFoundError):
+        _member_state_path(room_def.name, resolved_dir, resolved_handle).unlink()
+    _rewrite_cluster_file(room_def.name, resolved_dir)
+    typer.echo(f"{resolved_handle!r} left {room_def.name!r}.")
+
+
+# ---------------------------------------------------------------------------
+# Addressing  (mention routing over the room's directed-delivery path)
+# ---------------------------------------------------------------------------
+
+
+def _fetch_participants(room_def: RoomDef) -> list[dict]:
+    """Return the room's current participants, or fail with a clear message."""
+    import httpx  # noqa: PLC0415
+
+    try:
+        response = httpx.get(
+            f"{room_def.broker_url}/api/room/participants", timeout=_REQUEST_TIMEOUT_S
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        typer.echo(
+            f"Room {room_def.name!r} is unreachable at {room_def.broker_url}: {exc}", err=True
+        )
+        raise typer.Exit(1) from exc
+    return list(response.json().get("participants", []))
+
+
+@room_app.command("post")
+def room_post(
+    body: str = typer.Argument(help="Message body."),
+    author: str = typer.Option(
+        ..., "--as", help="Participant id posting the message, e.g. human:jozef."
+    ),
+    to: str = typer.Option(
+        "", "--to", help="Deliver to this member. Defaults to whoever spoke last."
+    ),
+    room: str = typer.Option("", "--room", "-r", envvar="RAVN_ROOM", help="Room name."),
+    rooms_dir: str = _ROOMS_DIR_OPTION,
+) -> None:
+    """Post a message into a room, optionally directed at one member.
+
+    This is the human's way into the room. Ravens reach each other over the
+    mesh — ``route_work`` finds a peer by the event types its persona consumes,
+    and the cascade tools delegate to it — so this command deliberately does
+    not decide on their behalf who should act.
+
+    \b
+    Examples:
+      ravn room post --as human:jozef --to reviewer 'take a look at the diff'
+      ravn room post --as human:jozef 'thanks, carry on'
+    """
+    resolved_dir = Path(rooms_dir) if rooms_dir else _rooms_dir_default()
+    room_def = _resolve_room_for_membership(room, resolved_dir)
+
+    participants = _fetch_participants(room_def)
+    peer_ids = {str(p.get("peer_id")) for p in participants if p.get("peer_id")}
+    if author not in peer_ids:
+        typer.echo(
+            f"{author!r} is not in room {room_def.name!r}. Join first with "
+            f"'ravn room join --participant {author} --environment {room_def.name}'.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    target = to.strip() or _last_speaker(room_def, exclude=author)
+    if target and target not in peer_ids:
+        typer.echo(
+            f"{target!r} is not in room {room_def.name!r}. "
+            f"Run 'ravn room participants --environment {room_def.name}' to see who is.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    if not target:
+        _post(
+            room_def.broker_url,
+            "/api/room/message",
+            {"participant_id": author, "content": body, "deliver_to_transport": False},
+        )
+        typer.echo("posted as room commentary (addressed to nobody)")
+        return
+
+    _post(
+        room_def.broker_url,
+        "/api/room/direct",
+        {
+            "target_peer_id": target,
+            "content": body,
+            "participant_id": author,
+            "metadata": {"room": room_def.name},
+        },
+    )
+    typer.echo(f"delivered to {target}")
+
+
+def _last_speaker(room_def: RoomDef, *, exclude: str) -> str:
+    """Return the participant that most recently spoke, if any.
+
+    Used for the untagged-message default so a plain reply lands somewhere
+    sensible instead of becoming a dead letter.
+    """
+    import httpx  # noqa: PLC0415
+
+    try:
+        response = httpx.get(
+            f"{room_def.broker_url}/api/conversation/history",
+            params={"limit": _HISTORY_SCAN_LIMIT},
+            timeout=_REQUEST_TIMEOUT_S,
+        )
+        response.raise_for_status()
+    except httpx.HTTPError:
+        return ""
+
+    turns = _history_turns(response.json())
+    for turn in reversed(turns):
+        speaker = str(turn.get("participant_id") or "")
+        if speaker and speaker != exclude:
+            return speaker
+    return ""
+
+
+def _history_turns(payload: object) -> list[dict]:
+    """Normalise the history endpoint's payload into a list of turns."""
+    if isinstance(payload, list):
+        return [t for t in payload if isinstance(t, dict)]
+    if isinstance(payload, dict):
+        for key in ("turns", "messages", "history"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [t for t in value if isinstance(t, dict)]
+    return []
+
+
+@room_app.command("tail")
+def room_tail(
+    room: str = typer.Option("", "--room", "-r", envvar="RAVN_ROOM", help="Room name."),
+    limit: int = typer.Option(_HISTORY_SCAN_LIMIT, "--limit", "-n", help="Turns of history."),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Keep streaming new turns."),
+    rooms_dir: str = _ROOMS_DIR_OPTION,
+) -> None:
+    """Print a room's recent turns, optionally following new ones.
+
+    \b
+    Examples:
+      ravn room tail
+      ravn room tail --room desk -n 20
+      ravn room tail --follow
+    """
+    import httpx  # noqa: PLC0415
+
+    resolved_dir = Path(rooms_dir) if rooms_dir else _rooms_dir_default()
+    room_def = _resolve_room_for_membership(room, resolved_dir)
+
+    def _fetch() -> list[dict]:
+        try:
+            response = httpx.get(
+                f"{room_def.broker_url}/api/conversation/history",
+                params={"limit": limit},
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            typer.echo(f"Room {room_def.name!r} is unreachable: {exc}", err=True)
+            raise typer.Exit(1) from exc
+        return _history_turns(response.json())
+
+    seen: set[str] = set()
+    for turn in _fetch():
+        seen.add(str(turn.get("id") or ""))
+        typer.echo(_format_turn(turn))
+
+    if not follow:
+        return
+
+    typer.echo("--- following (Ctrl+C to stop) ---", err=True)
+    try:
+        while True:
+            time.sleep(_TAIL_POLL_INTERVAL_S)
+            for turn in _fetch():
+                turn_id = str(turn.get("id") or "")
+                if turn_id in seen:
+                    continue
+                seen.add(turn_id)
+                typer.echo(_format_turn(turn))
+    except KeyboardInterrupt:
+        return
+
+
+def _format_turn(turn: dict) -> str:
+    """Render one conversation turn as a single readable line."""
+    speaker = str(turn.get("participant_id") or turn.get("role") or "?")
+    content = str(turn.get("content") or "").strip().replace("\n", " ")
+    if len(content) > _TURN_PREVIEW_LIMIT:
+        content = content[: _TURN_PREVIEW_LIMIT - 1] + "…"
+    return f"{speaker:<20} {content}"

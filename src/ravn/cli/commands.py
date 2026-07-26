@@ -90,6 +90,68 @@ from ravn.cli.room import room_app  # noqa: E402
 app.add_typer(room_app, name="room")
 
 
+@app.command("join")
+def join(
+    persona: str = typer.Option(
+        "", "--persona", "-p", help="Persona name, or a path to a persona YAML file."
+    ),
+    room: str = typer.Option("", "--room", "-r", envvar="RAVN_ROOM", help="Room to join."),
+    as_handle: str = typer.Option(
+        "", "--as", help="Member handle in the room. Defaults to the persona name."
+    ),
+    profile: str = typer.Option("", "--profile", help="Profile name or path (deployment wiring)."),
+    base_config: str = typer.Option(
+        "", "--base-config", help="Existing ravn.yaml to layer the membership config over."
+    ),
+    rooms_dir: str = typer.Option("", "--rooms-dir", help="Override the rooms state directory."),
+    here: bool = typer.Option(
+        False, "--here", help="Run the member in this terminal instead of detaching."
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Replace an existing member with the same handle."
+    ),
+    autonomous: bool = typer.Option(
+        False,
+        "--autonomous",
+        help="Also enable the self-driving triggers (cron, staleness, wakefulness).",
+    ),
+) -> None:
+    """Put a persona-typed Ravn into a room as an addressable member.
+
+    Persona picks who the member is; profile picks how it is deployed.  The
+    command waits until the member actually registers with the room, so a
+    reported join is a join.
+
+    \b
+    Examples:
+      ravn join --persona reviewer
+      ravn join --persona reviewer --room desk --as second-opinion
+      ravn join --persona ./contrib/red-team.yaml --room desk
+      ravn join --persona coder --room desk --here
+    """
+    from ravn.cli.room import join_room
+
+    join_room(persona, room, as_handle, profile, base_config, rooms_dir, here, force, autonomous)
+
+
+@app.command("leave")
+def leave(
+    as_handle: str = typer.Option(..., "--as", help="Member handle to remove from the room."),
+    room: str = typer.Option("", "--room", "-r", envvar="RAVN_ROOM", help="Room to leave."),
+    rooms_dir: str = typer.Option("", "--rooms-dir", help="Override the rooms state directory."),
+) -> None:
+    """Stop a member's daemon and remove it from the room.
+
+    \b
+    Examples:
+      ravn leave --as reviewer
+      ravn leave --as reviewer --room desk
+    """
+    from ravn.cli.room import leave_room
+
+    leave_room(as_handle, room, rooms_dir)
+
+
 def approvals_main() -> None:
     approvals_app()
 
