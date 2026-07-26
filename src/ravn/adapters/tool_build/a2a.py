@@ -432,6 +432,20 @@ class A2AToolBuildBackend(ToolBuildBackend):
                 raise
             except Exception as exc:
                 telemetry.mark_error(span, type(exc).__name__, str(exc))
+                await self._emit_activity(
+                    {
+                        "agent_id": self._card_url,
+                        "skill_id": workflow_id,
+                        "task_id": task_id,
+                        "state": _task_state(task) or "TASK_STATE_UNSPECIFIED",
+                        "operation": "build",
+                        "input_required": False,
+                        "prompt": request.build_request[:500],
+                        "status_message": str(exc),
+                        "source_tool": "build_tool",
+                        "tracking_state": "error",
+                    }
+                )
                 raise
             last_state = _task_state(task)
             message = (
@@ -446,6 +460,20 @@ class A2AToolBuildBackend(ToolBuildBackend):
                     "a2a.task.state": last_state,
                     "a2a.task.poll_attempt": self._max_poll_attempts,
                 },
+            )
+            await self._emit_activity(
+                {
+                    "agent_id": self._card_url,
+                    "skill_id": workflow_id,
+                    "task_id": task_id,
+                    "state": last_state or "TASK_STATE_UNSPECIFIED",
+                    "operation": "build",
+                    "input_required": False,
+                    "prompt": request.build_request[:500],
+                    "status_message": message,
+                    "source_tool": "build_tool",
+                    "tracking_state": "poll_exhausted",
+                }
             )
             return task, exchanges
 

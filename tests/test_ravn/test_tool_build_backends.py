@@ -912,6 +912,36 @@ async def test_a2a_backend_builds_from_inline_canonical_artifact() -> None:
     }
 
 
+async def test_a2a_backend_closes_local_tracking_when_polling_is_exhausted() -> None:
+    activities: list[dict[str, object]] = []
+
+    async def _capture(activity: dict[str, object]) -> None:
+        activities.append(activity)
+
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_task("TASK_STATE_WORKING")),
+            ],
+        }
+    )
+    backend = _a2a_backend(
+        client,
+        workflow_id="wf-1",
+        activity_emitter=_capture,
+        max_poll_attempts=1,
+    )
+
+    with pytest.raises(ToolBuildError, match="did not finish within 1 polls"):
+        await backend.build(_request())
+
+    assert activities[-1]["task_id"] == "task-1"
+    assert activities[-1]["state"] == "TASK_STATE_WORKING"
+    assert activities[-1]["tracking_state"] == "poll_exhausted"
+
+
 async def test_a2a_backend_uses_durable_operation_id_for_message_correlation() -> None:
     artifacts = [
         {
