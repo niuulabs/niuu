@@ -169,6 +169,18 @@ async def _run_daemon(
                 fields=fields,
             )
 
+        async def _emit_a2a_activity(activity: dict[str, object]) -> None:
+            if drive_loop is None:
+                return
+            current_task = drive_loop.resolve_task_context(task_id)
+            if current_task is None:
+                logger.warning("a2a_activity: no task context available for task_id=%s", task_id)
+                return
+            drive_loop.record_a2a_activity(
+                parent_task_id=current_task.task_id,
+                activity=activity,
+            )
+
         tools = _build_tools(
             settings,
             workspace,
@@ -187,6 +199,7 @@ async def _run_daemon(
                 drive_loop._session_join_manager if drive_loop is not None else None
             ),
             permission=permission,
+            a2a_activity_emitter=_emit_a2a_activity,
         )
         if profile_cfg.include_mcp:
             tools.extend(_filter_tools(mcp_tools, settings, resolved_persona))
@@ -266,6 +279,7 @@ async def _run_daemon(
             settings=settings,
             publisher=environment_signal_publisher or sleipnir_catalog_publisher or daemon_bus,
             drive_loop=drive_loop,
+            a2a_activity_emitter=_emit_a2a_activity,
         )
 
     tasks: list[asyncio.Task] = []

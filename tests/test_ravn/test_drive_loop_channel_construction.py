@@ -325,42 +325,23 @@ Determine whether the observations require action.
         dl._active_tasks[parent.task_id] = MagicMock()
         dl._inflight_tasks[parent.task_id] = parent
         dl._result_store.start(parent.task_id, parent.triggered_by)
-        started_at = datetime(2026, 7, 25, 10, 0, tzinfo=UTC)
         observed_at = datetime(2026, 7, 25, 10, 1, tzinfo=UTC)
         dl._result_store.append_event(
             parent.task_id,
             CapturedEvent(
-                type="tool_start",
-                summary="tool: a2a_task(...)",
-                timestamp=started_at,
-                details={
-                    "tool_name": "a2a_task",
-                    "input": {
-                        "operation": "start",
-                        "agent_id": "agent-1",
-                        "skill_id": "research",
-                        "prompt": "Investigate the observed fault.",
-                    },
-                },
-            ),
-        )
-        dl._result_store.append_event(
-            parent.task_id,
-            CapturedEvent(
-                type="tool_result",
-                summary="→ working",
+                type="a2a_task",
+                summary="A2A task task-1: TASK_STATE_INPUT_REQUIRED",
                 timestamp=observed_at,
                 details={
-                    "tool_name": "a2a_task",
-                    "result": {
-                        "operation": "start",
-                        "agent_id": "agent-1",
-                        "task_id": "task-1",
-                        "state": "TASK_STATE_INPUT_REQUIRED",
-                        "input_required": True,
-                        "pending_questions": [{"question": "Which firmware version?"}],
-                    },
-                    "is_error": False,
+                    "operation": "build",
+                    "agent_id": "agent-1",
+                    "skill_id": "research",
+                    "task_id": "task-1",
+                    "state": "TASK_STATE_INPUT_REQUIRED",
+                    "input_required": True,
+                    "question": "Which firmware version?",
+                    "prompt": "Investigate the observed fault.",
+                    "source_tool": "build_tool",
                 },
             ),
         )
@@ -374,14 +355,15 @@ Determine whether the observations require action.
                 "skill_id": "research",
                 "task_id": "task-1",
                 "state": "TASK_STATE_INPUT_REQUIRED",
-                "operation": "start",
+                "operation": "build",
                 "input_required": True,
                 "question": "Which firmware version?",
                 "prompt": "Investigate the observed fault.",
                 "status_message": "",
+                "source_tool": "build_tool",
                 "parent_task_id": "parent-task",
                 "parent_active": True,
-                "started_at": started_at.isoformat(),
+                "started_at": observed_at.isoformat(),
                 "observed_at": observed_at.isoformat(),
             }
         ]
@@ -389,39 +371,46 @@ Determine whether the observations require action.
         dl._result_store.append_event(
             parent.task_id,
             CapturedEvent(
-                type="tool_start",
-                summary="tool: a2a_task(...)",
-                timestamp=observed_at,
-                details={
-                    "tool_name": "a2a_task",
-                    "input": {
-                        "operation": "get",
-                        "agent_id": "agent-1",
-                        "task_id": "task-1",
-                    },
-                },
-            ),
-        )
-        dl._result_store.append_event(
-            parent.task_id,
-            CapturedEvent(
-                type="tool_result",
-                summary="→ complete",
+                type="a2a_task",
+                summary="A2A task task-1: TASK_STATE_COMPLETED",
                 timestamp=datetime(2026, 7, 25, 10, 2, tzinfo=UTC),
                 details={
-                    "tool_name": "a2a_task",
-                    "result": {
-                        "operation": "get",
-                        "agent_id": "agent-1",
-                        "task_id": "task-1",
-                        "state": "TASK_STATE_COMPLETED",
-                    },
-                    "is_error": False,
+                    "operation": "build",
+                    "agent_id": "agent-1",
+                    "task_id": "task-1",
+                    "state": "TASK_STATE_COMPLETED",
+                    "source_tool": "build_tool",
                 },
             ),
         )
 
         assert dl.resident_hud_status()["a2a_tasks"] == []
+
+    def test_record_a2a_activity_captures_the_polled_remote_state(self):
+        dl, _ = _make_drive_loop_with_mesh(cascade_enabled=True)
+        parent = _make_task("parent-task")
+        dl._active_tasks[parent.task_id] = MagicMock()
+        dl._inflight_tasks[parent.task_id] = parent
+        dl._result_store.start(parent.task_id, parent.triggered_by)
+
+        dl.record_a2a_activity(
+            parent_task_id=parent.task_id,
+            activity={
+                "agent_id": "https://ting.example/.well-known/agent-card.json",
+                "skill_id": "tool-builder",
+                "task_id": "task-1",
+                "state": "TASK_STATE_WORKING",
+                "operation": "build",
+                "source_tool": "build_tool",
+            },
+        )
+
+        status = dl.resident_hud_status()
+
+        assert status["a2a_count"] == 1
+        assert status["a2a_tasks"][0]["task_id"] == "task-1"
+        assert status["a2a_tasks"][0]["state"] == "TASK_STATE_WORKING"
+        assert status["a2a_tasks"][0]["source_tool"] == "build_tool"
 
     @pytest.mark.asyncio
     async def test_no_cascade_skuld_and_mesh_uses_composite(self):

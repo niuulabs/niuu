@@ -852,6 +852,11 @@ def _a2a_backend(client: _FakeHttpClient, **kwargs) -> A2AToolBuildBackend:
 
 
 async def test_a2a_backend_builds_from_inline_canonical_artifact() -> None:
+    activities: list[dict[str, object]] = []
+
+    async def _capture(activity: dict[str, object]) -> None:
+        activities.append(activity)
+
     artifacts = [
         {
             "artifactId": "research/campaigns/task-1/learned_tool.json",
@@ -868,7 +873,7 @@ async def test_a2a_backend_builds_from_inline_canonical_artifact() -> None:
             ],
         }
     )
-    backend = _a2a_backend(client, workflow_id="wf-1")
+    backend = _a2a_backend(client, workflow_id="wf-1", activity_emitter=_capture)
 
     result = await backend.build(_request())
 
@@ -889,6 +894,22 @@ async def test_a2a_backend_builds_from_inline_canonical_artifact() -> None:
     assert message["parts"][0]["text"]
     assert client.post_bodies[1]["method"] == "GetTask"
     assert all(headers.get("A2A-Version") == "1.0" for headers in client.headers_seen)
+    assert [activity["state"] for activity in activities] == [
+        "TASK_STATE_WORKING",
+        "TASK_STATE_COMPLETED",
+    ]
+    assert activities[0] == {
+        "agent_id": "https://ting.example/.well-known/agent-card.json",
+        "skill_id": "wf-1",
+        "task_id": "task-1",
+        "state": "TASK_STATE_WORKING",
+        "operation": "build",
+        "input_required": False,
+        "question": "",
+        "prompt": "Build a tool that queries a bounded metric window and summarizes it.",
+        "status_message": "",
+        "source_tool": "build_tool",
+    }
 
 
 async def test_a2a_backend_uses_durable_operation_id_for_message_correlation() -> None:

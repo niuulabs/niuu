@@ -30,7 +30,12 @@ from niuu.domain.mimir import ThreadState
 from niuu.domain.outcome import OutcomeSchema, parse_outcome_block
 from niuu.observability import get_observability
 from niuu.ports.mimir import MimirPort
-from ravn.adapters.channels.capture import CaptureChannel, TaskResult, TaskResultStore
+from ravn.adapters.channels.capture import (
+    CaptureChannel,
+    CapturedEvent,
+    TaskResult,
+    TaskResultStore,
+)
 from ravn.adapters.channels.composite import CompositeChannel
 from ravn.adapters.channels.mesh_channel import MeshActivityChannel
 from ravn.adapters.channels.silent import SilentChannel
@@ -245,105 +250,40 @@ def _resident_hud_a2a_tasks(
     """Project the latest observed state of non-terminal A2A tasks."""
     sessions: dict[str, dict[str, object]] = {}
     for result in results:
-        pending_input: dict[str, object] | None = None
-        pending_started_at: datetime | None = None
         for event in result.events:
+            if event.type != "a2a_task":
+                continue
             details = event.details if isinstance(event.details, dict) else {}
-            if details.get("tool_name") != "a2a_task":
+            task_id = str(details.get("task_id") or "")
+            if not task_id:
                 continue
-            if event.type == "tool_start":
-                supplied = details.get("input")
-                pending_input = dict(supplied) if isinstance(supplied, dict) else {}
-                pending_started_at = event.timestamp
-                continue
-            if event.type != "tool_result":
-                continue
-            payload = details.get("result")
-            if isinstance(payload, str):
-                try:
-                    payload = json.loads(payload)
-                except ValueError:
-                    payload = {}
-            if not isinstance(payload, dict):
-                pending_input = None
-                pending_started_at = None
-                continue
-
-            agent_id = str(payload.get("agent_id") or (pending_input or {}).get("agent_id") or "")
-            task_id = str(payload.get("task_id") or (pending_input or {}).get("task_id") or "")
-            if not agent_id or not task_id:
-                pending_input = None
-                pending_started_at = None
-                continue
-            state = str(payload.get("state") or "TASK_STATE_UNSPECIFIED")
-            key = f"{agent_id}:{task_id}"
+            state = str(details.get("state") or "TASK_STATE_UNSPECIFIED")
             if state in _A2A_TERMINAL_STATES:
-                sessions.pop(key, None)
-            else:
-                prior = sessions.get(key, {})
-                questions = payload.get("pending_questions")
-                if isinstance(questions, str):
-                    try:
-                        questions = json.loads(questions)
-                    except ValueError:
-                        questions = []
-                question = ""
-                if isinstance(questions, list) and questions and isinstance(questions[0], dict):
-                    question = str(questions[0].get("question") or "")
-                task_input = pending_input or {}
-                sessions[key] = {
-                    "agent_id": agent_id,
-                    "skill_id": str(task_input.get("skill_id") or prior.get("skill_id") or ""),
-                    "task_id": task_id,
-                    "state": state,
-                    "operation": str(payload.get("operation") or task_input.get("operation") or ""),
-                    "input_required": bool(payload.get("input_required")),
-                    "question": _bounded_hud_text(question, 500),
-                    "prompt": _bounded_hud_text(
-                        str(task_input.get("prompt") or prior.get("prompt") or ""),
-                        500,
-                    ),
-                    "status_message": _bounded_hud_text(
-                        str(payload.get("status_message") or ""),
-                        500,
-                    ),
-                    "parent_task_id": result.task_id,
-                    "parent_active": result.task_id in active_parent_ids,
-                    "started_at": prior.get("started_at")
-                    or (pending_started_at or event.timestamp).isoformat(),
-                    "observed_at": event.timestamp.isoformat(),
-                }
-            pending_input = None
-            pending_started_at = None
-
-        if pending_input is not None and pending_started_at is not None:
-            agent_id = str(pending_input.get("agent_id") or "")
-            if agent_id:
-                supplied_task_id = str(pending_input.get("task_id") or "")
-                key = (
-                    supplied_task_id
-                    and f"{agent_id}:{supplied_task_id}"
-                    or (f"call:{result.task_id}:{pending_started_at.isoformat()}")
-                )
-                prior = sessions.get(key, {})
-                sessions[key] = {
-                    "agent_id": agent_id,
-                    "skill_id": str(pending_input.get("skill_id") or prior.get("skill_id") or ""),
-                    "task_id": supplied_task_id,
-                    "state": "CALL_IN_PROGRESS",
-                    "operation": str(pending_input.get("operation") or ""),
-                    "input_required": False,
-                    "question": "",
-                    "prompt": _bounded_hud_text(
-                        str(pending_input.get("prompt") or prior.get("prompt") or ""),
-                        500,
-                    ),
-                    "status_message": "",
-                    "parent_task_id": result.task_id,
-                    "parent_active": result.task_id in active_parent_ids,
-                    "started_at": prior.get("started_at") or pending_started_at.isoformat(),
-                    "observed_at": pending_started_at.isoformat(),
-                }
+                sessions.pop(task_id, None)
+                continue
+            prior = sessions.get(task_id, {})
+            sessions[task_id] = {
+                "agent_id": str(details.get("agent_id") or prior.get("agent_id") or ""),
+                "skill_id": str(details.get("skill_id") or prior.get("skill_id") or ""),
+                "task_id": task_id,
+                "state": state,
+                "operation": str(details.get("operation") or prior.get("operation") or ""),
+                "input_required": bool(details.get("input_required")),
+                "question": _bounded_hud_text(str(details.get("question") or ""), 500),
+                "prompt": _bounded_hud_text(
+                    str(details.get("prompt") or prior.get("prompt") or ""),
+                    500,
+                ),
+                "status_message": _bounded_hud_text(
+                    str(details.get("status_message") or ""),
+                    500,
+                ),
+                "source_tool": str(details.get("source_tool") or prior.get("source_tool") or ""),
+                "parent_task_id": result.task_id,
+                "parent_active": result.task_id in active_parent_ids,
+                "started_at": prior.get("started_at") or event.timestamp.isoformat(),
+                "observed_at": event.timestamp.isoformat(),
+            }
     return sorted(
         sessions.values(),
         key=lambda item: str(item.get("observed_at") or ""),
@@ -1699,6 +1639,27 @@ class DriveLoop:
         merged = dict(existing)
         merged.update(fields)
         task.tool_outcomes[event_type] = merged
+
+    def record_a2a_activity(
+        self,
+        *,
+        parent_task_id: str,
+        activity: dict[str, object],
+    ) -> None:
+        """Capture an A2A task state already observed by a resident tool."""
+        task_id = str(activity.get("task_id") or "").strip()
+        if not parent_task_id or not task_id:
+            return
+        state = str(activity.get("state") or "TASK_STATE_UNSPECIFIED")
+        self._result_store.append_event(
+            parent_task_id,
+            CapturedEvent(
+                type="a2a_task",
+                summary=f"A2A task {task_id}: {state}",
+                timestamp=datetime.now(UTC),
+                details=dict(activity),
+            ),
+        )
 
     def _authoritative_valkyrie_fields(self, task: AgentTask) -> dict[str, object]:
         """Return identity/correlation data owned by runtime configuration."""
