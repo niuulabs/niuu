@@ -976,13 +976,27 @@ class FilesystemPersonaAdapter(PersonaRegistryPort):
 
         return None
 
+    def load_path(self, path: Path) -> PersonaConfig | None:
+        """Load a persona from a path the operator named directly.
+
+        Mirrors :meth:`load` — including outcome instruction injection — for a
+        file addressed by path rather than by registry name, so
+        ``--persona ./reviewer.yaml`` behaves exactly like ``--persona reviewer``.
+        Returns ``None`` when the file is unreadable or malformed.
+        """
+        persona = self.load_from_file(path)
+        if persona is None:
+            return None
+        return _apply_outcome_instruction(persona)
+
     def load_from_file(self, path: Path) -> PersonaConfig | None:
         """Parse a persona YAML file without injecting outcome instructions.
 
         Returns ``None`` when the file is unreadable or malformed rather than
         raising, so callers can treat missing personas as a soft error.
 
-        Note: outcome instruction injection happens in :meth:`load`, not here.
+        Note: outcome instruction injection happens in :meth:`load` and
+        :meth:`load_path`, not here.
         """
         try:
             text = path.read_text(encoding="utf-8", errors="replace")

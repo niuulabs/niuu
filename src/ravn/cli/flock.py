@@ -26,8 +26,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import signal
-import socket
 import subprocess
 import sys
 import time
@@ -40,6 +38,12 @@ import typer
 
 from niuu.mesh import nng_gateway_port_for, nng_ports_for
 from niuu.mesh.ipc import cleanup_ravn_mesh_sockets, flock_socket_dir, ravn_mesh_addresses
+from ravn.cli.process_supervision import (
+    DEFAULT_STOP_TIMEOUT_S,
+    is_alive,
+    port_free,
+    stop_pids,
+)
 
 # ---------------------------------------------------------------------------
 # Typer app
@@ -215,9 +219,7 @@ _gateway_port_for = nng_gateway_port_for
 
 
 def _port_free(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return s.connect_ex(("127.0.0.1", port)) != 0
+    return port_free(port)
 
 
 def _check_ports(flock_def: FlockDef) -> list[int]:
@@ -243,11 +245,7 @@ def _check_ports(flock_def: FlockDef) -> list[int]:
 
 
 def _is_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, PermissionError):
-        return False
+    return is_alive(pid)
 
 
 def _any_runtime_alive(runtime: FlockRuntime) -> bool:
@@ -394,23 +392,9 @@ def _spawn_node(node: NodeDef, flock_dir: Path) -> int:
     return proc.pid
 
 
-def _stop_pids(pids: list[int], *, timeout_s: float = 5.0) -> None:
+def _stop_pids(pids: list[int], *, timeout_s: float = DEFAULT_STOP_TIMEOUT_S) -> None:
     """Send SIGTERM to all pids, then SIGKILL stragglers."""
-    for pid in pids:
-        if _is_alive(pid):
-            with suppress(ProcessLookupError):
-                os.kill(pid, signal.SIGTERM)
-
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if not any(_is_alive(pid) for pid in pids):
-            return
-        time.sleep(0.2)
-
-    for pid in pids:
-        if _is_alive(pid):
-            with suppress(ProcessLookupError):
-                os.kill(pid, signal.SIGKILL)
+    stop_pids(pids, timeout_s=timeout_s)
 
 
 # ---------------------------------------------------------------------------

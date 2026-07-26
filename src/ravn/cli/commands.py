@@ -80,6 +80,15 @@ from ravn.cli.flock import flock_app  # noqa: E402 — must be after app is defi
 
 app.add_typer(flock_app, name="flock")
 
+from ravn.cli.registries import personas_app, profiles_app  # noqa: E402
+
+app.add_typer(personas_app, name="personas")
+app.add_typer(profiles_app, name="profiles")
+
+from ravn.cli.room import room_app  # noqa: E402
+
+app.add_typer(room_app, name="room")
+
 
 def approvals_main() -> None:
     approvals_app()
@@ -149,13 +158,32 @@ async def _cli_user_input(question: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _looks_like_path(name: str) -> bool:
+    """Return True when *name* addresses a file rather than a registry name.
+
+    Registry names are bare slugs (``reviewer``), so anything carrying a path
+    separator or a YAML suffix is an explicit file reference.
+    """
+    return os.sep in name or name.endswith((".yaml", ".yml"))
+
+
 def _resolve_persona(
     persona_name: str,
     project_config: ProjectConfig | None,
     settings: Settings | None = None,
     cwd: Path | None = None,
+    warn: bool = True,
 ) -> Any:
-    """Load and merge a persona with optional ProjectConfig overrides."""
+    """Load and merge a persona with optional ProjectConfig overrides.
+
+    *persona_name* is either a registry name resolved through the configured
+    ``persona_source`` adapter, or a path to a persona YAML file.  Returns
+    ``None`` when the name is empty or unresolvable — callers that act on an
+    explicit operator flag should use :func:`_require_persona` instead.
+
+    *warn* suppresses the fallback warning for callers that report the failure
+    themselves, so an operator never sees both a warning and an error.
+    """
     from niuu.utils import import_class, resolve_secret_kwargs  # noqa: PLC0415
     from ravn.adapters.personas.loader import FilesystemPersonaAdapter  # noqa: PLC0415
 
@@ -173,9 +201,15 @@ def _resolve_persona(
     if not name:
         return None
 
-    persona = loader.load(name)
+    if _looks_like_path(name):
+        # A path is inherently a filesystem reference, so it bypasses the
+        # configured registry adapter (which may not be filesystem-backed).
+        persona = FilesystemPersonaAdapter(cwd=cwd).load_path(Path(name).expanduser())
+    else:
+        persona = loader.load(name)
     if persona is None:
-        typer.echo(f"Warning: persona '{name}' not found — using defaults.", err=True)
+        if warn:
+            typer.echo(f"Warning: persona '{name}' not found — using defaults.", err=True)
         return None
 
     # Apply per-sidecar overrides injected by Volundr at flock dispatch time.
@@ -197,16 +231,45 @@ def _resolve_persona(
     return persona
 
 
+def _require_persona(
+    persona_name: str,
+    project_config: ProjectConfig | None,
+    settings: Settings | None = None,
+    cwd: Path | None = None,
+) -> Any:
+    """Resolve a persona, exiting when an explicitly named one does not resolve.
+
+    An operator who passes ``--persona`` has stated which role they want;
+    silently continuing with defaults would run a different agent than asked
+    for.  A persona inherited from ProjectConfig stays a soft fallback, and an
+    empty name still returns ``None``.
+    """
+    name = persona_name.strip()
+    persona = _resolve_persona(
+        persona_name, project_config, settings=settings, cwd=cwd, warn=not name
+    )
+    if persona is not None or not name:
+        return persona
+
+    typer.echo(f"Error: persona '{name}' not found.", err=True)
+    if not _looks_like_path(name):
+        typer.echo("Run 'ravn personas list' to see available personas.", err=True)
+    raise typer.Exit(2)
+
+
 # ---------------------------------------------------------------------------
 # Profile resolution
 # ---------------------------------------------------------------------------
 
 
-def _resolve_profile(profile_name: str) -> RavnProfile | None:
-    """Load a RavnProfile by name from ~/.ravn/profiles/ or the built-in set.
+def _resolve_profile(profile_name: str, warn: bool = True) -> RavnProfile | None:
+    """Load a RavnProfile by name or path.
 
-    Returns ``None`` when *profile_name* is empty or cannot be resolved, so
-    callers can proceed without a profile using Settings defaults.
+    Names resolve from ``~/.ravn/profiles/`` then the built-in set; anything
+    path-shaped is read directly.  Returns ``None`` when *profile_name* is
+    empty or cannot be resolved, so callers can proceed using Settings
+    defaults.  *warn* suppresses the fallback warning for callers that report
+    the failure themselves.
     """
     from ravn.adapters.profiles.loader import ProfileLoader
 
@@ -214,12 +277,34 @@ def _resolve_profile(profile_name: str) -> RavnProfile | None:
     if not name:
         return None
 
-    profile = ProfileLoader().load(name)
+    loader = ProfileLoader()
+    if _looks_like_path(name):
+        profile = loader.load_from_file(Path(name).expanduser())
+    else:
+        profile = loader.load(name)
     if profile is None:
-        typer.echo(f"Warning: profile '{name}' not found — using defaults.", err=True)
+        if warn:
+            typer.echo(f"Warning: profile '{name}' not found — using defaults.", err=True)
         return None
 
     return profile
+
+
+def _require_profile(profile_name: str) -> RavnProfile | None:
+    """Resolve a profile, exiting when an explicitly named one does not resolve.
+
+    Mirrors :func:`_require_persona`: an explicit ``--profile`` that cannot be
+    resolved is an error, not a silent fallback to defaults.
+    """
+    name = profile_name.strip()
+    profile = _resolve_profile(profile_name, warn=False)
+    if profile is not None or not name:
+        return profile
+
+    typer.echo(f"Error: profile '{name}' not found.", err=True)
+    if not _looks_like_path(name):
+        typer.echo("Run 'ravn profiles list' to see available profiles.", err=True)
+    raise typer.Exit(2)
 
 
 def _apply_profile(
@@ -494,11 +579,11 @@ def run(
     settings = Settings()
     _configure_logging(settings)
     project_config = ProjectConfig.discover()
-    ravn_profile = _resolve_profile(profile)
+    ravn_profile = _require_profile(profile)
     # --persona overrides the profile's persona reference; if neither is given
     # the persona is taken from the profile (or ProjectConfig as fallback).
     effective_persona = persona or (ravn_profile.persona if ravn_profile else "")
-    persona_config = _resolve_persona(effective_persona, project_config, settings=settings)
+    persona_config = _require_persona(effective_persona, project_config, settings=settings)
 
     asyncio.run(
         _run_with_signals(
@@ -762,9 +847,9 @@ def tool_mcp(
     )
     try:
         project_config = ProjectConfig.discover()
-        ravn_profile = _resolve_profile(profile)
+        ravn_profile = _require_profile(profile)
         effective_persona = persona or (ravn_profile.persona if ravn_profile else "")
-        persona_config = _resolve_persona(effective_persona, project_config, settings=settings)
+        persona_config = _require_persona(effective_persona, project_config, settings=settings)
         tools = _build_tool_mcp_tools(settings, persona_config=persona_config)
 
         from ravn.adapters.mcp.tool_port_server import ToolPortMcpServer
@@ -1069,9 +1154,9 @@ def gateway(
     settings = Settings()
     _configure_logging(settings)
     project_config = ProjectConfig.discover()
-    ravn_profile = _resolve_profile(profile)
+    ravn_profile = _require_profile(profile)
     effective_persona = persona or (ravn_profile.persona if ravn_profile else "")
-    persona_config = _resolve_persona(effective_persona, project_config, settings=settings)
+    persona_config = _require_persona(effective_persona, project_config, settings=settings)
 
     # CLI flags override config file.
     if telegram:
@@ -1300,9 +1385,9 @@ def daemon(
     _configure_logging(settings)
     _log_effective_config(settings)
     project_config = ProjectConfig.discover()
-    ravn_profile = _resolve_profile(profile)
+    ravn_profile = _require_profile(profile)
     effective_persona = persona or (ravn_profile.persona if ravn_profile else "")
-    persona_config = _resolve_persona(effective_persona, project_config, settings=settings)
+    persona_config = _require_persona(effective_persona, project_config, settings=settings)
 
     asyncio.run(
         _run_daemon(settings, persona_config=persona_config, profile=ravn_profile, resume=resume)
@@ -1337,9 +1422,9 @@ def listen(
     _configure_logging(settings)
     _log_effective_config(settings)
     project_config = ProjectConfig.discover()
-    ravn_profile = _resolve_profile(profile)
+    ravn_profile = _require_profile(profile)
     effective_persona = persona or (ravn_profile.persona if ravn_profile else "")
-    persona_config = _resolve_persona(effective_persona, project_config, settings=settings)
+    persona_config = _require_persona(effective_persona, project_config, settings=settings)
 
     asyncio.run(
         _run_daemon(
@@ -1604,100 +1689,6 @@ def tui(
         mimir_urls=mimir_urls,
     )
     ravn_tui.run()
-
-
-@app.command()
-def room(
-    action: str = typer.Argument(
-        help="Room action: join | leave | message | heartbeat | close | participants."
-    ),
-    broker_url: str = typer.Option(
-        "http://127.0.0.1:9000",
-        "--broker-url",
-        envvar="SKULD_BROKER_URL",
-        help="Skuld broker base URL hosting the Environment room.",
-    ),
-    participant: str = typer.Option("", "--participant", help="Participant id, e.g. human:jozef."),
-    environment: str = typer.Option("", "--environment", help="Environment id to join."),
-    role: str = typer.Option(
-        "observer", "--role", help="Room role: observer|teacher|approver|debugger|owner."
-    ),
-    room_id: str = typer.Option("", "--room", help="Optional huddle room id."),
-    text: str = typer.Option("", "--text", help="Message text (message action)."),
-    reason: str = typer.Option("left", "--reason", help="Reason for leave/close."),
-) -> None:
-    """Join, talk in, and leave a live Valkyrie Environment room from the CLI.
-
-    Wraps the Skuld broker room API so a terminal operator participates in
-    the same live Environment state as the UI (NIU-1023).
-    """
-    import httpx  # noqa: PLC0415
-
-    base = broker_url.rstrip("/")
-
-    def _post(path: str, payload: dict) -> dict:
-        response = httpx.post(f"{base}{path}", json=payload, timeout=10.0)
-        if response.status_code >= 400:
-            typer.echo(f"error {response.status_code}: {response.text[:300]}", err=True)
-            raise typer.Exit(1)
-        return response.json()
-
-    if action == "join":
-        if not participant or not environment:
-            typer.echo("join requires --participant and --environment", err=True)
-            raise typer.Exit(2)
-        result = _post(
-            "/api/room/join",
-            {
-                "participant_id": participant,
-                "display_name": participant,
-                "environment_id": environment,
-                "role": role,
-                "room_id": room_id,
-            },
-        )
-        meta = result.get("participant", result)
-        typer.echo(
-            f"joined {environment} as {participant} ({role}); "
-            f"capabilities: {', '.join(meta.get('capabilities', []))}"
-        )
-        return
-    if action == "leave":
-        _post("/api/room/leave", {"participant_id": participant, "reason": reason})
-        typer.echo(f"left: {participant}")
-        return
-    if action == "message":
-        if not text:
-            typer.echo("message requires --text", err=True)
-            raise typer.Exit(2)
-        _post(
-            "/api/room/message",
-            {"participant_id": participant, "content": text, "room_id": room_id},
-        )
-        typer.echo("sent")
-        return
-    if action == "heartbeat":
-        _post("/api/room/heartbeat", {"participant_id": participant})
-        typer.echo("heartbeat recorded")
-        return
-    if action == "close":
-        result = _post(
-            "/api/room/close",
-            {"room_id": room_id, "reason": reason},
-        )
-        typer.echo(f"closed {room_id}; transcript: {result.get('transcriptRef', '-')}")
-        return
-    if action == "participants":
-        response = httpx.get(f"{base}/api/room/participants", timeout=10.0)
-        response.raise_for_status()
-        for entry in response.json().get("participants", []):
-            typer.echo(
-                f"- {entry.get('peer_id')} [{entry.get('participant_type')}] "
-                f"{entry.get('authority_role') or ''} {entry.get('status') or ''}"
-            )
-        return
-    typer.echo(f"unknown action: {action}", err=True)
-    raise typer.Exit(2)
 
 
 @app.command()
