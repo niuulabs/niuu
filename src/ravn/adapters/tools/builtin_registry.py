@@ -210,6 +210,7 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         adapter="ravn.adapters.tools.web_fetch.WebFetchTool",
         groups=frozenset({"core"}),
         kwargs_fn=lambda s, ctx: {
+            "allow_private_addresses": s.tools.web.fetch.allow_private_addresses,
             "timeout": s.tools.web.fetch.timeout,
             "user_agent": s.tools.web.fetch.user_agent,
             "content_budget": s.tools.web.fetch.content_budget,
