@@ -173,7 +173,7 @@ async def test_a2a_task_preserves_task_state_questions_artifacts_and_provenance(
         "CancelTask",
     ]
     start_message = client.posts[0][1]["params"]["message"]
-    assert start_message["metadata"] == {"skillId": "review", "workflowId": "review"}
+    assert start_message["metadata"] == {"skillId": "review"}
     reply_message = client.posts[2][1]["params"]["message"]
     assert reply_message["taskId"] == "task-1"
     assert reply_message["metadata"] == {"requestId": "question-1"}

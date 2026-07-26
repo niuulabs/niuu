@@ -137,6 +137,7 @@ class ResidentTurnRecord:
     case_id: str = ""
     root_correlation_id: str = ""
     task_id: str = ""
+    triggered_by: str = ""
     persona: str = ""
     evidence_refs: tuple[str, ...] = ()
     inbox_refs: tuple[str, ...] = ()
@@ -182,6 +183,7 @@ class ResidentScheduledWakeRecord:
 
 
 RESIDENT_WORKING_STATE_FIELDS = (
+    "objectives",
     "observations",
     "hypotheses",
     "unknowns",
@@ -198,6 +200,8 @@ def validate_resident_working_state(value: Any) -> list[str]:
         return ["working_state must be a mapping"]
     errors: list[str] = []
     for field_name in RESIDENT_WORKING_STATE_FIELDS:
+        if field_name == "objectives" and field_name not in value:
+            continue
         entries = value.get(field_name)
         if not isinstance(entries, list):
             errors.append(f"working_state.{field_name} must be a list")

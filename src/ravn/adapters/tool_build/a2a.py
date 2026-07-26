@@ -735,7 +735,7 @@ class A2AToolBuildBackend(ToolBuildBackend):
     ) -> dict[str, Any]:
         operation_id = request.operation_id or str(uuid4())
         metadata: dict[str, Any] = {
-            "workflowId": workflow_id,
+            "skillId": workflow_id,
             "sessionName": f"tool-build-{request.name}",
         }
         if self._repo:

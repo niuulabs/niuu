@@ -115,7 +115,7 @@ def campaign_to_task(campaign: WorkflowCampaign) -> Task:
     task.metadata.update(
         {
             "sessionId": campaign.session_id,
-            "workflowId": str(campaign.workflow_id),
+            "skillId": str(campaign.workflow_id),
             "workflowName": campaign.workflow_name,
             "campaignName": campaign.name,
             **({"repo": str(campaign.metadata["repo"])} if campaign.metadata.get("repo") else {}),
@@ -179,10 +179,10 @@ class WorkflowTaskHandler(RequestHandler):
 
         existing = await self._campaign_for_message(message.message_id)
         if existing is not None:
-            requested_workflow_id = str(metadata.get("workflowId") or "")
-            if requested_workflow_id != str(existing.workflow_id):
+            requested_skill_id = str(metadata.get("skillId") or "")
+            if requested_skill_id != str(existing.workflow_id):
                 raise InvalidParamsError(
-                    f"messageId {message.message_id!r} already belongs to another workflow"
+                    f"messageId {message.message_id!r} already belongs to another skill"
                 )
             get_observability().event(
                 "ting.a2a.workflow.launch.reused",
@@ -744,16 +744,16 @@ class WorkflowTaskHandler(RequestHandler):
         )
 
     async def _resolve_workflow(self, metadata: dict[str, Any]):
-        raw_id = str(metadata.get("workflowId") or "").strip()
+        raw_id = str(metadata.get("skillId") or "").strip()
         if not raw_id:
-            raise InvalidParamsError("message metadata must include workflowId")
+            raise InvalidParamsError("message metadata must include skillId")
         try:
             workflow_id = UUID(raw_id)
         except ValueError as exc:
-            raise InvalidParamsError(f"workflowId is not a valid UUID: {raw_id}") from exc
+            raise InvalidParamsError(f"skillId is not a valid UUID: {raw_id}") from exc
         workflow = await self._workflow_repo.get_workflow(workflow_id)
         if workflow is None or not _can_view_workflow(workflow, self._principal):
-            raise InvalidParamsError(f"unknown workflow: {raw_id}")
+            raise InvalidParamsError(f"unknown skill: {raw_id}")
         return workflow
 
     async def _owned_campaign(self, task_id: str) -> WorkflowCampaign:

@@ -50,6 +50,7 @@ from niuu.domain.mimir import (
     MimirPageMeta,
     MimirSource,
     compute_content_hash,
+    compute_source_id,
 )
 from niuu.ports.mimir import MimirPort
 from ravn.adapters.tools._url_security import check_ssrf
@@ -1838,7 +1839,7 @@ class MimirRouter:
         ) -> IngestResponse:
             port, _ = self._resolve_port(request.mount)
             content_hash = compute_content_hash(request.content)
-            source_id = "src_" + content_hash[:16]
+            source_id = compute_source_id(request.content)
             source = MimirSource(
                 source_id=source_id,
                 title=request.title,

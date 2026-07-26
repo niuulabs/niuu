@@ -884,7 +884,7 @@ async def test_a2a_backend_builds_from_inline_canonical_artifact() -> None:
     send_body = client.post_bodies[0]
     assert send_body["method"] == "SendMessage"
     message = send_body["params"]["message"]
-    assert message["metadata"]["workflowId"] == "wf-1"
+    assert message["metadata"]["skillId"] == "wf-1"
     assert message["metadata"]["sessionName"] == "tool-build-mimir_metric_window"
     assert message["parts"][0]["text"]
     assert client.post_bodies[1]["method"] == "GetTask"
@@ -1058,7 +1058,7 @@ async def test_a2a_backend_selects_skill_by_tag() -> None:
     result = await backend.build(_request())
 
     assert result.provenance["workflow_id"] == "wf-9"
-    assert client.post_bodies[0]["params"]["message"]["metadata"]["workflowId"] == "wf-9"
+    assert client.post_bodies[0]["params"]["message"]["metadata"]["skillId"] == "wf-9"
 
 
 async def test_a2a_backend_fetches_url_part_artifact() -> None:

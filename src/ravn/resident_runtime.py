@@ -43,6 +43,7 @@ that reference scheme; the bounded content needed for this turn is already inclu
 
 In the final structured outcome, include a `working_state` mapping with these lists:
 
+- `objectives`: active operator-given or self-authored outcomes worth pursuing across turns
 - `observations`: evidence-grounded observations with their authoritative references
 - `hypotheses`: revisable interpretations, preserving uncertainty and supporting references
 - `unknowns`: unresolved questions that could change a judgment
@@ -102,6 +103,7 @@ class ResidentRuntime:
         tool_result_max_chars: int = 2000,
         scheduled_wake_default_seconds: float = 3600.0,
         stewardship_interval_seconds: float = 0.0,
+        directed_messages_enabled: bool = True,
     ) -> None:
         self._state = state
         self._inbox = inbox
@@ -114,6 +116,7 @@ class ResidentRuntime:
         self._tool_result_max_chars = max(100, int(tool_result_max_chars))
         self._scheduled_wake_default_seconds = max(1.0, float(scheduled_wake_default_seconds))
         self._stewardship_interval_seconds = max(0.0, float(stewardship_interval_seconds))
+        self._directed_messages_enabled = directed_messages_enabled
         self._enqueue: EnqueueResidentTask | None = None
         self._inflight_cases: set[str] = set()
         self._inflight_refs: set[str] = set()
@@ -121,6 +124,14 @@ class ResidentRuntime:
     @property
     def state(self) -> ResidentStatePort:
         return self._state
+
+    @property
+    def resident_id(self) -> str:
+        return self._resident_id
+
+    @property
+    def charter(self) -> str:
+        return self._charter
 
     def bind_enqueue(self, enqueue: EnqueueResidentTask) -> None:
         self._enqueue = enqueue
@@ -175,6 +186,30 @@ class ResidentRuntime:
         if task.resident_case_id:
             self._inflight_cases.add(task.resident_case_id)
         self._inflight_refs.update(task.resident_inbox_refs)
+
+    async def capture_directed_message(
+        self,
+        content: str,
+        metadata: dict[str, Any] | None,
+    ) -> str:
+        """Persist a human message so a failed immediate turn cannot lose it."""
+        if not self._directed_messages_enabled or self._inbox is None:
+            return ""
+        telemetry = get_observability()
+        with telemetry.span(
+            "ravn.port.resident_inbox.write_directed_message",
+            attributes={"ravn.resident.id": self._resident_id},
+        ) as span:
+            ref = await self._inbox.write_directed_message(
+                content=content,
+                metadata=metadata,
+            )
+            span.set_attribute("ravn.resident.inbox_ref", ref)
+        telemetry.count(
+            "ravn.resident.directed_messages.persisted",
+            attributes={"ravn.resident.id": self._resident_id},
+        )
+        return ref
 
     async def handle_completed_turn(
         self,
@@ -268,6 +303,7 @@ class ResidentRuntime:
             case_id=case_id,
             root_correlation_id=root_id,
             task_id=task.task_id,
+            triggered_by=task.triggered_by,
             persona=task.persona or "",
             evidence_refs=evidence_refs,
             inbox_refs=tuple(task.resident_inbox_refs),
@@ -886,9 +922,10 @@ class ResidentRuntime:
         context_lines.extend(
             (
                 "Judge, against the charter and your durable working state, whether "
-                "anything in this environment now deserves attention: a stale belief "
-                "worth re-checking, an unknown worth resolving, a risk worth "
-                "investigating, or an improvement worth proposing.",
+                "anything in this environment now deserves attention: an active objective "
+                "worth advancing, a stale belief worth re-checking, an unknown worth "
+                "resolving, a capability gap worth researching, a risk worth investigating, "
+                "or an improvement worth proposing.",
                 "",
                 "Deciding that nothing warrants action is a correct and expected "
                 "outcome. Do not manufacture work to justify this turn. Prefer "

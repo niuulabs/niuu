@@ -392,6 +392,7 @@ def _render_turn_record(record: ResidentTurnRecord) -> str:
         f"- case_id: {record.case_id}\n"
         f"- root_correlation_id: {record.root_correlation_id}\n"
         f"- task_id: {record.task_id}\n"
+        f"- triggered_by: {record.triggered_by}\n"
         f"- persona: {record.persona}\n"
         f"- tools_used: {tools}\n"
         f"- input_tokens: {record.usage.input_tokens}\n"

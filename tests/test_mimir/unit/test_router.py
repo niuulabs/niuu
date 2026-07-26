@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.registry import MimirRegistryStore
 from mimir.router import MimirRouter
+from niuu.domain.mimir import compute_source_id
 from ravn.adapters.mimir.composite import CompositeMimirAdapter
 from ravn.domain.mimir import MimirMount, WriteRouting
 
@@ -629,8 +630,7 @@ def test_ingest_source(client: TestClient) -> None:
     resp = client.post("/mimir/ingest", json=payload)
     assert resp.status_code == 200
     data = resp.json()
-    assert "source_id" in data
-    assert data["source_id"].startswith("src_")
+    assert data["source_id"] == compute_source_id(payload["content"])
 
 
 # ---------------------------------------------------------------------------

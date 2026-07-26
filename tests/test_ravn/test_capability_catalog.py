@@ -101,7 +101,7 @@ def test_workflow_capability_is_a_catalog_entry_not_a_signal_route() -> None:
     assert capability.to_codex_action()["kind"] == "workflow"
 
 
-def test_filter_capabilities_by_kind_tag_and_query() -> None:
+def test_filter_capabilities_by_kind_and_tag() -> None:
     capabilities = [
         capability_from_tool(
             name="mimir_search",
@@ -121,6 +121,5 @@ def test_filter_capabilities_by_kind_tag_and_query() -> None:
             capabilities,
             kind=CapabilityKind.WORKFLOW,
             tags=["tool-builder"],
-            query="builder",
         )
     ] == ["Tool Builder"]

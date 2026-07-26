@@ -190,11 +190,24 @@ resident_evolution:
 
 Related bounds (all NIU-1118):
 
+- `context_management.context_window_tokens` (0 = unknown) — the model's real
+  context window. Ravn subtracts the configured maximum output tokens before
+  deriving the safe prompt ceiling; it never infers this value from a model
+  name.
 - `context_management.max_prompt_tokens` (0 = off) — hard per-call budget for
-  the estimated prompt (system + tool schemas + history). When a turn still
+  the conservative estimated prompt (system + tool schemas + complete nested
+  tool/history payloads). The lower of this value and
+  `context_window_tokens - llm.max_tokens` wins. When a turn still
   exceeds it after context compression, the call fails loudly with a
   per-section breakdown instead of overflowing the model window. Every turn
-  also logs a `prompt_composition:` line with per-section token estimates.
+  also records a `ravn.prompt.budget` trace event and exposes the current
+  estimate, ceiling, output reservation, and compaction state in the resident
+  HUD.
+- `context_management.token_estimate_safety_factor` (default 1.5) — conservative
+  multiplier for providers that do not expose an exact preflight token count.
+- `resident_state.directed_message_context_max_chars` (default 4000) — bounds
+  prior room output carried into a human-directed task; the current human
+  message is not truncated.
 - `tools.max_result_chars` (default 100000, 0 = off) — caps one tool result's
   contribution to history. Compression protects the most recent messages, so
   a single giant result (observed: a 229MB mimir result) would otherwise make

@@ -58,6 +58,11 @@ def compute_content_hash(content: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()
 
 
+def compute_source_id(content: str) -> str:
+    """Return the canonical identifier for an immutable raw source."""
+    return "src_" + compute_content_hash(content)[:16]
+
+
 # ---------------------------------------------------------------------------
 # Slug utility
 # ---------------------------------------------------------------------------

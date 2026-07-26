@@ -227,7 +227,7 @@ class A2ATaskTool(ToolPort):
             supplied_metadata = input.get("metadata")
             metadata = dict(supplied_metadata) if isinstance(supplied_metadata, dict) else {}
             self._validate_metadata(metadata)
-            metadata.update({"skillId": skill_id, "workflowId": skill_id})
+            metadata["skillId"] = skill_id
             trace_context = get_observability().inject()
             if trace_context:
                 metadata["traceContext"] = trace_context

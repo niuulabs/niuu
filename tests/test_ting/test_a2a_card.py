@@ -125,6 +125,17 @@ class TestAgentCard:
         card = parse_agent_card(response.json())
         assert list(card.skills) == []
 
+    def test_workflow_without_declared_tags_gets_protocol_tag(self) -> None:
+        workflow = _workflow()
+        workflow.graph["tags"] = []
+        client = _client(InMemoryWorkflowRepository([workflow]))
+
+        response = client.get(CARD_PATH)
+
+        assert response.status_code == 200
+        card = parse_agent_card(response.json())
+        assert list(card.skills[0].tags) == ["workflow"]
+
     def test_new_workflow_appears_without_restart(self) -> None:
         repo = InMemoryWorkflowRepository([_workflow()])
         client = _client(repo)
