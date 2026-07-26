@@ -204,6 +204,13 @@ class TerminalToolConfig(BaseModel):
 class WebFetchConfig(BaseModel):
     """web_fetch tool configuration."""
 
+    allow_private_addresses: bool = Field(
+        default=False,
+        description=(
+            "Allow web_fetch to connect to hosts that resolve to private or reserved "
+            "addresses. Keep disabled for untrusted workloads."
+        ),
+    )
     timeout: float = Field(
         default=30.0,
         description="HTTP request timeout in seconds.",

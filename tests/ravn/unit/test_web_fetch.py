@@ -183,6 +183,10 @@ class TestWebFetchToolProperties:
         tool = WebFetchTool(user_agent="TestAgent/1.0")
         assert tool._user_agent == "TestAgent/1.0"
 
+    def test_private_address_access_can_be_enabled(self) -> None:
+        tool = WebFetchTool(allow_private_addresses=True)
+        assert tool._allow_private_addresses is True
+
 
 # ---------------------------------------------------------------------------
 # WebFetchTool.execute — with mocked httpx
@@ -383,6 +387,21 @@ class TestValidateUrl:
             result = _validate_url("http://internal.example.com")
             assert result is not None
             assert "private" in result.lower() or "reserved" in result.lower()
+
+    def test_private_ip_allowed_when_configured(self) -> None:
+        import socket
+        from unittest.mock import patch
+
+        with patch.object(
+            socket, "getaddrinfo", return_value=[(None, None, None, None, ("192.168.1.1", 0))]
+        ):
+            assert (
+                _validate_url(
+                    "http://internal.example.com",
+                    allow_private_addresses=True,
+                )
+                is None
+            )
 
     def test_localhost_blocked(self) -> None:
         import socket
