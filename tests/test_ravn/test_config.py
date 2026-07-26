@@ -31,6 +31,7 @@ from ravn.config import (
     ToolAdapterConfig,
     ToolsConfig,
     TrustGradientConfig,
+    WebFetchConfig,
     resolve_trust_tools,
 )
 
@@ -238,6 +239,14 @@ class TestPermissionConfig:
         assert "write_file" in c.ask
         assert c.rules[0].pattern == "net:*"
         assert c.rules[0].action == "deny"
+
+
+class TestWebFetchConfig:
+    def test_private_addresses_are_blocked_by_default(self) -> None:
+        assert WebFetchConfig().allow_private_addresses is False
+
+    def test_private_addresses_can_be_enabled(self) -> None:
+        assert WebFetchConfig(allow_private_addresses=True).allow_private_addresses is True
 
 
 class TestContextConfig:
