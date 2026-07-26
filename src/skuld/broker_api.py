@@ -685,6 +685,14 @@ class _RoomMessageRequest(BaseModel):
     source: str = "external"
     participant_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    deliver_to_transport: bool = Field(
+        default=True,
+        description=(
+            "Also hand the message to the broker's own CLI transport. Set false "
+            "for room commentary addressed to no member, which would otherwise "
+            "lazy-start a transport that has nothing to answer."
+        ),
+    )
 
 
 class _DirectedRoomMessageRequest(BaseModel):
@@ -788,6 +796,7 @@ async def send_room_message(body: _RoomMessageRequest) -> dict:
             source=body.source,
             participant_id=body.participant_id,
             metadata=body.metadata,
+            deliver_to_transport=body.deliver_to_transport,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))

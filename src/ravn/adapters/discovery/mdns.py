@@ -155,6 +155,11 @@ class MdnsDiscoveryAdapter:
         self._handshake_listener_task: asyncio.Task | None = None
         self._pending_handshakes: set[str] = set()
 
+        # Zeroconf browse callbacks and the handshake responder both run on
+        # threads with no event loop of their own, so the running loop is
+        # captured at start() and used to hand work back to it.
+        self._loop: asyncio.AbstractEventLoop | None = None
+
     # ------------------------------------------------------------------
     # DiscoveryPort interface
     # ------------------------------------------------------------------
@@ -165,6 +170,7 @@ class MdnsDiscoveryAdapter:
             logger.warning("mdns_discovery: zeroconf not installed — discovery disabled")
             return
 
+        self._loop = asyncio.get_running_loop()
         self._zc = AsyncZeroconf()
         await self._register_service()
         await self._start_browser()
@@ -329,6 +335,21 @@ class MdnsDiscoveryAdapter:
             handlers=handlers,
         )
 
+    def _schedule(self, fn: Any, *args: Any) -> bool:
+        """Run *fn* on the adapter's event loop from any thread.
+
+        Returns False when there is no live loop to schedule onto — which
+        happens only before start() or after stop().
+        """
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            logger.debug(
+                "mdns_discovery: no event loop to schedule %s", getattr(fn, "__name__", fn)
+            )
+            return False
+        loop.call_soon_threadsafe(fn, *args)
+        return True
+
     def _on_service_state_change(
         self,
         zeroconf: object,
@@ -336,11 +357,13 @@ class MdnsDiscoveryAdapter:
         name: str,
         state_change: object,
     ) -> None:
-        """mDNS browse callback — fires on add/remove/update."""
-        asyncio.get_running_loop().call_soon_threadsafe(
-            asyncio.ensure_future,
-            self._handle_service_event(zeroconf, service_type, name, state_change),
-        )
+        """mDNS browse callback — fires on add/remove/update.
+
+        Invoked from a zeroconf thread, which has no running loop of its own.
+        """
+        coro = self._handle_service_event(zeroconf, service_type, name, state_change)
+        if not self._schedule(asyncio.ensure_future, coro):
+            coro.close()
 
     async def _handle_service_event(
         self,
@@ -592,7 +615,8 @@ class MdnsDiscoveryAdapter:
 
             candidate = self._candidates.get(peer_id_a)
             peer = self._peer_from_identity_dict(peer_identity_raw, candidate)
-            asyncio.get_running_loop().call_soon_threadsafe(self._add_peer, peer)
+            # Runs on an executor thread — hand the peer back to the loop.
+            self._schedule(self._add_peer, peer)
         except Exception as exc:
             logger.debug("mdns_discovery: responder error: %s", exc)
 

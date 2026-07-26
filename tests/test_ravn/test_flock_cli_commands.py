@@ -415,3 +415,124 @@ def test_python_tail_prints_last_lines_without_following(tmp_path: Path) -> None
 
     # follow=False prints the last *lines* and returns; a missing path is skipped.
     _python_tail([str(log), str(tmp_path / "missing.log")], lines=3, follow=False)
+
+
+class TestFlockRoomMembership:
+    """`flock init --room` makes a flock and a room roster the same ravens."""
+
+    def _room(self, tmp_path: Path) -> Path:
+        from ravn.cli.room import RoomDef, _room_def_path
+
+        rooms = tmp_path / "rooms"
+        (rooms / "desk").mkdir(parents=True)
+        room_def = RoomDef(
+            name="desk",
+            environment_id="desk",
+            host="127.0.0.1",
+            port=7500,
+            created_at="2026-07-26T00:00:00+00:00",
+        )
+        _room_def_path("desk", rooms).write_text(room_def.to_yaml(), encoding="utf-8")
+        return rooms
+
+    def test_nodes_get_the_room_channel(self, tmp_path: Path) -> None:
+        rooms = self._room(tmp_path)
+
+        result = runner.invoke(
+            flock_app,
+            [
+                "init",
+                "coordinator",
+                "--flock-dir",
+                str(tmp_path / "flock"),
+                "--room",
+                "desk",
+                "--rooms-dir",
+                str(rooms),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        config = (tmp_path / "flock" / "node-coordinator.yaml").read_text()
+        assert "skuld:" in config
+        assert "broker_url: ws://127.0.0.1:7500/ws/ravn" in config
+
+    def test_without_room_no_skuld_block_is_added(self, tmp_path: Path) -> None:
+        result = runner.invoke(
+            flock_app, ["init", "coordinator", "--flock-dir", str(tmp_path / "flock")]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "skuld:" not in (tmp_path / "flock" / "node-coordinator.yaml").read_text()
+
+    def test_unknown_room_fails_before_writing_configs(self, tmp_path: Path) -> None:
+        """A typo must not produce a flock that quietly joins nothing."""
+        rooms = self._room(tmp_path)
+
+        result = runner.invoke(
+            flock_app,
+            [
+                "init",
+                "coordinator",
+                "--flock-dir",
+                str(tmp_path / "flock"),
+                "--room",
+                "ghost",
+                "--rooms-dir",
+                str(rooms),
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "Unknown room 'ghost'" in result.output
+        assert not (tmp_path / "flock" / "node-coordinator.yaml").exists()
+
+    def test_room_nodes_are_responsive_by_default(self, tmp_path: Path) -> None:
+        """A room node answers what is addressed to it instead of self-driving."""
+        rooms = self._room(tmp_path)
+
+        runner.invoke(
+            flock_app,
+            [
+                "init",
+                "coordinator",
+                "--flock-dir",
+                str(tmp_path / "flock"),
+                "--room",
+                "desk",
+                "--rooms-dir",
+                str(rooms),
+            ],
+        )
+
+        config = (tmp_path / "flock" / "node-coordinator.yaml").read_text()
+        assert "dream_cycle" in config
+        assert "resident_wakefulness" in config
+
+    def test_autonomous_room_nodes_keep_their_triggers(self, tmp_path: Path) -> None:
+        rooms = self._room(tmp_path)
+
+        runner.invoke(
+            flock_app,
+            [
+                "init",
+                "coordinator",
+                "--flock-dir",
+                str(tmp_path / "flock"),
+                "--room",
+                "desk",
+                "--rooms-dir",
+                str(rooms),
+                "--autonomous",
+            ],
+        )
+
+        config = (tmp_path / "flock" / "node-coordinator.yaml").read_text()
+        assert "dream_cycle" not in config
+
+    def test_a_roomless_flock_is_unchanged(self, tmp_path: Path) -> None:
+        """Plain `flock init` keeps its long-standing autonomous behaviour."""
+        runner.invoke(flock_app, ["init", "coordinator", "--flock-dir", str(tmp_path / "flock")])
+
+        config = (tmp_path / "flock" / "node-coordinator.yaml").read_text()
+        assert "dream_cycle" not in config

@@ -1274,8 +1274,10 @@ class DriveLoop:
         # today so ordering and correlation remain consistent for all consumers.
         self._skuld_channel: SkuldChannel | None = None
         if settings.skuld.enabled:
-            # peer_id is appended to the broker_url
-            peer_id = settings.mesh.own_peer_id if settings.mesh.enabled else "ravn-daemon"
+            # peer_id is appended to the broker_url. An explicitly configured
+            # peer id is the daemon's room identity whether or not the nng
+            # mesh is running — a room member sets it without needing a mesh.
+            peer_id = settings.mesh.own_peer_id.strip() or "ravn-daemon"
             broker_url = f"{settings.skuld.broker_url.rstrip('/')}/{peer_id}"
             self._skuld_channel = SkuldChannel(
                 broker_url=broker_url,

@@ -153,3 +153,21 @@ def test_runtime_helpers_round_trip_and_delete_state(tmp_path: Path) -> None:
 
     _delete_runtime(tmp_path)
     assert _load_runtime(tmp_path) is None
+
+
+def test_mdns_discovery_uses_the_adapters_list(tmp_path: Path) -> None:
+    """Regression: the legacy `adapter: mdns` shape parsed but built nothing.
+
+    `_build_discovery` reads `settings.discovery.adapters`, so a node written
+    with the old single-`adapter` key started with discovery disabled and no
+    mesh-routing tools — peers never found each other.
+    """
+    node = _node(tmp_path)
+
+    _write_node_config(node, tmp_path, discovery="mdns", mesh_transport="tcp")
+
+    config = Path(node.config_path).read_text(encoding="utf-8")
+    assert "adapters:" in config
+    assert "ravn.adapters.discovery.mdns.MdnsDiscoveryAdapter" in config
+    assert f"handshake_port: {node.handshake_port}" in config
+    assert "adapter: mdns" not in config
