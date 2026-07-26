@@ -203,6 +203,49 @@ def test_nats_transport_kwargs_include_flock_extra_subscription(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_local_build_is_registered_in_existing_skill_lifecycle(tmp_path) -> None:
+    bus = InProcessBus()
+    manager = _manager(tmp_path, "resident")
+    runtime = ResidentLearningRuntime(
+        identity=ResidentLearningIdentity(
+            environment_id="workshop",
+            environment_type="workshop",
+            valkyrie_id="valkyrie:workshop",
+            domain="workshop",
+            flock_ids=["workshop-flock"],
+            autonomy_mode="yolo",
+        ),
+        skills=manager,
+        publisher=bus,
+        subscriber=bus,
+        tools_dir=tmp_path / "resident" / "tools",
+    )
+    artifact = ResidentLearningArtifact(
+        learning_id="learned-tool:status_probe",
+        title="status_probe",
+        summary="Inspect live status",
+        content="",
+        artifact_type="agent_tool",
+        scope="environment",
+        confidence=0.9,
+        source_environment_id="workshop",
+        source_valkyrie_id="valkyrie:workshop",
+        learned_tool_manifest={
+            "name": "status_probe",
+            "description": "Inspect live status",
+            "input_schema": {"type": "object"},
+            "required_permission": "tool:run",
+        },
+    )
+
+    await runtime.register_installed_artifact(artifact)
+
+    shown = await manager.show("status_probe")
+    assert shown["metadata"]["status"] == "active"
+    assert shown["metadata"]["source"] == "flock-learning:learned-tool:status_probe"
+
+
+@pytest.mark.asyncio
 async def test_resident_installs_learning_and_exposes_it_as_a_signal_hint(tmp_path) -> None:
     bus = InProcessBus()
     events: list[SleipnirEvent] = []

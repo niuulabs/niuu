@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 
 from ravn.adapters.permission.allow_deny import AllowAllPermission, DenyAllPermission
+from ravn.adapters.skill.file_registry import FileSkillRegistry
 from ravn.adapters.tools.learned_tool_run import LearnedToolRunTool
+from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.learned_tools import (
     ContainedLearnedToolRunner,
     LearnedToolError,
@@ -105,11 +107,39 @@ class TestLearnedToolResolver:
 
 
 class TestLearnedToolRunTool:
-    def _dispatch(self, tmp_path: Path, permission=None) -> LearnedToolRunTool:
+    def _dispatch(
+        self,
+        tmp_path: Path,
+        permission=None,
+        skill_manager: SkillManagementRegistry | None = None,
+    ) -> LearnedToolRunTool:
         return LearnedToolRunTool(
             resolver=LearnedToolResolver(state_dir=tmp_path),
             permission=permission or AllowAllPermission(),
+            skill_manager=skill_manager,
         )
+
+    async def _manager(
+        self,
+        tmp_path: Path,
+        name: str,
+    ) -> SkillManagementRegistry:
+        skills_dir = tmp_path / "skills"
+        manager = SkillManagementRegistry(
+            FileSkillRegistry(
+                skill_dirs=[str(skills_dir)],
+                write_dir=skills_dir,
+                include_builtin=False,
+                cwd=tmp_path,
+            ),
+            metadata_path=tmp_path / "skill_management.json",
+        )
+        await manager.create(
+            name=name,
+            content=f"capability: tool.{name}",
+            description=f"Managed learned tool {name}",
+        )
+        return manager
 
     async def test_executes_installed_tool_by_name(self, tmp_path: Path) -> None:
         _install_tool(tmp_path, "metric_window")
@@ -181,3 +211,29 @@ class TestLearnedToolRunTool:
         result = await dispatch.execute({"name": "broken_tool", "input": {}})
 
         assert result.is_error
+
+    async def test_records_real_execution_outcome_in_shared_lifecycle(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        _install_tool(tmp_path, "metric_window")
+        manager = await self._manager(tmp_path, "metric_window")
+        dispatch = self._dispatch(tmp_path, skill_manager=manager)
+
+        result = await dispatch.execute({"name": "metric_window", "input": {}})
+
+        assert not result.is_error
+        shown = await manager.show("metric_window")
+        assert shown["metadata"]["run_count"] == 1
+        assert shown["metadata"]["success_count"] == 1
+
+    async def test_archived_learned_tool_cannot_run(self, tmp_path: Path) -> None:
+        _install_tool(tmp_path, "obsolete_probe")
+        manager = await self._manager(tmp_path, "obsolete_probe")
+        await manager.archive("obsolete_probe")
+        dispatch = self._dispatch(tmp_path, skill_manager=manager)
+
+        result = await dispatch.execute({"name": "obsolete_probe", "input": {}})
+
+        assert result.is_error
+        assert "archived" in result.content

@@ -248,6 +248,29 @@ async def test_capability_list_includes_learned_tools_without_loading_them() -> 
 
 
 @pytest.mark.asyncio
+async def test_capability_list_hides_archived_learned_tools() -> None:
+    class ArchivedSkillManager:
+        def status(self, name: str) -> str | None:
+            return "archived" if name == "obsolete_probe" else None
+
+    tool = CapabilityListTool(
+        tools_provider=lambda: [FakeTool()],
+        learned_tools_provider=lambda: [
+            _learned_artifact("obsolete_probe"),
+            _learned_artifact("current_probe"),
+        ],
+        skill_manager=ArchivedSkillManager(),  # type: ignore[arg-type]
+    )
+
+    result = await tool.execute({"kind": "tool"})
+
+    payload = json.loads(result.content)
+    names = [item["name"] for item in payload["capabilities"]]
+    assert "obsolete_probe" not in names
+    assert "current_probe" in names
+
+
+@pytest.mark.asyncio
 async def test_capability_list_dedupes_learned_tools_against_native_names() -> None:
     # A learned tool already registered natively (legacy bulk mode, or freshly
     # built in-session) must not appear twice in the catalog.

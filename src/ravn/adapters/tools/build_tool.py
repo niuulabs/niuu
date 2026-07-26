@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
@@ -60,6 +60,7 @@ SELF_REGISTERED_TOOL_CONFIDENCE = 0.74
 DEFAULT_MAX_REPAIR_ATTEMPTS = 3
 
 ToolRegistrar = Callable[[ToolPort], None]
+InstalledArtifactRecorder = Callable[[ResidentLearningArtifact], Awaitable[None]]
 logger = logging.getLogger(__name__)
 
 
@@ -89,6 +90,7 @@ class BuildTool(ToolPort):
         investigation_context: Callable[[], str] | None = None,
         max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
         flock_confidence: float = SELF_REGISTERED_TOOL_CONFIDENCE,
+        installed_artifact_recorder: InstalledArtifactRecorder | None = None,
     ) -> None:
         self._tools_dir = Path(tools_dir)
         self._artifacts_dir = (
@@ -112,6 +114,7 @@ class BuildTool(ToolPort):
         self._investigation_context = investigation_context
         self._max_repair_attempts = max_repair_attempts
         self._flock_confidence = flock_confidence
+        self._installed_artifact_recorder = installed_artifact_recorder
 
     def _investigation_prompt(self) -> str:
         """The investigation prompt that drove this build, for review provenance."""
@@ -571,6 +574,38 @@ class BuildTool(ToolPort):
 
             replace = bool(input.get("replace"))
             self._register_tool(learned_tool, replace=replace)  # type: ignore[call-arg]
+            lifecycle_warning = ""
+            if self._installed_artifact_recorder is not None:
+                lifecycle_attributes = {
+                    "ravn.learned_tool.name": artifact.manifest.name,
+                    "ravn.learned_tool.artifact_id": artifact.artifact_id,
+                    "ravn.skill.lifecycle.action": "register",
+                }
+                with telemetry.span(
+                    "ravn.learned_tool.lifecycle.register",
+                    attributes=lifecycle_attributes,
+                ) as lifecycle_span:
+                    try:
+                        await self._installed_artifact_recorder(resident_artifact)
+                        telemetry.event(
+                            "ravn.learned_tool.lifecycle.registered",
+                            attributes=lifecycle_attributes,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — installation already succeeded
+                        lifecycle_warning = (
+                            "The tool is installed, but its lifecycle record could not be "
+                            f"updated: {type(exc).__name__}: {exc}"
+                        )
+                        telemetry.mark_error(
+                            lifecycle_span,
+                            type(exc).__name__,
+                            str(exc),
+                        )
+                        logger.warning(
+                            "Learned tool %s installed, but lifecycle registration failed",
+                            artifact.manifest.name,
+                            exc_info=True,
+                        )
             publish_learned_tool_inventory([artifact])
             telemetry.event(
                 "ravn.tool_build.registered",
@@ -613,6 +648,7 @@ class BuildTool(ToolPort):
                 artifact_path,
                 registered=True,
                 flock_warning=flock_warning,
+                lifecycle_warning=lifecycle_warning,
             ),
         )
 
@@ -1380,6 +1416,7 @@ def attach_build_tool(
     investigation_context: Callable[[], str] | None = None,
     max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
     flock_confidence: float = SELF_REGISTERED_TOOL_CONFIDENCE,
+    installed_artifact_recorder: InstalledArtifactRecorder | None = None,
 ) -> BuildTool:
     """Attach build_tool to an agent supporting register_tool()."""
     registrar = getattr(agent, "register_tool", None)
@@ -1405,6 +1442,7 @@ def attach_build_tool(
         investigation_context=investigation_context,
         max_repair_attempts=max_repair_attempts,
         flock_confidence=flock_confidence,
+        installed_artifact_recorder=installed_artifact_recorder,
     )
     registrar(tool, replace=replace)
     return tool
@@ -1517,6 +1555,7 @@ def _summary(
     *,
     registered: bool,
     flock_warning: str = "",
+    lifecycle_warning: str = "",
 ) -> str:
     payload = {
         "artifact_id": artifact.artifact_id,
@@ -1531,6 +1570,8 @@ def _summary(
     }
     if flock_warning:
         payload["flock_publication_warning"] = flock_warning
+    if lifecycle_warning:
+        payload["lifecycle_warning"] = lifecycle_warning
     return json.dumps(payload, indent=2, sort_keys=True)
 
 

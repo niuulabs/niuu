@@ -118,6 +118,12 @@ async def _run_daemon(
         await environment_signal_publisher.start()
         environment_signal_publisher_started = True
 
+    resident_learning_runtime = _build_resident_learning_runtime(
+        settings,
+        publisher=environment_signal_publisher,
+        workspace=workspace,
+    )
+
     def _agent_factory(
         channel: ChannelPort,
         task_id: str | None = None,
@@ -212,6 +218,9 @@ async def _run_daemon(
             ),
             permission=permission,
             a2a_activity_emitter=_emit_a2a_activity,
+            skill_manager=(
+                resident_learning_runtime.skills if resident_learning_runtime is not None else None
+            ),
         )
         if profile_cfg.include_mcp:
             tools.extend(_filter_tools(mcp_tools, settings, resolved_persona))
@@ -292,6 +301,11 @@ async def _run_daemon(
             publisher=environment_signal_publisher or sleipnir_catalog_publisher or daemon_bus,
             drive_loop=drive_loop,
             a2a_activity_emitter=_emit_a2a_activity,
+            installed_artifact_recorder=(
+                resident_learning_runtime.register_installed_artifact
+                if resident_learning_runtime is not None
+                else None
+            ),
         )
 
     tasks: list[asyncio.Task] = []
@@ -350,7 +364,6 @@ async def _run_daemon(
     drive_loop: Any = None
     _cascade_participant: Any = None
     environment_signal_runtime: Any | None = None
-    resident_learning_runtime: Any | None = None
     resident_wakefulness: Any | None = None
     odin_court: Any | None = None
     feedback_recorder: Any | None = None
@@ -470,11 +483,6 @@ async def _run_daemon(
         trigger_names = [t.name for t in drive_loop._triggers]
         tasks.append(asyncio.create_task(drive_loop.run(), name="drive_loop"))
 
-    resident_learning_runtime = _build_resident_learning_runtime(
-        settings,
-        publisher=environment_signal_publisher,
-        workspace=_resolve_workspace(settings),
-    )
     if resident_learning_runtime is not None:
         await resident_learning_runtime.start()
         tasks.append(asyncio.create_task(asyncio.Event().wait(), name="resident_learning"))

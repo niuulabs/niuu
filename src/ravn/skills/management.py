@@ -58,6 +58,16 @@ class SkillManagementRegistry:
         self._metadata: dict[str, SkillLifecycle] = {}
         self._load()
 
+    @property
+    def skill_port(self) -> SkillPort:
+        """The backing skill store shared by lifecycle-aware tool adapters."""
+        return self._skill_port
+
+    def status(self, name: str) -> str | None:
+        """Return managed lifecycle status, or ``None`` for an unmanaged skill."""
+        meta = self._metadata.get(self._key(name))
+        return meta.status if meta is not None else None
+
     async def create(
         self,
         *,
@@ -219,6 +229,18 @@ class SkillManagementRegistry:
             rows.append({"skill": asdict(skill), "metadata": asdict(meta)})
         rows.sort(key=lambda row: (not row["metadata"]["pinned"], row["skill"]["name"].lower()))
         return rows
+
+    async def list_runnable_skills(self, query: str | None = None) -> list[Skill]:
+        """List skills that are available for discovery and execution."""
+        skills = await self._skill_port.list_skills(query)
+        runnable = [skill for skill in skills if not self._is_archived(skill.name)]
+        return sorted(
+            runnable,
+            key=lambda skill: (
+                not self._metadata_for(skill).pinned,
+                skill.name.lower(),
+            ),
+        )
 
     async def get_runnable_skill(self, name: str) -> Skill | None:
         skill = await self._skill_port.get_skill(name)

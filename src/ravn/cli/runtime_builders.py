@@ -60,6 +60,7 @@ def _attach_agent_build_tool(
     publisher: Any | None = None,
     drive_loop: Any | None = None,
     a2a_activity_emitter: Any | None = None,
+    installed_artifact_recorder: Any | None = None,
 ) -> Any:
     """Attach build_tool when the active persona explicitly allows it."""
     if not enabled:
@@ -143,6 +144,7 @@ def _attach_agent_build_tool(
             investigation_context=_investigation_context,
             max_repair_attempts=settings.resident_evolution.build_repair_attempts,
             flock_confidence=settings.resident_evolution.self_registered_tool_confidence,
+            installed_artifact_recorder=installed_artifact_recorder,
         )
     except TypeError:
         logger.debug("build_tool not attached: executor does not support dynamic tools")

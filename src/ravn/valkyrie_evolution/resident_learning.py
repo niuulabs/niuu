@@ -406,6 +406,8 @@ class ResidentLearningRuntime:
                 )
                 continue
             manifest = artifact.manifest
+            if self._skills.status(manifest.name) == "archived":
+                continue
             records.append(
                 {
                     "skill_name": manifest.name,
@@ -584,6 +586,18 @@ class ResidentLearningRuntime:
                 }
             ],
         }
+
+    async def register_installed_artifact(self, artifact: ResidentLearningArtifact) -> None:
+        """Put an already-installed local tool under the resident lifecycle.
+
+        ``build_tool`` has already verified, reviewed, persisted, and registered
+        the implementation before calling this hook. This method records the
+        same managed-skill projection used by peer adoption, without installing
+        the code a second time.
+        """
+        _, build = review_inputs(artifact, self.identity)
+        await self._record_installed_skill(artifact, build)
+        await self._refresh_skill_inventory()
 
     async def execute_selected_capability(
         self,
@@ -1632,6 +1646,27 @@ class ResidentLearningRuntime:
                 build=build,
             )
 
+        await self._record_installed_skill(artifact, build, skill_name=skill_name)
+        if (
+            build.artifact_type != "agent_tool"
+            and build.has_tool_implementation
+            and self._tools_dir is not None
+        ):
+            write_tool(
+                tools_dir=self._tools_dir,
+                skill_name=skill_name,
+                tool_code=build.tool_code,
+            )
+        return skill_name
+
+    async def _record_installed_skill(
+        self,
+        artifact: ResidentLearningArtifact,
+        build: BuildResult,
+        *,
+        skill_name: str | None = None,
+    ) -> None:
+        skill_name = skill_name or build.skill_name
         scope = _normalise_scope(artifact.scope)
         try:
             await self._skills.create(
@@ -1661,17 +1696,6 @@ class ResidentLearningRuntime:
                 environment_id=self.identity.environment_id,
                 domain=self.identity.domain or artifact.domain,
             )
-        if (
-            build.artifact_type != "agent_tool"
-            and build.has_tool_implementation
-            and self._tools_dir is not None
-        ):
-            write_tool(
-                tools_dir=self._tools_dir,
-                skill_name=skill_name,
-                tool_code=build.tool_code,
-            )
-        return skill_name
 
     async def _archive_learning_skill(self, artifact: ResidentLearningArtifact) -> str:
         rows = await self._skills.list_skills(include_archived=True)
