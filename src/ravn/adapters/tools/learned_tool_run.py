@@ -22,6 +22,7 @@ import logging
 from ravn.domain.models import ToolResult
 from ravn.ports.permission import PermissionPort
 from ravn.ports.tool import ToolPort
+from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.learned_tools import LearnedToolError, LearnedToolResolver
 
 logger = logging.getLogger(__name__)
@@ -37,9 +38,11 @@ class LearnedToolRunTool(ToolPort):
         *,
         resolver: LearnedToolResolver,
         permission: PermissionPort,
+        skill_manager: SkillManagementRegistry | None = None,
     ) -> None:
         self._resolver = resolver
         self._permission = permission
+        self._skill_manager = skill_manager
 
     @property
     def name(self) -> str:
@@ -98,6 +101,13 @@ class LearnedToolRunTool(ToolPort):
                 is_error=True,
             )
 
+        if self._skill_manager is not None and self._skill_manager.status(name) == "archived":
+            return ToolResult(
+                tool_call_id="",
+                content=f"Learned tool {name!r} is archived and cannot be run.",
+                is_error=True,
+            )
+
         try:
             tool = self._resolver.load(name)
         except LearnedToolError as exc:
@@ -121,11 +131,20 @@ class LearnedToolRunTool(ToolPort):
             )
 
         try:
-            return await tool.execute(payload)
+            result = await tool.execute(payload)
         except Exception as exc:
             logger.warning("learned_tool_run: %r raised: %s", name, exc)
-            return ToolResult(
+            result = ToolResult(
                 tool_call_id="",
                 content=f"Learned tool {name!r} error: {exc}",
                 is_error=True,
             )
+        if self._skill_manager is not None:
+            try:
+                await self._skill_manager.record_usage(name, success=not result.is_error)
+            except LookupError:
+                logger.warning(
+                    "learned_tool_run: %r has no managed lifecycle record",
+                    name,
+                )
+        return result

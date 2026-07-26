@@ -55,8 +55,14 @@ class SkillListTool(ToolPort):
     with ``skill_run``.
     """
 
-    def __init__(self, skill_port: SkillPort) -> None:
+    def __init__(
+        self,
+        skill_port: SkillPort,
+        *,
+        manager: SkillManagementRegistry | None = None,
+    ) -> None:
         self._skill_port = skill_port
+        self._manager = manager
 
     @property
     def name(self) -> str:
@@ -94,7 +100,10 @@ class SkillListTool(ToolPort):
         query: str | None = input.get("query") or None
 
         try:
-            skills = await self._skill_port.list_skills(query=query)
+            if self._manager is None:
+                skills = await self._skill_port.list_skills(query=query)
+            else:
+                skills = await self._manager.list_runnable_skills(query=query)
         except Exception as exc:
             logger.warning("skill_list: list_skills failed: %s", exc)
             return ToolResult(
@@ -143,8 +152,14 @@ class SkillRunTool(ToolPort):
     are appended to the skill instructions.
     """
 
-    def __init__(self, skill_port: SkillPort) -> None:
+    def __init__(
+        self,
+        skill_port: SkillPort,
+        *,
+        manager: SkillManagementRegistry | None = None,
+    ) -> None:
         self._skill_port = skill_port
+        self._manager = manager
 
     @property
     def name(self) -> str:
@@ -197,7 +212,11 @@ class SkillRunTool(ToolPort):
             )
 
         try:
-            skill = await self._skill_port.get_skill(skill_name)
+            skill = (
+                await self._manager.get_runnable_skill(skill_name)
+                if self._manager is not None
+                else await self._skill_port.get_skill(skill_name)
+            )
         except Exception as exc:
             logger.warning("skill_run: get_skill(%r) failed: %s", skill_name, exc)
             return ToolResult(

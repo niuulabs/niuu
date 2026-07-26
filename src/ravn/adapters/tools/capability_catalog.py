@@ -22,6 +22,7 @@ from ravn.ports.agent_directory import PeerAgentDirectoryPort
 from ravn.ports.capability import WorkflowCapabilityPort
 from ravn.ports.skill import SkillPort
 from ravn.ports.tool import ToolPort
+from ravn.skills.management import SkillManagementRegistry
 from ravn.tool_observability import publish_learned_tool_inventory
 
 _PERMISSION = "introspect:read"
@@ -35,12 +36,14 @@ class CapabilityListTool(ToolPort):
         *,
         tools_provider: Callable[[], Sequence[ToolPort]],
         skill_port: SkillPort | None = None,
+        skill_manager: SkillManagementRegistry | None = None,
         workflow_sources: Sequence[WorkflowCapabilityPort] | None = None,
         learned_tools_provider: Callable[[], Sequence[Any]] | None = None,
         agent_directory: PeerAgentDirectoryPort | None = None,
     ) -> None:
         self._tools_provider = tools_provider
         self._skill_port = skill_port
+        self._skill_manager = skill_manager
         self._workflow_sources = list(workflow_sources or [])
         # Returns learned-tool artifact envelopes (manifest name/description/
         # schema) read from disk — never loaded as callables here (NIU-1118).
@@ -199,6 +202,12 @@ class CapabilityListTool(ToolPort):
             before = len(capabilities)
             try:
                 learned_artifacts = list(self._learned_tools_provider())
+                if self._skill_manager is not None:
+                    learned_artifacts = [
+                        artifact
+                        for artifact in learned_artifacts
+                        if self._skill_manager.status(artifact.manifest.name) != "archived"
+                    ]
                 publish_learned_tool_inventory(learned_artifacts)
                 for artifact in learned_artifacts:
                     manifest = artifact.manifest
@@ -244,7 +253,11 @@ class CapabilityListTool(ToolPort):
         if self._skill_port is not None:
             before = len(capabilities)
             try:
-                for skill in await self._skill_port.list_skills():
+                if self._skill_manager is None:
+                    skills = await self._skill_port.list_skills()
+                else:
+                    skills = await self._skill_manager.list_runnable_skills()
+                for skill in skills:
                     capabilities.append(
                         capability_from_skill(
                             skill_id=skill.skill_id,
