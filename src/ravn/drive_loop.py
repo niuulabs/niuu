@@ -37,10 +37,16 @@ from ravn.adapters.channels.silent import SilentChannel
 from ravn.adapters.channels.skuld_channel import SkuldChannel
 from ravn.adapters.channels.task_context import TaskContextChannel
 from ravn.adapters.events.noop_publisher import NoOpEventPublisher
-from ravn.config import BudgetConfig, HttpChannelConfig, InitiativeConfig, Settings
+from ravn.config import (
+    BudgetConfig,
+    HttpChannelConfig,
+    InitiativeConfig,
+    ResidentStateConfig,
+    Settings,
+)
 from ravn.domain.budget import DailyBudgetTracker, compute_cost
 from ravn.domain.events import RavnEvent, RavnEventType
-from ravn.domain.exceptions import LLMError
+from ravn.domain.exceptions import LLMError, PromptBudgetExceededError
 from ravn.domain.help_needed import build_help_needed_event
 from ravn.domain.models import AgentTask, OutputMode
 from ravn.domain.resident_continuation import validate_resident_working_state
@@ -101,6 +107,7 @@ _A2A_TERMINAL_STATES = frozenset(
     }
 )
 _HTTP_DEFAULTS = HttpChannelConfig()
+_RESIDENT_STATE_DEFAULTS = ResidentStateConfig()
 
 
 def _bounded_hud_text(value: str, limit: int) -> str:
@@ -108,6 +115,14 @@ def _bounded_hud_text(value: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return f"{text[: max(0, limit - 1)].rstrip()}…"
+
+
+def _bounded_room_context(value: str, limit: int) -> str:
+    text = value.strip()
+    if len(text) <= limit:
+        return text
+    dropped = len(text) - limit
+    return f"{text[:limit].rstrip()}\n[prior room context truncated: {dropped} characters omitted]"
 
 
 def _integer_setting(value: object, default: int) -> int:
@@ -174,6 +189,7 @@ def _resident_hud_result(
     *,
     iteration: int | None = None,
     iteration_budget: int | None = None,
+    prompt_budget: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Project one captured task into the stable HUD task shape."""
     metadata = result.metadata
@@ -201,6 +217,13 @@ def _resident_hud_result(
             "warnings": sum(
                 event.type == "error" or "[warning]" in event.summary.casefold()
                 for event in result.events
+            ),
+            "prompt": (
+                dict(prompt_budget)
+                if prompt_budget is not None
+                else dict(metadata["prompt_budget"])
+                if isinstance(metadata.get("prompt_budget"), dict)
+                else {}
             ),
         },
         "events": [
@@ -689,6 +712,7 @@ def _build_resident_valkyrie_schema_repair_prompt(
     ):
         working_state_shape = (
             "working_state:\n"
+            "  objectives: []\n"
             "  observations: []\n"
             "  hypotheses: []\n"
             "  unknowns: []\n"
@@ -1427,6 +1451,7 @@ class DriveLoop:
             result = self._result_store.get(task_id)
             agent = self._active_agents.get(task_id)
             iteration_budget = getattr(agent, "iteration_budget", None)
+            prompt_budget = getattr(agent, "prompt_budget_status", {})
             if result is not None:
                 if task is not None and result.metadata.get("resident_hud") is not True:
                     result.metadata.update(
@@ -1441,6 +1466,9 @@ class DriveLoop:
                         result,
                         iteration=int(getattr(iteration_budget, "consumed", 0) or 0),
                         iteration_budget=int(getattr(iteration_budget, "total", 0) or 0),
+                        prompt_budget=(
+                            dict(prompt_budget) if isinstance(prompt_budget, dict) else {}
+                        ),
                     )
                 )
                 continue
@@ -1473,6 +1501,7 @@ class DriveLoop:
                         "iteration_budget": int(getattr(iteration_budget, "total", 0) or 0),
                         "tool_calls": 0,
                         "warnings": 0,
+                        "prompt": (dict(prompt_budget) if isinstance(prompt_budget, dict) else {}),
                     },
                     "events": [],
                 }
@@ -1884,8 +1913,8 @@ class DriveLoop:
             logger.error("drive_loop: rpc handler raised: %s", exc)
             return {"error": str(exc)}
 
-    @staticmethod
     def _directed_message_context(
+        self,
         content: str,
         metadata: dict[str, Any] | None,
     ) -> str:
@@ -1906,6 +1935,14 @@ class DriveLoop:
         context = metadata.get("help_context")
         reply_context = metadata.get("reply_context")
         recent_room_context = metadata.get("recent_room_context")
+        context_limit = _integer_setting(
+            getattr(
+                getattr(self._settings, "resident_state", None),
+                "directed_message_context_max_chars",
+                None,
+            ),
+            _RESIDENT_STATE_DEFAULTS.directed_message_context_max_chars,
+        )
         has_help_context = bool(
             help_summary
             or help_reason
@@ -1937,7 +1974,7 @@ class DriveLoop:
                 parts.extend(
                     [
                         "The human replied to this prior room message:",
-                        prior_content,
+                        _bounded_room_context(prior_content, context_limit),
                     ]
                 )
         elif isinstance(recent_room_context, dict) and recent_room_context:
@@ -1947,7 +1984,7 @@ class DriveLoop:
                     [
                         "Most recent message from this participant in the room "
                         "(context only; the human did not explicitly reply to it):",
-                        prior_content,
+                        _bounded_room_context(prior_content, context_limit),
                     ]
                 )
         label = "Human reply" if has_help_context or reply_context else "Human message"
@@ -2016,6 +2053,16 @@ class DriveLoop:
 
         import time
 
+        inbox_ref = ""
+        capture = getattr(self._resident_runtime, "capture_directed_message", None)
+        if capture is not None:
+            try:
+                inbox_ref = await capture(content, metadata)
+            except Exception:
+                logger.exception(
+                    "drive_loop: failed to persist directed message; continuing live delivery"
+                )
+
         task_id = f"task_{int(time.time() * 1000):x}_{self._next_counter()}"
         persona = self._persona_config.name if self._persona_config else None
         task = AgentTask(
@@ -2027,6 +2074,7 @@ class DriveLoop:
             persona=persona,
             priority=1,  # high priority — user is waiting
             human_initiated=True,
+            resident_inbox_refs=[inbox_ref] if inbox_ref else [],
         )
         if metadata:
             root_correlation_id = str(metadata.get("root_correlation_id") or "").strip()
@@ -2790,6 +2838,9 @@ class DriveLoop:
                 result.metadata["iteration_budget"] = int(
                     getattr(iteration_budget, "total", 0) or 0
                 )
+                prompt_budget = getattr(agent, "prompt_budget_status", {})
+                if isinstance(prompt_budget, dict) and prompt_budget:
+                    result.metadata["prompt_budget"] = dict(prompt_budget)
             if not success and self._resident_runtime is not None:
                 release = getattr(self._resident_runtime, "release_failed_task", None)
                 if release is not None:
@@ -2810,10 +2861,15 @@ class DriveLoop:
 
     def _format_task_error(self, task: AgentTask, exc: Exception) -> str:
         """Render a user-visible task failure message for live room chat."""
+        if isinstance(exc, PromptBudgetExceededError):
+            return (
+                f"Context limit reached while handling `{task.title}`: {exc}. "
+                "The turn stopped before another model request was sent."
+            )
         if isinstance(exc, LLMError):
             return (
-                f"LLM backend unavailable while handling `{task.title}`: {exc}. "
-                "The task will not make progress until the upstream model/service recovers."
+                f"LLM request failed while handling `{task.title}`: {exc}. "
+                "No successful judgment was recorded for this turn."
             )
         return f"{type(exc).__name__}: {exc}"
 
