@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -1080,8 +1081,48 @@ def leave_room(handle: str, room: str, rooms_dir: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Addressing  (mention routing over the room's directed-delivery path)
+# Mention parsing  (operator input only)
 # ---------------------------------------------------------------------------
+
+# A handle is a bare slug; colons are allowed because humans are addressed as
+# `human:name`.
+_MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9_:-]*)")
+
+# Code spans are masked so a sample containing an address invokes nobody.
+_FENCED_RE = re.compile(r"```.*?```", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+
+
+def _parse_mentions(body: str, peer_ids: set[str]) -> tuple[list[str], list[str]]:
+    """Return (resolved peer ids, unresolved handles) addressed in *body*.
+
+    This resolves what a human typed into the same directed delivery that
+    ``--to`` performs — it is input parsing, not routing.  Which peer should
+    pick up a piece of work is Ravn's judgment over the mesh (``route_work``
+    and the cascade tools), and nothing here substitutes for that.
+
+    An unknown handle is reported, never guessed at.
+    """
+    masked = _FENCED_RE.sub(lambda m: " " * len(m.group(0)), body)
+    masked = _INLINE_CODE_RE.sub(lambda m: " " * len(m.group(0)), masked)
+
+    # Humans answer to their bare name too, so `@jozef` reaches `human:jozef`.
+    lookup: dict[str, str] = {}
+    for peer_id in peer_ids:
+        lookup[peer_id.lower()] = peer_id
+        if ":" in peer_id:
+            lookup.setdefault(peer_id.split(":", 1)[1].lower(), peer_id)
+
+    resolved: list[str] = []
+    unresolved: list[str] = []
+    for match in _MENTION_RE.finditer(masked):
+        handle = match.group(1)
+        peer_id = lookup.get(handle.lower())
+        if peer_id is None:
+            unresolved.append(handle)
+        elif peer_id not in resolved:
+            resolved.append(peer_id)
+    return resolved, unresolved
 
 
 def _fetch_participants(room_def: RoomDef) -> list[dict]:
@@ -1103,27 +1144,35 @@ def _fetch_participants(room_def: RoomDef) -> list[dict]:
 
 @room_app.command("post")
 def room_post(
-    body: str = typer.Argument(help="Message body."),
+    body: str = typer.Argument(help="Message body. @handle addresses a member."),
     author: str = typer.Option(
         ..., "--as", help="Participant id posting the message, e.g. human:jozef."
     ),
     to: str = typer.Option(
-        "", "--to", help="Deliver to this member. Defaults to whoever spoke last."
+        "", "--to", help="Deliver to this member, overriding any @mentions in the body."
     ),
     room: str = typer.Option("", "--room", "-r", envvar="RAVN_ROOM", help="Room name."),
     rooms_dir: str = _ROOMS_DIR_OPTION,
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show the resolved recipients without delivering."
+    ),
 ) -> None:
-    """Post a message into a room, optionally directed at one member.
+    """Post a message into a room, addressed with @handle or --to.
 
-    This is the human's way into the room. Ravens reach each other over the
-    mesh — ``route_work`` finds a peer by the event types its persona consumes,
-    and the cascade tools delegate to it — so this command deliberately does
-    not decide on their behalf who should act.
+    Each recipient receives the whole message — parts addressed to different
+    members usually depend on each other, so splitting the body would hide
+    that. With no valid address the message goes to whoever spoke last, and
+    with nobody to address it is recorded as room commentary.
+
+    This resolves what a human typed. Ravens reach each other over the mesh —
+    ``route_work`` finds a peer by the event types its persona consumes — so
+    this never decides on their behalf who should act.
 
     \b
     Examples:
-      ravn room post --as human:jozef --to reviewer 'take a look at the diff'
-      ravn room post --as human:jozef 'thanks, carry on'
+      ravn room post --as human:jozef '@reviewer take a look at the diff'
+      ravn room post --as human:jozef '@builder build it then @reviewer check it'
+      ravn room post --as human:jozef --to reviewer 'take a look'
     """
     resolved_dir = Path(rooms_dir) if rooms_dir else _rooms_dir_default()
     room_def = _resolve_room_for_membership(room, resolved_dir)
@@ -1138,16 +1187,42 @@ def room_post(
         )
         raise typer.Exit(1)
 
-    target = to.strip() or _last_speaker(room_def, exclude=author)
-    if target and target not in peer_ids:
+    unresolved: list[str] = []
+    if to.strip():
+        recipients = [to.strip()]
+    else:
+        recipients, unresolved = _parse_mentions(body, peer_ids)
+        # A self-mention does not re-invoke the author.
+        recipients = [peer for peer in recipients if peer != author]
+        if not recipients:
+            last = _last_speaker(room_def, exclude=author)
+            recipients = [last] if last else []
+
+    if unresolved:
         typer.echo(
-            f"{target!r} is not in room {room_def.name!r}. "
+            "warning: no member matches "
+            + ", ".join("@" + handle for handle in unresolved)
+            + " — treated as plain text.",
+            err=True,
+        )
+
+    unknown = [peer for peer in recipients if peer not in peer_ids]
+    if unknown:
+        typer.echo(
+            f"{unknown[0]!r} is not in room {room_def.name!r}. "
             f"Run 'ravn room participants --environment {room_def.name}' to see who is.",
             err=True,
         )
         raise typer.Exit(1)
 
-    if not target:
+    if dry_run:
+        typer.echo(f"author:     {author}")
+        typer.echo(
+            "recipients: " + (", ".join(recipients) if recipients else "(nobody — commentary)")
+        )
+        return
+
+    if not recipients:
         _post(
             room_def.broker_url,
             "/api/room/message",
@@ -1156,17 +1231,18 @@ def room_post(
         typer.echo("posted as room commentary (addressed to nobody)")
         return
 
-    _post(
-        room_def.broker_url,
-        "/api/room/direct",
-        {
-            "target_peer_id": target,
-            "content": body,
-            "participant_id": author,
-            "metadata": {"room": room_def.name},
-        },
-    )
-    typer.echo(f"delivered to {target}")
+    for recipient in recipients:
+        _post(
+            room_def.broker_url,
+            "/api/room/direct",
+            {
+                "target_peer_id": recipient,
+                "content": body,
+                "participant_id": author,
+                "metadata": {"room": room_def.name, "recipients": recipients},
+            },
+        )
+    typer.echo(f"delivered to {', '.join(recipients)}")
 
 
 def _last_speaker(room_def: RoomDef, *, exclude: str) -> str:

@@ -611,3 +611,132 @@ class TestClusterFile:
 
         cluster = room_mod._cluster_file_path("desk", rooms_dir).read_text(encoding="utf-8")
         assert "peer_id: reviewer" not in cluster
+
+
+class TestMentionParsing:
+    """Operator input parsing — resolves what a human typed, nothing more."""
+
+    PEERS = {"reviewer", "builder", "human:jozef"}
+
+    def test_resolves_a_known_handle(self) -> None:
+        assert room_mod._parse_mentions("@reviewer look", self.PEERS) == (["reviewer"], [])
+
+    def test_resolves_several_in_order(self) -> None:
+        resolved, _ = room_mod._parse_mentions(
+            "@builder build it then @reviewer check it", self.PEERS
+        )
+        assert resolved == ["builder", "reviewer"]
+
+    def test_duplicates_collapse(self) -> None:
+        resolved, _ = room_mod._parse_mentions("@reviewer and @reviewer", self.PEERS)
+        assert resolved == ["reviewer"]
+
+    def test_matching_is_case_insensitive(self) -> None:
+        assert room_mod._parse_mentions("@Reviewer", self.PEERS)[0] == ["reviewer"]
+
+    def test_humans_answer_to_their_bare_name(self) -> None:
+        assert room_mod._parse_mentions("@jozef ping", self.PEERS)[0] == ["human:jozef"]
+
+    def test_unknown_handle_is_reported_not_guessed(self) -> None:
+        resolved, unresolved = room_mod._parse_mentions("@reviwer look", self.PEERS)
+        assert resolved == []
+        assert unresolved == ["reviwer"]
+
+    def test_inline_code_does_not_address(self) -> None:
+        assert room_mod._parse_mentions("use `@reviewer` here", self.PEERS) == ([], [])
+
+    def test_fenced_block_does_not_address(self) -> None:
+        body = "look:\n```python\n@reviewer\n```\nthoughts?"
+        assert room_mod._parse_mentions(body, self.PEERS) == ([], [])
+
+    def test_mention_outside_a_fence_still_resolves(self) -> None:
+        body = "```\n@builder\n```\n@reviewer please review it"
+        assert room_mod._parse_mentions(body, self.PEERS)[0] == ["reviewer"]
+
+
+class TestPostMentionRouting:
+    @pytest.fixture
+    def posted(self, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, dict]]:
+        calls: list[tuple[str, str, dict]] = []
+        monkeypatch.setattr(
+            room_mod,
+            "_post",
+            lambda base, path, payload: (calls.append((base, path, payload)), {})[1],
+        )
+        monkeypatch.setattr(
+            room_mod,
+            "_fetch_participants",
+            lambda rd: [
+                {"peer_id": "reviewer"},
+                {"peer_id": "builder"},
+                {"peer_id": "human:jozef"},
+            ],
+        )
+        monkeypatch.setattr(room_mod, "_last_speaker", lambda rd, exclude: "")
+        return calls
+
+    def _cmd(self, rooms_dir: Path, body: str, *extra: str):
+        return runner.invoke(
+            room_app,
+            [
+                "post",
+                body,
+                "--as",
+                "human:jozef",
+                "--room",
+                "desk",
+                "--rooms-dir",
+                str(rooms_dir),
+                *extra,
+            ],
+        )
+
+    def test_mention_delivers_to_that_member(
+        self, rooms_dir: Path, live_room: dict, posted: list
+    ) -> None:
+        result = self._cmd(rooms_dir, "@reviewer take a look")
+
+        assert result.exit_code == 0, result.output
+        assert posted[0][1] == "/api/room/direct"
+        assert posted[0][2]["target_peer_id"] == "reviewer"
+
+    def test_two_mentions_fan_out_with_the_whole_body(
+        self, rooms_dir: Path, live_room: dict, posted: list
+    ) -> None:
+        """Each recipient gets the full message, not a per-mention slice."""
+        body = "@builder build it then @reviewer check it"
+        result = self._cmd(rooms_dir, body)
+
+        assert result.exit_code == 0, result.output
+        assert [p["target_peer_id"] for _, _, p in posted] == ["builder", "reviewer"]
+        assert all(p["content"] == body for _, _, p in posted)
+
+    def test_self_mention_does_not_reinvoke_the_author(
+        self, rooms_dir: Path, live_room: dict, posted: list
+    ) -> None:
+        result = self._cmd(rooms_dir, "@jozef noting for myself")
+
+        assert result.exit_code == 0, result.output
+        assert posted[0][1] == "/api/room/message"
+
+    def test_to_overrides_mentions(self, rooms_dir: Path, live_room: dict, posted: list) -> None:
+        result = self._cmd(rooms_dir, "@reviewer look", "--to", "builder")
+
+        assert result.exit_code == 0, result.output
+        assert posted[0][2]["target_peer_id"] == "builder"
+
+    def test_misaddress_warns_and_falls_back(
+        self, rooms_dir: Path, live_room: dict, posted: list
+    ) -> None:
+        result = self._cmd(rooms_dir, "@reviwer look")
+
+        assert result.exit_code == 0, result.output
+        assert "no member matches @reviwer" in result.output
+        assert posted[0][1] == "/api/room/message"
+
+    def test_dry_run_delivers_nothing(self, rooms_dir: Path, live_room: dict, posted: list) -> None:
+        result = self._cmd(rooms_dir, "@reviewer look", "--dry-run")
+
+        assert result.exit_code == 0, result.output
+        assert posted == []
+        assert "recipients: reviewer" in result.output
