@@ -412,6 +412,21 @@ Determine whether the observations require action.
         assert status["a2a_tasks"][0]["state"] == "TASK_STATE_WORKING"
         assert status["a2a_tasks"][0]["source_tool"] == "build_tool"
 
+        dl.record_a2a_activity(
+            parent_task_id=parent.task_id,
+            activity={
+                "agent_id": "https://ting.example/.well-known/agent-card.json",
+                "skill_id": "tool-builder",
+                "task_id": "task-1",
+                "state": "TASK_STATE_WORKING",
+                "operation": "build",
+                "source_tool": "build_tool",
+                "tracking_state": "poll_exhausted",
+            },
+        )
+
+        assert dl.resident_hud_status()["a2a_tasks"] == []
+
     @pytest.mark.asyncio
     async def test_no_cascade_skuld_and_mesh_uses_composite(self):
         """No cascade, skuld_channel + mesh → direct Skuld stream wins for live activity."""

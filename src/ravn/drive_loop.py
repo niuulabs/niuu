@@ -258,7 +258,11 @@ def _resident_hud_a2a_tasks(
             if not task_id:
                 continue
             state = str(details.get("state") or "TASK_STATE_UNSPECIFIED")
-            if state in _A2A_TERMINAL_STATES:
+            tracking_state = str(details.get("tracking_state") or "")
+            if state in _A2A_TERMINAL_STATES or tracking_state in {
+                "error",
+                "poll_exhausted",
+            }:
                 sessions.pop(task_id, None)
                 continue
             prior = sessions.get(task_id, {})

@@ -398,6 +398,61 @@ class TestRavnAgentToolUse:
         assert not second_result.is_error
         assert recovered.requests[0].operation_id == operation_id
         assert list((artifacts_dir / "pending-commissions").glob("*.json")) == []
+        persisted = json.loads((artifacts_dir / "restart_probe.json").read_text())
+        assert persisted["provenance"]["build_operation_id"] == operation_id
+
+    async def test_build_tool_reconciles_stale_commission_when_tool_is_installed(
+        self,
+        tmp_path,
+    ) -> None:
+        agent, _ = make_agent(make_simple_llm("unused"))
+        tools_dir = tmp_path / "tools"
+        artifacts_dir = tmp_path / "artifacts"
+        tool = attach_build_tool(
+            agent,
+            tools_dir=tools_dir,
+            artifacts_dir=artifacts_dir,
+            environment_id="cluster-a",
+            valkyrie_id="resident-a",
+        )
+        tool_code = "def run(input):\n    return {'installed': True}\n"
+        installed = await tool.execute(
+            {
+                "manifest": {
+                    "name": "installed_probe",
+                    "description": "Already installed.",
+                    "input_schema": {"type": "object"},
+                    "required_permission": "probe:read",
+                },
+                "tool_code": tool_code,
+                "canary_input": {},
+            }
+        )
+        assert not installed.is_error
+
+        operation_id = "stale-repair-operation"
+        tool._write_commission(  # noqa: SLF001
+            operation_id,
+            {
+                "version": 1,
+                "operation_id": operation_id,
+                "tool_name": "installed_probe",
+                "environment_id": "cluster-a",
+                "valkyrie_id": "resident-a",
+                "state": "submitting",
+                "input": {
+                    "manifest": {"name": "installed_probe"},
+                    "tool_code": tool_code,
+                },
+            },
+        )
+
+        recovered = await tool.recover_pending()
+
+        assert len(recovered) == 1
+        assert not recovered[0].is_error
+        assert "already installed" in recovered[0].content
+        assert list((artifacts_dir / "pending-commissions").glob("*.json")) == []
 
     async def test_build_tool_rejects_build_request_without_backend(self, tmp_path) -> None:
         agent, _ = make_agent(make_simple_llm("unused"))
@@ -519,6 +574,42 @@ class TestRavnAgentToolUse:
         assert payload["tool_code"].startswith("def run")
         # P5a default preserved: without config the proposal travels at 0.74.
         assert payload["confidence"] == pytest.approx(0.74)
+
+    async def test_build_tool_keeps_success_when_flock_publication_fails(self, tmp_path) -> None:
+        class _UnavailablePublisher:
+            async def publish(self, _event) -> None:
+                raise TimeoutError("NATS publish timed out")
+
+        agent, _ = make_agent(make_simple_llm("unused"))
+        tool = attach_build_tool(
+            agent,
+            tools_dir=tmp_path / "tools",
+            publisher=_UnavailablePublisher(),
+            environment_id="cluster-a",
+            valkyrie_id="resident-a",
+            flock_id="flock-a",
+        )
+
+        result = await tool.execute(
+            {
+                "manifest": {
+                    "name": "resilient_probe",
+                    "description": "Survives optional publication failure.",
+                    "input_schema": {"type": "object"},
+                    "required_permission": "probe:read",
+                },
+                "tool_code": "def run(input):\n    return {'ok': True}\n",
+                "canary_input": {},
+            }
+        )
+
+        assert not result.is_error
+        payload = json.loads(result.content)
+        assert payload["registered"] is True
+        assert "NATS publish timed out" in payload["flock_publication_warning"]
+        registered = next(item for item in agent.tools if item.name == "resilient_probe")
+        run = await registered.execute({})
+        assert json.loads(run.content) == {"ok": True}
 
     async def test_build_tool_custom_flock_confidence_travels_with_proposal(self, tmp_path) -> None:
         """P5a: a configured self_registered_tool_confidence reaches the flock
