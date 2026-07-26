@@ -101,6 +101,132 @@ def test_span_context_and_metrics_are_real_when_sdk_is_installed() -> None:
     telemetry.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_learned_tool_lifecycle_has_explicit_trace_spans(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from contextlib import contextmanager
+
+    import ravn.adapters.tools.build_tool as build_tool_module
+    import ravn.adapters.tools.learned_tool_run as learned_tool_module
+    import ravn.adapters.tools.skill_tools as skill_tools_module
+    from ravn.adapters.permission.allow_deny import AllowAllPermission
+    from ravn.adapters.skill.file_registry import FileSkillRegistry
+    from ravn.adapters.tools.build_tool import BuildTool
+    from ravn.adapters.tools.learned_tool_run import LearnedToolRunTool
+    from ravn.adapters.tools.skill_tools import SkillManageTool
+    from ravn.skills.management import SkillManagementRegistry
+
+    class Span:
+        def set_attribute(self, _name, _value) -> None:
+            return None
+
+    class RecordingTelemetry:
+        def __init__(self) -> None:
+            self.spans = []
+            self.events = []
+            self._active = []
+
+        @contextmanager
+        def span(self, name, **_kwargs):
+            self.spans.append(name)
+            self._active.append(name)
+            try:
+                yield Span()
+            finally:
+                self._active.pop()
+
+        def event(self, name, **_kwargs) -> None:
+            self.events.append((self._active[-1] if self._active else "", name))
+
+        def set_attributes(self, _attributes) -> None:
+            return None
+
+        def mark_error(self, *_args, **_kwargs) -> None:
+            return None
+
+        def count(self, *_args, **_kwargs) -> None:
+            return None
+
+        def gauge(self, *_args, **_kwargs) -> None:
+            return None
+
+    telemetry = RecordingTelemetry()
+    monkeypatch.setattr(build_tool_module, "get_observability", lambda: telemetry)
+    monkeypatch.setattr(learned_tool_module, "get_observability", lambda: telemetry)
+    monkeypatch.setattr(skill_tools_module, "get_observability", lambda: telemetry)
+
+    skills_dir = tmp_path / "skills"
+    manager = SkillManagementRegistry(
+        FileSkillRegistry(
+            skill_dirs=[str(skills_dir)],
+            write_dir=skills_dir,
+            include_builtin=False,
+            cwd=tmp_path,
+        ),
+        metadata_path=tmp_path / "skill_management.json",
+    )
+    await manager.create(name="status_probe", content="capability: tool.status_probe")
+
+    class LearnedTool:
+        required_permission = "tool:run"
+
+        async def execute(self, payload):
+            return ToolResult(tool_call_id="", content="ok")
+
+    class Resolver:
+        def load(self, name):
+            return LearnedTool()
+
+    await LearnedToolRunTool(
+        resolver=Resolver(),  # type: ignore[arg-type]
+        permission=AllowAllPermission(),
+        skill_manager=manager,
+    ).execute({"name": "status_probe", "input": {}})
+    await SkillManageTool(manager.skill_port, manager=manager).execute(
+        {"action": "archive", "name": "status_probe"}
+    )
+
+    async def record_installed(_artifact) -> None:
+        return None
+
+    built = BuildTool(
+        tools_dir=tmp_path / "tools",
+        artifacts_dir=tmp_path / "artifacts",
+        register_tool=lambda *_args, **_kwargs: None,
+        autonomy_mode="autonomous",
+        installed_artifact_recorder=record_installed,
+    )
+    await built.execute(
+        {
+            "manifest": {
+                "name": "new_probe",
+                "description": "Inspect status",
+                "input_schema": {"type": "object"},
+                "required_permission": "tool:run",
+            },
+            "tool_code": "def run(payload):\n    return {'ok': True}\n",
+            "test_code": "",
+        }
+    )
+
+    assert {
+        "ravn.learned_tool.lifecycle.run",
+        "ravn.skill.lifecycle",
+        "ravn.learned_tool.lifecycle.register",
+    }.issubset(telemetry.spans)
+    assert (
+        "ravn.learned_tool.lifecycle.run",
+        "ravn.learned_tool.lifecycle.usage_recorded",
+    ) in telemetry.events
+    assert ("ravn.skill.lifecycle", "ravn.skill.lifecycle.finished") in telemetry.events
+    assert (
+        "ravn.learned_tool.lifecycle.register",
+        "ravn.learned_tool.lifecycle.registered",
+    ) in telemetry.events
+
+
 def test_linked_span_starts_a_bounded_trace_with_causal_link() -> None:
     pytest.importorskip("opentelemetry.sdk")
     from opentelemetry.sdk.metrics import MeterProvider

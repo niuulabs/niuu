@@ -576,18 +576,36 @@ class BuildTool(ToolPort):
             self._register_tool(learned_tool, replace=replace)  # type: ignore[call-arg]
             lifecycle_warning = ""
             if self._installed_artifact_recorder is not None:
-                try:
-                    await self._installed_artifact_recorder(resident_artifact)
-                except Exception as exc:  # noqa: BLE001 — installation already succeeded
-                    lifecycle_warning = (
-                        "The tool is installed, but its lifecycle record could not be "
-                        f"updated: {type(exc).__name__}: {exc}"
-                    )
-                    logger.warning(
-                        "Learned tool %s installed, but lifecycle registration failed",
-                        artifact.manifest.name,
-                        exc_info=True,
-                    )
+                lifecycle_attributes = {
+                    "ravn.learned_tool.name": artifact.manifest.name,
+                    "ravn.learned_tool.artifact_id": artifact.artifact_id,
+                    "ravn.skill.lifecycle.action": "register",
+                }
+                with telemetry.span(
+                    "ravn.learned_tool.lifecycle.register",
+                    attributes=lifecycle_attributes,
+                ) as lifecycle_span:
+                    try:
+                        await self._installed_artifact_recorder(resident_artifact)
+                        telemetry.event(
+                            "ravn.learned_tool.lifecycle.registered",
+                            attributes=lifecycle_attributes,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — installation already succeeded
+                        lifecycle_warning = (
+                            "The tool is installed, but its lifecycle record could not be "
+                            f"updated: {type(exc).__name__}: {exc}"
+                        )
+                        telemetry.mark_error(
+                            lifecycle_span,
+                            type(exc).__name__,
+                            str(exc),
+                        )
+                        logger.warning(
+                            "Learned tool %s installed, but lifecycle registration failed",
+                            artifact.manifest.name,
+                            exc_info=True,
+                        )
             publish_learned_tool_inventory([artifact])
             telemetry.event(
                 "ravn.tool_build.registered",

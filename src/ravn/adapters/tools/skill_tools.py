@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 from uuid import uuid4
 
+from niuu.observability import get_observability
 from ravn.context.autonomy import (
     AutonomyMode,
     AutonomyPolicy,
@@ -337,6 +338,24 @@ class SkillManageTool(ToolPort):
 
     async def execute(self, payload: dict) -> ToolResult:
         action = (payload.get("action") or "").strip()
+        name = (payload.get("name") or "").strip()
+        telemetry = get_observability()
+        attributes = {
+            "ravn.skill.lifecycle.action": action or "unknown",
+            "ravn.skill.name": name,
+        }
+        with telemetry.span("ravn.skill.lifecycle", attributes=attributes) as span:
+            result = await self._execute_action(action, payload)
+            outcome = "error" if result.is_error else "success"
+            span.set_attribute("ravn.skill.lifecycle.outcome", outcome)
+            telemetry.event(
+                "ravn.skill.lifecycle.finished",
+                attributes={**attributes, "ravn.skill.lifecycle.outcome": outcome},
+                content=result.content,
+            )
+            return result
+
+    async def _execute_action(self, action: str, payload: dict) -> ToolResult:
         try:
             if action in {
                 "create",
