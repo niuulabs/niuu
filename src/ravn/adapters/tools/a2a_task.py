@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import uuid4
 
@@ -19,6 +21,8 @@ _INPUT_REQUIRED_STATE = "TASK_STATE_INPUT_REQUIRED"
 _DEFAULT_RESULT_MAX_CHARS = 12_000
 _DEFAULT_MESSAGE_MAX_CHARS = 12_000
 
+logger = logging.getLogger(__name__)
+
 
 class A2ATaskTool(ToolPort):
     """Start, inspect, answer, or cancel a task on a discovered peer agent."""
@@ -31,6 +35,7 @@ class A2ATaskTool(ToolPort):
         trusted_origins: list[str] | None = None,
         result_max_chars: int = _DEFAULT_RESULT_MAX_CHARS,
         message_max_chars: int = _DEFAULT_MESSAGE_MAX_CHARS,
+        activity_emitter: Callable[[dict[str, object]], Awaitable[None]] | None = None,
     ) -> None:
         self._directory = agent_directory
         self._client = client
@@ -39,6 +44,7 @@ class A2ATaskTool(ToolPort):
         )
         self._result_max_chars = max(1_000, result_max_chars)
         self._message_max_chars = max(1_000, message_max_chars)
+        self._activity_emitter = activity_emitter
 
     @property
     def name(self) -> str:
@@ -196,6 +202,23 @@ class A2ATaskTool(ToolPort):
                 "a2a.task.state": state or "unknown",
             },
         )
+        await self._emit_activity(
+            {
+                "agent_id": agent.id,
+                "skill_id": str(input.get("skill_id") or ""),
+                "task_id": task_id,
+                "state": state or "TASK_STATE_UNSPECIFIED",
+                "operation": operation,
+                "input_required": state == _INPUT_REQUIRED_STATE,
+                "question": _pending_question(task),
+                "prompt": _truncate(str(input.get("prompt") or ""), 500),
+                "status_message": _truncate(
+                    str(status.get("message") or status.get("update") or ""),
+                    500,
+                ),
+                "source_tool": self.name,
+            }
+        )
         return ToolResult(
             tool_call_id="",
             content=_render_response_payload(
@@ -206,6 +229,14 @@ class A2ATaskTool(ToolPort):
                 max_chars=self._result_max_chars,
             ),
         )
+
+    async def _emit_activity(self, activity: dict[str, object]) -> None:
+        if self._activity_emitter is None or not activity.get("task_id"):
+            return
+        try:
+            await self._activity_emitter(activity)
+        except Exception:
+            logger.exception("Failed to capture A2A task activity")
 
     async def _execute_operation(
         self,
@@ -356,6 +387,19 @@ def _jsonrpc_endpoint(agent: AgentDirectoryEntry) -> str:
             continue
         if interface.url:
             return interface.url
+    return ""
+
+
+def _pending_question(task: dict[str, Any]) -> str:
+    metadata = task.get("metadata")
+    if not isinstance(metadata, dict):
+        return ""
+    questions = metadata.get("pendingQuestions")
+    if not isinstance(questions, list):
+        return ""
+    for item in questions:
+        if isinstance(item, dict):
+            return _truncate(str(item.get("question") or item.get("summary") or ""), 500)
     return ""
 
 

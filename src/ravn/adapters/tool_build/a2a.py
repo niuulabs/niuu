@@ -82,6 +82,7 @@ class A2AToolBuildBackend(ToolBuildBackend):
         poll_interval_seconds: float = 5.0,
         gate_reviewer: GateReviewer | None = None,
         question_answerer: QuestionAnswerer | None = None,
+        activity_emitter: Callable[[dict[str, object]], Awaitable[None]] | None = None,
         max_gate_rounds: int = 3,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -116,6 +117,7 @@ class A2AToolBuildBackend(ToolBuildBackend):
         # silently auto-approved or guessed.
         self._gate_reviewer = gate_reviewer
         self._question_answerer = question_answerer
+        self._activity_emitter = activity_emitter
         self._max_gate_rounds = max_gate_rounds
         self._sleep = sleep
 
@@ -275,6 +277,7 @@ class A2AToolBuildBackend(ToolBuildBackend):
             endpoint,
             task_id,
             request,
+            workflow_id=workflow_id,
             exchanges=exchanges,
             rounds=rounds,
         )
@@ -319,6 +322,7 @@ class A2AToolBuildBackend(ToolBuildBackend):
         task_id: str,
         request: ToolBuildRequest,
         *,
+        workflow_id: str,
         exchanges: list[dict[str, Any]] | None = None,
         rounds: int = 0,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -337,11 +341,31 @@ class A2AToolBuildBackend(ToolBuildBackend):
             "a2a.endpoint": endpoint,
             "a2a.task.max_poll_attempts": self._max_poll_attempts,
         }
+        last_activity: tuple[str, str, str] | None = None
         with telemetry.span("ravn.a2a.task.wait", attributes=attributes) as span:
             try:
                 for attempt in range(self._max_poll_attempts):
                     task = await self._get_task(endpoint, task_id)
                     state = _task_state(task)
+                    question = _activity_question(task)
+                    status_message = _task_status_message(task)
+                    activity = (state, question, status_message)
+                    if activity != last_activity:
+                        await self._emit_activity(
+                            {
+                                "agent_id": self._card_url,
+                                "skill_id": workflow_id,
+                                "task_id": task_id,
+                                "state": state or "TASK_STATE_UNSPECIFIED",
+                                "operation": "build",
+                                "input_required": state == _INPUT_REQUIRED_STATE,
+                                "question": question,
+                                "prompt": request.build_request[:500],
+                                "status_message": status_message,
+                                "source_tool": "build_tool",
+                            }
+                        )
+                        last_activity = activity
                     span.set_attribute("a2a.task.state", state)
                     span.set_attribute("a2a.task.poll_attempt", attempt + 1)
                     telemetry.event(
@@ -424,6 +448,14 @@ class A2AToolBuildBackend(ToolBuildBackend):
                 },
             )
             return task, exchanges
+
+    async def _emit_activity(self, activity: dict[str, object]) -> None:
+        if self._activity_emitter is None:
+            return
+        try:
+            await self._activity_emitter(activity)
+        except Exception:
+            logger.exception("Failed to capture A2A tool-build activity")
 
     async def _resume_task_input(
         self,
@@ -1044,6 +1076,27 @@ def _task_state(task: Any) -> str:
     if not isinstance(status, dict):
         return ""
     return str(status.get("state") or "")
+
+
+def _task_status_message(task: dict[str, Any]) -> str:
+    status = task.get("status")
+    if not isinstance(status, dict):
+        return ""
+    return str(status.get("message") or status.get("update") or "")[:500]
+
+
+def _activity_question(task: dict[str, Any]) -> str:
+    question = _first_pending_question(task)
+    if question:
+        return str(question.get("question") or question.get("summary") or "")[:500]
+    gate = _first_pending_gate(task)
+    if not gate:
+        return ""
+    return " — ".join(
+        str(gate.get(key) or "").strip()
+        for key in ("label", "condition", "instructions", "summary")
+        if str(gate.get(key) or "").strip()
+    )[:500]
 
 
 def _continuation_exchanges(continuation: dict[str, Any]) -> list[dict[str, Any]]:

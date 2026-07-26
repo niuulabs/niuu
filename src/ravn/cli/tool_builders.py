@@ -37,6 +37,7 @@ def _build_tools(
     mimir_event_emitter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     session_join_manager: Any | None = None,
     permission: Any | None = None,
+    a2a_activity_emitter: Callable[[dict[str, object]], Awaitable[None]] | None = None,
 ) -> list[Any]:
     """Build the tool list from the built-in registry, filtered by profile.
 
@@ -81,6 +82,7 @@ def _build_tools(
         "persona_prefix": persona_prefix,
         "discovery": discovery,
         "permission": permission,
+        "a2a_activity_emitter": a2a_activity_emitter,
     }
     runtime_ctx["capability_tools_provider"] = lambda: runtime_ctx.get("capability_tools", [])
 

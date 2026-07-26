@@ -392,6 +392,7 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "trusted_origins": ctx["a2a_trusted_origins"],
             "message_max_chars": s.gateway.platform.a2a_message_max_chars,
             "result_max_chars": s.gateway.platform.a2a_result_max_chars,
+            "activity_emitter": ctx.get("a2a_activity_emitter"),
         },
     ),
     "ting_plan": BuiltinToolDef(
