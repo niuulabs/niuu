@@ -36,6 +36,8 @@ def _agent(
     max_tool_result_chars: int = 0,
     prompt_builder: PromptBuilder | None = None,
     system_prompt: str = "You are a test assistant.",
+    context_window_tokens: int = 0,
+    token_estimate_safety_factor: float = 1.0,
 ) -> RavnAgent:
     return RavnAgent(
         llm=llm,
@@ -48,6 +50,8 @@ def _agent(
         max_iterations=5,
         prompt_builder=prompt_builder,
         max_prompt_tokens=max_prompt_tokens,
+        context_window_tokens=context_window_tokens,
+        token_estimate_safety_factor=token_estimate_safety_factor,
         max_tool_result_chars=max_tool_result_chars,
     )
 
@@ -172,6 +176,46 @@ class TestPromptBudget:
                 await agent.run_turn("word " * 500)
 
         assert any("Prompt budget exceeded" in r.message for r in caplog.records)
+
+    async def test_context_window_reserves_maximum_output(self) -> None:
+        agent = _agent(
+            make_simple_llm("ok"),
+            max_prompt_tokens=5_000,
+            context_window_tokens=2_048,
+        )
+
+        await agent.run_turn("hello")
+
+        assert agent.prompt_budget_status["prompt_budget_tokens"] == 1_024
+        assert agent.prompt_budget_status["output_reserve_tokens"] == 1_024
+        assert agent.prompt_budget_status["context_window_tokens"] == 2_048
+
+    async def test_safety_factor_applies_before_budget_check(self) -> None:
+        baseline = _agent(
+            make_simple_llm("ok"),
+            max_prompt_tokens=100_000,
+            token_estimate_safety_factor=1.0,
+        )
+        conservative = _agent(
+            make_simple_llm("ok"),
+            max_prompt_tokens=100_000,
+            token_estimate_safety_factor=1.5,
+        )
+
+        await baseline.run_turn("hello")
+        await conservative.run_turn("hello")
+
+        assert (
+            conservative.prompt_budget_status["estimated_prompt_tokens"]
+            > baseline.prompt_budget_status["estimated_prompt_tokens"]
+        )
+
+    def test_rejects_output_reserve_larger_than_context_window(self) -> None:
+        with pytest.raises(ValueError, match="max_tokens must be smaller"):
+            _agent(
+                make_simple_llm("ok"),
+                context_window_tokens=1_024,
+            )
 
 
 class TestToolResultCap:

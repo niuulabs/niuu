@@ -784,11 +784,29 @@ class IterationBudgetConfig(BaseModel):
 class ContextManagementConfig(BaseModel):
     """Context compression and prompt-builder configuration."""
 
+    context_window_tokens: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Model context-window size in tokens. The runtime reserves the configured "
+            "maximum output before deriving the safe prompt budget. 0 means the model "
+            "window is unknown, so max_prompt_tokens must provide the prompt ceiling."
+        ),
+    )
+    token_estimate_safety_factor: float = Field(
+        default=1.5,
+        ge=1.0,
+        description=(
+            "Multiplier applied to serialized prompt-size estimates before compression "
+            "and budget enforcement. It covers tokenizer and chat-template overhead "
+            "when the configured provider does not expose preflight token counts."
+        ),
+    )
     compression_threshold: float = Field(
         default=0.8,
         description=(
-            "Fraction of the model's context window that triggers compaction "
-            "(0.0–1.0, default 0.8 — fires when <20% of the context window remains)."
+            "Fraction of the effective safe prompt budget that triggers compaction "
+            "(0.0–1.0, default 0.8)."
         ),
     )
     protect_first_messages: int = Field(
@@ -2926,6 +2944,14 @@ class ResidentStateConfig(BaseModel):
         default=2000,
         ge=100,
         description="Maximum characters persisted from each resident tool result.",
+    )
+    directed_message_context_max_chars: int = Field(
+        default=4000,
+        ge=200,
+        description=(
+            "Maximum characters of prior room content carried into a directed-message "
+            "task. The human's current message is never truncated by this setting."
+        ),
     )
     home_wake_interval_seconds: float = Field(
         default=300.0,

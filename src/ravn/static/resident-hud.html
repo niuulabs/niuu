@@ -9,7 +9,7 @@
     --bg:#04060a; --panel:#080c12; --panel2:#0b1119;
     --line:#16202e; --line2:#233248;
     --tx:#cfdae6; --dim:#5d7085; --dim2:#3d4c5e;
-    --obs:#2fd6c3; --hyp:#f2b03c; --unk:#a870f5; --gap:#ff5f45; --att:#6d8599;
+    --obj:#62a8ff; --obs:#2fd6c3; --hyp:#f2b03c; --unk:#a870f5; --gap:#ff5f45; --att:#6d8599;
     --mono:"SF Mono",SFMono-Regular,ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
   }
   *{box-sizing:border-box;margin:0;padding:0}
@@ -333,6 +333,7 @@
         <div class="live-meta">
           <span>ELAPSED <b id="live-elapsed">—</b></span>
           <span>ITERATION <b id="live-iteration">—</b></span>
+          <span>CONTEXT <b id="live-context">—</b></span>
           <span>TOOLS <b id="live-tools">0</b></span>
           <span>WARNINGS <b id="live-warnings">0</b></span>
         </div>
@@ -394,15 +395,15 @@
   "resident_id": "resident",
   "charter": "",
   "environment": {"name": "Resident"},
-  "fields": ["observations", "hypotheses", "unknowns", "capability_gaps", "attempts"],
+  "fields": ["objectives", "observations", "hypotheses", "unknowns", "capability_gaps", "attempts"],
   "turns": []
 }</script>
 <script>
 // Canonical resident fields get their established colours; anything else a
 // deployment declares still renders, using a rotating palette.
-const KNOWN={observations:"--obs",hypotheses:"--hyp",unknowns:"--unk",
+const KNOWN={objectives:"--obj",observations:"--obs",hypotheses:"--hyp",unknowns:"--unk",
              capability_gaps:"--gap",attempts:"--att"};
-const PALETTE=["--obs","--hyp","--unk","--gap","--att"];
+const PALETTE=["--obj","--obs","--hyp","--unk","--gap","--att"];
 
 const RAW=JSON.parse(document.getElementById("data").textContent);
 // One page may carry several residents, so the same core can be shown against
@@ -852,6 +853,7 @@ function durableTasks(d){
           iteration_budget:0,
           tool_calls:(turn.tools_used||[]).length,
           warnings:0,
+          prompt:{},
         },
         events:[],
         durable:true,
@@ -930,6 +932,11 @@ function renderRuntime(d){
   document.getElementById("live-elapsed").textContent=task?taskDuration(task):"—";
   document.getElementById("live-iteration").textContent=progress.iteration_budget
     ? `${progress.iteration||0} / ${progress.iteration_budget}`:`${progress.iteration||0}`;
+  const prompt=progress.prompt||{}, estimated=prompt.estimated_prompt_tokens||0,
+        budget=prompt.prompt_budget_tokens||0;
+  document.getElementById("live-context").textContent=estimated
+    ? `${estimated.toLocaleString()}${budget?" / "+budget.toLocaleString():""}${prompt.compressed?" · compacted":""}`
+    :"—";
   document.getElementById("live-tools").textContent=progress.tool_calls||0;
   document.getElementById("live-warnings").textContent=progress.warnings||0;
   renderA2A(runtime);

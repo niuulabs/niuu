@@ -255,15 +255,15 @@ class TestContextCompressorCompression:
 
 
 class TestContextCompressorContextWindowLookup:
-    def test_known_model_context_window(self):
+    def test_model_name_does_not_imply_context_window(self):
         llm = _make_llm()
         c = ContextCompressor(llm, model="claude-sonnet-4-6")
-        assert c._context_window == 200_000
+        assert c._context_window == 0
 
-    def test_unknown_model_uses_default(self):
+    def test_unknown_model_does_not_get_a_fake_default(self):
         llm = _make_llm()
         c = ContextCompressor(llm, model="gpt-unknown")
-        assert c._context_window == 200_000
+        assert c._context_window == 0
 
     def test_explicit_context_window_override(self):
         llm = _make_llm()

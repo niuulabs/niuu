@@ -8,6 +8,7 @@ correctly when mesh is not available.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -160,6 +161,17 @@ Determine whether the observations require action.
         }
         dl._active_tasks[task.task_id] = MagicMock()
         dl._inflight_tasks[task.task_id] = task
+        dl._active_agents[task.task_id] = SimpleNamespace(
+            iteration_budget=None,
+            prompt_budget_status={
+                "estimated_prompt_tokens": 42_000,
+                "prompt_budget_tokens": 100_000,
+                "output_reserve_tokens": 8_192,
+                "context_window_tokens": 131_072,
+                "token_estimate_safety_factor": 1.5,
+                "compressed": False,
+            },
+        )
         dl._result_store.start(task.task_id, task.triggered_by)
         dl._result_store.append_event(
             task.task_id,
@@ -199,6 +211,14 @@ Determine whether the observations require action.
                     "iteration_budget": 0,
                     "tool_calls": 1,
                     "warnings": 0,
+                    "prompt": {
+                        "estimated_prompt_tokens": 42_000,
+                        "prompt_budget_tokens": 100_000,
+                        "output_reserve_tokens": 8_192,
+                        "context_window_tokens": 131_072,
+                        "token_estimate_safety_factor": 1.5,
+                        "compressed": False,
+                    },
                 },
                 "events": [
                     {
@@ -265,6 +285,7 @@ Determine whether the observations require action.
             "iteration_budget": 8,
             "tool_calls": 1,
             "warnings": 0,
+            "prompt": {},
         }
         assert recent["events"] == [
             {

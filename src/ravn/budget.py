@@ -10,7 +10,10 @@ so the agent can decide whether to compress context.
 
 from __future__ import annotations
 
+import json
+import math
 from dataclasses import dataclass, field
+from typing import Any
 
 from ravn.domain.models import Message, TokenUsage
 
@@ -60,6 +63,23 @@ class TokenEstimator:
         return total // _CHARS_PER_TOKEN
 
     @staticmethod
+    def rough_structured(value: Any) -> int:
+        """Estimate a complete structured payload, including nested values."""
+        rendered = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        return len(rendered) // _CHARS_PER_TOKEN
+
+    @staticmethod
+    def conservative(tokens: int, safety_factor: float) -> int:
+        """Apply a configured safety factor to a rough token estimate."""
+        return math.ceil(max(0, tokens) * max(1.0, safety_factor))
+
+    @staticmethod
     def from_usage(usage: TokenUsage) -> int:
         """Return the accurate total from an API usage record."""
         return usage.total_tokens
@@ -69,13 +89,15 @@ class TokenEstimator:
         content = msg.content
         if isinstance(content, str):
             return len(content)
-        total = 0
-        for block in content:
-            if isinstance(block, dict):
-                for v in block.values():
-                    if isinstance(v, str):
-                        total += len(v)
-        return total
+        return len(
+            json.dumps(
+                content,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+        )
 
 
 # ---------------------------------------------------------------------------

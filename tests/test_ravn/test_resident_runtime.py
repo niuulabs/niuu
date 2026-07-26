@@ -298,6 +298,7 @@ async def test_working_state_is_reused_by_a_new_runtime_after_restart(tmp_path) 
                 "continuation": "stop",
                 "signal_refs": ["signal-a"],
                 "working_state": {
+                    "objectives": ["understand and improve device Raven"],
                     "observations": ["signal-a introduced device Raven"],
                     "hypotheses": ["Raven may expose a control surface"],
                     "unknowns": ["how Raven can be inspected"],
@@ -323,6 +324,7 @@ async def test_working_state_is_reused_by_a_new_runtime_after_restart(tmp_path) 
 
     assert "A different generic event arrived." in second_context
     assert "resident/continuation/working-state/resident-alpha.md" in second_context
+    assert "understand and improve device Raven" in second_context
     assert "signal-a introduced device Raven" in second_context
     assert "Raven may expose a control surface" in second_context
     assert "no addressable source capability" in second_context
@@ -332,6 +334,38 @@ async def test_working_state_is_reused_by_a_new_runtime_after_restart(tmp_path) 
     assert "will not turn a prose" in second_context
     assert "Use available tools when they can materially reduce uncertainty" in second_context
     assert "Do not call a tool merely to demonstrate tool use" in second_context
+
+
+@pytest.mark.asyncio
+async def test_directed_message_is_captured_in_the_existing_resident_inbox(tmp_path) -> None:
+    inbox = MimirResidentInbox(MarkdownMimirAdapter(tmp_path / "mimir"))
+    runtime = ResidentRuntime(
+        state=LocalResidentState(tmp_path / "state"),
+        inbox=inbox,
+        resident_id="resident-alpha",
+    )
+
+    ref = await runtime.capture_directed_message(
+        "Keep improving this environment across turns.",
+        {"room_id": "operator-room"},
+    )
+
+    rows = await inbox.list_signals(status=ResidentInboxStatus.NEW.value)
+    assert rows[0][0] == ref
+    assert rows[0][1].summary == "Keep improving this environment across turns."
+
+
+@pytest.mark.asyncio
+async def test_directed_message_capture_can_be_disabled(tmp_path) -> None:
+    inbox = MimirResidentInbox(MarkdownMimirAdapter(tmp_path / "mimir"))
+    runtime = ResidentRuntime(
+        state=LocalResidentState(tmp_path / "state"),
+        inbox=inbox,
+        directed_messages_enabled=False,
+    )
+
+    assert await runtime.capture_directed_message("hello", None) == ""
+    assert await inbox.list_signals(status=ResidentInboxStatus.NEW.value) == []
 
 
 @pytest.mark.asyncio

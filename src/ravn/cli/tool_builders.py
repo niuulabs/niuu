@@ -477,6 +477,9 @@ def _build_compressor(settings: Settings, llm: Any) -> Any:
         protect_first=cm.protect_first_messages,
         protect_last=cm.effective_protect_last(),
         compression_threshold=cm.compression_threshold,
+        context_window=cm.context_window_tokens,
+        output_reserve=settings.effective_max_tokens(),
+        token_estimate_safety_factor=cm.token_estimate_safety_factor,
     )
 
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import itertools
-import json
 import logging
 import re
 import time
@@ -135,6 +134,8 @@ class RavnAgent:
         stop_on_outcome: bool = False,
         # NIU-1118: hard per-call prompt budget; 0 disables
         max_prompt_tokens: int = 0,
+        context_window_tokens: int = 0,
+        token_estimate_safety_factor: float = 1.0,
         # NIU-1118: cap one tool result's contribution to history; 0 disables
         max_tool_result_chars: int = 0,
     ) -> None:
@@ -190,8 +191,20 @@ class RavnAgent:
         self._mimir = mimir
         # NIU-594: persona config for outcome block parsing
         self._persona_config = persona_config
-        # NIU-1118: hard per-call prompt budget; 0 disables
-        self._max_prompt_tokens = max_prompt_tokens
+        self._context_window_tokens = max(0, context_window_tokens)
+        self._token_estimate_safety_factor = max(1.0, token_estimate_safety_factor)
+        if self._context_window_tokens and self._max_tokens >= self._context_window_tokens:
+            raise ValueError("max_tokens must be smaller than context_window_tokens")
+        prompt_ceilings = [
+            value
+            for value in (
+                max(0, max_prompt_tokens),
+                max(0, self._context_window_tokens - self._max_tokens),
+            )
+            if value > 0
+        ]
+        self._max_prompt_tokens = min(prompt_ceilings) if prompt_ceilings else 0
+        self._last_prompt_budget_status: dict[str, int | float | bool] = {}
         # NIU-1118: cap one tool result's contribution to history; 0 disables
         self._max_tool_result_chars = max_tool_result_chars
 
@@ -224,6 +237,11 @@ class RavnAgent:
     def last_compression_result(self) -> CompressionResult | None:
         """Compression result from the most recent turn, or None."""
         return self._last_compression_result
+
+    @property
+    def prompt_budget_status(self) -> dict[str, int | float | bool]:
+        """Latest preflight prompt-budget facts for telemetry and the resident HUD."""
+        return dict(self._last_prompt_budget_status)
 
     @property
     def task_id(self) -> str:
@@ -462,6 +480,12 @@ class RavnAgent:
             prompt_sections = self._prompt_section_estimates(effective_system, messages_for_llm)
             if iteration == 0:
                 self._log_prompt_composition(prompt_sections)
+            self._record_prompt_budget(
+                prompt_sections,
+                compressed=bool(
+                    self._last_compression_result and self._last_compression_result.was_compressed
+                ),
+            )
             self._enforce_prompt_budget(prompt_sections)
 
             thinking_param = self._resolve_thinking(
@@ -683,20 +707,24 @@ class RavnAgent:
         audit NIU-1118 asks for — the data that shows WHERE an oversized
         drive-loop prompt comes from.
         """
-        sections: dict[str, int] = {}
+        rough_sections: dict[str, int] = {}
         tool_defs = self._tool_defs()
-        sections["tool_schemas"] = TokenEstimator.rough(
-            json.dumps(tool_defs, default=str, sort_keys=True)
-        )
+        rough_sections["tool_schemas"] = TokenEstimator.rough_structured(tool_defs)
         if self._prompt_builder is not None:
             for name, text in self._prompt_builder.section_texts().items():
-                sections[f"system:{name}"] = TokenEstimator.rough(text)
+                rough_sections[f"system:{name}"] = TokenEstimator.rough(text)
         elif isinstance(effective_system, str):
-            sections["system"] = TokenEstimator.rough(effective_system)
+            rough_sections["system"] = TokenEstimator.rough(effective_system)
         else:
-            sections["system"] = TokenEstimator.rough_blocks(effective_system)
-        sections["history"] = TokenEstimator.rough_messages(messages)
-        return sections
+            rough_sections["system"] = TokenEstimator.rough_blocks(effective_system)
+        rough_sections["history"] = TokenEstimator.rough_messages(messages)
+        return {
+            name: TokenEstimator.conservative(
+                tokens,
+                self._token_estimate_safety_factor,
+            )
+            for name, tokens in rough_sections.items()
+        }
 
     def _log_prompt_composition(self, sections: dict[str, int]) -> None:
         total = sum(sections.values())
@@ -707,6 +735,43 @@ class RavnAgent:
             breakdown,
             len(self._tools),
             len(self._session.messages),
+        )
+
+    def _record_prompt_budget(
+        self,
+        sections: dict[str, int],
+        *,
+        compressed: bool,
+    ) -> None:
+        estimated = sum(sections.values())
+        status: dict[str, int | float | bool] = {
+            "estimated_prompt_tokens": estimated,
+            "prompt_budget_tokens": self._max_prompt_tokens,
+            "output_reserve_tokens": self._max_tokens,
+            "context_window_tokens": self._context_window_tokens,
+            "token_estimate_safety_factor": self._token_estimate_safety_factor,
+            "compressed": compressed,
+        }
+        self._last_prompt_budget_status = status
+        attributes = {
+            "ravn.prompt.estimated_tokens": estimated,
+            "ravn.prompt.budget_tokens": self._max_prompt_tokens,
+            "ravn.prompt.output_reserve_tokens": self._max_tokens,
+            "ravn.prompt.context_window_tokens": self._context_window_tokens,
+            "ravn.prompt.estimate_safety_factor": self._token_estimate_safety_factor,
+            "ravn.prompt.compressed": compressed,
+        }
+        telemetry = get_observability()
+        telemetry.set_attributes(attributes)
+        telemetry.event("ravn.prompt.budget", attributes=attributes, content=sections)
+        telemetry.gauge(
+            "ravn.prompt.estimated_tokens",
+            estimated,
+            attributes={
+                "gen_ai.request.model": self._model,
+                "gen_ai.agent.name": self._persona or "ravn",
+            },
+            description="Conservative preflight estimate of prompt tokens.",
         )
 
     def _enforce_prompt_budget(self, sections: dict[str, int]) -> None:
@@ -796,9 +861,12 @@ class RavnAgent:
             if isinstance(effective_system, list)
             else TokenEstimator.rough(effective_system)
         )
+        tool_tokens = TokenEstimator.rough_structured(self._tool_defs())
         messages, result = await self._compressor.maybe_compress(
             self._session.messages,
             system_tokens=system_tokens,
+            tool_tokens=tool_tokens,
+            prompt_budget_tokens=self._max_prompt_tokens,
             todos=self._session.todos or None,
             memory_summary=memory_summary or None,
         )

@@ -244,6 +244,8 @@ async def _run_daemon(
             stop_on_outcome=resolved_persona.stop_on_outcome if resolved_persona else False,
             # NIU-1118: hard per-call prompt budget (0 disables)
             max_prompt_tokens=settings.context_management.max_prompt_tokens,
+            context_window_tokens=settings.context_management.context_window_tokens,
+            token_estimate_safety_factor=(settings.context_management.token_estimate_safety_factor),
             # NIU-1118: bound one tool result's contribution to history
             max_tool_result_chars=settings.tools.max_result_chars,
             session_join_manager=(
