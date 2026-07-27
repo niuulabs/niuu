@@ -2060,7 +2060,7 @@ class DriveLoop:
             triggered_by="skuld:directed_message",
             output_mode=OutputMode.SURFACE,
             persona=persona,
-            priority=1,  # high priority — user is waiting
+            priority=0,  # user input precedes autonomous continuation work
             human_initiated=True,
             resident_inbox_refs=[inbox_ref] if inbox_ref else [],
         )
