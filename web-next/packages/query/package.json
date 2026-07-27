@@ -25,11 +25,11 @@
     "dev": "tsup --watch"
   },
   "peerDependencies": {
-    "@tanstack/react-query": "^5.101.2",
+    "@tanstack/react-query": "^5.101.3",
     "react": "^19.2.7"
   },
   "devDependencies": {
-    "@tanstack/react-query": "^5.101.2",
+    "@tanstack/react-query": "^5.101.3",
     "@types/react": "^19.2.17",
     "react": "^19.2.7",
     "tsup": "^8.3.5",
