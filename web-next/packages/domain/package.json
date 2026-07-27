@@ -1,6 +1,6 @@
 {
   "name": "@niuulabs/domain",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Framework-free TypeScript types and Zod schemas for cross-plugin domain entities",
   "license": "Apache-2.0",
   "type": "module",

@@ -1,6 +1,6 @@
 {
   "name": "@niuulabs/plugin-observatory",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Observatory plugin — live topology viewer and entity-type registry editor",
   "license": "Apache-2.0",
   "type": "module",

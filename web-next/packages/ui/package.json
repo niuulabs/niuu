@@ -1,6 +1,6 @@
 {
   "name": "@niuulabs/ui",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Shared UI primitives and composites for Niuu plugins",
   "license": "Apache-2.0",
   "type": "module",

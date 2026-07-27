@@ -1,6 +1,6 @@
 {
   "name": "@niuulabs/design-tokens",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Niuu design tokens — CSS custom properties, fonts, ThemeProvider",
   "license": "Apache-2.0",
   "type": "module",

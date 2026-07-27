@@ -1,6 +1,6 @@
 {
   "name": "@niuulabs/plugin-bifrost",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Bifrost plugin — model catalog, provider health, and usage control plane",
   "license": "Apache-2.0",
   "type": "module",

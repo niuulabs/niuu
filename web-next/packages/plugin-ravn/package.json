@@ -1,6 +1,6 @@
 {
   "name": "@niuulabs/plugin-ravn",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Ravn plugin — personas, ravens, sessions, triggers, budget",
   "license": "Apache-2.0",
   "type": "module",
