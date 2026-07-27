@@ -1004,6 +1004,39 @@ async def test_a_failed_resumed_turn_leaves_the_wake_pending_for_retry(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_a_completed_resumed_turn_consumes_wake_when_outcome_is_invalid(tmp_path) -> None:
+    state = LocalResidentState(tmp_path)
+    runtime = ResidentRuntime(state=state)
+    queued: list[AgentTask] = []
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime.bind_enqueue(enqueue)
+    await state.write_scheduled_wake(
+        ResidentScheduledWakeRecord(
+            case_id="case-invalid-outcome",
+            root_correlation_id="root-invalid-outcome",
+            wake_at=datetime.now(UTC) - timedelta(minutes=1),
+            reason="recheck after sleeping",
+        )
+    )
+
+    assert await runtime.resume_due_wakes() == 1
+    disposition = await runtime.handle_completed_turn(
+        task=queued[0],
+        prompt="completed recheck",
+        result=_result({"continuation": "stop"}, outcome_valid=False),
+        response_text="schema-invalid response",
+    )
+
+    assert disposition.reason == "resident outcome contract was invalid"
+    assert await state.list_scheduled_wakes() == []
+    assert await runtime.resume_due_wakes() == 0
+
+
+@pytest.mark.asyncio
 async def test_scheduled_resume_preserves_and_enforces_the_turn_budget(tmp_path) -> None:
     state = LocalResidentState(tmp_path)
     runtime = ResidentRuntime(state=state, max_turns=3)

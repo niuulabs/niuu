@@ -377,6 +377,22 @@ class ResidentRuntime:
             budget_ref = await self._state.write_budget(snapshot)
             budget_span.set_attribute("ravn.resident.budget_ref", budget_ref)
 
+        # The wake is a delivery marker, not evidence. Once the resumed turn and
+        # its budget are durable, that wake has been handled even when the model
+        # misses the outcome schema. Executor crashes never reach this point, so
+        # their wake remains pending for recovery.
+        if task.resident_wake_ref:
+            wake = await self._state.read(task.resident_wake_ref)
+            if wake is not None and wake.path == task.resident_wake_ref:
+                with telemetry.span(
+                    "ravn.port.resident_state.consume_scheduled_wake",
+                    attributes={
+                        "ravn.resident.case_id": case_id,
+                        "ravn.resident.wake_ref": task.resident_wake_ref,
+                    },
+                ):
+                    await self._state.consume_scheduled_wake(wake)
+
         if not outcome_valid:
             self._inflight_cases.discard(case_id)
             self._inflight_refs.difference_update(task.resident_inbox_refs)
@@ -405,17 +421,6 @@ class ResidentRuntime:
             answer = await self._state.read_operator_answer(case_id)
             if answer is not None and answer.path == task.resident_answer_ref:
                 await self._state.consume_operator_answer(answer)
-        if task.resident_wake_ref:
-            wake = await self._state.read(task.resident_wake_ref)
-            if wake is not None and wake.path == task.resident_wake_ref:
-                with telemetry.span(
-                    "ravn.port.resident_state.consume_scheduled_wake",
-                    attributes={
-                        "ravn.resident.case_id": case_id,
-                        "ravn.resident.wake_ref": task.resident_wake_ref,
-                    },
-                ):
-                    await self._state.consume_scheduled_wake(wake)
 
         self._inflight_cases.discard(case_id)
         self._inflight_refs.difference_update(task.resident_inbox_refs)
