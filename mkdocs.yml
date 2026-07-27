@@ -70,7 +70,10 @@ nav:
       - Model routing: concepts/model-routing.md
       - Git and review flow: concepts/git-and-review-flow.md
   - Reference:
-      - CLI: reference/cli.md
+      - CLI:
+          - Overview: reference/cli.md
+          - niuu: reference/cli-niuu.md
+          - ravn: reference/cli-ravn.md
       - Web UI: reference/web-ui.md
       - Configuration: reference/configuration.md
       - API: reference/api.md
