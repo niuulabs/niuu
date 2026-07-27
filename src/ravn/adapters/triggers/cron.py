@@ -29,7 +29,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import IO
 
@@ -66,6 +66,13 @@ _DELIVERY_TO_OUTPUT_MODE: dict[str, OutputMode] = {
     "sleipnir": OutputMode.AMBIENT,
     "platform": OutputMode.SURFACE,
 }
+
+
+def _task_deadline(canonical: str, now: datetime) -> datetime | None:
+    """Expire interval work when its next occurrence becomes due."""
+    if canonical.startswith("every:"):
+        return now + timedelta(seconds=int(canonical[6:]))
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +467,7 @@ class CronTrigger(TriggerPort):
                             output_mode=job.output_mode,
                             persona=job.persona,
                             priority=job.priority,
+                            deadline=_task_deadline(job.canonical, now),
                         )
                         logger.info("cron: firing job %r (task_id=%s)", job.name, task_id)
                         await enqueue(task)
@@ -496,6 +504,7 @@ class CronTrigger(TriggerPort):
                                 output_mode=output_mode,
                                 persona=record.persona or None,
                                 priority=record.priority,
+                                deadline=_task_deadline(canonical, now),
                                 output_path=output_path,
                             )
                             logger.info(

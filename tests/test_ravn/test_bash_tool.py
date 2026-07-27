@@ -6,6 +6,7 @@ sandbox. They do NOT require Docker or any external services.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -126,6 +127,24 @@ class TestTimeout:
     async def test_command_times_out(self, tmp_path: Path) -> None:
         tool = make_tool(tmp_path, timeout_seconds=0.2)
         result = await tool.execute({"command": "sleep 10"})
+        assert result.is_error
+        assert "timed out" in result.content.lower()
+
+    @pytest.mark.asyncio
+    async def test_timeout_kills_descendants_holding_output_pipe(self, tmp_path: Path) -> None:
+        tool = make_tool(tmp_path, timeout_seconds=0.2)
+        started = time.monotonic()
+
+        result = await tool.execute(
+            {
+                "command": (
+                    'python3 -c "import subprocess, time; '
+                    "subprocess.Popen(['sleep', '10']); time.sleep(10)\""
+                )
+            }
+        )
+
+        assert time.monotonic() - started < 2
         assert result.is_error
         assert "timed out" in result.content.lower()
 

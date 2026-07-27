@@ -1308,6 +1308,22 @@ class DriveLoop:
             await self._emit_sleipnir_task_dropped(task, reason="duplicate_task")
             return False, "duplicate_task"
 
+        recurring_key = self._recurring_key(task)
+        if recurring_key is not None and any(
+            self._recurring_key(existing) == recurring_key
+            for existing in (
+                *self._inflight_tasks.values(),
+                *(queued for _priority, _counter, queued in self._queue._queue),
+            )
+        ):
+            logger.info(
+                "drive_loop: recurring task %s (%r) already queued or active — discarding tick",
+                recurring_key,
+                task.title,
+            )
+            await self._emit_sleipnir_task_dropped(task, reason="recurring_task_pending")
+            return False, "recurring_task_pending"
+
         if task.deadline is not None and datetime.now(UTC) > task.deadline:
             logger.info(
                 "drive_loop: task %s (%r) deadline exceeded before enqueue — discarding",
@@ -1340,6 +1356,11 @@ class DriveLoop:
             len(self._active_tasks),
         )
         return True, "accepted"
+
+    @staticmethod
+    def _recurring_key(task: AgentTask) -> str | None:
+        """Return the stable identity shared by occurrences of a cron job."""
+        return task.triggered_by if task.triggered_by.startswith("cron:") else None
 
     def _record_queue_state(self) -> None:
         telemetry = get_observability()
@@ -4019,7 +4040,7 @@ class DriveLoop:
             }
             fan_in_data = raw.get("fan_in_pending", {})
 
-        restored = 0
+        restored_tasks: list[tuple[AgentTask, bool]] = []
         for rec in records:
             try:
                 deadline = datetime.fromisoformat(rec["deadline"]) if rec.get("deadline") else None
@@ -4065,17 +4086,43 @@ class DriveLoop:
                         task.task_id,
                     )
                     continue
-                counter = self._next_counter()
-                self._queue.put_nowait((task.priority, counter, task))
-                track = getattr(self._resident_runtime, "track_task", None)
-                if track is not None:
-                    track(task)
-                if task.task_id in inflight_task_ids:
-                    self._restored_inflight_task_ids.add(task.task_id)
-                restored += 1
+                restored_tasks.append((task, task.task_id in inflight_task_ids))
             except Exception as exc:
                 logger.warning("drive_loop: failed to restore journal entry: %s", exc)
 
+        # A restart turns formerly active tasks back into pending work. For a
+        # recurring job only its newest occurrence is useful; older ticks
+        # describe an environment state that has already been superseded.
+        recurring: dict[str, tuple[AgentTask, bool]] = {}
+        unique: list[tuple[AgentTask, bool]] = []
+        for candidate in restored_tasks:
+            task, _was_inflight = candidate
+            key = self._recurring_key(task)
+            if key is None:
+                unique.append(candidate)
+                continue
+            current = recurring.get(key)
+            if current is None or task.created_at > current[0].created_at:
+                recurring[key] = candidate
+
+        selected = [*unique, *recurring.values()]
+        dropped = len(restored_tasks) - len(selected)
+        if dropped:
+            logger.info(
+                "drive_loop: discarded %d superseded recurring task(s) from journal",
+                dropped,
+            )
+
+        for task, was_inflight in selected:
+            counter = self._next_counter()
+            self._queue.put_nowait((task.priority, counter, task))
+            track = getattr(self._resident_runtime, "track_task", None)
+            if track is not None:
+                track(task)
+            if was_inflight:
+                self._restored_inflight_task_ids.add(task.task_id)
+
+        restored = len(selected)
         if restored:
             logger.info("drive_loop: restored %d task(s) from journal", restored)
 
@@ -4086,3 +4133,5 @@ class DriveLoop:
                 "drive_loop: restored %d fan-in slot(s) from journal",
                 self._fan_in.pending_count,
             )
+        if dropped:
+            self._persist_queue()

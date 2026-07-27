@@ -30,12 +30,13 @@ def _make_task(
     priority: int = 10,
     output_mode: OutputMode = OutputMode.SILENT,
     deadline: datetime | None = None,
+    triggered_by: str | None = None,
 ) -> AgentTask:
     return AgentTask(
         task_id=f"task_{uuid4().hex}_0001",
         title="test task",
         initiative_context="do something useful",
-        triggered_by="cron:test",
+        triggered_by=triggered_by or f"event:test:{uuid4().hex}",
         output_mode=output_mode,
         priority=priority,
         deadline=deadline,
@@ -220,6 +221,28 @@ async def test_drive_loop_enqueue_rejects_duplicate_task_id(tmp_path: Path) -> N
     assert await loop.enqueue(task) is False
 
     assert loop.queued_task_ids() == ["task-duplicate"]
+
+
+@pytest.mark.asyncio
+async def test_drive_loop_keeps_one_pending_occurrence_per_cron_job(tmp_path: Path) -> None:
+    loop, _ = _make_drive_loop(tmp_path)
+    first = _make_task(triggered_by="cron:monitor")
+    second = _make_task(triggered_by="cron:monitor")
+
+    assert await loop.enqueue(first) is True
+    assert await loop.enqueue(second) is False
+
+    assert loop.queued_task_ids() == [first.task_id]
+
+
+@pytest.mark.asyncio
+async def test_drive_loop_allows_different_cron_jobs(tmp_path: Path) -> None:
+    loop, _ = _make_drive_loop(tmp_path)
+
+    assert await loop.enqueue(_make_task(triggered_by="cron:monitor-a")) is True
+    assert await loop.enqueue(_make_task(triggered_by="cron:monitor-b")) is True
+
+    assert loop._queue.qsize() == 2
 
 
 @pytest.mark.asyncio
@@ -422,6 +445,39 @@ async def test_drive_loop_journal_skips_expired_tasks(tmp_path: Path) -> None:
     assert loop._queue.empty()
 
 
+def test_drive_loop_journal_keeps_newest_recurring_occurrence(tmp_path: Path) -> None:
+    journal = tmp_path / "queue.json"
+    old = _make_task(triggered_by="cron:monitor")
+    old.task_id = "task-old"
+    old.created_at = datetime.now(UTC) - timedelta(minutes=10)
+    new = _make_task(triggered_by="cron:monitor")
+    new.task_id = "task-new"
+    new.created_at = datetime.now(UTC)
+    journal.write_text(
+        json.dumps(
+            {
+                "queue": [
+                    DriveLoop._task_journal_record(old),
+                    DriveLoop._task_journal_record(new),
+                ],
+                "inflight": [],
+            }
+        )
+    )
+    loop = DriveLoop(
+        agent_factory=MagicMock(),
+        config=_make_initiative_config(queue_journal_path=str(journal)),
+        settings=Settings(),
+    )
+
+    loop._load_journal()
+
+    assert loop.queued_task_ids() == ["task-new"]
+    assert [record["task_id"] for record in json.loads(journal.read_text())["queue"]] == [
+        "task-new"
+    ]
+
+
 # ---------------------------------------------------------------------------
 # DriveLoop — surface escalation
 # ---------------------------------------------------------------------------
@@ -550,6 +606,8 @@ async def test_cron_trigger_fires_on_schedule(tmp_path: Path) -> None:
 
     assert len(enqueued) >= 1
     assert enqueued[0].triggered_by == "cron:test_job"
+    assert enqueued[0].deadline is not None
+    assert enqueued[0].deadline > enqueued[0].created_at
 
 
 @pytest.mark.asyncio
@@ -1483,7 +1541,7 @@ async def test_finalise_thread_skipped_for_non_thread_task(tmp_path: Path) -> No
     mock_agent.run_turn = AsyncMock(return_value=None)
     factory.return_value = mock_agent
 
-    task = _make_task()  # triggered_by="cron:test"
+    task = _make_task()
     await loop._run_task(task)
 
     mock_mimir.update_thread_state.assert_not_awaited()
