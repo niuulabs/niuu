@@ -1462,6 +1462,7 @@ summary: post-mortem source captured
 
         enqueued = dl.enqueue.await_args.args[0]
         assert enqueued.human_initiated is True
+        assert enqueued.priority == 0
         assert enqueued.persona == "council-chair"
         assert enqueued.root_correlation_id == "root-1"
         assert enqueued.workflow_parent_event_id == "parent-1"
