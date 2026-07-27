@@ -1097,3 +1097,42 @@ class TestInProcessDiscovery:
         assert found.pub_address == "tcp://127.0.0.1:7490"
         assert found.status in ("idle", "busy")
         assert isinstance(found.task_count, int)
+
+
+class TestMdnsCrossThreadScheduling:
+    """Browse callbacks and the handshake responder run without an event loop."""
+
+    def _adapter(self):
+        from ravn.adapters.discovery.mdns import MdnsDiscoveryAdapter
+        from ravn.domain.models import RavnIdentity
+
+        identity = RavnIdentity(
+            peer_id="alpha",
+            realm_id="realm",
+            persona="p",
+            capabilities=[],
+            permission_mode="read_only",
+            version="0.0.0",
+        )
+        return MdnsDiscoveryAdapter(identity, handshake_port=0)
+
+    def test_scheduling_before_start_reports_failure_instead_of_raising(self) -> None:
+        """`asyncio.get_running_loop()` here raised and killed the handshake."""
+        adapter = self._adapter()
+
+        assert adapter._schedule(lambda: None) is False
+
+    def test_scheduling_runs_on_the_captured_loop(self) -> None:
+        import asyncio
+
+        adapter = self._adapter()
+        seen: list[str] = []
+
+        async def _run() -> None:
+            adapter._loop = asyncio.get_running_loop()
+            assert adapter._schedule(seen.append, "peer") is True
+            await asyncio.sleep(0)
+
+        asyncio.run(_run())
+
+        assert seen == ["peer"]

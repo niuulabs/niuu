@@ -101,10 +101,20 @@ def resolve_transport_kwargs(
             or getattr(mesh, "adapters", [])
         )
         peer_id = getattr(mesh, "own_peer_id", "") or getattr(mesh, "peer_id", "")
+
+        def _peer_addresses() -> list[str]:
+            """Re-read the peer table on every re-discovery pass.
+
+            A snapshot taken at build time left a node dialing only the peers
+            that existed when it started, so anyone who joined later was
+            unreachable in that direction.
+            """
+            return read_cluster_pub_addresses(discovery_adapters)
+
         return {
             "address": mesh.nng.pub_sub_address,
             "service_id": f"{service_prefix}:{peer_id}",
-            "peer_addresses": read_cluster_pub_addresses(discovery_adapters) or None,
+            "peer_addresses": _peer_addresses,
         }
 
     if adapter in ("sleipnir", "rabbitmq"):
