@@ -363,13 +363,29 @@ class TestBuildMeshTransport:
     """
 
     def test_nng_kwargs_with_cluster(self):
-        """NNG kwargs include peer addresses from cluster.yaml."""
+        """NNG kwargs resolve peer addresses from cluster.yaml."""
         settings = _make_settings()
         with patch("niuu.mesh.cluster.read_cluster_pub_addresses", return_value=["tcp://p:7480"]):
             kwargs = _resolve_transport_kwargs(settings, "nng")
-        assert kwargs["address"] == "ipc:///tmp/test.ipc"
-        assert kwargs["service_id"] == "ravn:test-peer"
-        assert kwargs["peer_addresses"] == ["tcp://p:7480"]
+            assert kwargs["address"] == "ipc:///tmp/test.ipc"
+            assert kwargs["service_id"] == "ravn:test-peer"
+            assert kwargs["peer_addresses"]() == ["tcp://p:7480"]
+
+    def test_nng_peer_addresses_are_re_read(self):
+        """The provider is re-invoked so peers that join later are dialed."""
+        settings = _make_settings()
+        roster = ["tcp://p:7480"]
+        with patch(
+            "niuu.mesh.cluster.read_cluster_pub_addresses",
+            side_effect=lambda _cfg: list(roster),
+        ):
+            provider = _resolve_transport_kwargs(settings, "nng")["peer_addresses"]
+
+            assert provider() == ["tcp://p:7480"]
+
+            roster.append("tcp://q:7482")
+
+            assert provider() == ["tcp://p:7480", "tcp://q:7482"]
 
     def test_rabbitmq_returns_none_when_env_missing(self):
         settings = _make_settings()

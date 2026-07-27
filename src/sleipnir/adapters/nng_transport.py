@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from contextlib import suppress
 
 try:
@@ -292,7 +293,7 @@ class NngSubscriber(SleipnirSubscriber):
         reconnect_max_ms: int = DEFAULT_RECONNECT_MAX_MS,
         registry: ServiceRegistry | None = None,
         rediscover_interval_s: float = DEFAULT_REDISCOVER_INTERVAL_S,
-        peer_addresses: list[str] | None = None,
+        peer_addresses: list[str] | Callable[[], list[str]] | None = None,
     ) -> None:
         _require_pynng()
         if ring_buffer_depth < 1:
@@ -342,7 +343,8 @@ class NngSubscriber(SleipnirSubscriber):
         self._recv_task = asyncio.create_task(self._recv_loop(), name="sleipnir-nng-sub-recv")
 
         # Start periodic re-discovery if registry or peer addresses are configured
-        if (self._registry is not None or self._peer_addresses) and self._rediscover_interval_s > 0:
+        has_peer_source = self._registry is not None or bool(self._peer_addresses)
+        if has_peer_source and self._rediscover_interval_s > 0:
             self._rediscover_task = asyncio.create_task(
                 self._rediscover_loop(), name="sleipnir-nng-sub-rediscover"
             )
@@ -363,11 +365,28 @@ class NngSubscriber(SleipnirSubscriber):
                 logger.debug("NngSubscriber: registry: %d publisher(s)", len(addresses))
                 return addresses
 
-        if self._peer_addresses:
-            logger.debug("NngSubscriber: peer_addresses: %d pub(s)", len(self._peer_addresses))
-            return list(self._peer_addresses)
+        peers = self._resolve_peer_addresses()
+        if peers:
+            logger.debug("NngSubscriber: peer_addresses: %d pub(s)", len(peers))
+            return peers
 
         return [self._address]
+
+    def _resolve_peer_addresses(self) -> list[str]:
+        """Return the configured peer publishers.
+
+        A callable is re-invoked on every re-discovery pass, so a peer that
+        joins after this subscriber started is still dialed.  A plain list is
+        fixed at construction, which is why late joiners were previously
+        unreachable.
+        """
+        if callable(self._peer_addresses):
+            try:
+                return list(self._peer_addresses())
+            except Exception as exc:
+                logger.debug("NngSubscriber: peer address provider failed: %s", exc)
+                return []
+        return list(self._peer_addresses)
 
     async def _rediscover_loop(self) -> None:
         """Periodically re-discover publishers and dial any new ones.
@@ -510,7 +529,7 @@ class NngTransport(SleipnirPublisher, SleipnirSubscriber):
         service_id: str | None = None,
         registry: ServiceRegistry | None = None,
         rediscover_interval_s: float = DEFAULT_REDISCOVER_INTERVAL_S,
-        peer_addresses: list[str] | None = None,
+        peer_addresses: list[str] | Callable[[], list[str]] | None = None,
     ) -> None:
         _require_pynng()
         self._publisher = NngPublisher(

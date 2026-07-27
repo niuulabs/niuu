@@ -309,52 +309,77 @@ def _build_up_callback(
         typer.echo("All services stopped. Goodbye.")
 
     # Build dynamic signature: skip_preflight, all, then one bool | None per service.
-    # Typer reads __signature__ and __annotations__ for introspection.
+    # Typer reads __signature__ and __annotations__ for introspection, and takes
+    # each option's help from the typer.Option used as the parameter default.
+    # Flag names are left to Typer so they keep deriving from the parameter name.
     # "all" is a valid inspect.Parameter name even though it shadows the builtin.
     params = [
         inspect.Parameter(
             "skip_preflight",
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            default=False,
+            default=typer.Option(
+                False,
+                help="Start without running the host preflight checks.",
+            ),
             annotation=bool,
         ),
         inspect.Parameter(
             "all",
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            default=False,
+            default=typer.Option(
+                False,
+                help="Start every registered service, ignoring per-service defaults.",
+            ),
             annotation=bool,
         ),
         inspect.Parameter(
             "no_web",
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            default=False,
+            default=typer.Option(
+                False,
+                help="Start the backend services without serving the web UI.",
+            ),
             annotation=bool,
         ),
         inspect.Parameter(
             "host_profile",
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            default="full",
+            default=typer.Option(
+                "full",
+                help="Host profile that decides which route domains are mounted.",
+            ),
             annotation=str,
         ),
         inspect.Parameter(
             "mounts",
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            default="",
+            default=typer.Option(
+                "",
+                help=("Comma-separated route domains to mount instead of the profile default."),
+            ),
             annotation=str,
         ),
         inspect.Parameter(
             "workspaces_dir",
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            default="",
+            default=typer.Option(
+                "",
+                help="Directory for session workspaces. Mini mode only.",
+            ),
             annotation=str,
         ),
     ]
     for svc_name in sorted(service_defs.keys()):
+        description = (service_defs[svc_name].description or "").strip().rstrip(".")
+        detail = f" — {description}" if description else ""
         params.append(
             inspect.Parameter(
                 svc_name,
                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                default=None,
+                default=typer.Option(
+                    None,
+                    help=f"Force the {svc_name} service on or off{detail}.",
+                ),
                 annotation=bool | None,
             )
         )

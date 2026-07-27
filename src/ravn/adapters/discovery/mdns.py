@@ -385,7 +385,10 @@ class MdnsDiscoveryAdapter:
         info = ServiceInfo(type_=service_type, name=name)  # type: ignore[call-arg]
         try:
             await info.async_request(zeroconf, timeout=2000)  # type: ignore[attr-defined]
-        except Exception:
+        except Exception as exc:
+            # Silently dropping this hid a total browse failure, so it is
+            # reported even though a single miss is not fatal.
+            logger.debug("mdns_discovery: service request for %s failed: %s", name, exc)
             return
 
         props = info.decoded_properties  # type: ignore[attr-defined]

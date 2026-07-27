@@ -148,6 +148,23 @@ def _build_discovery(
     )
 
 
+def _query_adapters_config(settings: Settings) -> list[dict[str, Any]]:
+    """Return a discovery config safe to run alongside a live local node.
+
+    ``ravn peers`` is a transient reader, not a participant: it dials peers to
+    handshake but never needs to receive one. Reusing the node's configured
+    handshake port would collide with the running daemon that already holds
+    it, so mDNS entries are moved to an ephemeral port.
+    """
+    adapters: list[dict[str, Any]] = []
+    for entry in getattr(settings.discovery, "adapters", []) or []:
+        cfg = dict(entry)
+        if "mdns" in str(cfg.get("adapter", "")).lower():
+            cfg["handshake_port"] = 0
+        adapters.append(cfg)
+    return adapters
+
+
 async def _run_peers(settings: Settings, *, verbose: bool, force_scan: bool) -> None:
     """Build a discovery adapter, optionally scan, and print the peer table."""
     from ravn.adapters.discovery._identity import (
@@ -180,7 +197,7 @@ async def _run_peers(settings: Settings, *, verbose: bool, force_scan: bool) -> 
     from niuu.mesh.discovery_builder import build_discovery_adapters  # noqa: PLC0415
 
     discovery = build_discovery_adapters(
-        adapters_config=list(getattr(settings.discovery, "adapters", [])),
+        adapters_config=_query_adapters_config(settings),
         own_identity=identity,
         heartbeat_interval_s=settings.discovery.heartbeat_interval_s,
         peer_ttl_s=settings.discovery.peer_ttl_s,

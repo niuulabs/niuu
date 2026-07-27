@@ -964,3 +964,37 @@ async def test_publisher_start_raises_on_invalid_socket_path():
     assert pub._socket is None, (
         "NngPublisher._socket must be None after a failed start() to avoid resource leak."
     )
+
+
+class TestPeerAddressProvider:
+    """A peer list fixed at construction left late joiners unreachable."""
+
+    def _subscriber(self, peer_addresses):
+        from sleipnir.adapters.nng_transport import NngSubscriber
+
+        return NngSubscriber(address="tcp://127.0.0.1:0", peer_addresses=peer_addresses)
+
+    def test_a_static_list_is_still_honoured(self) -> None:
+        sub = self._subscriber(["tcp://127.0.0.1:1", "tcp://127.0.0.1:2"])
+
+        assert sub._resolve_peer_addresses() == ["tcp://127.0.0.1:1", "tcp://127.0.0.1:2"]
+
+    def test_a_provider_is_re_invoked(self) -> None:
+        """Re-discovery must see peers that appeared after startup."""
+        roster = ["tcp://127.0.0.1:1"]
+        sub = self._subscriber(lambda: list(roster))
+
+        assert sub._resolve_peer_addresses() == ["tcp://127.0.0.1:1"]
+
+        roster.append("tcp://127.0.0.1:2")
+
+        assert sub._resolve_peer_addresses() == ["tcp://127.0.0.1:1", "tcp://127.0.0.1:2"]
+
+    def test_a_failing_provider_yields_no_peers(self) -> None:
+        def _boom() -> list[str]:
+            raise RuntimeError("cluster file unreadable")
+
+        assert self._subscriber(_boom)._resolve_peer_addresses() == []
+
+    def test_no_peers_configured_yields_empty(self) -> None:
+        assert self._subscriber(None)._resolve_peer_addresses() == []

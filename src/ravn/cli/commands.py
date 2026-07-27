@@ -1173,15 +1173,19 @@ async def _run_evolve(settings: Settings) -> None:
 # ---------------------------------------------------------------------------
 
 
+# The gateway is a single command, registered directly on the app so it is
+# invoked as `ravn gateway` rather than `ravn gateway gateway`. The Typer app
+# below exists only to back the standalone `ravn-gateway` console script; a
+# one-command app runs that command without naming it.
 gateway_app = typer.Typer(
     name="gateway",
     help="Start the Ravn Pi-mode gateway (Telegram polling + local HTTP).",
     add_completion=False,
 )
-app.add_typer(gateway_app, name="gateway")
 
 
-@gateway_app.command()
+@app.command("gateway")
+@gateway_app.command("gateway")
 def gateway(
     telegram: bool = typer.Option(False, "--telegram", help="Enable Telegram polling channel."),
     http: bool = typer.Option(False, "--http", help="Enable local HTTP channel."),
