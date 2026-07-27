@@ -432,7 +432,7 @@ RAVN_TASKS: list[tuple[str, str, list[str]]] = [
         [
             "ravn daemon --persona coordinator",
             "ravn listen --persona coder                # take dispatched tasks",
-            "ravn gateway gateway --telegram --http",
+            "ravn gateway --telegram --http           # human-facing chat channels",
             "",
             "ravn warden list                           # persisted long-lived agents",
             "ravn warden create <name>",

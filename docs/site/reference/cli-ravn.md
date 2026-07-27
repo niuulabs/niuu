@@ -96,7 +96,7 @@ The daemon drives itself and answers what is addressed to it; the gateway expose
 ```bash
 ravn daemon --persona coordinator
 ravn listen --persona coder                # take dispatched tasks
-ravn gateway gateway --telegram --http
+ravn gateway --telegram --http           # human-facing chat channels
 
 ravn warden list                           # persisted long-lived agents
 ravn warden create <name>
@@ -129,7 +129,7 @@ ravn [OPTIONS] COMMAND [ARGS]...
 | [`daemon`](#ravn-daemon) | Start gateway channels AND drive loop simultaneously. Never exits. |
 | [`evolve`](#ravn-evolve) | Self-improvement pattern extraction. |
 | [`flock`](#ravn-flock) | Manage a local multi-node Ravn flock (mesh of daemon processes). |
-| [`gateway`](#ravn-gateway) | Start the Ravn Pi-mode gateway (Telegram polling + local HTTP). |
+| [`gateway`](#ravn-gateway) | Start the Ravn gateway (Telegram polling + local HTTP server). |
 | [`join`](#ravn-join) | Put a persona-typed Ravn into a room as an addressable member. |
 | [`leave`](#ravn-leave) | Stop a member's daemon and remove it from the room. |
 | [`listen`](#ravn-listen) | Listen for remotely dispatched tasks via Sleipnir (NIU-505). |
@@ -343,22 +343,10 @@ ravn flock stop [OPTIONS]
 
 #### `ravn gateway`
 
-Start the Ravn Pi-mode gateway (Telegram polling + local HTTP).
-
-```bash
-ravn gateway [OPTIONS] COMMAND [ARGS]...
-```
-
-| Subcommand | Description |
-| --- | --- |
-| [`gateway`](#ravn-gateway-gateway) | Start the Ravn gateway (Telegram polling + local HTTP server). |
-
-##### `ravn gateway gateway`
-
 Start the Ravn gateway (Telegram polling + local HTTP server).
 
 ```bash
-ravn gateway gateway [OPTIONS]
+ravn gateway [OPTIONS]
 ```
 
 Channels are enabled via flags or via the ``gateway:`` section of ravn.yaml. The gateway runs as asyncio tasks — no separate process required.
