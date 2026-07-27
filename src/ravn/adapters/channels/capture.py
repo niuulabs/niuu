@@ -26,8 +26,9 @@ Sleipnir streaming extension path (NIU-545, future work):
 
 from __future__ import annotations
 
+import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -48,6 +49,7 @@ class CapturedEvent:
     type: str
     summary: str  # human-readable one-liner
     timestamp: datetime
+    details: dict[str, object] | None = None
 
 
 @dataclass
@@ -61,6 +63,7 @@ class TaskResult:
     triggered_by: str
     started_at: datetime
     completed_at: datetime | None
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 class TaskResultStore:
@@ -77,7 +80,13 @@ class TaskResultStore:
         self._store: dict[str, TaskResult] = {}
         self._insertion_order: list[str] = []
 
-    def start(self, task_id: str, triggered_by: str) -> None:
+    def start(
+        self,
+        task_id: str,
+        triggered_by: str,
+        *,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
         """Register a new running task.  Evicts oldest if at capacity."""
         result = TaskResult(
             task_id=task_id,
@@ -87,6 +96,7 @@ class TaskResultStore:
             triggered_by=triggered_by,
             started_at=datetime.now(UTC),
             completed_at=None,
+            metadata=dict(metadata or {}),
         )
         if task_id in self._store:
             self._store[task_id] = result
@@ -135,6 +145,14 @@ class TaskResultStore:
         """Return task IDs currently marked as running."""
         return [tid for tid, r in self._store.items() if r.status == "running"]
 
+    def results(self) -> tuple[TaskResult, ...]:
+        """Return the bounded results in insertion order for factual projections."""
+        return tuple(
+            result
+            for task_id in self._insertion_order
+            if (result := self._store.get(task_id)) is not None
+        )
+
 
 def _summarise_event(event: RavnEvent) -> str:
     """Produce a human-readable one-liner for each event type."""
@@ -163,6 +181,47 @@ def _summarise_event(event: RavnEvent) -> str:
     raise AssertionError("Unreachable _summarise_event fallthrough")
 
 
+def _capture_details(event: RavnEvent) -> dict[str, object] | None:
+    """Retain bounded structured tool facts for live runtime projections."""
+    if event.type == RavnEventType.TOOL_START:
+        tool_input = event.payload.get("input")
+        return {
+            "tool_name": str(event.payload.get("tool_name") or ""),
+            "input": _bounded_mapping(tool_input) if isinstance(tool_input, dict) else {},
+        }
+    if event.type == RavnEventType.TOOL_RESULT:
+        result = str(event.payload.get("result") or "")
+        try:
+            parsed: object = json.loads(result)
+        except (TypeError, ValueError):
+            parsed = result[:8_000]
+        if isinstance(parsed, dict):
+            parsed = _bounded_mapping(parsed)
+        elif not isinstance(parsed, str):
+            parsed = str(parsed)[:8_000]
+        return {
+            "tool_name": str(event.payload.get("tool_name") or ""),
+            "result": parsed,
+            "is_error": bool(event.payload.get("is_error")),
+        }
+    return None
+
+
+def _bounded_mapping(value: dict[object, object]) -> dict[str, object]:
+    """Keep identifying tool inputs without retaining unbounded prompts."""
+    bounded: dict[str, object] = {}
+    for key, item in list(value.items())[:16]:
+        name = str(key)[:128]
+        if isinstance(item, str):
+            bounded[name] = item[:2_000]
+        elif item is None or isinstance(item, bool | int | float):
+            bounded[name] = item
+        else:
+            rendered = json.dumps(item, default=str, sort_keys=True)
+            bounded[name] = rendered[:2_000]
+    return bounded
+
+
 class CaptureChannel(ChannelPort):
     """Accumulates all events for a task into a retrievable result.
 
@@ -187,6 +246,7 @@ class CaptureChannel(ChannelPort):
             type=str(event.type),
             summary=summary,
             timestamp=event.timestamp,
+            details=_capture_details(event),
         )
         self._store.append_event(self._task_id, captured)
 

@@ -179,6 +179,21 @@ def test_build_tool_build_backend_applies_realm_selector_override() -> None:
     assert backend._workflow_selector.tags == []
 
 
+def test_build_tool_build_backend_injects_a2a_activity_emitter() -> None:
+    configured = Settings(
+        resident_evolution={
+            "tool_build_adapter": "ravn.adapters.tool_build.A2AToolBuildBackend",
+            "tool_build_kwargs": {"card_url": "https://ting.example/.well-known/agent-card.json"},
+        }
+    )
+    emitter = AsyncMock()
+
+    backend = _build_tool_build_backend(configured, activity_emitter=emitter)
+
+    assert backend is not None
+    assert backend._activity_emitter is emitter
+
+
 # ---------------------------------------------------------------------------
 # _resolve_realm_build_config — realm grant resolution + fallbacks
 # ---------------------------------------------------------------------------

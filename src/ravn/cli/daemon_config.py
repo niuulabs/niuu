@@ -100,9 +100,7 @@ def _quiet_overlay() -> dict[str, Any]:
     return overlay
 
 
-def mesh_block(
-    handle: str, *, pub_port: int, rep_port: int, cluster_file: Path
-) -> dict[str, Any]:
+def mesh_block(handle: str, *, pub_port: int, rep_port: int, cluster_file: Path) -> dict[str, Any]:
     """Return the ``mesh:``/``discovery:`` sections that make a member a peer.
 
     Room membership is a surface; peer-to-peer work still travels over the
@@ -146,8 +144,8 @@ def render_cluster_yaml(members: list[dict[str, Any]]) -> str:
                 f"  - peer_id: {member['handle']}",
                 f"    persona: {member['persona']}",
                 f"    display_name: {member['handle']}",
-                f"    pub_address: \"tcp://127.0.0.1:{member['pub_port']}\"",
-                f"    rep_address: \"tcp://127.0.0.1:{member['rep_port']}\"",
+                f'    pub_address: "tcp://127.0.0.1:{member["pub_port"]}"',
+                f'    rep_address: "tcp://127.0.0.1:{member["rep_port"]}"',
             ]
         )
     return "\n".join(lines) + "\n"

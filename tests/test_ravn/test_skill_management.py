@@ -121,6 +121,21 @@ async def test_lifecycle_archive_restore_pin_promote_and_usage(tmp_path: Path) -
     assert telemetry.action_safety_class == "diagnostic"
 
 
+async def test_skill_tools_honor_shared_archive_state(tmp_path: Path) -> None:
+    skill_port = await _adapter(tmp_path)
+    manager = SkillManagementRegistry(skill_port, metadata_path=tmp_path / "meta.json")
+    await manager.create(name="obsolete probe", content="Inspect with `probe`.")
+    await manager.archive("obsolete probe")
+
+    listed = await SkillListTool(skill_port, manager=manager).execute({})
+    loaded = await SkillRunTool(skill_port, manager=manager).execute(
+        {"skill_name": "obsolete probe"}
+    )
+
+    assert "obsolete probe" not in listed.content
+    assert loaded.is_error
+
+
 async def test_successful_environment_episodes_feed_skill_extraction(tmp_path: Path) -> None:
     skill_port = await _adapter(tmp_path, threshold=2)
     manager = SkillManagementRegistry(skill_port, metadata_path=tmp_path / "meta.json")

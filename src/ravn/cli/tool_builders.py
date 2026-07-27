@@ -37,6 +37,8 @@ def _build_tools(
     mimir_event_emitter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     session_join_manager: Any | None = None,
     permission: Any | None = None,
+    a2a_activity_emitter: Callable[[dict[str, object]], Awaitable[None]] | None = None,
+    skill_manager: Any | None = None,
 ) -> list[Any]:
     """Build the tool list from the built-in registry, filtered by profile.
 
@@ -81,6 +83,7 @@ def _build_tools(
         "persona_prefix": persona_prefix,
         "discovery": discovery,
         "permission": permission,
+        "a2a_activity_emitter": a2a_activity_emitter,
     }
     runtime_ctx["capability_tools_provider"] = lambda: runtime_ctx.get("capability_tools", [])
 
@@ -93,13 +96,31 @@ def _build_tools(
         resolver = _build_learned_tool_resolver(settings, workspace)
         if resolver is not None:
             runtime_ctx["learned_tool_resolver"] = resolver
-            runtime_ctx["learned_tools_provider"] = resolver.list_artifacts
 
-    # Pre-build shared skill port so both skill_list and skill_run reuse one instance
-    if "skill" in include_groups and settings.skill.enabled:
+    # One lifecycle registry backs skill discovery, management, and learned-tool
+    # execution. Resident daemons inject their long-lived registry; other
+    # runtimes get one local instance for this tool set.
+    if skill_manager is not None or (
+        settings.skill.enabled and ("skill" in include_groups or dispatch_learned_tools)
+    ):
         from ravn.adapters.tools.builtin_registry import _build_skill_port  # noqa: PLC0415
+        from ravn.skills.management import SkillManagementRegistry  # noqa: PLC0415
 
-        runtime_ctx["skill_port"] = _build_skill_port(settings, workspace)
+        skill_port = (
+            skill_manager.skill_port
+            if skill_manager is not None
+            else _build_skill_port(settings, workspace)
+        )
+        skill_manager = skill_manager or SkillManagementRegistry(
+            skill_port,
+            metadata_path=_resident_ravn_state_dir(workspace, settings) / "skill_management.json",
+        )
+        runtime_ctx["skill_port"] = skill_port
+        runtime_ctx["skill_manager"] = skill_manager
+
+    resolver = runtime_ctx.get("learned_tool_resolver")
+    if resolver is not None:
+        runtime_ctx["learned_tools_provider"] = resolver.list_artifacts
 
     if "workflow" in include_groups:
         workflow_sources = _build_workflow_capability_sources(settings)
@@ -193,7 +214,14 @@ def _build_tools(
             logger.warning("Failed to load custom tool %r: %s", ct.adapter, exc)
 
     if not dispatch_learned_tools:
-        tools.extend(_load_resident_learned_tools(settings, workspace, tools))
+        tools.extend(
+            _load_resident_learned_tools(
+                settings,
+                workspace,
+                tools,
+                skill_manager=skill_manager,
+            )
+        )
 
     # -- Apply enabled/disabled filters --
     tools = _filter_tools(tools, settings, persona_config)
@@ -242,6 +270,8 @@ def _load_resident_learned_tools(
     settings: Settings,
     workspace: Path,
     existing_tools: list[Any],
+    *,
+    skill_manager: Any | None = None,
 ) -> list[Any]:
     """Legacy bulk mode: load every learned tool as a native callable.
 
@@ -256,6 +286,8 @@ def _load_resident_learned_tools(
     loaded: list[Any] = []
     for artifact in resolver.list_artifacts():
         name = artifact.manifest.name
+        if skill_manager is not None and skill_manager.status(name) == "archived":
+            continue
         if name in seen:
             continue
         try:
@@ -477,6 +509,9 @@ def _build_compressor(settings: Settings, llm: Any) -> Any:
         protect_first=cm.protect_first_messages,
         protect_last=cm.effective_protect_last(),
         compression_threshold=cm.compression_threshold,
+        context_window=cm.context_window_tokens,
+        output_reserve=settings.effective_max_tokens(),
+        token_estimate_safety_factor=cm.token_estimate_safety_factor,
     )
 
 

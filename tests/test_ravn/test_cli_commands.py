@@ -1415,6 +1415,18 @@ class TestDaemonAgentFactory:
 
         recorded: list[dict[str, object]] = []
 
+        class _FakePublisher:
+            def __init__(self) -> None:
+                self.started = False
+
+            async def start(self) -> None:
+                self.started = True
+
+            async def stop(self) -> None:
+                self.started = False
+
+        publisher = _FakePublisher()
+
         class _FakeExecutor:
             def build(self, **kwargs):  # noqa: ANN003
                 recorded.append(kwargs)
@@ -1422,6 +1434,7 @@ class TestDaemonAgentFactory:
 
         class _FakeDriveLoop:
             def __init__(self, *, agent_factory, **kwargs):  # noqa: ANN003
+                assert publisher.started
                 self._triggers: list[object] = []
                 agent_factory(MagicMock(), task_id="task-1", triggered_by="mesh:outcome:test")
                 agent_factory(MagicMock(), task_id="task-2", triggered_by="mesh:outcome:test")
@@ -1440,6 +1453,10 @@ class TestDaemonAgentFactory:
             patch("ravn.cli.commands._build_llm", return_value=MagicMock()),
             patch("ravn.cli.commands._build_memory", return_value=MagicMock()),
             patch("ravn.cli.commands._build_compressor", return_value=MagicMock()),
+            patch(
+                "ravn.cli.commands._build_environment_signal_publisher",
+                return_value=publisher,
+            ),
             patch(
                 "ravn.cli.commands._build_prompt_builder",
                 side_effect=lambda *_args: MagicMock(),

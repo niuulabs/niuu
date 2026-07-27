@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Mapping
+import logging
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
@@ -23,10 +24,13 @@ from ravn.tool_observability import publish_learned_tool_inventory
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
 from ravn.valkyrie_evolution.learned_tools import (
     LearnedToolError,
+    learned_tool_artifact_path,
+    learned_tool_path,
     learned_tool_runner_for_backend,
     learned_tool_venvs_dir,
     load_learned_tool,
     manifest_safety_class,
+    read_learned_tool_artifact,
     write_learned_tool,
     write_learned_tool_artifact,
 )
@@ -56,6 +60,8 @@ SELF_REGISTERED_TOOL_CONFIDENCE = 0.74
 DEFAULT_MAX_REPAIR_ATTEMPTS = 3
 
 ToolRegistrar = Callable[[ToolPort], None]
+InstalledArtifactRecorder = Callable[[ResidentLearningArtifact], Awaitable[None]]
+logger = logging.getLogger(__name__)
 
 
 class BuildTool(ToolPort):
@@ -84,6 +90,7 @@ class BuildTool(ToolPort):
         investigation_context: Callable[[], str] | None = None,
         max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
         flock_confidence: float = SELF_REGISTERED_TOOL_CONFIDENCE,
+        installed_artifact_recorder: InstalledArtifactRecorder | None = None,
     ) -> None:
         self._tools_dir = Path(tools_dir)
         self._artifacts_dir = (
@@ -107,6 +114,7 @@ class BuildTool(ToolPort):
         self._investigation_context = investigation_context
         self._max_repair_attempts = max_repair_attempts
         self._flock_confidence = flock_confidence
+        self._installed_artifact_recorder = installed_artifact_recorder
 
     def _investigation_prompt(self) -> str:
         """The investigation prompt that drove this build, for review provenance."""
@@ -304,6 +312,28 @@ class BuildTool(ToolPort):
                 "ravn.tool_build.commission.recover",
                 attributes={"ravn.tool_build.operation.id": operation_id},
             ):
+                installed = self._installed_artifact_for_commission(record)
+                if installed is not None:
+                    self._delete_commission(operation_id)
+                    telemetry.event(
+                        "ravn.tool_build.commission.reconciled",
+                        attributes={
+                            "ravn.tool_build.operation.id": operation_id,
+                            "ravn.tool_build.name": installed.manifest.name,
+                            "ravn.tool_build.artifact.id": installed.artifact_id,
+                        },
+                    )
+                    results.append(
+                        ToolResult(
+                            tool_call_id="",
+                            content=(
+                                "Skipped duplicate commissioned build recovery: "
+                                f"verified tool {installed.manifest.name!r} is already installed "
+                                f"as {installed.artifact_id}."
+                            ),
+                        )
+                    )
+                    continue
                 telemetry.event(
                     "ravn.tool_build.commission.recovery_started",
                     attributes={
@@ -486,7 +516,7 @@ class BuildTool(ToolPort):
                 )
 
             tool_path = write_learned_tool(tools_dir=self._tools_dir, artifact=artifact)
-            self._complete_commission(input)
+            self._complete_commission(input, artifact=artifact)
             telemetry.event(
                 "ravn.tool_build.tool.persisted",
                 attributes={
@@ -544,6 +574,38 @@ class BuildTool(ToolPort):
 
             replace = bool(input.get("replace"))
             self._register_tool(learned_tool, replace=replace)  # type: ignore[call-arg]
+            lifecycle_warning = ""
+            if self._installed_artifact_recorder is not None:
+                lifecycle_attributes = {
+                    "ravn.learned_tool.name": artifact.manifest.name,
+                    "ravn.learned_tool.artifact_id": artifact.artifact_id,
+                    "ravn.skill.lifecycle.action": "register",
+                }
+                with telemetry.span(
+                    "ravn.learned_tool.lifecycle.register",
+                    attributes=lifecycle_attributes,
+                ) as lifecycle_span:
+                    try:
+                        await self._installed_artifact_recorder(resident_artifact)
+                        telemetry.event(
+                            "ravn.learned_tool.lifecycle.registered",
+                            attributes=lifecycle_attributes,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — installation already succeeded
+                        lifecycle_warning = (
+                            "The tool is installed, but its lifecycle record could not be "
+                            f"updated: {type(exc).__name__}: {exc}"
+                        )
+                        telemetry.mark_error(
+                            lifecycle_span,
+                            type(exc).__name__,
+                            str(exc),
+                        )
+                        logger.warning(
+                            "Learned tool %s installed, but lifecycle registration failed",
+                            artifact.manifest.name,
+                            exc_info=True,
+                        )
             publish_learned_tool_inventory([artifact])
             telemetry.event(
                 "ravn.tool_build.registered",
@@ -552,7 +614,27 @@ class BuildTool(ToolPort):
                     "ravn.tool_build.replaced": replace,
                 },
             )
-            await self._publish_flock_proposal(artifact)
+            flock_warning = ""
+            try:
+                await self._publish_flock_proposal(artifact)
+            except Exception as exc:  # noqa: BLE001 — publication follows successful install
+                flock_warning = (
+                    "The tool is installed and registered, but its Flock "
+                    f"proposal could not be published: {type(exc).__name__}: {exc}"
+                )
+                logger.warning(
+                    "Learned tool %s installed, but Flock publication failed",
+                    artifact.manifest.name,
+                    exc_info=True,
+                )
+                telemetry.event(
+                    "ravn.tool_build.flock.failed",
+                    attributes={
+                        "ravn.tool_build.name": artifact.manifest.name,
+                        "error.type": type(exc).__name__,
+                    },
+                    content=str(exc),
+                )
         except ToolBuildInputRequiredError as exc:
             return self._input_required_result(exc)
         except (LearnedToolError, ToolBuildError, TypeError, ValueError) as exc:
@@ -560,7 +642,14 @@ class BuildTool(ToolPort):
 
         return ToolResult(
             tool_call_id="",
-            content=_summary(artifact, tool_path, artifact_path, registered=True),
+            content=_summary(
+                artifact,
+                tool_path,
+                artifact_path,
+                registered=True,
+                flock_warning=flock_warning,
+                lifecycle_warning=lifecycle_warning,
+            ),
         )
 
     async def _maybe_commission(self, input: dict) -> dict:  # noqa: A002
@@ -683,6 +772,8 @@ class BuildTool(ToolPort):
         merged["requirements"] = list(result.requirements)
         provenance = dict(input.get("provenance") or {})
         provenance.update(result.provenance)
+        if operation_id:
+            provenance["build_operation_id"] = operation_id
         if result.build_evidence:
             provenance["build_evidence"] = dict(result.build_evidence)
         merged["provenance"] = provenance
@@ -925,15 +1016,71 @@ class BuildTool(ToolPort):
         temporary.chmod(0o600)
         temporary.replace(path)
 
-    def _complete_commission(self, input: dict) -> None:  # noqa: A002
+    def _complete_commission(
+        self,
+        input: dict,  # noqa: A002
+        *,
+        artifact: LearnedToolArtifact | None = None,
+    ) -> None:
         operation_id = str(input.get("_build_operation_id") or "").strip()
-        if not operation_id:
-            return
-        self._delete_commission(operation_id)
-        get_observability().event(
-            "ravn.tool_build.commission.completed",
-            attributes={"ravn.tool_build.operation.id": operation_id},
-        )
+        completed_ids: set[str] = set()
+        if operation_id:
+            self._delete_commission(operation_id)
+            completed_ids.add(operation_id)
+        if artifact is not None:
+            for record in self._commission_records():
+                stale_id = str(record.get("operation_id") or "")
+                if not stale_id or not self._artifact_satisfies_commission(artifact, record):
+                    continue
+                self._delete_commission(stale_id)
+                completed_ids.add(stale_id)
+        for completed_id in completed_ids:
+            get_observability().event(
+                "ravn.tool_build.commission.completed",
+                attributes={"ravn.tool_build.operation.id": completed_id},
+            )
+
+    def _installed_artifact_for_commission(
+        self,
+        record: dict[str, Any],
+    ) -> LearnedToolArtifact | None:
+        tool_name = str(record.get("tool_name") or "").strip()
+        if not tool_name:
+            return None
+        artifact_path = learned_tool_artifact_path(self._artifacts_dir, tool_name)
+        code_path = learned_tool_path(self._tools_dir, tool_name)
+        if not artifact_path.is_file() or not code_path.is_file():
+            return None
+        try:
+            artifact = read_learned_tool_artifact(artifact_path)
+            installed_code = code_path.read_text(encoding="utf-8")
+        except (LearnedToolError, OSError, ValueError):
+            return None
+        if installed_code != artifact.tool_code:
+            return None
+        if not self._artifact_satisfies_commission(artifact, record):
+            return None
+        return artifact
+
+    @staticmethod
+    def _artifact_satisfies_commission(
+        artifact: LearnedToolArtifact,
+        record: dict[str, Any],
+    ) -> bool:
+        if artifact.manifest.name != str(record.get("tool_name") or ""):
+            return False
+        verification = artifact.provenance.get("verification")
+        if not isinstance(verification, dict) or verification.get("ok") is not True:
+            return False
+        operation_id = str(record.get("operation_id") or "")
+        if operation_id and artifact.provenance.get("build_operation_id") == operation_id:
+            return True
+        original = record.get("input")
+        if not isinstance(original, dict):
+            return False
+        if original.get("replace") or str(original.get("build_request") or "").strip():
+            return False
+        return bool(str(original.get("tool_code") or "").strip())
 
     def _delete_commission(self, operation_id: str) -> None:
         try:
@@ -1269,6 +1416,7 @@ def attach_build_tool(
     investigation_context: Callable[[], str] | None = None,
     max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
     flock_confidence: float = SELF_REGISTERED_TOOL_CONFIDENCE,
+    installed_artifact_recorder: InstalledArtifactRecorder | None = None,
 ) -> BuildTool:
     """Attach build_tool to an agent supporting register_tool()."""
     registrar = getattr(agent, "register_tool", None)
@@ -1294,6 +1442,7 @@ def attach_build_tool(
         investigation_context=investigation_context,
         max_repair_attempts=max_repair_attempts,
         flock_confidence=flock_confidence,
+        installed_artifact_recorder=installed_artifact_recorder,
     )
     registrar(tool, replace=replace)
     return tool
@@ -1405,6 +1554,8 @@ def _summary(
     artifact_path: Path,
     *,
     registered: bool,
+    flock_warning: str = "",
+    lifecycle_warning: str = "",
 ) -> str:
     payload = {
         "artifact_id": artifact.artifact_id,
@@ -1417,6 +1568,10 @@ def _summary(
         "tests_embedded_in_envelope": bool(artifact.test_code),
         "verification": _verification_payload(artifact),
     }
+    if flock_warning:
+        payload["flock_publication_warning"] = flock_warning
+    if lifecycle_warning:
+        payload["lifecycle_warning"] = lifecycle_warning
     return json.dumps(payload, indent=2, sort_keys=True)
 
 

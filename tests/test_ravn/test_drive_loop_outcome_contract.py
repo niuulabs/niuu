@@ -382,7 +382,10 @@ class TestDriveLoopOutcomeContract:
             validation_errors=["working_state.hypotheses must be a list"],
             outcome_fields={"working_state": {"observations": ["signal-a"]}},
         )
-        assert "working_state:\n  observations: []\n  hypotheses: []" in working_state_prompt
+        assert (
+            "working_state:\n  objectives: []\n  observations: []\n  hypotheses: []"
+            in working_state_prompt
+        )
         assert "preserve valid prior entries" in working_state_prompt
 
     def test_free_text_continue_is_not_a_supported_wake_source(self) -> None:
@@ -1114,8 +1117,9 @@ brief_path: research/campaigns/example/brief.md
 ---end---
 """
 
-        await dl._emit_mesh_outcome_event(task, response_text, success=True)
+        accepted = await dl._emit_mesh_outcome_event(task, response_text, success=True)
 
+        assert accepted is False
         mesh.publish.assert_not_awaited()
         canonical = skuld_channel.emit.await_args.args[0]
         assert canonical.payload["event_type"] == "research.frame.completed"
@@ -1409,6 +1413,14 @@ summary: post-mortem source captured
         assert "ignored the transport-only check" in recent_context
         assert recent_context.endswith("Human message: makes sense, ignore")
 
+        dl._settings.resident_state.directed_message_context_max_chars = 200
+        bounded_context = dl._directed_message_context(
+            "current message",
+            {"recent_room_context": {"content": "x" * 500}},
+        )
+        assert "prior room context truncated: 300 characters omitted" in bounded_context
+        assert bounded_context.endswith("Human message: current message")
+
     def test_record_tool_outcome_fields_merges_existing_values(self) -> None:
         dl = _make_drive_loop()
         task = _make_agent_task(task_id="task-tool-outcomes")
@@ -1458,6 +1470,26 @@ summary: post-mortem source captured
         assert enqueued.trace_context == {"traceparent": "00-room-parent-01"}
         assert "The human replied to this prior room message:" in enqueued.initiative_context
         assert "transport check only" in enqueued.initiative_context
+
+    @pytest.mark.asyncio
+    async def test_handle_directed_message_attaches_durable_inbox_ref(self) -> None:
+        dl = _make_drive_loop()
+        dl.enqueue = AsyncMock(return_value=True)
+        resident_runtime = SimpleNamespace(
+            capture_directed_message=AsyncMock(
+                return_value="resident/inbox/signals/operator-message.md"
+            )
+        )
+        dl.set_resident_runtime(resident_runtime)
+
+        assert await dl.handle_directed_message("Please retain this objective.") is True
+
+        task = dl.enqueue.await_args.args[0]
+        assert task.resident_inbox_refs == ["resident/inbox/signals/operator-message.md"]
+        resident_runtime.capture_directed_message.assert_awaited_once_with(
+            "Please retain this objective.",
+            None,
+        )
 
     @pytest.mark.asyncio
     async def test_handle_directed_message_steers_active_agent_when_available(self) -> None:

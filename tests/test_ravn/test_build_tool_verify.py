@@ -86,6 +86,25 @@ async def test_verify_passes_then_tool_installs_real_venv(tmp_path) -> None:
     assert verification["attempts"] == 0
 
 
+async def test_successful_install_records_resident_lifecycle_artifact(tmp_path) -> None:
+    recorded = []
+
+    async def record(artifact) -> None:
+        recorded.append(artifact)
+
+    tool, _ = _tool(tmp_path, installed_artifact_recorder=record)
+    result = await tool.execute(
+        {
+            "manifest": _manifest("managed_echo"),
+            "tool_code": _ECHO_TOOL,
+            "test_code": "",
+        }
+    )
+
+    assert not result.is_error
+    assert [artifact.title for artifact in recorded] == ["managed_echo"]
+
+
 async def test_verify_skipped_for_empty_test_code_still_installs(tmp_path) -> None:
     tool, registered = _tool(tmp_path)
     result = await tool.execute(

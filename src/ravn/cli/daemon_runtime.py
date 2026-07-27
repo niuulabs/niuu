@@ -106,6 +106,24 @@ async def _run_daemon(
 
             daemon_bus = ObservedSleipnirBus(daemon_bus)
 
+    # This publisher is shared by gateways, the drive loop, and the resident
+    # learning services. Start it before constructing any of those producers so
+    # an immediately-ready trigger cannot publish against an unstarted adapter.
+    environment_signal_publisher_started = False
+    environment_signal_publisher: Any | None = _build_environment_signal_publisher(settings)
+    if environment_signal_publisher is not None and hasattr(
+        environment_signal_publisher,
+        "start",
+    ):
+        await environment_signal_publisher.start()
+        environment_signal_publisher_started = True
+
+    resident_learning_runtime = _build_resident_learning_runtime(
+        settings,
+        publisher=environment_signal_publisher,
+        workspace=workspace,
+    )
+
     def _agent_factory(
         channel: ChannelPort,
         task_id: str | None = None,
@@ -169,6 +187,18 @@ async def _run_daemon(
                 fields=fields,
             )
 
+        async def _emit_a2a_activity(activity: dict[str, object]) -> None:
+            if drive_loop is None:
+                return
+            current_task = drive_loop.resolve_task_context(task_id)
+            if current_task is None:
+                logger.warning("a2a_activity: no task context available for task_id=%s", task_id)
+                return
+            drive_loop.record_a2a_activity(
+                parent_task_id=current_task.task_id,
+                activity=activity,
+            )
+
         tools = _build_tools(
             settings,
             workspace,
@@ -187,6 +217,10 @@ async def _run_daemon(
                 drive_loop._session_join_manager if drive_loop is not None else None
             ),
             permission=permission,
+            a2a_activity_emitter=_emit_a2a_activity,
+            skill_manager=(
+                resident_learning_runtime.skills if resident_learning_runtime is not None else None
+            ),
         )
         if profile_cfg.include_mcp:
             tools.extend(_filter_tools(mcp_tools, settings, resolved_persona))
@@ -244,6 +278,8 @@ async def _run_daemon(
             stop_on_outcome=resolved_persona.stop_on_outcome if resolved_persona else False,
             # NIU-1118: hard per-call prompt budget (0 disables)
             max_prompt_tokens=settings.context_management.max_prompt_tokens,
+            context_window_tokens=settings.context_management.context_window_tokens,
+            token_estimate_safety_factor=(settings.context_management.token_estimate_safety_factor),
             # NIU-1118: bound one tool result's contribution to history
             max_tool_result_chars=settings.tools.max_result_chars,
             session_join_manager=(
@@ -264,6 +300,12 @@ async def _run_daemon(
             settings=settings,
             publisher=environment_signal_publisher or sleipnir_catalog_publisher or daemon_bus,
             drive_loop=drive_loop,
+            a2a_activity_emitter=_emit_a2a_activity,
+            installed_artifact_recorder=(
+                resident_learning_runtime.register_installed_artifact
+                if resident_learning_runtime is not None
+                else None
+            ),
         )
 
     tasks: list[asyncio.Task] = []
@@ -276,6 +318,7 @@ async def _run_daemon(
 
     # Gateway channels (human-initiated turns)
     gw_tasks: list[str] = []
+    http_gateway: Any | None = None
     channels_cfg = settings.gateway.channels
     _any_channel = (
         channels_cfg.telegram.enabled
@@ -299,8 +342,12 @@ async def _run_daemon(
             gw_tasks.append("telegram")
 
         if channels_cfg.http.enabled:
-            ht = HttpGateway(channels_cfg.http, gw, resident_runtime=resident_runtime)
-            tasks.append(asyncio.create_task(ht.run(), name="http"))
+            http_gateway = HttpGateway(
+                channels_cfg.http,
+                gw,
+                resident_runtime=resident_runtime,
+            )
+            tasks.append(asyncio.create_task(http_gateway.run(), name="http"))
             gw_tasks.append("http")
 
         for task, name in _make_channel_tasks(channels_cfg, gw):
@@ -317,13 +364,10 @@ async def _run_daemon(
     drive_loop: Any = None
     _cascade_participant: Any = None
     environment_signal_runtime: Any | None = None
-    resident_learning_runtime: Any | None = None
     resident_wakefulness: Any | None = None
     odin_court: Any | None = None
     feedback_recorder: Any | None = None
     huddle_archiver: Any | None = None
-    environment_signal_publisher_started = False
-    environment_signal_publisher: Any | None = _build_environment_signal_publisher(settings)
     if settings.initiative.enabled or task_dispatch:
         if settings.sleipnir.enabled:
             event_publisher = RabbitMQEventPublisher(settings.sleipnir)
@@ -374,6 +418,8 @@ async def _run_daemon(
 
             if hasattr(drive_loop, "set_resident_runtime"):
                 drive_loop.set_resident_runtime(resident_runtime)
+            if http_gateway is not None:
+                http_gateway.bind_resident_status_provider(drive_loop.resident_hud_status)
             if hasattr(drive_loop, "register_directed_message_interceptor"):
                 drive_loop.register_directed_message_interceptor(
                     resident_runtime.consume_directed_message
@@ -437,18 +483,6 @@ async def _run_daemon(
         trigger_names = [t.name for t in drive_loop._triggers]
         tasks.append(asyncio.create_task(drive_loop.run(), name="drive_loop"))
 
-    if environment_signal_publisher is not None and hasattr(
-        environment_signal_publisher,
-        "start",
-    ):
-        await environment_signal_publisher.start()
-        environment_signal_publisher_started = True
-
-    resident_learning_runtime = _build_resident_learning_runtime(
-        settings,
-        publisher=environment_signal_publisher,
-        workspace=_resolve_workspace(settings),
-    )
     if resident_learning_runtime is not None:
         await resident_learning_runtime.start()
         tasks.append(asyncio.create_task(asyncio.Event().wait(), name="resident_learning"))

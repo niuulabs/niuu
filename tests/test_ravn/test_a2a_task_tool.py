@@ -104,6 +104,11 @@ class _Client:
 
 @pytest.mark.asyncio
 async def test_a2a_task_preserves_task_state_questions_artifacts_and_provenance() -> None:
+    activities: list[dict[str, object]] = []
+
+    async def _capture(activity: dict[str, object]) -> None:
+        activities.append(activity)
+
     client = _Client(
         [
             {"task": {"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}}},
@@ -117,7 +122,11 @@ async def test_a2a_task_preserves_task_state_questions_artifacts_and_provenance(
             {"id": "task-1", "status": {"state": "TASK_STATE_CANCELED"}},
         ]
     )
-    tool = A2ATaskTool(agent_directory=_Directory(_agent()), client=client)
+    tool = A2ATaskTool(
+        agent_directory=_Directory(_agent()),
+        client=client,
+        activity_emitter=_capture,
+    )
 
     started = json.loads(
         (
@@ -173,11 +182,19 @@ async def test_a2a_task_preserves_task_state_questions_artifacts_and_provenance(
         "CancelTask",
     ]
     start_message = client.posts[0][1]["params"]["message"]
-    assert start_message["metadata"] == {"skillId": "review", "workflowId": "review"}
+    assert start_message["metadata"] == {"skillId": "review"}
     reply_message = client.posts[2][1]["params"]["message"]
     assert reply_message["taskId"] == "task-1"
     assert reply_message["metadata"] == {"requestId": "question-1"}
     assert all(url == "https://peer.example/a2a" for url, _, _ in client.posts)
+    assert [activity["state"] for activity in activities] == [
+        "TASK_STATE_SUBMITTED",
+        "TASK_STATE_INPUT_REQUIRED",
+        "TASK_STATE_WORKING",
+        "TASK_STATE_CANCELED",
+    ]
+    assert activities[0]["source_tool"] == "a2a_task"
+    assert activities[1]["question"] == "Which branch?"
 
 
 @pytest.mark.asyncio

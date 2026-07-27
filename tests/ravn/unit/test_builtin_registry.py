@@ -264,6 +264,13 @@ class TestKwargsFn:
         assert "num_results" in kwargs
         assert type(kwargs["provider"]).__name__ == "DuckDuckGoLiteSearchProvider"
 
+    def test_web_fetch_kwargs_include_private_address_policy(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        settings.tools.web.fetch.allow_private_addresses = True
+        kwargs = BUILTIN_TOOLS["web_fetch"].kwargs_fn(settings, _make_runtime_ctx(tmp_path))
+        assert kwargs["allow_private_addresses"] is True
+
     def test_ravn_state_kwargs_tool_names_empty(self, settings: Settings, tmp_path: Path) -> None:
         ctx = _make_runtime_ctx(tmp_path)
         kwargs = BUILTIN_TOOLS["ravn_state"].kwargs_fn(settings, ctx)

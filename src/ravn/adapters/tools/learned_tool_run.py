@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import logging
 
+from niuu.observability import get_observability
 from ravn.domain.models import ToolResult
 from ravn.ports.permission import PermissionPort
 from ravn.ports.tool import ToolPort
+from ravn.skills.management import SkillManagementRegistry
 from ravn.valkyrie_evolution.learned_tools import LearnedToolError, LearnedToolResolver
 
 logger = logging.getLogger(__name__)
@@ -37,9 +39,11 @@ class LearnedToolRunTool(ToolPort):
         *,
         resolver: LearnedToolResolver,
         permission: PermissionPort,
+        skill_manager: SkillManagementRegistry | None = None,
     ) -> None:
         self._resolver = resolver
         self._permission = permission
+        self._skill_manager = skill_manager
 
     @property
     def name(self) -> str:
@@ -98,34 +102,91 @@ class LearnedToolRunTool(ToolPort):
                 is_error=True,
             )
 
-        try:
-            tool = self._resolver.load(name)
-        except LearnedToolError as exc:
-            return ToolResult(
-                tool_call_id="",
-                content=(
-                    f"{exc} — use capability_list (kind='tool', tag 'learned') to "
-                    "discover installed learned tools."
-                ),
-                is_error=True,
-            )
+        telemetry = get_observability()
+        lifecycle_status = (
+            self._skill_manager.status(name) if self._skill_manager is not None else None
+        )
+        attributes = {
+            "ravn.learned_tool.name": name,
+            "ravn.skill.lifecycle.status": lifecycle_status or "unmanaged",
+        }
+        with telemetry.span("ravn.learned_tool.lifecycle.run", attributes=attributes) as span:
+            if lifecycle_status == "archived":
+                span.set_attribute("ravn.learned_tool.outcome", "archived")
+                return ToolResult(
+                    tool_call_id="",
+                    content=f"Learned tool {name!r} is archived and cannot be run.",
+                    is_error=True,
+                )
 
-        granted = await self._permission.check(tool.required_permission)
-        if not granted:
-            return ToolResult(
-                tool_call_id="",
-                content=(
-                    f"Permission {tool.required_permission!r} denied for learned tool {name!r}."
-                ),
-                is_error=True,
-            )
+            try:
+                tool = self._resolver.load(name)
+            except LearnedToolError as exc:
+                span.set_attribute("ravn.learned_tool.outcome", "unavailable")
+                return ToolResult(
+                    tool_call_id="",
+                    content=(
+                        f"{exc} — use capability_list (kind='tool', tag 'learned') to "
+                        "discover installed learned tools."
+                    ),
+                    is_error=True,
+                )
 
-        try:
-            return await tool.execute(payload)
-        except Exception as exc:
-            logger.warning("learned_tool_run: %r raised: %s", name, exc)
-            return ToolResult(
-                tool_call_id="",
-                content=f"Learned tool {name!r} error: {exc}",
-                is_error=True,
-            )
+            granted = await self._permission.check(tool.required_permission)
+            if not granted:
+                span.set_attribute("ravn.learned_tool.outcome", "permission_denied")
+                return ToolResult(
+                    tool_call_id="",
+                    content=(
+                        f"Permission {tool.required_permission!r} denied for learned tool {name!r}."
+                    ),
+                    is_error=True,
+                )
+
+            try:
+                result = await tool.execute(payload)
+            except Exception as exc:
+                logger.warning("learned_tool_run: %r raised: %s", name, exc)
+                result = ToolResult(
+                    tool_call_id="",
+                    content=f"Learned tool {name!r} error: {exc}",
+                    is_error=True,
+                )
+            outcome = "error" if result.is_error else "success"
+            span.set_attribute("ravn.learned_tool.outcome", outcome)
+            if self._skill_manager is not None:
+                try:
+                    lifecycle = await self._skill_manager.record_usage(
+                        name,
+                        success=not result.is_error,
+                    )
+                    usage_attributes = {
+                        **attributes,
+                        "ravn.learned_tool.outcome": outcome,
+                        "ravn.skill.lifecycle.run_count": lifecycle.run_count,
+                        "ravn.skill.lifecycle.failure_count": lifecycle.failure_count,
+                        "ravn.skill.lifecycle.consecutive_failures": (
+                            lifecycle.consecutive_failures
+                        ),
+                    }
+                    telemetry.event(
+                        "ravn.learned_tool.lifecycle.usage_recorded",
+                        attributes=usage_attributes,
+                    )
+                    telemetry.count(
+                        "ravn.learned_tool.lifecycle.runs",
+                        attributes={
+                            "ravn.learned_tool.name": name,
+                            "ravn.learned_tool.outcome": outcome,
+                        },
+                    )
+                except LookupError:
+                    telemetry.event(
+                        "ravn.learned_tool.lifecycle.unmanaged",
+                        attributes=attributes,
+                    )
+                    logger.warning(
+                        "learned_tool_run: %r has no managed lifecycle record",
+                        name,
+                    )
+            return result

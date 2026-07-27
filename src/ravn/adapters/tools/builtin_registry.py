@@ -210,6 +210,7 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         adapter="ravn.adapters.tools.web_fetch.WebFetchTool",
         groups=frozenset({"core"}),
         kwargs_fn=lambda s, ctx: {
+            "allow_private_addresses": s.tools.web.fetch.allow_private_addresses,
             "timeout": s.tools.web.fetch.timeout,
             "user_agent": s.tools.web.fetch.user_agent,
             "content_budget": s.tools.web.fetch.content_budget,
@@ -302,21 +303,30 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         groups=frozenset({"skill"}),
         condition=lambda s: s.skill.enabled,
         required_context=frozenset({"skill_port"}),
-        kwargs_fn=lambda s, ctx: {"skill_port": ctx["skill_port"]},
+        kwargs_fn=lambda s, ctx: {
+            "skill_port": ctx["skill_port"],
+            "manager": ctx.get("skill_manager"),
+        },
     ),
     "skill_run": BuiltinToolDef(
         adapter="ravn.adapters.tools.skill_tools.SkillRunTool",
         groups=frozenset({"skill"}),
         condition=lambda s: s.skill.enabled,
         required_context=frozenset({"skill_port"}),
-        kwargs_fn=lambda s, ctx: {"skill_port": ctx["skill_port"]},
+        kwargs_fn=lambda s, ctx: {
+            "skill_port": ctx["skill_port"],
+            "manager": ctx.get("skill_manager"),
+        },
     ),
     "skill_manage": BuiltinToolDef(
         adapter="ravn.adapters.tools.skill_tools.SkillManageTool",
         groups=frozenset({"skill"}),
         condition=lambda s: s.skill.enabled,
         required_context=frozenset({"skill_port"}),
-        kwargs_fn=lambda s, ctx: {"skill_port": ctx["skill_port"]},
+        kwargs_fn=lambda s, ctx: {
+            "skill_port": ctx["skill_port"],
+            "manager": ctx.get("skill_manager"),
+        },
     ),
     # =========================================================================
     # kubernetes — read-only resident Environment inspection
@@ -391,6 +401,7 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "trusted_origins": ctx["a2a_trusted_origins"],
             "message_max_chars": s.gateway.platform.a2a_message_max_chars,
             "result_max_chars": s.gateway.platform.a2a_result_max_chars,
+            "activity_emitter": ctx.get("a2a_activity_emitter"),
         },
     ),
     "ting_plan": BuiltinToolDef(
@@ -468,6 +479,7 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         kwargs_fn=lambda _s, ctx: {
             "tools_provider": ctx["capability_tools_provider"],
             "skill_port": ctx.get("skill_port"),
+            "skill_manager": ctx.get("skill_manager"),
             "workflow_sources": ctx.get("workflow_sources") or [],
             "learned_tools_provider": ctx.get("learned_tools_provider"),
             "agent_directory": ctx.get("agent_directory"),
@@ -483,6 +495,7 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
         kwargs_fn=lambda _s, ctx: {
             "resolver": ctx["learned_tool_resolver"],
             "permission": ctx["permission"],
+            "skill_manager": ctx.get("skill_manager"),
         },
     ),
 }

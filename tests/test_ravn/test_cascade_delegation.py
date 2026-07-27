@@ -575,6 +575,7 @@ class TestDriveLoopJournal:
         task.trace_context = {
             "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
         }
+        task.resident_wake_ref = "resident/continuation/cases/case-1/scheduled-wake/latest.md"
         dl._queue.put_nowait((10, 0, task))
         dl._persist_queue()
 
@@ -584,6 +585,7 @@ class TestDriveLoopJournal:
         assert dl2.task_status("journal-task") == "queued"
         restored = dl2._queue._queue[0][2]
         assert restored.trace_context == task.trace_context
+        assert restored.resident_wake_ref == task.resident_wake_ref
 
     @pytest.mark.asyncio
     async def test_restored_inflight_task_recovers_durable_tool_work(self, tmp_path: Path):

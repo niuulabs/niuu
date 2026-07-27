@@ -154,33 +154,25 @@ async def test_capability_list_filters_catalog_without_routing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_capability_list_distinguishes_no_match_from_empty_catalog() -> None:
+async def test_capability_list_returns_complete_catalog_without_text_filtering() -> None:
     tool = CapabilityListTool(
         tools_provider=lambda: [FakeTool()],
         agent_directory=FakeAgentDirectory(),
     )
 
-    result = await tool.execute({"query": "unknown machine protocol"})
+    assert "query" not in tool.input_schema["properties"]
+
+    result = await tool.execute({})
 
     payload = json.loads(result.content)
-    assert payload["capabilities"] == []
-    assert payload["total"] == 0
+    assert [item["name"] for item in payload["capabilities"]] == [
+        "mimir_search",
+        "Research environment",
+    ]
+    assert payload["total"] == 2
     assert payload["catalog_total"] == 2
     assert payload["catalog_counts"] == {"tool": 1, "agent_skill": 1}
-    assert payload["catalog_preview"] == [
-        {
-            "id": "tool:mimir_search",
-            "kind": "tool",
-            "name": "mimir_search",
-            "source": "ravn",
-        },
-        {
-            "id": "agent:agent-1:research",
-            "kind": "agent_skill",
-            "name": "Research environment",
-            "source": "agent-card",
-        },
-    ]
+    assert payload["catalog_preview"] == []
 
 
 @pytest.mark.asyncio
@@ -190,7 +182,7 @@ async def test_capability_list_projects_agent_card_skills_with_invocation_metada
         agent_directory=FakeAgentDirectory(),
     )
 
-    result = await tool.execute({"kind": "agent_skill", "query": "research"})
+    result = await tool.execute({"kind": "agent_skill"})
 
     assert not result.is_error
     payload = json.loads(result.content)
@@ -253,6 +245,29 @@ async def test_capability_list_includes_learned_tools_without_loading_them() -> 
         "has_tests": False,
         "requirements_count": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_capability_list_hides_archived_learned_tools() -> None:
+    class ArchivedSkillManager:
+        def status(self, name: str) -> str | None:
+            return "archived" if name == "obsolete_probe" else None
+
+    tool = CapabilityListTool(
+        tools_provider=lambda: [FakeTool()],
+        learned_tools_provider=lambda: [
+            _learned_artifact("obsolete_probe"),
+            _learned_artifact("current_probe"),
+        ],
+        skill_manager=ArchivedSkillManager(),  # type: ignore[arg-type]
+    )
+
+    result = await tool.execute({"kind": "tool"})
+
+    payload = json.loads(result.content)
+    names = [item["name"] for item in payload["capabilities"]]
+    assert "obsolete_probe" not in names
+    assert "current_probe" in names
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,7 @@ from ravn.ports.agent_directory import PeerAgentDirectoryPort
 from ravn.ports.capability import WorkflowCapabilityPort
 from ravn.ports.skill import SkillPort
 from ravn.ports.tool import ToolPort
+from ravn.skills.management import SkillManagementRegistry
 from ravn.tool_observability import publish_learned_tool_inventory
 
 _PERMISSION = "introspect:read"
@@ -35,12 +36,14 @@ class CapabilityListTool(ToolPort):
         *,
         tools_provider: Callable[[], Sequence[ToolPort]],
         skill_port: SkillPort | None = None,
+        skill_manager: SkillManagementRegistry | None = None,
         workflow_sources: Sequence[WorkflowCapabilityPort] | None = None,
         learned_tools_provider: Callable[[], Sequence[Any]] | None = None,
         agent_directory: PeerAgentDirectoryPort | None = None,
     ) -> None:
         self._tools_provider = tools_provider
         self._skill_port = skill_port
+        self._skill_manager = skill_manager
         self._workflow_sources = list(workflow_sources or [])
         # Returns learned-tool artifact envelopes (manifest name/description/
         # schema) read from disk — never loaded as callables here (NIU-1118).
@@ -58,9 +61,7 @@ class CapabilityListTool(ToolPort):
             "resident learned tools, resident skills, configured remote workflows, "
             "and peer Agent Card skills. Use this before building new tools so existing "
             "capabilities are not duplicated. Entries tagged 'learned' are not native "
-            "tools — execute them by name with learned_tool_run. A filtered miss includes "
-            "a compact catalog_preview; use it to choose a broader query or kind before "
-            "concluding that no relevant capability exists."
+            "tools — execute them by name with learned_tool_run."
         )
 
     @property
@@ -72,10 +73,6 @@ class CapabilityListTool(ToolPort):
                     "type": "string",
                     "enum": [kind.value for kind in CapabilityKind],
                     "description": "Optional capability kind filter.",
-                },
-                "query": {
-                    "type": "string",
-                    "description": "Optional case-insensitive text filter.",
                 },
                 "tags": {
                     "type": "array",
@@ -112,7 +109,6 @@ class CapabilityListTool(ToolPort):
             capabilities,
             kind=kind,
             tags=_string_list(input.get("tags")),
-            query=str(input.get("query") or ""),
             require_all_tags=bool(input.get("require_all_tags") or False),
         )
         limit = _int_in_range(input.get("limit"), default=100, minimum=1, maximum=500)
@@ -206,6 +202,12 @@ class CapabilityListTool(ToolPort):
             before = len(capabilities)
             try:
                 learned_artifacts = list(self._learned_tools_provider())
+                if self._skill_manager is not None:
+                    learned_artifacts = [
+                        artifact
+                        for artifact in learned_artifacts
+                        if self._skill_manager.status(artifact.manifest.name) != "archived"
+                    ]
                 publish_learned_tool_inventory(learned_artifacts)
                 for artifact in learned_artifacts:
                     manifest = artifact.manifest
@@ -251,7 +253,11 @@ class CapabilityListTool(ToolPort):
         if self._skill_port is not None:
             before = len(capabilities)
             try:
-                for skill in await self._skill_port.list_skills():
+                if self._skill_manager is None:
+                    skills = await self._skill_port.list_skills()
+                else:
+                    skills = await self._skill_manager.list_runnable_skills()
+                for skill in skills:
                     capabilities.append(
                         capability_from_skill(
                             skill_id=skill.skill_id,

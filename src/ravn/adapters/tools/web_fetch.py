@@ -106,7 +106,7 @@ def truncate_to_budget(text: str, budget: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _validate_url(url: str) -> str | None:
+def _validate_url(url: str, *, allow_private_addresses: bool = False) -> str | None:
     """Return an error message if *url* is disallowed, else None.
 
     Blocks:
@@ -121,6 +121,8 @@ def _validate_url(url: str) -> str | None:
     if not hostname:
         return "Blocked: URL has no hostname"
 
+    if allow_private_addresses:
+        return None
     return check_ssrf(hostname)
 
 
@@ -140,10 +142,12 @@ class WebFetchTool(ToolPort):
     def __init__(
         self,
         *,
+        allow_private_addresses: bool = False,
         timeout: float = _DEFAULT_TIMEOUT,
         user_agent: str = _DEFAULT_USER_AGENT,
         content_budget: int = _DEFAULT_CONTENT_BUDGET,
     ) -> None:
+        self._allow_private_addresses = allow_private_addresses
         self._timeout = timeout
         self._user_agent = user_agent
         self._content_budget = content_budget
@@ -183,7 +187,10 @@ class WebFetchTool(ToolPort):
         if not url:
             return ToolResult(tool_call_id="", content="url is required", is_error=True)
 
-        url_error = _validate_url(url)
+        url_error = _validate_url(
+            url,
+            allow_private_addresses=self._allow_private_addresses,
+        )
         if url_error:
             return ToolResult(tool_call_id="", content=url_error, is_error=True)
 

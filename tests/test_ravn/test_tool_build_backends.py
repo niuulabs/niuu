@@ -852,6 +852,11 @@ def _a2a_backend(client: _FakeHttpClient, **kwargs) -> A2AToolBuildBackend:
 
 
 async def test_a2a_backend_builds_from_inline_canonical_artifact() -> None:
+    activities: list[dict[str, object]] = []
+
+    async def _capture(activity: dict[str, object]) -> None:
+        activities.append(activity)
+
     artifacts = [
         {
             "artifactId": "research/campaigns/task-1/learned_tool.json",
@@ -868,7 +873,7 @@ async def test_a2a_backend_builds_from_inline_canonical_artifact() -> None:
             ],
         }
     )
-    backend = _a2a_backend(client, workflow_id="wf-1")
+    backend = _a2a_backend(client, workflow_id="wf-1", activity_emitter=_capture)
 
     result = await backend.build(_request())
 
@@ -884,11 +889,57 @@ async def test_a2a_backend_builds_from_inline_canonical_artifact() -> None:
     send_body = client.post_bodies[0]
     assert send_body["method"] == "SendMessage"
     message = send_body["params"]["message"]
-    assert message["metadata"]["workflowId"] == "wf-1"
+    assert message["metadata"]["skillId"] == "wf-1"
     assert message["metadata"]["sessionName"] == "tool-build-mimir_metric_window"
     assert message["parts"][0]["text"]
     assert client.post_bodies[1]["method"] == "GetTask"
     assert all(headers.get("A2A-Version") == "1.0" for headers in client.headers_seen)
+    assert [activity["state"] for activity in activities] == [
+        "TASK_STATE_WORKING",
+        "TASK_STATE_COMPLETED",
+    ]
+    assert activities[0] == {
+        "agent_id": "https://ting.example/.well-known/agent-card.json",
+        "skill_id": "wf-1",
+        "task_id": "task-1",
+        "state": "TASK_STATE_WORKING",
+        "operation": "build",
+        "input_required": False,
+        "question": "",
+        "prompt": "Build a tool that queries a bounded metric window and summarizes it.",
+        "status_message": "",
+        "source_tool": "build_tool",
+    }
+
+
+async def test_a2a_backend_closes_local_tracking_when_polling_is_exhausted() -> None:
+    activities: list[dict[str, object]] = []
+
+    async def _capture(activity: dict[str, object]) -> None:
+        activities.append(activity)
+
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [HttpResponse(200, _a2a_card())],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result(_a2a_task("TASK_STATE_WORKING")),
+            ],
+        }
+    )
+    backend = _a2a_backend(
+        client,
+        workflow_id="wf-1",
+        activity_emitter=_capture,
+        max_poll_attempts=1,
+    )
+
+    with pytest.raises(ToolBuildError, match="did not finish within 1 polls"):
+        await backend.build(_request())
+
+    assert activities[-1]["task_id"] == "task-1"
+    assert activities[-1]["state"] == "TASK_STATE_WORKING"
+    assert activities[-1]["tracking_state"] == "poll_exhausted"
 
 
 async def test_a2a_backend_uses_durable_operation_id_for_message_correlation() -> None:
@@ -1058,7 +1109,7 @@ async def test_a2a_backend_selects_skill_by_tag() -> None:
     result = await backend.build(_request())
 
     assert result.provenance["workflow_id"] == "wf-9"
-    assert client.post_bodies[0]["params"]["message"]["metadata"]["workflowId"] == "wf-9"
+    assert client.post_bodies[0]["params"]["message"]["metadata"]["skillId"] == "wf-9"
 
 
 async def test_a2a_backend_fetches_url_part_artifact() -> None:

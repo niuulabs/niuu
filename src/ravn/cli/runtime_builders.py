@@ -59,6 +59,8 @@ def _attach_agent_build_tool(
     settings: Settings,
     publisher: Any | None = None,
     drive_loop: Any | None = None,
+    a2a_activity_emitter: Any | None = None,
+    installed_artifact_recorder: Any | None = None,
 ) -> Any:
     """Attach build_tool when the active persona explicitly allows it."""
     if not enabled:
@@ -137,10 +139,12 @@ def _attach_agent_build_tool(
                 workflow_selector=realm_config.workflow_selector,
                 gate_reviewer=gate_reviewer,
                 question_answerer=question_answerer,
+                activity_emitter=a2a_activity_emitter,
             ),
             investigation_context=_investigation_context,
             max_repair_attempts=settings.resident_evolution.build_repair_attempts,
             flock_confidence=settings.resident_evolution.self_registered_tool_confidence,
+            installed_artifact_recorder=installed_artifact_recorder,
         )
     except TypeError:
         logger.debug("build_tool not attached: executor does not support dynamic tools")
@@ -155,6 +159,7 @@ def _build_tool_build_backend(
     workflow_selector: dict[str, Any] | None = None,
     gate_reviewer: Any | None = None,
     question_answerer: Any | None = None,
+    activity_emitter: Any | None = None,
 ) -> Any | None:
     """Construct the configured tool build adapter, or None for inline authoring.
 
@@ -180,6 +185,8 @@ def _build_tool_build_backend(
         kwargs["gate_reviewer"] = gate_reviewer
     if question_answerer is not None and _constructor_accepts_kwarg(cls, "question_answerer"):
         kwargs["question_answerer"] = question_answerer
+    if activity_emitter is not None and _constructor_accepts_kwarg(cls, "activity_emitter"):
+        kwargs["activity_emitter"] = activity_emitter
     return cls(**kwargs)
 
 

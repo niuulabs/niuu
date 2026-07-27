@@ -77,7 +77,7 @@ Create the name of the service account to use
 {{- end }}
 
 {{/*
-Return the proper image name (global overrides local)
+Return the proper image name (local tag overrides global default)
 */}}
 {{- define "observatory.image" -}}
 {{- $registryName := .Values.image.registry -}}
@@ -87,7 +87,7 @@ Return the proper image name (global overrides local)
   {{- if .Values.global.image.registry -}}
     {{- $registryName = .Values.global.image.registry -}}
   {{- end -}}
-  {{- if .Values.global.image.tag -}}
+  {{- if and (not .Values.image.tag) .Values.global.image.tag -}}
     {{- $tag = .Values.global.image.tag -}}
   {{- end -}}
 {{- end -}}
