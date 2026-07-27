@@ -32,6 +32,15 @@ updates:
       web-next:
         patterns:
           - "*"
+        # A TypeScript major drags every other update down with it: the .d.ts
+        # build goes through rollup-plugin-dts, which reads compiler internals
+        # and breaks until it ships support for the new major. Keep majors out
+        # of the group so they arrive as their own reviewable PR.
+        exclude-patterns:
+          - "typescript"
+    ignore:
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: docker
     directories:
