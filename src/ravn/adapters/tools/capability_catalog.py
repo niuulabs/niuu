@@ -61,7 +61,8 @@ class CapabilityListTool(ToolPort):
             "resident learned tools, resident skills, configured remote workflows, "
             "and peer Agent Card skills. Use this before building new tools so existing "
             "capabilities are not duplicated. Entries tagged 'learned' are not native "
-            "tools — execute them by name with learned_tool_run."
+            "tools — execute them by name with learned_tool_run. Learned entries include "
+            "lifecycle, usage, failure, and supersession evidence for portfolio review."
         )
 
     @property
@@ -237,6 +238,8 @@ class CapabilityListTool(ToolPort):
                                 "verification": verification_outcome,
                                 "has_tests": bool(artifact.test_code),
                                 "requirements_count": len(artifact.requirements),
+                                "supersedes": artifact.supersedes,
+                                "lifecycle": self._learned_tool_lifecycle(manifest.name),
                             },
                         )
                     )
@@ -341,6 +344,27 @@ class CapabilityListTool(ToolPort):
             )
 
         return capabilities, errors
+
+    def _learned_tool_lifecycle(self, name: str) -> dict[str, Any]:
+        if self._skill_manager is None:
+            return {"status": "unmanaged"}
+        metadata = self._skill_manager.lifecycle_metadata(name)
+        if metadata is None:
+            return {"status": "unmanaged"}
+        return {
+            key: metadata[key]
+            for key in (
+                "status",
+                "scope",
+                "version",
+                "pinned",
+                "run_count",
+                "success_count",
+                "failure_count",
+                "consecutive_failures",
+                "last_used_at",
+            )
+        }
 
 
 def _parse_kind(value: Any) -> CapabilityKind | None:

@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from niuu.observability import get_observability
 from ravn.adapters.reflection.flock_learning import (
     FlockLearningCandidate,
     FlockLearningRecord,
@@ -291,6 +292,7 @@ class ResidentLearningRuntime:
     async def start(self) -> None:
         if self._subscription is not None:
             return
+        await self._enroll_persisted_learned_tools()
         self._subscription = await self._subscriber.subscribe(
             _SUBSCRIBED_EVENT_TYPES,
             self._handle_learning_event,
@@ -441,6 +443,59 @@ class ResidentLearningRuntime:
                 }
             )
         return records
+
+    async def _enroll_persisted_learned_tools(self) -> int:
+        """Bring durable learned-tool envelopes under the existing lifecycle."""
+        enrolled = 0
+        telemetry = get_observability()
+        for record in self._iter_learned_tool_inventory():
+            name = record["skill_name"]
+            if self._skills.status(name) is not None:
+                continue
+            attributes = {
+                "ravn.learned_tool.name": name,
+                "ravn.learned_tool.artifact_id": record["learning_id"],
+                "ravn.skill.lifecycle.action": "enroll",
+            }
+            with telemetry.span(
+                "ravn.learned_tool.lifecycle.enroll",
+                attributes=attributes,
+            ) as span:
+                try:
+                    await self._record_inventory_skill(record)
+                except Exception as exc:  # noqa: BLE001 — continue enrolling valid artifacts
+                    telemetry.mark_error(span, type(exc).__name__, str(exc))
+                    logger.exception(
+                        "resident_learning: could not enroll persisted learned tool %s",
+                        name,
+                    )
+                    continue
+                enrolled += 1
+                telemetry.event(
+                    "ravn.learned_tool.lifecycle.enrolled",
+                    attributes={**attributes, "ravn.skill.lifecycle.status": "active"},
+                )
+        return enrolled
+
+    async def _record_inventory_skill(self, record: dict[str, Any]) -> None:
+        artifact = ResidentLearningArtifact(
+            learning_id=record["learning_id"],
+            title=record["skill_name"],
+            summary=record["summary_text"],
+            content=record["skill_content"],
+            artifact_type="agent_tool",
+            scope=record["learning_scope"],
+            confidence=0.0,
+            source_environment_id=record["source_environment_id"],
+            source_valkyrie_id=record["source_valkyrie_id"],
+            domain=self.identity.domain,
+            tool_code=record["tool_code"],
+            learned_tool_manifest=record["learned_tool_manifest"],
+            test_code=record["test_code"],
+            requirements=record["requirements"],
+        )
+        _, build = review_inputs(artifact, self.identity)
+        await self._record_installed_skill(artifact, build)
 
     async def _iter_managed_skill_inventory(self) -> list[dict[str, Any]]:
         """Full records for installed managed skills (markdown + optional tool)."""
@@ -1732,22 +1787,8 @@ class ResidentLearningRuntime:
         for record in self._iter_learned_tool_inventory():
             if not any(marker in record["skill_content"] for marker in markers):
                 continue
-            try:
-                skill = await self._skills.create(
-                    name=record["skill_name"],
-                    content=record["skill_content"],
-                    description=record["summary_text"],
-                    scope=_normalise_scope(record["learning_scope"]),
-                    environment_id=self.identity.environment_id,
-                    domain=self.identity.domain,
-                    source=record["learning_source"],
-                    source_environment_id=record["source_environment_id"],
-                    source_valkyrie_id=record["source_valkyrie_id"],
-                    action_safety_class=_safety_class_from_content(record["skill_content"]),
-                )
-            except ValueError:
-                continue
-            return skill
+            await self._record_inventory_skill(record)
+            return await self._skills.get_runnable_skill(record["skill_name"])
         return None
 
     async def _publish_odin_decision(

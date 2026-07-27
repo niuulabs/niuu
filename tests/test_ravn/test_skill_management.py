@@ -121,6 +121,19 @@ async def test_lifecycle_archive_restore_pin_promote_and_usage(tmp_path: Path) -
     assert telemetry.action_safety_class == "diagnostic"
 
 
+async def test_lifecycle_metadata_returns_detached_discovery_snapshot(tmp_path: Path) -> None:
+    skill_port = await _adapter(tmp_path)
+    manager = SkillManagementRegistry(skill_port, metadata_path=tmp_path / "meta.json")
+    await manager.create(name="printer probe", content="Inspect with `printerctl`.")
+
+    snapshot = manager.lifecycle_metadata("printer probe")
+
+    assert snapshot is not None
+    assert snapshot["status"] == "active"
+    snapshot["status"] = "archived"
+    assert manager.status("printer probe") == "active"
+
+
 async def test_skill_tools_honor_shared_archive_state(tmp_path: Path) -> None:
     skill_port = await _adapter(tmp_path)
     manager = SkillManagementRegistry(skill_port, metadata_path=tmp_path / "meta.json")

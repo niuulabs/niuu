@@ -19,7 +19,15 @@ from ravn.cli.commands import (
 from ravn.config import Settings
 from ravn.odin.review import ReviewItem, ReviewKind, review_decided_event
 from ravn.skills.management import SkillManagementRegistry
-from ravn.valkyrie_evolution.models import OperationalSignal
+from ravn.valkyrie_evolution.learned_tools import (
+    learned_tool_storage,
+    write_learned_tool_artifact,
+)
+from ravn.valkyrie_evolution.models import (
+    LearnedToolArtifact,
+    LearnedToolManifest,
+    OperationalSignal,
+)
 from ravn.valkyrie_evolution.resident_learning import (
     EVOLUTION_SKILL_INVENTORY_EVENT,
     ResidentLearningArtifact,
@@ -243,6 +251,59 @@ async def test_local_build_is_registered_in_existing_skill_lifecycle(tmp_path) -
     shown = await manager.show("status_probe")
     assert shown["metadata"]["status"] == "active"
     assert shown["metadata"]["source"] == "flock-learning:learned-tool:status_probe"
+
+
+@pytest.mark.asyncio
+async def test_start_enrolls_persisted_learned_tools_in_existing_lifecycle(tmp_path) -> None:
+    bus = InProcessBus()
+    manager = _manager(tmp_path, "resident")
+    tools_dir = tmp_path / "resident" / "tools"
+    _, artifacts_dir = learned_tool_storage(tools_dir.parent)
+    write_learned_tool_artifact(
+        artifacts_dir=artifacts_dir,
+        artifact=LearnedToolArtifact(
+            artifact_id="learned-tool:fleet_status:abc123",
+            manifest=LearnedToolManifest(
+                name="fleet_status",
+                description="Inspect the current fleet status.",
+                input_schema={"type": "object"},
+                required_permission="tool:run",
+            ),
+            tool_code="def run(input):\n    return {'ok': True}\n",
+            provenance={
+                "scope": "environment",
+                "source_environment_id": "workshop",
+                "source_valkyrie_id": "valkyrie:workshop",
+            },
+        ),
+    )
+    runtime = ResidentLearningRuntime(
+        identity=ResidentLearningIdentity(
+            environment_id="workshop",
+            environment_type="workshop",
+            valkyrie_id="valkyrie:workshop",
+            domain="workshop",
+            flock_ids=["workshop-flock"],
+            autonomy_mode="yolo",
+        ),
+        skills=manager,
+        publisher=bus,
+        subscriber=bus,
+        tools_dir=tools_dir,
+    )
+
+    await runtime.start()
+
+    shown = await manager.show("fleet_status")
+    assert shown["metadata"]["status"] == "active"
+    assert shown["metadata"]["scope"] == "environment"
+    assert shown["metadata"]["source"] == ("flock-learning:learned-tool:fleet_status:abc123")
+    assert await runtime._enroll_persisted_learned_tools() == 0
+
+    await manager.archive("fleet_status")
+    assert await runtime._enroll_persisted_learned_tools() == 0
+    assert manager.status("fleet_status") == "archived"
+    await runtime.stop()
 
 
 @pytest.mark.asyncio
