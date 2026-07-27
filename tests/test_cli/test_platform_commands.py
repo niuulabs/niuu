@@ -177,6 +177,11 @@ class TestDynamicUpCallback:
         assert "workspaces_dir" in sig.parameters
 
     def test_up_flag_defaults_are_none_for_services(self) -> None:
+        """An unspecified service flag stays None so config/defaults decide.
+
+        The parameter default is a ``typer.Option`` carrying the flag's help
+        text, so the value Typer resolves lives one level in.
+        """
         service_defs = {"skuld": _make_svc_def("skuld", default_enabled=False)}
         manager = MagicMock()
         settings = CLISettings()
@@ -185,7 +190,22 @@ class TestDynamicUpCallback:
         import inspect
 
         sig = inspect.signature(up_fn)
-        assert sig.parameters["skuld"].default is None
+        assert sig.parameters["skuld"].default.default is None
+
+    def test_up_flags_carry_help_text(self) -> None:
+        """Every generated flag is documented, including per-service ones."""
+        service_defs = {"skuld": _make_svc_def("skuld", default_enabled=False)}
+        manager = MagicMock()
+        settings = CLISettings()
+        up_fn = _build_up_callback(service_defs, manager, settings)
+
+        import inspect
+
+        sig = inspect.signature(up_fn)
+        for name in ("skip_preflight", "all", "host_profile", "mounts", "skuld"):
+            assert sig.parameters[name].default.help, f"{name} has no help text"
+        # The service flag borrows its wording from the ServiceDefinition.
+        assert "skuld" in sig.parameters["skuld"].default.help
 
     def test_new_plugin_adds_flag_automatically(self) -> None:
         """Adding a new service definition adds its flag with no code change."""
