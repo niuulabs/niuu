@@ -110,6 +110,10 @@ def _option_rows(command: click.Command) -> list[tuple[str, str, str, str]]:
     for param in command.params:
         if not _is_option(param) or param.name == "help":
             continue
+        # Hidden options are internal plumbing the caller passes, not operator
+        # surface — `--help` omits them and so must the reference.
+        if getattr(param, "hidden", False):
+            continue
         flags = ", ".join(f"`{opt}`" for opt in param.opts + param.secondary_opts)
         help_text = _clean(param.help)
         envvar = param.envvar
@@ -184,17 +188,20 @@ def _render(command: click.Command, path: list[str], depth: int, lines: list[str
             lines.append(f"| {flags} | {type_name} | {default_cell} | {help_text} |")
         lines.append("")
 
-    subcommands = getattr(command, "commands", None)
-    if not subcommands:
+    subcommands = getattr(command, "commands", None) or {}
+    visible = [
+        name for name in sorted(subcommands) if not getattr(subcommands[name], "hidden", False)
+    ]
+    if not visible:
         return
 
     lines.append("| Subcommand | Description |")
     lines.append("| --- | --- |")
-    for name in sorted(subcommands):
+    for name in visible:
         lines.append(f"| [`{name}`](#{'-'.join([*path, name])}) | {_summary(subcommands[name])} |")
     lines.append("")
 
-    for name in sorted(subcommands):
+    for name in visible:
         _render(subcommands[name], [*path, name], depth + 1, lines)
 
 

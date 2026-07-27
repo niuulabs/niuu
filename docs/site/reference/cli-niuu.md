@@ -166,7 +166,6 @@ niuu platform [OPTIONS] COMMAND [ARGS]...
 | [`down`](#niuu-platform-down) | Stop all running services. |
 | [`init`](#niuu-platform-init) | Run the first-time setup wizard. |
 | [`inventory`](#niuu-platform-inventory) | Show or export the route domains mounted by the niuu host. |
-| [`skuld`](#niuu-platform-skuld) | Run a Skuld broker instance (internal, one per session). |
 | [`status`](#niuu-platform-status) | Show health of all registered services. |
 | [`up`](#niuu-platform-up) | Start platform services (use --all to start everything). |
 
@@ -201,14 +200,6 @@ niuu platform inventory [OPTIONS]
 | `--json` | flag |  | Print route inventory as JSON. |
 | `--out` | TEXT |  | Optional file path to write the JSON route inventory report. |
 
-#### `niuu platform skuld`
-
-Run a Skuld broker instance (internal, one per session).
-
-```bash
-niuu platform skuld [OPTIONS]
-```
-
 #### `niuu platform status`
 
 Show health of all registered services.
@@ -227,27 +218,27 @@ niuu platform up [OPTIONS]
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--skip-preflight`, `--no-skip-preflight` | flag |  |  |
-| `--all`, `--no-all` | flag |  |  |
-| `--no-web`, `--no-no-web` | flag |  |  |
-| `--host-profile` | TEXT | `full` |  |
-| `--mounts` | TEXT |  |  |
-| `--workspaces-dir` | TEXT |  |  |
-| `--audit`, `--no-audit` | flag |  |  |
-| `--bifrost`, `--no-bifrost` | flag |  |  |
-| `--credentials`, `--no-credentials` | flag |  |  |
-| `--features`, `--no-features` | flag |  |  |
-| `--guild`, `--no-guild` | flag |  |  |
-| `--identity`, `--no-identity` | flag |  |  |
-| `--integrations`, `--no-integrations` | flag |  |  |
-| `--mimir`, `--no-mimir` | flag |  |  |
-| `--niuu`, `--no-niuu` | flag |  |  |
-| `--observatory`, `--no-observatory` | flag |  |  |
-| `--personas`, `--no-personas` | flag |  |  |
-| `--ravn`, `--no-ravn` | flag |  |  |
-| `--ting`, `--no-ting` | flag |  |  |
-| `--tracker`, `--no-tracker` | flag |  |  |
-| `--volundr`, `--no-volundr` | flag |  |  |
+| `--skip-preflight`, `--no-skip-preflight` | flag |  | Start without running the host preflight checks. |
+| `--all`, `--no-all` | flag |  | Start every registered service, ignoring per-service defaults. |
+| `--no-web`, `--no-no-web` | flag |  | Start the backend services without serving the web UI. |
+| `--host-profile` | TEXT | `full` | Host profile that decides which route domains are mounted. |
+| `--mounts` | TEXT |  | Comma-separated route domains to mount instead of the profile default. |
+| `--workspaces-dir` | TEXT |  | Directory for session workspaces. Mini mode only. |
+| `--audit`, `--no-audit` | flag |  | Force the audit service on or off — Audit log query service. |
+| `--bifrost`, `--no-bifrost` | flag |  | Force the bifrost service on or off — Anthropic-compatible LLM proxy. |
+| `--credentials`, `--no-credentials` | flag |  | Force the credentials service on or off — Credential, secret, and MCP metadata service. |
+| `--features`, `--no-features` | flag |  | Force the features service on or off — Feature catalog and preference service. |
+| `--guild`, `--no-guild` | flag |  | Force the guild service on or off — Shared instance registry and aggregate service. |
+| `--identity`, `--no-identity` | flag |  | Force the identity service on or off — Identity, tenancy, and token service. |
+| `--integrations`, `--no-integrations` | flag |  | Force the integrations service on or off — Integration connection and OAuth service. |
+| `--mimir`, `--no-mimir` | flag |  | Force the mimir service on or off — Knowledge service. |
+| `--niuu`, `--no-niuu` | flag |  | Force the niuu service on or off — Shared platform services. |
+| `--observatory`, `--no-observatory` | flag |  | Force the observatory service on or off — Observatory registry and live streams. |
+| `--personas`, `--no-personas` | flag |  | Force the personas service on or off — Canonical persona registry service. |
+| `--ravn`, `--no-ravn` | flag |  | Force the ravn service on or off — Agent runtime and session management. |
+| `--ting`, `--no-ting` | flag |  | Force the ting service on or off — Autonomous saga coordinator. |
+| `--tracker`, `--no-tracker` | flag |  | Force the tracker service on or off — Tracker issue, status, and repo mapping service. |
+| `--volundr`, `--no-volundr` | flag |  | Force the volundr service on or off — AI-native development platform. |
 
 ### `niuu ravn`
 

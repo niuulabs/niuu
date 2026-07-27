@@ -845,10 +845,6 @@ ravn tool-mcp [OPTIONS]
 | `--config`, `-c` | TEXT |  | Path to ravn config YAML. |
 | `--persona`, `-p` | TEXT |  | Persona whose allowed tools should be exposed. |
 | `--profile` | TEXT |  | Profile name (built-in or from ~/.ravn/profiles/). |
-| `--conversation-id` | TEXT |  |  |
-| `--task-id` | TEXT |  |  |
-| `--traceparent` | TEXT |  |  |
-| `--tracestate` | TEXT |  |  |
 
 ### `ravn tui`
 
