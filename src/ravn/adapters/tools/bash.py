@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import signal
 from pathlib import Path
 
 from ravn.adapters.permission.bash_validator import BashValidationPipeline
@@ -134,11 +136,18 @@ class BashTool(ToolPort):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=str(self._workspace_root),
+                start_new_session=True,
             )
             try:
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=self._timeout)
             except TimeoutError:
-                proc.kill()
+                # The shell may have spawned descendants which inherited its
+                # stdout pipe. Killing only the shell leaves communicate()
+                # waiting forever for those descendants to close the pipe.
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 await proc.communicate()
                 output = self._build_output(b"", warnings)
                 return ToolResult(
