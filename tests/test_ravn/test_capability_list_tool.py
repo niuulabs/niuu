@@ -206,7 +206,12 @@ async def test_capability_list_rejects_unknown_kind() -> None:
     assert "Unsupported capability kind" in result.content
 
 
-def _learned_artifact(name: str, description: str = "Read a metric window."):
+def _learned_artifact(
+    name: str,
+    description: str = "Read a metric window.",
+    *,
+    supersedes: str = "",
+):
     from ravn.valkyrie_evolution.models import LearnedToolArtifact, LearnedToolManifest
 
     return LearnedToolArtifact(
@@ -219,6 +224,7 @@ def _learned_artifact(name: str, description: str = "Read a metric window."):
             declared_reach=[],
         ),
         tool_code="def run(input):\n    return {'ok': True}\n",
+        supersedes=supersedes,
     )
 
 
@@ -244,6 +250,55 @@ async def test_capability_list_includes_learned_tools_without_loading_them() -> 
         "verification": "unknown",
         "has_tests": False,
         "requirements_count": 0,
+        "supersedes": "",
+        "lifecycle": {"status": "unmanaged"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_capability_list_exposes_learned_tool_lifecycle_evidence() -> None:
+    class ManagedSkillManager:
+        def status(self, name: str) -> str | None:
+            return "active"
+
+        def lifecycle_metadata(self, name: str) -> dict[str, object] | None:
+            return {
+                "status": "active",
+                "scope": "environment",
+                "version": 2,
+                "pinned": False,
+                "run_count": 4,
+                "success_count": 3,
+                "failure_count": 1,
+                "consecutive_failures": 0,
+                "last_used_at": "2026-07-27T08:00:00+00:00",
+            }
+
+    tool = CapabilityListTool(
+        tools_provider=lambda: [],
+        learned_tools_provider=lambda: [
+            _learned_artifact(
+                "current_probe",
+                supersedes="learned-tool:old_probe:abc123",
+            )
+        ],
+        skill_manager=ManagedSkillManager(),  # type: ignore[arg-type]
+    )
+
+    result = await tool.execute({"kind": "tool"})
+
+    metadata = json.loads(result.content)["capabilities"][0]["metadata"]
+    assert metadata["supersedes"] == "learned-tool:old_probe:abc123"
+    assert metadata["lifecycle"] == {
+        "status": "active",
+        "scope": "environment",
+        "version": 2,
+        "pinned": False,
+        "run_count": 4,
+        "success_count": 3,
+        "failure_count": 1,
+        "consecutive_failures": 0,
+        "last_used_at": "2026-07-27T08:00:00+00:00",
     }
 
 
@@ -252,6 +307,9 @@ async def test_capability_list_hides_archived_learned_tools() -> None:
     class ArchivedSkillManager:
         def status(self, name: str) -> str | None:
             return "archived" if name == "obsolete_probe" else None
+
+        def lifecycle_metadata(self, name: str) -> dict[str, object] | None:
+            return None
 
     tool = CapabilityListTool(
         tools_provider=lambda: [FakeTool()],

@@ -268,7 +268,9 @@ class SkillManageTool(ToolPort):
         return (
             "Write-capable skill management for resident Valkyries. Supports "
             "create, update, archive, restore, pin, unpin, promote, show, list, "
-            "validate, and telemetry actions with Environment/Flock scope metadata."
+            "validate, and telemetry actions with Environment/Flock scope metadata. "
+            "Use lifecycle and usage evidence to maintain the capability portfolio; "
+            "after verifying a replacement, archive an obsolete or inferior capability."
         )
 
     @property

@@ -68,6 +68,11 @@ class SkillManagementRegistry:
         meta = self._metadata.get(self._key(name))
         return meta.status if meta is not None else None
 
+    def lifecycle_metadata(self, name: str) -> dict[str, object] | None:
+        """Return a read-only lifecycle snapshot for capability discovery."""
+        meta = self._metadata.get(self._key(name))
+        return asdict(meta) if meta is not None else None
+
     async def create(
         self,
         *,
