@@ -67,6 +67,9 @@ class ResidentTimelineTurn:
     evidence_refs: tuple[str, ...] = ()
     inbox_refs: tuple[str, ...] = ()
     working_state: dict[str, list[str]] = field(default_factory=dict)
+    working_state_turn_index: int = 0
+    working_state_updated_at: str = ""
+    working_state_authored: bool = False
     changes: dict[str, ResidentStateChange] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
@@ -90,6 +93,9 @@ class ResidentTimelineTurn:
             "evidence_refs": list(self.evidence_refs),
             "inbox_refs": list(self.inbox_refs),
             "working_state": {key: list(value) for key, value in self.working_state.items()},
+            "working_state_turn_index": self.working_state_turn_index,
+            "working_state_updated_at": self.working_state_updated_at,
+            "working_state_authored": self.working_state_authored,
             "changes": {key: value.as_dict() for key, value in self.changes.items()},
         }
 
@@ -153,16 +159,27 @@ def _with_changes(turns: list[ResidentTimelineTurn]) -> list[ResidentTimelineTur
     """Attach per-field added/retained/removed against the previous turn."""
     projected: list[ResidentTimelineTurn] = []
     previous: dict[str, list[str]] = {}
+    previous_turn_index = 0
+    previous_updated_at = ""
     for turn in turns:
+        authored = bool(turn.working_state)
+        if authored:
+            current_state = {key: list(value) for key, value in turn.working_state.items()}
+            state_turn_index = turn.turn_index
+            state_updated_at = turn.updated_at
+        else:
+            current_state = {key: list(value) for key, value in previous.items()}
+            state_turn_index = previous_turn_index
+            state_updated_at = previous_updated_at
         changes: dict[str, ResidentStateChange] = {}
         for name in RESIDENT_WORKING_STATE_FIELDS:
-            if not turn.working_state:
+            if not authored:
                 # A turn that authored no snapshot revised nothing. Diffing it
                 # against the baseline would render as the resident dropping its
                 # entire model, which is the opposite of what happened.
                 changes[name] = ResidentStateChange()
                 continue
-            current_entries = turn.working_state.get(name, [])
+            current_entries = current_state.get(name, [])
             prior_entries = previous.get(name, [])
             prior_set = set(prior_entries)
             current_set = set(current_entries)
@@ -191,14 +208,19 @@ def _with_changes(turns: list[ResidentTimelineTurn]) -> list[ResidentTimelineTur
                 judgment=turn.judgment,
                 evidence_refs=turn.evidence_refs,
                 inbox_refs=turn.inbox_refs,
-                working_state=turn.working_state,
+                working_state=current_state,
+                working_state_turn_index=state_turn_index,
+                working_state_updated_at=state_updated_at,
+                working_state_authored=authored,
                 changes=changes,
             )
         )
         # Only a turn that authored a snapshot moves the baseline; a turn with an
         # invalid outcome must not read as the resident dropping everything.
-        if turn.working_state:
-            previous = turn.working_state
+        if authored:
+            previous = current_state
+            previous_turn_index = turn.turn_index
+            previous_updated_at = turn.updated_at
     return projected
 
 

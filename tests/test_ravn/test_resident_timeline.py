@@ -152,10 +152,15 @@ async def test_a_turn_without_a_snapshot_does_not_read_as_wiping_the_model(tmp_p
 
     timeline = await build_resident_timeline(state)
 
-    assert timeline.turns[1].working_state == {}
+    assert timeline.turns[1].working_state["observations"] == ["printer A is idle"]
+    assert timeline.turns[1].working_state_authored is False
+    assert timeline.turns[1].working_state_turn_index == 1
+    assert timeline.turns[1].working_state_updated_at == timeline.turns[0].updated_at
     assert timeline.turns[1].changes["observations"].removed == ()
     # The baseline held, so the unchanged entry is retained rather than "new".
     assert timeline.turns[2].changes["observations"].retained == ("printer A is idle",)
+    assert timeline.turns[2].working_state_authored is True
+    assert timeline.turns[2].working_state_turn_index == 3
 
 
 @pytest.mark.asyncio

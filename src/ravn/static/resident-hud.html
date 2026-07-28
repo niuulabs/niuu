@@ -170,6 +170,18 @@
   .wake .meta{display:flex; gap:20px; font-size:10px; color:var(--dim2); letter-spacing:.1em; white-space:nowrap}
   .wake .meta b{color:var(--tx); font-weight:500}
 
+  /* ── durable state and active overlay ───────────────── */
+  .state-layers{display:flex;align-items:center;justify-content:space-between;gap:14px;
+    border:1px solid var(--line);background:var(--panel);padding:7px 11px}
+  .state-layer{display:flex;align-items:baseline;gap:8px;min-width:0}
+  .state-layer .kind{font-size:8.5px;letter-spacing:.2em;text-transform:uppercase;
+    color:var(--obs);white-space:nowrap}
+  .state-layer b{font-size:10px;color:var(--tx);font-weight:500}
+  .state-layer .detail{font-size:9px;color:var(--dim);white-space:nowrap}
+  .state-layer.live{border-left:1px solid var(--line2);padding-left:14px}
+  .state-layer.live .kind{color:var(--hyp)}
+  .state-layer.live[hidden]{display:none}
+
   /* ── callouts ───────────────────────────────────────── */
   .flags{display:flex; gap:8px; min-height:26px; flex-wrap:wrap}
   .flag{font-size:10px; letter-spacing:.18em; text-transform:uppercase; padding:4px 11px;
@@ -262,6 +274,8 @@
     .live-card{height:320px}
     .cols{grid-template-columns:1fr 1fr}
     .charter{display:none}
+    .state-layers{align-items:flex-start;flex-direction:column}
+    .state-layer.live{border-left:0;border-top:1px solid var(--line2);padding:7px 0 0;width:100%}
   }
 </style>
 </head>
@@ -373,6 +387,18 @@
   </div>
 
   <div class="flags" id="flags"></div>
+
+  <div class="state-layers">
+    <div class="state-layer">
+      <span class="kind">Durable model</span>
+      <b id="durable-state">No persisted state yet</b>
+    </div>
+    <div class="state-layer live" id="live-state-layer" hidden>
+      <span class="kind">Live overlay</span>
+      <b id="live-state">—</b>
+      <span class="detail">provisional until the turn persists a judgment</span>
+    </div>
+  </div>
 
   <div class="cols" id="cols"></div>
 
@@ -939,6 +965,16 @@ function renderRuntime(d){
     :"—";
   document.getElementById("live-tools").textContent=progress.tool_calls||0;
   document.getElementById("live-warnings").textContent=progress.warnings||0;
+  const liveStateLayer=document.getElementById("live-state-layer");
+  liveStateLayer.hidden=!activeTask;
+  document.getElementById("live-state").textContent=activeTask
+    ? [
+        progress.iteration_budget
+          ? `iteration ${progress.iteration||0} / ${progress.iteration_budget}`
+          : `iteration ${progress.iteration||0}`,
+        `${progress.tool_calls||0} tool call${progress.tool_calls===1?"":"s"}`,
+      ].join(" · ")
+    :"—";
   renderA2A(runtime);
   renderActivity(
     events,
@@ -965,6 +1001,7 @@ function renderEmpty(){
   document.getElementById("wtok").textContent="0";
   document.getElementById("wnext").textContent="—";
   document.getElementById("flags").innerHTML="";
+  document.getElementById("durable-state").textContent="No persisted state yet";
   document.getElementById("stamp").textContent="0 / 0";
 }
 
@@ -981,6 +1018,11 @@ function render(n){
   document.getElementById("wnext").textContent=(t.continuation||"—").toUpperCase();
   document.getElementById("flags").innerHTML=judgmentFacts(t)
     .map(fact=>`<span class="flag fact">${esc(fact)}</span>`).join("");
+  const stateTime=t.working_state_updated_at?new Date(t.working_state_updated_at):null;
+  document.getElementById("durable-state").textContent=t.working_state_turn_index
+    ? `turn ${t.working_state_turn_index}${stateTime&&!isNaN(stateTime)
+        ?" · "+stateTime.toISOString().slice(0,16).replace("T"," ")+"Z":""}`
+    :"No persisted state yet";
 
   FIELDS.forEach(k=>{
     const cur=t.working_state?.[k]||[], c=ch[k]||{};
