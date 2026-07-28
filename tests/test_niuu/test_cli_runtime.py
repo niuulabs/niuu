@@ -84,6 +84,24 @@ async def test_cli_turn_runner_falls_back_to_assistant_content() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cli_turn_runner_raises_when_transport_reports_error() -> None:
+    transport = StubTransport(
+        {
+            "first": [
+                {"type": "error", "error": "authentication expired"},
+                {"type": "result", "result": ""},
+            ]
+        }
+    )
+    runner = CliTurnRunner(transport)
+
+    with pytest.raises(RuntimeError, match="authentication expired"):
+        await runner.run_prompt("first", "req-1")
+
+    assert runner.pending_responses == {}
+
+
+@pytest.mark.asyncio
 async def test_cli_turn_runner_falls_back_to_streamed_delta_text() -> None:
     transport = StubTransport(
         {

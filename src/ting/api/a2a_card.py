@@ -84,8 +84,19 @@ def _workflow_skill(workflow: WorkflowDefinition) -> AgentSkill:
     return AgentSkill(
         id=str(workflow.id),
         name=workflow.name,
-        description=workflow.description,
+        description=(
+            f"{workflow.description}\n\n"
+            "Launch context may be supplied in A2A message metadata: repo is a "
+            "repository URL, branch selects its starting branch, and connectionId "
+            "selects an execution connection."
+        ),
         tags=tags or ["workflow"],
+        examples=[
+            (
+                "Select a repository from the platform repository catalog, then start "
+                "this skill with metadata containing repo and, when needed, branch."
+            )
+        ],
     )
 
 

@@ -118,7 +118,13 @@ class CliTurnRunner:
             nonlocal current_text_block
             event_type = data.get("type", "")
 
-            if event_type == "assistant":
+            if event_type == "error":
+                error = data.get("error") or data.get("message") or "CLI runtime failed"
+                if isinstance(error, dict):
+                    error = error.get("message") or str(error)
+                if not result_future.done():
+                    result_future.set_exception(RuntimeError(str(error)))
+            elif event_type == "assistant":
                 flush_current_text_block()
                 self._capture_assistant_text(data, collected_text)
             elif event_type == "content_block_start":

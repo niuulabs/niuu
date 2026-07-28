@@ -12,7 +12,8 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
+from typing import Any
 from uuid import uuid4
 
 import httpx
@@ -32,6 +33,7 @@ class OpenBaoCredentialStore(CredentialStorePort):
     Supported auth modes:
     - ``token``: use a pre-provisioned token
     - ``approle``: authenticate via ``auth/approle/login``
+    - ``jwt``: authenticate a workload JWT via ``auth/<jwt_mount_path>/login``
 
     Constructor kwargs:
         url: Base OpenBao URL.
@@ -42,6 +44,9 @@ class OpenBaoCredentialStore(CredentialStorePort):
         approle_mount_path: AppRole mount path.
         role_id: AppRole role ID for ``approle`` auth.
         secret_id: AppRole secret ID for ``approle`` auth.
+        jwt_mount_path: JWT auth backend path.
+        jwt_role: JWT auth role.
+        jwt_token_file: File containing the workload JWT.
     """
 
     def __init__(
@@ -54,6 +59,9 @@ class OpenBaoCredentialStore(CredentialStorePort):
         approle_mount_path: str = "auth/approle",
         role_id: str = "",
         secret_id: str = "",
+        jwt_mount_path: str = "auth/jwt",
+        jwt_role: str = "",
+        jwt_token_file: str = "/var/run/secrets/kubernetes.io/serviceaccount/token",
     ) -> None:
         self._url = url.rstrip("/")
         self._namespace = namespace.strip("/")
@@ -63,6 +71,9 @@ class OpenBaoCredentialStore(CredentialStorePort):
         self._approle_mount_path = approle_mount_path.strip("/")
         self._role_id = role_id
         self._secret_id = secret_id
+        self._jwt_mount_path = jwt_mount_path.strip("/")
+        self._jwt_role = jwt_role
+        self._jwt_token_file = jwt_token_file
         self._client: httpx.AsyncClient | None = None
         self._client_token: str | None = token or None
 
@@ -88,22 +99,34 @@ class OpenBaoCredentialStore(CredentialStorePort):
         if self._auth_method == "token":
             return ""
 
-        if self._auth_method != "approle":
-            raise RuntimeError("OpenBao credential store requires a token or approle credentials")
-        if not self._role_id or not self._secret_id:
-            raise RuntimeError("AppRole auth requires role_id and secret_id")
-
         client = await self._get_client()
-        response = await client.post(
-            f"/v1/{self._approle_mount_path}/login",
-            json={
-                "role_id": self._role_id,
-                "secret_id": self._secret_id,
-            },
-        )
+        if self._auth_method == "approle":
+            if not self._role_id or not self._secret_id:
+                raise RuntimeError("AppRole auth requires role_id and secret_id")
+            path = f"/v1/{self._approle_mount_path}/login"
+            payload = {"role_id": self._role_id, "secret_id": self._secret_id}
+            label = "AppRole"
+        elif self._auth_method == "jwt":
+            if not self._jwt_role:
+                raise RuntimeError("JWT auth requires jwt_role")
+            try:
+                jwt = Path(self._jwt_token_file).read_text().strip()
+            except OSError as exc:
+                raise RuntimeError(f"JWT auth could not read token file: {exc}") from exc
+            if not jwt:
+                raise RuntimeError("JWT auth token file is empty")
+            path = f"/v1/{self._jwt_mount_path}/login"
+            payload = {"role": self._jwt_role, "jwt": jwt}
+            label = "JWT"
+        else:
+            raise RuntimeError(
+                "OpenBao credential store requires token, approle, or jwt authentication"
+            )
+
+        response = await client.post(path, json=payload)
         if response.status_code >= 400:
             raise RuntimeError(
-                f"OpenBao AppRole auth failed ({response.status_code}): {response.text}"
+                f"OpenBao {label} auth failed ({response.status_code}): {response.text}"
             )
 
         self._client_token = response.json()["auth"]["client_token"]
@@ -117,6 +140,17 @@ class OpenBaoCredentialStore(CredentialStorePort):
         if self._namespace:
             headers["X-Vault-Namespace"] = self._namespace
         return headers
+
+    async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        """Issue one authenticated request, re-authenticating once when a lease expires."""
+        client = await self._get_client()
+        request = getattr(client, method)
+        response = await request(path, headers=await self._headers(), **kwargs)
+        if response.status_code not in {401, 403} or self._auth_method == "token":
+            return response
+
+        self._client_token = None
+        return await request(path, headers=await self._headers(), **kwargs)
 
     async def close(self) -> None:
         if self._client:
@@ -133,10 +167,9 @@ class OpenBaoCredentialStore(CredentialStorePort):
         return str(PurePosixPath(self._mount_path, "metadata", f"{owner_type}s", owner_id))
 
     async def _read_raw(self, owner_type: str, owner_id: str, name: str) -> dict[str, str] | None:
-        client = await self._get_client()
-        response = await client.get(
+        response = await self._request(
+            "get",
             f"/v1/{self._data_path(owner_type, owner_id, name)}",
-            headers=await self._headers(),
         )
         if response.status_code == 404:
             return None
@@ -156,7 +189,6 @@ class OpenBaoCredentialStore(CredentialStorePort):
         data: dict[str, str],
         metadata: dict | None = None,
     ) -> StoredCredential:
-        client = await self._get_client()
         now = datetime.now(UTC)
 
         existing = await self.get(owner_type, owner_id, name)
@@ -178,9 +210,9 @@ class OpenBaoCredentialStore(CredentialStorePort):
             }
         )
 
-        response = await client.post(
+        response = await self._request(
+            "post",
             f"/v1/{self._data_path(owner_type, owner_id, name)}",
-            headers=await self._headers(),
             json={"data": payload},
         )
         if response.status_code >= 400:
@@ -236,10 +268,9 @@ class OpenBaoCredentialStore(CredentialStorePort):
         return {k: v for k, v in raw.items() if k != _META_KEY}
 
     async def delete(self, owner_type: str, owner_id: str, name: str) -> None:
-        client = await self._get_client()
-        response = await client.delete(
+        response = await self._request(
+            "delete",
             f"/v1/{self._data_path(owner_type, owner_id, name)}",
-            headers=await self._headers(),
         )
         if response.status_code >= 400 and response.status_code != 404:
             logger.error("OpenBao delete failed: %s %s", response.status_code, response.text)
@@ -250,10 +281,9 @@ class OpenBaoCredentialStore(CredentialStorePort):
         owner_id: str,
         secret_type: SecretType | None = None,
     ) -> list[StoredCredential]:
-        client = await self._get_client()
-        response = await client.get(
+        response = await self._request(
+            "get",
             f"/v1/{self._list_path(owner_type, owner_id)}",
-            headers=await self._headers(),
             params={"list": "true"},
         )
         if response.status_code == 404:
