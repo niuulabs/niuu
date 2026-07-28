@@ -573,6 +573,10 @@ def test_resident_hud_serves_live_durable_and_inflight_state_without_operator_to
     assert "RESIDENT · HUD" in page.text
     assert "What happened" in page.text
     assert "Current progress" in page.text
+    assert "Durable model" in page.text
+    assert "Live overlay" in page.text
+    assert 'id="durable-state"' in page.text
+    assert 'id="live-state-layer"' in page.text
     assert 'id="live-context"' in page.text
     assert '"objectives", "observations"' in page.text
     assert 'id="progress-status"' in page.text
