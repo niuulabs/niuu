@@ -68,7 +68,7 @@ class StreamEventType(StrEnum):
     TEXT_DELTA = "text_delta"
     TOOL_CALL = "tool_call"
     MESSAGE_DONE = "message_done"
-    THINKING = "thinking"  # Extended thinking block content (Anthropic-only)
+    THINKING = "thinking"  # Provider reasoning content
 
 
 # ---------------------------------------------------------------------------
@@ -175,9 +175,8 @@ class TokenUsage:
     """Token usage for a single LLM call or cumulative across a session.
 
     ``thinking_tokens`` tracks the subset of ``output_tokens`` consumed by
-    extended-thinking blocks (Anthropic-only).  They are already included in
-    ``output_tokens``; this field provides a separate breakdown for cost
-    accounting (Bifrost).
+    model reasoning. They are already included in ``output_tokens``; this field
+    provides a separate breakdown for telemetry and cost accounting (Bifrost).
     """
 
     input_tokens: int
@@ -224,6 +223,14 @@ class Message:
 
     role: str  # "user" or "assistant"
     content: str | list[dict]
+    reasoning: str = ""
+
+    def to_api_dict(self) -> dict[str, Any]:
+        """Return the transport-neutral message representation."""
+        message: dict[str, Any] = {"role": self.role, "content": self.content}
+        if self.reasoning:
+            message["reasoning"] = self.reasoning
+        return message
 
 
 @dataclass(frozen=True)
@@ -234,6 +241,7 @@ class LLMResponse:
     tool_calls: list[ToolCall]
     stop_reason: StopReason
     usage: TokenUsage
+    reasoning: str = ""
 
 
 @dataclass(frozen=True)

@@ -80,6 +80,24 @@ class TestMessage:
         m = Message(role="assistant", content=blocks)
         assert m.content == blocks
 
+    def test_api_dict_includes_reasoning_when_present(self) -> None:
+        m = Message(
+            role="assistant",
+            content="Answer",
+            reasoning="Evidence first",
+        )
+        assert m.to_api_dict() == {
+            "role": "assistant",
+            "content": "Answer",
+            "reasoning": "Evidence first",
+        }
+
+    def test_api_dict_omits_empty_reasoning(self) -> None:
+        assert Message(role="user", content="Hello").to_api_dict() == {
+            "role": "user",
+            "content": "Hello",
+        }
+
     def test_frozen(self) -> None:
         m = Message(role="user", content="Hello")
         with pytest.raises(Exception):

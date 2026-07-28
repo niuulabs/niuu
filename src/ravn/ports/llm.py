@@ -21,7 +21,7 @@ class LLMPort(ABC):
     def supports_thinking(self) -> bool:
         """Return True if this adapter supports extended thinking.
 
-        Defaults to False.  AnthropicAdapter overrides to True.
+        Defaults to False.  Reasoning-capable adapters override to True.
         FallbackLLMAdapter uses this to decide whether to forward the
         ``thinking`` parameter to a given provider.
         """
@@ -46,9 +46,10 @@ class LLMPort(ABC):
         ``system`` may be a plain string or a list of Anthropic-format text blocks
         with optional ``cache_control`` entries for prompt caching.
 
-        ``thinking`` enables extended thinking when set to
-        ``{"type": "enabled", "budget_tokens": N}``.  Ignored by adapters that
-        do not support extended thinking (``supports_thinking == False``).
+        ``thinking`` enables deliberate reasoning when set. Adapters translate
+        this transport-neutral request into their provider's wire format.
+        Ignored by adapters that do not support reasoning
+        (``supports_thinking == False``).
         """
         raise NotImplementedError
 
@@ -65,8 +66,7 @@ class LLMPort(ABC):
     ) -> LLMResponse:
         """Generate a complete (non-streaming) response from the LLM.
 
-        ``thinking`` enables extended thinking when set to
-        ``{"type": "enabled", "budget_tokens": N}``.  Ignored by adapters that
-        do not support extended thinking (``supports_thinking == False``).
+        ``thinking`` enables deliberate reasoning when set. Adapters translate
+        this transport-neutral request into their provider's wire format.
         """
         raise NotImplementedError

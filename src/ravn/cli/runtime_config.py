@@ -4,10 +4,30 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Any
 
-from ravn.config import Settings
+from ravn.config import ExtendedThinkingConfig, Settings
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_extended_thinking(
+    settings: Settings,
+    persona_config: Any | None,
+    *,
+    cli_transport_executor: bool,
+) -> ExtendedThinkingConfig | None:
+    """Resolve reasoning policy for one concrete agent."""
+    if cli_transport_executor:
+        return None
+
+    configured = settings.llm.extended_thinking
+    enabled = configured.enabled or bool(
+        persona_config is not None and persona_config.llm.thinking_enabled
+    )
+    if not enabled:
+        return None
+    return configured.model_copy(update={"enabled": True})
 
 
 def _configure_logging(settings: Settings) -> None:

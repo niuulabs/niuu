@@ -100,7 +100,13 @@ def restore_session_from_checkpoint(session: Session, checkpoint: Checkpoint) ->
 
     session.messages.clear()
     for raw in checkpoint.messages:
-        session.messages.append(Message(role=raw["role"], content=raw["content"]))
+        session.messages.append(
+            Message(
+                role=raw["role"],
+                content=raw["content"],
+                reasoning=raw.get("reasoning", ""),
+            )
+        )
 
     session.todos.clear()
     for raw in checkpoint.todos:

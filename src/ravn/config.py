@@ -89,8 +89,8 @@ class ExtendedThinkingConfig(BaseModel):
     """Extended thinking (extended reasoning budget) configuration.
 
     Extended thinking allocates a deliberate reasoning budget to hard problems
-    before the model produces its response.  Anthropic-only — FallbackAdapter
-    skips this when routing to a non-Anthropic provider.
+    before the model produces its response. Each LLM adapter maps the generic
+    reasoning request to its provider protocol.
     """
 
     enabled: bool = Field(
@@ -103,7 +103,7 @@ class ExtendedThinkingConfig(BaseModel):
     )
     auto_trigger: bool = Field(
         default=True,
-        description="Automatically activate thinking on planning/ambiguous inputs.",
+        description="Activate reasoning on every model call.",
     )
     auto_trigger_on_retry: bool = Field(
         default=True,

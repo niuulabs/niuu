@@ -10,8 +10,8 @@ Covers:
 - FallbackLLMAdapter: passes thinking to supports_thinking providers, strips
   it for non-supporting providers
 - LLMPort.supports_thinking property
-- Agent: _parse_think_flag, _looks_like_planning_task, _resolve_thinking,
-  THINKING events emitted in _call_llm_streaming, explicit/auto triggers
+- Agent: _parse_think_flag, configured reasoning activation,
+  THINKING events emitted in _call_llm_streaming
 """
 
 from __future__ import annotations
@@ -25,11 +25,7 @@ import respx
 
 from ravn.adapters.llm.anthropic import AnthropicAdapter
 from ravn.adapters.llm.fallback import FallbackLLMAdapter
-from ravn.agent import (
-    RavnAgent,
-    _looks_like_planning_task,
-    _parse_think_flag,
-)
+from ravn.agent import RavnAgent, _parse_think_flag
 from ravn.config import ExtendedThinkingConfig
 from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.models import (
@@ -169,32 +165,6 @@ def test_parse_think_flag(user_input, expected_flag, expected_text):
 
 
 # ---------------------------------------------------------------------------
-# _looks_like_planning_task helper
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "user_input, expected",
-    [
-        ("design a database schema", True),
-        ("plan the migration", True),
-        ("what approach should i use", True),
-        ("best way to implement this", True),
-        ("how should I structure this", True),
-        ("just fix the bug", False),
-        ("run the tests", False),
-        ("", False),
-        # Word-boundary false-positive regression cases
-        ("this bug was unplanned, just fix it", False),
-        ("no replanning needed", False),
-        ("I need to re-architect the service", True),  # still matches "architect"
-    ],
-)
-def test_looks_like_planning_task(user_input, expected):
-    assert _looks_like_planning_task(user_input) == expected
-
-
-# ---------------------------------------------------------------------------
 # AnthropicAdapter — _headers with thinking enabled
 # ---------------------------------------------------------------------------
 
@@ -245,6 +215,21 @@ def test_anthropic_adapter_build_request_with_thinking():
         thinking=thinking,
     )
     assert req["thinking"] == thinking
+
+
+def test_anthropic_adapter_does_not_send_prior_reasoning_as_message_field():
+    adapter = AnthropicAdapter(api_key="sk-test")
+    req = adapter._build_request(
+        [{"role": "assistant", "content": "answer", "reasoning": "internal"}],
+        tools=[],
+        system="",
+        model="claude-sonnet-4-6",
+        max_tokens=1024,
+        stream=False,
+        thinking=None,
+    )
+
+    assert req["messages"] == [{"role": "assistant", "content": "answer"}]
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +365,7 @@ async def test_anthropic_adapter_generate_with_thinking_blocks():
 
     assert result.content == "Here is my answer."
     thinking_text = "Let me reason about this carefully." * 10
+    assert result.reasoning == thinking_text
     assert result.usage.thinking_tokens == len(thinking_text) // 4
     assert result.usage.input_tokens == 50
     assert result.usage.output_tokens == 120
@@ -689,17 +675,16 @@ async def test_agent_no_thinking_without_config():
 
 
 @pytest.mark.asyncio
-async def test_agent_auto_trigger_on_planning_input():
+async def test_agent_auto_trigger_applies_to_ordinary_input():
     agent, ch, llm = make_thinking_agent(auto_trigger=True)
-    await agent.run_turn("plan the new architecture for this service")
+    await agent.run_turn("read the file foo.py")
     assert llm.thinking_params[0] == {"type": "enabled", "budget_tokens": 4000}
 
 
 @pytest.mark.asyncio
 async def test_agent_no_auto_trigger_when_disabled():
     agent, ch, llm = make_thinking_agent(auto_trigger=False)
-    await agent.run_turn("plan the new architecture for this service")
-    # auto_trigger off → should be None even for planning input
+    await agent.run_turn("read the file foo.py")
     assert llm.thinking_params[0] is None
 
 
@@ -755,6 +740,7 @@ async def test_agent_thinking_events_emitted_to_channel():
     ]
     assert len(thinking_events) == 1
     assert thinking_events[0].payload["text"] == "reasoning step"
+    assert agent._session.messages[-1].reasoning == "reasoning step"
 
 
 @pytest.mark.asyncio

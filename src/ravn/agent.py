@@ -277,7 +277,7 @@ class RavnAgent:
 
     def _build_api_messages(self) -> list[dict]:
         """Convert session messages to the API format."""
-        return [{"role": m.role, "content": m.content} for m in self._session.messages]
+        return [message.to_api_dict() for message in self._session.messages]
 
     async def _emit_session_started(self) -> None:
         """Publish ravn.session.started to Sleipnir (no-op when publisher absent)."""
@@ -489,7 +489,6 @@ class RavnAgent:
             self._enforce_prompt_budget(prompt_sections)
 
             thinking_param = self._resolve_thinking(
-                user_input=user_input,
                 iteration=iteration,
                 explicit=explicit_thinking,
                 last_had_tool_error=last_had_tool_error,
@@ -518,7 +517,13 @@ class RavnAgent:
                         )
                     )
                 final_response = llm_response.content
-                self._session.add_message(Message(role="assistant", content=llm_response.content))
+                self._session.add_message(
+                    Message(
+                        role="assistant",
+                        content=llm_response.content,
+                        reasoning=llm_response.reasoning,
+                    )
+                )
                 break
 
             # Track partial response for checkpointing during tool-call iterations.
@@ -527,7 +532,13 @@ class RavnAgent:
 
             # Append the assistant message (with tool calls) to history.
             assistant_content = _build_assistant_content(llm_response)
-            self._session.messages.append(Message(role="assistant", content=assistant_content))
+            self._session.messages.append(
+                Message(
+                    role="assistant",
+                    content=assistant_content,
+                    reasoning=llm_response.reasoning,
+                )
+            )
 
             # Execute all tool calls sequentially and collect results.
             tool_results_content = []
@@ -896,9 +907,7 @@ class RavnAgent:
 
         from ravn.domain.checkpoint import Checkpoint
 
-        messages: list[dict] = [
-            {"role": m.role, "content": m.content} for m in self._session.messages
-        ]
+        messages = [message.to_api_dict() for message in self._session.messages]
         todos: list[dict] = [
             {"id": t.id, "content": t.content, "status": str(t.status), "priority": t.priority}
             for t in self._session.todos
@@ -973,9 +982,7 @@ class RavnAgent:
             return
 
         # Serialise messages to plain dicts for storage.
-        messages: list[dict] = [
-            {"role": m.role, "content": m.content} for m in self._session.messages
-        ]
+        messages = [message.to_api_dict() for message in self._session.messages]
         todos: list[dict] = [
             {"id": t.id, "content": t.content, "status": str(t.status), "priority": t.priority}
             for t in self._session.todos
@@ -1098,7 +1105,6 @@ class RavnAgent:
     def _resolve_thinking(
         self,
         *,
-        user_input: str,
         iteration: int,
         explicit: bool,
         last_had_tool_error: bool,
@@ -1107,7 +1113,7 @@ class RavnAgent:
 
         Extended thinking is activated when:
         - Explicitly requested (``think:`` prefix / ``--think`` flag).
-        - Auto-trigger is on AND the input looks like a planning/ambiguous task.
+        - Auto-trigger is on for the persona.
         - Auto-trigger-on-retry is on AND a tool failed on the previous iteration.
         """
         et = self._extended_thinking
@@ -1120,7 +1126,7 @@ class RavnAgent:
         if et.auto_trigger_on_retry and iteration > 0 and last_had_tool_error:
             return {"type": "enabled", "budget_tokens": et.budget_tokens}
 
-        if et.auto_trigger and _looks_like_planning_task(user_input):
+        if et.auto_trigger:
             return {"type": "enabled", "budget_tokens": et.budget_tokens}
 
         return None
@@ -1196,6 +1202,7 @@ class RavnAgent:
                 },
                 content={
                     "content": response.content,
+                    "reasoning": response.reasoning,
                     "tool_calls": [
                         {"id": call.id, "name": call.name, "input": call.input}
                         for call in response.tool_calls
@@ -1230,6 +1237,7 @@ class RavnAgent:
     ) -> LLMResponse:
         """Call the LLM with streaming and accumulate into an LLMResponse."""
         accumulated_text = ""
+        accumulated_reasoning = ""
         tool_calls: list[ToolCall] = []
         final_usage = TokenUsage(input_tokens=0, output_tokens=0)
         stop_reason = StopReason.END_TURN
@@ -1237,7 +1245,7 @@ class RavnAgent:
             system_prompt if system_prompt is not None else self._system_prompt
         )
         api_messages = (
-            [{"role": m.role, "content": m.content} for m in messages]
+            [message.to_api_dict() for message in messages]
             if messages is not None
             else self._build_api_messages()
         )
@@ -1264,6 +1272,7 @@ class RavnAgent:
                         )
                 case StreamEventType.THINKING:
                     if event.text:
+                        accumulated_reasoning += event.text
                         await self._channel.emit(
                             RavnEvent.thinking(
                                 self._source_id,
@@ -1286,6 +1295,7 @@ class RavnAgent:
             tool_calls=tool_calls,
             stop_reason=stop_reason,
             usage=final_usage,
+            reasoning=accumulated_reasoning,
         )
 
     async def _execute_tool(self, tool_call: ToolCall) -> ToolResult:
@@ -1698,21 +1708,6 @@ _THINK_PREFIXES = ("think:", "think: ")
 # Captures any surrounding whitespace so collapsing leaves a single space.
 _THINK_FLAG_RE = re.compile(r"(?<!\S)--think(?!\S)")
 
-# Single-word planning keywords matched with \b to avoid substring false-positives
-# (e.g. "unplanned" must not match "plan").
-_PLANNING_WORD_RE = re.compile(
-    r"\b(?:plan|design|architect|architecture|strategy|roadmap|approach)\b",
-    re.IGNORECASE,
-)
-# Multi-word phrases can remain as plain substring checks.
-_PLANNING_PHRASES = (
-    "how should",
-    "what approach",
-    "what's the best",
-    "best way to",
-    "how do i",
-)
-
 
 def _parse_think_flag(user_input: str) -> tuple[bool, str]:
     """Return (explicit_thinking, cleaned_input).
@@ -1733,19 +1728,6 @@ def _parse_think_flag(user_input: str) -> tuple[bool, str]:
         cleaned = re.sub(r" {2,}", " ", cleaned)
         return True, cleaned
     return False, stripped
-
-
-def _looks_like_planning_task(user_input: str) -> bool:
-    """Return True if the input looks like a planning or ambiguous task.
-
-    Single-word keywords are matched with word boundaries to prevent
-    substring false-positives (e.g. ``unplanned`` must not match ``plan``).
-    Multi-word phrases are matched as plain substrings.
-    """
-    if _PLANNING_WORD_RE.search(user_input):
-        return True
-    lower = user_input.lower()
-    return any(phrase in lower for phrase in _PLANNING_PHRASES)
 
 
 def _build_assistant_content(response: LLMResponse) -> list[dict]:
