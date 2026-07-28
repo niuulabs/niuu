@@ -58,12 +58,6 @@ async def _run_daemon(
     compressor = None if cli_transport_executor else _build_compressor(settings, llm)
     pre_hooks, post_hooks = _build_hooks(settings)
 
-    extended_thinking = (
-        settings.llm.extended_thinking
-        if settings.llm.extended_thinking.enabled and not cli_transport_executor
-        else None
-    )
-
     mcp_manager: Any | None = None
     mcp_tools: list[Any] = []
 
@@ -241,6 +235,11 @@ async def _run_daemon(
         tools = _apply_trust_filter(tools, settings, triggered_by)
 
         executor = _build_executor(resolved_persona)
+        resolved_extended_thinking = _resolve_extended_thinking(
+            settings,
+            resolved_persona,
+            cli_transport_executor=_uses_cli_transport_executor(resolved_persona),
+        )
         agent = executor.build(
             llm=llm,
             tools=tools,
@@ -268,7 +267,7 @@ async def _run_daemon(
             task_summary_max_chars=settings.memory.task_summary_max_chars,
             input_token_cost_per_million=settings.memory.input_token_cost_per_million,
             output_token_cost_per_million=settings.memory.output_token_cost_per_million,
-            extended_thinking=extended_thinking,
+            extended_thinking=resolved_extended_thinking,
             # NIU-598: session lifecycle events for optional reflection storage
             sleipnir_publisher=daemon_bus,
             persona=resolved_persona.name if resolved_persona else "",

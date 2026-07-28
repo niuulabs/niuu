@@ -64,6 +64,20 @@ def _text_chunk(content: str, finish_reason: str | None = None) -> str:
     )
 
 
+def _reasoning_chunk(content: str, *, legacy: bool = False) -> str:
+    field = "reasoning_content" if legacy else "reasoning"
+    return json.dumps(
+        {
+            "choices": [
+                {
+                    "delta": {field: content},
+                    "finish_reason": None,
+                }
+            ]
+        }
+    )
+
+
 def _tool_chunk(
     idx: int = 0,
     *,
@@ -94,10 +108,13 @@ def _non_stream_response(
     tool_calls: list | None = None,
     finish_reason: str = "stop",
     usage: dict | None = None,
+    reasoning: str = "",
 ) -> dict:
     message: dict = {"role": "assistant", "content": content}
     if tool_calls:
         message["tool_calls"] = tool_calls
+    if reasoning:
+        message["reasoning"] = reasoning
     return {
         "choices": [{"message": message, "finish_reason": finish_reason}],
         "usage": usage or {"prompt_tokens": 10, "completion_tokens": 5},
@@ -154,6 +171,23 @@ class TestNormaliseUsage:
             }
         )
         assert usage.cache_read_tokens == 40
+
+    def test_reasoning_tokens_from_completion_details(self) -> None:
+        usage = _normalise_usage(
+            {
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "completion_tokens_details": {"reasoning_tokens": 32},
+            }
+        )
+        assert usage.thinking_tokens == 32
+
+    def test_reasoning_tokens_estimated_when_provider_omits_details(self) -> None:
+        usage = _normalise_usage(
+            {"prompt_tokens": 10, "completion_tokens": 5},
+            reasoning_text="reasoning that the provider did not itemise",
+        )
+        assert usage.thinking_tokens > 0
 
     def test_empty_dict_returns_zeros(self) -> None:
         usage = _normalise_usage({})
@@ -238,6 +272,9 @@ class TestOpenAIAdapterInit:
         assert adapter._default_model == "gpt-4o"
         assert adapter._max_retries >= 0
 
+    def test_supports_thinking(self) -> None:
+        assert OpenAICompatibleAdapter().supports_thinking is True
+
     def test_custom_base_url_trailing_slash_stripped(self) -> None:
         adapter = OpenAICompatibleAdapter(base_url="http://proxy/")
         assert not adapter._base_url.endswith("/")
@@ -251,6 +288,66 @@ class TestOpenAIAdapterInit:
         adapter = OpenAICompatibleAdapter(api_key="")
         headers = adapter._headers()
         assert "authorization" not in headers
+
+    def test_reasoning_request_options_are_config_driven(self) -> None:
+        adapter = OpenAICompatibleAdapter(
+            request_options={"temperature": 1.0, "model": "must-not-override"},
+            thinking_request_options={
+                "chat_template_kwargs": {
+                    "enable_thinking": True,
+                    "preserve_thinking": True,
+                }
+            },
+        )
+
+        ordinary = adapter._build_request(
+            _MESSAGES,
+            tools=[],
+            system="",
+            model="configured-model",
+            max_tokens=100,
+            stream=False,
+        )
+        reasoned = adapter._build_request(
+            _MESSAGES,
+            tools=[],
+            system="",
+            model="configured-model",
+            max_tokens=100,
+            stream=False,
+            thinking={"type": "enabled", "budget_tokens": 8000},
+        )
+
+        assert ordinary["temperature"] == 1.0
+        assert "chat_template_kwargs" not in ordinary
+        assert reasoned["chat_template_kwargs"]["preserve_thinking"] is True
+        assert reasoned["model"] == "configured-model"
+
+    def test_assistant_reasoning_is_preserved_in_tool_history(self) -> None:
+        adapter = OpenAICompatibleAdapter()
+        request = adapter._build_request(
+            [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "call-1",
+                            "name": "inspect",
+                            "input": {},
+                        }
+                    ],
+                    "reasoning": "I should inspect first.",
+                }
+            ],
+            tools=[],
+            system="",
+            model="configured-model",
+            max_tokens=100,
+            stream=False,
+        )
+
+        assert request["messages"][0]["reasoning_content"] == "I should inspect first."
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +380,28 @@ class TestOpenAIAdapterGenerate:
         result = await adapter.generate(_MESSAGES, **_KWARGS)
         assert result.usage.input_tokens == 20
         assert result.usage.output_tokens == 10
+
+    @respx.mock
+    async def test_generate_preserves_reasoning(self) -> None:
+        adapter = OpenAICompatibleAdapter(api_key="k", base_url=_BASE_URL)
+        respx.post(f"{_BASE_URL}/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200,
+                json=_non_stream_response(
+                    content="Answer.",
+                    reasoning="I should inspect the evidence.",
+                ),
+            )
+        )
+
+        result = await adapter.generate(
+            _MESSAGES,
+            **_KWARGS,
+            thinking={"type": "enabled", "budget_tokens": 8000},
+        )
+
+        assert result.reasoning == "I should inspect the evidence."
+        assert result.usage.thinking_tokens > 0
 
     @respx.mock
     async def test_generate_tool_call_extracted(self) -> None:
@@ -430,6 +549,33 @@ class TestOpenAIAdapterStream:
         assert done_events[0].usage is not None
         assert done_events[0].usage.input_tokens == 10
         assert done_events[0].usage.output_tokens == 5
+
+    @respx.mock
+    async def test_stream_emits_current_and_legacy_reasoning_fields(self) -> None:
+        adapter = OpenAICompatibleAdapter(api_key="k", base_url=_BASE_URL)
+        sse = _make_sse_lines(
+            _reasoning_chunk("Inspect "),
+            _reasoning_chunk("evidence.", legacy=True),
+            _text_chunk("Answer."),
+            usage={"prompt_tokens": 10, "completion_tokens": 9},
+        )
+        respx.post(f"{_BASE_URL}/v1/chat/completions").mock(
+            return_value=httpx.Response(200, content=sse)
+        )
+
+        events = []
+        async for event in adapter.stream(
+            _MESSAGES,
+            **_KWARGS,
+            thinking={"type": "enabled", "budget_tokens": 8000},
+        ):
+            events.append(event)
+
+        thinking_events = [event for event in events if event.type == StreamEventType.THINKING]
+        assert "".join(event.text or "" for event in thinking_events) == "Inspect evidence."
+        done = next(event for event in events if event.type == StreamEventType.MESSAGE_DONE)
+        assert done.usage is not None
+        assert done.usage.thinking_tokens > 0
 
     @respx.mock
     async def test_stream_tool_call_extracted(self) -> None:

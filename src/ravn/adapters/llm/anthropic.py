@@ -36,6 +36,13 @@ _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503})
 _DEFAULT_BASE_URL = "https://api.anthropic.com"
 
 
+def _without_reasoning(messages: list[dict]) -> list[dict]:
+    """Remove prior internal reasoning from Anthropic input messages."""
+    return [
+        {key: value for key, value in message.items() if key != "reasoning"} for message in messages
+    ]
+
+
 class AnthropicAdapter(LLMPort):
     """Calls the Anthropic Messages API with streaming and tool support.
 
@@ -118,7 +125,7 @@ class AnthropicAdapter(LLMPort):
         body: dict = {
             "model": model or self._default_model,
             "max_tokens": effective_max_tokens,
-            "messages": messages,
+            "messages": _without_reasoning(messages),
             "stream": stream,
         }
         system_blocks = self._build_system(system)
@@ -346,12 +353,12 @@ class AnthropicAdapter(LLMPort):
         data = response.json()
         content_text = ""
         tool_calls: list[ToolCall] = []
-        thinking_chars = 0
+        thinking_parts: list[str] = []
 
         for block in data.get("content", []):
             match block.get("type"):
                 case "thinking":
-                    thinking_chars += len(block.get("thinking", ""))
+                    thinking_parts.append(block.get("thinking", ""))
                 case "text":
                     content_text += block.get("text", "")
                 case "tool_use":
@@ -364,6 +371,7 @@ class AnthropicAdapter(LLMPort):
                     )
 
         usage_data = data.get("usage", {})
+        reasoning = "".join(thinking_parts)
         stop_reason_raw = data.get("stop_reason", "end_turn")
         try:
             stop_reason = StopReason(stop_reason_raw)
@@ -379,6 +387,7 @@ class AnthropicAdapter(LLMPort):
                 output_tokens=usage_data.get("output_tokens", 0),
                 cache_read_tokens=usage_data.get("cache_read_input_tokens", 0),
                 cache_write_tokens=usage_data.get("cache_creation_input_tokens", 0),
-                thinking_tokens=thinking_chars // 4,
+                thinking_tokens=len(reasoning) // 4,
             ),
+            reasoning=reasoning,
         )

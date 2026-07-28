@@ -68,7 +68,11 @@ approvals_app = typer.Typer(
 )
 app.add_typer(approvals_app, name="approvals")
 
-from ravn.cli.runtime_config import _configure_logging, _log_effective_config  # noqa: E402
+from ravn.cli.runtime_config import (  # noqa: E402
+    _configure_logging,
+    _log_effective_config,
+    _resolve_extended_thinking,
+)
 from ravn.cli.warden_commands import (  # noqa: E402, F401
     _parse_deployment_kwargs,
     warden_app,
@@ -542,10 +546,10 @@ def _build_agent(
     pre_hooks, post_hooks = _build_hooks(settings)
     checkpoint_port = _build_checkpoint(settings)
 
-    extended_thinking = (
-        settings.llm.extended_thinking
-        if settings.llm.extended_thinking.enabled and not cli_transport_executor
-        else None
+    extended_thinking = _resolve_extended_thinking(
+        settings,
+        persona_config,
+        cli_transport_executor=cli_transport_executor,
     )
 
     cp_cfg = settings.checkpoint
@@ -786,7 +790,13 @@ async def _load_checkpoint_session(
     # Reconstruct session from checkpoint messages.
     session = Session()
     for raw_msg in checkpoint.messages:
-        session.messages.append(Message(role=raw_msg["role"], content=raw_msg["content"]))
+        session.messages.append(
+            Message(
+                role=raw_msg["role"],
+                content=raw_msg["content"],
+                reasoning=raw_msg.get("reasoning", ""),
+            )
+        )
 
     # Restore todo list.
     for raw_todo in checkpoint.todos:
@@ -1313,10 +1323,10 @@ async def _run_gateway(
     prompt_builder = _build_prompt_builder(settings)
     pre_hooks, post_hooks = _build_hooks(settings)
 
-    extended_thinking = (
-        settings.llm.extended_thinking
-        if settings.llm.extended_thinking.enabled and not cli_transport_executor
-        else None
+    extended_thinking = _resolve_extended_thinking(
+        settings,
+        persona_config,
+        cli_transport_executor=cli_transport_executor,
     )
 
     # Start MCP servers (shared across sessions)

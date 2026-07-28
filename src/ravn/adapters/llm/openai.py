@@ -6,6 +6,7 @@ server that implements the OpenAI Chat Completions API.
 Features:
 - Streaming via SSE (``data: {...}`` events)
 - Tool calling in OpenAI function-calling format
+- Reasoning output from both ``reasoning`` and legacy ``reasoning_content`` fields
 - Token usage normalisation: ``prompt_tokens`` → ``input_tokens``,
   ``completion_tokens`` → ``output_tokens``
 - Token estimation fallback when the API response does not include usage data
@@ -42,6 +43,7 @@ families and substitutes the role automatically so callers do not need to know.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -135,7 +137,13 @@ def _system_to_string(system: SystemPrompt) -> str:
     return "\n\n".join(block.get("text", "") for block in system if block.get("text"))
 
 
-def _normalise_usage(raw: dict, *, input_text: str = "", output_text: str = "") -> TokenUsage:
+def _normalise_usage(
+    raw: dict,
+    *,
+    input_text: str = "",
+    output_text: str = "",
+    reasoning_text: str = "",
+) -> TokenUsage:
     """Normalise an OpenAI usage dict to TokenUsage.
 
     When the API response does not include usage data (e.g. local Ollama
@@ -149,18 +157,25 @@ def _normalise_usage(raw: dict, *, input_text: str = "", output_text: str = "") 
 
     input_tokens = raw.get("prompt_tokens", 0)
     output_tokens = raw.get("completion_tokens", 0)
+    completion_details = raw.get("completion_tokens_details") or {}
+    thinking_tokens = (
+        completion_details.get("reasoning_tokens", 0) if isinstance(completion_details, dict) else 0
+    )
 
     # Estimation fallback: when the API sends no usage numbers, estimate from text length.
     if input_tokens == 0 and input_text:
         input_tokens = max(1, TokenEstimator.rough(input_text))
     if output_tokens == 0 and output_text:
         output_tokens = max(1, TokenEstimator.rough(output_text))
+    if thinking_tokens == 0 and reasoning_text:
+        thinking_tokens = max(1, TokenEstimator.rough(reasoning_text))
 
     return TokenUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_read_tokens=cache_read,
         cache_write_tokens=0,  # OpenAI does not expose cache writes
+        thinking_tokens=thinking_tokens,
     )
 
 
@@ -177,9 +192,14 @@ def _convert_anthropic_messages(messages: list[dict]) -> list[dict]:
     for msg in messages:
         content = msg.get("content")
 
-        # Plain string content — pass through unchanged.
+        # Plain string content — map Ravn's generic reasoning field to the
+        # OpenAI-compatible field expected by reasoning chat templates.
         if not isinstance(content, list):
-            converted.append(msg)
+            out = dict(msg)
+            reasoning = out.pop("reasoning", "")
+            if msg.get("role") == "assistant" and reasoning:
+                out["reasoning_content"] = reasoning
+            converted.append(out)
             continue
 
         if msg.get("role") == "assistant":
@@ -204,6 +224,8 @@ def _convert_anthropic_messages(messages: list[dict]) -> list[dict]:
                     text_parts.append(block)
 
             out: dict = {"role": "assistant", "content": "\n".join(text_parts) or None}
+            if msg.get("reasoning"):
+                out["reasoning_content"] = msg["reasoning"]
             if tool_calls_out:
                 out["tool_calls"] = tool_calls_out
             converted.append(out)
@@ -245,6 +267,10 @@ class OpenAICompatibleAdapter(LLMPort):
     Constructor kwargs are forwarded from config via the dynamic adapter pattern.
     """
 
+    @property
+    def supports_thinking(self) -> bool:
+        return True
+
     def __init__(
         self,
         *,
@@ -256,6 +282,8 @@ class OpenAICompatibleAdapter(LLMPort):
         retry_base_delay: float = 1.0,
         timeout: float = 120.0,
         system_prefix: str = "",
+        request_options: dict | None = None,
+        thinking_request_options: dict | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
@@ -265,6 +293,8 @@ class OpenAICompatibleAdapter(LLMPort):
         self._retry_base_delay = retry_base_delay
         self._timeout = timeout
         self._system_prefix = system_prefix
+        self._request_options = copy.deepcopy(request_options or {})
+        self._thinking_request_options = copy.deepcopy(thinking_request_options or {})
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -310,14 +340,20 @@ class OpenAICompatibleAdapter(LLMPort):
         model: str,
         max_tokens: int,
         stream: bool,
+        thinking: dict | None = None,
     ) -> dict:
         effective_model = model or self._default_model
-        body: dict = {
-            "model": effective_model,
-            _max_tokens_param(effective_model): max_tokens or self._default_max_tokens,
-            "messages": self._build_messages(messages, system, effective_model),
-            "stream": stream,
-        }
+        body = copy.deepcopy(self._request_options)
+        if thinking is not None:
+            body.update(copy.deepcopy(self._thinking_request_options))
+        body.update(
+            {
+                "model": effective_model,
+                _max_tokens_param(effective_model): max_tokens or self._default_max_tokens,
+                "messages": self._build_messages(messages, system, effective_model),
+                "stream": stream,
+            }
+        )
         if stream:
             # Request usage data in the final stream chunk.
             body["stream_options"] = {"include_usage": True}
@@ -399,7 +435,7 @@ class OpenAICompatibleAdapter(LLMPort):
         system: SystemPrompt,
         model: str,
         max_tokens: int,
-        thinking: dict | None = None,  # noqa: ARG002 — Anthropic-only, ignored here
+        thinking: dict | None = None,
     ) -> AsyncIterator[StreamEvent]:
         payload = self._build_request(
             messages,
@@ -408,6 +444,7 @@ class OpenAICompatibleAdapter(LLMPort):
             model=model,
             max_tokens=max_tokens,
             stream=True,
+            thinking=thinking,
         )
 
         async with httpx.AsyncClient(headers=self._headers(), timeout=self._timeout) as client:
@@ -427,6 +464,7 @@ class OpenAICompatibleAdapter(LLMPort):
 
             # Accumulate output text for estimation fallback when usage is absent.
             accumulated_text: list[str] = []
+            accumulated_reasoning: list[str] = []
             usage_emitted = False
 
             async for line in response.aiter_lines():
@@ -447,7 +485,10 @@ class OpenAICompatibleAdapter(LLMPort):
                     usage_emitted = True
                     yield StreamEvent(
                         type=StreamEventType.MESSAGE_DONE,
-                        usage=_normalise_usage(usage_raw),
+                        usage=_normalise_usage(
+                            usage_raw,
+                            reasoning_text="".join(accumulated_reasoning),
+                        ),
                     )
                     continue
 
@@ -458,6 +499,11 @@ class OpenAICompatibleAdapter(LLMPort):
                 choice = choices[0]
                 delta = choice.get("delta") or {}
                 finish_reason = choice.get("finish_reason")
+
+                reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+                if reasoning:
+                    accumulated_reasoning.append(reasoning)
+                    yield StreamEvent(type=StreamEventType.THINKING, text=reasoning)
 
                 # Text content delta.
                 content = delta.get("content")
@@ -507,7 +553,12 @@ class OpenAICompatibleAdapter(LLMPort):
                 output_text = "".join(accumulated_text)
                 yield StreamEvent(
                     type=StreamEventType.MESSAGE_DONE,
-                    usage=_normalise_usage({}, input_text=input_text, output_text=output_text),
+                    usage=_normalise_usage(
+                        {},
+                        input_text=input_text,
+                        output_text=output_text,
+                        reasoning_text="".join(accumulated_reasoning),
+                    ),
                 )
 
     async def generate(
@@ -518,7 +569,7 @@ class OpenAICompatibleAdapter(LLMPort):
         system: SystemPrompt,
         model: str,
         max_tokens: int,
-        thinking: dict | None = None,  # noqa: ARG002 — Anthropic-only, ignored here
+        thinking: dict | None = None,
     ) -> LLMResponse:
         payload = self._build_request(
             messages,
@@ -527,6 +578,7 @@ class OpenAICompatibleAdapter(LLMPort):
             model=model,
             max_tokens=max_tokens,
             stream=False,
+            thinking=thinking,
         )
 
         async with httpx.AsyncClient(headers=self._headers(), timeout=self._timeout) as client:
@@ -544,6 +596,7 @@ class OpenAICompatibleAdapter(LLMPort):
         finish_reason = choices[0].get("finish_reason", "stop") if choices else "stop"
 
         content_text = _strip_reasoning_tags(message.get("content") or "")
+        reasoning_text = message.get("reasoning") or message.get("reasoning_content") or ""
         tool_calls: list[ToolCall] = []
 
         # First, check for API-returned tool calls
@@ -574,6 +627,7 @@ class OpenAICompatibleAdapter(LLMPort):
             data.get("usage") or {},
             input_text=input_text,
             output_text=content_text,
+            reasoning_text=reasoning_text,
         )
 
         return LLMResponse(
@@ -581,4 +635,5 @@ class OpenAICompatibleAdapter(LLMPort):
             tool_calls=tool_calls,
             stop_reason=stop_reason,
             usage=usage,
+            reasoning=reasoning_text,
         )
