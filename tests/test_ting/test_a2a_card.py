@@ -105,6 +105,9 @@ class TestAgentCard:
         assert [skill.id for skill in card.skills] == [str(system.id)]
         assert card.skills[0].name == "tool-builder"
         assert list(card.skills[0].tags) == ["tool-builder", "build"]
+        assert "metadata" in card.skills[0].description
+        assert "repo" in card.skills[0].description
+        assert list(card.skills[0].examples)
         assert card.capabilities.streaming is False
         assert card.capabilities.push_notifications is False
         assert card.capabilities.extended_agent_card is True

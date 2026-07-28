@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -84,9 +85,9 @@ class TestAppRoleAuth:
 
     @pytest.mark.asyncio()
     async def test_invalid_auth_method_raises(self):
-        store = OpenBaoCredentialStore(auth_method="jwt")
+        store = OpenBaoCredentialStore(auth_method="invalid")
 
-        with pytest.raises(RuntimeError, match="requires a token or approle"):
+        with pytest.raises(RuntimeError, match="token, approle, or jwt"):
             await store._ensure_authenticated()
 
     @pytest.mark.asyncio()
@@ -95,6 +96,59 @@ class TestAppRoleAuth:
 
         with pytest.raises(RuntimeError, match="requires role_id and secret_id"):
             await store._ensure_authenticated()
+
+    @pytest.mark.asyncio()
+    async def test_jwt_login_reads_workload_token_and_caches_client_token(self, tmp_path: Path):
+        token_file = tmp_path / "token"
+        token_file.write_text("workload-jwt")
+        store = OpenBaoCredentialStore(
+            auth_method="jwt",
+            jwt_mount_path="auth/jwt-valhalla",
+            jwt_role="volundr-app",
+            jwt_token_file=str(token_file),
+        )
+        mock_client = AsyncMock()
+        mock_client.post.return_value = _mock_response(
+            json_data={"auth": {"client_token": "bao-token"}}
+        )
+        store._client = mock_client
+
+        token = await store._ensure_authenticated()
+
+        assert token == "bao-token"
+        mock_client.post.assert_called_once_with(
+            "/v1/auth/jwt-valhalla/login",
+            json={"role": "volundr-app", "jwt": "workload-jwt"},
+        )
+
+    @pytest.mark.asyncio()
+    async def test_jwt_request_reauthenticates_once_after_expired_lease(self, tmp_path: Path):
+        token_file = tmp_path / "token"
+        token_file.write_text("workload-jwt")
+        store = OpenBaoCredentialStore(
+            auth_method="jwt",
+            jwt_role="volundr-app",
+            jwt_token_file=str(token_file),
+        )
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = [
+            _mock_response(status_code=403, text="expired"),
+            _mock_response(status_code=404),
+        ]
+        mock_client.post.return_value = _mock_response(
+            json_data={"auth": {"client_token": "renewed-token"}}
+        )
+        store._client = mock_client
+        store._client_token = "expired-token"
+
+        assert await store.get("user", "alice", "github") is None
+
+        assert mock_client.get.call_count == 2
+        first_headers = mock_client.get.call_args_list[0].kwargs["headers"]
+        assert first_headers["X-Vault-Token"] == "expired-token"
+        assert (
+            mock_client.get.call_args_list[1].kwargs["headers"]["X-Vault-Token"] == "renewed-token"
+        )
 
     @pytest.mark.asyncio()
     async def test_approle_login_failure_raises(self):

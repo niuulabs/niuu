@@ -918,6 +918,32 @@ class TestEventNormalization:
         assert event["error"] == "rate limit exceeded"
 
     @pytest.mark.asyncio
+    async def test_error_notification_cannot_be_overwritten_by_successful_completion(
+        self, tmp_path
+    ):
+        t = _make_transport(tmp_path)
+        emit = _collect_emits(t)
+
+        await t._handle_server_message(
+            {
+                "method": "error",
+                "params": {"error": {"message": "authentication expired"}},
+            }
+        )
+        await t._handle_server_message(
+            {
+                "method": "turn/completed",
+                "params": {"turn": {"id": "turn-1", "status": "failed"}},
+            }
+        )
+
+        result = _events_of_type(emit, "result")[0]
+        assert result["stop_reason"] == "error"
+        assert result["is_error"] is True
+        assert result["result"] == "authentication expired"
+        assert t.last_result == result
+
+    @pytest.mark.asyncio
     async def test_thread_closed_sets_not_alive(self, tmp_path):
         t = _make_transport(tmp_path)
         t._alive = True

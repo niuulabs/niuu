@@ -29,6 +29,7 @@ _DEFAULT_WORKLOAD_TOKEN_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/to
 _DEFAULT_WORKLOAD_AUDIENCES = ["volundr-api", "forge", "ting", "mimir", "guild"]
 _FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
 _FORGE_REPOS_PATH = "/api/v1/forge/repos"
+_NIUU_REPOS_PATH = "/api/v1/niuu/repos"
 _TRACKER_ISSUES_PATH = "/api/v1/tracker/issues"
 _TING_WORKFLOWS_PATH = "/api/v1/ting/workflows"
 
@@ -334,6 +335,7 @@ class VolundrGitTool(_PlatformAuthMixin, ToolPort):
     """Perform git operations via the Volundr API.
 
     Actions:
+    - ``list_repos``    — list repositories visible to the current identity.
     - ``list_branches`` — list branches for a repo (requires ``repo_url``).
     - ``create_pr``     — open a pull request (requires ``session_id``, ``title``).
     - ``list_prs``      — list pull requests (requires ``repo_url``).
@@ -367,7 +369,7 @@ class VolundrGitTool(_PlatformAuthMixin, ToolPort):
     @property
     def description(self) -> str:
         return (
-            "Git operations via Volundr: list_branches (repo_url), "
+            "Git operations via Volundr: list_repos, list_branches (repo_url), "
             "create_pr (session_id + title), list_prs (repo_url), "
             "get_pr (pr_number + repo_url), merge_pr (pr_number + repo_url), "
             "ci_status (pr_number + repo_url + branch)."
@@ -381,6 +383,7 @@ class VolundrGitTool(_PlatformAuthMixin, ToolPort):
                 "action": {
                     "type": "string",
                     "enum": [
+                        "list_repos",
                         "list_branches",
                         "create_pr",
                         "list_prs",
@@ -438,6 +441,8 @@ class VolundrGitTool(_PlatformAuthMixin, ToolPort):
         action = input.get("action", "")
         async with await self._client() as client:
             match action:
+                case "list_repos":
+                    return await self._list_repos(client)
                 case "list_branches":
                     return await self._list_branches(client, input)
                 case "create_pr":
@@ -453,6 +458,14 @@ class VolundrGitTool(_PlatformAuthMixin, ToolPort):
                 case _:
                     return _err(f"Unknown action: {action!r}")
         raise AssertionError("Unreachable execute fallthrough")
+
+    async def _list_repos(self, client: httpx.AsyncClient) -> ToolResult:
+        try:
+            resp = await client.get(_NIUU_REPOS_PATH)
+            resp.raise_for_status()
+            return _ok(resp.json())
+        except Exception as exc:
+            return _err(f"Failed to list repositories: {exc}")
 
     async def _list_branches(self, client: httpx.AsyncClient, input: dict) -> ToolResult:
         repo_url = input.get("repo_url", "")

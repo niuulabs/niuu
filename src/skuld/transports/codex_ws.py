@@ -243,6 +243,7 @@ class CodexWebSocketTransport(CLITransport):
         self._thread_id: str | None = None
         self._current_turn_id: str | None = None
         self._last_result: dict | None = None
+        self._turn_error: str | None = None
         self._last_usage: dict | None = None
         self._alive = False
         self._block_index: int = 0
@@ -715,6 +716,16 @@ class CodexWebSocketTransport(CLITransport):
                 return
 
             self._active_user_prompt = None
+            if self._turn_error:
+                self._last_result = {
+                    "type": "result",
+                    "stop_reason": "error",
+                    "result": self._turn_error,
+                    "is_error": True,
+                    "modelUsage": self._last_usage or {},
+                }
+                await self._emit(self._last_result)
+                return
             # Merge saved usage into result event.
             usage = self._last_usage or {}
             self._last_result = {
@@ -813,6 +824,7 @@ class CodexWebSocketTransport(CLITransport):
                 if recovered:
                     return
             logger.warning("Codex error notification: %s", message)
+            self._turn_error = message
             await self._emit({"type": "error", "error": message})
             return
 
@@ -1606,6 +1618,7 @@ class CodexWebSocketTransport(CLITransport):
             raise RuntimeError("No active thread — call start() first")
 
         self._last_result = None
+        self._turn_error = None
         self._last_usage = None
         self._block_index = 0
         self._active_user_prompt = content

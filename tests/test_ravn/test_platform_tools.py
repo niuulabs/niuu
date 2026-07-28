@@ -188,6 +188,30 @@ class TestVolundrGitTool:
 
     @pytest.mark.asyncio
     @respx.mock
+    async def test_list_repos(self):
+        respx.get(f"{BASE_URL}/api/v1/niuu/repos").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "github": [
+                        {
+                            "name": "laevateinn",
+                            "url": "https://github.com/niuulabs/laevateinn",
+                            "clone_url": "https://github.com/niuulabs/laevateinn.git",
+                            "default_branch": "dev",
+                        }
+                    ]
+                },
+            )
+        )
+
+        result = await self.tool.execute({"action": "list_repos"})
+
+        assert not result.is_error
+        assert json.loads(result.content)["github"][0]["name"] == "laevateinn"
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_list_branches(self):
         respx.get(f"{FORGE_GIT_URL}/branches").mock(
             return_value=httpx.Response(200, json=[{"name": "main"}])
