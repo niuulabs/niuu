@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 import httpx
 import pytest
 
@@ -11,7 +9,6 @@ from observatory.entity_discovery import (
     DiscoveredEntity,
     DiscoveryResult,
     FluxHelmReleaseSessionDiscoveryAdapter,
-    HttpObservatoryDiscoveryAdapter,
     KubernetesDiscoveryAdapter,
     RavnValkyrieDiscoveryAdapter,
     StaticRelationshipDiscoveryAdapter,
@@ -485,38 +482,6 @@ async def test_observatory_discovery_uses_adapters_without_demo_nodes() -> None:
     assert "runtime:noatun:volundr:mimir:niuu-mimir-shared" in node_ids
     assert not any(node_id.startswith("realm-") for node_id in node_ids)
     assert "mimir-well" not in node_ids
-
-
-@pytest.mark.asyncio
-async def test_http_observatory_adapter_merges_remote_snapshot() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/v1/observatory/topology/snapshot"
-        return httpx.Response(
-            200,
-            json={
-                "nodes": [
-                    {
-                        "id": "cluster-valhalla",
-                        "typeId": "cluster",
-                        "label": "valhalla",
-                        "clusterName": "valhalla",
-                    }
-                ],
-                "edges": [],
-                "events": [{"id": "event-1", "service": "observatory"}],
-            },
-        )
-
-    adapter = HttpObservatoryDiscoveryAdapter(
-        base_url="https://valhalla.example",
-        transport=httpx.MockTransport(handler),
-    )
-
-    result = await adapter.discover()
-
-    assert [entity.id for entity in result.entities] == ["cluster-valhalla"]
-    assert result.entities[0].cluster == "valhalla"
-    assert json.loads(json.dumps(result.events))[0]["id"] == "event-1"
 
 
 @pytest.mark.asyncio

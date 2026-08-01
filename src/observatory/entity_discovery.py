@@ -786,60 +786,6 @@ class FluxHelmReleaseSessionDiscoveryAdapter:
         return not self._image_tags or image_tag in self._image_tags
 
 
-class HttpObservatoryDiscoveryAdapter:
-    """Merge topology from another Observatory HTTP endpoint."""
-
-    def __init__(
-        self,
-        base_url: str,
-        timeout_seconds: float = 5.0,
-        headers: dict[str, str] | None = None,
-        auth_header_env: str = "",
-        transport: httpx.AsyncBaseTransport | None = None,
-    ) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._timeout_seconds = timeout_seconds
-        self._headers = dict(headers or {})
-        self._auth_header_env = auth_header_env
-        self._transport = transport
-
-    async def discover(self) -> DiscoveryResult:
-        headers = dict(self._headers)
-        if self._auth_header_env:
-            token = os.environ.get(self._auth_header_env, "").strip()
-            if token:
-                headers.setdefault("Authorization", token)
-        try:
-            async with httpx.AsyncClient(
-                timeout=self._timeout_seconds,
-                follow_redirects=True,
-                transport=self._transport,
-            ) as client:
-                response = await client.get(self._snapshot_url(), headers=headers)
-                response.raise_for_status()
-                payload = response.json()
-        except Exception as exc:
-            return DiscoveryResult(
-                events=[_adapter_warning("http-observatory", f"{self._base_url}: {exc}")]
-            )
-        if not isinstance(payload, dict):
-            return DiscoveryResult()
-        return DiscoveryResult(
-            entities=[
-                _entity_from_node(node, source_adapter=self.__class__.__name__)
-                for node in payload.get("nodes", [])
-                if isinstance(node, dict)
-            ],
-            edges=[edge for edge in payload.get("edges", []) if _is_edge(edge)],
-            events=[event for event in payload.get("events", []) if isinstance(event, dict)],
-        )
-
-    def _snapshot_url(self) -> str:
-        if self._base_url.endswith("/api/v1/observatory"):
-            return f"{self._base_url}/topology/snapshot"
-        return f"{self._base_url}/api/v1/observatory/topology/snapshot"
-
-
 class RavnValkyrieDiscoveryAdapter:
     """Discover cross-cluster Valkyries from Ravn's live dashboard projection."""
 
@@ -1456,40 +1402,6 @@ def _entity_to_node(
     return node
 
 
-def _entity_from_node(node: dict[str, Any], *, source_adapter: str) -> DiscoveredEntity:
-    return DiscoveredEntity(
-        id=str(node.get("id") or ""),
-        kind=str(node.get("typeId") or "service"),
-        name=str(node.get("label") or node.get("id") or ""),
-        cluster=str(node.get("clusterName") or ""),
-        namespace=str(node.get("namespace") or ""),
-        status=str(node.get("status") or "unknown"),
-        parent_id=node.get("parentId") if isinstance(node.get("parentId"), str) else None,
-        labels=_clean_map(node.get("labels")),
-        source_adapter=source_adapter,
-        source_kind=str(node.get("sourceKind") or "remote-observatory"),
-        source_uid=str(node.get("sourceId") or ""),
-        endpoints=node.get("endpoints") if isinstance(node.get("endpoints"), dict) else {},
-        metadata={key: value for key, value in node.items() if key not in _NODE_ENTITY_KEYS},
-    )
-
-
-_NODE_ENTITY_KEYS = {
-    "id",
-    "typeId",
-    "label",
-    "parentId",
-    "status",
-    "clusterName",
-    "namespace",
-    "labels",
-    "sourceKind",
-    "sourceId",
-    "endpoints",
-    "layoutHints",
-}
-
-
 def _adapter_warning(adapter: str, message: str) -> ObservatoryEvent:
     event_id = f"discovery:{_slug(adapter)}:{_slug(message)[:40]}"
     return {
@@ -1582,16 +1494,6 @@ def _type_id_for_component(component: str, app_name: str = "") -> str:
     if mapped:
         return mapped
     return _COMPONENT_TYPES.get(app_name, "service")
-
-
-def _is_edge(value: Any) -> bool:
-    return (
-        isinstance(value, dict)
-        and isinstance(value.get("id"), str)
-        and isinstance(value.get("sourceId"), str)
-        and isinstance(value.get("targetId"), str)
-        and isinstance(value.get("kind"), str)
-    )
 
 
 def _relationships_from_k8s(

@@ -298,14 +298,6 @@ def create_router() -> APIRouter:
             },
         )
 
-    @router.get("/topology/snapshot", summary="Get one live topology snapshot")
-    async def topology_snapshot(request: Request) -> dict[str, Any]:
-        snapshot = await _discovery(request).get_topology_snapshot(
-            headers=_forward_headers(request)
-        )
-        events = await _discovery(request).get_events(headers=_forward_headers(request))
-        return {**snapshot, "events": events}
-
     @router.get(
         "/fragment",
         response_model=ObservatoryFragment,
@@ -318,9 +310,9 @@ def create_router() -> APIRouter:
     ) -> ObservatoryFragment:
         """Return what this source alone knows, for an aggregator to merge.
 
-        Requires a principal. `/topology/snapshot` is currently reachable
-        without one, which is what makes this the endpoint an aggregator should
-        move to rather than the one it should keep calling.
+        Requires a principal. This replaced `/topology/snapshot`, which the
+        gateway served without one — publishing every cluster's namespace
+        names, workload names, labels and endpoints to anyone who asked.
         """
         del principal
         discovery = _discovery(request)

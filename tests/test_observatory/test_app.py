@@ -434,7 +434,41 @@ class TestObservatoryApp:
 
 
 class TestObservatoryFragment:
-    """Fragment is the authenticated endpoint an aggregator should move to."""
+    """Fragment is the authenticated endpoint that replaced /topology/snapshot."""
+
+    def test_the_unauthenticated_snapshot_endpoint_is_gone(self) -> None:
+        """It was listed in the gateway's bypassPrefixes, so it served every
+        cluster's namespace names, workload names, labels and endpoints to
+        anyone who asked. It must not come back."""
+        app = create_app(
+            registry_repository=InMemoryObservatoryRegistryRepository(),
+            discovery_service=_FakeDiscoveryService(),
+        )
+        with TestClient(app) as client:
+            response = client.get("/api/v1/observatory/topology/snapshot")
+
+        assert response.status_code == 404
+
+    def test_no_route_serves_the_graph_outside_the_authenticated_prefixes(self) -> None:
+        """Authentication is Envoy's job — every path except those in the
+        gateway's bypassPrefixes needs a valid JWT, and `extract_principal`
+        only reads the headers Envoy injects. So the code-side guarantee is
+        about which paths exist, not about rejecting requests: the topology
+        must be reachable at no path that the bypass list names.
+        """
+        bypassed_by_the_gateway = {"/health", "/api/v1/observatory/topology/snapshot"}
+        app = create_app(
+            registry_repository=InMemoryObservatoryRegistryRepository(),
+            discovery_service=_FakeDiscoveryService(),
+        )
+
+        graph_routes = {
+            route.path
+            for route in app.routes
+            if getattr(route, "path", "").startswith("/api/v1/observatory")
+        }
+
+        assert not (graph_routes & bypassed_by_the_gateway)
 
     def test_returns_this_sources_view_with_its_identity(self) -> None:
         app = create_app(
