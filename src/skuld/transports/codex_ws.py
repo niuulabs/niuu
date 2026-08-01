@@ -32,6 +32,7 @@ from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.codex_auth import CodexAuthProviderError, CodexAuthProviderPort, HostCodexAuthProvider
 from skuld.transports.codex import (
     CodexSubprocessTransport,
     _map_codex_tool,
@@ -199,7 +200,9 @@ class CodexWebSocketTransport(CLITransport):
         4. User messages are sent via ``turn/start``
         5. Streaming events arrive as JSON-RPC notifications
 
-    Authentication: set ``OPENAI_API_KEY`` in the environment.
+    Authentication is selected by the configured ``CodexAuthProviderPort``.
+    Local sessions retain Codex's host login; Kubernetes sessions use externally
+    managed access-only ChatGPT tokens supplied by Völundr.
     """
 
     def __init__(
@@ -217,6 +220,7 @@ class CodexWebSocketTransport(CLITransport):
         resume_session_id: str = "",
         reasoning_effort: str = "",
         max_ws_message_bytes: int = _DEFAULT_MAX_WS_MESSAGE_BYTES,
+        codex_auth_provider: CodexAuthProviderPort | None = None,
         **_kwargs: object,
     ) -> None:
         super().__init__()
@@ -235,6 +239,7 @@ class CodexWebSocketTransport(CLITransport):
         self._resume_session_id = (resume_session_id or "").strip() or None
         self._max_ws_message_bytes = max(_MIN_MAX_WS_MESSAGE_BYTES, int(max_ws_message_bytes))
         self._env = dict(os.environ)
+        self._codex_auth_provider = codex_auth_provider or HostCodexAuthProvider()
 
         self._process: asyncio.subprocess.Process | None = None
         self._ws: ClientConnection | None = None
@@ -311,6 +316,10 @@ class CodexWebSocketTransport(CLITransport):
             await self._spawn_app_server()
             await self._connect_ws()
             await self._handshake()
+        except CodexAuthProviderError as exc:
+            await self._emit({"type": "error", "error": str(exc)})
+            await self.stop()
+            raise
         except Exception as exc:
             await self._start_fallback_transport(exc)
             return
@@ -498,6 +507,7 @@ class CodexWebSocketTransport(CLITransport):
         logger.info("Codex initialize response: %s", result)
 
         await self._send_notification("initialized")
+        await self._authenticate_codex()
 
         if self._resume_session_id:
             # Imported/external session — reattach to the existing thread
@@ -566,6 +576,16 @@ class CodexWebSocketTransport(CLITransport):
                 "model": self._model,
                 "tools": [],
             }
+        )
+
+    async def _authenticate_codex(self) -> None:
+        """Select host-managed or externally managed auth through the configured port."""
+        tokens = await self._codex_auth_provider.get_tokens()
+        if tokens is None:
+            return
+        await self._send_rpc(
+            "account/login/start",
+            {"type": "chatgptAuthTokens", **tokens.app_server_payload()},
         )
 
     # ------------------------------------------------------------------
@@ -930,6 +950,21 @@ class CodexWebSocketTransport(CLITransport):
         rid = data["id"]
         params = data.get("params", {})
 
+        if method == "account/chatgptAuthTokens/refresh":
+            try:
+                tokens = await self._codex_auth_provider.get_tokens(force_refresh=True)
+                if tokens is None:
+                    raise CodexAuthProviderError(
+                        "Codex requested external token refresh while host auth is configured"
+                    )
+            except CodexAuthProviderError as exc:
+                self._turn_error = str(exc)
+                await self._emit({"type": "error", "error": str(exc)})
+                await self._send_rpc_error(rid, -32001, str(exc))
+                return
+            await self._send_rpc_response(rid, tokens.app_server_payload())
+            return
+
         if method == "item/commandExecution/requestApproval":
             request_id = str(rid)
             command = params.get("command", "")
@@ -1016,6 +1051,13 @@ class CodexWebSocketTransport(CLITransport):
         if not self._ws:
             return
         msg = {"jsonrpc": "2.0", "id": rid, "result": result}
+        await self._ws.send(json.dumps(msg))
+
+    async def _send_rpc_error(self, rid: int, code: int, message: str) -> None:
+        """Reject a server request without logging credential material."""
+        if not self._ws:
+            return
+        msg = {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": message}}
         await self._ws.send(json.dumps(msg))
 
     @staticmethod

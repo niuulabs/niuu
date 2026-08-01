@@ -470,6 +470,14 @@ class WorkloadIdentityConfig(BaseModel):
         return value
 
 
+class CodexAuthConfig(BaseModel):
+    """Dynamic Codex authentication adapter configuration."""
+
+    adapter: str = Field(default="skuld.codex_auth.HostCodexAuthProvider")
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs_env: dict[str, str] = Field(default_factory=dict)
+
+
 # Legacy bare env vars (pre config-first rule) that deployed charts still set.
 # Mapped into the workload_identity section by LegacyWorkloadIdentityEnvSource;
 # the config file is canonical, these are a compatibility override.
@@ -627,6 +635,7 @@ class SkuldSettings(BaseSettings):
         ),
     )
     workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
+    codex_auth: CodexAuthConfig = Field(default_factory=CodexAuthConfig)
     service_user_id: str = Field(default="skuld-broker")
     service_tenant_id: str = Field(default="default")
     persistence_mount_path: str = Field(default="/volundr/sessions")

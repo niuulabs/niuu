@@ -21,12 +21,14 @@ from niuu.service_runtime import create_workload_identity_service
 from niuu.utils import import_class, resolve_secret_kwargs
 from ravn.adapters.personas.loader import FilesystemPersonaAdapter
 from ravn.ports.persona import PersonaPort
+from ting.adapters.a2a_push_dispatcher import A2APushDispatcher
 from ting.adapters.github_git import GitHubGitAdapter
 from ting.adapters.guild_instances import GuildInstanceRegistryClient
 from ting.adapters.inbound.rest_integrations import create_telegram_setup_router
 from ting.adapters.inbound.rest_pats import create_pats_router
 from ting.adapters.inbound.rest_telegram_webhook import create_telegram_webhook_router
 from ting.adapters.notification_channel_factory import NotificationChannelFactory
+from ting.adapters.postgres_a2a_push import PostgresA2APushConfigRepository
 from ting.adapters.postgres_dispatcher import PostgresDispatcherRepository
 from ting.adapters.postgres_notification_subscriptions import (
     PostgresNotificationSubscriptionRepository,
@@ -565,6 +567,31 @@ def create_app(
             workflow_campaign_repo = PostgresWorkflowCampaignRepository(pool)
             app.state.workflow_campaign_repo = workflow_campaign_repo
 
+            a2a_push_dispatcher = None
+            if settings.a2a.push_notifications_enabled:
+                a2a_push_repo = PostgresA2APushConfigRepository(
+                    pool,
+                    settings.a2a.push_encryption_key.get_secret_value(),
+                    max_error_chars=settings.a2a.push_max_error_chars,
+                )
+                a2a_push_dispatcher = A2APushDispatcher(
+                    repo=a2a_push_repo,
+                    auth=_create_http_auth_adapter(settings.a2a.push_auth),
+                    allowed_callback_origins=settings.a2a.push_callback_allowed_origins,
+                    timeout_seconds=settings.a2a.push_timeout_seconds,
+                    poll_seconds=settings.a2a.push_poll_seconds,
+                    retry_initial_seconds=settings.a2a.push_retry_initial_seconds,
+                    retry_max_seconds=settings.a2a.push_retry_max_seconds,
+                    claim_limit=settings.a2a.push_claim_limit,
+                    lease_seconds=settings.a2a.push_lease_seconds,
+                    max_url_chars=settings.a2a.push_max_url_chars,
+                    max_credential_chars=settings.a2a.push_max_credential_chars,
+                    max_configs_page_size=settings.a2a.push_max_configs_page_size,
+                )
+                await a2a_push_dispatcher.start()
+                logger.info("A2A push dispatcher started")
+            app.state.a2a_push_dispatcher = a2a_push_dispatcher
+
             async def _resolve_workflow_campaign_repo() -> WorkflowCampaignRepository:
                 return workflow_campaign_repo
 
@@ -698,6 +725,7 @@ def create_app(
                 repo=workflow_campaign_repo,
                 volundr_factory=app.state.volundr_factory,
                 event_bus=event_bus,
+                push_dispatcher=a2a_push_dispatcher,
             )
             app.state.workflow_campaign_projector = workflow_campaign_projector
             await workflow_campaign_projector.start()
@@ -885,7 +913,7 @@ def create_app(
                 review_engine=review_engine,
                 sleipnir_publisher=sleipnir_bus,
                 ravn_scope_adherence_threshold=settings.ravn_outcome.scope_adherence_threshold,
-                workflow_campaign_repo=workflow_campaign_repo,
+                workflow_campaign_projector=workflow_campaign_projector,
             )
             app.state.subscriber = subscriber
             await subscriber.start()
@@ -961,9 +989,12 @@ def create_app(
                 await ravn_outcome_handler.stop()
             if event_trigger_adapter is not None:
                 await event_trigger_adapter.stop()
+            await subscriber.stop()
             if ting_sleipnir_bridge is not None:
                 await ting_sleipnir_bridge.stop()
             await workflow_campaign_projector.stop()
+            if a2a_push_dispatcher is not None:
+                await a2a_push_dispatcher.stop()
             await review_engine.stop()
             if ravn_dispatcher is not None:
                 await ravn_dispatcher.close()
@@ -977,7 +1008,6 @@ def create_app(
                 await guild_registry_client.close()
             if hasattr(llm_adapter, "close"):
                 await llm_adapter.close()
-            await subscriber.stop()
             logger.info("Ting shutting down")
 
     app.router.lifespan_context = lifespan

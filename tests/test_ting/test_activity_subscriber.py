@@ -29,6 +29,7 @@ from ting.domain.services.activity_subscriber import (
     _coerce_str,
     _coerce_str_list,
 )
+from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.volundr import ActivityEvent, SpawnRequest, VolundrPort, VolundrSession
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
@@ -358,6 +359,15 @@ def _make_subscriber(
     e = event_bus or InMemoryEventBus()
     c = config or _default_config()
     factory = StubVolundrFactory(v)
+    campaign_projector = (
+        WorkflowCampaignProjector(
+            repo=workflow_campaign_repo,
+            volundr_factory=factory,  # type: ignore[arg-type]
+            event_bus=e,
+        )
+        if workflow_campaign_repo is not None
+        else None
+    )
     sub = SessionActivitySubscriber(
         volundr_factory=factory,
         tracker_factory=tf,
@@ -365,7 +375,7 @@ def _make_subscriber(
         event_bus=e,
         config=c,
         review_engine=review_engine,  # type: ignore[arg-type]
-        workflow_campaign_repo=workflow_campaign_repo,
+        workflow_campaign_projector=campaign_projector,
     )
     return sub, v, t, e
 
@@ -421,6 +431,38 @@ class TestSubscriberLifecycle:
         sub, _, _, _ = _make_subscriber()
         await sub.stop()  # Should not raise
 
+    @pytest.mark.asyncio
+    async def test_campaign_owner_gets_subscription_without_dispatcher(self) -> None:
+        sub, volundr, _, _ = _make_subscriber(config=_default_config(reconnect_delay=0))
+        projector = AsyncMock()
+        projector.list_active_owner_ids.return_value = [OWNER_ID]
+        sub._workflow_campaign_projector = projector
+        stale = asyncio.create_task(asyncio.sleep(60))
+        sub._owner_tasks["stale-owner"] = [stale]
+        sub._owner_adapters["stale-owner"] = [volundr]
+
+        await sub._sync_owner_subscriptions()
+        await asyncio.sleep(0)
+
+        projector.reconcile_owner.assert_awaited_once_with(OWNER_ID)
+        assert OWNER_ID in sub._owner_tasks
+        assert "stale-owner" not in sub._owner_tasks
+        assert stale.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_no_active_work_clears_existing_subscriptions(self) -> None:
+        sub, volundr, _, _ = _make_subscriber(config=_default_config(reconnect_delay=0))
+        stale = asyncio.create_task(asyncio.sleep(60))
+        sub._owner_tasks[OWNER_ID] = [stale]
+        sub._owner_adapters[OWNER_ID] = [volundr]
+
+        await sub._sync_owner_subscriptions()
+        await asyncio.sleep(0)
+
+        assert sub._owner_tasks == {}
+        assert sub._owner_adapters == {}
+        assert stale.cancelled()
+
 
 # ---------------------------------------------------------------------------
 # Tests -- Activity event handling
@@ -428,6 +470,24 @@ class TestSubscriberLifecycle:
 
 
 class TestActivityEventHandling:
+    @pytest.mark.asyncio
+    async def test_terminal_activity_error_fails_run_with_worker_reason(self) -> None:
+        sub, volundr, tracker, _ = _make_subscriber()
+        event = ActivityEvent(
+            session_id=SESSION_ID,
+            state="error",
+            metadata={"error": "refresh token was already used"},
+            owner_id=OWNER_ID,
+        )
+
+        await sub._on_activity_event(event, volundr, OWNER_ID)
+
+        tracker.update_run_progress.assert_awaited_once_with(
+            TRACKER_ISSUE_ID,
+            status=RunStatus.FAILED,
+            reason="refresh token was already used",
+        )
+
     @pytest.mark.asyncio
     async def test_idle_event_triggers_completion(self) -> None:
         """Idle event with sufficient turns completes the session."""
@@ -590,6 +650,7 @@ class TestActivityEventHandling:
         await sub._on_activity_event(event, _volundr, OWNER_ID)
 
         campaign = next(iter(campaign_repo.campaigns.values()))
+        assert campaign.status == WorkflowCampaignStatus.BLOCKED
         assert campaign.active_stage_id == "plan-review-gate"
         assert campaign.metadata["pending_workflow_gates"] == [
             {
@@ -602,6 +663,8 @@ class TestActivityEventHandling:
             }
         ]
         bus_event = await asyncio.wait_for(q.get(), timeout=1.0)
+        if bus_event.event == "workflow.campaign.updated":
+            bus_event = await asyncio.wait_for(q.get(), timeout=1.0)
         assert bus_event.event == "workflow.campaign.feedback_requested"
         assert bus_event.data["session_id"] == full_session_id
 

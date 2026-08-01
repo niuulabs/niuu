@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, status
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
@@ -15,12 +16,17 @@ from niuu.domain.models import SecretType
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from volundr.adapters.inbound.auth import extract_principal
 from volundr.domain.models import (
+    CredentialEnrollment,
     IntegrationConnection,
     IntegrationDefinition,
     IntegrationType,
     Principal,
 )
 from volundr.domain.ports import CredentialStorePort, IntegrationRepository
+from volundr.domain.services.credential_enrollment import (
+    CredentialEnrollmentError,
+    CredentialEnrollmentService,
+)
 from volundr.domain.services.integration_registry import IntegrationRegistry
 from volundr.domain.services.tracker_factory import TrackerFactory
 
@@ -186,6 +192,10 @@ class CatalogEntryResponse(BaseModel):
         description="OAuth scopes if auth_type is OAuth",
         examples=[["read", "write"]],
     )
+    credential_enrollment: dict[str, str] | None = Field(
+        default=None,
+        description="Interactive credential enrollment metadata when supported",
+    )
 
     @classmethod
     def from_definition(
@@ -217,6 +227,63 @@ class CatalogEntryResponse(BaseModel):
             mcp_server=mcp,
             auth_type=defn.auth_type,
             oauth_scopes=oauth_scopes,
+            credential_enrollment=(
+                {
+                    "method": defn.credential_enrollment.method,
+                    "credential_field": defn.credential_enrollment.credential_field,
+                    "default_credential_name": (defn.credential_enrollment.default_credential_name),
+                }
+                if defn.credential_enrollment is not None
+                else None
+            ),
+        )
+
+
+class CredentialEnrollmentStartRequest(BaseModel):
+    """Start or resume one user-scoped interactive integration login."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    slug: str = Field(min_length=1, max_length=100)
+    credential_name: str = Field(
+        default="",
+        validation_alias=AliasChoices("credential_name", "credentialName"),
+        max_length=253,
+    )
+    connection_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("connection_id", "connectionId"),
+        max_length=100,
+    )
+
+
+class CredentialEnrollmentResponse(BaseModel):
+    """Secret-free status for an interactive credential enrollment."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: UUID
+    connection_id: str = Field(serialization_alias="connectionId")
+    provider_slug: str = Field(serialization_alias="providerSlug")
+    credential_name: str = Field(serialization_alias="credentialName")
+    state: str
+    verification_uri: str = Field(serialization_alias="verificationUri")
+    user_code: str = Field(serialization_alias="userCode")
+    expires_at: datetime = Field(serialization_alias="expiresAt")
+    error_code: str = Field(serialization_alias="errorCode")
+
+    @classmethod
+    def from_domain(cls, enrollment: CredentialEnrollment) -> CredentialEnrollmentResponse:
+        return cls(
+            id=enrollment.id,
+            connection_id=enrollment.connection_id,
+            provider_slug=enrollment.provider_slug,
+            credential_name=enrollment.credential_name,
+            state=enrollment.state.value,
+            verification_uri=enrollment.verification_uri,
+            user_code=enrollment.user_code,
+            expires_at=enrollment.expires_at,
+            error_code=enrollment.error_code,
         )
 
 
@@ -254,12 +321,40 @@ def _build_integrations_router(
     canonical_prefix: str | None = None,
     registry: IntegrationRegistry | None = None,
     credential_store: CredentialStorePort | None = None,
+    credential_enrollment_service: CredentialEnrollmentService | None = None,
 ) -> APIRouter:
     """Create FastAPI router for integration management endpoints."""
     router = APIRouter(
         prefix=prefix,
         tags=["Integrations"],
     )
+
+    async def integration_response(connection: IntegrationConnection) -> IntegrationResponse:
+        if credential_store is None:
+            return IntegrationResponse.from_connection(connection)
+        credential = await credential_store.get(
+            "user",
+            connection.owner_id,
+            connection.credential_name,
+        )
+        if credential is None:
+            return IntegrationResponse.from_connection(
+                connection,
+                credential_status="missing",
+            )
+        metadata = credential.metadata
+        return IntegrationResponse.from_connection(
+            connection,
+            credential_status=str(metadata.get("auth_state") or "configured"),
+            credential_error_code=(
+                str(metadata["auth_error_code"]) if metadata.get("auth_error_code") else None
+            ),
+            credential_status_updated_at=(
+                str(metadata["auth_state_updated_at"])
+                if metadata.get("auth_state_updated_at")
+                else None
+            ),
+        )
 
     @router.get(
         "/catalog",
@@ -284,6 +379,72 @@ def _build_integrations_router(
         definitions = registry.list_definitions()
         return [CatalogEntryResponse.from_definition(d) for d in definitions]
 
+    @router.post(
+        "/enrollments",
+        response_model=CredentialEnrollmentResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def start_credential_enrollment(
+        data: CredentialEnrollmentStartRequest,
+        principal: Principal = Depends(extract_principal),
+    ) -> CredentialEnrollmentResponse:
+        if credential_enrollment_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Interactive credential enrollment is unavailable",
+            )
+        try:
+            enrollment = await credential_enrollment_service.start(
+                principal=principal,
+                slug=data.slug,
+                credential_name=data.credential_name,
+                connection_id=data.connection_id,
+            )
+        except CredentialEnrollmentError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        return CredentialEnrollmentResponse.from_domain(enrollment)
+
+    @router.get(
+        "/enrollments/{enrollment_id}",
+        response_model=CredentialEnrollmentResponse,
+    )
+    async def get_credential_enrollment(
+        enrollment_id: UUID,
+        principal: Principal = Depends(extract_principal),
+    ) -> CredentialEnrollmentResponse:
+        if credential_enrollment_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Interactive credential enrollment is unavailable",
+            )
+        try:
+            enrollment = await credential_enrollment_service.get(enrollment_id, principal)
+        except CredentialEnrollmentError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        return CredentialEnrollmentResponse.from_domain(enrollment)
+
+    @router.delete(
+        "/enrollments/{enrollment_id}",
+        response_model=CredentialEnrollmentResponse,
+    )
+    async def cancel_credential_enrollment(
+        enrollment_id: UUID,
+        principal: Principal = Depends(extract_principal),
+    ) -> CredentialEnrollmentResponse:
+        if credential_enrollment_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Interactive credential enrollment is unavailable",
+            )
+        try:
+            enrollment = await credential_enrollment_service.cancel(enrollment_id, principal)
+        except CredentialEnrollmentError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        return CredentialEnrollmentResponse.from_domain(enrollment)
+
     @router.get(
         "",
         response_model=list[IntegrationResponse],
@@ -304,7 +465,7 @@ def _build_integrations_router(
                 ),
             )
         connections = await integration_repo.list_connections(principal.user_id)
-        return [IntegrationResponse.from_connection(c) for c in connections]
+        return list(await asyncio.gather(*(integration_response(c) for c in connections)))
 
     @router.get(
         "/{connection_id}",
@@ -332,7 +493,7 @@ def _build_integrations_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Integration not found: {connection_id}",
             )
-        return IntegrationResponse.from_connection(existing)
+        return await integration_response(existing)
 
     @router.post(
         "",
@@ -419,6 +580,7 @@ def _build_integrations_router(
                     "integration": definition.slug,
                     "integration_type": str(definition.integration_type),
                     "auth_type": definition.auth_type,
+                    "auth_state": "active",
                     **(
                         credential_metadata
                         if isinstance(credential_metadata, dict)
@@ -460,7 +622,7 @@ def _build_integrations_router(
             _sanitize_log(adapter),
             principal.user_id,
         )
-        return IntegrationResponse.from_connection(saved)
+        return await integration_response(saved)
 
     @router.put(
         "/{connection_id}",
@@ -508,7 +670,7 @@ def _build_integrations_router(
             slug=existing.slug,
         )
         saved = await integration_repo.save_connection(updated)
-        return IntegrationResponse.from_connection(saved)
+        return await integration_response(saved)
 
     @router.delete(
         "/{connection_id}",
@@ -624,6 +786,7 @@ def create_integrations_router(
     prefix: str = "/api/v1/integrations",
     registry: IntegrationRegistry | None = None,
     credential_store: CredentialStorePort | None = None,
+    credential_enrollment_service: CredentialEnrollmentService | None = None,
 ) -> APIRouter:
     """Create the canonical shared integrations router."""
     return _build_integrations_router(
@@ -632,6 +795,7 @@ def create_integrations_router(
         prefix=prefix,
         registry=registry,
         credential_store=credential_store,
+        credential_enrollment_service=credential_enrollment_service,
     )
 
 
@@ -641,6 +805,7 @@ def create_canonical_integrations_router(
     prefix: str = "/api/v1/integrations",
     registry: IntegrationRegistry | None = None,
     credential_store: CredentialStorePort | None = None,
+    credential_enrollment_service: CredentialEnrollmentService | None = None,
 ) -> APIRouter:
     """Backward-compatible alias for the canonical shared integrations router."""
     return create_integrations_router(
@@ -649,4 +814,5 @@ def create_canonical_integrations_router(
         prefix=prefix,
         registry=registry,
         credential_store=credential_store,
+        credential_enrollment_service=credential_enrollment_service,
     )

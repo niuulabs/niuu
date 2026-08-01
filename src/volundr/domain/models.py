@@ -90,6 +90,9 @@ class SessionActivityState(StrEnum):
       message but is NOT blocked on anything.
     - ``stopped`` — the transport died (e.g. its tmux session vanished); the
       session is no longer running and the last live state is final.
+    - ``error`` — an unattended workflow reached a terminal agent/transport
+      error. The workload may remain up long enough to report diagnostics, but
+      downstream workflow state must treat this as failed.
     - ``awaiting_input`` — the session is BLOCKED on a human: an
       ``AskUserQuestion``, a confirmation, or a tool-permission prompt. This is
       the "needs attention" state — the agent cannot make progress until the
@@ -104,6 +107,7 @@ class SessionActivityState(StrEnum):
     TOOL_EXECUTING = "tool_executing"
     AWAITING_INPUT = "awaiting_input"
     STOPPED = "stopped"
+    ERROR = "error"
 
     @property
     def is_busy(self) -> bool:
@@ -1078,6 +1082,56 @@ class OAuthSpec:
 
 
 @dataclass(frozen=True)
+class CredentialEnrollmentSpec:
+    """Config-driven interactive credential enrollment contract."""
+
+    method: str
+    credential_field: str
+    default_credential_name: str
+
+
+class CredentialEnrollmentState(StrEnum):
+    """Durable lifecycle for one interactive provider enrollment."""
+
+    PENDING = "pending"
+    AWAITING_USER = "awaiting_user"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True)
+class CredentialEnrollment:
+    """Public and runner metadata for one user-scoped enrollment attempt."""
+
+    id: UUID
+    connection_id: str
+    owner_id: str
+    tenant_id: str
+    provider_slug: str
+    credential_name: str
+    method: str
+    state: CredentialEnrollmentState
+    runner_ref: dict[str, str]
+    verification_uri: str
+    user_code: str
+    expires_at: datetime
+    error_code: str
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class CredentialEnrollmentPoll:
+    """Transient runner result; credential data is never persisted with the enrollment."""
+
+    state: CredentialEnrollmentState
+    credential_data: dict[str, str] = field(default_factory=dict)
+    error_code: str = ""
+
+
+@dataclass(frozen=True)
 class IntegrationDefinition:
     """A known integration type in the catalog.
 
@@ -1102,6 +1156,7 @@ class IntegrationDefinition:
     auth_type: str = "api_key"
     oauth: OAuthSpec | None = None
     file_mounts: dict[str, str] = ()  # type: ignore[assignment]
+    credential_enrollment: CredentialEnrollmentSpec | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.credential_schema, dict):

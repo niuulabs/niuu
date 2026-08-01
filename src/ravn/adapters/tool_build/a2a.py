@@ -35,6 +35,7 @@ from ravn.ports.tool_build_backend import (
     ToolBuildBackend,
     ToolBuildError,
     ToolBuildInputRequiredError,
+    ToolBuildPendingError,
     ToolBuildRequest,
     ToolBuildResult,
 )
@@ -78,6 +79,7 @@ class A2AToolBuildBackend(ToolBuildBackend):
         branch: str = "",
         model: str = "",
         connection_id: str = "",
+        push_callback_url: str = "",
         max_poll_attempts: int = 120,
         poll_interval_seconds: float = 5.0,
         gate_reviewer: GateReviewer | None = None,
@@ -107,6 +109,7 @@ class A2AToolBuildBackend(ToolBuildBackend):
         self._branch = branch
         self._model = model
         self._connection_id = connection_id
+        self._push_callback_url = push_callback_url.strip()
         self._max_poll_attempts = max_poll_attempts
         self._poll_interval = poll_interval_seconds
         # INPUT_REQUIRED handling. A pending peer QUESTION (help_needed) is
@@ -161,6 +164,20 @@ class A2AToolBuildBackend(ToolBuildBackend):
             telemetry.event("ravn.tool_build.requested", attributes=attributes, content=request)
             try:
                 result = await self._build_observed(request)
+            except ToolBuildPendingError as exc:
+                span.set_attribute("ravn.tool_build.outcome", "pending")
+                span.set_attribute("a2a.task.id", exc.task_id)
+                span.set_attribute("a2a.push.registered", exc.push_registered)
+                telemetry.event(
+                    "ravn.a2a.tool_build.pending",
+                    attributes={
+                        **attributes,
+                        "ravn.tool_build.outcome": "pending",
+                        "a2a.task.id": exc.task_id,
+                        "a2a.push.registered": exc.push_registered,
+                    },
+                )
+                raise
             except ToolBuildInputRequiredError as exc:
                 span.set_attribute("ravn.tool_build.outcome", "input_required")
                 span.set_attribute("a2a.task.id", exc.task_id)
@@ -229,24 +246,28 @@ class A2AToolBuildBackend(ToolBuildBackend):
             return result
 
     async def _build_observed(self, request: ToolBuildRequest) -> ToolBuildResult:
-        endpoint, workflow_id = await self._resolve_endpoint_and_workflow()
+        endpoint, workflow_id, push_supported = await self._resolve_endpoint_and_workflow()
         telemetry = get_observability()
         continuation = request.continuation
         task_id = str(continuation.get("task_id") or "")
         exchanges = _continuation_exchanges(continuation)
         rounds = int(continuation.get("round") or 0)
+        task: dict[str, Any]
         if task_id:
-            exchange = await self._resume_task_input(endpoint, request)
-            exchanges.append(exchange)
-            telemetry.event(
-                "ravn.a2a.task.resumed",
-                attributes={
-                    "a2a.task.id": task_id,
-                    "a2a.skill.id": workflow_id,
-                    "a2a.input.kind": str(continuation.get("input_kind") or ""),
-                },
-                content=exchange,
-            )
+            input_kind = str(continuation.get("input_kind") or "")
+            if input_kind and input_kind != "pending":
+                exchange = await self._resume_task_input(endpoint, request)
+                exchanges.append(exchange)
+                telemetry.event(
+                    "ravn.a2a.task.resumed",
+                    attributes={
+                        "a2a.task.id": task_id,
+                        "a2a.skill.id": workflow_id,
+                        "a2a.input.kind": input_kind,
+                    },
+                    content=exchange,
+                )
+            task = await self._get_task(endpoint, task_id)
         else:
             _system, initial_prompt = build_prompts(request)
             task = await self._find_task_by_context(endpoint, request.operation_id)
@@ -273,14 +294,37 @@ class A2AToolBuildBackend(ToolBuildBackend):
             }
         )
 
-        final, gate_exchanges = await self._poll_answering_gates(
-            endpoint,
-            task_id,
-            request,
-            workflow_id=workflow_id,
-            exchanges=exchanges,
-            rounds=rounds,
-        )
+        push_registered = bool(continuation.get("push_registered"))
+        if not push_registered and push_supported and self._push_callback_url:
+            try:
+                await self._register_push(endpoint, task_id)
+                push_registered = True
+            except ToolBuildError as exc:
+                logger.warning(
+                    "A2A tool-build push registration failed for task %s; "
+                    "using compatibility polling: %s",
+                    task_id,
+                    exc,
+                )
+
+        if push_registered:
+            final, gate_exchanges = await self._advance_push_task_once(
+                endpoint,
+                task,
+                request,
+                workflow_id=workflow_id,
+                exchanges=exchanges,
+                rounds=rounds,
+            )
+        else:
+            final, gate_exchanges = await self._poll_answering_gates(
+                endpoint,
+                task_id,
+                request,
+                workflow_id=workflow_id,
+                exchanges=exchanges,
+                rounds=rounds,
+            )
         state = _task_state(final)
         if state in _FAILED_STATES:
             raise ToolBuildError(f"A2A task {task_id} ended in state {state!r}")
@@ -312,6 +356,91 @@ class A2AToolBuildBackend(ToolBuildBackend):
             requirements=result.requirements,
             build_evidence=build_evidence,
             provenance=provenance,
+        )
+
+    async def _advance_push_task_once(
+        self,
+        endpoint: str,
+        task: dict[str, Any],
+        request: ToolBuildRequest,
+        *,
+        workflow_id: str,
+        exchanges: list[dict[str, Any]],
+        rounds: int,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Process one callback-driven snapshot, then suspend if work continues."""
+        task_id = str(task.get("id") or "")
+        state = _task_state(task)
+        await self._emit_activity(
+            {
+                "agent_id": self._card_url,
+                "skill_id": workflow_id,
+                "task_id": task_id,
+                "state": state or "TASK_STATE_UNSPECIFIED",
+                "operation": "build",
+                "input_required": state == _INPUT_REQUIRED_STATE,
+                "question": _activity_question(task),
+                "prompt": request.build_request[:500],
+                "status_message": _task_status_message(task),
+                "source_tool": "build_tool",
+                "push_registered": True,
+            }
+        )
+        if state in _TERMINAL_STATES:
+            return task, exchanges
+        if state == _INPUT_REQUIRED_STATE:
+            rounds += 1
+            if rounds > self._max_gate_rounds:
+                raise ToolBuildError(
+                    f"A2A task {task_id} exceeded {self._max_gate_rounds} input rounds"
+                )
+            question = _first_pending_question(task)
+            if question:
+                if self._question_answerer is None:
+                    raise _input_required(
+                        task_id=task_id,
+                        input_kind="question",
+                        payload=question,
+                        exchanges=exchanges,
+                        round=rounds,
+                        push_registered=True,
+                    )
+                exchange = await self._answer_question(
+                    endpoint, task_id, question, request, round=rounds
+                )
+            else:
+                gate = _first_pending_gate(task)
+                if not gate:
+                    raise _input_required(
+                        task_id=task_id,
+                        input_kind="input",
+                        payload={},
+                        exchanges=exchanges,
+                        round=rounds,
+                        push_registered=True,
+                    )
+                if self._gate_reviewer is None:
+                    raise _input_required(
+                        task_id=task_id,
+                        input_kind="gate",
+                        payload=gate,
+                        exchanges=exchanges,
+                        round=rounds,
+                        push_registered=True,
+                    )
+                exchange = await self._answer_gate(endpoint, task_id, task, request, round=rounds)
+            exchanges.append(exchange)
+
+        raise ToolBuildPendingError(
+            task_id=task_id,
+            push_registered=True,
+            continuation={
+                "task_id": task_id,
+                "input_kind": "pending",
+                "round": rounds,
+                "exchanges": exchanges,
+                "push_registered": True,
+            },
         )
 
     # -- Gate-aware polling ------------------------------------------------ #
@@ -724,7 +853,7 @@ class A2AToolBuildBackend(ToolBuildBackend):
 
     # -- Card & skill resolution ---------------------------------------- #
 
-    async def _resolve_endpoint_and_workflow(self) -> tuple[str, str]:
+    async def _resolve_endpoint_and_workflow(self) -> tuple[str, str, bool]:
         telemetry = get_observability()
         attributes = {"a2a.card.url": self._card_url}
         with telemetry.span("ravn.a2a.discover", attributes=attributes) as span:
@@ -773,7 +902,9 @@ class A2AToolBuildBackend(ToolBuildBackend):
                     },
                     content=card,
                 )
-                return endpoint, workflow_id
+                capabilities = card.get("capabilities")
+                capabilities = capabilities if isinstance(capabilities, dict) else {}
+                return endpoint, workflow_id, bool(capabilities.get("pushNotifications"))
             except Exception as exc:
                 telemetry.mark_error(span, type(exc).__name__, str(exc))
                 telemetry.event(
@@ -874,6 +1005,18 @@ class A2AToolBuildBackend(ToolBuildBackend):
     async def _get_task(self, endpoint: str, task_id: str) -> dict[str, Any]:
         result = await self._rpc(endpoint, "GetTask", {"id": task_id})
         return result if isinstance(result, dict) else {}
+
+    async def _register_push(self, endpoint: str, task_id: str) -> None:
+        await self._rpc(
+            endpoint,
+            "CreateTaskPushNotificationConfig",
+            {
+                "taskId": task_id,
+                "id": f"ravn-tool-build-{uuid4()}",
+                "url": self._push_callback_url,
+                "authentication": {"scheme": "Bearer"},
+            },
+        )
 
     async def _rpc(
         self,
@@ -1141,6 +1284,7 @@ def _input_required(
     payload: dict[str, Any],
     exchanges: list[dict[str, Any]],
     round: int,  # noqa: A002
+    push_registered: bool = False,
 ) -> ToolBuildInputRequiredError:
     reply_metadata: dict[str, Any] = {}
     if input_kind == "question":
@@ -1166,6 +1310,7 @@ def _input_required(
         "reply_metadata": reply_metadata,
         "exchanges": exchanges,
         "round": round,
+        "push_registered": push_registered,
     }
     return ToolBuildInputRequiredError(
         task_id=task_id,

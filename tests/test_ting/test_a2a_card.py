@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from a2a.client.card_resolver import parse_agent_card
+from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -127,6 +128,17 @@ class TestAgentCard:
         assert response.status_code == 200
         card = parse_agent_card(response.json())
         assert list(card.skills) == []
+
+    def test_card_advertises_push_only_when_outbox_is_fully_configured(self) -> None:
+        config = A2AConfig(
+            push_encryption_key=Fernet.generate_key().decode(),
+            push_callback_allowed_origins=["https://resident.example"],
+        )
+        client = _client(InMemoryWorkflowRepository(), config=config)
+
+        card = parse_agent_card(client.get(CARD_PATH).json())
+
+        assert card.capabilities.push_notifications is True
 
     def test_workflow_without_declared_tags_gets_protocol_tag(self) -> None:
         workflow = _workflow()

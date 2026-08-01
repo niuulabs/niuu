@@ -181,10 +181,15 @@ def test_build_tool_build_backend_applies_realm_selector_override() -> None:
 
 def test_build_tool_build_backend_injects_a2a_activity_emitter() -> None:
     configured = Settings(
+        gateway={
+            "platform": {
+                "a2a_push_callback_url": "https://ivaldi.example/a2a/push",
+            }
+        },
         resident_evolution={
             "tool_build_adapter": "ravn.adapters.tool_build.A2AToolBuildBackend",
             "tool_build_kwargs": {"card_url": "https://ting.example/.well-known/agent-card.json"},
-        }
+        },
     )
     emitter = AsyncMock()
 
@@ -192,6 +197,7 @@ def test_build_tool_build_backend_injects_a2a_activity_emitter() -> None:
 
     assert backend is not None
     assert backend._activity_emitter is emitter
+    assert backend._push_callback_url == "https://ivaldi.example/a2a/push"
 
 
 # ---------------------------------------------------------------------------

@@ -6,9 +6,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsPage } from './SettingsPage';
 
 const apiMocks = vi.hoisted(() => ({
-  get: vi.fn(),
+  get: vi.fn<(path: string) => Promise<unknown>>(),
   patch: vi.fn(async () => null),
-  post: vi.fn(async (path: string) => {
+  post: vi.fn<(path: string, body?: unknown) => Promise<unknown>>(async (path: string) => {
     if (path === '/api/v1/tokens') {
       return {
         id: 'tok-2',
@@ -570,6 +570,108 @@ describe('SettingsPage', () => {
 
     expect(await screen.findByRole('button', { name: 'Connect with OAuth' })).toBeTruthy();
     expect(screen.getByText('Connected as github-oauth')).toBeTruthy();
+    expect(screen.queryByText('Create a new credential')).toBeNull();
+  });
+
+  it('starts a user-scoped Codex device login from shared Integrations', async () => {
+    routerMocks.params = { providerId: 'integrations', sectionId: 'connections' };
+    const challenge = {
+      id: 'enrollment-1',
+      connectionId: 'codex-connection-1',
+      providerSlug: 'codex',
+      credentialName: 'codex-credentials',
+      state: 'awaiting_user',
+      verificationUri: 'https://auth.openai.com/codex/device',
+      userCode: 'ABCD-EFGH',
+      expiresAt: '2026-08-01T12:15:00Z',
+      errorCode: '',
+    };
+    apiMocks.post.mockImplementation(async (path: string) => {
+      if (path === '/api/v1/integrations/enrollments') return challenge;
+      return null;
+    });
+    apiMocks.get.mockImplementation(async (path: string) => {
+      if (path === '/settings') {
+        return {
+          title: 'Integrations',
+          scope: 'user',
+          sections: [
+            {
+              id: 'connections',
+              label: 'Connections',
+              fields: [],
+              resources: [
+                {
+                  id: 'integration_connections',
+                  type: 'integrations',
+                  label: 'Integration connections',
+                  listPath: '/api/v1/integrations',
+                  catalogPath: '/api/v1/integrations/catalog',
+                  createPath: '/api/v1/integrations',
+                  deletePath: '/api/v1/integrations/{id}',
+                  credentialListPath: '/api/v1/credentials/user',
+                  testPath: '/api/v1/integrations/{id}/test',
+                  oauthAuthorizePath: '/api/v1/integrations/oauth/{slug}/authorize',
+                  oauthDisconnectPath: '/api/v1/integrations/oauth/{slug}/disconnect',
+                  enrollmentStartPath: '/api/v1/integrations/enrollments',
+                  enrollmentStatusPath: '/api/v1/integrations/enrollments/{id}',
+                  enrollmentCancelPath: '/api/v1/integrations/enrollments/{id}',
+                },
+              ],
+            },
+          ],
+        };
+      }
+      if (path === '/api/v1/credentials/user') return { credentials: [] };
+      if (path === '/api/v1/integrations') {
+        return [
+          {
+            id: 'codex-connection-1',
+            slug: 'codex',
+            integrationType: 'ai_provider',
+            credentialName: 'codex-credentials',
+            credentialStatus: 'auth_required',
+            enabled: true,
+          },
+        ];
+      }
+      if (path === '/api/v1/integrations/catalog') {
+        return [
+          {
+            id: 'codex',
+            slug: 'codex',
+            name: 'OpenAI Codex (ChatGPT)',
+            integration_type: 'ai_provider',
+            auth_type: 'device_code',
+            credential_schema: {},
+            config_schema: {},
+            credential_enrollment: {
+              method: 'codex_device',
+              credential_field: 'auth.json',
+              default_credential_name: 'codex-credentials',
+            },
+          },
+        ];
+      }
+      if (path === '/api/v1/integrations/enrollments/enrollment-1') return challenge;
+      throw new Error(`Unexpected GET ${path}`);
+    });
+
+    wrap(<SettingsPage />);
+
+    const reconnect = await screen.findByRole('button', { name: 'Reconnect Codex' });
+    expect(screen.getByText('Reconnect required')).toBeTruthy();
+    fireEvent.click(reconnect);
+
+    expect(await screen.findByText('ABCD-EFGH')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'the provider login page' }).getAttribute('href')).toBe(
+      challenge.verificationUri,
+    );
+    expect(apiMocks.post).toHaveBeenCalledWith('/api/v1/integrations/enrollments', {
+      slug: 'codex',
+      credential_name: 'codex-credentials',
+      connection_id: 'codex-connection-1',
+    });
     expect(screen.queryByText('Create a new credential')).toBeNull();
   });
 

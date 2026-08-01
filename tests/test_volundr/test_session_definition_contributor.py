@@ -202,6 +202,13 @@ class TestDefaultSessionDefinitions:
         assert codex.display_name == "OpenAI Codex"
         assert codex.defaults["broker"]["cliType"] == "codex-ws"
 
+        batch = default_session_definitions()["skuldCodexExec"]
+        assert batch.defaults["broker"]["cliType"] == "codex-ws"
+        assert (
+            batch.defaults["broker"]["transportAdapter"]
+            == "skuld.transports.codex_ws.CodexWebSocketTransport"
+        )
+
     def test_opencode_defaults(self):
         opencode = default_session_definitions()["skuldOpenCode"]
         assert opencode.display_name == "OpenCode"

@@ -114,6 +114,25 @@ function setDocumentFonts(value: Document['fonts'] | undefined) {
   });
 }
 
+/**
+ * Wait until the component has opened its websocket.
+ *
+ * Every driver below reaches for `latestWebSocketOptions?.`, so if the effect
+ * that registers it has not run yet the call silently does nothing and the
+ * assertion after it fails. Rendered output does not imply that effect has
+ * run — they are separate effects — which made these tests fail
+ * intermittently under CI load.
+ */
+async function waitForSocket(): Promise<void> {
+  await waitFor(() => expect(latestWebSocketOptions).toBeDefined());
+}
+
+/** Wait for the websocket *and* the attached terminal, for tests driving both. */
+async function waitForTerminalWiring(): Promise<void> {
+  await waitForSocket();
+  await waitFor(() => expect(xtermInstances.length).toBeGreaterThan(0));
+}
+
 describe('SessionTerminalLive helpers', () => {
   const originalFetch = global.fetch;
 
@@ -451,6 +470,7 @@ describe('SessionTerminalLive', () => {
     render(<SessionTerminalLive url="ws://localhost:8080/terminal/ws" />);
 
     await waitFor(() => expect(screen.getByRole('tab', { name: /shell 1/i })).toBeInTheDocument());
+    await waitForTerminalWiring();
     expect(xtermInstances).toHaveLength(1);
 
     latestWebSocketOptions?.onOpen?.();
@@ -483,6 +503,7 @@ describe('SessionTerminalLive', () => {
 
     await waitFor(() => expect(screen.getByRole('tab', { name: /shell 1/i })).toBeInTheDocument());
 
+    await waitForTerminalWiring();
     latestWebSocketOptions?.onMessage?.(JSON.stringify({ type: 'output', data: 'hello' }));
     latestWebSocketOptions?.onMessage?.(JSON.stringify({ type: 'exit' }));
     latestWebSocketOptions?.onMessage?.('not-json');
@@ -507,6 +528,7 @@ describe('SessionTerminalLive', () => {
     render(<SessionTerminalLive url="ws://localhost:8080/terminal/ws" />);
 
     await waitFor(() => expect(screen.getByText('connecting…')).toBeInTheDocument());
+    await waitForSocket();
     latestWebSocketOptions?.onOpen?.();
     await waitFor(() => expect(screen.getByText('connected')).toBeInTheDocument());
 
@@ -545,6 +567,8 @@ describe('SessionTerminalLive', () => {
     await waitFor(() => expect(screen.getByRole('tab', { name: /shell 1/i })).toBeInTheDocument());
     expect(mockXtermOpen).not.toHaveBeenCalled();
 
+    // Socket only: this test is precisely about there being no terminal yet.
+    await waitForSocket();
     latestWebSocketOptions?.onOpen?.();
     latestWebSocketOptions?.onMessage?.('{"type":"output","data":"ignored"}');
 

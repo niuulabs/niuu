@@ -41,6 +41,38 @@ class PostgresWorkflowCampaignRepository(WorkflowCampaignRepository):
         )
         return [self._row_to_campaign(row) for row in rows]
 
+    async def list_active_owner_ids(self) -> list[str]:
+        rows = await self._pool.fetch(
+            """
+            SELECT DISTINCT owner_id
+            FROM workflow_campaigns
+            WHERE status IN ('pending', 'running', 'blocked')
+            ORDER BY owner_id
+            """
+        )
+        return [str(row["owner_id"]) for row in rows]
+
+    async def get_active_campaign_by_session(
+        self,
+        *,
+        owner_id: str,
+        session_id: str,
+    ) -> WorkflowCampaign | None:
+        row = await self._pool.fetchrow(
+            """
+            SELECT *
+            FROM workflow_campaigns
+            WHERE owner_id = $1
+              AND session_id = $2
+              AND status IN ('pending', 'running', 'blocked')
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            owner_id,
+            session_id,
+        )
+        return self._row_to_campaign(row) if row is not None else None
+
     async def get_campaign(self, campaign_id: UUID) -> WorkflowCampaign | None:
         row = await self._pool.fetchrow(
             "SELECT * FROM workflow_campaigns WHERE id = $1",

@@ -27,6 +27,14 @@ system_prompt_template: |
 
   Use `capability_list` to inspect native, learned, workflow, and peer
   capabilities. Use `a2a_task` to collaborate with a discovered A2A peer.
+  When an A2A start result says `push_registered: true`, record its task ID and
+  sleep with `next_action_timing: external_event`; the authenticated callback
+  will wake you with the new task state. Do not poll that task repeatedly. If
+  push registration is false or absent, schedule one bounded recheck instead.
+  A `build_tool` result with `status: pending` follows the same rule: sleep for
+  an external event, then call `build_tool` once with its
+  `continuation_task_id` after the callback wakes you. Never loop on that
+  continuation.
   `build_tool` is complete only after its build, tests, review, provenance, and
   adoption succeed. When its capability description says a build backend is
   configured, commission the build instead of authoring the implementation

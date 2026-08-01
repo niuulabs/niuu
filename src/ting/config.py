@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -1080,6 +1080,79 @@ class A2AConfig(BaseModel):
         ge=0,
         description="Cache-Control max-age for the served agent card.",
     )
+    push_encryption_key: SecretStr = Field(
+        default=SecretStr(""),
+        description="Fernet key used to encrypt callback credentials at rest.",
+    )
+    push_callback_allowed_origins: list[str] = Field(
+        default_factory=list,
+        description="Exact HTTPS origins allowed to receive A2A task callbacks.",
+    )
+    push_auth: HttpAuthAdapterConfig = Field(
+        default_factory=HttpAuthAdapterConfig,
+        description=(
+            "Dynamic auth adapter used by Ting for A2A callbacks. Production "
+            "deployments should use short-lived workload identity credentials."
+        ),
+    )
+    push_timeout_seconds: float = Field(
+        default=10.0,
+        ge=1.0,
+        description="HTTP timeout for one A2A callback attempt.",
+    )
+    push_poll_seconds: float = Field(
+        default=1.0,
+        ge=0.1,
+        description="Seconds between durable callback outbox passes.",
+    )
+    push_retry_initial_seconds: float = Field(
+        default=2.0,
+        ge=0.1,
+        description="Initial callback retry delay.",
+    )
+    push_retry_max_seconds: float = Field(
+        default=300.0,
+        ge=1.0,
+        description="Maximum callback retry delay.",
+    )
+    push_claim_limit: int = Field(
+        default=20,
+        ge=1,
+        description="Maximum callback deliveries leased in one outbox pass.",
+    )
+    push_lease_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        description="Lease duration for one claimed callback delivery.",
+    )
+    push_max_url_chars: int = Field(
+        default=2048,
+        ge=256,
+        description="Maximum callback URL length.",
+    )
+    push_max_credential_chars: int = Field(
+        default=8192,
+        ge=256,
+        description="Maximum callback token or bearer credential length.",
+    )
+    push_max_configs_page_size: int = Field(
+        default=100,
+        ge=1,
+        description="Maximum A2A callback configurations returned per page.",
+    )
+    push_max_error_chars: int = Field(
+        default=2000,
+        ge=128,
+        description="Maximum persisted callback delivery error length.",
+    )
+
+    @property
+    def push_notifications_enabled(self) -> bool:
+        return bool(
+            self.push_encryption_key.get_secret_value().strip()
+            and self.push_callback_allowed_origins
+        )
+
     inline_artifact_max_chars: int = Field(
         default=65536,
         ge=0,

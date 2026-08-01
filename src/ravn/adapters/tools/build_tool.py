@@ -19,6 +19,7 @@ from ravn.ports.tool import ToolPort
 from ravn.ports.tool_build_backend import (
     ToolBuildError,
     ToolBuildInputRequiredError,
+    ToolBuildPendingError,
 )
 from ravn.tool_observability import publish_learned_tool_inventory
 from ravn.valkyrie_evolution.adapters import PolicyCourtReviewer
@@ -142,7 +143,9 @@ class BuildTool(ToolPort):
             "Provide a manifest with name, description, input_schema, required_permission, "
             "and declared_reach. "
             + authoring
-            + "If a commissioned build returns status=input_required, either answer from "
+            + "If a commissioned build returns status=pending, stop and wait for its A2A "
+            "callback; on the callback turn, resume it with continuation_task_id only. "
+            "If it returns status=input_required, either answer from "
             "available evidence or ask the operator. Resume the same durable A2A task with "
             "continuation_task_id and continuation_answer; include continuation_metadata "
             "when the result requests a gate decision. "
@@ -264,7 +267,8 @@ class BuildTool(ToolPort):
                     "type": "string",
                     "description": (
                         "A durable commissioned-build task id returned by an earlier "
-                        "status=input_required result. Use it to resume that exact task."
+                        "status=pending or status=input_required result. Use it to resume "
+                        "that exact task after its callback."
                     ),
                 },
                 "continuation_answer": {
@@ -283,7 +287,7 @@ class BuildTool(ToolPort):
             },
             "anyOf": [
                 {"required": ["manifest"]},
-                {"required": ["continuation_task_id", "continuation_answer"]},
+                {"required": ["continuation_task_id"]},
             ],
         }
 
@@ -637,6 +641,8 @@ class BuildTool(ToolPort):
                 )
         except ToolBuildInputRequiredError as exc:
             return self._input_required_result(exc)
+        except ToolBuildPendingError as exc:
+            return self._pending_result(exc)
         except (LearnedToolError, ToolBuildError, TypeError, ValueError) as exc:
             return ToolResult(tool_call_id="", content=f"build_tool failed: {exc}", is_error=True)
 
@@ -756,7 +762,7 @@ class BuildTool(ToolPort):
         )
         try:
             result = await self._build_backend.build(request)
-        except ToolBuildInputRequiredError as exc:
+        except (ToolBuildInputRequiredError, ToolBuildPendingError) as exc:
             self._persist_pending_build(prepared, exc)
             if operation_id:
                 self._delete_commission(operation_id)
@@ -785,10 +791,6 @@ class BuildTool(ToolPort):
             raise LearnedToolError(
                 "continuation_task_id was given but no tool build backend is configured"
             )
-        answer = str(input.get("continuation_answer") or "").strip()
-        if not answer:
-            raise LearnedToolError("continuation_answer must be non-empty")
-
         pending = self._load_pending_build(task_id)
         original = pending.get("input")
         continuation = pending.get("continuation")
@@ -798,7 +800,12 @@ class BuildTool(ToolPort):
             raise LearnedToolError(f"pending build state does not match task {task_id!r}")
 
         continuation = dict(continuation)
-        continuation["answer"] = answer
+        input_kind = str(continuation.get("input_kind") or "")
+        answer = str(input.get("continuation_answer") or "").strip()
+        if input_kind != "pending" and not answer:
+            raise LearnedToolError("continuation_answer must be non-empty")
+        if answer:
+            continuation["answer"] = answer
         supplied_metadata = input.get("continuation_metadata")
         if supplied_metadata is not None and not isinstance(supplied_metadata, dict):
             raise LearnedToolError("continuation_metadata must be an object")
@@ -828,7 +835,7 @@ class BuildTool(ToolPort):
                 resumed,
                 signal_context_suffix="",
             )
-        except ToolBuildInputRequiredError:
+        except (ToolBuildInputRequiredError, ToolBuildPendingError):
             raise
         self._delete_pending_build(task_id)
         telemetry.event(
@@ -840,7 +847,7 @@ class BuildTool(ToolPort):
     def _persist_pending_build(
         self,
         input: dict,  # noqa: A002
-        required: ToolBuildInputRequiredError,
+        required: ToolBuildInputRequiredError | ToolBuildPendingError,
     ) -> None:
         """Atomically persist the minimum state needed to resume one build."""
         original = {
@@ -874,11 +881,11 @@ class BuildTool(ToolPort):
             "ravn.tool_build.continuation.suspended",
             attributes={
                 "a2a.task.id": required.task_id,
-                "a2a.input.kind": required.input_kind,
+                "a2a.input.kind": str(required.continuation.get("input_kind") or ""),
                 "ravn.tool_build.pending.path": str(path),
             },
             content={
-                "prompt": required.prompt,
+                "prompt": getattr(required, "prompt", ""),
                 "input_payload": required.continuation.get("input_payload", {}),
                 "reply_metadata": required.continuation.get("reply_metadata", {}),
             },
@@ -1119,6 +1126,28 @@ class BuildTool(ToolPort):
         return ToolResult(
             tool_call_id="",
             content=json.dumps(payload, indent=2, sort_keys=True),
+            is_error=False,
+        )
+
+    def _pending_result(self, pending: ToolBuildPendingError) -> ToolResult:
+        return ToolResult(
+            tool_call_id="",
+            content=json.dumps(
+                {
+                    "status": "pending",
+                    "backend": str(getattr(self._build_backend, "name", "unknown")),
+                    "task_id": pending.task_id,
+                    "push_registered": pending.push_registered,
+                    "resume_with": {"continuation_task_id": pending.task_id},
+                    "next_step": (
+                        "Do not poll. Sleep with reason=external_event. The A2A callback "
+                        "will wake this resident; then call build_tool once with the returned "
+                        "continuation_task_id to process the new task state."
+                    ),
+                },
+                indent=2,
+                sort_keys=True,
+            ),
             is_error=False,
         )
 

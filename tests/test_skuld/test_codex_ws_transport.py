@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from skuld.codex_auth import CodexAuthProviderError, CodexExternalTokens
 from skuld.transports.codex_ws import (
     CodexWebSocketTransport,
     _codex_effort_for_model,
@@ -81,6 +82,16 @@ class FakeRunningProcess:
     returncode = None
 
 
+class FakeCodexAuthProvider:
+    def __init__(self, tokens: CodexExternalTokens | None) -> None:
+        self.tokens = tokens
+        self.calls: list[bool] = []
+
+    async def get_tokens(self, *, force_refresh: bool = False):
+        self.calls.append(force_refresh)
+        return self.tokens
+
+
 # ---------------------------------------------------------------------------
 # Unit tests: RPC helpers
 # ---------------------------------------------------------------------------
@@ -138,6 +149,42 @@ class TestConstruction:
         assert caps.mcp_set_servers is False
         assert caps.slash_commands is True
         assert caps.skills is False
+
+    @pytest.mark.asyncio
+    async def test_external_auth_logs_in_with_access_only_token_envelope(self, tmp_path):
+        provider = FakeCodexAuthProvider(
+            CodexExternalTokens(
+                access_token="access-token",
+                account_id="account-1",
+                plan_type="pro",
+            )
+        )
+        t = _make_transport(tmp_path, codex_auth_provider=provider)
+        t._send_rpc = AsyncMock(return_value={})
+
+        await t._authenticate_codex()
+
+        t._send_rpc.assert_awaited_once_with(
+            "account/login/start",
+            {
+                "type": "chatgptAuthTokens",
+                "accessToken": "access-token",
+                "chatgptAccountId": "account-1",
+                "chatgptPlanType": "pro",
+            },
+        )
+        assert provider.calls == [False]
+
+    @pytest.mark.asyncio
+    async def test_host_auth_provider_does_not_start_external_login(self, tmp_path):
+        provider = FakeCodexAuthProvider(None)
+        t = _make_transport(tmp_path, codex_auth_provider=provider)
+        t._send_rpc = AsyncMock(return_value={})
+
+        await t._authenticate_codex()
+
+        t._send_rpc.assert_not_awaited()
+        assert provider.calls == [False]
 
     def test_init_with_mcp_servers(self, tmp_path):
         t = _make_transport(
@@ -1527,6 +1574,60 @@ class TestControl:
 
 
 class TestApprovals:
+    @pytest.mark.asyncio
+    async def test_app_server_refresh_request_uses_central_provider(self, tmp_path):
+        provider = FakeCodexAuthProvider(
+            CodexExternalTokens(access_token="rotated-token", account_id="account-1")
+        )
+        t = _make_transport(tmp_path, codex_auth_provider=provider)
+        t._ws = FakeWebSocket()
+
+        await t._handle_server_request(
+            {
+                "id": 40,
+                "method": "account/chatgptAuthTokens/refresh",
+                "params": {"previousAccountId": "account-1"},
+            }
+        )
+
+        sent = json.loads(t._ws.sent[0])
+        assert sent == {
+            "jsonrpc": "2.0",
+            "id": 40,
+            "result": {
+                "accessToken": "rotated-token",
+                "chatgptAccountId": "account-1",
+            },
+        }
+        assert provider.calls == [True]
+
+    @pytest.mark.asyncio
+    async def test_app_server_refresh_failure_errors_the_turn(self, tmp_path):
+        class FailingProvider:
+            async def get_tokens(self, *, force_refresh: bool = False):
+                assert force_refresh is True
+                raise CodexAuthProviderError("Codex authentication requires reconnection")
+
+        t = _make_transport(tmp_path, codex_auth_provider=FailingProvider())
+        t._ws = FakeWebSocket()
+        emit = _collect_emits(t)
+
+        await t._handle_server_request(
+            {
+                "id": 41,
+                "method": "account/chatgptAuthTokens/refresh",
+                "params": {},
+            }
+        )
+
+        assert t._turn_error == "Codex authentication requires reconnection"
+        assert _events_of_type(emit, "error") == [
+            {"type": "error", "error": "Codex authentication requires reconnection"}
+        ]
+        sent = json.loads(t._ws.sent[0])
+        assert sent["id"] == 41
+        assert sent["error"]["code"] == -32001
+
     @pytest.mark.asyncio
     async def test_command_approval_emits_control_request(self, tmp_path):
         t = _make_transport(tmp_path)

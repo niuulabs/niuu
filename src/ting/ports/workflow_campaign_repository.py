@@ -19,6 +19,28 @@ class WorkflowCampaignRepository(ABC):
     async def list_active_campaigns(self) -> list[WorkflowCampaign]:
         """List campaigns that may still change at runtime."""
 
+    async def list_active_owner_ids(self) -> list[str]:
+        """List owners whose campaigns require an activity subscription."""
+        campaigns = await self.list_active_campaigns()
+        return sorted({campaign.owner_id for campaign in campaigns})
+
+    async def get_active_campaign_by_session(
+        self,
+        *,
+        owner_id: str,
+        session_id: str,
+    ) -> WorkflowCampaign | None:
+        """Fetch the active campaign associated with one Volundr session."""
+        campaigns = await self.list_active_campaigns()
+        return next(
+            (
+                campaign
+                for campaign in campaigns
+                if campaign.owner_id == owner_id and campaign.session_id == session_id
+            ),
+            None,
+        )
+
     @abstractmethod
     async def get_campaign(self, campaign_id: UUID) -> WorkflowCampaign | None:
         """Fetch a campaign by UUID."""

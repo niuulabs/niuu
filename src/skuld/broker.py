@@ -263,6 +263,27 @@ def _normalize_browser_message_content(content: object) -> str:
     return "\n\n".join(lines).strip()
 
 
+def _peer_error_message(frame: dict[str, Any]) -> str:
+    """Extract a bounded, human-readable error from a room peer frame."""
+    data = frame.get("data")
+    if isinstance(data, str):
+        message = data
+    elif isinstance(data, dict):
+        raw_error = data.get("error")
+        if isinstance(raw_error, dict):
+            message = str(raw_error.get("message") or raw_error.get("error") or "")
+        else:
+            message = str(
+                raw_error
+                or data.get("message")
+                or data.get("content")
+                or "Peer workflow agent failed"
+            )
+    else:
+        message = str(frame.get("error") or "Peer workflow agent failed")
+    return message.strip()[:2000] or "Peer workflow agent failed"
+
+
 @dataclass
 class PeerWatchState:
     """Tracks one active flock peer task for Skuld's silence watchdog."""
@@ -382,6 +403,7 @@ class Broker(
             run_id=self._settings.session.run_id,
         )
         self._flock_completion_reported = False
+        self._flock_failure_reported = False
         self._session_start_reported = False
         self._event_sequence = 0
         # Durable full-fidelity event log (session_event_log). Every CLI frame is
@@ -1401,6 +1423,8 @@ class Broker(
                 return
             await self._report_peer_help_needed_activity(peer_id, frame)
             await self._emit_peer_help_needed_sleipnir_event(peer_id, frame)
+        elif event_type == "error":
+            await self._maybe_report_flock_failure(peer_id, frame)
 
         now = time.monotonic()
         watch = self._peer_watches.get(peer_id)
@@ -2255,7 +2279,11 @@ class Broker(
         Use that existing path for ravn_flock completion instead of relying on an
         out-of-process Sleipnir transport during co-hosted development runs.
         """
-        if self._flock_completion_reported or not self._is_room_only_workflow_session():
+        if (
+            self._flock_completion_reported
+            or self._flock_failure_reported
+            or not self._is_room_only_workflow_session()
+        ):
             return
         if self._room_bridge is None:
             return
@@ -2296,6 +2324,50 @@ class Broker(
 
         self._flock_completion_reported = True
         await self._report_activity_state("idle", extra_metadata=extra_metadata)
+
+    async def _maybe_report_flock_failure(
+        self,
+        peer_id: str,
+        frame: dict[str, Any],
+    ) -> None:
+        """Report a terminal peer error for unattended flock workflows.
+
+        A peer ``error`` frame is terminal for that agent turn. Previously it
+        was visible in chat and tracing only, leaving the workflow campaign in
+        ``running`` forever. Report an explicit terminal activity state so
+        Volundr, Ting, and A2A clients agree that the workflow failed.
+        """
+        if (
+            self._flock_failure_reported
+            or self._flock_completion_reported
+            or not self._is_room_only_workflow_session()
+        ):
+            return
+
+        participant = self._room_bridge.participants.get(peer_id) if self._room_bridge else None
+        persona = (participant.persona if participant is not None else "").strip()
+        error = _peer_error_message(frame)
+        extra_metadata = {
+            "failure_source": "ravn_flock",
+            "failure_peer_id": peer_id,
+            "failure_persona": persona,
+            "error": error,
+        }
+
+        # Set the terminal guard before awaiting the report so a concurrent
+        # completion event cannot overwrite the failure with ``idle``.
+        self._flock_failure_reported = True
+        await self._report_activity_state("error", extra_metadata=extra_metadata)
+        await self._finish_trace_span(
+            self._trace_workflow_span_id,
+            status="failed",
+            attributes={
+                "reason": "peer_error",
+                "peer_id": peer_id,
+                "persona": persona,
+            },
+        )
+        self._trace_workflow_span_id = None
 
     async def _peer_watchdog_loop(self) -> None:
         """Warn in chat when a flock peer accepted work but goes quiet."""
@@ -2957,6 +3029,12 @@ class Broker(
                     content=visible_error,
                     parts=[{"type": "text", "text": visible_error}],
                     metadata={"status": "error", "messageType": "error"},
+                )
+            )
+            asyncio.create_task(
+                self._report_activity_state(
+                    "error",
+                    extra_metadata={"error": visible_error},
                 )
             )
             asyncio.create_task(

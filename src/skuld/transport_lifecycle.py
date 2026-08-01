@@ -10,9 +10,10 @@ import uuid
 from pathlib import Path
 
 from niuu.ports.cli import CLITransport
-from niuu.utils import import_class
+from niuu.utils import import_class, resolve_secret_kwargs
 from skuld.broker_api import _rebuild_presented_registry
 from skuld.chronicle_watcher import ChronicleWatcher
+from skuld.codex_auth import CodexAuthProviderPort
 from skuld.conversation_models import ConversationTurn
 from skuld.service_manager import ServiceManager
 from skuld.session_artifacts import _capture_git_workspace_checkpoint
@@ -48,6 +49,18 @@ class TransportLifecycleMixin:
             "acp_prompt_timeout_s": self._settings.acp_prompt_timeout_s,
         }
 
+    def _create_codex_auth_provider(self) -> CodexAuthProviderPort:
+        """Build the configured auth adapter against Skuld's platform HTTP client."""
+        config = self._settings.codex_auth
+        cls = import_class(config.adapter)
+        kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
+        provider = cls(http_client_provider=self._get_http_client, **kwargs)
+        if not isinstance(provider, CodexAuthProviderPort):
+            raise TypeError(
+                f"Codex auth adapter {config.adapter} must implement CodexAuthProviderPort"
+            )
+        return provider
+
     def _create_transport(self) -> CLITransport:
         """Create the configured CLI transport via dynamic import.
 
@@ -68,8 +81,10 @@ class TransportLifecycleMixin:
         except (ImportError, AttributeError) as exc:
             raise ValueError(f"Cannot load transport adapter '{adapter_path}': {exc}") from exc
 
-        kwargs = self._build_transport_kwargs()
         sig = inspect.signature(cls)
+        kwargs = self._build_transport_kwargs()
+        if "codex_auth_provider" in sig.parameters:
+            kwargs["codex_auth_provider"] = self._create_codex_auth_provider()
         filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
         logger.info("Using %s (adapter: %s)", cls.__name__, adapter_path)
         return cls(**filtered)

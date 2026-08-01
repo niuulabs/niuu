@@ -187,6 +187,8 @@ def _build_tool_build_backend(
         kwargs["question_answerer"] = question_answerer
     if activity_emitter is not None and _constructor_accepts_kwarg(cls, "activity_emitter"):
         kwargs["activity_emitter"] = activity_emitter
+    if _constructor_accepts_kwarg(cls, "push_callback_url"):
+        kwargs["push_callback_url"] = settings.gateway.platform.a2a_push_callback_url
     return cls(**kwargs)
 
 

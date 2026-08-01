@@ -24,11 +24,13 @@ from datetime import UTC, datetime
 from importlib.resources import files
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
+from niuu.ports.workload_identity import WorkloadIdentityVerifier
+from niuu.utils import resolve_secret_kwargs
 from ravn.adapters.channels.gateway import RavnGateway
 from ravn.config import HttpChannelConfig
 from ravn.domain.events import RavnEvent
@@ -77,15 +79,25 @@ class HttpGateway:
         config: HttpChannelConfig,
         gateway: RavnGateway,
         resident_runtime: Any | None = None,
+        a2a_push_verifier: WorkloadIdentityVerifier | None = None,
     ) -> None:
         self._config = config
         self._gateway = gateway
         self._resident_runtime = resident_runtime
+        self._a2a_push_verifier = a2a_push_verifier or self._build_a2a_push_verifier()
         self._resident_status_provider: (
             Callable[[], dict[str, Any] | Awaitable[dict[str, Any]]] | None
         ) = None
         self._translator_cls: type[EventTranslatorPort] = _import_class(config.translator)
         self._app = self._build_app()
+
+    def _build_a2a_push_verifier(self) -> WorkloadIdentityVerifier | None:
+        auth = self._config.a2a_push_auth
+        if not auth.adapter.strip():
+            return None
+        kwargs = resolve_secret_kwargs(auth.kwargs, auth.secret_kwargs_env)
+        verifier_class = _import_class(auth.adapter)
+        return verifier_class(**kwargs)
 
     @property
     def app(self) -> FastAPI:
@@ -178,6 +190,64 @@ class HttpGateway:
             )
 
         if self._resident_runtime is not None:
+            if self._config.a2a_push_enabled:
+
+                @app.post("/a2a/push")
+                async def a2a_push(
+                    request: Request,
+                    authorization: str | None = Header(default=None),
+                ) -> dict[str, Any]:
+                    """Persist a workload-authenticated A2A task update and wake the resident."""
+                    if self._a2a_push_verifier is None:
+                        raise HTTPException(
+                            status_code=503,
+                            detail="A2A push receiver has no workload identity verifier",
+                        )
+                    scheme, _, presented = (authorization or "").partition(" ")
+                    if scheme.casefold() != "bearer" or not presented.strip():
+                        raise HTTPException(
+                            status_code=401,
+                            detail="A2A callback requires a bearer workload identity",
+                        )
+                    try:
+                        claims = await self._a2a_push_verifier.verify(presented.strip())
+                    except Exception as exc:
+                        logger.warning(
+                            "Rejected A2A callback workload identity: %s",
+                            type(exc).__name__,
+                        )
+                        raise HTTPException(
+                            status_code=401,
+                            detail="Invalid A2A callback workload identity",
+                        ) from exc
+                    for claim, expected in self._config.a2a_push_required_claims.items():
+                        if claims.get(claim) != expected:
+                            raise HTTPException(
+                                status_code=403,
+                                detail="A2A callback workload is not authorized",
+                            )
+                    raw = await request.body()
+                    if len(raw) > self._config.a2a_push_max_body_bytes:
+                        raise HTTPException(
+                            status_code=413, detail="A2A callback body is too large"
+                        )
+                    try:
+                        payload = json.loads(raw)
+                    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                        raise HTTPException(
+                            status_code=400, detail="Invalid JSON callback"
+                        ) from exc
+                    if not isinstance(payload, dict):
+                        raise HTTPException(
+                            status_code=422, detail="A2A callback must be an object"
+                        )
+                    try:
+                        return await self._resident_runtime.submit_a2a_push(payload)
+                    except ValueError as exc:
+                        raise HTTPException(status_code=422, detail=str(exc)) from exc
+                    except RuntimeError as exc:
+                        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
             if self._config.resident_hud_enabled:
 
                 @app.get("/resident/hud", response_class=HTMLResponse)

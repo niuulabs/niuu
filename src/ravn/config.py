@@ -42,6 +42,7 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from niuu.config_models import WorkloadIdentityVerifierConfig
 from niuu.domain.observability import ObservabilityConfig
 from niuu.mesh.config import MeshNatsConfig
 
@@ -995,6 +996,23 @@ class HttpChannelConfig(BaseModel):
             "operator-question and answer endpoints. Missing tokens disable those endpoints."
         ),
     )
+    a2a_push_enabled: bool = Field(
+        default=False,
+        description="Accept authenticated A2A task callbacks and wake the resident.",
+    )
+    a2a_push_auth: WorkloadIdentityVerifierConfig = Field(
+        default_factory=lambda: WorkloadIdentityVerifierConfig(name="a2a-push", adapter=""),
+        description="JWT verifier used to authenticate A2A callback workloads.",
+    )
+    a2a_push_required_claims: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Exact JWT claims required on an authenticated A2A callback.",
+    )
+    a2a_push_max_body_bytes: int = Field(
+        default=1_048_576,
+        ge=1024,
+        description="Maximum accepted A2A callback body size.",
+    )
     resident_hud_enabled: bool = Field(
         default=False,
         description="Expose the resident's read-only HUD and live data endpoints.",
@@ -1146,6 +1164,14 @@ class PlatformToolsConfig(BaseModel):
             "Use this for platform workflow facades or other stable peers that are not "
             "projected by an Observatory Agent Directory."
         ),
+    )
+    a2a_default_connection_id: str = Field(
+        default="",
+        description="Default Volundr target injected into newly started A2A workflows.",
+    )
+    a2a_push_callback_url: str = Field(
+        default="",
+        description=("Public HTTPS callback registered for A2A tasks that advertise push support."),
     )
     a2a_message_max_chars: int = Field(
         default=12_000,

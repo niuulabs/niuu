@@ -264,6 +264,21 @@ class PodManagerConfig(BaseModel):
     )
 
 
+def _default_codex_credential_broker() -> DynamicAdapterConfig:
+    return DynamicAdapterConfig(
+        adapter=("volundr.adapters.outbound.codex_credential_broker.DisabledCodexCredentialBroker")
+    )
+
+
+def _default_credential_enrollment_runner() -> DynamicAdapterConfig:
+    return DynamicAdapterConfig(
+        adapter=(
+            "volundr.adapters.outbound.credential_enrollment_runner."
+            "UnsupportedCredentialEnrollmentRunner"
+        )
+    )
+
+
 class ResidentProfileConfig(BaseModel):
     """One operator-approved resident backend and engine combination."""
 
@@ -939,6 +954,7 @@ class IntegrationDefinitionConfig(BaseModel):
     auth_type: str = "api_key"
     oauth: OAuthSpecConfig | None = None
     file_mounts: dict[str, str] = Field(default_factory=dict)
+    credential_enrollment: dict[str, str] | None = None
 
 
 def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
@@ -1048,6 +1064,20 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 "properties": {"api_key": {"label": "API Key", "type": "password"}},
             },
             env_from_credentials={"OPENAI_API_KEY": "api_key"},
+        ),
+        IntegrationDefinitionConfig(
+            slug="codex",
+            name="OpenAI Codex (ChatGPT)",
+            description="User-scoped ChatGPT subscription login for Codex runtimes",
+            integration_type="ai_provider",
+            icon="openai",
+            credential_schema={},
+            auth_type="device_code",
+            credential_enrollment={
+                "method": "codex_device",
+                "credential_field": "auth.json",
+                "default_credential_name": "codex-credentials",
+            },
         ),
         IntegrationDefinitionConfig(
             slug="telegram",
@@ -1672,6 +1702,17 @@ class Settings(BaseSettings):
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)
     credential_store: CredentialStoreConfig = Field(default_factory=CredentialStoreConfig)
+    codex_credential_broker: DynamicAdapterConfig = Field(
+        default_factory=_default_codex_credential_broker,
+        description=(
+            "Configured Codex token broker. Local mode defaults to the disabled adapter so "
+            "the host Codex login remains authoritative."
+        ),
+    )
+    credential_enrollment_runner: DynamicAdapterConfig = Field(
+        default_factory=_default_credential_enrollment_runner,
+        description="Trusted interactive-login runner, independent of the session pod manager.",
+    )
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     secret_injection: SecretInjectionConfig = Field(default_factory=SecretInjectionConfig)
     resource_provider: ResourceProviderConfig = Field(default_factory=ResourceProviderConfig)

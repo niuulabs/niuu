@@ -72,6 +72,9 @@ class SettingsIntegrationsResourceSchema(SettingsResourceSchemaBase):
     test_path: str = Field(serialization_alias="testPath")
     oauth_authorize_path: str = Field(serialization_alias="oauthAuthorizePath")
     oauth_disconnect_path: str = Field(serialization_alias="oauthDisconnectPath")
+    enrollment_start_path: str = Field(serialization_alias="enrollmentStartPath")
+    enrollment_status_path: str = Field(serialization_alias="enrollmentStatusPath")
+    enrollment_cancel_path: str = Field(serialization_alias="enrollmentCancelPath")
 
 
 SettingsResourceSchema = Annotated[

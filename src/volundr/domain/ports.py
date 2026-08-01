@@ -24,7 +24,7 @@ from credentials.ports import (  # noqa: F401
 from identity.models import Resource  # noqa: F401
 from identity.ports import AuthorizationPort, TenantRepository, UserRepository  # noqa: F401
 from niuu.domain.outcome import OutcomeField
-from niuu.ports.credentials import CredentialStorePort  # noqa: F401
+from niuu.ports.credentials import CredentialRefreshLockPort, CredentialStorePort  # noqa: F401
 from niuu.ports.git import (
     GitAuthError,  # noqa: F401
     GitProvider,  # noqa: F401
@@ -43,6 +43,8 @@ from volundr.domain.models import (  # noqa: F401
     Chronicle,
     ClusterResourceInfo,
     CommunicationRoute,
+    CredentialEnrollment,
+    CredentialEnrollmentPoll,
     CredentialMapping,
     DeviceToken,
     ExternalSessionRecord,
@@ -97,6 +99,7 @@ from volundr.domain.models import (  # noqa: F401
 __all__ = [
     "AuthorizationPort",
     "CredentialStorePort",
+    "CredentialRefreshLockPort",
     "GitAuthError",
     "GitProvider",
     "GitRepoNotFoundError",
@@ -166,6 +169,32 @@ class OpenShellCredentialGrantToken:
     token_type: str = "Bearer"
 
 
+@dataclass(frozen=True)
+class CodexAuthTokens:
+    """Externally managed ChatGPT tokens safe to expose to one user workload."""
+
+    access_token: str
+    account_id: str
+    expires_in: int
+    plan_type: str = ""
+
+
+class CodexCredentialBrokerPort(ABC):
+    """Resolve and rotate a user's Codex credential without exposing its refresh token."""
+
+    @abstractmethod
+    async def get_tokens(
+        self,
+        *,
+        owner_id: str,
+        credential_name: str,
+        credential_field: str,
+        force_refresh: bool = False,
+        previous_access_token_sha256: str = "",
+    ) -> CodexAuthTokens:
+        """Return an access token and account metadata for one user credential."""
+
+
 class OpenShellCredentialGrantPort(ABC):
     """Exchange an OpenShell sandbox JWT-SVID for one authorized credential."""
 
@@ -180,6 +209,52 @@ class OpenShellCredentialGrantPort(ABC):
         scope: str,
     ) -> OpenShellCredentialGrantToken:
         """Validate the sandbox identity and return a short-lived credential value."""
+
+
+class CredentialEnrollmentRepository(ABC):
+    """Persistence boundary for interactive credential enrollment attempts."""
+
+    @abstractmethod
+    async def save(self, enrollment: CredentialEnrollment) -> CredentialEnrollment:
+        """Create or update an enrollment."""
+
+    @abstractmethod
+    async def get(self, enrollment_id: UUID) -> CredentialEnrollment | None:
+        """Get one enrollment by ID."""
+
+    @abstractmethod
+    async def find_active(self, connection_id: str) -> CredentialEnrollment | None:
+        """Return the active enrollment for a connection, if one exists."""
+
+    @abstractmethod
+    async def list_expired_active(self, now: datetime) -> list[CredentialEnrollment]:
+        """Return active enrollments whose user challenge has expired."""
+
+
+class CredentialEnrollmentRunnerPort(ABC):
+    """Launch and inspect a trusted interactive provider-login runtime."""
+
+    @abstractmethod
+    def supports_enrollment(self, method: str) -> bool:
+        """Return whether this runner implements the configured enrollment method."""
+
+    @abstractmethod
+    async def start_enrollment(
+        self,
+        enrollment: CredentialEnrollment,
+    ) -> CredentialEnrollment:
+        """Launch the runtime and return the user-facing challenge."""
+
+    @abstractmethod
+    async def poll_enrollment(
+        self,
+        enrollment: CredentialEnrollment,
+    ) -> CredentialEnrollmentPoll:
+        """Inspect the runtime without exposing secret values to the caller."""
+
+    @abstractmethod
+    async def cancel_enrollment(self, enrollment: CredentialEnrollment) -> None:
+        """Destroy any runtime resources belonging to the enrollment."""
 
 
 class ExternalSessionProvider(ABC):

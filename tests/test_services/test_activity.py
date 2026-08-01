@@ -80,6 +80,23 @@ class TestUpdateActivity:
         assert updated.activity_metadata == metadata
 
     @pytest.mark.asyncio
+    async def test_terminal_error_activity_persists_failure_reason(self, service):
+        session = await service.create_session(
+            name="Test",
+            model="codex",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+
+        updated = await service.update_activity(
+            session.id,
+            SessionActivityState.ERROR,
+            {"error": "refresh token was already used"},
+        )
+
+        assert updated.activity_state == SessionActivityState.ERROR
+        assert updated.error == "refresh token was already used"
+
+    @pytest.mark.asyncio
     async def test_update_activity_clears_stale_liveness_error(self, service, repository):
         """A heartbeat is proof of life — a lingering liveness verdict is
         demonstrably false and must clear (the clients render `error` as a
@@ -512,6 +529,7 @@ class TestSessionActivityState:
         assert SessionActivityState.TOOL_EXECUTING == "tool_executing"
         assert SessionActivityState.AWAITING_INPUT == "awaiting_input"
         assert SessionActivityState.STOPPED == "stopped"
+        assert SessionActivityState.ERROR == "error"
 
     def test_from_string(self) -> None:
         assert SessionActivityState("provisioning") == SessionActivityState.PROVISIONING
@@ -520,6 +538,7 @@ class TestSessionActivityState:
         assert SessionActivityState("tool_executing") == SessionActivityState.TOOL_EXECUTING
         assert SessionActivityState("awaiting_input") == SessionActivityState.AWAITING_INPUT
         assert SessionActivityState("stopped") == SessionActivityState.STOPPED
+        assert SessionActivityState("error") == SessionActivityState.ERROR
 
     def test_invalid_raises(self) -> None:
         with pytest.raises(ValueError):

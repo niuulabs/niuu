@@ -167,7 +167,7 @@ def _build_oauth_router(
             name=credential_name,
             secret_type=SecretType.OAUTH_TOKEN,
             data=credentials,
-            metadata={"source": "oauth2", "integration": slug},
+            metadata={"source": "oauth2", "integration": slug, "auth_state": "active"},
         )
 
         now = datetime.now(UTC)

@@ -1049,13 +1049,23 @@ class TestBroker:
         test_broker._transport.capabilities = TransportCapabilities(steering_mode="live")
         mock_channel = self._pending_user_turn(test_broker, "m-err")
 
-        await test_broker._handle_cli_event({"type": "error", "error": "boom"})
+        with patch.object(
+            test_broker,
+            "_report_activity_state",
+            new=AsyncMock(),
+        ) as report_activity:
+            await test_broker._handle_cli_event({"type": "error", "error": "boom"})
+            await asyncio.sleep(0)
 
         turn = next(t for t in test_broker._conversation_turns if t.id == "m-err")
         assert turn.metadata["steering_state"] == "active"
         assert any(
             c.args[0].get("type") == "user_active" and c.args[0].get("id") == "m-err"
             for c in mock_channel.send_event.await_args_list
+        )
+        report_activity.assert_awaited_once_with(
+            "error",
+            extra_metadata={"error": "boom"},
         )
 
     def test_assistant_has_content(self):
@@ -1415,6 +1425,36 @@ class TestBroker:
             {"data": "backend unavailable"},
         )
         assert "flock-coder" not in test_broker._peer_watches
+
+    @pytest.mark.asyncio
+    async def test_peer_error_fails_room_only_workflow_once(self, test_broker):
+        participant = MagicMock(persona="specification-framer")
+        test_broker._room_bridge = MagicMock()
+        test_broker._room_bridge.participants = {"flock-framer": participant}
+        test_broker._report_activity_state = AsyncMock()
+        test_broker._finish_trace_span = AsyncMock()
+        test_broker._is_room_only_workflow_session = MagicMock(return_value=True)
+
+        frame = {
+            "data": {
+                "error": (
+                    "Your access token could not be refreshed because your refresh token "
+                    "was already used."
+                )
+            }
+        }
+        await test_broker._observe_room_peer_event("flock-framer", "error", frame)
+        await test_broker._observe_room_peer_event("flock-framer", "error", frame)
+
+        test_broker._report_activity_state.assert_awaited_once_with(
+            "error",
+            extra_metadata={
+                "failure_source": "ravn_flock",
+                "failure_peer_id": "flock-framer",
+                "failure_persona": "specification-framer",
+                "error": frame["data"]["error"],
+            },
+        )
 
     @pytest.mark.asyncio
     async def test_peer_git_checkpoint_signals_increment_artifacts(self, test_broker):

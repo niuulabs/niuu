@@ -19,6 +19,7 @@ import logging
 import re
 from typing import Any
 
+from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
 from volundr.domain.models import Session, SessionSpec, SessionStatus
 from volundr.domain.ports import CredentialStorePort, PodManager, PodStartResult
 
@@ -180,7 +181,7 @@ http {{
 """
 
 
-class DirectK8sPodManager(PodManager):
+class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
     """Direct Kubernetes API implementation of PodManager.
 
     Creates Deployment + Service + Ingress resources for each session
@@ -212,6 +213,8 @@ class DirectK8sPodManager(PodManager):
         home_mount_path: str = "/volundr/home",
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         readiness_timeout: float = DEFAULT_READINESS_TIMEOUT,
+        codex_auth_adapter: str = "skuld.codex_auth.VolundrCodexAuthProvider",
+        codex_auth_kwargs: dict | None = None,
         **_extra: object,
     ):
         self._namespace = namespace
@@ -233,6 +236,10 @@ class DirectK8sPodManager(PodManager):
         self._home_mount_path = home_mount_path
         self._poll_interval = poll_interval
         self._readiness_timeout = readiness_timeout
+        self._configure_brokered_credentials(
+            codex_auth_adapter=codex_auth_adapter,
+            codex_auth_kwargs=codex_auth_kwargs,
+        )
         self._credential_store: CredentialStorePort | None = None
         self._api_client = None
 
@@ -320,6 +327,10 @@ class DirectK8sPodManager(PodManager):
             {"name": "DATABASE__PASSWORD", "value": self._db_password},
             {"name": "DATABASE__NAME", "value": self._db_name},
         ]
+        env.extend(
+            {"name": name, "value": value}
+            for name, value in self._brokered_credential_environment(spec).items()
+        )
 
         # Handle git config from spec values.
         git_config = spec.values.get("git", {})
@@ -1145,6 +1156,7 @@ echo "Git credential helper configured"
         spec: SessionSpec,
     ) -> PodStartResult:
         """Start Deployment + Service + Ingress for the session."""
+        spec = self._with_brokered_credentials(spec)
         await self._ensure_client()
 
         release_name = self._release_name(session)

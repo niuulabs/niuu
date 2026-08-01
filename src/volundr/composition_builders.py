@@ -10,6 +10,9 @@ from volundr.config import Settings
 from volundr.domain.ports import (
     ArchiveStorePort,
     AuthorizationPort,
+    CodexCredentialBrokerPort,
+    CredentialEnrollmentRunnerPort,
+    CredentialRefreshLockPort,
     CredentialStorePort,
     ExternalSessionProvider,
     GatewayPort,
@@ -22,6 +25,44 @@ from volundr.domain.ports import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _create_codex_credential_broker(
+    settings: Settings,
+    *,
+    credential_store: CredentialStorePort,
+    refresh_lock: CredentialRefreshLockPort,
+) -> CodexCredentialBrokerPort:
+    """Create the configured central Codex token broker adapter."""
+    config = settings.codex_credential_broker
+    cls = import_class(config.adapter)
+    kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
+    instance = cls(
+        credential_store=credential_store,
+        refresh_lock=refresh_lock,
+        **kwargs,
+    )
+    if not isinstance(instance, CodexCredentialBrokerPort):
+        raise TypeError(
+            f"Codex credential broker {config.adapter} must implement CodexCredentialBrokerPort"
+        )
+    logger.info("Codex credential broker: %s", config.adapter.rsplit(".", 1)[-1])
+    return instance
+
+
+def _create_credential_enrollment_runner(settings: Settings) -> CredentialEnrollmentRunnerPort:
+    """Create the configured trusted login runner independently of PodManager."""
+    config = settings.credential_enrollment_runner
+    cls = import_class(config.adapter)
+    kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
+    instance = cls(**kwargs)
+    if not isinstance(instance, CredentialEnrollmentRunnerPort):
+        raise TypeError(
+            f"Credential enrollment runner {config.adapter} must implement "
+            "CredentialEnrollmentRunnerPort"
+        )
+    logger.info("Credential enrollment runner: %s", config.adapter.rsplit(".", 1)[-1])
+    return instance
 
 
 def _create_pod_manager(settings: Settings) -> PodManager:

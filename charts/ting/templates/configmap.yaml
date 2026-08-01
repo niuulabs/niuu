@@ -121,7 +121,7 @@ data:
       auto_approve_threshold: {{ .Values.review.autoApproveThreshold }}
       {{- end }}
     {{- end }}
-    {{- if or .Values.a2a.agentName .Values.a2a.agentDescription .Values.a2a.cardMaxAgeSeconds .Values.a2a.inlineArtifactMaxChars .Values.a2a.extraArtifactFiles .Values.a2a.publicBaseUrl }}
+    {{- if or .Values.a2a.agentName .Values.a2a.agentDescription .Values.a2a.cardMaxAgeSeconds .Values.a2a.inlineArtifactMaxChars .Values.a2a.extraArtifactFiles .Values.a2a.publicBaseUrl .Values.a2a.pushAuth.adapter }}
     a2a:
       {{- if .Values.a2a.agentName }}
       agent_name: {{ .Values.a2a.agentName | quote }}
@@ -141,6 +141,10 @@ data:
       {{- if .Values.a2a.publicBaseUrl }}
       public_base_url: {{ .Values.a2a.publicBaseUrl | quote }}
       {{- end }}
+      push_auth:
+        adapter: {{ .Values.a2a.pushAuth.adapter | quote }}
+        kwargs:
+          {{- toYaml .Values.a2a.pushAuth.kwargs | nindent 10 }}
     {{- end }}
 
     cerbos:

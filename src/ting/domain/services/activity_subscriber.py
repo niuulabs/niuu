@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -37,7 +37,7 @@ from ting.ports.volundr import ActivityEvent, VolundrFactory, VolundrPort
 
 if TYPE_CHECKING:
     from ting.domain.services.review_engine import ReviewEngine
-    from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
+    from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ class SessionActivitySubscriber:
         review_engine: ReviewEngine | None = None,
         sleipnir_publisher: object | None = None,
         ravn_scope_adherence_threshold: float = 0.7,
-        workflow_campaign_repo: WorkflowCampaignRepository | None = None,
+        workflow_campaign_projector: WorkflowCampaignProjector | None = None,
     ) -> None:
         self._factory = volundr_factory
         self._tracker_factory = tracker_factory
@@ -81,7 +81,7 @@ class SessionActivitySubscriber:
         self._review_engine = review_engine
         self._sleipnir_publisher = sleipnir_publisher
         self._ravn_scope_adherence_threshold = ravn_scope_adherence_threshold
-        self._workflow_campaign_repo = workflow_campaign_repo
+        self._workflow_campaign_projector = workflow_campaign_projector
         self._running = False
         self._task: asyncio.Task[None] | None = None
         self._owner_tasks: dict[str, list[asyncio.Task[None]]] = {}
@@ -141,8 +141,10 @@ class SessionActivitySubscriber:
                 await asyncio.sleep(self._config.reconnect_delay)
 
     async def _sync_owner_subscriptions(self) -> None:
-        """Discover owners with active dispatchers, ensure each has SSE subs."""
+        """Discover owners with active work, ensure each has SSE subscriptions."""
         active_owners = set(await self._dispatcher_repo.list_active_owner_ids())
+        if self._workflow_campaign_projector is not None:
+            active_owners.update(await self._workflow_campaign_projector.list_active_owner_ids())
         logger.info(
             "Sync: active_owners=%s, existing_tasks=%s",
             active_owners,
@@ -166,6 +168,8 @@ class SessionActivitySubscriber:
             existing = self._owner_tasks.get(owner_id, [])
             all_done = not existing or all(t.done() for t in existing)
             if all_done:
+                if self._workflow_campaign_projector is not None:
+                    await self._workflow_campaign_projector.reconcile_owner(owner_id)
                 adapters = await self._resolve_owner_adapters(owner_id)
                 tasks = []
                 for idx, adapter in enumerate(adapters):
@@ -278,6 +282,21 @@ class SessionActivitySubscriber:
             event.session_status or "-",
             event.metadata,
         )
+        terminal_event = event.state == "error" or bool(event.session_status)
+        if (
+            terminal_event
+            and self._workflow_campaign_projector is not None
+            and await self._workflow_campaign_projector.handle_activity(event, owner_id)
+        ):
+            return
+        if await self._maybe_handle_help_needed(event, owner_id):
+            return
+        if (
+            not terminal_event
+            and self._workflow_campaign_projector is not None
+            and await self._workflow_campaign_projector.handle_activity(event, owner_id)
+        ):
+            return
         if await self._try_handle_authoritative_completion(event, volundr, owner_id):
             return
 
@@ -293,7 +312,8 @@ class SessionActivitySubscriber:
             await self._on_session_failed(event, volundr, owner_id)
             return
 
-        if await self._maybe_handle_help_needed(event, owner_id):
+        if event.state == "error":
+            await self._on_session_failed(event, volundr, owner_id)
             return
 
         if event.state != "idle":
@@ -561,60 +581,20 @@ class SessionActivitySubscriber:
         payload: dict[str, object],
         owner_id: str,
     ) -> bool:
-        if self._workflow_campaign_repo is None:
+        if self._workflow_campaign_projector is None:
             return False
 
         session_id = _help_needed_session_id(payload) or event.session_id
         if not session_id:
             return False
 
-        campaigns = await self._workflow_campaign_repo.list_active_campaigns()
-        campaign = next(
-            (
-                item
-                for item in campaigns
-                if item.owner_id == owner_id and item.session_id == session_id
-            ),
-            None,
-        )
-        if campaign is None:
-            return False
-
         gate = _workflow_gate_from_help_needed(payload)
-        metadata = dict(campaign.metadata)
-        metadata["pending_workflow_gates"] = [gate]
-        metadata["latest_help_needed"] = dict(payload)
-        now = datetime.now(UTC)
-        await self._workflow_campaign_repo.save_campaign(
-            replace(
-                campaign,
-                active_stage_id=str(gate.get("node_id") or campaign.active_stage_id or "") or None,
-                metadata=metadata,
-                updated_at=now,
-                last_activity_at=now,
-            )
+        return await self._workflow_campaign_projector.record_help_needed(
+            payload,
+            owner_id,
+            session_id=session_id,
+            gate=gate,
         )
-        await self._event_bus.emit(
-            TingEvent(
-                event="workflow.campaign.feedback_requested",
-                owner_id=owner_id,
-                data={
-                    "owner_id": owner_id,
-                    "campaign_id": str(campaign.id),
-                    "slug": campaign.slug,
-                    "session_id": session_id,
-                    "summary": payload.get("summary", ""),
-                    "reason": payload.get("reason", ""),
-                    "recommendation": payload.get("recommendation", ""),
-                },
-            )
-        )
-        logger.info(
-            "Recorded workflow campaign help-needed request for campaign=%s session=%s",
-            campaign.slug,
-            session_id[:8],
-        )
-        return True
 
     async def _try_handle_flock_completion(
         self,
@@ -784,7 +764,10 @@ class SessionActivitySubscriber:
             )
             return
 
-        await self._handle_failure(run, tracker, owner_id, reason=f"Session {event.session_status}")
+        reason = str(event.metadata.get("error") or event.metadata.get("message") or "").strip()
+        if not reason:
+            reason = f"Session {event.session_status or event.state or 'failed'}"
+        await self._handle_failure(run, tracker, owner_id, reason=reason)
 
     async def _try_handle_reviewer_failure(self, session_id: str, reason: str) -> None:
         """If the failed session is a tracked reviewer, hand off to review_engine."""

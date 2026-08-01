@@ -226,6 +226,96 @@ async def test_a2a_task_propagates_active_trace_in_message_metadata(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_a2a_task_injects_configured_default_connection() -> None:
+    client = _Client([{"task": {"id": "task-1", "status": {"state": "TASK_STATE_SUBMITTED"}}}])
+    tool = A2ATaskTool(
+        agent_directory=_Directory(_agent()),
+        client=client,
+        default_connection_id="Noatun",
+    )
+
+    result = await tool.execute(
+        {
+            "operation": "start",
+            "agent_id": _agent().id,
+            "skill_id": "review",
+            "prompt": "Review the change.",
+        }
+    )
+
+    assert not result.is_error
+    assert client.posts[0][1]["params"]["message"]["metadata"]["connectionId"] == "Noatun"
+
+
+@pytest.mark.asyncio
+async def test_a2a_task_registers_push_and_reports_delivery_mode() -> None:
+    agent = _agent().model_copy(deep=True)
+    agent.capabilities = {"pushNotifications": True}
+    client = _Client(
+        [
+            {"task": {"id": "task-push", "status": {"state": "TASK_STATE_SUBMITTED"}}},
+            {
+                "taskId": "task-push",
+                "id": "callback-1",
+                "url": "https://resident.example/a2a/push",
+            },
+        ]
+    )
+    tool = A2ATaskTool(
+        agent_directory=_Directory(agent),
+        client=client,
+        push_callback_url="https://resident.example/a2a/push",
+    )
+
+    result = await tool.execute(
+        {
+            "operation": "start",
+            "agent_id": agent.id,
+            "skill_id": "review",
+            "prompt": "Review the change.",
+        }
+    )
+
+    assert not result.is_error
+    assert json.loads(result.content)["push_registered"] is True
+    assert [body["method"] for _, body, _ in client.posts] == [
+        "SendMessage",
+        "CreateTaskPushNotificationConfig",
+    ]
+    registration = client.posts[1][1]["params"]
+    assert registration["taskId"] == "task-push"
+    assert registration["url"] == "https://resident.example/a2a/push"
+    assert registration["authentication"] == {"scheme": "Bearer"}
+    assert "token" not in registration
+
+
+@pytest.mark.asyncio
+async def test_a2a_task_keeps_polling_available_when_push_registration_fails() -> None:
+    agent = _agent().model_copy(deep=True)
+    agent.capabilities = {"pushNotifications": True}
+    client = _Client(
+        [{"task": {"id": "task-fallback", "status": {"state": "TASK_STATE_SUBMITTED"}}}]
+    )
+    tool = A2ATaskTool(
+        agent_directory=_Directory(agent),
+        client=client,
+        push_callback_url="https://resident.example/a2a/push",
+    )
+
+    result = await tool.execute(
+        {
+            "operation": "start",
+            "agent_id": agent.id,
+            "skill_id": "review",
+            "prompt": "Review the change.",
+        }
+    )
+
+    assert not result.is_error
+    assert json.loads(result.content)["push_registered"] is False
+
+
+@pytest.mark.asyncio
 async def test_a2a_task_rejects_unknown_agent_and_unpublished_skill() -> None:
     unknown = A2ATaskTool(agent_directory=_Directory(), client=_Client([]))
     missing_agent = await unknown.execute(

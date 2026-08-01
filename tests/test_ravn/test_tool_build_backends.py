@@ -33,6 +33,7 @@ from ravn.adapters.tool_build.ting_workflow import _decode_canonical_content
 from ravn.ports.tool_build_backend import (
     ToolBuildError,
     ToolBuildInputRequiredError,
+    ToolBuildPendingError,
     ToolBuildRequest,
 )
 
@@ -803,11 +804,17 @@ async def test_ting_canonical_artifact_transport_error_falls_back() -> None:
 _A2A_ENDPOINT = "https://ting.example/api/v1/ting/a2a"
 
 
-def _a2a_card(*, skills: list[dict] | None = None, interfaces: list[dict] | None = None) -> dict:
+def _a2a_card(
+    *,
+    skills: list[dict] | None = None,
+    interfaces: list[dict] | None = None,
+    push_notifications: bool = False,
+) -> dict:
     return {
         "name": "Niuu Workflows",
         "description": "Launchable workflows",
         "version": "1.0.0",
+        "capabilities": {"pushNotifications": push_notifications},
         "supportedInterfaces": interfaces
         if interfaces is not None
         else [
@@ -910,6 +917,62 @@ async def test_a2a_backend_builds_from_inline_canonical_artifact() -> None:
         "status_message": "",
         "source_tool": "build_tool",
     }
+
+
+async def test_a2a_backend_suspends_for_push_and_resumes_with_one_get() -> None:
+    artifacts = [
+        {
+            "artifactId": "research/campaigns/task-1/learned_tool.json",
+            "parts": [{"filename": "learned_tool.json", "text": _BUILT_CONTRACT}],
+        }
+    ]
+    client = _FakeHttpClient(
+        {
+            ("GET", "/.well-known/agent-card.json"): [
+                HttpResponse(200, _a2a_card(push_notifications=True))
+            ],
+            ("POST", "/api/v1/ting/a2a"): [
+                _rpc_result({"task": _a2a_task("TASK_STATE_SUBMITTED")}),
+                _rpc_result({"taskId": "task-1", "id": "push-1"}),
+                _rpc_result(_a2a_task("TASK_STATE_COMPLETED", artifacts=artifacts)),
+            ],
+        }
+    )
+    backend = _a2a_backend(
+        client,
+        workflow_id="wf-1",
+        push_callback_url="https://ivaldi.example/a2a/push",
+    )
+
+    with pytest.raises(ToolBuildPendingError) as raised:
+        await backend.build(_request())
+
+    assert raised.value.push_registered is True
+    assert raised.value.continuation == {
+        "task_id": "task-1",
+        "input_kind": "pending",
+        "round": 0,
+        "exchanges": [],
+        "push_registered": True,
+    }
+    assert [body["method"] for body in client.post_bodies] == [
+        "SendMessage",
+        "CreateTaskPushNotificationConfig",
+    ]
+    registration = client.post_bodies[1]["params"]
+    assert registration["taskId"] == "task-1"
+    assert registration["url"] == "https://ivaldi.example/a2a/push"
+    assert registration["authentication"] == {"scheme": "Bearer"}
+    assert "token" not in registration
+
+    result = await backend.build(replace(_request(), continuation=raised.value.continuation))
+
+    assert result.manifest["name"] == "mimir_metric_window"
+    assert [body["method"] for body in client.post_bodies] == [
+        "SendMessage",
+        "CreateTaskPushNotificationConfig",
+        "GetTask",
+    ]
 
 
 async def test_a2a_backend_closes_local_tracking_when_polling_is_exhausted() -> None:
