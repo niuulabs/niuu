@@ -195,3 +195,18 @@ class TestInMemoryRepository:
             "spark-2",
             "spark-3",
         ]
+
+
+class TestLogSafety:
+    @pytest.mark.asyncio
+    async def test_a_source_id_cannot_forge_log_entries(self, caplog) -> None:
+        """`source_id` is a URL path segment, so newlines in it would otherwise
+        let a publisher write whole lines of its own into the log."""
+        import logging
+
+        inbox = _inbox(_Clock())
+        with caplog.at_level(logging.DEBUG, logger="niuu.domain.services.observatory_fragments"):
+            await inbox.accept("spark-1\nERROR:root:fake entry", _fragment())
+
+        assert "\n" not in caplog.records[0].getMessage()
+        assert "\\n" in caplog.records[0].getMessage()

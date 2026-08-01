@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -1094,20 +1094,29 @@ class MimirDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
         )
 
 
+#: Hosts whose names mean "served from our own hardware".
+_INTERNAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_INTERNAL_HOST_SUFFIXES = (".svc.cluster.local", ".internal", ".local")
+
+
 def _model_location(base_url: str) -> str:
     """Where a model is served from, judged by its provider endpoint.
 
-    A cluster-internal or loopback URL means the weights run on our hardware;
+    A cluster-internal or loopback host means the weights run on our hardware;
     anything else is a hosted API. This is read from real provider config, so
     it is an observation rather than a guess.
+
+    Matched against the parsed host, never against the whole URL: a substring
+    test would read `https://localhost.example.com/` and
+    `https://api.vendor.test/?v=.svc.cluster.local` as internal, and this value
+    is what tells an operator whether their traffic leaves the building.
     """
     if not base_url:
         return "unknown"
-    lowered = base_url.lower()
-    if any(
-        marker in lowered
-        for marker in ("localhost", "127.0.0.1", ".svc.cluster.local", ".internal")
-    ):
+    host = (urlsplit(base_url).hostname or "").lower()
+    if not host:
+        return "unknown"
+    if host in _INTERNAL_HOSTS or host.endswith(_INTERNAL_HOST_SUFFIXES):
         return "internal"
     return "external"
 
@@ -1351,11 +1360,7 @@ class KubernetesDiscoveryAdapter:
             "kubelet": str(node_info.get("kubeletVersion") or ""),
             "cores": _int_quantity(capacity.get("cpu")),
             "ram": _memory_gib(capacity.get("memory")),
-            "roles": sorted(
-                str(key).split("/", 1)[1]
-                for key in raw_labels
-                if str(key).startswith("node-role.kubernetes.io/")
-            ),
+            "roles": _node_roles(raw_labels),
         }
         gpu_count = _int_quantity(capacity.get("nvidia.com/gpu"))
         if gpu_count:
@@ -1872,6 +1877,25 @@ def _innermost_container(
     if entity.realm:
         return realm_id
     return None
+
+
+#: Label domain Kubernetes uses to mark a node's roles.
+_NODE_ROLE_DOMAIN = "node-role.kubernetes.io"
+
+
+def _node_roles(labels: Mapping[str, Any]) -> list[str]:
+    """Role names from `node-role.kubernetes.io/<role>` label keys.
+
+    Splits on the separator and compares the domain exactly, so a key that
+    merely starts with or contains the domain cannot contribute a role.
+    """
+    roles = [
+        role
+        for key in labels
+        for domain, _, role in [str(key).partition("/")]
+        if domain == _NODE_ROLE_DOMAIN and role
+    ]
+    return sorted(roles)
 
 
 def _int_quantity(value: Any) -> int:

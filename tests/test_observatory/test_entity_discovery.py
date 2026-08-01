@@ -1586,3 +1586,45 @@ async def test_an_unreachable_service_warns_instead_of_raising() -> None:
     assert result.entities == []
     assert result.events[0]["level"] == "warning"
     assert "mimir" in result.events[0]["subject"]
+
+
+# ── Location classification ──────────────────────────────────────────────────
+# This value tells an operator whether their traffic leaves the building, so a
+# lookalike host must not be able to claim it stays inside.
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expected"),
+    [
+        ("http://localhost:8000", "internal"),
+        ("http://127.0.0.1:8000", "internal"),
+        ("http://vllm.volundr.svc.cluster.local", "internal"),
+        ("http://box.internal", "internal"),
+        ("https://api.anthropic.com", "external"),
+        ("", "unknown"),
+        # A substring test would have called all three of these internal.
+        ("https://localhost.attacker.example/v1", "external"),
+        ("https://api.vendor.test/v1?probe=.svc.cluster.local", "external"),
+        ("https://not-localhost.example.com", "external"),
+    ],
+)
+def test_model_location_matches_the_host_not_the_url(base_url: str, expected: str) -> None:
+    from observatory.entity_discovery import _model_location
+
+    assert _model_location(base_url) == expected
+
+
+def test_node_roles_require_an_exact_domain_match() -> None:
+    from observatory.entity_discovery import _node_roles
+
+    roles = _node_roles(
+        {
+            "node-role.kubernetes.io/control-plane": "",
+            "node-role.kubernetes.io/worker": "",
+            # Neither of these is a real role key.
+            "not-node-role.kubernetes.io/spoofed": "",
+            "node-role.kubernetes.io": "",
+        }
+    )
+
+    assert roles == ["control-plane", "worker"]

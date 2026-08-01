@@ -26,6 +26,15 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def _loggable(value: str) -> str:
+    """Flatten a caller-supplied value before it reaches the log.
+
+    `source_id` is a URL path segment, so without this a publisher could put
+    newlines in it and forge whole log entries.
+    """
+    return value.replace("\r", "\\r").replace("\n", "\\n")[:200]
+
+
 class ObservatoryFragmentInboxService:
     """Accepts pushed fragments and reports how fresh each source is."""
 
@@ -50,7 +59,7 @@ class ObservatoryFragmentInboxService:
         stored = await self._repository.put(source_id, fragment, received_at=self._clock())
         logger.debug(
             "Accepted topology fragment from %s (%d nodes, %d edges)",
-            source_id,
+            _loggable(source_id),
             len(fragment.nodes),
             len(fragment.edges),
         )
