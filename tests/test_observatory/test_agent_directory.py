@@ -71,11 +71,6 @@ class _StaticDiscoveryAdapter:
         return self._result
 
 
-class _StubAuth:
-    async def headers(self) -> dict[str, str]:
-        return {}
-
-
 class _StubCardResolver:
     def __init__(self, cards: dict[str, ResolvedAgentCard | Exception]) -> None:
         self.cards = cards
@@ -162,7 +157,6 @@ def _service(
 ) -> AgentDirectoryService:
     discovery = ObservatoryDiscoveryService(
         guild_url="http://guild.test",
-        auth=_StubAuth(),  # type: ignore[arg-type]
         discovery_adapter=_StaticDiscoveryAdapter(DiscoveryResult(entities=entities)),
     )
     return AgentDirectoryService(

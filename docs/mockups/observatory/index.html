@@ -1,0 +1,2916 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>*,*::before,*::after{box-sizing:border-box}html,body{margin:0}</style>
+</head>
+<body>
+<title>Observatory — redesign mockup</title>
+
+<style>
+  /* ============================================================
+     Hue encodes WHERE a thing runs — the one thing the pitch needs
+     readable at a glance:
+       ice    #38bdf8  the k8s realms
+       spring #8fd400  your own silicon doing inference
+       violet #8b7cf0  outside the walls (metered vendors)
+       amber  #f59e0b  waiting on a human
+       red    #ef4444  failing
+     Channel type is encoded by STROKE STYLE, never by hue.
+     ============================================================ */
+  :root {
+    --ink-900: #05070d;
+    --ink-850: #080b13;
+    --ink-800: #0b0f1a;
+    --ink-700: #111726;
+    --ink-600: #1a2233;
+    --line: #202a3d;
+    --line-soft: #161d2b;
+
+    --fg: #e8edf7;
+    --fg-2: #93a1bb;
+    --fg-3: #5e6c86;
+    --fg-4: #3d4859;
+
+    --ice: #38bdf8;
+    --spring: #8fd400;
+    --violet: #8b7cf0;
+    --amber: #f59e0b;
+    --red: #ef4444;
+
+    --page: #05070d;
+    --page-fg: #e8edf7;
+    --page-fg-2: #93a1bb;
+    --page-rule: #1a2233;
+    --shell-shadow: none;
+
+    --mono: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+    --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  }
+
+  /* The instrument stays dark in every theme — a mission-control surface
+     that flipped to white would defeat its purpose. What adapts is the
+     surround it is presented on. */
+  @media (prefers-color-scheme: light) {
+    :root {
+      --page: #eceef2; --page-fg: #14181f; --page-fg-2: #5a6373; --page-rule: #d3d7de;
+      --shell-shadow: 0 1px 2px rgb(9 12 20 / 0.2), 0 24px 60px -18px rgb(9 12 20 / 0.45);
+    }
+  }
+  :root[data-theme='light'] {
+    --page: #eceef2; --page-fg: #14181f; --page-fg-2: #5a6373; --page-rule: #d3d7de;
+    --shell-shadow: 0 1px 2px rgb(9 12 20 / 0.2), 0 24px 60px -18px rgb(9 12 20 / 0.45);
+  }
+  :root[data-theme='dark'] {
+    --page: #05070d; --page-fg: #e8edf7; --page-fg-2: #93a1bb; --page-rule: #1a2233;
+    --shell-shadow: none;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--page-fg);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 1680px;
+    margin: 0 auto;
+    padding: clamp(16px, 3vw, 40px) clamp(12px, 3vw, 40px) 56px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .page-head {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px;
+    border-bottom: 1px solid var(--page-rule); padding-bottom: 14px;
+  }
+  .page-head h1 {
+    margin: 0; font-family: var(--mono); font-size: 13px; font-weight: 600;
+    letter-spacing: 0.18em; text-transform: uppercase;
+  }
+  .page-head p {
+    margin: 0; font-size: 13px; line-height: 1.5; color: var(--page-fg-2); max-width: 66ch;
+  }
+
+  /* ---------- the instrument ---------- */
+
+  .shell {
+    --rail: 268px;
+    --insp: 320px;
+    display: grid;
+    grid-template-columns: var(--rail) minmax(0, 1fr) var(--insp);
+    grid-template-rows: 46px auto minmax(0, 1fr) 118px;
+    grid-template-areas:
+      'top top top'
+      'filt filt filt'
+      'rail stage insp'
+      'rail ticker insp';
+    height: min(82vh, 920px);
+    min-height: 560px;
+    background: var(--ink-900);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+    color: var(--fg);
+    box-shadow: var(--shell-shadow);
+    transition: grid-template-columns 480ms cubic-bezier(0.4, 0, 0.15, 1);
+  }
+  .shell.present { --rail: 0px; --insp: 0px; grid-template-rows: 46px auto minmax(0, 1fr) 0px; }
+
+  /* ---------- topbar ---------- */
+
+  .topbar {
+    grid-area: top; display: flex; align-items: center; gap: 16px; padding: 0 14px;
+    background: linear-gradient(180deg, var(--ink-800), var(--ink-850));
+    border-bottom: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .brand .rune {
+    width: 22px; height: 22px; display: grid; place-items: center;
+    font-family: var(--mono); font-size: 13px; color: var(--ice);
+    border: 1px solid color-mix(in srgb, var(--ice) 45%, transparent);
+    border-radius: 5px; background: color-mix(in srgb, var(--ice) 12%, transparent);
+  }
+  .brand b {
+    font-family: var(--mono); font-size: 12px; font-weight: 600;
+    letter-spacing: 0.2em; text-transform: uppercase;
+  }
+  .brand span {
+    font-family: var(--mono); font-size: 10.5px; color: var(--fg-3);
+    letter-spacing: 0.06em; white-space: nowrap;
+  }
+
+  .readout {
+    display: flex; margin-left: auto; border: 1px solid var(--line-soft);
+    border-radius: 6px; overflow: hidden; background: var(--ink-850);
+  }
+  .readout .cell {
+    display: flex; flex-direction: column; justify-content: center; gap: 1px;
+    padding: 4px 12px; border-right: 1px solid var(--line-soft);
+  }
+  .readout .cell:last-child { border-right: 0; }
+  .readout .k {
+    font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.14em;
+    color: var(--fg-4); text-transform: uppercase;
+  }
+  .readout .v {
+    font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums;
+    line-height: 1; color: var(--fg);
+  }
+  .readout .v.ice { color: var(--ice); }
+  .readout .v.spring { color: var(--spring); }
+  .readout .v.violet { color: var(--violet); }
+
+  .live {
+    display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono);
+    font-size: 9.5px; letter-spacing: 0.16em; color: var(--ice);
+    border: 1px solid color-mix(in srgb, var(--ice) 40%, transparent);
+    background: color-mix(in srgb, var(--ice) 10%, transparent);
+    border-radius: 999px; padding: 4px 10px 4px 8px;
+  }
+  .live i {
+    width: 5px; height: 5px; border-radius: 50%; background: var(--ice);
+    animation: pulse 2.4s ease-out infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ice) 60%, transparent); }
+    70% { box-shadow: 0 0 0 7px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+
+  .btn {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--fg-2); background: var(--ink-700);
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 11px; cursor: pointer;
+    transition: color 140ms, border-color 140ms, background 140ms;
+  }
+  .btn:hover { color: var(--fg); border-color: var(--fg-4); }
+  .btn[aria-pressed='true'] { color: var(--ink-900); background: var(--ice); border-color: var(--ice); }
+  .btn:focus-visible { outline: 2px solid var(--ice); outline-offset: 2px; }
+
+  /* ---------- rail ---------- */
+
+  .rail {
+    grid-area: rail; background: var(--ink-850); border-right: 1px solid var(--line);
+    overflow-y: auto; overflow-x: hidden; min-width: 0;
+  }
+  .shell.present .rail, .shell.present .inspector, .shell.present .ticker {
+    opacity: 0; pointer-events: none;
+  }
+  .rail, .inspector, .ticker { transition: opacity 260ms; }
+
+  /* Collapsible rail sections — <details> so keyboard and screen readers
+     get open/close for free. */
+  .sec { border-bottom: 1px solid var(--line-soft); }
+  .sec-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 14px 11px 11px; font-family: var(--mono); font-size: 9px;
+    letter-spacing: 0.2em; text-transform: uppercase; color: var(--fg-4);
+    cursor: pointer; list-style: none; user-select: none;
+    transition: color 140ms, background 140ms;
+  }
+  .sec-head::-webkit-details-marker { display: none; }
+  .sec-head:hover { color: var(--fg-2); background: var(--ink-800); }
+  .sec-head:focus-visible { outline: 2px solid var(--ice); outline-offset: -2px; }
+  .sec-head span:first-child { flex: 1; }
+  .sec-head em { font-style: normal; font-variant-numeric: tabular-nums; color: var(--fg-3); }
+  /* chevron */
+  .sec-head::before {
+    content: ''; width: 5px; height: 5px; flex: none;
+    border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+    transform: rotate(-45deg); transition: transform 160ms ease;
+    margin-right: 2px;
+  }
+  .sec[open] > .sec-head::before { transform: rotate(45deg); }
+  .sec[open] > .sec-head { color: var(--fg-3); }
+
+  .fleet { display: flex; flex-direction: column; }
+
+  .row-btn {
+    display: grid; grid-template-columns: 3px 1fr auto; align-items: center; gap: 0 10px;
+    padding: 9px 14px 9px 11px; border-top: 1px solid var(--line-soft);
+    background: none; border-left: 0; border-right: 0; border-bottom: 0;
+    width: 100%; text-align: left; cursor: pointer; font: inherit; color: inherit;
+    transition: background 140ms;
+  }
+  .row-btn:hover { background: var(--ink-800); }
+  .row-btn[aria-current='true'] { background: var(--ink-700); }
+  .row-btn:focus-visible { outline: 2px solid var(--ice); outline-offset: -2px; }
+  .row-btn .stripe {
+    grid-row: 1 / span 2; align-self: stretch; border-radius: 2px;
+    background: var(--c); opacity: 0.55;
+  }
+  .row-btn[aria-current='true'] .stripe { opacity: 1; }
+  .row-btn .name {
+    font-family: var(--mono); font-size: 12px; color: var(--fg);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  }
+  .row-btn .where {
+    grid-column: 2; font-family: var(--mono); font-size: 9.5px; color: var(--fg-3);
+    letter-spacing: 0.04em; margin-top: 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  }
+  .row-btn .where b { color: var(--c); font-weight: 500; }
+  .row-btn .spark { grid-row: 1 / span 2; grid-column: 3; display: block; }
+
+  .state {
+    display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono);
+    font-size: 8.5px; letter-spacing: 0.14em; text-transform: uppercase;
+    padding: 2px 6px; border-radius: 3px; border: 1px solid transparent; white-space: nowrap;
+  }
+  .state.working { color: var(--ice); border-color: color-mix(in srgb, var(--ice) 32%, transparent); background: color-mix(in srgb, var(--ice) 9%, transparent); }
+  .state.waiting { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 34%, transparent); background: color-mix(in srgb, var(--amber) 10%, transparent); }
+  .state.idle { color: var(--fg-3); border-color: var(--line); }
+  .state.learning { color: var(--spring); border-color: color-mix(in srgb, var(--spring) 32%, transparent); background: color-mix(in srgb, var(--spring) 9%, transparent); }
+
+  /* ---------- stage ---------- */
+
+  .stage {
+    grid-area: stage; position: relative; min-width: 0; min-height: 0;
+    background: radial-gradient(120% 90% at 50% 44%, #0a1020 0%, #06080f 62%, #04060b 100%);
+    overflow: hidden;
+  }
+  .stage canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  .stage canvas.dragging { cursor: grabbing; }
+
+  .corner {
+    position: absolute; font-family: var(--mono); font-size: 9px; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--fg-4); pointer-events: none;
+  }
+  /* bottom-right, clear of the filter chips that own the top strip */
+  .corner.tr { bottom: 14px; right: 92px; text-align: right; }
+
+  /* Always-on-canvas filters — the rail hides on narrow screens, and this
+     is the control people reach for most. */
+  /* Filter toolbar — a single scrolling strip under the topbar, so the
+     canvas stays clear and the controls never overlay the topology. */
+  .filterbar {
+    grid-area: filt;
+    display: flex; align-items: center; gap: 9px;
+    padding: 7px 14px; min-width: 0;
+    background: var(--ink-850);
+    border-bottom: 1px solid var(--line);
+    overflow-x: auto; scrollbar-width: none;
+  }
+  .filterbar::-webkit-scrollbar { display: none; }
+  .fgroup {
+    font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.2em;
+    text-transform: uppercase; color: var(--fg-4); white-space: nowrap; flex: none;
+  }
+  .fsep { width: 1px; align-self: stretch; background: var(--line); flex: none; margin: 0 2px; }
+  .frow { display: flex; gap: 5px; flex: none; }
+  .fchip {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em;
+    text-transform: uppercase; padding: 4px 7px; border-radius: 4px;
+    border: 1px solid var(--line); color: var(--fg-3); cursor: pointer;
+    background: var(--ink-800); white-space: nowrap; flex: none;
+    transition: color 130ms, border-color 130ms, opacity 130ms;
+  }
+  .fchip i {
+    width: 14px; height: 0; border-top-width: 2px; border-top-style: solid;
+    border-color: currentColor; flex: none;
+  }
+  .fchip:hover { color: var(--fg); border-color: var(--fg-4); }
+  .fchip:focus-visible { outline: 2px solid var(--ice); outline-offset: 1px; }
+  .fchip[aria-pressed='true'] { color: var(--k); border-color: color-mix(in srgb, var(--k) 40%, transparent); }
+  .fchip[aria-pressed='false'] { opacity: 0.38; }
+  .fchip[aria-pressed='false'] i { border-top-style: dotted; }
+  .fchip.act { color: var(--fg-4); letter-spacing: 0.16em; }
+  .fchip.act:hover { color: var(--fg-2); }
+
+  /* zoom controls */
+  .nav {
+    position: absolute; right: 12px; bottom: 12px; display: flex; flex-direction: column;
+    border: 1px solid var(--line); border-radius: 7px; overflow: hidden;
+    background: color-mix(in srgb, var(--ink-850) 92%, transparent);
+    backdrop-filter: blur(6px);
+  }
+  .nav button {
+    width: 32px; height: 30px; display: grid; place-items: center;
+    background: none; border: 0; border-bottom: 1px solid var(--line-soft);
+    color: var(--fg-2); font-family: var(--mono); font-size: 13px; cursor: pointer;
+    transition: background 140ms, color 140ms;
+  }
+  .nav button:last-child { border-bottom: 0; font-size: 9px; letter-spacing: 0.1em; }
+  .nav button:hover { background: var(--ink-700); color: var(--fg); }
+  .nav button:focus-visible { outline: 2px solid var(--ice); outline-offset: -2px; }
+  .nav .zoomval {
+    font-family: var(--mono); font-size: 9.5px; color: var(--fg-3);
+    text-align: center; padding: 5px 0; border-bottom: 1px solid var(--line-soft);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .hint {
+    position: absolute; left: 14px; bottom: 12px; font-family: var(--mono);
+    font-size: 9px; letter-spacing: 0.1em; color: var(--fg-4); pointer-events: none;
+  }
+
+  /* minimap */
+  .minimap {
+    position: absolute; right: 56px; bottom: 34px; width: 148px; height: 96px;
+    border: 1px solid var(--line); border-radius: 6px; overflow: hidden;
+    background: color-mix(in srgb, var(--ink-900) 88%, transparent);
+    backdrop-filter: blur(6px); cursor: pointer;
+  }
+  .minimap canvas { width: 100%; height: 100%; display: block; cursor: pointer; }
+
+  .tip {
+    position: absolute; pointer-events: none; z-index: 5; padding: 7px 10px;
+    background: color-mix(in srgb, var(--ink-900) 93%, transparent);
+    border: 1px solid var(--line); border-left-width: 2px; border-radius: 5px;
+    backdrop-filter: blur(6px); font-family: var(--mono); font-size: 10.5px;
+    line-height: 1.55; white-space: nowrap; opacity: 0; transform: translateY(3px);
+    transition: opacity 110ms, transform 110ms;
+  }
+  .tip.on { opacity: 1; transform: none; }
+  .tip .t { color: var(--fg); letter-spacing: 0.04em; }
+  .tip .s { color: var(--fg-3); font-size: 9.5px; letter-spacing: 0.06em; }
+
+  /* ---------- ticker ---------- */
+
+  .ticker {
+    grid-area: ticker; border-top: 1px solid var(--line); background: var(--ink-850);
+    display: flex; flex-direction: column; min-height: 0; min-width: 0;
+  }
+  .ticker .bar {
+    display: flex; align-items: center; gap: 12px; padding: 6px 14px;
+    border-bottom: 1px solid var(--line-soft); font-family: var(--mono); font-size: 9px;
+    letter-spacing: 0.18em; text-transform: uppercase; color: var(--fg-4);
+  }
+  .ticker .bar .rate {
+    margin-left: auto; font-variant-numeric: tabular-nums; color: var(--fg-3); letter-spacing: 0.1em;
+  }
+  .feed { flex: 1; overflow: hidden; padding: 3px 0 6px; display: flex; flex-direction: column; }
+  .row {
+    display: grid; grid-template-columns: 58px 116px 1fr auto; gap: 12px; align-items: baseline;
+    padding: 3px 14px; font-family: var(--mono); font-size: 10.5px; line-height: 1.4;
+    white-space: nowrap; animation: rowin 320ms cubic-bezier(0.2, 0.8, 0.3, 1);
+  }
+  @keyframes rowin { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: none; } }
+  .row .ts { color: var(--fg-4); font-variant-numeric: tabular-nums; }
+  .row .src { color: var(--c); letter-spacing: 0.04em; overflow: hidden; text-overflow: ellipsis; }
+  .row .msg { color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; }
+  .row .kind { color: var(--fg-4); font-size: 8.5px; letter-spacing: 0.16em; text-transform: uppercase; }
+
+  /* ---------- inspector ---------- */
+
+  .inspector {
+    grid-area: insp; background: var(--ink-850); border-left: 1px solid var(--line);
+    overflow-y: auto; overflow-x: hidden; min-width: 0;
+  }
+  .insp-head {
+    padding: 14px 16px 12px; border-bottom: 1px solid var(--line-soft);
+    background: linear-gradient(180deg, color-mix(in srgb, var(--c) 9%, transparent), transparent);
+  }
+  .insp-head .kind {
+    font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.2em;
+    text-transform: uppercase; color: var(--c);
+  }
+  .insp-head h2 {
+    margin: 5px 0 3px; font-family: var(--mono); font-size: 19px; font-weight: 500;
+    letter-spacing: 0.01em; color: var(--fg); overflow-wrap: anywhere;
+  }
+  .insp-head .sub {
+    font-family: var(--mono); font-size: 10px; color: var(--fg-3); letter-spacing: 0.05em;
+  }
+  .insp-head .chips { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+
+  .block { padding: 13px 16px; border-bottom: 1px solid var(--line-soft); }
+  .block > h3 {
+    margin: 0 0 9px; font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.2em;
+    text-transform: uppercase; color: var(--fg-4);
+  }
+  .kv { display: grid; grid-template-columns: 96px 1fr; gap: 5px 10px; margin: 0; }
+  .kv dt { font-family: var(--mono); font-size: 10px; color: var(--fg-3); letter-spacing: 0.04em; }
+  .kv dd {
+    margin: 0; font-family: var(--mono); font-size: 10.5px; color: var(--fg);
+    font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+  }
+
+  .split { display: flex; height: 5px; border-radius: 3px; overflow: hidden; background: var(--ink-600); }
+  .split i { display: block; height: 100%; }
+  .split-key {
+    display: flex; justify-content: space-between; gap: 10px; margin-top: 7px;
+    font-family: var(--mono); font-size: 9.5px; color: var(--fg-3); letter-spacing: 0.04em;
+  }
+  .split-key b { font-weight: 500; }
+
+  .belief { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; }
+  .belief li {
+    list-style: none; display: grid; grid-template-columns: 1fr auto; gap: 4px 10px;
+    font-family: var(--mono); font-size: 10.5px; line-height: 1.5; color: var(--fg-2);
+  }
+  .belief .conf { font-size: 9px; letter-spacing: 0.1em; color: var(--fg-4); font-variant-numeric: tabular-nums; }
+  .belief .bar { grid-column: 1 / -1; height: 2px; background: var(--ink-600); border-radius: 2px; overflow: hidden; }
+  .belief .bar i { display: block; height: 100%; background: var(--c); }
+
+  .tools { display: flex; flex-direction: column; gap: 1px; margin: 0; padding: 0; }
+  .tools li {
+    list-style: none; display: grid; grid-template-columns: 1fr auto auto; align-items: center;
+    gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line-soft);
+    font-family: var(--mono); font-size: 10.5px; color: var(--fg-2);
+  }
+  .tools li:last-child { border-bottom: 0; }
+  .tools .runs { font-size: 9.5px; color: var(--fg-4); font-variant-numeric: tabular-nums; }
+  .tools .ok { font-size: 9px; letter-spacing: 0.1em; color: var(--spring); font-variant-numeric: tabular-nums; }
+  .tools .ok.warn { color: var(--amber); }
+
+  .seg {
+    font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.16em; text-transform: uppercase;
+    padding: 3px 10px; border-radius: 3px; border: 1px solid var(--line);
+    background: transparent; color: var(--fg-3); cursor: pointer;
+    transition: color 140ms, background 140ms, border-color 140ms;
+  }
+  .seg:hover { color: var(--fg); }
+  .seg[aria-pressed='true'] { color: var(--ink-900); background: var(--c); border-color: var(--c); }
+  .seg:focus-visible { outline: 2px solid var(--c); outline-offset: 2px; }
+
+  .caps { display: flex; flex-wrap: wrap; gap: 6px; }
+  .cap {
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em; padding: 3px 8px;
+    border-radius: 3px; border: 1px solid var(--line); color: var(--fg-4);
+  }
+  .cap.on {
+    color: var(--c); border-color: color-mix(in srgb, var(--c) 34%, transparent);
+    background: color-mix(in srgb, var(--c) 9%, transparent);
+  }
+
+  .skills { margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+  .skills li {
+    list-style: none; display: grid; grid-template-columns: 1fr auto; gap: 2px 10px;
+    padding: 7px 0; border-bottom: 1px solid var(--line-soft);
+  }
+  .skills li:last-child { border-bottom: 0; }
+  .skills .sid { font-family: var(--mono); font-size: 10.5px; color: var(--c); }
+  .skills .sname { grid-column: 1; font-size: 11.5px; color: var(--fg-2); }
+  .skills .tags { grid-row: 1 / span 2; grid-column: 2; display: flex; gap: 4px; align-items: center; }
+  .skills .tags i {
+    font-style: normal; font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.08em;
+    color: var(--fg-4); border: 1px solid var(--line); border-radius: 2px; padding: 1px 5px;
+  }
+
+  .wl { margin: 0; padding: 0; display: flex; flex-direction: column; }
+  .wl li {
+    list-style: none; display: grid; grid-template-columns: 1fr auto; gap: 10px;
+    align-items: baseline; padding: 5px 0; border-bottom: 1px solid var(--line-soft);
+    font-family: var(--mono); font-size: 10.5px; color: var(--fg-2);
+  }
+  .wl li:last-child { border-bottom: 0; }
+  .wl .ns { font-size: 9px; color: var(--fg-4); letter-spacing: 0.06em; }
+  .wl .rep { font-size: 9.5px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+  .wl .rep.zero { color: var(--fg-4); }
+
+  .json {
+    margin: 0; padding: 13px 16px; font-family: var(--mono); font-size: 10px;
+    line-height: 1.6; color: var(--fg-2); white-space: pre; overflow-x: auto;
+    background: var(--ink-900); border-bottom: 1px solid var(--line-soft);
+  }
+
+  .empty {
+    padding: 40px 16px; text-align: center; font-family: var(--mono); font-size: 10.5px;
+    line-height: 1.7; color: var(--fg-4); letter-spacing: 0.05em;
+  }
+
+  .note-body { font-size: 12px; line-height: 1.6; color: var(--fg-2); }
+
+  /* ---------- notes ---------- */
+
+  .notes {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 1px;
+    background: var(--page-rule); border: 1px solid var(--page-rule);
+    border-radius: 8px; overflow: hidden;
+  }
+  .note { background: var(--page); padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 6px; }
+  .note .t {
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.18em;
+    text-transform: uppercase; color: var(--page-fg-2);
+  }
+  .note .d { font-size: 12.5px; line-height: 1.55; color: var(--page-fg); }
+  .note .d b { font-weight: 600; }
+
+  @media (max-width: 1120px) {
+    .shell { --rail: 0px; --insp: 0px; }
+    .rail, .inspector { display: none; }
+    .readout .cell:nth-child(n + 3) { display: none; }
+    .minimap { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+  }
+</style>
+
+<div class="page">
+  <header class="page-head">
+    <h1>Observatory — redesign</h1>
+    <p>
+      Read live from the platform: seven clusters across five realms, node and pod counts from
+      each API server, workloads from <code>kubectl</code>, the model catalogue and residents
+      from the API. Scroll to zoom, drag to pan.
+    </p>
+  </header>
+
+  <div class="shell" id="shell">
+    <div class="topbar">
+      <div class="brand">
+        <span class="rune" aria-hidden="true">ᚹ</span>
+        <b>Observatory</b>
+        <span>live topology · niuu.world</span>
+      </div>
+
+      <div class="readout">
+        <div class="cell"><span class="k">Realms</span><span class="v ice">5</span></div>
+        <div class="cell"><span class="k">Clusters</span><span class="v ice">8</span></div>
+        <div class="cell"><span class="k">Nodes</span><span class="v ice">59</span></div>
+        <div class="cell"><span class="k">Pods</span><span class="v ice">1 934</span></div>
+        <div class="cell"><span class="k">Residents</span><span class="v spring">14</span></div>
+        <div class="cell"><span class="k">Meshes</span><span class="v" style="color:var(--amber)">3</span></div>
+        <div class="cell"><span class="k">Mímir</span><span class="v ice">5</span></div>
+        <div class="cell"><span class="k">Msgs / min</span><span class="v" id="r-rate">—</span></div>
+      </div>
+
+      <span class="live"><i></i>LIVE</span>
+      <button class="btn" id="present" aria-pressed="false">Present</button>
+    </div>
+
+    <div class="filterbar" id="filterbar">
+      <span class="fgroup">Layers</span>
+      <div class="frow" id="fl-layers"></div>
+      <span class="fsep" aria-hidden="true"></span>
+      <span class="fgroup">Compute</span>
+      <div class="frow" id="fl-compute"></div>
+      <span class="fsep" aria-hidden="true"></span>
+      <div class="frow">
+        <button class="fchip act" id="f-calm">calm</button>
+        <button class="fchip act" id="f-all">all</button>
+        <button class="fchip act" id="f-none">none</button>
+      </div>
+    </div>
+
+    <aside class="rail">
+      <details class="sec" open>
+        <summary class="sec-head"><span>Meshes</span><em>3</em></summary>
+        <div class="fleet" id="meshlist"></div>
+      </details>
+
+      <details class="sec" open>
+        <summary class="sec-head"><span>Residents</span><em id="res-n">14</em></summary>
+        <div class="fleet" id="fleet"></div>
+      </details>
+
+      <details class="sec">
+        <summary class="sec-head"><span>Realms &amp; clusters</span><em>8</em></summary>
+        <div class="fleet" id="clusterlist"></div>
+      </details>
+
+      <details class="sec">
+        <summary class="sec-head"><span>Mímir instances</span><em>5</em></summary>
+        <div class="fleet" id="mimirlist"></div>
+      </details>
+
+    </aside>
+
+    <main class="stage" id="stage">
+      <canvas id="cv"></canvas>
+      <span class="corner tr" id="counts"></span>
+      <div class="tip" id="tip"></div>
+      <span class="hint">scroll zoom · drag pan · ⌥click fit</span>
+      <div class="minimap" id="minimap" title="Click to jump"><canvas id="mm"></canvas></div>
+      <div class="nav">
+        <button id="zin" title="Zoom in" aria-label="Zoom in">+</button>
+        <div class="zoomval" id="zval">100%</div>
+        <button id="zout" title="Zoom out" aria-label="Zoom out">−</button>
+        <button id="zfit" title="Fit all" aria-label="Fit all">FIT</button>
+      </div>
+    </main>
+
+    <section class="ticker">
+      <div class="bar">
+        <span>Signal</span>
+        <span class="rate" id="feed-rate">— msg/min</span>
+      </div>
+      <div class="feed" id="feed"></div>
+    </section>
+
+    <aside class="inspector" id="inspector"></aside>
+  </div>
+
+  <div class="notes">
+    <div class="note">
+      <span class="t">Four Mímirs, two systems</span>
+      <span class="d">
+        <b>Niuu Mímir</b> (knowledge) runs on ymir and noatun; each resident also carries a
+        local one. <b>Grafana Mimir</b> (metrics) is a separate 12-workload stack on glitnir.
+        Same name, different job — so they are drawn differently.
+      </span>
+    </div>
+    <div class="note">
+      <span class="t">Five realms, not one</span>
+      <span class="d">
+        Clusters live in different DNS realms — <b>asgard</b>, <b>yggdrasil</b>, <b>alfheim</b>,
+        <b>svartalfheim</b>, <b>midgard</b> — drawn as dashed hulls. Identity is the exception:
+        every cluster's SPIRE OIDC sits under asgard.
+      </span>
+    </div>
+    <div class="note">
+      <span class="t">Navigate it</span>
+      <span class="d">
+        Scroll to zoom about the cursor, drag to pan, minimap to jump.
+        Detail resolves as you zoom: <b>pod counts and namespaces appear past 130%</b>.
+      </span>
+    </div>
+    <div class="note">
+      <span class="t">Traffic is the subject</span>
+      <span class="d">
+        Packets travel edges and land in the signal feed — canvas and log are the
+        <b>same event</b>, seen twice. NATS meshes every cluster; all eight ship
+        telemetry to glitnir.
+      </span>
+    </div>
+  </div>
+</div>
+
+<script>
+  (() => {
+    'use strict';
+
+    const REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+    const C = {
+      ice: '#38bdf8', spring: '#8fd400', violet: '#8b7cf0',
+      amber: '#f59e0b', red: '#ef4444',
+      fg: '#e8edf7', fg2: '#93a1bb', fg3: '#5e6c86', fg4: '#3d4859',
+    };
+    const MONO = "ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, monospace";
+
+    /* =========================================================
+       SCENE — world coordinates. Everything below is read from
+       the live clusters and the platform API.
+       ========================================================= */
+
+    const REALMS = [
+      { id: 'asgard', label: 'ASGARD', dns: 'asgard.niuu.world', members: ['valaskjalf', 'vanaheim', 'noatun', 'valhalla'] },
+      { id: 'yggdrasil', label: 'YGGDRASIL', dns: 'yggdrasil.niuu.world', members: ['ymir'] },
+      { id: 'alfheim', label: 'ALFHEIM', dns: 'alfheim.niuu.world', members: ['glitnir'] },
+      { id: 'svartalfheim', label: 'SVARTALFHEIM', dns: 'svartalfheim.niuu.world', members: ['eitri'] },
+      { id: 'midgard', label: 'MIDGARD', dns: 'midgard.niuu.world', members: ['jarnvidr'] },
+    ];
+
+    const CLUSTERS = [
+      {
+        id: 'valaskjalf', label: 'VALASKJÁLF', realm: 'asgard', hue: 'ice',
+        x: 520, y: 700, r: 300, bezel: 'solid',
+        tag: '9 nodes · 4 GPU · 225 pods', role: 'GPU · inference · sandboxes',
+        nodes: 9, gpu: 4, pods: 225, ns: 36,
+      },
+      {
+        id: 'valhalla', label: 'VALHALLA', realm: 'asgard', hue: 'ice',
+        x: 1180, y: 420, r: 230, bezel: 'solid',
+        tag: '6 nodes · shared mímir', role: 'platform · API unreachable',
+        nodes: 6, gpu: 0, pods: null, ns: null, unreachable: true,
+      },
+      {
+        id: 'vanaheim', label: 'VANAHEIM', realm: 'asgard', hue: 'ice',
+        x: 560, y: 1500, r: 260, bezel: 'solid',
+        tag: 'harvester · 9 hosts · 695 pods', role: 'hypervisor · hosts the guests',
+        nodes: 9, gpu: 0, pods: 695, ns: 42,
+      },
+      {
+        id: 'noatun', label: 'NÓATÚN', realm: 'asgard', hue: 'ice',
+        x: 1180, y: 1120, r: 240, bezel: 'solid',
+        tag: '6 nodes · 163 pods', role: 'niuu deployment · gateway',
+        nodes: 6, gpu: 0, pods: 163, ns: 34,
+      },
+      {
+        id: 'ymir', label: 'YMIR', realm: 'yggdrasil', hue: 'ice',
+        x: 2660, y: 420, r: 300, bezel: 'solid',
+        tag: '8 nodes · 227 pods', role: 'platform · identity · mímir',
+        nodes: 8, gpu: 0, pods: 227, ns: 35,
+      },
+      {
+        id: 'glitnir', label: 'GLITNIR', realm: 'alfheim', hue: 'ice',
+        x: 2800, y: 1300, r: 280, bezel: 'solid',
+        tag: '8 nodes · 216 pods', role: 'observability · object store',
+        nodes: 8, gpu: 0, pods: 216, ns: 33,
+      },
+      {
+        id: 'eitri', label: 'EITRI', realm: 'svartalfheim', hue: 'ice',
+        x: 2000, y: 1350, r: 280, bezel: 'solid',
+        tag: '12 nodes · 218 pods', role: 'workshop · OT · printers',
+        nodes: 12, gpu: 0, pods: 218, ns: 43,
+      },
+      {
+        id: 'jarnvidr', label: 'JÁRNVIÐR', realm: 'midgard', hue: 'ice',
+        x: 1900, y: 420, r: 220, bezel: 'solid',
+        tag: '7 nodes · 1 GPU · 190 pods', role: 'media · general workloads',
+        nodes: 7, gpu: 1, pods: 190, ns: 32,
+      },
+      {
+        id: 'local', label: 'LOCAL', realm: null, hue: 'spring',
+        x: 2150, y: 2010, r: 200, bezel: 'dash',
+        tag: 'workstation · docker', role: 'four residents, no cluster',
+      },
+      {
+        id: 'cloud', label: 'CLOUD VENDORS', realm: null, hue: 'violet',
+        x: 3320, y: 300, r: 180, bezel: 'dash',
+        tag: 'outside · metered', role: 'anthropic · openai · xai',
+      },
+    ];
+
+    /* Meshes — multi-agent groups. Membership crosses clusters; the links
+       between members are how they learn from each other. */
+    const MESHES = [
+      {
+        id: 'forge', label: 'FORGE-MESH', purpose: 'build · verify · ship',
+        members: ['huginn', 'nemoclaw', 'nemoclaw-ui', 'eldhrimnir'],
+      },
+      {
+        id: 'ops', label: 'OPS-MESH', purpose: 'reconcile · observe · repair',
+        members: ['muninn', 'forseti', 'freyja', 'vidar', 'kvasir'],
+      },
+      {
+        id: 'shop', label: 'WORKSHOP-MESH', purpose: 'floor signals · equipment',
+        members: ['ivaldi', 'angrboda', 'njord-r', 'nemohermes', 'ravn-ps'],
+      },
+      {
+        id: 'research', label: 'RESEARCH-SESSION', purpose: 'workflow · valhalla · 00:14:22',
+        session: true,
+        members: ['res-planner', 'res-search', 'res-read', 'res-write', 'muninn'],
+      },
+      {
+        id: 'coding', label: 'CODING-SESSION', purpose: 'workflow · nóatún · 00:31:07',
+        session: true,
+        members: ['cod-architect', 'cod-impl', 'cod-review', 'cod-test', 'njord-r'],
+      },
+    ];
+
+    /* type: agent svc model host cluster beacon printer vaettir
+             mimir mimir-metrics bifrost skuld ting volundr db gate */
+    const NODES = [
+      // ---- valaskjálf (asgard) — GPU / inference -------------
+      { id: 'infgw', label: 'inference-gateway', type: 'gate', hue: 'ice', c: 'valaskjalf', a: 300, o: 0.30, kind: 'llm-d gateway', sub: 'ns vllm · 1/1' },
+      { id: 'vllm-router', label: 'vllm-router', type: 'svc', hue: 'ice', c: 'valaskjalf', a: 240, o: 0.34, kind: 'Serving router', sub: 'ns vllm · 1/1' },
+      { id: 'saehrimnir', label: 'sæhrímnir', type: 'host', hue: 'spring', c: 'valaskjalf', a: 196, o: 0.80, kind: 'DGX Spark', sub: 'arm64 · 20c · 122 GB · 1 GPU' },
+      { id: 'tanngnjost', label: 'tanngnjóst', type: 'host', hue: 'spring', c: 'valaskjalf', a: 232, o: 0.80, kind: 'DGX Spark', sub: 'arm64 · 20c · 120 GB · 1 GPU' },
+      { id: 'tanngrisnir', label: 'tanngrisnir', type: 'host', hue: 'spring', c: 'valaskjalf', a: 268, o: 0.80, kind: 'DGX Spark', sub: 'arm64 · 20c · 122 GB · 1 GPU' },
+      { id: 'nemotron', label: 'nemotron-3-super', type: 'model', hue: 'spring', c: 'valaskjalf', a: 340, o: 0.78, kind: 'Self-hosted model', sub: 'vLLM · 2/2 serving' },
+      { id: 'qwen36', label: 'qwen3.6-coder', type: 'model', hue: 'spring', c: 'valaskjalf', a: 22, o: 0.78, kind: 'Self-hosted model', sub: 'llm-d · 0 replicas' },
+      { id: 'openclaw', label: 'openclaw', type: 'svc', hue: 'ice', c: 'valaskjalf', a: 68, o: 0.52, kind: 'Agent runtime', sub: 'sts 0/0 · oski ingress' },
+      { id: 'openshell-v', label: 'openshell', type: 'svc', hue: 'ice', c: 'valaskjalf', a: 112, o: 0.52, kind: 'Sandbox runtime', sub: 'sts 1/1' },
+      { id: 'nats-v', label: 'nats', type: 'svc', hue: 'ice', c: 'valaskjalf', a: 150, o: 0.42, kind: 'Mesh node', sub: 'nats-valaskjalf 1/1' },
+
+      // ---- ymir (yggdrasil) — platform + identity ------------
+      { id: 'volundr', label: 'völundr', type: 'volundr', hue: 'ice', c: 'ymir', a: 196, o: 0.56, kind: 'Forge', sub: 'niuu-volundr 1/1' },
+      { id: 'ting', label: 'ting', type: 'ting', hue: 'ice', c: 'ymir', a: 232, o: 0.56, kind: 'Dispatcher', sub: 'niuu-ting 1/1' },
+      { id: 'bifrost-y', label: 'bifröst', type: 'bifrost', hue: 'ice', c: 'ymir', a: 268, o: 0.56, kind: 'Model gateway', sub: 'niuu-bifrost 2/2' },
+      { id: 'ravn-y', label: 'ravn', type: 'skuld', hue: 'ice', c: 'ymir', a: 304, o: 0.56, kind: 'Agent runtime', sub: 'niuu-ravn 1/1' },
+      { id: 'guild', label: 'guild', type: 'svc', hue: 'ice', c: 'ymir', a: 340, o: 0.56, kind: 'Guild', sub: 'niuu-guild 1/1' },
+      { id: 'mimir-ymir', label: 'mímir-shared', type: 'mimir', hue: 'ice', c: 'ymir', a: 90, o: 0.62, kind: 'Niuu Mímir · knowledge', sub: 'mimir.yggdrasil.niuu.world' },
+      { id: 'warden-y', label: 'warden-agent', type: 'svc', hue: 'ice', c: 'ymir', a: 130, o: 0.56, kind: 'Mímir warden', sub: 'mimir-shared-warden-agent' },
+      { id: 'pg-y', label: 'postgres', type: 'db', hue: 'ice', c: 'ymir', a: 40, o: 0.56, kind: 'CloudNativePG', sub: 'rw · ro · r' },
+      { id: 'keycloak', label: 'keycloak', type: 'svc', hue: 'ice', c: 'ymir', a: 0, o: 0.86, kind: 'Identity provider', sub: 'keycloak.niuu.world' },
+      { id: 'openbao', label: 'openbao', type: 'svc', hue: 'ice', c: 'ymir', a: 330, o: 0.86, kind: 'Secrets', sub: 'openbao.niuu.world' },
+      { id: 'nats-y', label: 'nats', type: 'svc', hue: 'ice', c: 'ymir', a: 160, o: 0.80, kind: 'Mesh node', sub: 'nats-yggdrasil 3/3' },
+
+      // ---- nóatún (asgard) — second niuu deployment ----------
+      { id: 'volundr-n', label: 'völundr', type: 'volundr', hue: 'ice', c: 'noatun', a: 200, o: 0.58, kind: 'Forge', sub: 'niuu-volundr 1/1' },
+      { id: 'bifrost-n', label: 'bifröst', type: 'bifrost', hue: 'ice', c: 'noatun', a: 250, o: 0.58, kind: 'Model gateway', sub: 'niuu-bifrost 2/2' },
+      { id: 'ravn-n', label: 'ravn', type: 'skuld', hue: 'ice', c: 'noatun', a: 300, o: 0.58, kind: 'Agent runtime', sub: 'niuu-ravn 1/1' },
+      { id: 'mimir-noatun', label: 'mímir-shared', type: 'mimir', hue: 'ice', c: 'noatun', a: 80, o: 0.62, kind: 'Niuu Mímir · knowledge', sub: 'niuu-mimir-shared 1/1' },
+      { id: 'envoy-n', label: 'envoy-gateway', type: 'gate', hue: 'ice', c: 'noatun', a: 350, o: 0.58, kind: 'Gateway', sub: 'volundr-gateway' },
+      { id: 'pg-n', label: 'postgres', type: 'db', hue: 'ice', c: 'noatun', a: 30, o: 0.58, kind: 'CloudNativePG', sub: 'rw · ro · r' },
+      { id: 'nats-n', label: 'nats', type: 'svc', hue: 'ice', c: 'noatun', a: 140, o: 0.50, kind: 'Mesh node', sub: 'nats-noatun 1/1' },
+
+      // ---- glitnir (alfheim) — observability -----------------
+      { id: 'grafana', label: 'grafana', type: 'svc', hue: 'ice', c: 'glitnir', a: 210, o: 0.52, kind: 'Dashboards', sub: 'grafana.glitnir.alfheim' },
+      { id: 'mimir-metrics', label: 'mimir', type: 'mimir-metrics', hue: 'ice', c: 'glitnir', a: 270, o: 0.62, kind: 'Grafana Mimir · metrics', sub: '12 workloads · 3 ingesters' },
+      { id: 'loki', label: 'loki', type: 'svc', hue: 'ice', c: 'glitnir', a: 320, o: 0.56, kind: 'Logs', sub: 'loki.glitnir.alfheim' },
+      { id: 'tempo', label: 'tempo', type: 'svc', hue: 'ice', c: 'glitnir', a: 10, o: 0.56, kind: 'Traces', sub: 'tempo-gateway' },
+      { id: 'minio', label: 'minio', type: 'db', hue: 'ice', c: 'glitnir', a: 60, o: 0.56, kind: 'Object store', sub: 'minio.glitnir.alfheim' },
+      { id: 'nats-g', label: 'nats', type: 'svc', hue: 'ice', c: 'glitnir', a: 140, o: 0.48, kind: 'Mesh node', sub: 'nats-glitnir 1/1' },
+
+      // ---- eitri (svartalfheim) — the workshop ---------------
+      { id: 'ivaldi', label: 'ivaldi', type: 'agent', hue: 'ice', c: 'eitri', a: 250, o: 0.44, kind: 'Resident (cluster)', sub: 'ivaldi-room 1/1 · ivaldi 0/0', state: 'idle' },
+      { id: 'laevateinn', label: 'lævateinn', type: 'beacon', hue: 'ice', c: 'eitri', a: 190, o: 0.74, kind: 'Signal source', sub: '01–04 + console · 5/5' },
+      { id: 'bambuddy', label: 'bambuddy', type: 'printer', hue: 'ice', c: 'eitri', a: 232, o: 0.78, kind: 'Printer fleet', sub: 'bambuddy.eitri.svartalfheim' },
+      { id: 'orca', label: 'orca-slicer', type: 'svc', hue: 'ice', c: 'eitri', a: 274, o: 0.78, kind: 'Slicer API', sub: 'orca-slicer-api' },
+      { id: 'spoolman', label: 'spoolman', type: 'svc', hue: 'ice', c: 'eitri', a: 316, o: 0.78, kind: 'Filament tracking', sub: 'spoolman.eitri.svartalfheim' },
+      { id: 'ovfarm', label: 'ovfarm', type: 'vaettir', hue: 'ice', c: 'eitri', a: 358, o: 0.78, kind: 'Equipment', sub: 'ot-operators' },
+      { id: 'alviss', label: 'alviss', type: 'host', hue: 'ice', c: 'eitri', a: 44, o: 0.76, kind: 'Host', sub: 'arm64 · 4c · 8 GB' },
+      { id: 'brokk', label: 'brokk', type: 'host', hue: 'ice', c: 'eitri', a: 88, o: 0.76, kind: 'Host', sub: 'arm64 · 4c · 8 GB' },
+      { id: 'nats-e', label: 'nats', type: 'svc', hue: 'ice', c: 'eitri', a: 130, o: 0.46, kind: 'Mesh node', sub: 'nats-eitri 1/1' },
+
+      // ---- vanaheim (asgard) — the hypervisor ----------------
+      { id: 'rancher', label: 'rancher', type: 'svc', hue: 'ice', c: 'vanaheim', a: 250, o: 0.44, kind: 'Management', sub: 'rancher.niuu.world' },
+      { id: 'harvester', label: 'harvester', type: 'svc', hue: 'ice', c: 'vanaheim', a: 300, o: 0.44, kind: 'Hypervisor', sub: 'harvester-system' },
+      { id: 'baldr', label: 'baldr', type: 'host', hue: 'ice', c: 'vanaheim', a: 190, o: 0.76, kind: 'Bare metal', sub: '112c · 441 GB' },
+      { id: 'frigg', label: 'frigg', type: 'host', hue: 'ice', c: 'vanaheim', a: 235, o: 0.76, kind: 'Bare metal', sub: '112c · 504 GB' },
+      { id: 'freya', label: 'freya', type: 'host', hue: 'ice', c: 'vanaheim', a: 280, o: 0.76, kind: 'Bare metal', sub: '64c · 252 GB' },
+      { id: 'njord', label: 'njörð', type: 'host', hue: 'ice', c: 'vanaheim', a: 325, o: 0.76, kind: 'Bare metal', sub: '64c · 220 GB' },
+      { id: 'guests', label: '4 guest clusters', type: 'cluster', hue: 'ice', c: 'vanaheim', a: 40, o: 0.66, kind: 'Guest VMs', sub: 'glitnir · járnviðr · nóatún · ymir' },
+
+      // ---- járnviðr (midgard) — media ------------------------
+      { id: 'plex', label: 'plex', type: 'svc', hue: 'ice', c: 'jarnvidr', a: 210, o: 0.60, kind: 'Media', sub: 'plex.jarnvidr.midgard' },
+      { id: 'arr', label: '*arr stack', type: 'svc', hue: 'ice', c: 'jarnvidr', a: 270, o: 0.60, kind: 'Media automation', sub: 'radarr · sonarr · sabnzbd' },
+      { id: 'gpuworker', label: 'gpuworker', type: 'host', hue: 'spring', c: 'jarnvidr', a: 330, o: 0.62, kind: 'GPU worker', sub: 'amd64 · 8c · 24 GB · 1 GPU' },
+      { id: 'nats-j', label: 'nats', type: 'svc', hue: 'ice', c: 'jarnvidr', a: 100, o: 0.50, kind: 'Mesh node', sub: 'nats-jarnvidr 1/1' },
+
+      // ---- workflow sessions: ephemeral multi-agent runs -------
+      // A launched workflow is a `run` (registry: halo) holding a set of
+      // short-lived `ravn_run` agents that peer with each other for the
+      // life of the task, then disappear.
+      { id: 'research-run', label: 'research-session', type: 'run', hue: 'spring', c: 'valhalla', a: 96, o: 0.30, kind: 'Workflow session', sub: 'ting saga · 4 agents · 14m' },
+      { id: 'res-planner', label: 'planner', type: 'runagent', hue: 'spring', c: 'valhalla', a: 44, o: 0.62, kind: 'Run agent', sub: 'decomposes the question' },
+      { id: 'res-search', label: 'searcher', type: 'runagent', hue: 'spring', c: 'valhalla', a: 82, o: 0.68, kind: 'Run agent', sub: '3 sources open' },
+      { id: 'res-read', label: 'reader', type: 'runagent', hue: 'spring', c: 'valhalla', a: 120, o: 0.68, kind: 'Run agent', sub: 'summarising' },
+      { id: 'res-write', label: 'writer', type: 'runagent', hue: 'spring', c: 'valhalla', a: 158, o: 0.62, kind: 'Run agent', sub: 'awaiting sources' },
+
+      { id: 'coding-run', label: 'coding-session', type: 'run', hue: 'spring', c: 'noatun', a: 250, o: 0.26, kind: 'Workflow session', sub: 'ting saga · 4 agents · 31m' },
+      { id: 'cod-architect', label: 'architect', type: 'runagent', hue: 'spring', c: 'noatun', a: 196, o: 0.62, kind: 'Run agent', sub: 'plan accepted' },
+      { id: 'cod-impl', label: 'implementer', type: 'runagent', hue: 'spring', c: 'noatun', a: 234, o: 0.68, kind: 'Run agent', sub: 'editing 6 files' },
+      { id: 'cod-review', label: 'reviewer', type: 'runagent', hue: 'spring', c: 'noatun', a: 272, o: 0.68, kind: 'Run agent', sub: 'blocking on tests' },
+      { id: 'cod-test', label: 'tester', type: 'runagent', hue: 'spring', c: 'noatun', a: 310, o: 0.62, kind: 'Run agent', sub: 'sandbox on openshell' },
+
+      // ---- one resident per cluster ---------------------------
+      { id: 'huginn', label: 'huginn', type: 'agent', hue: 'ice', c: 'valaskjalf', a: 92, o: 0.54, kind: 'Resident · cluster', sub: 'inference steward', state: 'working' },
+      { id: 'muninn', label: 'muninn', type: 'agent', hue: 'ice', c: 'valhalla', a: 264, o: 0.52, kind: 'Resident · cluster', sub: 'platform steward', state: 'working' },
+      { id: 'kvasir', label: 'kvasir', type: 'agent', hue: 'ice', c: 'ymir', a: 62, o: 0.80, kind: 'Resident · cluster', sub: 'memory steward', state: 'learning' },
+      { id: 'njord-r', label: 'njörð', type: 'agent', hue: 'ice', c: 'noatun', a: 112, o: 0.56, kind: 'Resident · cluster', sub: 'deployment steward', state: 'working' },
+      { id: 'forseti', label: 'forseti', type: 'agent', hue: 'ice', c: 'glitnir', a: 168, o: 0.72, kind: 'Resident · cluster', sub: 'observability steward', state: 'working' },
+      { id: 'angrboda', label: 'angrboða', type: 'agent', hue: 'ice', c: 'jarnvidr', a: 28, o: 0.62, kind: 'Resident · cluster', sub: 'media steward', state: 'idle' },
+      { id: 'freyja', label: 'freyja', type: 'agent', hue: 'ice', c: 'vanaheim', a: 122, o: 0.50, kind: 'Resident · cluster', sub: 'fleet steward', state: 'working' },
+
+      // ---- residents on bare metal, outside kubernetes --------
+      { id: 'eldhrimnir', label: 'eldhrímnir', type: 'agent', hue: 'spring', c: 'valaskjalf', a: 176, o: 0.96, kind: 'Resident · bare metal', sub: 'on sæhrímnir · systemd', state: 'working' },
+      { id: 'vidar', label: 'víðarr', type: 'agent', hue: 'spring', c: 'vanaheim', a: 166, o: 0.94, kind: 'Resident · bare metal', sub: 'on baldr · systemd', state: 'learning' },
+
+      // ---- valhalla (API unreachable — declared, not observed) -
+      { id: 'mimir-valhalla', label: 'mímir-shared', type: 'mimir', hue: 'ice', c: 'valhalla', a: 70, o: 0.58, kind: 'Niuu Mímir · knowledge', sub: 'unverified · API 403' },
+
+      // ---- cloud vendors (outside) ---------------------------
+      { id: 'anthropic', label: 'anthropic', type: 'model', hue: 'violet', c: 'cloud', a: 186, o: 0.58, kind: 'Cloud vendor', sub: '3 models · $9–30 / Mtok' },
+      { id: 'openai', label: 'openai', type: 'model', hue: 'violet', c: 'cloud', a: 300, o: 0.58, kind: 'Cloud vendor', sub: '2 models · $15–30 / Mtok' },
+      { id: 'xai', label: 'xai', type: 'model', hue: 'violet', c: 'cloud', a: 54, o: 0.58, kind: 'Cloud vendor', sub: 'grok-build' },
+
+      // ---- local workstation (outside) -----------------------
+      { id: 'ravn-ps', label: 'steward', type: 'agent', hue: 'spring', c: 'local', a: 178, o: 0.58, kind: 'Resident', sub: 'ravn · gpt-5.6-sol', state: 'working' },
+      { id: 'nemohermes', label: 'hermes', type: 'agent', hue: 'spring', c: 'local', a: 232, o: 0.58, kind: 'Resident', sub: 'hermes · nemotron-3', state: 'learning' },
+      { id: 'nemoclaw', label: 'claw', type: 'agent', hue: 'spring', c: 'local', a: 308, o: 0.58, kind: 'Resident', sub: 'openclaw · nemotron-3', state: 'working' },
+      { id: 'nemoclaw-ui', label: 'claw-ui', type: 'agent', hue: 'spring', c: 'local', a: 4, o: 0.58, kind: 'Resident', sub: 'openclaw · gpt-5.6-sol', state: 'waiting' },
+      { id: 'mimir-local', label: 'mímir local', type: 'mimir', hue: 'spring', c: 'local', a: 90, o: 0.60, kind: 'Niuu Mímir · knowledge', sub: '~/.ravn/mimir · priority 20' },
+    ];
+
+    /* Resident-to-resident links. Within a mesh every member peers with
+       every other — that ring is what "learning from each other" means
+       mechanically. A few cross-mesh links carry findings between them. */
+    const RESIDENT_MESH = [
+      ...MESHES.flatMap((f) =>
+        f.members.flatMap((m, i) =>
+          f.members.slice(i + 1).map((o) => ({ a: m, b: o, layer: 'mesh', rate: 0.45, mesh: f.id }))
+        )
+      ),
+      { a: 'kvasir', b: 'huginn', layer: 'mesh', rate: 0.3, mesh: null },
+      { a: 'muninn', b: 'njord-r', layer: 'mesh', rate: 0.3, mesh: null },
+      { a: 'forseti', b: 'angrboda', layer: 'mesh', rate: 0.25, mesh: null },
+      { a: 'ivaldi', b: 'freyja', layer: 'mesh', rate: 0.25, mesh: null },
+    ];
+
+    /* layer: mesh | nats | memory | model | a2a | plat | obs */
+    const EDGES = [
+      ...RESIDENT_MESH,
+
+      // workflow sessions: dispatched by ting, agents route through bifröst,
+      // findings land in mímir, the coder builds in an openshell sandbox
+      { a: 'ting', b: 'research-run', layer: 'plat', rate: 0.5 },
+      { a: 'ting', b: 'coding-run', layer: 'plat', rate: 0.5 },
+      ...['res-planner', 'res-search', 'res-read', 'res-write'].map((a) => ({ a, b: 'research-run', layer: 'plat', rate: 0.6 })),
+      ...['cod-architect', 'cod-impl', 'cod-review', 'cod-test'].map((a) => ({ a, b: 'coding-run', layer: 'plat', rate: 0.6 })),
+      { a: 'research-run', b: 'mimir-valhalla', layer: 'memory', rate: 0.55 },
+      { a: 'coding-run', b: 'mimir-noatun', layer: 'memory', rate: 0.5 },
+      { a: 'res-read', b: 'bifrost-y', layer: 'model', rate: 0.7 },
+      { a: 'res-write', b: 'bifrost-y', layer: 'model', rate: 0.5 },
+      { a: 'cod-impl', b: 'bifrost-n', layer: 'model', rate: 0.75 },
+      { a: 'cod-review', b: 'bifrost-n', layer: 'model', rate: 0.5 },
+      { a: 'cod-test', b: 'openshell-v', layer: 'plat', rate: 0.6 },
+
+      // every resident reads and writes its cluster's memory
+      { a: 'muninn', b: 'mimir-valhalla', layer: 'memory', rate: 0.4 },
+      { a: 'kvasir', b: 'mimir-ymir', layer: 'memory', rate: 0.7 },
+      { a: 'njord-r', b: 'mimir-noatun', layer: 'memory', rate: 0.5 },
+      { a: 'huginn', b: 'mimir-ymir', layer: 'memory', rate: 0.4 },
+      { a: 'forseti', b: 'mimir-ymir', layer: 'memory', rate: 0.35 },
+      { a: 'ivaldi', b: 'mimir-ymir', layer: 'memory', rate: 0.35 },
+      { a: 'freyja', b: 'mimir-ymir', layer: 'memory', rate: 0.3 },
+      { a: 'angrboda', b: 'mimir-noatun', layer: 'memory', rate: 0.25 },
+      { a: 'eldhrimnir', b: 'mimir-ymir', layer: 'memory', rate: 0.35 },
+      { a: 'vidar', b: 'mimir-ymir', layer: 'memory', rate: 0.3 },
+
+      // cluster residents route inference through bifröst
+      { a: 'huginn', b: 'bifrost-y', layer: 'model', rate: 0.5 },
+      { a: 'kvasir', b: 'bifrost-y', layer: 'model', rate: 0.45 },
+      { a: 'forseti', b: 'bifrost-y', layer: 'model', rate: 0.35 },
+      { a: 'njord-r', b: 'bifrost-n', layer: 'model', rate: 0.4 },
+      { a: 'angrboda', b: 'bifrost-n', layer: 'model', rate: 0.2 },
+      { a: 'freyja', b: 'bifrost-y', layer: 'model', rate: 0.3 },
+      { a: 'muninn', b: 'bifrost-y', layer: 'model', rate: 0.35 },
+      // the bare-metal pair talk straight to the Sparks — no gateway hop
+      { a: 'eldhrimnir', b: 'vllm-router', layer: 'model', rate: 0.6 },
+      { a: 'vidar', b: 'vllm-router', layer: 'model', rate: 0.35 },
+
+      // NATS mesh — every cluster peers with every other. Drawn as a ring
+      // plus cross-links so the mesh reads as a mesh, not a hub.
+      ...[
+        ['nats-v', 'nats-y'], ['nats-y', 'nats-g'], ['nats-g', 'nats-e'],
+        ['nats-e', 'nats-n'], ['nats-n', 'nats-v'], ['nats-j', 'nats-y'],
+        ['nats-v', 'nats-e'], ['nats-j', 'nats-n'],
+      ].map(([a, b]) => ({ a, b, layer: 'nats', rate: 0.5 })),
+
+      // observability fan-in — all clusters ship to glitnir
+      ...['nats-v', 'nats-y', 'nats-e', 'nats-n', 'nats-j'].map((a) => ({
+        a, b: 'tempo', layer: 'obs', rate: 0.4,
+      })),
+      { a: 'mimir-metrics', b: 'minio', layer: 'obs', rate: 0.5 },
+      { a: 'grafana', b: 'mimir-metrics', layer: 'obs', rate: 0.45 },
+      { a: 'grafana', b: 'loki', layer: 'obs', rate: 0.35 },
+      { a: 'grafana', b: 'tempo', layer: 'obs', rate: 0.35 },
+
+      // memory — residents read/write local, learnings/ fan out to shared
+      { a: 'mimir-local', b: 'ravn-ps', layer: 'memory', rate: 0.7 },
+      { a: 'mimir-local', b: 'nemohermes', layer: 'memory', rate: 0.6 },
+      { a: 'mimir-local', b: 'nemoclaw', layer: 'memory', rate: 0.55 },
+      { a: 'mimir-local', b: 'nemoclaw-ui', layer: 'memory', rate: 0.4 },
+      { a: 'mimir-local', b: 'mimir-ymir', layer: 'memory', rate: 0.5 },
+      { a: 'mimir-ymir', b: 'mimir-noatun', layer: 'memory', rate: 0.35 },
+      { a: 'mimir-ymir', b: 'warden-y', layer: 'memory', rate: 0.4 },
+      { a: 'mimir-ymir', b: 'pg-y', layer: 'memory', rate: 0.45 },
+      { a: 'mimir-noatun', b: 'pg-n', layer: 'memory', rate: 0.35 },
+
+      // inference — self-hosted on the Sparks, or metered outside
+      { a: 'bifrost-y', b: 'infgw', layer: 'model', rate: 0.8 },
+      { a: 'bifrost-n', b: 'infgw', layer: 'model', rate: 0.5 },
+      { a: 'infgw', b: 'vllm-router', layer: 'model', rate: 0.7 },
+      { a: 'vllm-router', b: 'nemotron', layer: 'model', rate: 0.8 },
+      { a: 'vllm-router', b: 'qwen36', layer: 'model', rate: 0.2 },
+      { a: 'nemotron', b: 'saehrimnir', layer: 'model', rate: 0.6 },
+      { a: 'nemotron', b: 'tanngnjost', layer: 'model', rate: 0.55 },
+      { a: 'qwen36', b: 'tanngrisnir', layer: 'model', rate: 0.15 },
+      { a: 'bifrost-y', b: 'anthropic', layer: 'model', rate: 0.4 },
+      { a: 'bifrost-y', b: 'openai', layer: 'model', rate: 0.5 },
+      { a: 'bifrost-y', b: 'xai', layer: 'model', rate: 0.12 },
+      { a: 'ravn-ps', b: 'bifrost-y', layer: 'model', rate: 0.6 },
+      { a: 'nemohermes', b: 'bifrost-y', layer: 'model', rate: 0.55 },
+      { a: 'nemoclaw', b: 'bifrost-y', layer: 'model', rate: 0.5 },
+      { a: 'nemoclaw-ui', b: 'bifrost-y', layer: 'model', rate: 0.35 },
+
+      // A2A — residents publish cards; ravn/skuld fronts the endpoints
+      { a: 'ravn-y', b: 'ravn-ps', layer: 'a2a', rate: 0.35 },
+      { a: 'ravn-y', b: 'nemoclaw', layer: 'a2a', rate: 0.3 },
+      { a: 'ravn-n', b: 'nemohermes', layer: 'a2a', rate: 0.25 },
+      { a: 'ravn-y', b: 'ivaldi', layer: 'a2a', rate: 0.2 },
+
+      // platform
+      { a: 'ting', b: 'volundr', layer: 'plat', rate: 0.4 },
+      { a: 'volundr', b: 'ravn-y', layer: 'plat', rate: 0.4 },
+      { a: 'volundr', b: 'pg-y', layer: 'plat', rate: 0.35 },
+      { a: 'volundr', b: 'openshell-v', layer: 'plat', rate: 0.35 },
+      { a: 'guild', b: 'ting', layer: 'plat', rate: 0.25 },
+      { a: 'keycloak', b: 'volundr', layer: 'plat', rate: 0.2 },
+      { a: 'openbao', b: 'volundr', layer: 'plat', rate: 0.18 },
+      { a: 'envoy-n', b: 'volundr-n', layer: 'plat', rate: 0.3 },
+      { a: 'volundr-n', b: 'ravn-n', layer: 'plat', rate: 0.3 },
+      { a: 'laevateinn', b: 'ivaldi', layer: 'plat', rate: 0.6 },
+      { a: 'laevateinn', b: 'ovfarm', layer: 'plat', rate: 0.4 },
+      { a: 'bambuddy', b: 'spoolman', layer: 'plat', rate: 0.3 },
+      { a: 'bambuddy', b: 'orca', layer: 'plat', rate: 0.28 },
+      { a: 'harvester', b: 'guests', layer: 'plat', rate: 0.3 },
+      { a: 'rancher', b: 'harvester', layer: 'plat', rate: 0.22 },
+      { a: 'baldr', b: 'harvester', layer: 'plat', rate: 0.2 },
+      { a: 'frigg', b: 'harvester', layer: 'plat', rate: 0.2 },
+      { a: 'plex', b: 'arr', layer: 'plat', rate: 0.25 },
+      { a: 'openclaw', b: 'openshell-v', layer: 'plat', rate: 0.3 },
+    ];
+
+    const LAYERS = {
+      mesh: { label: 'Agent mesh · on hover', short: 'agent mesh', color: C.amber, dash: [], on: true },
+      nats: { label: 'NATS cluster transport', short: 'nats', color: C.ice, dash: [], on: true },
+      memory: { label: 'Mímir memory', short: 'mímir', color: C.ice, dash: [1, 4], on: true },
+      model: { label: 'Model calls', short: 'models', color: C.spring, dash: [], on: true },
+      a2a: { label: 'A2A tasks', short: 'a2a', color: C.violet, dash: [7, 5], on: true },
+      obs: { label: 'Telemetry → glitnir', short: 'telemetry', color: C.fg3, dash: [3, 3], on: true },
+      plat: { label: 'Platform', short: 'platform', color: C.fg3, dash: [], on: true },
+    };
+
+    const COMPUTE = {
+      ice: { label: 'Niuu realms · k8s', short: 'k8s realms', color: C.ice, on: true },
+      spring: { label: 'Your own silicon', short: 'own silicon', color: C.spring, on: true },
+      violet: { label: 'Outside · metered', short: 'outside', color: C.violet, on: true },
+    };
+
+    const byId = new Map(NODES.map((n) => [n.id, n]));
+    const clusterById = new Map(CLUSTERS.map((c) => [c.id, c]));
+
+    EDGES.forEach((e, i) => {
+      e.id = i;
+      e.na = byId.get(e.a);
+      e.nb = byId.get(e.b);
+      e.color = LAYERS[e.layer].color;
+      if (e.layer === 'model') e.color = e.nb.hue === 'violet' ? C.violet : C.spring;
+    });
+
+    const adj = new Map();
+    EDGES.forEach((e) => {
+      if (!adj.has(e.a)) adj.set(e.a, new Set());
+      if (!adj.has(e.b)) adj.set(e.b, new Set());
+      adj.get(e.a).add(e.b);
+      adj.get(e.b).add(e.a);
+    });
+    const connected = (a, b) => adj.get(a)?.has(b) ?? false;
+
+    /* ---------- world positions ---------- */
+
+    for (const n of NODES) {
+      const c = clusterById.get(n.c);
+      const rad = (n.a * Math.PI) / 180;
+      n.x = c.x + Math.cos(rad) * c.r * n.o;
+      n.y = c.y + Math.sin(rad) * c.r * n.o;
+    }
+
+    // realm hulls — bounding box of member clusters, padded
+    for (const rm of REALMS) {
+      const ms = rm.members.map((id) => clusterById.get(id));
+      const pad = 78;
+      rm.x0 = Math.min(...ms.map((c) => c.x - c.r)) - pad;
+      rm.y0 = Math.min(...ms.map((c) => c.y - c.r)) - pad;
+      rm.x1 = Math.max(...ms.map((c) => c.x + c.r)) + pad;
+      rm.y1 = Math.max(...ms.map((c) => c.y + c.r)) + pad;
+    }
+
+    const WORLD = (() => {
+      const pad = 100;
+      const xs = CLUSTERS.flatMap((c) => [c.x - c.r, c.x + c.r]);
+      const ys = CLUSTERS.flatMap((c) => [c.y - c.r, c.y + c.r]);
+      return {
+        x0: Math.min(...xs) - pad, y0: Math.min(...ys) - pad,
+        x1: Math.max(...xs) + pad, y1: Math.max(...ys) + pad,
+      };
+    })();
+
+    document.getElementById('counts').textContent =
+      `${CLUSTERS.length} sites · ${NODES.length} entities · ${EDGES.length} links`;
+
+    /* =========================================================
+       INSPECTOR DATA
+       ========================================================= */
+
+    const AGENTS = {
+      'ravn-ps': {
+        display: 'Local GPT 5.6 Ravn proof', persona: 'product-steward',
+        where: 'local · docker', hue: 'spring', state: 'working', up: '20d 01h',
+        engine: 'ravn', profile: 'ravn-local',
+        task: 'distilling session outcomes into mímir learnings/',
+        local: 0, cloud: 100, model: 'gpt-5.6-sol',
+        beliefs: [
+          ['iteration budget over 200 rarely improves the outcome', 0.81],
+          ['checkpointing every 10 tools recovers cleanly from stuck runs', 0.88],
+          ['entity detection is worth the extra 1k tokens per ingest', 0.72],
+        ],
+        tools: [['episode_reflect', 214, 99], ['fact_detect', 148, 96], ['checkpoint_restore', 37, 100]],
+        models: [['gpt-5.6-sol', 'openai · cloud', 'cloud']],
+      },
+      nemohermes: {
+        display: 'Local NemoHermes full proof', persona: '—',
+        where: 'local · docker', hue: 'spring', state: 'learning', up: '20d 01h',
+        engine: 'hermes', profile: 'ravn-local',
+        task: 'skills extraction from the last 12 episodes',
+        local: 100, cloud: 0, model: 'nvidia/nemotron-3-super',
+        beliefs: [
+          ['nemotron-3-super holds tool-call format better with a system prefix', 0.84],
+          ['the valaskjálf vLLM endpoint cold-starts in ~40s from zero replicas', 0.91],
+          ['reflection under 512 tokens loses the causal chain', 0.69],
+        ],
+        tools: [['skill_extract', 96, 94], ['episode_reflect', 88, 97], ['entity_detect', 61, 92]],
+        models: [['nvidia/nemotron-3-super', 'valaskjálf · vLLM', 'local']],
+      },
+      nemoclaw: {
+        display: 'Local NemoClaw full proof', persona: '—',
+        where: 'local · docker', hue: 'spring', state: 'working', up: '20d 01h',
+        engine: 'openclaw', profile: 'ravn-local',
+        task: 'running a sandboxed build in openshell-sandboxes',
+        local: 100, cloud: 0, model: 'nvidia/nemotron-3-super',
+        beliefs: [
+          ['openclaw sandboxes need the auth home writable to resume', 0.93],
+          ['builds on arm64 nodes need an explicit platform pin', 0.87],
+          ['scale-to-zero saves GPU hours but breaks first-token latency', 0.78],
+        ],
+        tools: [['sandbox_launch', 132, 95], ['build_verify', 74, 91], ['platform_pin', 40, 100]],
+        models: [['nvidia/nemotron-3-super', 'valaskjálf · vLLM', 'local']],
+      },
+      'nemoclaw-ui': {
+        display: 'Local NemoClaw UI proof', persona: '—',
+        where: 'local · docker', hue: 'spring', state: 'waiting', up: '20d 01h',
+        engine: 'openclaw', profile: 'ravn-local',
+        task: 'awaiting operator answer — approve the UI diff?',
+        local: 0, cloud: 100, model: 'gpt-5.6-sol',
+        beliefs: [
+          ['UI diffs over 400 lines get rejected without a screenshot', 0.86],
+          ['the coverage gate fails before lint, so run tests first', 0.9],
+          ['token budget guards trip most often on long transcripts', 0.74],
+        ],
+        tools: [['diff_screenshot', 58, 93], ['coverage_check', 51, 98], ['budget_guard', 29, 100]],
+        models: [['gpt-5.6-sol', 'openai · cloud', 'cloud']],
+      },
+    };
+
+    /* One resident per cluster, plus two on bare metal. Ivaldi is deployed
+       (eitri/nats: ivaldi-room 1/1); muninn is on valhalla, whose API we
+       cannot reach. The rest are the intended per-cluster stewards. */
+    const CLUSTER_RESIDENTS = {
+      huginn: ['valaskjálf · asgard', 'ravn', 'nvidia/nemotron-3-super', 'valaskjálf vLLM', 100, 'working',
+        'watching GPU pressure across the three Sparks',
+        [['scale-to-zero costs more in SLO than it saves in GPU hours', 0.82],
+         ['llm-d canary jobs fail on tanngrisnir under memory pressure', 0.88],
+         ['nemotron holds format better than qwen for tool calls', 0.76]],
+        [['gpu_pressure_probe', 142, 97], ['replica_warm', 88, 93], ['canary_triage', 51, 90]]],
+      muninn: ['valhalla · asgard', 'ravn', 'gpt-5.6-terra', 'openai · cloud', 0, 'working',
+        'reconciling drift across helm releases',
+        [['the cluster API token expires without a renewal hook', 0.94],
+         ['drift reappears after every fleet resync', 0.81],
+         ['ingress certs renew cleanly since cert-manager 1.20.3', 0.9]],
+        [['helm_release_diff', 214, 99], ['token_renew', 63, 88], ['cert_expiry_sweep', 41, 100]]],
+      kvasir: ['ymir · yggdrasil', 'hermes', 'nvidia/nemotron-3-super', 'valaskjálf vLLM', 100, 'learning',
+        'compacting learnings/ and promoting durable facts',
+        [['learnings written by two residents converge within a day', 0.79],
+         ['pages over 4k tokens retrieve worse than split pages', 0.86],
+         ['entity extraction pays for itself after ~40 pages', 0.71]],
+        [['page_compact', 176, 96], ['fact_promote', 121, 94], ['dedupe_entities', 84, 98]]],
+      'njord-r': ['nóatún · asgard', 'openclaw', 'nvidia/nemotron-3-super', 'valaskjálf vLLM', 100, 'working',
+        'rolling the second niuu deployment behind the envoy gateway',
+        [['the gateway drops websockets during a rollout without drain', 0.91],
+         ['postgres failover takes 12s, long enough to fail a run', 0.84],
+         ['noatun and ymir schemas drift after independent migrations', 0.77]],
+        [['rollout_drain', 97, 95], ['pg_failover_probe', 62, 92], ['schema_diff', 45, 99]]],
+      forseti: ['glitnir · alfheim', 'ravn', 'gpt-5.6-terra', 'openai · cloud', 0, 'working',
+        'correlating a latency spike across tempo and mimir',
+        [['ingester churn precedes query-frontend timeouts by ~4 min', 0.87],
+         ['minio backpressure shows up first in compactor lag', 0.83],
+         ['per-cluster tempo proxies hide which cluster is noisy', 0.72]],
+        [['trace_correlate', 188, 96], ['ingester_lag_watch', 133, 98], ['series_budget', 70, 91]]],
+      angrboda: ['járnviðr · midgard', 'openclaw', 'llama3.2', 'jarnviðr GPU worker', 100, 'idle',
+        'idle — no open cases',
+        [['transcode queues drain fastest overnight', 0.8],
+         ['the GPU worker is the only node that can transcode', 0.95],
+         ['library scans block the API for ~90s', 0.68]],
+        [['transcode_queue', 74, 94], ['library_scan_window', 38, 97]]],
+      freyja: ['vanaheim · asgard', 'ravn', 'nvidia/nemotron-3-super', 'valaskjálf vLLM', 100, 'working',
+        'balancing guest-cluster VMs across the bare-metal hosts',
+        [['baldr and frigg carry the guest control planes unevenly', 0.85],
+         ['live migration during backup windows times out', 0.89],
+         ['695 pods is mostly guest-cluster overhead, not workload', 0.74]],
+        [['vm_rebalance', 116, 93], ['migration_window', 58, 96], ['host_pressure', 44, 99]]],
+      eldhrimnir: ['sæhrímnir · bare metal', 'hermes', 'nvidia/nemotron-3-super', 'on-host vLLM', 100, 'working',
+        'serving the forge-mesh straight off the Spark, no gateway hop',
+        [['skipping the gateway saves ~180ms per call', 0.9],
+         ['systemd restarts beat pod rescheduling for a warm model', 0.86],
+         ['unified memory lets a 49B model coexist with the agent', 0.81]],
+        [['direct_infer', 204, 98], ['model_warm', 91, 97], ['thermal_guard', 47, 100]]],
+      ivaldi: ['eitri · svartalfheim', 'ravn', 'nvidia/nemotron-3-super', 'valaskjálf vLLM', 100, 'working',
+        'watching the shop floor — lævateinn 01–04 and the printer fleet',
+        [['spindle load above 82% precedes a tool change within 20 min', 0.83],
+         ['the shop NATS stream drops during the 06:00 backup window', 0.88],
+         ['operators ignore alerts that fire more than twice an hour', 0.75]],
+        [['spindle_load_watch', 61, 94], ['nats_gap_detect', 44, 100], ['shift_handover', 22, 86]]],
+      vidar: ['baldr · bare metal', 'ravn', 'deepseek-r1', 'on-host ollama', 100, 'learning',
+        'learning host failure signatures from vanaheim telemetry',
+        [['disk latency spikes precede VM eviction by ~6 min', 0.84],
+         ['112-core hosts throttle before they saturate', 0.78],
+         ['running outside k8s survives control-plane outages', 0.92]],
+        [['host_signature', 88, 94], ['evict_predict', 52, 90], ['bare_metal_probe', 36, 98]]],
+    };
+
+    for (const [id, v] of Object.entries(CLUSTER_RESIDENTS)) {
+      const [where, engine, model, modelWhere, local, state, task, beliefs, tools] = v;
+      AGENTS[id] = {
+        display: byId.get(id)?.label ?? id, persona: '—', where,
+        hue: byId.get(id)?.hue ?? 'ice', state, up: '—',
+        engine, profile: engine === 'ravn' ? 'ravn-cluster' : `${engine}-cluster`,
+        task, local, cloud: 100 - local, model, beliefs, tools,
+        models: [[model, modelWhere, local === 100 ? 'local' : 'cloud']],
+      };
+    }
+
+    const CARDS = {
+      'ravn-ps': {
+        name: 'product-steward',
+        description: 'Long-lived Ravn stewarding the product surface. Distils sessions into durable memory and answers questions about platform state.',
+        session: '7193e4d1-1cb5-4fba-837d-694865b681f5',
+        transport: 'JSONRPC', protocolVersion: '0.3.0', version: '0.0.1',
+        auth: 'oauth2 · client_credentials', visibility: 'user',
+        caps: { streaming: true, pushNotifications: true, stateTransitionHistory: true },
+        skills: [
+          { id: 'session_distil', name: 'Distil a session', tags: ['memory', 'write'] },
+          { id: 'platform_state', name: 'Explain platform state', tags: ['read'] },
+          { id: 'fact_detect', name: 'Detect durable facts', tags: ['memory'] },
+        ],
+      },
+      nemohermes: {
+        name: 'nemo-hermes',
+        description: 'Hermes-engine resident running entirely on self-hosted Nemotron. Extracts reusable skills from completed episodes.',
+        session: 'a1c47f92-3b68-4e0d-9f21-6c8ab30e5177',
+        transport: 'JSONRPC', protocolVersion: '0.3.0', version: '0.0.1',
+        auth: 'oauth2 · client_credentials', visibility: 'user',
+        caps: { streaming: true, pushNotifications: false, stateTransitionHistory: true },
+        skills: [
+          { id: 'skill_extract', name: 'Extract a skill', tags: ['learning'] },
+          { id: 'episode_reflect', name: 'Reflect on an episode', tags: ['memory'] },
+        ],
+      },
+      nemoclaw: {
+        name: 'nemo-claw',
+        description: 'OpenClaw-engine resident. Takes a goal and a repo, runs it in an OpenShell sandbox, returns a verified build.',
+        session: 'c73f0a15-9d2e-4b87-a054-1e9fb6d2c308',
+        transport: 'JSONRPC', protocolVersion: '0.3.0', version: '0.0.1',
+        auth: 'oauth2 · client_credentials', visibility: 'user',
+        caps: { streaming: true, pushNotifications: true, stateTransitionHistory: true },
+        skills: [
+          { id: 'sandbox_build', name: 'Build in a sandbox', tags: ['code', 'verify'] },
+          { id: 'platform_pin', name: 'Pin build platform', tags: ['code'] },
+        ],
+      },
+      'nemoclaw-ui': {
+        name: 'nemo-claw-ui',
+        description: 'OpenClaw-engine resident scoped to the web surface. Produces UI diffs with screenshots and waits for approval.',
+        session: 'f2b8d461-77ac-4e35-b1d9-05ca8e37f6b2',
+        transport: 'JSONRPC', protocolVersion: '0.3.0', version: '0.0.1',
+        auth: 'oauth2 · client_credentials', visibility: 'user',
+        caps: { streaming: true, pushNotifications: true, stateTransitionHistory: true },
+        skills: [
+          { id: 'ui_diff', name: 'Produce a UI diff', tags: ['code', 'review'] },
+          { id: 'diff_screenshot', name: 'Screenshot a diff', tags: ['verify'] },
+        ],
+      },
+    };
+
+    /* Every resident publishes an agent card, not just the local four —
+       that is the whole point of A2A discovery. Cluster residents get one
+       derived from the tools they actually kept. */
+    const CARD_HOSTS = {
+      huginn: 'valaskjalf.asgard', muninn: 'valhalla.asgard', kvasir: 'yggdrasil',
+      'njord-r': 'noatun.asgard', forseti: 'glitnir.alfheim', angrboda: 'jarnvidr.midgard',
+      freyja: 'vanaheim.asgard', ivaldi: 'eitri.svartalfheim',
+      eldhrimnir: 'saehrimnir.valaskjalf.asgard', vidar: 'baldr.vanaheim.asgard',
+    };
+    const CARD_DESC = {
+      huginn: 'Cluster resident for the GPU estate. Answers questions about model serving, replica state and Spark pressure.',
+      muninn: 'Platform steward for valhalla. Reconciles helm drift and reports cluster health.',
+      kvasir: 'Memory steward. Compacts learnings, promotes durable facts and answers what the fleet knows.',
+      'njord-r': 'Deployment steward for the nóatún stack. Runs rollouts and reports gateway and database state.',
+      forseti: 'Observability steward. Correlates traces, metrics and logs across every cluster.',
+      angrboda: 'Media cluster steward. Manages transcode queues and library scans.',
+      freyja: 'Fleet steward for the hypervisor. Balances guest clusters across bare metal.',
+      ivaldi: 'Workshop steward. Watches the shop floor, the printer fleet and lævateinn signals.',
+      eldhrimnir: 'Bare-metal resident on a DGX Spark. Serves the forge mesh directly, bypassing the gateway.',
+      vidar: 'Bare-metal resident on baldr. Learns host failure signatures and survives control-plane outages.',
+    };
+    Object.entries(CARD_HOSTS).forEach(([id, host], i) => {
+      const a = AGENTS[id];
+      if (!a) return;
+      CARDS[id] = {
+        name: byId.get(id)?.label ?? id,
+        description: CARD_DESC[id],
+        session: `${id.replace(/[^a-z0-9]/g, '')}-${(1000 + i * 137).toString(16)}-resident`,
+        host,
+        transport: 'JSONRPC',
+        protocolVersion: '0.3.0',
+        version: '0.0.1',
+        auth: 'oauth2 · client_credentials',
+        visibility: 'realm',
+        caps: { streaming: true, pushNotifications: true, stateTransitionHistory: true },
+        skills: a.tools.map(([t]) => ({
+          id: t,
+          name: t.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()),
+          tags: [a.engine],
+        })),
+      };
+    });
+
+    /* The Mímir instances — two of them are not the same product. */
+    const MIMIRS = [
+      {
+        id: 'mimir-ymir', name: 'mímir-shared', kind: 'Niuu Mímir · knowledge',
+        where: 'ymir · yggdrasil', hue: 'ice',
+        rows: [
+          ['workload', 'niuu-mimir-shared 1/1'], ['warden', 'mimir-shared-warden-agent 1/1'],
+          ['service', 'niuu-mimir-shared-app :7477'], ['host', 'mimir.yggdrasil.niuu.world'],
+          ['store', 'CloudNativePG · rw/ro/r'], ['role', 'shared · read priority 10'],
+        ],
+        note: 'The primary shared knowledge base. Residents fan learnings/ out to it; self/ stays local.',
+      },
+      {
+        id: 'mimir-noatun', name: 'mímir-shared', kind: 'Niuu Mímir · knowledge',
+        where: 'nóatún · asgard', hue: 'ice',
+        rows: [
+          ['workload', 'niuu-mimir-shared 1/1'], ['store', 'CloudNativePG · rw/ro/r'],
+          ['gateway', 'envoy-volundr-gateway'], ['host', 'niuu.noatun.asgard.niuu.world'],
+          ['role', 'second deployment'],
+        ],
+        note: 'A second full Niuu deployment. Same chart, separate database — not a replica of ymir.',
+      },
+      {
+        id: 'mimir-local', name: 'mímir local', kind: 'Niuu Mímir · knowledge',
+        where: 'workstation', hue: 'spring',
+        rows: [
+          ['path', '~/.ravn/mimir'], ['pages', '203'], ['categories', '9'],
+          ['search', 'vector + BM25 · RRF k=60'], ['role', 'local · read priority 20'],
+          ['health', 'healthy'],
+        ],
+        note: 'Each resident carries one. Write routing: self/ → local only, learnings/ → local + shared.',
+      },
+      {
+        id: 'mimir-valhalla', name: 'mímir-shared', kind: 'Niuu Mímir · knowledge',
+        where: 'valhalla · asgard', hue: 'ice',
+        rows: [
+          ['chart', 'charts/mimir · values-shared'], ['namespace', 'valhalla'],
+          ['status', 'declared, not observed'], ['reason', 'cluster API returns 403'],
+        ],
+        note: 'The helm values install this into the valhalla namespace, but that cluster\'s API rejects our credentials — so this one is declared in config, not confirmed on the wire.',
+        unverified: true,
+      },
+      {
+        id: 'mimir-metrics', name: 'mimir', kind: 'Grafana Mimir · metrics',
+        where: 'glitnir · alfheim', hue: 'ice',
+        rows: [
+          ['distributor', '1/1'], ['ingester', '3/3'], ['querier', '1/1'],
+          ['query-frontend', '1/1'], ['store-gateway', '1/1'], ['compactor', '1/1'],
+          ['backend', 'minio'], ['host', 'mimir.glitnir.alfheim.niuu.world'],
+        ],
+        note: 'A different product that happens to share the name — the metrics TSDB behind Grafana. It stores no agent knowledge.',
+      },
+    ];
+
+    /* Per-cluster workload detail for the inspector. */
+    const WORKLOADS = {
+      valaskjalf: [['vllm', 'inference-gateway', 1], ['vllm', 'vllm-deployment-router', 1], ['vllm', 'vllm-nemotron-3-super', 2], ['vllm', 'llmd-qwen36-coder', 0], ['vllm', 'vllm-qwen3-coder', 0], ['vllm', 'vllm-gemma4', 0], ['openclaw', 'openclaw (sts)', 0], ['openshell', 'openshell (sts)', 1], ['nats', 'nats-valaskjalf (sts)', 1], ['nats', 'nats-surveyor', 1], ['volundr', 'observatory', 1]],
+      ymir: [['volundr', 'niuu-volundr', 1], ['volundr', 'niuu-ting', 1], ['volundr', 'niuu-bifrost', 2], ['volundr', 'niuu-ravn', 1], ['volundr', 'niuu-guild', 1], ['volundr', 'niuu-mimir-shared', 1], ['volundr', 'mimir-shared-warden-agent', 1], ['volundr', 'niuu-observatory', 1], ['volundr', 'niuu-volundr-web-next', 1], ['keycloak', 'keycloak', 1], ['openbao', 'openbao', 1], ['nats', 'nats-yggdrasil (sts)', 3]],
+      noatun: [['volundr', 'niuu-volundr', 1], ['volundr', 'niuu-bifrost', 2], ['volundr', 'niuu-ravn', 1], ['volundr', 'niuu-mimir-shared', 1], ['volundr', 'niuu-observatory', 1], ['volundr', 'niuu-volundr-web-next', 1], ['envoy-gateway-system', 'envoy-volundr-gateway', 1], ['nats', 'nats-noatun (sts)', 1], ['openshell', 'openshell (sts)', 1]],
+      glitnir: [['monitoring', 'mimir-distributor', 1], ['monitoring', 'mimir-ingester (sts)', 3], ['monitoring', 'mimir-querier', 1], ['monitoring', 'mimir-query-frontend', 1], ['monitoring', 'mimir-store-gateway (sts)', 1], ['monitoring', 'mimir-compactor (sts)', 1], ['monitoring', 'grafana', 1], ['monitoring', 'loki', 1], ['monitoring', 'tempo-gateway', 1], ['minio', 'minio', 1], ['volundr', 'observatory', 1]],
+      eitri: [['laevateinn', 'laevateinn-01…04', 4], ['laevateinn', 'laevateinn-console', 1], ['nats', 'ivaldi-room', 1], ['nats', 'ivaldi', 0], ['bambuddy', 'bambuddy-web', 1], ['bambuddy', 'bambu-studio-api', 1], ['bambuddy', 'orca-slicer-api', 1], ['spoolman', 'spoolman', 1], ['nats', 'nats-eitri (sts)', 1], ['openshell', 'openshell (sts)', 1], ['volundr', 'observatory', 1]],
+      vanaheim: [['harvester-system', 'harvester', 1], ['rancher-vcluster', 'rancher', 1], ['volundr', 'observatory', 1], ['—', 'realm namespaces', 9]],
+      jarnvidr: [['media', 'plex', 1], ['media', 'radarr', 1], ['media', 'sonarr', 1], ['media', 'sabnzbd', 1], ['nats', 'nats-jarnvidr (sts)', 1], ['openshell', 'openshell (sts)', 1], ['volundr', 'observatory', 1]],
+    };
+
+    /* =========================================================
+       CANVAS + CAMERA
+       ========================================================= */
+
+    const cv = document.getElementById('cv');
+    const ctx = cv.getContext('2d');
+    const stage = document.getElementById('stage');
+    const tipEl = document.getElementById('tip');
+    const zvalEl = document.getElementById('zval');
+    const mm = document.getElementById('mm');
+    const mmx = mm.getContext('2d');
+
+    const ZMIN = 0.12, ZMAX = 3.2;
+    const cam = { x: 0, y: 0, z: 1 };
+    let W = 0, H = 0, dpr = 1;
+
+    /* True once the stage has reported a real size. The camera cannot be
+       framed against a zero-size box, so the first honest measurement has
+       to trigger the initial fit — otherwise the view stays stuck on the
+       fallback scale and nothing lands on screen. */
+    let sized = false;
+
+    function resize() {
+      const rect = stage.getBoundingClientRect();
+      if (rect.width < 2 || rect.height < 2) return false;
+      W = rect.width;
+      H = rect.height;
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      cv.width = Math.round(W * dpr);
+      cv.height = Math.round(H * dpr);
+      mm.width = Math.max(1, mm.clientWidth * dpr);
+      mm.height = Math.max(1, mm.clientHeight * dpr);
+      sized = true;
+      return true;
+    }
+
+    function fit(animate = true) {
+      if (!resize() && !sized) return;
+      const ww = WORLD.x1 - WORLD.x0;
+      const wh = WORLD.y1 - WORLD.y0;
+      // Filters live in the toolbar now, so the canvas is unobstructed and
+      // the whole stage is available to frame into.
+      const z = clamp(Math.min(W / ww, H / wh), ZMIN, ZMAX);
+      const target = { x: (WORLD.x0 + WORLD.x1) / 2, y: (WORLD.y0 + WORLD.y1) / 2, z };
+      if (!animate || REDUCED) return void Object.assign(cam, target);
+      glide(target);
+    }
+
+    let glideTo = null, glideT = 0;
+    function glide(target) {
+      glideTo = { ...target, from: { ...cam } };
+      glideT = 0;
+    }
+    function stepGlide(dt) {
+      if (!glideTo) return;
+      glideT = Math.min(1, glideT + dt / 460);
+      const e = 1 - Math.pow(1 - glideT, 3);
+      cam.x = glideTo.from.x + (glideTo.x - glideTo.from.x) * e;
+      cam.y = glideTo.from.y + (glideTo.y - glideTo.from.y) * e;
+      cam.z = glideTo.from.z + (glideTo.z - glideTo.from.z) * e;
+      if (glideT >= 1) glideTo = null;
+    }
+
+    const toScreen = (wx, wy) => [(wx - cam.x) * cam.z + W / 2, (wy - cam.y) * cam.z + H / 2];
+    const toWorld = (sx, sy) => [(sx - W / 2) / cam.z + cam.x, (sy - H / 2) / cam.z + cam.y];
+
+    function zoomAbout(factor, sx, sy) {
+      glideTo = null;
+      const [wx, wy] = toWorld(sx, sy);
+      const z = clamp(cam.z * factor, ZMIN, ZMAX);
+      // keep the world point under the cursor fixed
+      cam.x = wx - (sx - W / 2) / z;
+      cam.y = wy - (sy - H / 2) / z;
+      cam.z = z;
+    }
+
+    stage.addEventListener(
+      'wheel',
+      (ev) => {
+        ev.preventDefault();
+        const rect = stage.getBoundingClientRect();
+        const f = Math.pow(1.0016, -ev.deltaY);
+        zoomAbout(f, ev.clientX - rect.left, ev.clientY - rect.top);
+      },
+      { passive: false }
+    );
+
+    let drag = null;
+    cv.addEventListener('pointerdown', (ev) => {
+      if (ev.altKey) return void fit();
+      drag = { sx: ev.clientX, sy: ev.clientY, cx: cam.x, cy: cam.y, moved: false };
+      glideTo = null;
+      cv.setPointerCapture(ev.pointerId);
+      cv.classList.add('dragging');
+    });
+    cv.addEventListener('pointerup', (ev) => {
+      if (drag && !drag.moved && hover) select(hover);
+      drag = null;
+      cv.classList.remove('dragging');
+      cv.releasePointerCapture?.(ev.pointerId);
+    });
+    cv.addEventListener('pointercancel', () => {
+      drag = null;
+      cv.classList.remove('dragging');
+    });
+
+    stage.addEventListener('pointermove', (ev) => {
+      const rect = stage.getBoundingClientRect();
+      const mx = ev.clientX - rect.left;
+      const my = ev.clientY - rect.top;
+
+      if (drag) {
+        const dx = ev.clientX - drag.sx;
+        const dy = ev.clientY - drag.sy;
+        if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+        cam.x = drag.cx - dx / cam.z;
+        cam.y = drag.cy - dy / cam.z;
+        tipEl.classList.remove('on');
+        return;
+      }
+
+      const [wx, wy] = toWorld(mx, my);
+      let found = null, best = Infinity;
+      for (const n of NODES) {
+        if (!COMPUTE[n.hue].on) continue;
+        const r = (n.type === 'agent' ? 22 : n.type === 'mimir' || n.type === 'mimir-metrics' ? 24 : 17) / 1;
+        const d = Math.hypot(n.x - wx, n.y - wy);
+        if (d < r && d < best) { best = d; found = n; }
+      }
+      hover = found ? found.id : null;
+
+      if (found) {
+        tipEl.classList.add('on');
+        tipEl.style.borderLeftColor = C[found.hue];
+        const c = clusterById.get(found.c);
+        tipEl.innerHTML =
+          `<div class="t">${found.label}</div>` +
+          `<div class="s">${found.kind}${found.sub ? ' · ' + found.sub : ''}</div>` +
+          `<div class="s">${c.label.toLowerCase()}${c.realm ? ' · ' + c.realm : ''}</div>`;
+        const tw = tipEl.offsetWidth || 200;
+        tipEl.style.left = `${clamp(mx + 16, 8, rect.width - tw - 8)}px`;
+        tipEl.style.top = `${clamp(my + 16, 8, rect.height - 74)}px`;
+      } else {
+        tipEl.classList.remove('on');
+      }
+    });
+    stage.addEventListener('pointerleave', () => {
+      hover = null;
+      tipEl.classList.remove('on');
+    });
+
+    document.getElementById('zin').addEventListener('click', () => zoomAbout(1.35, W / 2, H / 2));
+    document.getElementById('zout').addEventListener('click', () => zoomAbout(1 / 1.35, W / 2, H / 2));
+    document.getElementById('zfit').addEventListener('click', () => fit());
+
+    stage.setAttribute('tabindex', '0');
+    stage.addEventListener('keydown', (ev) => {
+      const step = 90 / cam.z;
+      const map = {
+        ArrowLeft: [-step, 0], ArrowRight: [step, 0],
+        ArrowUp: [0, -step], ArrowDown: [0, step],
+      };
+      if (map[ev.key]) {
+        glideTo = null;
+        cam.x += map[ev.key][0];
+        cam.y += map[ev.key][1];
+        ev.preventDefault();
+        return;
+      }
+      if (ev.key === '+' || ev.key === '=') { zoomAbout(1.35, W / 2, H / 2); ev.preventDefault(); }
+      if (ev.key === '-' || ev.key === '_') { zoomAbout(1 / 1.35, W / 2, H / 2); ev.preventDefault(); }
+      if (ev.key === '0') { fit(); ev.preventDefault(); }
+    });
+
+    // minimap click-to-jump
+    mm.addEventListener('click', (ev) => {
+      const rect = mm.getBoundingClientRect();
+      const fx = (ev.clientX - rect.left) / rect.width;
+      const fy = (ev.clientY - rect.top) / rect.height;
+      glide({
+        x: WORLD.x0 + fx * (WORLD.x1 - WORLD.x0),
+        y: WORLD.y0 + fy * (WORLD.y1 - WORLD.y0),
+        z: cam.z,
+      });
+    });
+
+    /* ---------- drawing ---------- */
+
+    let hover = null;
+    let selected = 'mimir-ymir';
+
+    const STARS = Array.from({ length: 260 }, () => ({
+      x: WORLD.x0 + Math.random() * (WORLD.x1 - WORLD.x0),
+      y: WORLD.y0 + Math.random() * (WORLD.y1 - WORLD.y0),
+      r: 0.6 + Math.random() * 1.5,
+      a: 0.05 + Math.random() * 0.16,
+      tw: Math.random() * Math.PI * 2,
+    }));
+
+    function mix(hex, alpha) {
+      const r = parseInt(hex.slice(1, 3), 16);
+      const g = parseInt(hex.slice(3, 5), 16);
+      const b = parseInt(hex.slice(5, 7), 16);
+      return `rgba(${r},${g},${b},${alpha})`;
+    }
+
+    function label(text, x, y, size, color, align = 'center', track = 0.06) {
+      ctx.font = `${size}px ${MONO}`;
+      ctx.textAlign = align;
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = color;
+      if (track > 0 && ctx.letterSpacing !== undefined) {
+        ctx.letterSpacing = `${(size * track).toFixed(2)}px`;
+        ctx.fillText(text, x, y);
+        ctx.letterSpacing = '0px';
+        return;
+      }
+      ctx.fillText(text, x, y);
+    }
+
+    function roundRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function poly(cx, cy, r, sides, rot) {
+      ctx.beginPath();
+      for (let i = 0; i < sides; i++) {
+        const t = rot + (i / sides) * Math.PI * 2;
+        const x = cx + Math.cos(t) * r;
+        const y = cy + Math.sin(t) * r;
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.closePath();
+    }
+
+    /* Multiplier that keeps a world-space label at constant screen size
+       once you zoom out past the reference scale. */
+    const LBL = () => Math.max(1, 0.5 / cam.z);
+
+    /* Zoom thresholds at which each tier of label becomes legible without
+       colliding. Derived from sibling spacing, not guessed:
+         overview  (<0.45)  realms + cluster names only
+         primary   (>=0.45) residents, Mímirs, workflow sessions
+         secondary (>=0.80) services, hosts, models, run agents
+         detail    (>=1.15) the second line under any label            */
+    const LOD = { tag: 0.30, primary: 0.45, secondary: 0.8, detail: 1.15 };
+
+    function drawRealm(rm) {
+      const w = rm.x1 - rm.x0, h = rm.y1 - rm.y0;
+      ctx.save();
+      ctx.setLineDash([14, 12]);
+      ctx.strokeStyle = mix(C.ice, 0.16);
+      ctx.lineWidth = 1.5 / cam.z;
+      roundRect(rm.x0, rm.y0, w, h, 54);
+      ctx.stroke();
+      ctx.restore();
+
+      const g = ctx.createLinearGradient(rm.x0, rm.y0, rm.x0, rm.y1);
+      g.addColorStop(0, mix(C.ice, 0.02));
+      g.addColorStop(1, mix(C.ice, 0.005));
+      ctx.fillStyle = g;
+      roundRect(rm.x0, rm.y0, w, h, 54);
+      ctx.fill();
+
+      // structural labels hold a constant screen size, so the overview
+      // stays readable however far out you zoom
+      // set along the bottom edge — cluster headers sit above their circles
+      // near the hull's top, so a top-left realm label collides with them
+      const k = LBL();
+      const ly = rm.y1 - 22 * k;
+      label(rm.label, rm.x0 + 26 * k, ly, 22 * k, mix(C.ice, 0.5), 'left', 0.22);
+      if (cam.z > 0.42) {
+        label(rm.dns, rm.x0 + 26, ly - 24, 15, mix(C.fg4, 0.95), 'left', 0.1);
+      }
+    }
+
+    /* Convex hull, expanded outward — a mesh is a set of residents
+       scattered across clusters, so its shape has to be derived. */
+    function hull(pts) {
+      if (pts.length < 3) return pts;
+      const s = [...pts].sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+      const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+      const lower = [];
+      for (const p of s) {
+        while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+        lower.push(p);
+      }
+      const upper = [];
+      for (let i = s.length - 1; i >= 0; i--) {
+        const p = s[i];
+        while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+        upper.push(p);
+      }
+      lower.pop(); upper.pop();
+      return lower.concat(upper);
+    }
+
+    function drawMesh(f) {
+      if (!LAYERS.mesh.on) return;
+      const pts = f.members.map((id) => byId.get(id)).filter(Boolean).map((n) => [n.x, n.y]);
+      if (pts.length < 2) return;
+
+      const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+      const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+      const grow = 78;
+      const h = hull(pts).map(([x, y]) => {
+        const d = Math.hypot(x - cx, y - cy) || 1;
+        return [x + ((x - cx) / d) * grow, y + ((y - cy) / d) * grow];
+      });
+
+      /* Five hulls spanning every cluster is five overlapping blobs on top
+         of everything else. The rail lists them all; the shape only draws
+         for the one you are actually looking at. */
+      const focused = f.members.includes(hover) || f.members.includes(selected);
+      if (!focused) return;
+      const A = 1;
+
+      ctx.save();
+      ctx.beginPath();
+      if (h.length < 3) {
+        ctx.moveTo(h[0][0], h[0][1]);
+        ctx.lineTo(h[1][0], h[1][1]);
+      } else {
+        // rounded closed path through the expanded hull
+        ctx.moveTo((h[0][0] + h[h.length - 1][0]) / 2, (h[0][1] + h[h.length - 1][1]) / 2);
+        for (let i = 0; i < h.length; i++) {
+          const cur = h[i];
+          const nxt = h[(i + 1) % h.length];
+          ctx.quadraticCurveTo(cur[0], cur[1], (cur[0] + nxt[0]) / 2, (cur[1] + nxt[1]) / 2);
+        }
+        ctx.closePath();
+      }
+      if (focused) {
+        ctx.fillStyle = mix(C.amber, 0.045);
+        ctx.fill();
+      }
+      ctx.setLineDash([16, 12]);
+      ctx.strokeStyle = mix(C.amber, 0.3 * A);
+      ctx.lineWidth = 1.8 / cam.z;
+      ctx.stroke();
+      ctx.restore();
+
+      // the rail lists every mesh, so an unfocused hull needs no caption
+      // sitting on top of whatever cluster it happens to span
+      if (!focused) return;
+      const k = LBL();
+      label(f.label, cx, cy, 17 * k, mix(C.amber, 0.62), 'center', 0.2);
+      label(f.purpose, cx, cy + 19 * k, 12 * k, mix(C.amber, 0.4), 'center', 0.1);
+      if (cam.z > 0.5) {
+        label(`${f.members.length} residents`, cx, cy + 35, 11, mix(C.fg4, 1), 'center', 0.1);
+      }
+    }
+
+    function drawCluster(c, now) {
+      const col = C[c.hue];
+      const dim = !COMPUTE[c.hue].on;
+      const A = dim ? 0.18 : 1;
+      const boost = c.hue === 'violet' ? 1.5 : c.hue === 'ice' ? 1.25 : 1;
+
+      const g = ctx.createRadialGradient(c.x, c.y, c.r * 0.15, c.x, c.y, c.r);
+      g.addColorStop(0, mix(col, 0.085 * A * boost));
+      g.addColorStop(0.62, mix(col, 0.035 * A * boost));
+      g.addColorStop(1, mix(col, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.save();
+      ctx.strokeStyle = mix(col, 0.34 * A);
+      ctx.lineWidth = 1.4 / cam.z;
+      if (c.bezel === 'dash') ctx.setLineDash([10, 10]);
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      // instrument bezel ticks
+      ctx.strokeStyle = mix(col, 0.2 * A);
+      ctx.lineWidth = 1.2 / cam.z;
+      for (let i = 0; i < 48; i++) {
+        const t = (i / 48) * Math.PI * 2;
+        const major = i % 6 === 0;
+        const r2 = c.r - (major ? 13 : 7);
+        ctx.beginPath();
+        ctx.moveTo(c.x + Math.cos(t) * c.r, c.y + Math.sin(t) * c.r);
+        ctx.lineTo(c.x + Math.cos(t) * r2, c.y + Math.sin(t) * r2);
+        ctx.stroke();
+      }
+
+      if (!REDUCED && !dim) {
+        const a0 = ((now / 9000 + c.x * 0.001) % 1) * Math.PI * 2;
+        ctx.save();
+        ctx.lineWidth = 2.6 / cam.z;
+        for (let k = 0; k < 14; k++) {
+          ctx.strokeStyle = mix(col, 0.18 * (1 - k / 14));
+          ctx.beginPath();
+          ctx.arc(c.x, c.y, c.r, a0 - k * 0.028, a0 - k * 0.028 + 0.03);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      const k = LBL();
+      const ly = c.y - c.r - 34 * k;
+      label(c.label, c.x, ly, 20 * k, mix(col, 0.92 * A), 'center', 0.16);
+      if (cam.z >= LOD.tag) {
+        label(c.tag, c.x, ly + 22 * k, 14 * k, mix(C.fg3, A), 'center', 0.08);
+      }
+      if (cam.z >= LOD.detail && c.role) {
+        label(c.role, c.x, ly + 40 * k, 12.5 * k, mix(C.fg4, A), 'center', 0.08);
+      }
+
+      ctx.strokeStyle = mix(col, 0.28 * A);
+      ctx.lineWidth = 1.2 / cam.z;
+      ctx.beginPath();
+      ctx.moveTo(c.x, ly + 32 * k);
+      ctx.lineTo(c.x, c.y - c.r - 2);
+      ctx.stroke();
+    }
+
+    /* A complete graph between residents scattered across every cluster is
+       ~30 arcs spanning the whole world — the single biggest source of
+       clutter. The mesh hull already says who is in it, so the links
+       themselves only appear once you engage with that mesh (or solo the
+       layer). Everything is still there; it is drawn on demand. */
+    // soloing the mesh layer means you asked for the whole graph — show it
+    const meshSoloed = () =>
+      LAYERS.mesh.on && Object.keys(LAYERS).every((k) => k === 'mesh' || !LAYERS[k].on);
+
+    function meshShown(e) {
+      if (meshSoloed()) return true;
+      const focus = hover ?? selected;
+      if (!focus) return false;
+      if (e.a === focus || e.b === focus) return true;
+      const f = MESHES.find((x) => x.members.includes(focus));
+      return !!f && f.members.includes(e.a) && f.members.includes(e.b);
+    }
+
+    const edgeVisible = (e) =>
+      LAYERS[e.layer].on &&
+      COMPUTE[e.na.hue].on &&
+      COMPUTE[e.nb.hue].on &&
+      (e.layer !== 'mesh' || meshShown(e));
+
+    /* Long cross-cluster links are bowed. Straight lines through a graph
+       this size read as a hairball; arcs separate and stay followable. */
+    /* Edges that converge on a hub (mímir, bifröst) are left straight — a
+       radial fan reads as structure, where bowed arcs criss-cross into
+       noise. Only peer-to-peer links get bowed. */
+    const BOW = { mesh: 0.16, a2a: 0.1, memory: 0, model: 0, nats: 0.13, obs: 0.09, plat: 0 };
+
+    function control(e) {
+      const bow = BOW[e.layer] ?? 0;
+      const mx = (e.na.x + e.nb.x) / 2;
+      const my = (e.na.y + e.nb.y) / 2;
+      if (!bow) return [mx, my];
+      const dx = e.nb.x - e.na.x, dy = e.nb.y - e.na.y;
+      // deterministic side so an edge never flips between frames
+      const side = e.id % 2 === 0 ? 1 : -1;
+      return [mx - dy * bow * side, my + dx * bow * side];
+    }
+
+    function edgePoint(e, t) {
+      const [cx, cy] = control(e);
+      const u = 1 - t;
+      return [
+        u * u * e.na.x + 2 * u * t * cx + t * t * e.nb.x,
+        u * u * e.na.y + 2 * u * t * cy + t * t * e.nb.y,
+      ];
+    }
+
+    /* Below this zoom the infrastructure layers fade out so the agent
+       mesh stays readable. */
+    function layerAlpha(layer) {
+      if (cam.z > 0.34) return 1;
+      const f = clamp((cam.z - 0.14) / 0.2, 0, 1);
+      return layer === 'plat' || layer === 'obs' ? 0.15 + 0.85 * f : 0.55 + 0.45 * f;
+    }
+
+    function drawEdge(e) {
+      // on-demand layers are absent, not faded — a ghost of 30 arcs is
+      // still 30 arcs of visual noise
+      if (e.layer === 'mesh' && !meshShown(e)) return;
+      const dim = !edgeVisible(e);
+      let a = dim ? 0.05 : 0.26 * layerAlpha(e.layer);
+      if (hover && !dim) a = e.a === hover || e.b === hover ? 0.85 : 0.06;
+      else if (hover) a = 0.03;
+      if (a < 0.012) return;
+
+      const [cx, cy] = control(e);
+      ctx.save();
+      ctx.strokeStyle = mix(e.color, a);
+      ctx.lineWidth = (hover && (e.a === hover || e.b === hover) ? 2.6 : 1.4) / cam.z;
+      const dash = LAYERS[e.layer].dash;
+      if (dash.length) ctx.setLineDash(dash.map((d) => d * 2.2));
+      ctx.beginPath();
+      ctx.moveTo(e.na.x, e.na.y);
+      ctx.quadraticCurveTo(cx, cy, e.nb.x, e.nb.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    const packets = [];
+    let msgCount = 0;
+    let rateWindow = [];
+
+    function spawn(edge) {
+      const dir = Math.random() < 0.5 ? 1 : -1;
+      packets.push({ e: edge, t: dir === 1 ? 0 : 1, dir, v: (0.22 + Math.random() * 0.18) / 1000 });
+    }
+
+    function drawPacket(p) {
+      const e = p.e;
+      if (!edgeVisible(e)) return;
+      const [x, y] = edgePoint(e, p.t);
+      const [tx, ty] = edgePoint(e, clamp(p.t - 0.055 * p.dir, 0, 1));
+
+      const focused = !hover || e.a === hover || e.b === hover;
+      const A = (focused ? 1 : 0.1) * layerAlpha(e.layer);
+
+      const g = ctx.createLinearGradient(tx, ty, x, y);
+      g.addColorStop(0, mix(e.color, 0));
+      g.addColorStop(1, mix(e.color, 0.7 * A));
+      ctx.strokeStyle = g;
+      ctx.lineWidth = 2.6 / cam.z;
+      ctx.beginPath();
+      ctx.moveTo(tx, ty);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+
+      ctx.fillStyle = mix(e.color, 0.95 * A);
+      ctx.beginPath();
+      ctx.arc(x, y, 3.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = mix(e.color, 0.16 * A);
+      ctx.beginPath();
+      ctx.arc(x, y, 9, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    const SIZES = {
+      agent: 18, svc: 11, model: 13, host: 13, cluster: 15, beacon: 9,
+      printer: 10, vaettir: 10, volundr: 12, ting: 12, bifrost: 14,
+      skuld: 12, db: 12, gate: 13, mimir: 20, 'mimir-metrics': 20,
+      run: 22, runagent: 9,
+    };
+
+    function drawNode(n, now) {
+      const col = C[n.hue];
+      const dim = !COMPUTE[n.hue].on;
+      let A = dim ? 0.16 : 1;
+      if (hover && !dim) A = n.id === hover || connected(hover, n.id) ? 1 : 0.26;
+      const isSel = n.id === selected;
+      const sz = SIZES[n.type] ?? 11;
+
+      if (isSel || n.id === hover) {
+        ctx.fillStyle = mix(col, 0.13);
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, sz + 18, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      if (n.type === 'mimir' || n.type === 'mimir-metrics') {
+        drawMimir(n, now, A, isSel, sz);
+      } else if (n.type === 'agent') {
+        const stateCol = n.state === 'waiting' ? C.amber : n.state === 'learning' ? C.spring : col;
+        ctx.save();
+        ctx.translate(n.x, n.y);
+        if (!REDUCED) ctx.rotate(now / 7000);
+        ctx.strokeStyle = mix(stateCol, 0.5 * A);
+        ctx.lineWidth = 1.8 / cam.z;
+        ctx.setLineDash([7, 7]);
+        ctx.beginPath();
+        ctx.arc(0, 0, sz + 9, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+
+        const g = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, sz * 2.4);
+        g.addColorStop(0, mix(col, 0.4 * A));
+        g.addColorStop(1, mix(col, 0));
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, sz * 2.4, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = mix('#05070d', A);
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, sz, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = mix(col, 0.95 * A);
+        ctx.lineWidth = 2.4 / cam.z;
+        ctx.stroke();
+        ctx.fillStyle = mix(col, 0.9 * A);
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, sz * 0.36, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (n.state === 'waiting') {
+          ctx.fillStyle = mix(C.amber, (0.55 + 0.45 * Math.sin(now / 420)) * A);
+          ctx.beginPath();
+          ctx.arc(n.x + sz * 0.78, n.y - sz * 0.78, 4.4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      } else if (n.type === 'run') {
+        // registry shape: halo — a live workflow session
+        const spin = REDUCED ? 0 : now / 5200;
+        ctx.save();
+        ctx.translate(n.x, n.y);
+        ctx.rotate(spin);
+        for (let i = 0; i < 3; i++) {
+          ctx.strokeStyle = mix(col, (0.55 - i * 0.14) * A);
+          ctx.lineWidth = 2 / cam.z;
+          ctx.beginPath();
+          ctx.arc(0, 0, sz + i * 7, i * 1.1, i * 1.1 + 2.1);
+          ctx.stroke();
+        }
+        ctx.restore();
+        ctx.fillStyle = mix('#05070d', A);
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, sz * 0.62, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = mix(col, 0.9 * A);
+        ctx.lineWidth = 2 / cam.z;
+        ctx.stroke();
+        ctx.fillStyle = mix(col, 0.85 * A);
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, sz * 0.24, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (n.type === 'runagent') {
+        // registry shape: triangle — a short-lived run agent
+        ctx.beginPath();
+        for (let i = 0; i < 3; i++) {
+          const t = -Math.PI / 2 + (i / 3) * Math.PI * 2;
+          const x = n.x + Math.cos(t) * sz;
+          const y = n.y + Math.sin(t) * sz;
+          i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+        }
+        ctx.closePath();
+        ctx.fillStyle = mix(col, 0.2 * A);
+        ctx.fill();
+        ctx.strokeStyle = mix(col, 0.9 * A);
+        ctx.lineWidth = 1.6 / cam.z;
+        ctx.stroke();
+      } else if (n.type === 'host') {
+        ctx.fillStyle = mix('#05070d', A * 0.9);
+        ctx.strokeStyle = mix(col, 0.85 * A);
+        ctx.lineWidth = 1.8 / cam.z;
+        roundRect(n.x - sz * 1.25, n.y - sz * 0.78, sz * 2.5, sz * 1.56, 3.5);
+        ctx.fill();
+        ctx.stroke();
+        ctx.strokeStyle = mix(col, 0.45 * A);
+        ctx.lineWidth = 1.2 / cam.z;
+        for (let i = -1; i <= 1; i++) {
+          ctx.beginPath();
+          ctx.moveTo(n.x - sz * 0.85, n.y + i * sz * 0.42);
+          ctx.lineTo(n.x + sz * 0.85, n.y + i * sz * 0.42);
+          ctx.stroke();
+        }
+      } else if (n.type === 'cluster') {
+        ctx.save();
+        ctx.setLineDash([6, 5]);
+        ctx.strokeStyle = mix(col, 0.8 * A);
+        ctx.lineWidth = 1.8 / cam.z;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, sz, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+        ctx.fillStyle = mix(col, 0.3 * A);
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, sz * 0.42, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (n.type === 'bifrost') {
+        poly(n.x, n.y, sz, 5, -Math.PI / 2);
+        ctx.fillStyle = mix(col, 0.18 * A);
+        ctx.fill();
+        ctx.strokeStyle = mix(col, 0.95 * A);
+        ctx.lineWidth = 2 / cam.z;
+        ctx.stroke();
+      } else if (n.type === 'skuld' || n.type === 'gate') {
+        poly(n.x, n.y, sz, 6, 0);
+        ctx.fillStyle = mix(col, 0.16 * A);
+        ctx.fill();
+        ctx.strokeStyle = mix(col, 0.9 * A);
+        ctx.lineWidth = 1.8 / cam.z;
+        ctx.stroke();
+      } else if (n.type === 'db') {
+        // cylinder
+        ctx.strokeStyle = mix(col, 0.85 * A);
+        ctx.fillStyle = mix(col, 0.14 * A);
+        ctx.lineWidth = 1.7 / cam.z;
+        roundRect(n.x - sz * 0.8, n.y - sz * 0.9, sz * 1.6, sz * 1.8, sz * 0.5);
+        ctx.fill();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.ellipse(n.x, n.y - sz * 0.5, sz * 0.8, sz * 0.3, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (n.type === 'printer' || n.type === 'vaettir') {
+        ctx.fillStyle = mix(col, 0.16 * A);
+        ctx.strokeStyle = mix(col, 0.8 * A);
+        ctx.lineWidth = 1.7 / cam.z;
+        roundRect(n.x - sz, n.y - sz, sz * 2, sz * 2, 2);
+        ctx.fill();
+        ctx.stroke();
+      } else if (n.type === 'model') {
+        poly(n.x, n.y, sz, 6, Math.PI / 6);
+        ctx.fillStyle = mix(col, 0.14 * A);
+        ctx.fill();
+        ctx.strokeStyle = mix(col, 0.9 * A);
+        ctx.lineWidth = 1.8 / cam.z;
+        ctx.stroke();
+        const util = { nemotron: 0.82, qwen36: 0, anthropic: 0.38, openai: 0.52, xai: 0.12 }[n.id] ?? 0.4;
+        if (util > 0) {
+          ctx.strokeStyle = mix(col, 0.9 * A);
+          ctx.lineWidth = 3 / cam.z;
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, sz + 7, -Math.PI / 2, -Math.PI / 2 + util * Math.PI * 2);
+          ctx.stroke();
+        }
+      } else if (n.type === 'beacon') {
+        ctx.fillStyle = mix(col, 0.75 * A);
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, sz, 0, Math.PI * 2);
+        ctx.fill();
+        if (!REDUCED) {
+          const ph = (now / 2200) % 1;
+          ctx.strokeStyle = mix(col, 0.35 * (1 - ph) * A);
+          ctx.lineWidth = 1.6 / cam.z;
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, sz + ph * 26, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      } else {
+        ctx.fillStyle = mix('#05070d', A * 0.9);
+        ctx.strokeStyle = mix(col, 0.8 * A);
+        ctx.lineWidth = 1.7 / cam.z;
+        roundRect(n.x - sz, n.y - sz, sz * 2, sz * 2, 4);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = mix(col, 0.75 * A);
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, sz * 0.3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      /* Level of detail. A label only draws at a zoom where it can
+         physically fit beside its neighbours: siblings inside a cluster sit
+         ~150–220 world units apart, and a constant-size label is ~70–110px
+         wide, so below these thresholds they collide by construction. */
+      const primary =
+        n.type === 'agent' || n.type === 'mimir' || n.type === 'mimir-metrics' || n.type === 'run';
+      const tier = primary ? LOD.primary : LOD.secondary;
+      const focused = n.id === hover || n.id === selected;
+      if (cam.z < tier && !focused) return;
+
+      const k = LBL();
+      const ly = n.y + sz * k + (n.type === 'host' ? 15 : 19) * k;
+      label(n.label, n.x, ly, (primary ? 15 : 13) * k, mix(primary ? C.fg : C.fg2, A), 'center', 0.04);
+      if (n.sub && (cam.z >= LOD.detail || focused)) {
+        label(n.sub, n.x, ly + 15 * k, 11 * k, mix(C.fg4, A), 'center', 0.06);
+      }
+    }
+
+    /* Mímir gets a distinct mark. Knowledge Mímir is a well; Grafana Mimir
+       is a stacked ring — same name, visibly not the same thing. */
+    function drawMimir(n, now, A, isSel, sz) {
+      const col = C[n.hue];
+      const metrics = n.type === 'mimir-metrics';
+      const breathe = REDUCED ? 1 : 1 + 0.04 * Math.sin(now / 1900);
+
+      const g = ctx.createRadialGradient(n.x, n.y, sz * 0.9, n.x, n.y, sz * 3);
+      g.addColorStop(0, mix(col, 0.1 * A));
+      g.addColorStop(1, mix(col, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, sz * 3, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (metrics) {
+        // stacked ingester rings — a TSDB, not a well
+        ctx.fillStyle = mix('#050c16', A);
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, sz, 0, Math.PI * 2);
+        ctx.fill();
+        for (let i = 0; i < 3; i++) {
+          ctx.strokeStyle = mix(col, (0.75 - i * 0.16) * A);
+          ctx.lineWidth = 2.2 / cam.z;
+          ctx.beginPath();
+          ctx.ellipse(n.x, n.y - sz * 0.45 + i * sz * 0.45, sz * 0.9, sz * 0.34, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.strokeStyle = mix(col, 0.5 * A);
+        ctx.lineWidth = 1.6 / cam.z;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, sz, 0, Math.PI * 2);
+        ctx.stroke();
+        return;
+      }
+
+      // knowledge Mímir: dark water, lit at the rim
+      const w = ctx.createRadialGradient(n.x, n.y, sz * 0.1, n.x, n.y, sz * breathe);
+      w.addColorStop(0, mix('#04080f', A));
+      w.addColorStop(0.72, mix('#050c16', A));
+      w.addColorStop(1, mix(n.hue === 'spring' ? '#16300a' : '#0a2536', A));
+      ctx.fillStyle = w;
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, sz * breathe, 0, Math.PI * 2);
+      ctx.fill();
+
+      for (let i = 1; i <= 3; i++) {
+        const ph = REDUCED ? 0.55 : ((now / 3800 + i / 3) % 1);
+        ctx.strokeStyle = mix(col, 0.26 * (1 - ph) * A);
+        ctx.lineWidth = 1.4 / cam.z;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, sz * (0.16 + ph * 0.8), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      ctx.strokeStyle = mix(n.hue === 'spring' ? '#d8f79a' : '#bfe9ff', (isSel ? 0.95 : 0.72) * A);
+      ctx.lineWidth = 2.2 / cam.z;
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, sz * breathe, 0, Math.PI * 2);
+      ctx.stroke();
+
+      if (cam.z > 0.55) {
+        const runes = ['ᚠ', 'ᚢ', 'ᚦ', 'ᚨ', 'ᚱ', 'ᚲ', 'ᚷ', 'ᚹ', 'ᚾ', 'ᛁ', '✦', 'ᛈ'];
+        ctx.save();
+        ctx.translate(n.x, n.y);
+        if (!REDUCED) ctx.rotate(now / 24000);
+        ctx.font = `11px ${MONO}`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        runes.forEach((r, i) => {
+          const t = (i / runes.length) * Math.PI * 2;
+          ctx.save();
+          ctx.translate(Math.cos(t) * sz * 1.75, Math.sin(t) * sz * 1.75);
+          ctx.rotate(t + Math.PI / 2);
+          ctx.fillStyle = mix(col, (0.4 + 0.3 * Math.sin(now / 850 + i)) * A);
+          ctx.fillText(r, 0, 0);
+          ctx.restore();
+        });
+        ctx.restore();
+      }
+    }
+
+    /* ---------- minimap ---------- */
+
+    function drawMinimap() {
+      const w = mm.width, h = mm.height;
+      mmx.setTransform(1, 0, 0, 1, 0, 0);
+      mmx.clearRect(0, 0, w, h);
+      const sx = w / (WORLD.x1 - WORLD.x0);
+      const sy = h / (WORLD.y1 - WORLD.y0);
+      const s = Math.min(sx, sy);
+      const ox = (w - (WORLD.x1 - WORLD.x0) * s) / 2;
+      const oy = (h - (WORLD.y1 - WORLD.y0) * s) / 2;
+      const px = (x) => ox + (x - WORLD.x0) * s;
+      const py = (y) => oy + (y - WORLD.y0) * s;
+
+      for (const c of CLUSTERS) {
+        mmx.fillStyle = mix(C[c.hue], 0.22);
+        mmx.beginPath();
+        mmx.arc(px(c.x), py(c.y), Math.max(2, c.r * s), 0, Math.PI * 2);
+        mmx.fill();
+      }
+      for (const n of NODES) {
+        if (n.type !== 'agent' && n.type !== 'mimir' && n.type !== 'mimir-metrics') continue;
+        mmx.fillStyle = mix(C[n.hue], 0.9);
+        mmx.beginPath();
+        mmx.arc(px(n.x), py(n.y), 1.8 * dpr, 0, Math.PI * 2);
+        mmx.fill();
+      }
+
+      // viewport rectangle
+      const [vx0, vy0] = toWorld(0, 0);
+      const [vx1, vy1] = toWorld(W, H);
+      mmx.strokeStyle = mix(C.ice, 0.85);
+      mmx.lineWidth = 1.2 * dpr;
+      mmx.strokeRect(px(vx0), py(vy0), (vx1 - vx0) * s, (vy1 - vy0) * s);
+    }
+
+    /* ---------- loop ---------- */
+
+    let last = performance.now();
+
+    function frame(now) {
+      const dt = Math.min(64, now - last);
+      last = now;
+      if (!sized) return void requestAnimationFrame(frame);
+      stepGlide(dt);
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, W, H);
+      ctx.setTransform(cam.z * dpr, 0, 0, cam.z * dpr, (W / 2 - cam.x * cam.z) * dpr, (H / 2 - cam.y * cam.z) * dpr);
+
+      for (const s of STARS) {
+        const a = REDUCED ? s.a : s.a * (0.7 + 0.3 * Math.sin(now / 2600 + s.tw));
+        ctx.fillStyle = mix('#9fc4ff', a);
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      for (const rm of REALMS) drawRealm(rm);
+      for (const c of CLUSTERS) drawCluster(c, now);
+      for (const f of MESHES) drawMesh(f);
+      for (const e of EDGES) drawEdge(e);
+
+      if (!REDUCED) {
+        for (const e of EDGES) {
+          if (!edgeVisible(e)) continue;
+          if (Math.random() < (e.rate * dt) / 9000) spawn(e);
+        }
+        for (let i = packets.length - 1; i >= 0; i--) {
+          const p = packets[i];
+          p.t += p.v * dt * p.dir;
+          if (p.t > 1 || p.t < 0) { packets.splice(i, 1); arrive(p); continue; }
+          drawPacket(p);
+        }
+      }
+
+      const isBig = (n) => n.type === 'agent' || n.type === 'mimir' || n.type === 'mimir-metrics';
+      for (const n of NODES) if (!isBig(n)) drawNode(n, now);
+      for (const n of NODES) if (isBig(n)) drawNode(n, now);
+
+      zvalEl.textContent = `${Math.round(cam.z * 100)}%`;
+      drawMinimap();
+      requestAnimationFrame(frame);
+    }
+
+    /* ---------- signal feed ---------- */
+
+    const feed = document.getElementById('feed');
+    const pick = (a) => a[Math.floor(Math.random() * a.length)];
+    const CLOUD_IDS = new Set(['anthropic', 'openai', 'xai']);
+
+    const MSG = {
+      mesh: (a, b) => [
+        `shared a finding with ${b}`,
+        `${b} adopted the revised belief`,
+        `handed the failing case to ${b}`,
+        `skill promoted to the mesh`,
+      ],
+      nats: (a, b) => [
+        `mesh gossip → ${b}`,
+        `presence broadcast across 7 clusters`,
+        `lease handed to ${b}`,
+      ],
+      memory: (a, b) => [
+        `wrote ${1 + Math.floor(Math.random() * 9)} pages under ${pick(['learnings/', 'self/', 'entities/', 'resident/', 'infrastructure/'])}`,
+        `fanned learnings/ out to local + shared`,
+        `recall hit — hybrid search, RRF k=60`,
+        `revised belief after new evidence`,
+      ],
+      model: (a, b) => [
+        CLOUD_IDS.has(b) ? `routed to ${b} — metered, leaves the realm` : `routed to ${b} — self-hosted, 0 egress`,
+        `${b} returned in ${(0.4 + Math.random() * 2.6).toFixed(1)}s`,
+        `budget guard kept the call on valaskjálf`,
+        `qwen3.6 at 0 replicas — cold start ~40s`,
+      ],
+      a2a: (a, b) => [
+        `published agent card for ${b}`,
+        `A2A task for ${b} → ${pick(['working', 'input-required', 'completed'])}`,
+        `card fetched from .well-known`,
+      ],
+      obs: (a, b) => [
+        `shipped ${pick(['traces', 'metrics', 'logs'])} to glitnir`,
+        `mimir ingester accepted ${20 + Math.floor(Math.random() * 400)} series`,
+        `tempo proxy · per-cluster ingest`,
+      ],
+      plat: (a, b) => [
+        `${pick(['session', 'run', 'saga'])} started on ${b}`,
+        `signal from ${a} → ${b}`,
+        `reconcile pass clean`,
+        `${b} ready`,
+      ],
+    };
+
+    const t0 = performance.now();
+    function arrive(p) {
+      msgCount++;
+      rateWindow.push(performance.now());
+      if (Math.random() > 0.5) return;
+      const e = p.e;
+      const src = p.dir === 1 ? e.na : e.nb;
+      const dst = p.dir === 1 ? e.nb : e.na;
+      const cl = clusterById.get(src.c);
+      const el = document.createElement('div');
+      el.className = 'row';
+      el.style.setProperty('--c', e.color);
+      const secs = (performance.now() - t0) / 1000;
+      const ts = `${String(Math.floor(secs / 60)).padStart(2, '0')}:${String(Math.floor(secs % 60)).padStart(2, '0')}`;
+      // A layer without a message template must not be able to throw here —
+      // arrive() runs inside the render loop, so one bad lookup would stop
+      // the whole canvas.
+      const tpl = MSG[e.layer];
+      const body = tpl ? pick(tpl(src.label, dst.label)) : `→ ${dst.label}`;
+      el.innerHTML =
+        `<span class="ts">${ts}</span>` +
+        `<span class="src">${cl.id}/${src.label}</span>` +
+        `<span class="msg">${body}</span>` +
+        `<span class="kind">${e.layer}</span>`;
+      feed.prepend(el);
+      while (feed.children.length > 14) feed.lastChild.remove();
+    }
+
+    setInterval(() => {
+      if (REDUCED) return;
+      const cut = performance.now() - 10000;
+      rateWindow = rateWindow.filter((t) => t > cut);
+      const perMin = Math.round((rateWindow.length / 10) * 60);
+      document.getElementById('r-rate').textContent = perMin || '—';
+      document.getElementById('feed-rate').textContent = `${perMin} msg/min · ${msgCount} total`;
+    }, 900);
+
+    /* ---------- rail ---------- */
+
+    function sparkline(color, seed) {
+      const pts = Array.from({ length: 24 }, (_, i) => 0.5 + 0.5 * Math.sin(i * 0.7 + seed) * Math.random());
+      const w = 46, h = 20;
+      const d = pts.map((v, i) => `${(i / 23) * w},${h - v * h * 0.86 - 2}`).join(' ');
+      return (
+        `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true">` +
+        `<polyline points="${d}" fill="none" stroke="${color}" stroke-width="1.2" opacity="0.75" stroke-linejoin="round"/>` +
+        `<circle cx="${w}" cy="${h - pts[23] * h * 0.86 - 2}" r="1.8" fill="${color}"/></svg>`
+      );
+    }
+
+    const meshEl = document.getElementById('meshlist');
+    MESHES.forEach((f) => {
+      const b = document.createElement('button');
+      b.className = 'row-btn';
+      b.style.setProperty('--c', C.amber);
+      b.innerHTML =
+        `<span class="stripe"></span><span class="name">${f.label.toLowerCase()}</span>` +
+        `<span class="state waiting" style="grid-row:1/span 2;grid-column:3">${f.members.length}</span>` +
+        `<span class="where">${f.purpose}</span>`;
+      b.addEventListener('click', () => {
+        const pts = f.members.map((id) => byId.get(id)).filter(Boolean);
+        const cx = pts.reduce((s, n) => s + n.x, 0) / pts.length;
+        const cy = pts.reduce((s, n) => s + n.y, 0) / pts.length;
+        const spread = Math.max(...pts.map((n) => Math.hypot(n.x - cx, n.y - cy))) + 220;
+        glide({ x: cx, y: cy, z: clamp(Math.min(W, H) / (spread * 2), 0.24, 1.2) });
+        selected = f.members[0];
+        renderInspector(selected);
+      });
+      meshEl.appendChild(b);
+    });
+
+    const fleetEl = document.getElementById('fleet');
+    Object.entries(AGENTS).forEach(([id, a], i) => {
+      const b = document.createElement('button');
+      b.className = 'row-btn';
+      b.style.setProperty('--c', C[a.hue]);
+      b.dataset.id = id;
+      b.setAttribute('aria-current', 'false');
+      b.innerHTML =
+        `<span class="stripe"></span><span class="name">${byId.get(id).label}</span>` +
+        sparkline(C[a.hue], i * 2.1) +
+        `<span class="where"><b>${a.engine}</b> · ${a.where.split(' · ')[0]}</span>`;
+      b.addEventListener('click', () => select(id));
+      fleetEl.appendChild(b);
+    });
+
+    const clusterListEl = document.getElementById('clusterlist');
+    CLUSTERS.filter((c) => c.realm).forEach((c) => {
+      const b = document.createElement('button');
+      b.className = 'row-btn';
+      b.style.setProperty('--c', c.gpu ? C.spring : C.ice);
+      b.dataset.cluster = c.id;
+      b.innerHTML =
+        `<span class="stripe"></span><span class="name">${c.id}</span>` +
+        `<span class="state ${c.gpu ? 'learning' : 'idle'}" style="grid-row:1/span 2;grid-column:3">` +
+        `${c.nodes}n${c.gpu ? ` · ${c.gpu}g` : ''}</span>` +
+        `<span class="where"><b>${c.realm}</b> · ${c.pods} pods</span>`;
+      b.addEventListener('click', () => focusCluster(c.id));
+      clusterListEl.appendChild(b);
+    });
+
+    const mimirListEl = document.getElementById('mimirlist');
+    MIMIRS.forEach((m) => {
+      const b = document.createElement('button');
+      b.className = 'row-btn';
+      b.style.setProperty('--c', C[m.hue]);
+      b.dataset.id = m.id;
+      const isMetrics = m.id === 'mimir-metrics';
+      b.innerHTML =
+        `<span class="stripe"></span><span class="name">${m.name}</span>` +
+        `<span class="state ${isMetrics ? 'idle' : 'working'}" style="grid-row:1/span 2;grid-column:3">` +
+        `${isMetrics ? 'metrics' : 'knowledge'}</span>` +
+        `<span class="where">${m.where}</span>`;
+      b.addEventListener('click', () => select(m.id));
+      mimirListEl.appendChild(b);
+    });
+
+    /* One source of truth for filter state, mirrored into both the rail
+       rows and the on-canvas chips. */
+    const filterEls = { layer: {}, compute: {} };
+
+    function syncFilters() {
+      for (const [k, v] of Object.entries(LAYERS)) {
+        (filterEls.layer[k] ?? []).forEach((el) => el.setAttribute('aria-pressed', String(v.on)));
+      }
+      for (const [k, v] of Object.entries(COMPUTE)) {
+        (filterEls.compute[k] ?? []).forEach((el) => el.setAttribute('aria-pressed', String(v.on)));
+      }
+    }
+
+    function register(kind, key, el) {
+      (filterEls[kind][key] ??= []).push(el);
+    }
+
+    function canvasChips(host, map, withDash, kind) {
+      Object.entries(map).forEach(([k, v]) => {
+        const b = document.createElement('button');
+        b.className = 'fchip';
+        b.style.setProperty('--k', v.color);
+        b.setAttribute('aria-pressed', String(v.on));
+        b.title = 'Click to toggle · alt-click to show only this';
+        const short = v.short ?? v.label.split(' · ')[0];
+        const n = withDash
+          ? EDGES.filter((e) => e.layer === k).length
+          : NODES.filter((x) => x.hue === k).length;
+        b.innerHTML =
+          `<i style="border-top-style:${withDash && v.dash.length ? (v.dash[0] < 3 ? 'dotted' : 'dashed') : 'solid'}"></i>` +
+          `${short}<span style="color:var(--fg-4);font-variant-numeric:tabular-nums">${n}</span>`;
+        b.addEventListener('click', (ev) => {
+          if (ev.altKey) {
+            for (const o of Object.values(map)) o.on = false;
+            v.on = true;
+          } else {
+            v.on = !v.on;
+          }
+          syncFilters();
+        });
+        register(kind, k, b);
+        host.appendChild(b);
+      });
+    }
+    canvasChips(document.getElementById('fl-layers'), LAYERS, true, 'layer');
+    canvasChips(document.getElementById('fl-compute'), COMPUTE, false, 'compute');
+
+    const setAll = (on) => {
+      for (const v of Object.values(LAYERS)) v.on = on;
+      for (const v of Object.values(COMPUTE)) v.on = on;
+      syncFilters();
+    };
+    // "calm" is the default view: the agent story without the plumbing
+    const CALM = new Set(['mesh', 'memory', 'model', 'a2a']);
+    const calm = () => {
+      for (const [k, v] of Object.entries(LAYERS)) v.on = CALM.has(k);
+      for (const v of Object.values(COMPUTE)) v.on = true;
+      syncFilters();
+    };
+    document.getElementById('f-all').addEventListener('click', () => setAll(true));
+    document.getElementById('f-none').addEventListener('click', () => setAll(false));
+    document.getElementById('f-calm').addEventListener('click', calm);
+    calm();
+
+    function focusCluster(id) {
+      const c = clusterById.get(id);
+      glide({ x: c.x, y: c.y, z: clamp(Math.min(W, H) / (c.r * 2.9), 0.5, 2.2) });
+      renderCluster(c);
+      document.querySelectorAll('.row-btn').forEach((el) =>
+        el.setAttribute('aria-current', String(el.dataset.cluster === id))
+      );
+    }
+
+    /* ---------- inspector ---------- */
+
+    const inspector = document.getElementById('inspector');
+    let cardMode = 'resident';
+
+    function select(id) {
+      selected = id;
+      document.querySelectorAll('.row-btn').forEach((el) =>
+        el.setAttribute('aria-current', String(el.dataset.id === id))
+      );
+      const n = byId.get(id);
+      if (n) glide({ x: n.x, y: n.y, z: Math.max(cam.z, 0.72) });
+      renderInspector(id);
+    }
+
+    function capChip(on, l) {
+      return `<span class="cap ${on ? 'on' : 'off'}">${on ? '✓' : '·'} ${l}</span>`;
+    }
+
+    function cardJson(c) {
+      return JSON.stringify(
+        {
+          protocolVersion: c.protocolVersion, name: c.name, description: c.description,
+          url: `https://skuld.${c.host ?? 'yggdrasil'}.niuu.world/s/${c.session}/a2a`,
+          preferredTransport: c.transport, version: c.version, capabilities: c.caps,
+          defaultInputModes: ['text/plain', 'application/json'],
+          defaultOutputModes: ['text/plain', 'application/json'],
+          skills: c.skills.map((s) => ({ id: s.id, name: s.name, tags: s.tags })),
+        },
+        null, 2
+      ).replace(/[<>&]/g, (m) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[m]);
+    }
+
+    function cardBody(c, col) {
+      if (cardMode === 'json') return `<pre class="json">${cardJson(c)}</pre>`;
+      return `
+        <div class="block">
+          <h3>Agent card</h3>
+          <div class="note-body" style="margin-bottom:11px">${c.description}</div>
+          <dl class="kv">
+            <dt>card</dt><dd>https://skuld.${c.host ?? 'yggdrasil'}.niuu.world/s/${c.session}/.well-known/agent-card.json</dd>
+            <dt>transport</dt><dd>${c.transport}</dd>
+            <dt>protocol</dt><dd>A2A ${c.protocolVersion}</dd>
+            <dt>visibility</dt><dd>${c.visibility}</dd>
+            <dt>auth</dt><dd>${c.auth}</dd>
+          </dl>
+        </div>
+        <div class="block">
+          <h3>Capabilities</h3>
+          <div class="caps">
+            ${capChip(c.caps.streaming, 'streaming')}
+            ${capChip(c.caps.pushNotifications, 'push')}
+            ${capChip(c.caps.stateTransitionHistory, 'history')}
+          </div>
+        </div>
+        <div class="block">
+          <h3>Skills it advertises · ${c.skills.length}</h3>
+          <ul class="skills">
+            ${c.skills.map((s) =>
+              `<li><span class="sid">${s.id}</span><span class="sname">${s.name}</span>` +
+              `<span class="tags">${s.tags.map((t) => `<i>${t}</i>`).join('')}</span></li>`
+            ).join('')}
+          </ul>
+        </div>
+        <div class="block">
+          <h3>Reachable at</h3>
+          <dl class="kv">
+            <dt>chat</dt><dd>/s/${c.session.slice(0, 8)}…/session</dd>
+            <dt>protocol</dt><dd>skuld-v1</dd>
+            <dt>session</dt><dd style="color:${col}">${c.session}</dd>
+          </dl>
+        </div>`;
+    }
+
+    /* Who this resident learns from, and through which mesh. */
+    function meshBlock(id, col) {
+      const f = MESHES.find((x) => x.members.includes(id));
+      const peers = [...(adj.get(id) ?? [])]
+        .map((o) => byId.get(o))
+        .filter((n) => n && n.type === 'agent');
+      if (!peers.length) return '';
+      return `
+        <div class="block">
+          <h3>${f ? `Mesh · ${f.label.toLowerCase()}` : 'Peers'}</h3>
+          ${f ? `<div class="note-body" style="margin-bottom:10px">${f.purpose} — ${f.members.length} residents peer directly, so a finding by one becomes evidence for all.</div>` : ''}
+          <ul class="wl">
+            ${peers.map((p) => {
+              const pc = clusterById.get(p.c);
+              const same = f && f.members.includes(p.id);
+              return `<li><span>${p.label}<br><span class="ns">${pc.id}${pc.realm ? ' · ' + pc.realm : ''}</span></span>` +
+                `<span class="rep" style="${same ? `color:${col}` : ''}">${same ? 'same mesh' : 'cross-mesh'}</span></li>`;
+            }).join('')}
+          </ul>
+        </div>`;
+    }
+
+    function renderCluster(c) {
+      inspector.style.setProperty('--c', C[c.hue]);
+      const wl = WORKLOADS[c.id] || [];
+      inspector.innerHTML = `
+        <div class="insp-head" style="--c:${C[c.hue]}">
+          <div class="kind">Cluster · realm ${c.realm ?? '—'}</div>
+          <h2>${c.id}</h2>
+          <div class="sub">${c.role}</div>
+          <div class="chips">
+            <span class="state idle">${c.nodes} nodes</span>
+            ${c.gpu ? `<span class="state learning">${c.gpu} GPU</span>` : ''}
+            <span class="state working">${c.pods} pods</span>
+          </div>
+        </div>
+        <div class="block">
+          <h3>At a glance</h3>
+          <dl class="kv">
+            <dt>realm</dt><dd>${c.realm}</dd>
+            <dt>namespaces</dt><dd>${c.ns}</dd>
+            <dt>nodes</dt><dd>${c.nodes}</dd>
+            <dt>gpu nodes</dt><dd>${c.gpu}</dd>
+            <dt>pods</dt><dd>${c.pods}</dd>
+          </dl>
+        </div>
+        <div class="block">
+          <h3>Workloads · ${wl.length}</h3>
+          <ul class="wl">
+            ${wl.map(([ns, name, rep]) =>
+              `<li><span>${name}<br><span class="ns">${ns}</span></span>` +
+              `<span class="rep ${rep === 0 ? 'zero' : ''}">${rep === 0 ? '0 · scaled to zero' : rep}</span></li>`
+            ).join('')}
+          </ul>
+        </div>`;
+    }
+
+    function renderInspector(id) {
+      const mimir = MIMIRS.find((m) => m.id === id);
+      if (mimir) {
+        const col = C[mimir.hue];
+        inspector.style.setProperty('--c', col);
+        const isMetrics = mimir.id === 'mimir-metrics';
+        inspector.innerHTML = `
+          <div class="insp-head" style="--c:${col}">
+            <div class="kind">${mimir.kind}</div>
+            <h2>${mimir.name}</h2>
+            <div class="sub">${mimir.where}</div>
+            <div class="chips">
+              <span class="state ${isMetrics ? 'idle' : 'working'}">${isMetrics ? 'metrics store' : 'knowledge base'}</span>
+              <span class="state ${mimir.unverified ? 'waiting' : 'idle'}">${mimir.unverified ? 'unverified' : `1 of ${MIMIRS.length}`}</span>
+            </div>
+          </div>
+          <div class="block">
+            <h3>What it is</h3>
+            <div class="note-body">${mimir.note}</div>
+          </div>
+          <div class="block">
+            <h3>Detail</h3>
+            <dl class="kv">${mimir.rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
+          </div>
+          <div class="block">
+            <h3>The other ${MIMIRS.length - 1}</h3>
+            <ul class="wl">
+              ${MIMIRS.filter((m) => m.id !== id).map((m) =>
+                `<li><span>${m.name}<br><span class="ns">${m.where}</span></span>` +
+                `<span class="rep">${m.id === 'mimir-metrics' ? 'metrics' : 'knowledge'}</span></li>`
+              ).join('')}
+            </ul>
+          </div>`;
+        return;
+      }
+
+      const n = byId.get(id);
+      const a = AGENTS[id];
+      if (!n) return;
+      const col = C[n.hue];
+      inspector.style.setProperty('--c', col);
+
+      if (!a) {
+        const c = clusterById.get(n.c);
+        inspector.innerHTML = `
+          <div class="insp-head" style="--c:${col}">
+            <div class="kind">${n.kind}</div><h2>${n.label}</h2>
+            <div class="sub">${c.label.toLowerCase()}${c.realm ? ' · ' + c.realm : ''}</div>
+          </div>
+          <div class="block">
+            <h3>Detail</h3>
+            <dl class="kv">
+              <dt>type</dt><dd>${n.kind}</dd>
+              <dt>workload</dt><dd>${n.sub || '—'}</dd>
+              <dt>cluster</dt><dd>${c.id}</dd>
+              <dt>realm</dt><dd>${c.realm ?? 'outside the realms'}</dd>
+            </dl>
+          </div>
+          <div class="block">
+            <h3>Connected to</h3>
+            <ul class="wl">
+              ${[...(adj.get(id) ?? [])].map((o) => {
+                const on = byId.get(o);
+                const oc = clusterById.get(on.c);
+                return `<li><span>${on.label}<br><span class="ns">${oc.id}</span></span>` +
+                  `<span class="rep">${on.kind}</span></li>`;
+              }).join('') || '<li><span>nothing yet</span></li>'}
+            </ul>
+          </div>`;
+        return;
+      }
+
+      const stateLbl = { working: 'working', waiting: 'awaiting operator', learning: 'learning', idle: 'idle' }[a.state];
+      const card = CARDS[id];
+
+      const residentBody = `
+        <div class="block">
+          <h3>Doing now</h3>
+          <div style="font-family:${MONO};font-size:11.5px;line-height:1.65;color:${C.fg}">${a.task}</div>
+        </div>
+        <div class="block">
+          <h3>Runtime</h3>
+          <dl class="kv">
+            <dt>engine</dt><dd style="color:${col}">${a.engine}</dd>
+            <dt>profile</dt><dd>${a.profile}</dd>
+            <dt>deployment</dt><dd>local · DockerContainer</dd>
+            <dt>registered</dt><dd>${a.display}</dd>
+            <dt>persona</dt><dd>${a.persona}</dd>
+          </dl>
+        </div>
+        <div class="block">
+          <h3>Where its thinking runs</h3>
+          <div class="split">
+            <i style="width:${a.local}%;background:${C.spring}"></i>
+            <i style="width:${a.cloud}%;background:${C.violet}"></i>
+          </div>
+          <div class="split-key">
+            <span><b style="color:${C.spring}">${a.local}%</b> your silicon</span>
+            <span><b style="color:${C.violet}">${a.cloud}%</b> cloud</span>
+          </div>
+          <dl class="kv" style="margin-top:11px">
+            ${a.models.map(([m, w, k]) =>
+              `<dt>${k === 'local' ? 'self-hosted' : 'metered'}</dt>` +
+              `<dd>${m} <span style="color:${C.fg4}">· ${w}</span></dd>`
+            ).join('')}
+          </dl>
+        </div>
+        <div class="block" style="--c:${col}">
+          <h3>What it believes about its environment</h3>
+          <ul class="belief">
+            ${a.beliefs.map(([t, cf]) =>
+              `<li><span>${t}</span><span class="conf">${cf.toFixed(2)}</span>` +
+              `<span class="bar"><i style="width:${cf * 100}%;background:${col}"></i></span></li>`
+            ).join('')}
+          </ul>
+        </div>
+        <div class="block">
+          <h3>Tools it built and kept</h3>
+          <ul class="tools">
+            ${a.tools.map(([t, runs, ok]) =>
+              `<li><span>${t}</span><span class="runs">${runs} runs</span>` +
+              `<span class="ok ${ok < 95 ? 'warn' : ''}">${ok}%</span></li>`
+            ).join('')}
+          </ul>
+        </div>`;
+
+      inspector.innerHTML = `
+        <div class="insp-head" style="--c:${col}">
+          <div class="kind">Resident · engine ${a.engine} · ${a.where}</div>
+          <h2>${n.label}</h2>
+          <div class="sub">${a.model} · up ${a.up}</div>
+          <div class="chips">
+            <span class="state ${a.state}">${stateLbl}</span>
+            <span class="state idle">${a.tools.length} learned tools</span>
+          </div>
+          ${card ? `<div class="chips" style="margin-top:8px">
+            <button class="seg" data-mode="resident" aria-pressed="${cardMode === 'resident'}">Resident</button>
+            <button class="seg" data-mode="card" aria-pressed="${cardMode === 'card'}">A2A card</button>
+            <button class="seg" data-mode="json" aria-pressed="${cardMode === 'json'}">JSON</button>
+          </div>` : ''}
+        </div>
+        ${!card || cardMode === 'resident' ? residentBody : cardBody(card, col)}
+        ${meshBlock(id, col)}`;
+
+      inspector.querySelectorAll('.seg').forEach((b) =>
+        b.addEventListener('click', () => {
+          cardMode = b.dataset.mode;
+          renderInspector(id);
+        })
+      );
+    }
+
+    /* ---------- boot ---------- */
+
+    document.getElementById('present').addEventListener('click', function () {
+      const on = this.getAttribute('aria-pressed') === 'true';
+      this.setAttribute('aria-pressed', String(!on));
+      document.getElementById('shell').classList.toggle('present', !on);
+      setTimeout(() => { resize(); fit(); }, 520);
+    });
+
+    if (REDUCED) {
+      [
+        ['local/claw', 'running a sandboxed build in openshell', 'plat', C.spring],
+        ['ymir/bifröst', 'routed to nemotron-3-super — self-hosted, 0 egress', 'model', C.spring],
+        ['local/claw-ui', 'A2A task → input-required', 'a2a', C.violet],
+        ['ymir/mímir-shared', 'fanned learnings/ out to local + shared', 'memory', C.ice],
+        ['glitnir/mimir', 'ingester accepted 284 series', 'obs', C.fg3],
+      ].forEach(([src, msg, kind, col], i) => {
+        const el = document.createElement('div');
+        el.className = 'row';
+        el.style.setProperty('--c', col);
+        el.innerHTML =
+          `<span class="ts">00:${String(48 - i * 7).padStart(2, '0')}</span>` +
+          `<span class="src">${src}</span><span class="msg">${msg}</span>` +
+          `<span class="kind">${kind}</span>`;
+        feed.appendChild(el);
+      });
+      document.getElementById('r-rate').textContent = '184';
+      document.getElementById('feed-rate').textContent = '184 msg/min · paused';
+    }
+
+    // The first frame in an iframe often lands before layout settles, so the
+    // observer owns the initial fit rather than the boot sequence.
+    let everFitted = false;
+    new ResizeObserver(() => {
+      if (!resize()) return;
+      if (!everFitted) {
+        everFitted = true;
+        fit(false);
+      }
+    }).observe(stage);
+
+    if (resize()) {
+      everFitted = true;
+      fit(false);
+    }
+    renderInspector('mimir-ymir');
+    requestAnimationFrame(frame);
+  })();
+</script>
+
+</body>
+</html>

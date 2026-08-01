@@ -1,21 +1,28 @@
-"""Least-privilege scope enforcement for Valkyrie build tokens.
+"""Least-privilege scope enforcement for short-lived workload credentials.
 
-A Valkyrie that commissions a build authenticates with a short-lived JWT
-minted by the workload-identity exchange. Those build tokens carry two
-extra claims:
+A workload that needs to do one specific thing — commission a build, launch a
+workflow, publish its own topology — authenticates with a short-lived JWT
+minted by the workload-identity exchange. Those tokens carry two extra claims:
 
-- ``token_use == "valkyrie_build"`` — marks the token as a scoped build
-  credential (ordinary human PATs and ordinary workload tokens never carry
-  this value).
-- ``scopes`` — the list of build scopes the credential is allowed to use,
-  bounded to :data:`KNOWN_BUILD_SCOPES` at issuance time.
+- ``token_use == "valkyrie_build"`` — marks the token as a scoped credential
+  (ordinary human PATs and ordinary workload tokens never carry this value).
+  The value is historical: builds were the first use, but the marker means
+  "this credential is scoped", not "this credential builds".
+- ``scopes`` — what the credential may do, bounded to
+  :data:`KNOWN_WORKLOAD_SCOPES` at issuance time.
 
-Enforcement is **stateless and fail-closed for build tokens only**:
+Enforcement is **stateless and fail-closed for scoped tokens only**:
 
 - A token WITHOUT ``token_use == "valkyrie_build"`` (humans, PATs, legacy
   workload tokens) passes through untouched — full backward compatibility.
-- A ``valkyrie_build`` token is admitted at a build entry point only when
-  its ``scopes`` claim contains the required scope; otherwise it is 403'd.
+- A scoped token is admitted at an entry point only when its ``scopes`` claim
+  contains the required scope; otherwise it is 403'd.
+
+A scope is only real because code enforces it: :func:`require_scope` on a
+route is what gives the string meaning. Adding an entry here without a
+matching enforcement point produces a credential that reads as restricted but
+protects nothing, which is why `test_token_scope.py` asserts the two stay in
+step.
 
 The JWT is decoded WITHOUT signature verification — the same posture as
 ``PATValidator``: Envoy validates the signature upstream, so this layer
@@ -32,20 +39,27 @@ from fastapi import HTTPException, Request, status
 
 logger = logging.getLogger(__name__)
 
-#: The claim value that marks a token as a scoped Valkyrie build credential.
+#: The claim value that marks a token as a scoped workload credential.
 VALKYRIE_BUILD_TOKEN_USE = "valkyrie_build"
 OPENSHELL_SESSION_TOKEN_USE = "openshell_session"
 OPENSHELL_RESIDENT_TOKEN_USE = "openshell_resident"
 
-#: The build scopes a Valkyrie build token may ever be granted. A caller
+#: The scopes a short-lived workload credential may ever be granted. A caller
 #: cannot self-grant anything outside this allowlist — unknown scopes are
-#: dropped at issuance time.
-KNOWN_BUILD_SCOPES: frozenset[str] = frozenset(
+#: dropped at issuance time, which is why this is deliberately a constant and
+#: not configuration: whoever could edit the config could mint privilege.
+#:
+#: Every entry must have an enforcement point (see the module docstring).
+KNOWN_WORKLOAD_SCOPES: frozenset[str] = frozenset(
     {
         "forge:session:create",
         "ting:workflow:launch",
+        "observatory:topology:push",
     }
 )
+
+#: Scope required to publish a topology fragment to the push inbox.
+TOPOLOGY_PUSH_SCOPE = "observatory:topology:push"
 
 
 def _decode_claims(token: str) -> dict | None:
@@ -67,14 +81,14 @@ def _decode_claims(token: str) -> dict | None:
 
 
 def token_requires_scope_check(claims: dict) -> bool:
-    """Return True when the token's claims mark it as a build credential."""
+    """Return True when the token's claims mark it as a scoped credential."""
     return claims.get("token_use") == VALKYRIE_BUILD_TOKEN_USE
 
 
 def token_has_scope(token: str, scope: str) -> bool:
     """Return True when ``token`` is permitted to use ``scope``.
 
-    Backward-compatible and fail-closed for build tokens only:
+    Backward-compatible and fail-closed for scoped tokens only:
 
     - A missing or malformed token, or any token that is NOT a
       ``valkyrie_build`` token, returns True (humans / PATs / legacy
@@ -95,8 +109,8 @@ def token_has_scope(token: str, scope: str) -> bool:
     return scope in granted
 
 
-def bound_build_scopes(requested: list[str] | None) -> list[str]:
-    """Intersect requested build scopes with :data:`KNOWN_BUILD_SCOPES`.
+def bound_workload_scopes(requested: list[str] | None) -> list[str]:
+    """Intersect requested scopes with :data:`KNOWN_WORKLOAD_SCOPES`.
 
     Unknown scopes are dropped (and logged) so a caller can never
     self-grant a scope the platform does not recognise. Order and
@@ -114,14 +128,14 @@ def bound_build_scopes(requested: list[str] | None) -> list[str]:
         if not scope or scope in seen:
             continue
         seen.add(scope)
-        if scope in KNOWN_BUILD_SCOPES:
+        if scope in KNOWN_WORKLOAD_SCOPES:
             allowed.append(scope)
             continue
         dropped.append(scope)
 
     if dropped:
         logger.warning(
-            "Dropping unknown build scopes from token request: %s",
+            "Dropping unknown scopes from token request: %s",
             ", ".join(sorted(dropped)),
         )
     return allowed
@@ -135,13 +149,12 @@ def _bearer_from_request(request: Request) -> str:
     return auth[7:]
 
 
-def require_build_scope(scope: str) -> Callable[..., Awaitable[None]]:
-    """FastAPI dependency factory enforcing a build scope, fail-closed.
+def require_scope(scope: str) -> Callable[..., Awaitable[None]]:
+    """FastAPI dependency factory enforcing one scope, fail-closed.
 
     The returned dependency reads the bearer token from the request's
-    Authorization header, then raises HTTP 403 when the token is a
-    ``valkyrie_build`` credential lacking ``scope``. Non-build tokens are
-    admitted unchanged.
+    Authorization header, then raises HTTP 403 when the token is a scoped
+    credential lacking ``scope``. Unscoped tokens are admitted unchanged.
 
     Usage::
 
@@ -149,33 +162,34 @@ def require_build_scope(scope: str) -> Callable[..., Awaitable[None]]:
         async def create_session(
             request: Request,
             data: SessionCreate,
-            _: None = Depends(require_build_scope("forge:session:create")),
+            _: None = Depends(require_scope("forge:session:create")),
         ) -> SessionResponse:
             ...
     """
-    if scope not in KNOWN_BUILD_SCOPES:
-        raise ValueError(f"Unknown build scope: {scope}")
+    if scope not in KNOWN_WORKLOAD_SCOPES:
+        raise ValueError(f"Unknown workload scope: {scope}")
 
     async def _check(request: Request) -> None:
         token = _bearer_from_request(request)
         if token_has_scope(token, scope):
             return None
-        logger.warning("Build token denied: missing scope %s", scope)
+        logger.warning("Scoped token denied: missing scope %s", scope)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Build token is missing the required scope: {scope}",
+            detail=f"Token is missing the required scope: {scope}",
         )
 
     return _check
 
 
 __all__ = [
-    "KNOWN_BUILD_SCOPES",
+    "KNOWN_WORKLOAD_SCOPES",
     "OPENSHELL_SESSION_TOKEN_USE",
     "OPENSHELL_RESIDENT_TOKEN_USE",
+    "TOPOLOGY_PUSH_SCOPE",
     "VALKYRIE_BUILD_TOKEN_USE",
-    "bound_build_scopes",
-    "require_build_scope",
+    "bound_workload_scopes",
+    "require_scope",
     "token_has_scope",
     "token_requires_scope_check",
 ]

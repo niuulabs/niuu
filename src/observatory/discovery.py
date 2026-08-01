@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
+import logging
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
-import httpx
-
-from niuu.ports.http_auth import HttpAuthPort
 from observatory.contracts import ObservatorySnapshot
 from observatory.entity_discovery import (
     DiscoveryAdapter,
@@ -19,7 +16,10 @@ from observatory.entity_discovery import (
     topology_from_discovery,
 )
 
-JsonFetcher = Callable[[str], Awaitable[Any]]
+logger = logging.getLogger(__name__)
+
+#: Resolves the entity type ids currently registered.
+RegistryTypeIdsProvider = Callable[[], Awaitable[Collection[str]]]
 
 
 @dataclass(frozen=True)
@@ -42,20 +42,14 @@ class ObservatoryDiscoveryService:
         self,
         *,
         guild_url: str,
-        auth: HttpAuthPort,
         ttl_seconds: float = 10.0,
-        timeout_seconds: float = 4.0,
-        transport: httpx.AsyncBaseTransport | None = None,
-        fetch_json: JsonFetcher | None = None,
         discovery_adapter: DiscoveryAdapter | None = None,
+        registry_type_ids: RegistryTypeIdsProvider | None = None,
     ) -> None:
         self._guild_url = guild_url.rstrip("/")
-        self._auth = auth
         self._ttl = timedelta(seconds=ttl_seconds)
-        self._timeout = timeout_seconds
-        self._transport = transport
-        self._fetch_json = fetch_json
         self._discovery_adapter = discovery_adapter
+        self._registry_type_ids = registry_type_ids
         self._lock = asyncio.Lock()
         self._cached: dict[str, tuple[datetime, DiscoverySnapshot]] = {}
 
@@ -128,34 +122,21 @@ class ObservatoryDiscoveryService:
             )
         else:
             result = await self._discovery_adapter.discover()
-        topology = topology_from_discovery(result)
+        topology = topology_from_discovery(result, known_type_ids=await self._known_type_ids())
         events = topology.pop("events", [])
         return DiscoverySnapshot(topology=topology, events=events, result=result)
 
-    async def _safe_fetch(self, fetch: JsonFetcher, path: str) -> Any:
+    async def _known_type_ids(self) -> Collection[str] | None:
+        """Entity types from the live registry, which operators can edit.
+
+        Falling back to ``None`` (the registry seed) keeps discovery working if
+        the registry is unreachable — a degraded type map is better than an
+        empty graph.
+        """
+        if self._registry_type_ids is None:
+            return None
         try:
-            return await fetch(path)
+            return await self._registry_type_ids()
         except Exception:
-            return {
-                "timestamp": _utc_now().isoformat().replace("+00:00", "Z"),
-                "nodes": [
-                    {
-                        "id": "service:observatory",
-                        "typeId": "service",
-                        "label": "Observatory",
-                        "parentId": None,
-                        "status": "failed",
-                        "svcType": "observatory",
-                    }
-                ],
-                "edges": [],
-                "events": [
-                    {
-                        "id": "observatory:guild:unreachable",
-                        "level": "warning",
-                        "service": "observatory",
-                        "message": "Guild discovery endpoint unavailable",
-                        "timestamp": _utc_now().isoformat().replace("+00:00", "Z"),
-                    }
-                ],
-            }
+            logger.warning("Registry type ids unavailable; using seed types", exc_info=True)
+            return None

@@ -12,6 +12,12 @@
       "runtimeExecutable": "python3",
       "runtimeArgs": ["-c", "import socket,threading,sys\ndef pipe(a,b):\n    try:\n        while True:\n            d=a.recv(65536)\n            if not d: break\n            b.sendall(d)\n    except OSError: pass\n    finally:\n        try: b.shutdown(socket.SHUT_WR)\n        except OSError: pass\ns=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',8081)); s.listen(64)\nprint('bridge 127.0.0.1:8081 -> 192.168.1.106:8080', flush=True)\nwhile True:\n    c,_=s.accept()\n    u=socket.socket(); u.connect(('192.168.1.106',8080))\n    threading.Thread(target=pipe,args=(c,u),daemon=True).start()\n    threading.Thread(target=pipe,args=(u,c),daemon=True).start()"],
       "port": 8081
+    },
+    {
+      "name": "niuu-docs",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd /Users/jozefvaneenbergen/git/niuu/software/volundr-ravn-room-cli && exec uv run --with mkdocs-material mkdocs serve -a 127.0.0.1:8123"],
+      "port": 8123
     }
   ]
 }

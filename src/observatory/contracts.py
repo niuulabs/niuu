@@ -121,3 +121,6 @@ class ObservatorySnapshot(ObservatoryFragment, total=False):
     """Merged observatory snapshot returned to the frontend."""
 
     timestamp: str
+    #: Digest of graph content. Unlike `timestamp`, it only changes when the
+    #: graph does, so consumers can tell a real change from a re-poll.
+    revision: str

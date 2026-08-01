@@ -51,21 +51,34 @@ PATs are long-lived JWTs signed with the same symmetric key that Envoy validates
 so they integrate with the existing infrastructure without requiring IDP changes.
 The shared PAT code lives in `src/niuu/` (service, port, adapter, model).
 
-### Exception: scoped Valkyrie build tokens (workload identity)
+### Exception: scoped workload tokens (workload identity)
 
 The same sanctioned exception covers the short-lived tokens minted by the
 workload-identity exchange (`POST /api/v1/tokens/workload/exchange`). When the
-exchange request asks for build `scopes`, the issued JWT carries
+exchange request asks for `scopes`, the issued JWT carries
 `token_use: "valkyrie_build"` and a `scopes` claim bounded to
-`KNOWN_BUILD_SCOPES` (`src/niuu/domain/services/token_scope.py`) — a
-least-privilege credential that can commission a build and nothing else,
-enforced fail-closed at the build entry points (Forge session create, Ting
-workflow launch). Tokens without `token_use == "valkyrie_build"` are never
-scope-checked, so human sessions and ordinary PATs are unaffected.
+`KNOWN_WORKLOAD_SCOPES` (`src/niuu/domain/services/token_scope.py`) — a
+least-privilege credential that can do one named thing and nothing else,
+enforced fail-closed at that entry point (Forge session create, Ting workflow
+launch, Observatory topology push). Tokens without
+`token_use == "valkyrie_build"` are never scope-checked, so human sessions and
+ordinary PATs are unaffected.
+
+The `valkyrie_build` claim value is historical — builds were the first use.
+It means "this credential is scoped", not "this credential builds"; the
+mechanism is general and scopes are not limited to builds.
+
+`KNOWN_WORKLOAD_SCOPES` is deliberately a constant, not configuration: it is
+the allowlist that stops a caller self-granting privilege, so anything able to
+edit it can mint authority. A scope is also only real because code enforces
+it — `require_scope("x")` on a route is what gives `"x"` meaning, so a
+config-only scope would grant nothing while reading as protection.
 
 Known limitation (deliberate, for now): PATs themselves cannot carry scopes —
 a leaked PAT retains its owner's full authority. Off-cluster Valkyries using
 a PAT via `external_token_env` therefore do not get least-privilege; scoped
-PAT minting is future work. When adding a NEW build entry point, add its scope
-to `KNOWN_BUILD_SCOPES` and a `require_build_scope(...)` dependency on the
-route — build tokens are only as narrow as the enforcement coverage.
+PAT minting is future work. When adding a NEW scoped entry point, add its
+scope to `KNOWN_WORKLOAD_SCOPES` and a `require_scope(...)` dependency on the
+route — scoped tokens are only as narrow as the enforcement coverage.
+`tests/test_niuu/test_token_scope.py` fails if the two drift apart in either
+direction.

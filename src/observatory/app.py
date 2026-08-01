@@ -18,14 +18,13 @@ from niuu.domain.agent_directory import (
     AgentDirectoryPage,
 )
 from niuu.domain.models import Principal
-from niuu.ports.http_auth import HttpAuthPort
+from niuu.domain.observatory import ObservatoryFragment
 from niuu.service_databases import apply_service_database_settings, database_pool
 from niuu.settings_schema import (
     SettingsFieldSchema,
     SettingsProviderSchema,
     SettingsSectionSchema,
 )
-from niuu.utils import import_class, resolve_secret_kwargs
 from observatory.a2a_cards import HttpAgentCardResolver
 from observatory.agent_directory import AgentDirectoryService
 from observatory.discovery import ObservatoryDiscoveryService
@@ -70,12 +69,6 @@ def _agent_directory(request: Request) -> AgentDirectoryService:
     return request.app.state.agent_directory_service
 
 
-def _create_http_auth_adapter(config) -> HttpAuthPort:
-    cls = import_class(config.adapter)
-    kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
-    return cls(**kwargs)
-
-
 def _forward_headers(request: Request) -> dict[str, str]:
     headers: dict[str, str] = {}
     for name in FORWARDED_AUTH_HEADERS:
@@ -89,13 +82,20 @@ async def _topology_stream(
     discovery: ObservatoryDiscoveryService,
     headers: dict[str, str] | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Yield topology snapshots whenever the local view changes."""
-    last_timestamp: str | None = None
+    """Yield topology snapshots whenever the local view changes.
+
+    Deduped on `revision`, which only changes when the graph does. The previous
+    check compared `timestamp`, which is re-stamped on every materialization, so
+    it never matched and the full snapshot went out on every tick regardless of
+    whether anything had changed. `timestamp` remains the fallback for a
+    producer that supplies no revision.
+    """
+    last_marker: str | None = None
     while True:
         snapshot = await discovery.get_topology_snapshot(headers=headers)
-        timestamp = str(snapshot.get("timestamp") or "")
-        if timestamp != last_timestamp:
-            last_timestamp = timestamp
+        marker = str(snapshot.get("revision") or snapshot.get("timestamp") or "")
+        if marker != last_marker:
+            last_marker = marker
             yield _to_sse(snapshot, event="topology.snapshot")
         else:
             yield ": keepalive\n\n"
@@ -280,14 +280,6 @@ def create_router() -> APIRouter:
                             description="Guild endpoint used for Observatory discovery.",
                             read_only=True,
                         ),
-                        SettingsFieldSchema(
-                            key="guild_auth_adapter",
-                            label="Guild Auth Adapter",
-                            type="text",
-                            value=request.app.state.guild_auth_adapter,
-                            description="Dynamic auth adapter used for Guild requests.",
-                            read_only=True,
-                        ),
                     ],
                 )
             ],
@@ -306,13 +298,39 @@ def create_router() -> APIRouter:
             },
         )
 
-    @router.get("/topology/snapshot", summary="Get one live topology snapshot")
-    async def topology_snapshot(request: Request) -> dict[str, Any]:
-        snapshot = await _discovery(request).get_topology_snapshot(
-            headers=_forward_headers(request)
+    @router.get(
+        "/fragment",
+        response_model=ObservatoryFragment,
+        response_model_by_alias=True,
+        summary="This Observatory's partial view of the topology",
+    )
+    async def fragment(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> ObservatoryFragment:
+        """Return what this source alone knows, for an aggregator to merge.
+
+        Requires a principal. This replaced `/topology/snapshot`, which the
+        gateway served without one — publishing every cluster's namespace
+        names, workload names, labels and endpoints to anyone who asked.
+        """
+        del principal
+        discovery = _discovery(request)
+        headers = _forward_headers(request)
+        snapshot = await discovery.get_topology_snapshot(headers=headers)
+        events = await discovery.get_events(headers=headers)
+        return ObservatoryFragment.model_validate(
+            {
+                "nodes": snapshot.get("nodes", []),
+                "edges": snapshot.get("edges", []),
+                "events": events,
+                "layoutHints": snapshot.get("layoutHints"),
+                "meta": {
+                    **request.app.state.fragment_meta,
+                    "revision": str(snapshot.get("revision") or ""),
+                },
+            }
         )
-        events = await _discovery(request).get_events(headers=_forward_headers(request))
-        return {**snapshot, "events": events}
 
     @router.get("/events", summary="Stream observatory events")
     @router.get("/events/stream", summary="Stream observatory events")
@@ -339,14 +357,28 @@ def create_app(
 ) -> FastAPI:
     """Create the Observatory ASGI app."""
     loaded_settings = apply_service_database_settings(settings or Settings(), "observatory")
+    app: FastAPI | None = None
+
+    async def registry_type_ids() -> list[str]:
+        """Entity types the registry currently knows about.
+
+        Resolved per call rather than captured at construction: the repository
+        is attached during lifespan, and operators can edit the registry through
+        the API at any time without a restart.
+        """
+        repository = getattr(app.state, "registry_repository", None) if app else None
+        if repository is None:
+            raise RuntimeError("Registry repository is not ready")
+        registry = await repository.get_registry()
+        return [str(entry.get("id", "")) for entry in registry.get("types", [])]
+
     discovery = discovery_service
     if discovery is None:
         guild_cfg = loaded_settings.observatory.guild
         discovery = ObservatoryDiscoveryService(
             guild_url=guild_cfg.url,
-            auth=_create_http_auth_adapter(guild_cfg.auth),
-            timeout_seconds=guild_cfg.timeout_seconds,
             discovery_adapter=build_discovery_adapter(loaded_settings.observatory.discovery),
+            registry_type_ids=registry_type_ids,
         )
     directory = agent_directory_service
     if directory is None:
@@ -388,7 +420,16 @@ def create_app(
     app.state.discovery_service = discovery
     app.state.agent_directory_service = directory
     app.state.guild_url = getattr(discovery, "guild_url", getattr(discovery, "base_url", ""))
-    app.state.guild_auth_adapter = loaded_settings.observatory.guild.auth.adapter
+    # Identity this source stamps on the fragments it publishes. Reuses the
+    # Agent Directory's identity rather than inventing a second one: an
+    # aggregator that fans out for agents and for topology is talking to the
+    # same instance and should see the same name for it.
+    app.state.fragment_meta = {
+        "sourceId": loaded_settings.observatory.directory.instance_id,
+        "sourceKind": "observatory",
+        "sourceName": loaded_settings.observatory.directory.instance_id,
+        "clusterId": loaded_settings.observatory.directory.cluster_id,
+    }
 
     @app.get("/health", tags=["Health"])
     async def health() -> dict[str, object]:

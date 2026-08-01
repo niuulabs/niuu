@@ -7,8 +7,11 @@ metadata:
   labels:
     {{- include "observatory.labels" . | nindent 4 }}
 rules:
+  # `nodes` is cluster-scoped and so appears only here, not in the namespaced
+  # Role below. Without it the discovery adapter logs a warning and the graph
+  # simply has no hosts.
   - apiGroups: [""]
-    resources: ["pods", "services", "configmaps", "persistentvolumeclaims"]
+    resources: ["pods", "services", "configmaps", "persistentvolumeclaims", "nodes"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]

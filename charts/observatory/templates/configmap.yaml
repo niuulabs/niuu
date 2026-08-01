@@ -48,18 +48,6 @@ data:
         authenticated_card_origins: {{ .Values.directory.authenticatedCardOrigins | toJson }}
       guild:
         url: {{ .Values.guild.url | default (printf "http://%s-guild" .Release.Name) | quote }}
-        timeout_seconds: {{ .Values.guild.timeoutSeconds | default 10.0 }}
-        auth:
-          adapter: {{ .Values.guild.auth.adapter | quote }}
-          kwargs: {{ .Values.guild.auth.kwargs | toJson }}
-          {{- if .Values.guild.auth.secretKwargs }}
-          secret_kwargs_env:
-            {{- range .Values.guild.auth.secretKwargs }}
-            {{ .kwarg }}: OBSERVATORY_GUILD_AUTH_SK_{{ .kwarg | upper }}
-            {{- end }}
-          {{- else }}
-          secret_kwargs_env: {}
-          {{- end }}
       discovery:
         {{- if .Values.discovery.adapters }}
         {{- range .Values.discovery.adapters }}

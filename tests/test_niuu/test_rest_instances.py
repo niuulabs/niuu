@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -515,168 +516,175 @@ def test_list_volundr_targets_requests_enabled_visible_volundr_instances() -> No
     assert service.list_calls[-1]["enabled_only"] is True
 
 
-@respx.mock
-def test_observatory_snapshot_builds_registry_backed_topology() -> None:
-    service = StubInstanceService()
-    service.visible_instances = [
-        _instance(
-            "volundr-1",
-            kind=InstanceKind.VOLUNDR,
-            base_url="https://volundr.example.com",
-            is_default=True,
-        ),
-        _instance(
-            "bifrost-1",
-            kind=InstanceKind.BIFROST,
-            base_url="https://bifrost.example.com",
-        ),
-        _instance(
-            "mimir-1",
-            kind=InstanceKind.MIMIR,
-            base_url="https://mimir.example.com",
-        ),
-    ]
-    client = _client(service)
-    respx.get("https://volundr.example.com/health").mock(return_value=Response(200))
-    respx.get("https://bifrost.example.com/health").mock(return_value=Response(503))
-    respx.get("https://mimir.example.com/health").mock(return_value=Response(200))
+# ── Topology fragment push inbox ─────────────────────────────────────────────
 
-    response = client.get("/api/v1/niuu/observatory/snapshot", headers=_headers())
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["layoutHints"]["mode"] == "pack"
-    assert any(node["id"] == "cluster-unknown" for node in payload["nodes"])
-    assert not any(node["id"].startswith("realm-") for node in payload["nodes"])
-    assert any(node.get("svcType") == "volundr" for node in payload["nodes"])
-    assert any(node.get("svcType") == "bifrost" for node in payload["nodes"])
-    assert not any(node["id"] == "mimir-well" for node in payload["nodes"])
-    assert any(
-        node.get("layoutHints", {}).get("packGroup") == "volundr" for node in payload["nodes"]
-    )
-    assert not any(node["id"].startswith("run-") for node in payload["nodes"])
-    assert any(
-        edge.get("relationType") == "uses"
-        and edge.get("label") == "uses"
-        and edge.get("evidence", {}).get("adapter") == "rest_instances"
-        for edge in payload["edges"]
-    )
-    assert any(event["service"] == "volundr" for event in payload["events"])
-    assert any(event["service"] == "bifrost" for event in payload["events"])
-    assert any(event["service"] == "mimir" for event in payload["events"])
+#: Scope enforcement reads claims without verifying the signature (Envoy
+#: verifies upstream), so this key only needs to satisfy PyJWT's minimum.
+_TEST_SIGNING_KEY = "test-signing-key-of-sufficient-length-for-hs256"
 
 
-@respx.mock
-def test_observatory_snapshot_includes_wardens_from_registered_ravn() -> None:
-    service = StubInstanceService()
-    service.visible_instances = [
-        _instance(
-            "ravn-1",
-            kind=InstanceKind.RAVN,
-            base_url="https://ravn.example.com/api/v1/ravn",
-        ),
-        _instance(
-            "mimir-1",
-            kind=InstanceKind.MIMIR,
-            base_url="https://mimir.example.com",
-        ),
-    ]
-    client = _client(service)
-    respx.get("https://ravn.example.com/api/v1/ravn/health").mock(return_value=Response(200))
-    respx.get("https://mimir.example.com/health").mock(return_value=Response(200))
-    respx.get("https://ravn.example.com/api/v1/ravn/wardens").mock(
-        return_value=Response(
-            200,
-            json=[
-                {
-                    "id": "mimir-shared-warden",
-                    "name": "Mimir Shared Warden",
-                    "persona": "mimir-warden",
-                    "deployment": "kubernetes",
-                    "mimir": {
-                        "mount_names": ["shared"],
-                        "write_mount": "shared",
-                    },
-                    "schedules": {
-                        "dream_cycle_cron_expression": "*/15 * * * *",
-                    },
-                    "runtime": {"state": "active"},
-                    "supervisor": {
-                        "observation": {
-                            "status": "running",
-                            "source": "kubernetes",
-                        }
-                    },
-                }
-            ],
+def _inbox_client(inbox: Any) -> TestClient:
+    app = FastAPI()
+    app.include_router(
+        create_instances_router(  # type: ignore[arg-type]
+            StubInstanceService(),
+            fragment_inbox=inbox,
         )
     )
+    return TestClient(app)
 
-    response = client.get("/api/v1/niuu/observatory/snapshot", headers=_headers())
+
+def _push_inbox(ttl_seconds: float = 180.0) -> Any:
+    from niuu.adapters.memory_observatory_fragments import (
+        InMemoryObservatoryFragmentRepository,
+    )
+    from niuu.domain.services.observatory_fragments import ObservatoryFragmentInboxService
+
+    return ObservatoryFragmentInboxService(
+        InMemoryObservatoryFragmentRepository(),
+        ttl_seconds=ttl_seconds,
+    )
+
+
+def _fragment_payload(source_id: str = "spark-1") -> dict[str, Any]:
+    return {
+        "nodes": [
+            {
+                "id": "ravn-ivaldi",
+                "typeId": "ravn_long",
+                "label": "ivaldi",
+                "hostId": "saehrimnir",
+                "realmId": "sparks",
+            }
+        ],
+        "meta": {"sourceId": source_id, "sourceKind": "resident", "hostId": "saehrimnir"},
+    }
+
+
+def test_publishing_a_fragment_reports_the_sources_health() -> None:
+    client = _inbox_client(_push_inbox())
+
+    response = client.put(
+        "/api/v1/niuu/observatory/fragments/spark-1",
+        json=_fragment_payload(),
+        headers=_headers(),
+    )
 
     assert response.status_code == 200
-    payload = response.json()
-    assert any(node["id"] == "warden:mimir-shared-warden" for node in payload["nodes"])
-    assert any(edge["id"] == "edge:warden:mimir-shared-warden:mimir" for edge in payload["edges"])
+    body = response.json()
+    assert body["sourceId"] == "spark-1"
+    assert body["status"] == "healthy"
+    assert body["transport"] == "push"
+    assert body["nodeCount"] == 1
 
 
-@respx.mock
-def test_observatory_snapshot_uses_deployment_cluster_labels() -> None:
-    service = StubInstanceService()
-    service.visible_instances = [
-        _instance(
-            "ravn-1",
-            kind=InstanceKind.RAVN,
-            base_url="https://ravn.example.com/api/v1/ravn",
-            config={
-                "labels": {
-                    "niuu.world/cluster": "ymir",
-                    "niuu.world/namespace": "volundr",
-                }
-            },
-        ),
-        _instance(
-            "mimir-1",
-            kind=InstanceKind.MIMIR,
-            base_url="https://mimir.example.com",
-            config={"environment": "ymir", "namespace": "volundr"},
-        ),
-    ]
-    client = _client(service)
-    respx.get("https://ravn.example.com/api/v1/ravn/health").mock(return_value=Response(200))
-    respx.get("https://mimir.example.com/health").mock(return_value=Response(200))
-    respx.get("https://ravn.example.com/api/v1/ravn/wardens").mock(
-        return_value=Response(
-            200,
-            json=[
-                {
-                    "id": "mimir-shared-warden",
-                    "name": "Mimir Shared Warden",
-                    "runtime": {"state": "active"},
-                }
-            ],
+def test_republishing_replaces_rather_than_accumulating() -> None:
+    inbox = _push_inbox()
+    client = _inbox_client(inbox)
+
+    for _ in range(3):
+        client.put(
+            "/api/v1/niuu/observatory/fragments/spark-1",
+            json=_fragment_payload(),
+            headers=_headers(),
         )
+
+    assert len(asyncio.run(inbox.current())) == 1
+
+
+def test_a_fragment_cannot_claim_a_different_source_than_its_path() -> None:
+    """Otherwise a source could overwrite, or masquerade as, another."""
+    client = _inbox_client(_push_inbox())
+
+    response = client.put(
+        "/api/v1/niuu/observatory/fragments/spark-1",
+        json=_fragment_payload(source_id="spark-2"),
+        headers=_headers(),
     )
 
-    response = client.get("/api/v1/niuu/observatory/snapshot", headers=_headers())
+    assert response.status_code == 400
+    assert "spark-2" in response.json()["detail"]
+
+
+def test_publishing_without_a_configured_inbox_says_so() -> None:
+    app = FastAPI()
+    app.include_router(create_instances_router(StubInstanceService()))  # type: ignore[arg-type]
+    client = TestClient(app)
+
+    response = client.put(
+        "/api/v1/niuu/observatory/fragments/spark-1",
+        json=_fragment_payload(),
+        headers=_headers(),
+    )
+
+    assert response.status_code == 503
+
+
+def test_a_build_token_without_the_push_scope_is_refused() -> None:
+    """Scoped credentials are fail-closed: a token that may launch workflows
+    must not also be able to rewrite the topology."""
+    import jwt
+
+    token = jwt.encode(
+        {"token_use": "valkyrie_build", "scopes": ["ting:workflow:launch"]},
+        _TEST_SIGNING_KEY,
+        algorithm="HS256",
+    )
+    client = _inbox_client(_push_inbox())
+
+    response = client.put(
+        "/api/v1/niuu/observatory/fragments/spark-1",
+        json=_fragment_payload(),
+        headers={**_headers(), "authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+    assert "observatory:topology:push" in response.json()["detail"]
+
+
+def test_a_build_token_carrying_the_push_scope_is_admitted() -> None:
+    import jwt
+
+    token = jwt.encode(
+        {"token_use": "valkyrie_build", "scopes": ["observatory:topology:push"]},
+        _TEST_SIGNING_KEY,
+        algorithm="HS256",
+    )
+    client = _inbox_client(_push_inbox())
+
+    response = client.put(
+        "/api/v1/niuu/observatory/fragments/spark-1",
+        json=_fragment_payload(),
+        headers={**_headers(), "authorization": f"Bearer {token}"},
+    )
 
     assert response.status_code == 200
-    payload = response.json()
-    assert any(
-        node["id"] == "cluster-ymir" and node["label"] == "ymir" and node["namespace"] == "volundr"
-        for node in payload["nodes"]
+
+
+def test_forgetting_a_source_removes_it() -> None:
+    inbox = _push_inbox()
+    client = _inbox_client(inbox)
+    client.put(
+        "/api/v1/niuu/observatory/fragments/spark-1",
+        json=_fragment_payload(),
+        headers=_headers(),
     )
-    assert any(
-        node["id"] == "instance:ravn:ravn-1-slug"
-        and node["parentId"] == "cluster-ymir"
-        and node["clusterName"] == "ymir"
-        and node["namespace"] == "volundr"
-        for node in payload["nodes"]
+
+    response = client.delete(
+        "/api/v1/niuu/observatory/fragments/spark-1",
+        headers=_headers(),
     )
-    assert any(
-        node["id"] == "warden:mimir-shared-warden"
-        and node["parentId"] == "cluster-ymir"
-        and node["clusterName"] == "ymir"
-        and node["namespace"] == "volundr"
-        for node in payload["nodes"]
+
+    assert response.status_code == 204
+    assert asyncio.run(inbox.current()) == []
+
+
+def test_forgetting_an_unknown_source_is_a_404() -> None:
+    client = _inbox_client(_push_inbox())
+
+    response = client.delete(
+        "/api/v1/niuu/observatory/fragments/never-seen",
+        headers=_headers(),
     )
+
+    assert response.status_code == 404

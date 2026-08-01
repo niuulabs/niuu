@@ -21,7 +21,7 @@ from cryptography.hazmat.primitives.serialization import (
 from niuu.domain.models import Principal
 from niuu.domain.services.token_scope import (
     VALKYRIE_BUILD_TOKEN_USE,
-    bound_build_scopes,
+    bound_workload_scopes,
 )
 from niuu.ports.workload_identity import (
     IssuedWorkloadToken,
@@ -116,7 +116,7 @@ class WorkloadIdentityService(WorkloadTokenIssuer):
         if not token.strip():
             raise WorkloadIdentityError("Missing workload token")
 
-        build_scopes = bound_build_scopes(scopes)
+        build_scopes = bound_workload_scopes(scopes)
         last_error: Exception | None = None
         for mapping in getattr(self._config, "mappings", []) or []:
             verifier_name = getattr(mapping, "verifier", "kubernetes")

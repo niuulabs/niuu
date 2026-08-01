@@ -3,41 +3,42 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import socket
-from collections.abc import Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class, resolve_secret_kwargs
 from observatory.contracts import ObservatoryEdge, ObservatoryEvent, ObservatorySnapshot
+from observatory.data import REGISTRY
 
 logger = logging.getLogger(__name__)
 _SERVICE_ACCOUNT_ROOT = Path("/var/run/secrets/kubernetes.io/serviceaccount")
-_KNOWN_TYPE_IDS = {
-    "bifrost",
-    "beacon",
-    "cluster",
-    "host",
-    "mimir",
-    "namespace",
-    "printer",
-    "ravn_long",
-    "service",
-    "skuld",
-    "ting",
-    "valkyrie",
-    "vaettir",
-    "volundr",
-    "warden",
-}
+#: Entity types recognised when no live registry is supplied.
+#:
+#: Derived from the registry seed rather than written out by hand. A literal set
+#: here inevitably drifts from the registry — that drift is exactly why realms,
+#: models and runs were being silently downgraded to ``service``. The registry is
+#: the configurable, API-editable source of truth; this is only its in-code
+#: default for callers that have no repository to read from.
+_SEED_TYPE_IDS = frozenset(str(entry.get("id", "")) for entry in REGISTRY.get("types", []))
+
+
+def default_type_ids() -> frozenset[str]:
+    """Entity type ids known from the registry seed."""
+    return _SEED_TYPE_IDS
+
+
 _COMPONENT_TYPES = {
     "agent": "ravn_long",
     "api": "volundr",
@@ -300,8 +301,13 @@ class DiscoveredEntity:
     id: str
     kind: str
     name: str
+    # Placement. Every level is optional and they are not a fixed hierarchy: a
+    # Kubernetes workload arrives with a cluster and a namespace, a resident on
+    # a bare-metal Spark with a host and a realm and neither of the others.
+    realm: str = ""
     cluster: str = ""
     namespace: str = ""
+    host: str = ""
     status: str = "unknown"
     parent_id: str | None = None
     labels: dict[str, str] = field(default_factory=dict)
@@ -780,58 +786,339 @@ class FluxHelmReleaseSessionDiscoveryAdapter:
         return not self._image_tags or image_tag in self._image_tags
 
 
-class HttpObservatoryDiscoveryAdapter:
-    """Merge topology from another Observatory HTTP endpoint."""
+class _HttpServiceDiscoveryAdapter:
+    """Shared plumbing for adapters that read one niuu service over HTTP.
+
+    Each subclass supplies `collect`; failures become a warning event rather
+    than an exception, because one unreachable service must not empty the graph
+    the other adapters contributed to.
+    """
+
+    warning_name = "service"
 
     def __init__(
         self,
         base_url: str,
+        cluster: str = "",
+        realm: str = "",
+        namespace: str = "",
         timeout_seconds: float = 5.0,
-        headers: dict[str, str] | None = None,
-        auth_header_env: str = "",
+        auth_adapter: str = "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter",
+        auth_kwargs: dict[str, Any] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
+        self._cluster = cluster
+        self._realm = realm
+        self._namespace = namespace
         self._timeout_seconds = timeout_seconds
-        self._headers = dict(headers or {})
-        self._auth_header_env = auth_header_env
+        self._auth: HttpAuthPort = import_class(auth_adapter)(**(auth_kwargs or {}))
         self._transport = transport
 
     async def discover(self) -> DiscoveryResult:
-        headers = dict(self._headers)
-        if self._auth_header_env:
-            token = os.environ.get(self._auth_header_env, "").strip()
-            if token:
-                headers.setdefault("Authorization", token)
         try:
+            headers = await asyncio.to_thread(self._auth.headers)
             async with httpx.AsyncClient(
                 timeout=self._timeout_seconds,
                 follow_redirects=True,
                 transport=self._transport,
             ) as client:
-                response = await client.get(self._snapshot_url(), headers=headers)
-                response.raise_for_status()
-                payload = response.json()
+                return await self.collect(client, headers)
         except Exception as exc:
             return DiscoveryResult(
-                events=[_adapter_warning("http-observatory", f"{self._base_url}: {exc}")]
+                events=[_adapter_warning(self.warning_name, f"{self._base_url}: {exc}")]
             )
-        if not isinstance(payload, dict):
-            return DiscoveryResult()
-        return DiscoveryResult(
-            entities=[
-                _entity_from_node(node, source_adapter=self.__class__.__name__)
-                for node in payload.get("nodes", [])
-                if isinstance(node, dict)
-            ],
-            edges=[edge for edge in payload.get("edges", []) if _is_edge(edge)],
-            events=[event for event in payload.get("events", []) if isinstance(event, dict)],
+
+    async def collect(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+    ) -> DiscoveryResult:
+        raise NotImplementedError
+
+    async def _json(self, client: httpx.AsyncClient, headers: dict[str, str], path: str) -> Any:
+        response = await client.get(f"{self._base_url}{path}", headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+    def _entity(self, kind: str, name: str, entity_id: str, **kwargs: Any) -> DiscoveredEntity:
+        return DiscoveredEntity(
+            id=entity_id,
+            kind=kind,
+            name=name,
+            realm=self._realm,
+            cluster=self._cluster,
+            namespace=self._namespace,
+            source_adapter=self.__class__.__name__,
+            **kwargs,
         )
 
-    def _snapshot_url(self) -> str:
-        if self._base_url.endswith("/api/v1/observatory"):
-            return f"{self._base_url}/topology/snapshot"
-        return f"{self._base_url}/api/v1/observatory/topology/snapshot"
+
+class BifrostCatalogDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
+    """Discover the real model catalogue from Bifröst.
+
+    This replaces the three model children the Guild used to fabricate for
+    every Bifröst (Anthropic, OpenAI, Local) from a hardcoded list. Models here
+    are the ones actually configured, and each is attributed to the provider
+    that serves it — which is also what makes local-vs-hosted visible.
+    """
+
+    warning_name = "bifrost"
+
+    async def collect(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+    ) -> DiscoveryResult:
+        models = await self._json(client, headers, "/api/v1/bifrost/models")
+        providers = await self._json(client, headers, "/api/v1/bifrost/providers")
+        providers = providers if isinstance(providers, list) else []
+        models = models if isinstance(models, list) else []
+
+        gateway_id = f"bifrost:{_slug(self._cluster or 'unknown')}"
+        entities = [
+            self._entity(
+                "bifrost",
+                "Bifröst",
+                gateway_id,
+                status="healthy",
+                endpoints={"internal": self._base_url},
+                metadata={
+                    "providers": len(providers),
+                    "models": len(models),
+                    "vendors": sorted(
+                        {
+                            str(p.get("vendor") or "")
+                            for p in providers
+                            if isinstance(p, dict) and p.get("vendor")
+                        }
+                    ),
+                },
+            )
+        ]
+        edges: list[ObservatoryEdge] = []
+
+        # A provider's base_url is real configuration, so "this model is served
+        # from here" is observed rather than guessed.
+        served_by = {
+            str(model_id): provider
+            for provider in providers
+            if isinstance(provider, dict)
+            for model_id in (provider.get("model_ids") or [])
+        }
+
+        for model in models:
+            if not isinstance(model, dict) or not model.get("id"):
+                continue
+            model_id = str(model["id"])
+            provider = served_by.get(model_id) or {}
+            base_url = str(provider.get("base_url") or "")
+            node_id = f"model:{_slug(self._cluster or 'unknown')}:{_slug(model_id)}"
+            entities.append(
+                self._entity(
+                    "model",
+                    str(model.get("name") or model_id),
+                    node_id,
+                    parent_id=gateway_id,
+                    status="healthy" if model.get("enabled", True) else "idle",
+                    metadata={
+                        "modelId": model_id,
+                        "vendor": str(model.get("vendor") or ""),
+                        "provider": str(model.get("provider") or provider.get("key") or ""),
+                        "tier": str(model.get("tier") or ""),
+                        "location": _model_location(base_url),
+                        "supportsTools": bool(model.get("supports_tools")),
+                        "supportsThinking": bool(model.get("supports_thinking")),
+                        "vramRequired": model.get("vram_required"),
+                        "costPerMillionTokens": model.get("cost_per_million_tokens"),
+                    },
+                )
+            )
+            if base_url:
+                edges.append(
+                    _edge(
+                        source_id=gateway_id,
+                        target_id=node_id,
+                        relation_type="routes_to",
+                        source_adapter=self.__class__.__name__,
+                        evidence_field="base_url",
+                        confidence="observed",
+                    )
+                )
+
+        return DiscoveryResult(entities=entities, edges=edges)
+
+
+class RavnResidentsDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
+    """Discover long-running residents from Ravn's fleet projection.
+
+    This is also how residents outside Kubernetes reach the graph when the
+    Ravn that knows about them is reachable: the projection already carries
+    local and container deployments, not only cluster ones.
+    """
+
+    warning_name = "ravn-residents"
+
+    async def collect(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+    ) -> DiscoveryResult:
+        payload = await self._json(client, headers, "/api/v1/ravn/ravens")
+        ravens = payload if isinstance(payload, list) else []
+        entities: list[DiscoveredEntity] = []
+        edges: list[ObservatoryEdge] = []
+
+        for raven in ravens:
+            if not isinstance(raven, dict) or not raven.get("id"):
+                continue
+            raven_id = str(raven["id"])
+            name = str(raven.get("resident_name") or raven.get("persona_name") or raven_id)
+            node_id = f"ravn:{_slug(self._cluster or 'unknown')}:{_slug(raven_id)}"
+            flock_id = str(raven.get("flock_id") or "")
+            entities.append(
+                self._entity(
+                    "ravn_long",
+                    name,
+                    node_id,
+                    # A resident reports where it runs; a local or container
+                    # deployment has no cluster placement to inherit.
+                    host=str(raven.get("location") or ""),
+                    status=_status_from_valkyrie(str(raven.get("status") or "")),
+                    endpoints=(
+                        {"chat": str(raven["chat_endpoint"])} if raven.get("chat_endpoint") else {}
+                    ),
+                    metadata={
+                        "persona": str(raven.get("persona_name") or ""),
+                        "model": str(raven.get("model") or ""),
+                        "deployment": str(raven.get("deployment") or raven.get("backend") or ""),
+                        "engine": str(raven.get("engine") or ""),
+                        "flockId": flock_id,
+                        "flockRole": str(raven.get("flock_role") or ""),
+                        "peerId": str(raven.get("peer_id") or ""),
+                        "desiredState": raven.get("desired_state"),
+                        "observedState": raven.get("observed_state"),
+                    },
+                )
+            )
+            if flock_id:
+                # Flock membership is declared by the resident's own config,
+                # which is what makes a mesh visible as more than co-location.
+                edges.append(
+                    _edge(
+                        source_id=node_id,
+                        target_id=f"flock:{_slug(flock_id)}",
+                        relation_type="member_of",
+                        source_adapter=self.__class__.__name__,
+                        evidence_field="flock_id",
+                        confidence="observed",
+                    )
+                )
+
+        return DiscoveryResult(entities=entities, edges=edges)
+
+
+class TingWorkDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
+    """Discover the dispatcher and what it currently has in flight."""
+
+    warning_name = "ting"
+
+    async def collect(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+    ) -> DiscoveryResult:
+        summary = await self._json(client, headers, "/api/v1/ting/runs/summary")
+        counts = {str(k): int(v) for k, v in summary.items()} if isinstance(summary, dict) else {}
+        active = sum(count for state, count in counts.items() if state.lower() == "running")
+        return DiscoveryResult(
+            entities=[
+                self._entity(
+                    "ting",
+                    "Ting",
+                    f"ting:{_slug(self._cluster or 'unknown')}",
+                    status="healthy" if active else "idle",
+                    endpoints={"internal": self._base_url},
+                    metadata={
+                        "runsByStatus": counts,
+                        "activeRuns": active,
+                        "totalRuns": sum(counts.values()),
+                    },
+                )
+            ]
+        )
+
+
+class MimirDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
+    """Discover a Mímir and the mounts it serves."""
+
+    warning_name = "mimir"
+
+    async def collect(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+    ) -> DiscoveryResult:
+        stats = await self._json(client, headers, "/api/v1/mimir/stats")
+        mounts = await self._json(client, headers, "/api/v1/mimir/mounts")
+        stats = stats if isinstance(stats, dict) else {}
+        mounts = mounts if isinstance(mounts, list) else []
+
+        node_id = f"mimir:{_slug(self._cluster or 'unknown')}"
+        return DiscoveryResult(
+            entities=[
+                self._entity(
+                    "mimir",
+                    "Mímir",
+                    node_id,
+                    status="healthy" if stats.get("healthy") else "failed",
+                    endpoints={"internal": self._base_url},
+                    metadata={
+                        "pages": int(stats.get("page_count") or 0),
+                        "categories": list(stats.get("categories") or []),
+                        "mountCount": len(mounts),
+                        "mounts": [
+                            {
+                                "name": str(mount.get("name") or ""),
+                                "role": str(mount.get("role") or ""),
+                                "status": str(mount.get("status") or ""),
+                                "pages": int(mount.get("pages") or 0),
+                                "sizeKb": int(mount.get("size_kb") or 0),
+                            }
+                            for mount in mounts
+                            if isinstance(mount, dict)
+                        ],
+                    },
+                )
+            ]
+        )
+
+
+#: Hosts whose names mean "served from our own hardware".
+_INTERNAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_INTERNAL_HOST_SUFFIXES = (".svc.cluster.local", ".internal", ".local")
+
+
+def _model_location(base_url: str) -> str:
+    """Where a model is served from, judged by its provider endpoint.
+
+    A cluster-internal or loopback host means the weights run on our hardware;
+    anything else is a hosted API. This is read from real provider config, so
+    it is an observation rather than a guess.
+
+    Matched against the parsed host, never against the whole URL: a substring
+    test would read `https://localhost.example.com/` and
+    `https://api.vendor.test/?v=.svc.cluster.local` as internal, and this value
+    is what tells an operator whether their traffic leaves the building.
+    """
+    if not base_url:
+        return "unknown"
+    host = (urlsplit(base_url).hostname or "").lower()
+    if not host:
+        return "unknown"
+    if host in _INTERNAL_HOSTS or host.endswith(_INTERNAL_HOST_SUFFIXES):
+        return "internal"
+    return "external"
 
 
 class RavnValkyrieDiscoveryAdapter:
@@ -925,6 +1212,7 @@ class KubernetesDiscoveryAdapter:
         self,
         cluster: str = "",
         namespace: str = "",
+        realm: str = "",
         label_selector: str = "niuu.world/cluster",
         include_kinds: list[str] | None = None,
         timeout_seconds: float = 10.0,
@@ -933,8 +1221,11 @@ class KubernetesDiscoveryAdapter:
     ) -> None:
         self._cluster = cluster
         self._namespace = namespace
+        # Nothing labels a cluster with its realm, so it comes from config.
+        self._realm = realm
         self._label_selector = label_selector
         self._include_kinds = include_kinds or [
+            "nodes",
             "deployments",
             "statefulsets",
             "daemonsets",
@@ -980,14 +1271,14 @@ class KubernetesDiscoveryAdapter:
                     path = self._path_for_kind(kind)
                     if not path:
                         continue
+                    # Nodes are cluster infrastructure, not niuu workloads, so
+                    # they carry none of our labels. Filtering them by the
+                    # workload selector would return nothing at all.
+                    selector = None if kind == "nodes" else self._label_selector
                     response = await client.get(
                         f"{base_url}{path}",
                         headers=headers,
-                        params=(
-                            {"labelSelector": self._label_selector}
-                            if self._label_selector
-                            else None
-                        ),
+                        params={"labelSelector": selector} if selector else None,
                     )
                     if response.status_code == 403:
                         events.append(_adapter_warning("kubernetes", f"Forbidden listing {kind}"))
@@ -997,6 +1288,11 @@ class KubernetesDiscoveryAdapter:
                     for item in payload.get("items", []) if isinstance(payload, dict) else []:
                         if isinstance(item, dict):
                             resource_kind = _singular_resource_kind(kind)
+                            if resource_kind == "node":
+                                node = self._node_entity(item)
+                                if node is not None:
+                                    entities.append(node)
+                                continue
                             entity = self._entity_from_k8s(resource_kind, item)
                             if entity is not None:
                                 entities.append(entity)
@@ -1034,7 +1330,58 @@ class KubernetesDiscoveryAdapter:
             if namespace:
                 return f"/apis/gateway.networking.k8s.io/v1/namespaces/{namespace}/httproutes"
             return "/apis/gateway.networking.k8s.io/v1/httproutes"
+        if kind == "nodes":
+            return "/api/v1/nodes"
         return ""
+
+    def _node_entity(self, item: dict[str, Any]) -> DiscoveredEntity | None:
+        """Turn a Kubernetes Node into a host.
+
+        Hosts are what make the graph show where things actually run — which
+        box, with which GPU — rather than an undifferentiated cluster blob.
+        """
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        name = str(metadata.get("name") or "").strip()
+        if not name:
+            return None
+
+        status = item.get("status") if isinstance(item.get("status"), dict) else {}
+        capacity = status.get("capacity") if isinstance(status.get("capacity"), dict) else {}
+        node_info = status.get("nodeInfo") if isinstance(status.get("nodeInfo"), dict) else {}
+        labels = _clean_map(metadata.get("labels"))
+        # Read roles from the raw labels: `node-role.kubernetes.io/control-plane`
+        # conventionally has an empty value, which `_clean_map` drops.
+        raw_labels = metadata.get("labels") if isinstance(metadata.get("labels"), dict) else {}
+
+        node_metadata: dict[str, Any] = {
+            "os": str(node_info.get("osImage") or ""),
+            "hw": str(node_info.get("architecture") or ""),
+            "kernel": str(node_info.get("kernelVersion") or ""),
+            "kubelet": str(node_info.get("kubeletVersion") or ""),
+            "cores": _int_quantity(capacity.get("cpu")),
+            "ram": _memory_gib(capacity.get("memory")),
+            "roles": _node_roles(raw_labels),
+        }
+        gpu_count = _int_quantity(capacity.get("nvidia.com/gpu"))
+        if gpu_count:
+            node_metadata["gpu"] = labels.get("nvidia.com/gpu.product") or "nvidia"
+            node_metadata["gpuCount"] = gpu_count
+
+        return DiscoveredEntity(
+            id=f"host:{_slug(self._cluster or 'unknown')}:{_slug(name)}",
+            kind="host",
+            name=name,
+            realm=self._realm,
+            cluster=self._cluster or "unknown",
+            # Deliberately no `host=`: a host is placed by its cluster, and
+            # naming itself would make it its own parent.
+            status="healthy" if _condition_status(item, "Ready") else "failed",
+            labels=labels,
+            source_adapter=self.__class__.__name__,
+            source_kind="kubernetes:node",
+            source_uid=str(metadata.get("uid") or ""),
+            metadata=node_metadata,
+        )
 
     def _entity_from_k8s(self, resource_kind: str, item: dict[str, Any]) -> DiscoveredEntity | None:
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
@@ -1050,13 +1397,16 @@ class KubernetesDiscoveryAdapter:
         cluster = (
             self._cluster if cluster_label.lower() in {"", "unknown"} else cluster_label
         ) or "unknown"
-        component = (
-            labels.get("niuu.world/kind")
-            or labels.get("observatory.niuu.world/type")
-            or labels.get("app.kubernetes.io/component")
+        declared_component = labels.get("niuu.world/kind") or labels.get(
+            "observatory.niuu.world/type"
         )
+        component = declared_component or labels.get("app.kubernetes.io/component")
         app_name = labels.get("app.kubernetes.io/name")
-        type_id = _type_id_for_component(component or "", app_name or "")
+        type_id = _type_id_for_component(
+            component or "",
+            app_name or "",
+            declared=bool(declared_component),
+        )
         logical_name = labels.get("niuu.world/entity-id") or labels.get("niuu.world/service-id")
         display_name = labels.get("niuu.world/display-name") or ""
         if labels.get("niuu.world/warden-id"):
@@ -1094,12 +1444,22 @@ class KubernetesDiscoveryAdapter:
         visibility = annotations.get("observatory.niuu.world/a2a-visibility")
         if visibility:
             entity_metadata["visibility"] = visibility
+        spec = item.get("spec") if isinstance(item.get("spec"), dict) else {}
         return DiscoveredEntity(
             id=entity_id,
-            kind=type_id if type_id in _KNOWN_TYPE_IDS else "service",
+            # No downgrade here. Whether a kind is renderable is the registry's
+            # call, made once in `topology_from_discovery`; flattening it at the
+            # adapter would hide an operator-registered type from the code that
+            # knows about it.
+            kind=type_id,
             name=display_name,
+            realm=self._realm,
             cluster=cluster,
             namespace=namespace,
+            # Only a pod knows which box it landed on. Namespace still decides
+            # containment; this is what lets the graph relate a workload to
+            # the host underneath it.
+            host=str(spec.get("nodeName") or "") if resource_kind == "pod" else "",
             status=_status_from_k8s(resource_kind, item),
             labels=labels,
             annotations=annotations,
@@ -1169,15 +1529,56 @@ def build_discovery_adapter(configs: list[Any]) -> DiscoveryAdapter:
     return CompositeDiscoveryAdapter(adapters)
 
 
-def topology_from_discovery(result: DiscoveryResult) -> ObservatorySnapshot:
-    """Materialize an Observatory topology from canonical discovered entities."""
+def topology_from_discovery(
+    result: DiscoveryResult,
+    *,
+    known_type_ids: Collection[str] | None = None,
+) -> ObservatorySnapshot:
+    """Materialize an Observatory topology from canonical discovered entities.
+
+    ``known_type_ids`` should come from the live registry, which is the
+    configurable source of truth for entity types. An entity whose kind is not
+    registered still renders — as a ``service`` — but says so in an event, so a
+    missing type is visible to an operator instead of silently flattening the
+    graph. Omit it to fall back to the registry seed.
+    """
+    type_ids = frozenset(known_type_ids) if known_type_ids is not None else _SEED_TYPE_IDS
+    unregistered: set[str] = set()
     nodes: dict[str, dict[str, Any]] = {}
     edges: dict[str, ObservatoryEdge] = {}
 
+    # An adapter may discover a realm or a host as an entity in its own right.
+    # Prefer that real node over a synthesised container so the same host does
+    # not appear twice under two different ids.
+    declared_realms = _declared_containers(result.entities, "realm")
+    declared_hosts = _declared_containers(result.entities, "host")
+
     for entity in sorted(
         result.entities,
-        key=lambda item: (item.cluster, item.namespace, item.kind, item.name),
+        key=lambda item: (
+            item.realm,
+            item.cluster,
+            item.namespace,
+            item.host,
+            item.kind,
+            item.name,
+        ),
     ):
+        realm_id = declared_realms.get(entity.realm) or _realm_id(entity.realm)
+        if entity.realm and entity.realm not in declared_realms:
+            nodes.setdefault(
+                realm_id,
+                {
+                    "id": realm_id,
+                    "typeId": "realm",
+                    "label": entity.realm,
+                    "parentId": None,
+                    "status": "healthy",
+                    "sourceKind": "discovery",
+                    "layoutHints": {"mode": "pack", "scope": "world", "packGroup": "realm"},
+                },
+            )
+
         cluster_id = _cluster_id(entity.cluster)
         if entity.cluster:
             nodes.setdefault(
@@ -1193,8 +1594,12 @@ def topology_from_discovery(result: DiscoveryResult) -> ObservatorySnapshot:
                     "layoutHints": {"mode": "pack", "scope": "world", "packGroup": "cluster"},
                 },
             )
+            # Filled in rather than set at creation: whichever entity mentions
+            # the cluster first may not be the one that knows its realm.
+            if entity.realm and not nodes[cluster_id].get("parentId"):
+                nodes[cluster_id]["parentId"] = realm_id
+
         namespace_id = _namespace_id(entity.cluster, entity.namespace)
-        parent_id = entity.parent_id
         if entity.cluster and entity.namespace:
             nodes.setdefault(
                 namespace_id,
@@ -1210,14 +1615,41 @@ def topology_from_discovery(result: DiscoveryResult) -> ObservatorySnapshot:
                     "layoutHints": {"mode": "pack", "scope": "cluster", "packGroup": "namespace"},
                 },
             )
-            parent_id = parent_id or namespace_id
-        elif entity.cluster:
-            parent_id = parent_id or cluster_id
+
+        host_id = declared_hosts.get(entity.host) or _host_id(entity.cluster, entity.host)
+        if entity.host and entity.host not in declared_hosts:
+            nodes.setdefault(
+                host_id,
+                {
+                    "id": host_id,
+                    "typeId": "host",
+                    "label": entity.host,
+                    "parentId": cluster_id
+                    if entity.cluster
+                    else realm_id
+                    if entity.realm
+                    else None,
+                    "status": "unknown",
+                    "sourceKind": "discovery",
+                    "clusterName": entity.cluster,
+                    "layoutHints": {"mode": "pack", "scope": "cluster", "packGroup": "host"},
+                },
+            )
+
+        parent_id = entity.parent_id or _innermost_container(
+            entity,
+            namespace_id=namespace_id,
+            host_id=host_id,
+            cluster_id=cluster_id,
+            realm_id=realm_id,
+        )
 
         if parent_id == entity.id:
             parent_id = None
 
-        node = _entity_to_node(entity, parent_id=parent_id)
+        if entity.kind and entity.kind not in type_ids:
+            unregistered.add(entity.kind)
+        node = _entity_to_node(entity, parent_id=parent_id, known_type_ids=type_ids)
         nodes[node["id"]] = node
 
     for edge in result.edges:
@@ -1225,13 +1657,57 @@ def topology_from_discovery(result: DiscoveryResult) -> ObservatorySnapshot:
         if resolved and resolved["sourceId"] != resolved["targetId"]:
             edges[resolved["id"]] = resolved
 
+    events = list(result.events)
+    if unregistered:
+        # Rendering an unknown kind as `service` keeps the graph usable, but
+        # doing it quietly is how realms and models disappeared for months.
+        kinds = ", ".join(sorted(unregistered))
+        events.append(
+            {
+                "id": f"observatory:registry:unregistered:{_slug(kinds)}",
+                "type": "warning",
+                "level": "warning",
+                "service": "observatory",
+                "subject": "registry",
+                "body": f"Entity types not registered, rendered as service: {kinds}",
+                "message": f"Entity types not registered, rendered as service: {kinds}",
+                "timestamp": _iso(),
+            }
+        )
+
+    node_list = list(nodes.values())
+    edge_list = list(edges.values())
     return {
         "timestamp": _iso(),
-        "nodes": list(nodes.values()),
-        "edges": list(edges.values()),
-        "events": result.events,
+        "revision": _revision(node_list, edge_list, events),
+        "nodes": node_list,
+        "edges": edge_list,
+        "events": events,
         "layoutHints": {"mode": "pack", "scope": "world"},
     }
+
+
+def _revision(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    events: list[Mapping[str, Any]],
+) -> str:
+    """Stable digest of graph content, ignoring when it was materialized.
+
+    Only event *ids* participate, not whole events: adapters stamp their events
+    with a fresh timestamp on every poll, so digesting them whole would make the
+    revision change even when nothing about the topology did.
+    """
+    payload = json.dumps(
+        {
+            "nodes": sorted(nodes, key=lambda node: str(node.get("id", ""))),
+            "edges": sorted(edges, key=lambda edge: str(edge.get("id", ""))),
+            "events": sorted(str(event.get("id", "")) for event in events),
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 def _resolve_edge(
@@ -1306,57 +1782,32 @@ def _resolve_node_ref(ref: str, nodes: dict[str, dict[str, Any]]) -> str:
     return candidates[0] if len(set(candidates)) == 1 else ""
 
 
-def _entity_to_node(entity: DiscoveredEntity, *, parent_id: str | None) -> dict[str, Any]:
+def _entity_to_node(
+    entity: DiscoveredEntity,
+    *,
+    parent_id: str | None,
+    known_type_ids: Collection[str],
+) -> dict[str, Any]:
     node: dict[str, Any] = {
         "id": entity.id,
-        "typeId": entity.kind if entity.kind in _KNOWN_TYPE_IDS else "service",
+        "typeId": entity.kind if entity.kind in known_type_ids else "service",
         "label": entity.name,
         "parentId": parent_id,
         "status": entity.status,
         "sourceKind": entity.source_kind,
         "sourceId": entity.source_uid or entity.id,
+        # Placement carried as names, matching `clusterName`/`namespace`. Empty
+        # is meaningful: it says this entity genuinely has no such container.
+        "realm": entity.realm,
         "clusterName": entity.cluster,
         "namespace": entity.namespace,
+        "host": entity.host,
         "labels": entity.labels,
         "endpoints": entity.endpoints,
         "layoutHints": {"mode": "pack", "scope": "node", "packGroup": entity.kind},
     }
     node.update(entity.metadata)
     return node
-
-
-def _entity_from_node(node: dict[str, Any], *, source_adapter: str) -> DiscoveredEntity:
-    return DiscoveredEntity(
-        id=str(node.get("id") or ""),
-        kind=str(node.get("typeId") or "service"),
-        name=str(node.get("label") or node.get("id") or ""),
-        cluster=str(node.get("clusterName") or ""),
-        namespace=str(node.get("namespace") or ""),
-        status=str(node.get("status") or "unknown"),
-        parent_id=node.get("parentId") if isinstance(node.get("parentId"), str) else None,
-        labels=_clean_map(node.get("labels")),
-        source_adapter=source_adapter,
-        source_kind=str(node.get("sourceKind") or "remote-observatory"),
-        source_uid=str(node.get("sourceId") or ""),
-        endpoints=node.get("endpoints") if isinstance(node.get("endpoints"), dict) else {},
-        metadata={key: value for key, value in node.items() if key not in _NODE_ENTITY_KEYS},
-    )
-
-
-_NODE_ENTITY_KEYS = {
-    "id",
-    "typeId",
-    "label",
-    "parentId",
-    "status",
-    "clusterName",
-    "namespace",
-    "labels",
-    "sourceKind",
-    "sourceId",
-    "endpoints",
-    "layoutHints",
-}
 
 
 def _adapter_warning(adapter: str, message: str) -> ObservatoryEvent:
@@ -1381,6 +1832,112 @@ def _namespace_id(cluster: str, namespace: str) -> str:
     return f"namespace-{_slug(cluster or 'unknown')}-{_slug(namespace or 'unknown')}"
 
 
+def _realm_id(realm: str) -> str:
+    return f"realm-{_slug(realm or 'unknown')}"
+
+
+def _host_id(cluster: str, host: str) -> str:
+    """Host ids are cluster-scoped: two clusters may both have a `node-1`.
+
+    A host outside any cluster is keyed on its name alone, which is what makes
+    a bare-metal box addressable without inventing a cluster for it.
+    """
+    if not cluster:
+        return f"host-{_slug(host or 'unknown')}"
+    return f"host-{_slug(cluster)}-{_slug(host or 'unknown')}"
+
+
+def _declared_containers(entities: Iterable[DiscoveredEntity], kind: str) -> dict[str, str]:
+    """Map container name to node id for entities that declare themselves one."""
+    return {entity.name: entity.id for entity in entities if entity.kind == kind and entity.name}
+
+
+def _innermost_container(
+    entity: DiscoveredEntity,
+    *,
+    namespace_id: str,
+    host_id: str,
+    cluster_id: str,
+    realm_id: str,
+) -> str | None:
+    """Pick the tightest container that actually applies to this entity.
+
+    Namespace wins over host for a Kubernetes workload because that is the
+    containment the graph is drawn around; the host stays a sibling under the
+    cluster. Outside Kubernetes there is no namespace, so the host becomes the
+    container — and an entity with no placement at all stays top-level rather
+    than being forced under a fabricated cluster.
+    """
+    if entity.cluster and entity.namespace:
+        return namespace_id
+    if entity.host:
+        return host_id
+    if entity.cluster:
+        return cluster_id
+    if entity.realm:
+        return realm_id
+    return None
+
+
+#: Label domain Kubernetes uses to mark a node's roles.
+_NODE_ROLE_DOMAIN = "node-role.kubernetes.io"
+
+
+def _node_roles(labels: Mapping[str, Any]) -> list[str]:
+    """Role names from `node-role.kubernetes.io/<role>` label keys.
+
+    Splits on the separator and compares the domain exactly, so a key that
+    merely starts with or contains the domain cannot contribute a role.
+    """
+    roles = [
+        role
+        for key in labels
+        for domain, _, role in [str(key).partition("/")]
+        if domain == _NODE_ROLE_DOMAIN and role
+    ]
+    return sorted(roles)
+
+
+def _int_quantity(value: Any) -> int:
+    """Parse a Kubernetes count quantity, tolerating milli-CPU suffixes."""
+    raw = str(value or "").strip()
+    if not raw:
+        return 0
+    if raw.endswith("m"):
+        # 3500m CPU is 3 whole cores for display purposes.
+        try:
+            return int(float(raw[:-1]) / 1000)
+        except ValueError:
+            return 0
+    try:
+        return int(float(raw))
+    except ValueError:
+        return 0
+
+
+_MEMORY_UNITS = {"Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4}
+
+
+def _memory_gib(value: Any) -> int:
+    """Convert a Kubernetes memory quantity to whole GiB.
+
+    Node capacity arrives as `263849876Ki`, which is unreadable in a tooltip.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return 0
+    for suffix, multiplier in _MEMORY_UNITS.items():
+        if raw.endswith(suffix):
+            try:
+                return int(float(raw[: -len(suffix)]) * multiplier / 1024**3)
+            except ValueError:
+                return 0
+    try:
+        return int(float(raw) / 1024**3)
+    except ValueError:
+        return 0
+
+
 def _singular_resource_kind(kind: str) -> str:
     return {
         "deployments": "deployment",
@@ -1396,24 +1953,25 @@ def _singular_resource_kind(kind: str) -> str:
     }.get(kind, kind.rstrip("s"))
 
 
-def _type_id_for_component(component: str, app_name: str = "") -> str:
+def _type_id_for_component(component: str, app_name: str = "", *, declared: bool = False) -> str:
+    """Best guess at an entity type for a Kubernetes workload.
+
+    `declared` means the component came from a deliberate niuu/observatory
+    label rather than a generic `app.kubernetes.io/component`. A declaration is
+    taken verbatim so an operator can register a new type and label workloads
+    with it, without a code change; a generic component is only a hint, so it
+    stays a lookup and falls back to `service` rather than inventing a type
+    from whatever a third-party chart happened to write.
+    """
     normalized = _slug(component)
-    if normalized in _KNOWN_TYPE_IDS:
+    if declared and normalized:
+        return normalized
+    if normalized in _SEED_TYPE_IDS:
         return normalized
     mapped = _COMPONENT_TYPES.get(component) or _COMPONENT_TYPES.get(normalized)
     if mapped:
         return mapped
     return _COMPONENT_TYPES.get(app_name, "service")
-
-
-def _is_edge(value: Any) -> bool:
-    return (
-        isinstance(value, dict)
-        and isinstance(value.get("id"), str)
-        and isinstance(value.get("sourceId"), str)
-        and isinstance(value.get("targetId"), str)
-        and isinstance(value.get("kind"), str)
-    )
 
 
 def _relationships_from_k8s(

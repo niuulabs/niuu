@@ -1,21 +1,21 @@
 from __future__ import annotations
 
-import json
-
 import httpx
 import pytest
 
-from niuu.adapters.outbound.http_auth import NoAuthHeaderAdapter
 from observatory.discovery import ObservatoryDiscoveryService
 from observatory.entity_discovery import (
+    BifrostCatalogDiscoveryAdapter,
     CompositeDiscoveryAdapter,
     DiscoveredEntity,
     DiscoveryResult,
     FluxHelmReleaseSessionDiscoveryAdapter,
-    HttpObservatoryDiscoveryAdapter,
     KubernetesDiscoveryAdapter,
+    MimirDiscoveryAdapter,
+    RavnResidentsDiscoveryAdapter,
     RavnValkyrieDiscoveryAdapter,
     StaticRelationshipDiscoveryAdapter,
+    TingWorkDiscoveryAdapter,
     VolundrSessionsDiscoveryAdapter,
     WardenSpecDiscoveryAdapter,
     topology_from_discovery,
@@ -458,7 +458,6 @@ async def test_warden_spec_discovery_emits_semantic_relationships(tmp_path) -> N
 async def test_observatory_discovery_uses_adapters_without_demo_nodes() -> None:
     service = ObservatoryDiscoveryService(
         guild_url="http://guild.test",
-        auth=NoAuthHeaderAdapter(),
         discovery_adapter=CompositeDiscoveryAdapter(
             [
                 _StaticAdapter(
@@ -487,38 +486,6 @@ async def test_observatory_discovery_uses_adapters_without_demo_nodes() -> None:
     assert "runtime:noatun:volundr:mimir:niuu-mimir-shared" in node_ids
     assert not any(node_id.startswith("realm-") for node_id in node_ids)
     assert "mimir-well" not in node_ids
-
-
-@pytest.mark.asyncio
-async def test_http_observatory_adapter_merges_remote_snapshot() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/v1/observatory/topology/snapshot"
-        return httpx.Response(
-            200,
-            json={
-                "nodes": [
-                    {
-                        "id": "cluster-valhalla",
-                        "typeId": "cluster",
-                        "label": "valhalla",
-                        "clusterName": "valhalla",
-                    }
-                ],
-                "edges": [],
-                "events": [{"id": "event-1", "service": "observatory"}],
-            },
-        )
-
-    adapter = HttpObservatoryDiscoveryAdapter(
-        base_url="https://valhalla.example",
-        transport=httpx.MockTransport(handler),
-    )
-
-    result = await adapter.discover()
-
-    assert [entity.id for entity in result.entities] == ["cluster-valhalla"]
-    assert result.entities[0].cluster == "valhalla"
-    assert json.loads(json.dumps(result.events))[0]["id"] == "event-1"
 
 
 @pytest.mark.asyncio
@@ -834,3 +801,830 @@ async def test_topology_from_remote_cluster_does_not_emit_self_loop() -> None:
     cluster = next(node for node in snapshot["nodes"] if node["id"] == "cluster-noatun")
     assert cluster["parentId"] is None
     assert not any(edge["sourceId"] == edge["targetId"] for edge in snapshot["edges"])
+
+
+# ── Registry-driven entity types ─────────────────────────────────────────────
+# The set of renderable types is the registry's job, not a constant in this
+# module. A hardcoded set drifted from the registry and silently downgraded
+# realms, models and runs to `service` for months.
+
+
+def _entity(kind: str, name: str = "thing") -> DiscoveredEntity:
+    return DiscoveredEntity(id=f"e-{kind}", kind=kind, name=name, cluster="ymir")
+
+
+@pytest.mark.parametrize("kind", ["realm", "model", "run", "ravn_run"])
+def test_seed_types_are_not_downgraded_to_service(kind: str) -> None:
+    snapshot = topology_from_discovery(DiscoveryResult(entities=[_entity(kind)]))
+
+    node = next(n for n in snapshot["nodes"] if n["id"] == f"e-{kind}")
+    assert node["typeId"] == kind
+
+
+def test_registry_types_override_the_seed() -> None:
+    """An operator can register a new type without a code change."""
+    snapshot = topology_from_discovery(
+        DiscoveryResult(entities=[_entity("weathervane")]),
+        known_type_ids={"weathervane"},
+    )
+
+    node = next(n for n in snapshot["nodes"] if n["id"] == "e-weathervane")
+    assert node["typeId"] == "weathervane"
+
+
+def test_unregistered_type_renders_as_service_but_says_so() -> None:
+    snapshot = topology_from_discovery(
+        DiscoveryResult(entities=[_entity("weathervane")]),
+        known_type_ids={"service"},
+    )
+
+    node = next(n for n in snapshot["nodes"] if n["id"] == "e-weathervane")
+    assert node["typeId"] == "service"
+
+    warnings = [e for e in snapshot["events"] if e.get("subject") == "registry"]
+    assert len(warnings) == 1
+    assert "weathervane" in warnings[0]["body"]
+
+
+def test_no_registry_warning_when_every_type_is_known() -> None:
+    snapshot = topology_from_discovery(DiscoveryResult(entities=[_entity("mimir")]))
+
+    assert [e for e in snapshot["events"] if e.get("subject") == "registry"] == []
+
+
+# ── Placement outside Kubernetes ─────────────────────────────────────────────
+# Residents also run as bare-metal systemd units and as Docker containers on a
+# workstation. Forcing every entity under a synthesised cluster/namespace is
+# what made the graph Kubernetes-shaped.
+
+
+def _node(snapshot: dict, node_id: str) -> dict:
+    return next(n for n in snapshot["nodes"] if n["id"] == node_id)
+
+
+def test_bare_metal_resident_is_placed_on_its_host_not_a_fake_cluster() -> None:
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(
+                    id="ravn-ivaldi",
+                    kind="ravn_long",
+                    name="ivaldi",
+                    realm="sparks",
+                    host="saehrimnir",
+                )
+            ]
+        )
+    )
+
+    assert _node(snapshot, "ravn-ivaldi")["parentId"] == "host-saehrimnir"
+    assert not [n for n in snapshot["nodes"] if n["typeId"] == "cluster"]
+    assert not [n for n in snapshot["nodes"] if n["typeId"] == "namespace"]
+
+
+def test_a_host_outside_a_cluster_hangs_from_its_realm() -> None:
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(
+                    id="ravn-ivaldi",
+                    kind="ravn_long",
+                    name="ivaldi",
+                    realm="sparks",
+                    host="saehrimnir",
+                )
+            ]
+        )
+    )
+
+    assert _node(snapshot, "host-saehrimnir")["parentId"] == "realm-sparks"
+    assert _node(snapshot, "realm-sparks")["parentId"] is None
+
+
+def test_an_entity_with_no_placement_stays_top_level() -> None:
+    snapshot = topology_from_discovery(
+        DiscoveryResult(entities=[DiscoveredEntity(id="lonely", kind="mimir", name="mímir")])
+    )
+
+    assert _node(snapshot, "lonely")["parentId"] is None
+    assert len(snapshot["nodes"]) == 1
+
+
+def test_a_cluster_is_nested_under_its_realm() -> None:
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(
+                    id="svc", kind="service", name="api", realm="asgard", cluster="ymir"
+                )
+            ]
+        )
+    )
+
+    assert _node(snapshot, "cluster-ymir")["parentId"] == "realm-asgard"
+
+
+def test_a_clusters_realm_is_filled_in_by_a_later_entity() -> None:
+    """Whichever entity mentions the cluster first may not know its realm."""
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(id="a", kind="service", name="a", cluster="ymir"),
+                DiscoveredEntity(id="b", kind="service", name="b", realm="asgard", cluster="ymir"),
+            ]
+        )
+    )
+
+    assert _node(snapshot, "cluster-ymir")["parentId"] == "realm-asgard"
+
+
+def test_namespace_still_wins_for_a_kubernetes_workload_on_a_named_host() -> None:
+    """The host stays a sibling under the cluster; namespace is the containment
+    the graph is drawn around."""
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(
+                    id="pod-1",
+                    kind="service",
+                    name="api",
+                    cluster="ymir",
+                    namespace="niuu",
+                    host="node-1",
+                )
+            ]
+        )
+    )
+
+    assert _node(snapshot, "pod-1")["parentId"] == "namespace-ymir-niuu"
+    assert _node(snapshot, "host-ymir-node-1")["parentId"] == "cluster-ymir"
+
+
+def test_host_ids_are_cluster_scoped_so_two_clusters_can_both_have_node_1() -> None:
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(id="a", kind="service", name="a", cluster="ymir", host="node-1"),
+                DiscoveredEntity(id="b", kind="service", name="b", cluster="noatun", host="node-1"),
+            ]
+        )
+    )
+
+    host_ids = {n["id"] for n in snapshot["nodes"] if n["typeId"] == "host"}
+    assert host_ids == {"host-ymir-node-1", "host-noatun-node-1"}
+
+
+def test_a_discovered_host_is_not_duplicated_by_a_synthesised_one() -> None:
+    """An adapter that discovers the host itself owns that node."""
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(
+                    id="local:saehrimnir", kind="host", name="saehrimnir", realm="sparks"
+                ),
+                DiscoveredEntity(
+                    id="ravn-ivaldi",
+                    kind="ravn_long",
+                    name="ivaldi",
+                    realm="sparks",
+                    host="saehrimnir",
+                ),
+            ]
+        )
+    )
+
+    hosts = [n for n in snapshot["nodes"] if n["typeId"] == "host"]
+    assert [h["id"] for h in hosts] == ["local:saehrimnir"]
+    assert _node(snapshot, "ravn-ivaldi")["parentId"] == "local:saehrimnir"
+
+
+def test_a_discovered_realm_is_not_duplicated_by_a_synthesised_one() -> None:
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(id="realm:sparks", kind="realm", name="sparks"),
+                DiscoveredEntity(id="ravn-ivaldi", kind="ravn_long", name="ivaldi", realm="sparks"),
+            ]
+        )
+    )
+
+    realms = [n for n in snapshot["nodes"] if n["typeId"] == "realm"]
+    assert [r["id"] for r in realms] == ["realm:sparks"]
+    assert _node(snapshot, "ravn-ivaldi")["parentId"] == "realm:sparks"
+
+
+def test_placement_names_are_carried_on_the_node() -> None:
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(
+                    id="ravn-ivaldi",
+                    kind="ravn_long",
+                    name="ivaldi",
+                    realm="sparks",
+                    host="saehrimnir",
+                )
+            ]
+        )
+    )
+
+    node = _node(snapshot, "ravn-ivaldi")
+    assert node["realm"] == "sparks"
+    assert node["host"] == "saehrimnir"
+    assert node["clusterName"] == ""
+    assert node["namespace"] == ""
+
+
+# ── Snapshot revision ────────────────────────────────────────────────────────
+# The SSE stream deduped on `timestamp`, which topology_from_discovery
+# re-stamps on every materialization, so it never matched and every tick
+# resent the whole snapshot.
+
+
+def test_revision_is_stable_across_materializations_of_the_same_graph() -> None:
+    result = DiscoveryResult(entities=[_entity("mimir")])
+
+    assert (
+        topology_from_discovery(result)["revision"] == topology_from_discovery(result)["revision"]
+    )
+
+
+def test_revision_changes_when_the_graph_does() -> None:
+    one = topology_from_discovery(DiscoveryResult(entities=[_entity("mimir")]))
+    two = topology_from_discovery(DiscoveryResult(entities=[_entity("mimir"), _entity("bifrost")]))
+
+    assert one["revision"] != two["revision"]
+
+
+def test_revision_ignores_volatile_event_timestamps() -> None:
+    """Adapters re-stamp their events every poll; that is not a graph change."""
+
+    def snapshot(stamp: str) -> str:
+        return topology_from_discovery(
+            DiscoveryResult(
+                entities=[_entity("mimir")],
+                events=[{"id": "e-1", "type": "info", "timestamp": stamp}],
+            )
+        )["revision"]
+
+    assert snapshot("2026-08-01T12:00:00Z") == snapshot("2026-08-01T12:00:30Z")
+
+
+def test_revision_changes_when_a_new_event_appears() -> None:
+    base = topology_from_discovery(DiscoveryResult(entities=[_entity("mimir")]))
+    with_event = topology_from_discovery(
+        DiscoveryResult(entities=[_entity("mimir")], events=[{"id": "e-1", "type": "info"}])
+    )
+
+    assert base["revision"] != with_event["revision"]
+
+
+# ── Kubernetes hosts ─────────────────────────────────────────────────────────
+# Hosts are what make the graph show where things actually run — which box,
+# with which GPU — rather than an undifferentiated cluster blob.
+
+
+def _service_account(tmp_path) -> str:
+    root = tmp_path / "sa"
+    root.mkdir()
+    (root / "token").write_text("token", encoding="utf-8")
+    return str(root)
+
+
+def _node_item(
+    name: str = "spark-1",
+    *,
+    gpu: str | None = None,
+    ready: bool = True,
+) -> dict:
+    labels = {"node-role.kubernetes.io/control-plane": ""}
+    capacity = {"cpu": "112", "memory": "263849876Ki"}
+    if gpu:
+        labels["nvidia.com/gpu.product"] = gpu
+        capacity["nvidia.com/gpu"] = "4"
+    return {
+        "metadata": {"name": name, "uid": f"uid-{name}", "labels": labels},
+        "status": {
+            "capacity": capacity,
+            "nodeInfo": {
+                "osImage": "Ubuntu 24.04.1 LTS",
+                "architecture": "arm64",
+                "kernelVersion": "6.11.0",
+                "kubeletVersion": "v1.31.4",
+            },
+            "conditions": [{"type": "Ready", "status": "True" if ready else "False"}],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_nodes_are_discovered_as_hosts_with_their_hardware(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/nodes"
+        return httpx.Response(200, json={"items": [_node_item(gpu="NVIDIA-GB10")]})
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        realm="asgard",
+        include_kinds=["nodes"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    host = result.entities[0]
+    assert host.kind == "host"
+    assert host.name == "spark-1"
+    assert host.cluster == "ymir"
+    assert host.realm == "asgard"
+    assert host.metadata["cores"] == 112
+    assert host.metadata["ram"] == 251  # 263849876Ki rendered in whole GiB
+    assert host.metadata["gpu"] == "NVIDIA-GB10"
+    assert host.metadata["gpuCount"] == 4
+    assert host.metadata["os"] == "Ubuntu 24.04.1 LTS"
+    assert host.metadata["roles"] == ["control-plane"]
+
+
+@pytest.mark.asyncio
+async def test_a_node_without_a_gpu_reports_none(tmp_path, monkeypatch) -> None:
+    """Absent is different from zero — the UI should not show a GPU chip."""
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        include_kinds=["nodes"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(
+            lambda _r: httpx.Response(200, json={"items": [_node_item()]})
+        ),
+    )
+
+    result = await adapter.discover()
+
+    assert "gpu" not in result.entities[0].metadata
+
+
+@pytest.mark.asyncio
+async def test_a_not_ready_node_is_failed(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        include_kinds=["nodes"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(
+            lambda _r: httpx.Response(200, json={"items": [_node_item(ready=False)]})
+        ),
+    )
+
+    result = await adapter.discover()
+
+    assert result.entities[0].status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_nodes_are_listed_without_the_workload_label_selector(tmp_path, monkeypatch) -> None:
+    """Nodes carry none of our labels; filtering them would return nothing."""
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.params.get("labelSelector"))
+        return httpx.Response(200, json={"items": []})
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        label_selector="niuu.world/cluster=ymir",
+        include_kinds=["nodes", "pods"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    await adapter.discover()
+
+    assert seen == [None, "niuu.world/cluster=ymir"]
+
+
+@pytest.mark.asyncio
+async def test_a_host_hangs_from_its_cluster_not_from_itself(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        realm="asgard",
+        include_kinds=["nodes"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(
+            lambda _r: httpx.Response(200, json={"items": [_node_item()]})
+        ),
+    )
+
+    snapshot = topology_from_discovery(await adapter.discover())
+
+    host = next(n for n in snapshot["nodes"] if n["typeId"] == "host")
+    assert host["parentId"] == "cluster-ymir"
+    assert _node(snapshot, "cluster-ymir")["parentId"] == "realm-asgard"
+
+
+@pytest.mark.asyncio
+async def test_a_pod_records_the_host_it_landed_on(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "metadata": {
+                            "name": "niuu-ravn-abc",
+                            "namespace": "volundr",
+                            "uid": "uid-pod",
+                            "labels": {"niuu.world/cluster": "ymir"},
+                        },
+                        "spec": {"nodeName": "spark-1"},
+                        "status": {"phase": "Running"},
+                    }
+                ]
+            },
+        )
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        include_kinds=["pods"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    assert result.entities[0].host == "spark-1"
+
+
+@pytest.mark.asyncio
+async def test_an_operator_declared_type_is_taken_verbatim(tmp_path, monkeypatch) -> None:
+    """Registering a type and labelling workloads with it must not need a code
+    change — that is the whole point of the registry."""
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "metadata": {
+                            "name": "weathervane",
+                            "namespace": "volundr",
+                            "labels": {
+                                "niuu.world/cluster": "ymir",
+                                "niuu.world/kind": "weathervane",
+                            },
+                        },
+                        "status": {"replicas": 1, "readyReplicas": 1, "availableReplicas": 1},
+                    }
+                ]
+            },
+        )
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        include_kinds=["deployments"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    assert result.entities[0].kind == "weathervane"
+
+
+@pytest.mark.asyncio
+async def test_a_generic_component_label_stays_a_guess(tmp_path, monkeypatch) -> None:
+    """A third-party chart's component name must not invent an entity type."""
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "metadata": {
+                            "name": "sidecar-thing",
+                            "namespace": "volundr",
+                            "labels": {
+                                "niuu.world/cluster": "ymir",
+                                "app.kubernetes.io/component": "some-vendor-sidecar",
+                            },
+                        },
+                        "status": {"replicas": 1, "readyReplicas": 1, "availableReplicas": 1},
+                    }
+                ]
+            },
+        )
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        include_kinds=["deployments"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    assert result.entities[0].kind == "service"
+
+
+# ── Service adapters ─────────────────────────────────────────────────────────
+# These are what fill the graph in beyond bare Kubernetes objects, and what
+# replaced the Guild's fabricated Bifröst model children.
+
+
+def _routed(routes: dict[str, object]) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path not in routes:
+            return httpx.Response(404, json={"detail": request.url.path})
+        return httpx.Response(200, json=routes[request.url.path])
+
+    return httpx.MockTransport(handler)
+
+
+@pytest.mark.asyncio
+async def test_bifrost_discovers_the_real_catalogue_not_a_hardcoded_one() -> None:
+    adapter = BifrostCatalogDiscoveryAdapter(
+        base_url="http://bifrost.test",
+        cluster="ymir",
+        transport=_routed(
+            {
+                "/api/v1/bifrost/models": [
+                    {
+                        "id": "nemotron-super",
+                        "name": "Nemotron Super",
+                        "vendor": "nvidia",
+                        "tier": "large",
+                        "enabled": True,
+                        "supports_tools": True,
+                    },
+                    {"id": "claude-opus-5", "name": "Opus 5", "vendor": "anthropic"},
+                ],
+                "/api/v1/bifrost/providers": [
+                    {
+                        "key": "saehrimnir",
+                        "vendor": "nvidia",
+                        "base_url": "http://vllm.volundr.svc.cluster.local",
+                        "model_ids": ["nemotron-super"],
+                    },
+                    {
+                        "key": "anthropic",
+                        "vendor": "anthropic",
+                        "base_url": "https://api.anthropic.com",
+                        "model_ids": ["claude-opus-5"],
+                    },
+                ],
+            }
+        ),
+    )
+
+    result = await adapter.discover()
+
+    models = {e.metadata["modelId"]: e for e in result.entities if e.kind == "model"}
+    assert set(models) == {"nemotron-super", "claude-opus-5"}
+    assert models["nemotron-super"].metadata["location"] == "internal"
+    assert models["claude-opus-5"].metadata["location"] == "external"
+
+
+@pytest.mark.asyncio
+async def test_bifrost_model_edges_are_observed_from_provider_config() -> None:
+    """The old fabricated children were labelled `inferred`, which made a
+    hardcoded guess look like a weak observation."""
+    adapter = BifrostCatalogDiscoveryAdapter(
+        base_url="http://bifrost.test",
+        cluster="ymir",
+        transport=_routed(
+            {
+                "/api/v1/bifrost/models": [{"id": "m-1", "name": "M1"}],
+                "/api/v1/bifrost/providers": [
+                    {"key": "p", "base_url": "https://api.example.test", "model_ids": ["m-1"]}
+                ],
+            }
+        ),
+    )
+
+    result = await adapter.discover()
+
+    assert result.edges[0]["confidence"] == "observed"
+    assert result.edges[0]["evidence"]["field"] == "base_url"
+
+
+@pytest.mark.asyncio
+async def test_a_model_no_provider_serves_gets_no_edge() -> None:
+    adapter = BifrostCatalogDiscoveryAdapter(
+        base_url="http://bifrost.test",
+        cluster="ymir",
+        transport=_routed(
+            {
+                "/api/v1/bifrost/models": [{"id": "orphan", "name": "Orphan"}],
+                "/api/v1/bifrost/providers": [],
+            }
+        ),
+    )
+
+    result = await adapter.discover()
+
+    assert result.edges == []
+    assert next(e for e in result.entities if e.kind == "model").metadata["location"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_ravn_discovers_residents_including_non_cluster_ones() -> None:
+    adapter = RavnResidentsDiscoveryAdapter(
+        base_url="http://ravn.test",
+        cluster="ymir",
+        transport=_routed(
+            {
+                "/api/v1/ravn/ravens": [
+                    {
+                        "id": "ivaldi",
+                        "resident_name": "Ivaldi",
+                        "persona_name": "Workshop Steward",
+                        "status": "online",
+                        "model": "nemotron",
+                        "deployment": "local",
+                        "location": "saehrimnir",
+                        "flock_id": "workshop",
+                    }
+                ]
+            }
+        ),
+    )
+
+    result = await adapter.discover()
+
+    resident = result.entities[0]
+    assert resident.kind == "ravn_long"
+    assert resident.name == "Ivaldi"
+    assert resident.host == "saehrimnir"
+    assert resident.status == "healthy"
+    assert resident.metadata["deployment"] == "local"
+
+
+@pytest.mark.asyncio
+async def test_a_resident_in_a_flock_gets_a_membership_edge() -> None:
+    adapter = RavnResidentsDiscoveryAdapter(
+        base_url="http://ravn.test",
+        cluster="ymir",
+        transport=_routed(
+            {"/api/v1/ravn/ravens": [{"id": "a", "resident_name": "A", "flock_id": "workshop"}]}
+        ),
+    )
+
+    result = await adapter.discover()
+
+    assert result.edges[0]["relationType"] == "member_of"
+    assert result.edges[0]["targetId"] == "flock:workshop"
+
+
+@pytest.mark.asyncio
+async def test_a_resident_without_a_flock_gets_no_membership_edge() -> None:
+    adapter = RavnResidentsDiscoveryAdapter(
+        base_url="http://ravn.test",
+        cluster="ymir",
+        transport=_routed({"/api/v1/ravn/ravens": [{"id": "a", "resident_name": "A"}]}),
+    )
+
+    assert (await adapter.discover()).edges == []
+
+
+@pytest.mark.asyncio
+async def test_ting_reports_what_is_in_flight() -> None:
+    adapter = TingWorkDiscoveryAdapter(
+        base_url="http://ting.test",
+        cluster="ymir",
+        transport=_routed({"/api/v1/ting/runs/summary": {"running": 2, "completed": 9}}),
+    )
+
+    result = await adapter.discover()
+
+    ting = result.entities[0]
+    assert ting.kind == "ting"
+    assert ting.status == "healthy"
+    assert ting.metadata["activeRuns"] == 2
+    assert ting.metadata["totalRuns"] == 11
+
+
+@pytest.mark.asyncio
+async def test_ting_with_nothing_running_is_idle_not_failed() -> None:
+    adapter = TingWorkDiscoveryAdapter(
+        base_url="http://ting.test",
+        cluster="ymir",
+        transport=_routed({"/api/v1/ting/runs/summary": {"completed": 3}}),
+    )
+
+    assert (await adapter.discover()).entities[0].status == "idle"
+
+
+@pytest.mark.asyncio
+async def test_mimir_reports_pages_and_mounts() -> None:
+    adapter = MimirDiscoveryAdapter(
+        base_url="http://mimir.test",
+        cluster="ymir",
+        transport=_routed(
+            {
+                "/api/v1/mimir/stats": {
+                    "page_count": 203,
+                    "categories": ["runbooks"],
+                    "healthy": True,
+                },
+                "/api/v1/mimir/mounts": [
+                    {
+                        "name": "shared",
+                        "role": "primary",
+                        "status": "ok",
+                        "pages": 203,
+                        "size_kb": 900,
+                    },
+                ],
+            }
+        ),
+    )
+
+    result = await adapter.discover()
+
+    mimir = result.entities[0]
+    assert mimir.kind == "mimir"
+    assert mimir.status == "healthy"
+    assert mimir.metadata["pages"] == 203
+    assert mimir.metadata["mountCount"] == 1
+    assert mimir.metadata["mounts"][0]["name"] == "shared"
+
+
+@pytest.mark.asyncio
+async def test_an_unhealthy_mimir_is_failed() -> None:
+    adapter = MimirDiscoveryAdapter(
+        base_url="http://mimir.test",
+        cluster="ymir",
+        transport=_routed(
+            {"/api/v1/mimir/stats": {"page_count": 0, "healthy": False}, "/api/v1/mimir/mounts": []}
+        ),
+    )
+
+    assert (await adapter.discover()).entities[0].status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_service_warns_instead_of_raising() -> None:
+    """One dead service must not empty the graph the others contributed to."""
+    adapter = MimirDiscoveryAdapter(
+        base_url="http://mimir.test",
+        cluster="ymir",
+        transport=httpx.MockTransport(lambda _r: httpx.Response(503)),
+    )
+
+    result = await adapter.discover()
+
+    assert result.entities == []
+    assert result.events[0]["level"] == "warning"
+    assert "mimir" in result.events[0]["subject"]
+
+
+# ── Location classification ──────────────────────────────────────────────────
+# This value tells an operator whether their traffic leaves the building, so a
+# lookalike host must not be able to claim it stays inside.
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expected"),
+    [
+        ("http://localhost:8000", "internal"),
+        ("http://127.0.0.1:8000", "internal"),
+        ("http://vllm.volundr.svc.cluster.local", "internal"),
+        ("http://box.internal", "internal"),
+        ("https://api.anthropic.com", "external"),
+        ("", "unknown"),
+        # A substring test would have called all three of these internal.
+        ("https://localhost.attacker.example/v1", "external"),
+        ("https://api.vendor.test/v1?probe=.svc.cluster.local", "external"),
+        ("https://not-localhost.example.com", "external"),
+    ],
+)
+def test_model_location_matches_the_host_not_the_url(base_url: str, expected: str) -> None:
+    from observatory.entity_discovery import _model_location
+
+    assert _model_location(base_url) == expected
+
+
+def test_node_roles_require_an_exact_domain_match() -> None:
+    from observatory.entity_discovery import _node_roles
+
+    roles = _node_roles(
+        {
+            "node-role.kubernetes.io/control-plane": "",
+            "node-role.kubernetes.io/worker": "",
+            # Neither of these is a real role key.
+            "not-node-role.kubernetes.io/spoofed": "",
+            "node-role.kubernetes.io": "",
+        }
+    )
+
+    assert roles == ["control-plane", "worker"]
