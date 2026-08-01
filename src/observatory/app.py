@@ -18,6 +18,7 @@ from niuu.domain.agent_directory import (
     AgentDirectoryPage,
 )
 from niuu.domain.models import Principal
+from niuu.domain.observatory import ObservatoryFragment
 from niuu.service_databases import apply_service_database_settings, database_pool
 from niuu.settings_schema import (
     SettingsFieldSchema,
@@ -305,6 +306,40 @@ def create_router() -> APIRouter:
         events = await _discovery(request).get_events(headers=_forward_headers(request))
         return {**snapshot, "events": events}
 
+    @router.get(
+        "/fragment",
+        response_model=ObservatoryFragment,
+        response_model_by_alias=True,
+        summary="This Observatory's partial view of the topology",
+    )
+    async def fragment(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> ObservatoryFragment:
+        """Return what this source alone knows, for an aggregator to merge.
+
+        Requires a principal. `/topology/snapshot` is currently reachable
+        without one, which is what makes this the endpoint an aggregator should
+        move to rather than the one it should keep calling.
+        """
+        del principal
+        discovery = _discovery(request)
+        headers = _forward_headers(request)
+        snapshot = await discovery.get_topology_snapshot(headers=headers)
+        events = await discovery.get_events(headers=headers)
+        return ObservatoryFragment.model_validate(
+            {
+                "nodes": snapshot.get("nodes", []),
+                "edges": snapshot.get("edges", []),
+                "events": events,
+                "layoutHints": snapshot.get("layoutHints"),
+                "meta": {
+                    **request.app.state.fragment_meta,
+                    "revision": str(snapshot.get("revision") or ""),
+                },
+            }
+        )
+
     @router.get("/events", summary="Stream observatory events")
     @router.get("/events/stream", summary="Stream observatory events")
     async def events(request: Request) -> StreamingResponse:
@@ -393,6 +428,16 @@ def create_app(
     app.state.discovery_service = discovery
     app.state.agent_directory_service = directory
     app.state.guild_url = getattr(discovery, "guild_url", getattr(discovery, "base_url", ""))
+    # Identity this source stamps on the fragments it publishes. Reuses the
+    # Agent Directory's identity rather than inventing a second one: an
+    # aggregator that fans out for agents and for topology is talking to the
+    # same instance and should see the same name for it.
+    app.state.fragment_meta = {
+        "sourceId": loaded_settings.observatory.directory.instance_id,
+        "sourceKind": "observatory",
+        "sourceName": loaded_settings.observatory.directory.instance_id,
+        "clusterId": loaded_settings.observatory.directory.cluster_id,
+    }
 
     @app.get("/health", tags=["Health"])
     async def health() -> dict[str, object]:

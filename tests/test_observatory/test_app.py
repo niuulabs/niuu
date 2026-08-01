@@ -431,3 +431,52 @@ class TestObservatoryApp:
             assert isinstance(repo, _FakePostgresRepository)
             assert repo.pool is fake_pool
             assert repo.seeded is True
+
+
+class TestObservatoryFragment:
+    """Fragment is the authenticated endpoint an aggregator should move to."""
+
+    def test_returns_this_sources_view_with_its_identity(self) -> None:
+        app = create_app(
+            registry_repository=InMemoryObservatoryRegistryRepository(),
+            discovery_service=_FakeDiscoveryService(),
+        )
+        with TestClient(app) as client:
+            response = client.get(
+                "/api/v1/observatory/fragment",
+                headers={"x-auth-user-id": "user-a", "x-auth-tenant": "tenant-a"},
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert [node["id"] for node in body["nodes"]] == ["realm:test"]
+        assert body["meta"]["sourceKind"] == "observatory"
+        assert body["meta"]["sourceId"]
+
+    def test_is_camel_case_on_the_wire(self) -> None:
+        app = create_app(
+            registry_repository=InMemoryObservatoryRegistryRepository(),
+            discovery_service=_FakeDiscoveryService(),
+        )
+        with TestClient(app) as client:
+            body = client.get(
+                "/api/v1/observatory/fragment",
+                headers={"x-auth-user-id": "user-a", "x-auth-tenant": "tenant-a"},
+            ).json()
+
+        assert "typeId" in body["nodes"][0]
+        assert "type_id" not in body["nodes"][0]
+        assert "sourceId" in body["meta"]
+
+    def test_carries_the_events_alongside_the_graph(self) -> None:
+        app = create_app(
+            registry_repository=InMemoryObservatoryRegistryRepository(),
+            discovery_service=_FakeDiscoveryService(),
+        )
+        with TestClient(app) as client:
+            body = client.get(
+                "/api/v1/observatory/fragment",
+                headers={"x-auth-user-id": "user-a", "x-auth-tenant": "tenant-a"},
+            ).json()
+
+        assert body["events"]
