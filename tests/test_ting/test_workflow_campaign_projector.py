@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -10,7 +11,10 @@ from uuid import uuid4
 import pytest
 
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
-from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
+from ting.domain.services.workflow_campaign_projector import (
+    WorkflowCampaignProjector,
+    _status_from_session,
+)
 from ting.ports.volundr import ActivityEvent
 
 
@@ -110,6 +114,104 @@ def _projector(adapter: _Adapter) -> tuple[WorkflowCampaignProjector, AsyncMock,
         event_bus=event_bus,
     )
     return projector, repo, event_bus
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_and_active_owner_projection() -> None:
+    projector, repo, _ = _projector(_Adapter())
+    repo.list_active_owner_ids.return_value = ["owner-1", "owner-2"]
+
+    assert projector.running is False
+    await projector.start()
+    assert projector.running is True
+    assert await projector.list_active_owner_ids() == ["owner-1", "owner-2"]
+    await projector.stop()
+    assert projector.running is False
+
+
+@pytest.mark.asyncio
+async def test_reconcile_owner_isolated_and_best_effort() -> None:
+    projector, repo, _ = _projector(_Adapter())
+    first = _campaign()
+    second = _campaign()
+    other_owner = replace(_campaign(), owner_id="user-2")
+    repo.list_active_campaigns.return_value = [first, other_owner, second]
+    projector._refresh_campaign = AsyncMock(side_effect=[None, RuntimeError("unreachable")])
+
+    await projector.reconcile_owner("user-1")
+
+    assert projector._refresh_campaign.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_stream_events_cover_missing_pending_and_failure_states() -> None:
+    projector, repo, _ = _projector(_Adapter())
+    repo.get_active_campaign_by_session.side_effect = [
+        None,
+        _campaign(WorkflowCampaignStatus.PENDING),
+        _campaign(),
+    ]
+
+    assert (
+        await projector.handle_activity(ActivityEvent("missing", "active", {}, "user-1"), "user-1")
+        is False
+    )
+    assert (
+        await projector.handle_activity(
+            ActivityEvent("session-123", "active", {}, "user-1"), "user-1"
+        )
+        is True
+    )
+    assert repo.save_campaign.await_args_list[0].args[0].status == WorkflowCampaignStatus.RUNNING
+
+    await projector.handle_activity(
+        ActivityEvent(
+            "session-123",
+            "",
+            {},
+            "user-1",
+            session_status="failed",
+        ),
+        "user-1",
+    )
+    failed = repo.save_campaign.await_args_list[1].args[0]
+    assert failed.status == WorkflowCampaignStatus.FAILED
+    assert failed.metadata["failure_error"] == "Session failed"
+
+
+@pytest.mark.asyncio
+async def test_missing_campaign_and_session_are_ignored() -> None:
+    adapter = _Adapter()
+    adapter.get_session = AsyncMock(return_value=None)
+    projector, repo, _ = _projector(adapter)
+    repo.get_active_campaign_by_session.return_value = None
+
+    assert (
+        await projector.record_help_needed(
+            {"summary": "help"},
+            "user-1",
+            session_id="missing",
+            gate={},
+        )
+        is False
+    )
+    await projector._refresh_campaign(_campaign())
+    repo.save_campaign.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("queued", WorkflowCampaignStatus.PENDING),
+        ("paused", WorkflowCampaignStatus.BLOCKED),
+        ("cancelled", WorkflowCampaignStatus.FAILED),
+        ("unknown", WorkflowCampaignStatus.RUNNING),
+    ],
+)
+def test_status_projection_covers_recovery_states(
+    raw: str, expected: WorkflowCampaignStatus
+) -> None:
+    assert _status_from_session(raw) == expected
 
 
 @pytest.mark.asyncio

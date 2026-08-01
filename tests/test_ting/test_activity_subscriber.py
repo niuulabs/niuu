@@ -431,6 +431,38 @@ class TestSubscriberLifecycle:
         sub, _, _, _ = _make_subscriber()
         await sub.stop()  # Should not raise
 
+    @pytest.mark.asyncio
+    async def test_campaign_owner_gets_subscription_without_dispatcher(self) -> None:
+        sub, volundr, _, _ = _make_subscriber(config=_default_config(reconnect_delay=0))
+        projector = AsyncMock()
+        projector.list_active_owner_ids.return_value = [OWNER_ID]
+        sub._workflow_campaign_projector = projector
+        stale = asyncio.create_task(asyncio.sleep(60))
+        sub._owner_tasks["stale-owner"] = [stale]
+        sub._owner_adapters["stale-owner"] = [volundr]
+
+        await sub._sync_owner_subscriptions()
+        await asyncio.sleep(0)
+
+        projector.reconcile_owner.assert_awaited_once_with(OWNER_ID)
+        assert OWNER_ID in sub._owner_tasks
+        assert "stale-owner" not in sub._owner_tasks
+        assert stale.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_no_active_work_clears_existing_subscriptions(self) -> None:
+        sub, volundr, _, _ = _make_subscriber(config=_default_config(reconnect_delay=0))
+        stale = asyncio.create_task(asyncio.sleep(60))
+        sub._owner_tasks[OWNER_ID] = [stale]
+        sub._owner_adapters[OWNER_ID] = [volundr]
+
+        await sub._sync_owner_subscriptions()
+        await asyncio.sleep(0)
+
+        assert sub._owner_tasks == {}
+        assert sub._owner_adapters == {}
+        assert stale.cancelled()
+
 
 # ---------------------------------------------------------------------------
 # Tests -- Activity event handling
