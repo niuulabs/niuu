@@ -1775,7 +1775,7 @@ async def test_start_uses_central_codex_broker_without_openshell_token_grant(
                         "envMappings": {"GITHUB_PERSONAL_ACCESS_TOKEN": "token"},
                     },
                 ],
-            }
+            },
         },
         pod_spec=PodSpecAdditions(),
     )

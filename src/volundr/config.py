@@ -266,10 +266,7 @@ class PodManagerConfig(BaseModel):
 
 def _default_codex_credential_broker() -> DynamicAdapterConfig:
     return DynamicAdapterConfig(
-        adapter=(
-            "volundr.adapters.outbound.codex_credential_broker."
-            "DisabledCodexCredentialBroker"
-        )
+        adapter=("volundr.adapters.outbound.codex_credential_broker.DisabledCodexCredentialBroker")
     )
 
 

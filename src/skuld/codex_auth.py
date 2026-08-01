@@ -90,9 +90,7 @@ class VolundrCodexAuthProvider(CodexAuthProviderPort):
             response.raise_for_status()
             payload = response.json()
         except (httpx.HTTPError, ValueError) as exc:
-            raise CodexAuthProviderError(
-                "Codex authentication requires reconnection"
-            ) from exc
+            raise CodexAuthProviderError("Codex authentication requires reconnection") from exc
 
         access_token = str(payload.get("access_token") or "")
         account_id = str(payload.get("chatgpt_account_id") or "")

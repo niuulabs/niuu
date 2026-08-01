@@ -39,9 +39,7 @@ class BrokeredCredentialPodManager:
 
     @staticmethod
     def _brokered_credential_environment(spec: SessionSpec) -> dict[str, str]:
-        return BrokeredCredentialPodManager._brokered_credential_environment_values(
-            spec.values
-        )
+        return BrokeredCredentialPodManager._brokered_credential_environment_values(spec.values)
 
     @staticmethod
     def _brokered_credential_environment_values(values: dict) -> dict[str, str]:

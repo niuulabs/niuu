@@ -184,9 +184,7 @@ class OpenBaoCodexCredentialBroker(CodexCredentialBrokerPort):
 
         access_token = str(payload.get("access_token") or "")
         if not access_token:
-            raise CodexCredentialBrokerError(
-                "Codex OAuth token refresh returned no access token"
-            )
+            raise CodexCredentialBrokerError("Codex OAuth token refresh returned no access token")
         tokens["access_token"] = access_token
         if payload.get("refresh_token"):
             tokens["refresh_token"] = str(payload["refresh_token"])

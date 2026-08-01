@@ -44,8 +44,7 @@ def _create_codex_credential_broker(
     )
     if not isinstance(instance, CodexCredentialBrokerPort):
         raise TypeError(
-            f"Codex credential broker {config.adapter} must implement "
-            "CodexCredentialBrokerPort"
+            f"Codex credential broker {config.adapter} must implement CodexCredentialBrokerPort"
         )
     logger.info("Codex credential broker: %s", config.adapter.rsplit(".", 1)[-1])
     return instance

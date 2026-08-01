@@ -208,18 +208,14 @@ async def test_concurrent_forced_refresh_reuses_rotation_completed_under_lock() 
             credential_name="codex-main",
             credential_field="auth.json",
             force_refresh=True,
-            previous_access_token_sha256=hashlib.sha256(
-                previous_access_token.encode()
-            ).hexdigest(),
+            previous_access_token_sha256=hashlib.sha256(previous_access_token.encode()).hexdigest(),
         ),
         broker.get_tokens(
             owner_id="owner-1",
             credential_name="codex-main",
             credential_field="auth.json",
             force_refresh=True,
-            previous_access_token_sha256=hashlib.sha256(
-                previous_access_token.encode()
-            ).hexdigest(),
+            previous_access_token_sha256=hashlib.sha256(previous_access_token.encode()).hexdigest(),
         ),
     )
 

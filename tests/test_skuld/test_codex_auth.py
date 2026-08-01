@@ -66,9 +66,7 @@ async def test_volundr_provider_uses_current_token_then_requests_one_rotation() 
             "credential_name": "codex-user",
             "credential_field": "auth.json",
             "force_refresh": True,
-            "previous_access_token_sha256": hashlib.sha256(
-                b"access-token-1"
-            ).hexdigest(),
+            "previous_access_token_sha256": hashlib.sha256(b"access-token-1").hexdigest(),
         },
     ]
 

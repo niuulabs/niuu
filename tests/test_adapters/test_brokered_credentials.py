@@ -15,17 +15,11 @@ class _Manager(BrokeredCredentialPodManager):
 
 def test_shared_mixin_projects_one_skuld_auth_contract() -> None:
     manager = _Manager()
-    manager._configure_brokered_credentials(
-        codex_auth_kwargs={"credential_name": "codex-default"}
-    )
+    manager._configure_brokered_credentials(codex_auth_kwargs={"credential_name": "codex-default"})
 
     projected = manager._with_brokered_credentials(
         SessionSpec(
-            values={
-                "broker": {
-                    "codexAuth": {"kwargs": {"credential_field": "auth.json"}}
-                }
-            },
+            values={"broker": {"codexAuth": {"kwargs": {"credential_field": "auth.json"}}}},
             pod_spec=PodSpecAdditions(),
         )
     )
