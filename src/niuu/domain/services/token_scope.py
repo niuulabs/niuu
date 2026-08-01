@@ -37,15 +37,25 @@ VALKYRIE_BUILD_TOKEN_USE = "valkyrie_build"
 OPENSHELL_SESSION_TOKEN_USE = "openshell_session"
 OPENSHELL_RESIDENT_TOKEN_USE = "openshell_resident"
 
-#: The build scopes a Valkyrie build token may ever be granted. A caller
+#: The scopes a short-lived workload credential may ever be granted. A caller
 #: cannot self-grant anything outside this allowlist — unknown scopes are
 #: dropped at issuance time.
+#:
+#: Named for builds because builds were the first use, but the mechanism is
+#: general: any least-privilege workload credential draws its scopes from here.
+#: `observatory:topology:push` lets a source publish its own view of the
+#: topology and nothing else, so a resident on a bare-metal host does not need
+#: a full-authority PAT to appear on the graph.
 KNOWN_BUILD_SCOPES: frozenset[str] = frozenset(
     {
         "forge:session:create",
         "ting:workflow:launch",
+        "observatory:topology:push",
     }
 )
+
+#: Scope required to publish a topology fragment to the push inbox.
+TOPOLOGY_PUSH_SCOPE = "observatory:topology:push"
 
 
 def _decode_claims(token: str) -> dict | None:
@@ -173,6 +183,7 @@ __all__ = [
     "KNOWN_BUILD_SCOPES",
     "OPENSHELL_SESSION_TOKEN_USE",
     "OPENSHELL_RESIDENT_TOKEN_USE",
+    "TOPOLOGY_PUSH_SCOPE",
     "VALKYRIE_BUILD_TOKEN_USE",
     "bound_build_scopes",
     "require_build_scope",

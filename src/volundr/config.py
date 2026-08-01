@@ -1539,12 +1539,29 @@ class AgentDirectoryConfig(BaseModel):
     )
 
 
+class ObservatoryFragmentInboxConfig(BaseModel):
+    """Push inbox for sources the aggregator cannot reach."""
+
+    ttl_seconds: float = Field(
+        default=180.0,
+        gt=0,
+        description=(
+            "How long a pushed fragment stays fresh. A source that has not "
+            "published within this window is reported as stale rather than "
+            "dropped, so a host that stopped reporting stays visible."
+        ),
+    )
+
+
 class ObservatoryConfig(BaseModel):
     """Observatory plugin configuration."""
 
     guild: ObservatoryGuildConfig = Field(default_factory=ObservatoryGuildConfig)
     discovery: list[DynamicAdapterConfig] = Field(default_factory=list)
     directory: AgentDirectoryConfig = Field(default_factory=AgentDirectoryConfig)
+    fragments: ObservatoryFragmentInboxConfig = Field(
+        default_factory=ObservatoryFragmentInboxConfig
+    )
 
 
 class Settings(BaseSettings):

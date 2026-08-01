@@ -24,12 +24,15 @@ from niuu.domain.models import (
     Principal,
     RegisteredInstance,
 )
+from niuu.domain.observatory import ObservatoryFragment, TopologySourceHealth
 from niuu.domain.services.agent_directory import AgentDirectoryAggregationService
 from niuu.domain.services.instances import (
     InstanceAccessError,
     InstanceService,
     InstanceValidationError,
 )
+from niuu.domain.services.observatory_fragments import ObservatoryFragmentInboxService
+from niuu.domain.services.token_scope import TOPOLOGY_PUSH_SCOPE, require_build_scope
 
 
 class InstanceResponse(BaseModel):
@@ -655,6 +658,7 @@ def create_instances_router(
     *,
     embedded_forge_app: ASGIApp | None = None,
     agent_directory: AgentDirectoryAggregationService | None = None,
+    fragment_inbox: ObservatoryFragmentInboxService | None = None,
 ) -> APIRouter:
     """Create the shared instance registry router."""
     router = APIRouter(prefix="/api/v1/niuu", tags=["Shared"])
@@ -813,6 +817,71 @@ def create_instances_router(
     ) -> dict[str, Any]:
         instances = await service.list_visible(principal, enabled_only=True)
         return await _build_observatory_snapshot(instances, request=request)
+
+    @router.put(
+        "/observatory/fragments/{source_id}",
+        response_model=TopologySourceHealth,
+        response_model_by_alias=True,
+        summary="Publish this source's view of the topology",
+    )
+    async def put_observatory_fragment(
+        source_id: str,
+        fragment: ObservatoryFragment,
+        principal: Principal = Depends(extract_principal),
+        _scope: None = Depends(require_build_scope(TOPOLOGY_PUSH_SCOPE)),
+    ) -> TopologySourceHealth:
+        """Accept a fragment from a source the aggregator cannot reach.
+
+        PUT rather than POST because a heartbeat is "this is my current state":
+        publishing twice is publishing once, so there is no dedupe to get wrong
+        and no way for a retry to double a source's nodes.
+
+        Scoped to `observatory:topology:push`, so a resident on a bare-metal
+        host can appear on the graph without holding a credential that can do
+        anything else.
+        """
+        del principal
+        if fragment_inbox is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Topology fragment inbox is not configured",
+            )
+        if fragment.meta and fragment.meta.source_id and fragment.meta.source_id != source_id:
+            # The path is the key the fragment is stored under. A payload
+            # claiming a different identity would silently overwrite, or
+            # masquerade as, another source.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Fragment meta.sourceId '{fragment.meta.source_id}' does not match "
+                    f"path source id '{source_id}'"
+                ),
+            )
+        await fragment_inbox.accept(source_id, fragment)
+        health = {source.source_id: source for _stored, source in await fragment_inbox.current()}
+        return health[source_id]
+
+    @router.delete(
+        "/observatory/fragments/{source_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        summary="Forget a decommissioned topology source",
+    )
+    async def delete_observatory_fragment(
+        source_id: str,
+        principal: Principal = Depends(extract_principal),
+        _scope: None = Depends(require_build_scope(TOPOLOGY_PUSH_SCOPE)),
+    ) -> None:
+        del principal
+        if fragment_inbox is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Topology fragment inbox is not configured",
+            )
+        if not await fragment_inbox.forget(source_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No fragment published by source '{source_id}'",
+            )
 
     @router.get(
         "/observatory/agents",

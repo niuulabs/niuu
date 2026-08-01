@@ -18,11 +18,15 @@ from niuu.adapters.inbound.rest_volundr import create_volundr_router
 from niuu.adapters.outbound.http_agent_directory import HttpAgentDirectoryClient
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_instances import PostgresInstanceRepository
+from niuu.adapters.postgres_observatory_fragments import (
+    PostgresObservatoryFragmentRepository,
+)
 from niuu.adapters.postgres_pats import PostgresPATRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import InstanceKind, InstanceVisibility
 from niuu.domain.services.agent_directory import AgentDirectoryAggregationService
 from niuu.domain.services.instances import InstanceService
+from niuu.domain.services.observatory_fragments import ObservatoryFragmentInboxService
 from niuu.service_databases import apply_service_database_settings, database_pool
 from niuu.service_instances import seed_configured_instances
 from niuu.service_runtime import (
@@ -103,6 +107,10 @@ def create_app(
                     instance_service,
                     embedded_forge_app=embedded_forge_app,
                     agent_directory=agent_directory,
+                    fragment_inbox=ObservatoryFragmentInboxService(
+                        PostgresObservatoryFragmentRepository(pool),
+                        ttl_seconds=loaded_settings.observatory.fragments.ttl_seconds,
+                    ),
                 )
             )
             app.include_router(

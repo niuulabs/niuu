@@ -35,7 +35,15 @@ def _build_token(scopes: list[str]) -> str:
 
 class TestKnownBuildScopes:
     def test_known_build_scopes_constant(self) -> None:
-        assert KNOWN_BUILD_SCOPES == frozenset({"forge:session:create", "ting:workflow:launch"})
+        """Pinned deliberately: widening what a workload credential may ever be
+        granted should be a visible, reviewed change, not a silent one."""
+        assert KNOWN_BUILD_SCOPES == frozenset(
+            {
+                "forge:session:create",
+                "ting:workflow:launch",
+                "observatory:topology:push",
+            }
+        )
 
 
 class TestTokenRequiresScopeCheck:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -680,3 +681,177 @@ def test_observatory_snapshot_uses_deployment_cluster_labels() -> None:
         and node["namespace"] == "volundr"
         for node in payload["nodes"]
     )
+
+
+# ── Topology fragment push inbox ─────────────────────────────────────────────
+
+#: Scope enforcement reads claims without verifying the signature (Envoy
+#: verifies upstream), so this key only needs to satisfy PyJWT's minimum.
+_TEST_SIGNING_KEY = "test-signing-key-of-sufficient-length-for-hs256"
+
+
+def _inbox_client(inbox: Any) -> TestClient:
+    app = FastAPI()
+    app.include_router(
+        create_instances_router(  # type: ignore[arg-type]
+            StubInstanceService(),
+            fragment_inbox=inbox,
+        )
+    )
+    return TestClient(app)
+
+
+def _push_inbox(ttl_seconds: float = 180.0) -> Any:
+    from niuu.adapters.memory_observatory_fragments import (
+        InMemoryObservatoryFragmentRepository,
+    )
+    from niuu.domain.services.observatory_fragments import ObservatoryFragmentInboxService
+
+    return ObservatoryFragmentInboxService(
+        InMemoryObservatoryFragmentRepository(),
+        ttl_seconds=ttl_seconds,
+    )
+
+
+def _fragment_payload(source_id: str = "spark-1") -> dict[str, Any]:
+    return {
+        "nodes": [
+            {
+                "id": "ravn-ivaldi",
+                "typeId": "ravn_long",
+                "label": "ivaldi",
+                "hostId": "saehrimnir",
+                "realmId": "sparks",
+            }
+        ],
+        "meta": {"sourceId": source_id, "sourceKind": "resident", "hostId": "saehrimnir"},
+    }
+
+
+def test_publishing_a_fragment_reports_the_sources_health() -> None:
+    client = _inbox_client(_push_inbox())
+
+    response = client.put(
+        "/api/v1/niuu/observatory/fragments/spark-1",
+        json=_fragment_payload(),
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sourceId"] == "spark-1"
+    assert body["status"] == "healthy"
+    assert body["transport"] == "push"
+    assert body["nodeCount"] == 1
+
+
+def test_republishing_replaces_rather_than_accumulating() -> None:
+    inbox = _push_inbox()
+    client = _inbox_client(inbox)
+
+    for _ in range(3):
+        client.put(
+            "/api/v1/niuu/observatory/fragments/spark-1",
+            json=_fragment_payload(),
+            headers=_headers(),
+        )
+
+    assert len(asyncio.run(inbox.current())) == 1
+
+
+def test_a_fragment_cannot_claim_a_different_source_than_its_path() -> None:
+    """Otherwise a source could overwrite, or masquerade as, another."""
+    client = _inbox_client(_push_inbox())
+
+    response = client.put(
+        "/api/v1/niuu/observatory/fragments/spark-1",
+        json=_fragment_payload(source_id="spark-2"),
+        headers=_headers(),
+    )
+
+    assert response.status_code == 400
+    assert "spark-2" in response.json()["detail"]
+
+
+def test_publishing_without_a_configured_inbox_says_so() -> None:
+    app = FastAPI()
+    app.include_router(create_instances_router(StubInstanceService()))  # type: ignore[arg-type]
+    client = TestClient(app)
+
+    response = client.put(
+        "/api/v1/niuu/observatory/fragments/spark-1",
+        json=_fragment_payload(),
+        headers=_headers(),
+    )
+
+    assert response.status_code == 503
+
+
+def test_a_build_token_without_the_push_scope_is_refused() -> None:
+    """Scoped credentials are fail-closed: a token that may launch workflows
+    must not also be able to rewrite the topology."""
+    import jwt
+
+    token = jwt.encode(
+        {"token_use": "valkyrie_build", "scopes": ["ting:workflow:launch"]},
+        _TEST_SIGNING_KEY,
+        algorithm="HS256",
+    )
+    client = _inbox_client(_push_inbox())
+
+    response = client.put(
+        "/api/v1/niuu/observatory/fragments/spark-1",
+        json=_fragment_payload(),
+        headers={**_headers(), "authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+    assert "observatory:topology:push" in response.json()["detail"]
+
+
+def test_a_build_token_carrying_the_push_scope_is_admitted() -> None:
+    import jwt
+
+    token = jwt.encode(
+        {"token_use": "valkyrie_build", "scopes": ["observatory:topology:push"]},
+        _TEST_SIGNING_KEY,
+        algorithm="HS256",
+    )
+    client = _inbox_client(_push_inbox())
+
+    response = client.put(
+        "/api/v1/niuu/observatory/fragments/spark-1",
+        json=_fragment_payload(),
+        headers={**_headers(), "authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+
+
+def test_forgetting_a_source_removes_it() -> None:
+    inbox = _push_inbox()
+    client = _inbox_client(inbox)
+    client.put(
+        "/api/v1/niuu/observatory/fragments/spark-1",
+        json=_fragment_payload(),
+        headers=_headers(),
+    )
+
+    response = client.delete(
+        "/api/v1/niuu/observatory/fragments/spark-1",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 204
+    assert asyncio.run(inbox.current()) == []
+
+
+def test_forgetting_an_unknown_source_is_a_404() -> None:
+    client = _inbox_client(_push_inbox())
+
+    response = client.delete(
+        "/api/v1/niuu/observatory/fragments/never-seen",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 404

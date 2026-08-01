@@ -11,6 +11,7 @@ Lives in `niuu` rather than `observatory` because Guild aggregates fragments and
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -166,6 +167,19 @@ class ObservatoryFragment(_ObservatoryModel):
     events: list[TopologyEvent] = Field(default_factory=list)
     layout_hints: LayoutHints | None = None
     meta: FragmentMeta | None = None
+
+
+class StoredFragment(_ObservatoryModel):
+    """A pushed fragment together with when the inbox received it.
+
+    `received_at` is stamped by the inbox, not by the publisher: a source with
+    a wrong clock, or one replaying an old payload, must not be able to present
+    itself as fresher than it is.
+    """
+
+    source_id: str
+    fragment: ObservatoryFragment
+    received_at: datetime
 
 
 class TopologySourceHealth(_ObservatoryModel):
