@@ -912,7 +912,7 @@ def create_app(
                 review_engine=review_engine,
                 sleipnir_publisher=sleipnir_bus,
                 ravn_scope_adherence_threshold=settings.ravn_outcome.scope_adherence_threshold,
-                workflow_campaign_repo=workflow_campaign_repo,
+                workflow_campaign_projector=workflow_campaign_projector,
             )
             app.state.subscriber = subscriber
             await subscriber.start()
@@ -988,6 +988,7 @@ def create_app(
                 await ravn_outcome_handler.stop()
             if event_trigger_adapter is not None:
                 await event_trigger_adapter.stop()
+            await subscriber.stop()
             if ting_sleipnir_bridge is not None:
                 await ting_sleipnir_bridge.stop()
             await workflow_campaign_projector.stop()
@@ -1006,7 +1007,6 @@ def create_app(
                 await guild_registry_client.close()
             if hasattr(llm_adapter, "close"):
                 await llm_adapter.close()
-            await subscriber.stop()
             logger.info("Ting shutting down")
 
     app.router.lifespan_context = lifespan

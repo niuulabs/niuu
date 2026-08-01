@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -10,7 +11,11 @@ from uuid import uuid4
 import pytest
 
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
-from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
+from ting.domain.services.workflow_campaign_projector import (
+    WorkflowCampaignProjector,
+    _status_from_session,
+)
+from ting.ports.volundr import ActivityEvent
 
 
 def _campaign(
@@ -112,6 +117,104 @@ def _projector(adapter: _Adapter) -> tuple[WorkflowCampaignProjector, AsyncMock,
 
 
 @pytest.mark.asyncio
+async def test_lifecycle_and_active_owner_projection() -> None:
+    projector, repo, _ = _projector(_Adapter())
+    repo.list_active_owner_ids.return_value = ["owner-1", "owner-2"]
+
+    assert projector.running is False
+    await projector.start()
+    assert projector.running is True
+    assert await projector.list_active_owner_ids() == ["owner-1", "owner-2"]
+    await projector.stop()
+    assert projector.running is False
+
+
+@pytest.mark.asyncio
+async def test_reconcile_owner_isolated_and_best_effort() -> None:
+    projector, repo, _ = _projector(_Adapter())
+    first = _campaign()
+    second = _campaign()
+    other_owner = replace(_campaign(), owner_id="user-2")
+    repo.list_active_campaigns.return_value = [first, other_owner, second]
+    projector._refresh_campaign = AsyncMock(side_effect=[None, RuntimeError("unreachable")])
+
+    await projector.reconcile_owner("user-1")
+
+    assert projector._refresh_campaign.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_stream_events_cover_missing_pending_and_failure_states() -> None:
+    projector, repo, _ = _projector(_Adapter())
+    repo.get_active_campaign_by_session.side_effect = [
+        None,
+        _campaign(WorkflowCampaignStatus.PENDING),
+        _campaign(),
+    ]
+
+    assert (
+        await projector.handle_activity(ActivityEvent("missing", "active", {}, "user-1"), "user-1")
+        is False
+    )
+    assert (
+        await projector.handle_activity(
+            ActivityEvent("session-123", "active", {}, "user-1"), "user-1"
+        )
+        is True
+    )
+    assert repo.save_campaign.await_args_list[0].args[0].status == WorkflowCampaignStatus.RUNNING
+
+    await projector.handle_activity(
+        ActivityEvent(
+            "session-123",
+            "",
+            {},
+            "user-1",
+            session_status="failed",
+        ),
+        "user-1",
+    )
+    failed = repo.save_campaign.await_args_list[1].args[0]
+    assert failed.status == WorkflowCampaignStatus.FAILED
+    assert failed.metadata["failure_error"] == "Session failed"
+
+
+@pytest.mark.asyncio
+async def test_missing_campaign_and_session_are_ignored() -> None:
+    adapter = _Adapter()
+    adapter.get_session = AsyncMock(return_value=None)
+    projector, repo, _ = _projector(adapter)
+    repo.get_active_campaign_by_session.return_value = None
+
+    assert (
+        await projector.record_help_needed(
+            {"summary": "help"},
+            "user-1",
+            session_id="missing",
+            gate={},
+        )
+        is False
+    )
+    await projector._refresh_campaign(_campaign())
+    repo.save_campaign.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("queued", WorkflowCampaignStatus.PENDING),
+        ("paused", WorkflowCampaignStatus.BLOCKED),
+        ("cancelled", WorkflowCampaignStatus.FAILED),
+        ("unknown", WorkflowCampaignStatus.RUNNING),
+    ],
+)
+def test_status_projection_covers_recovery_states(
+    raw: str, expected: WorkflowCampaignStatus
+) -> None:
+    assert _status_from_session(raw) == expected
+
+
+@pytest.mark.asyncio
 async def test_pending_help_request_flips_campaign_to_blocked() -> None:
     adapter = _Adapter(help_requests=[{"id": "help-1", "status": "pending"}])
     projector, repo, _ = _projector(adapter)
@@ -199,6 +302,70 @@ async def test_terminal_activity_error_fails_running_campaign() -> None:
     emitted = event_bus.emit.await_args.args[0]
     assert emitted.event == "workflow.campaign.failed"
     assert emitted.data["error"] == "refresh token was already used"
+
+
+@pytest.mark.asyncio
+async def test_sse_terminal_event_completes_and_queues_push_without_session_read() -> None:
+    adapter = _Adapter()
+    campaign = _campaign()
+    repo = AsyncMock()
+    repo.get_active_campaign_by_session.return_value = campaign
+    repo.save_campaign = AsyncMock(side_effect=lambda value: value)
+    push_dispatcher = AsyncMock()
+    projector = WorkflowCampaignProjector(
+        repo=repo,
+        volundr_factory=_Factory(adapter),
+        event_bus=AsyncMock(),
+        push_dispatcher=push_dispatcher,
+    )
+
+    handled = await projector.handle_activity(
+        ActivityEvent(
+            session_id=campaign.session_id,
+            state="",
+            metadata={},
+            owner_id=campaign.owner_id,
+            session_status="stopped",
+        ),
+        campaign.owner_id,
+    )
+
+    assert handled is True
+    saved = repo.save_campaign.await_args.args[0]
+    assert saved.status == WorkflowCampaignStatus.COMPLETED
+    push_dispatcher.queue_campaign.assert_awaited_once_with(saved)
+
+
+@pytest.mark.asyncio
+async def test_sse_error_event_fails_and_queues_error_push() -> None:
+    campaign = _campaign()
+    repo = AsyncMock()
+    repo.get_active_campaign_by_session.return_value = campaign
+    repo.save_campaign = AsyncMock(side_effect=lambda value: value)
+    event_bus = AsyncMock()
+    push_dispatcher = AsyncMock()
+    projector = WorkflowCampaignProjector(
+        repo=repo,
+        volundr_factory=_Factory(_Adapter()),
+        event_bus=event_bus,
+        push_dispatcher=push_dispatcher,
+    )
+
+    await projector.handle_activity(
+        ActivityEvent(
+            session_id=campaign.session_id,
+            state="error",
+            metadata={"error": "refresh token was already used"},
+            owner_id=campaign.owner_id,
+        ),
+        campaign.owner_id,
+    )
+
+    saved = repo.save_campaign.await_args.args[0]
+    assert saved.status == WorkflowCampaignStatus.FAILED
+    assert saved.metadata["failure_error"] == "refresh token was already used"
+    assert event_bus.emit.await_args.args[0].event == "workflow.campaign.failed"
+    push_dispatcher.queue_campaign.assert_awaited_once_with(saved)
 
 
 class TestConnectionAffinity:
