@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { CANVAS } from '../packages/plugin-observatory/src/ui/TopologyCanvas/config';
 
 async function openTopologyDrawer(page: Page, testId: string, name: RegExp) {
   const nodeButton = page.getByTestId(testId);
@@ -83,15 +84,18 @@ test('zoom cannot exceed 300%', async ({ page }) => {
   expect(pct).toBeLessThanOrEqual(300);
 });
 
-test('zoom cannot fall below 30%', async ({ page }) => {
+test('zoom clamps at the configured floor', async ({ page }) => {
   await page.goto('/observatory');
   await page.waitForSelector('[data-testid="zoom-display"]');
 
   const zoomOut = page.getByRole('button', { name: /zoom out/i });
   for (let i = 0; i < 30; i++) await zoomOut.click();
 
+  // Asserted against the config rather than a literal, so the floor can be
+  // tuned for a larger topology without silently breaking this expectation.
   const pct = parseInt((await page.getByTestId('zoom-display').textContent()) ?? '0', 10);
-  expect(pct).toBeGreaterThanOrEqual(30);
+  expect(pct).toBeGreaterThanOrEqual(Math.round(CANVAS.ZOOM_MIN * 100));
+  expect(pct).toBeLessThan(Math.round(CANVAS.ZOOM_MAX * 100));
 });
 
 test('camera reset restores default zoom', async ({ page }) => {
@@ -190,14 +194,14 @@ test('arrow keys pan the canvas when focused', async ({ page }) => {
 
 // ── Minimap interaction ───────────────────────────────────────────────────────
 
-test('minimap SVG overlay is visible with topology content', async ({ page }) => {
+test('minimap overlay is visible with topology content', async ({ page }) => {
   await page.goto('/observatory');
   const minimapPanel = page.getByTestId('minimap-panel');
   await minimapPanel.waitFor();
 
-  // New minimap is a static SVG overview, not a click-to-pan canvas
+  // The minimap is a canvas the render loop paints, not an SVG document.
   await expect(minimapPanel).toBeVisible();
-  await expect(minimapPanel.locator('svg')).toBeVisible();
+  await expect(minimapPanel.locator('canvas')).toBeVisible();
 });
 
 // ── Registry page ─────────────────────────────────────────────────────────────
@@ -394,4 +398,79 @@ test('EventLog overlay is visible and shows events', async ({ page }) => {
 test('Minimap overlay is visible on observatory page', async ({ page }) => {
   await page.goto('/observatory');
   await expect(page.getByRole('img', { name: /topology minimap/i })).toBeVisible({ timeout: 3000 });
+});
+
+// ── Connection layers ─────────────────────────────────────────────────────────
+
+test('layer filters toggle and can be restored', async ({ page }) => {
+  await page.goto('/observatory');
+
+  const memory = page.getByTestId('layer-toggle-memory');
+  await expect(memory).toBeVisible({ timeout: 5000 });
+  await expect(memory).toHaveAttribute('aria-pressed', 'true');
+
+  await memory.click();
+  await expect(memory).toHaveAttribute('aria-pressed', 'false');
+
+  // Other layers are unaffected by hiding one.
+  await expect(page.getByTestId('layer-toggle-mesh')).toHaveAttribute('aria-pressed', 'true');
+
+  const showAll = page.getByTestId('layer-toggle-all');
+  await expect(showAll).toBeEnabled();
+  await showAll.click();
+  await expect(memory).toHaveAttribute('aria-pressed', 'true');
+  await expect(showAll).toBeDisabled();
+});
+
+test('every connection layer offers a toggle with a count', async ({ page }) => {
+  await page.goto('/observatory');
+  for (const layer of ['mesh', 'memory', 'inference', 'platform', 'observability', 'signals']) {
+    await expect(page.getByTestId(`layer-toggle-${layer}`)).toBeVisible({ timeout: 5000 });
+  }
+});
+
+// ── Rail sections ─────────────────────────────────────────────────────────────
+
+test('rail sections collapse and expand independently', async ({ page }) => {
+  await page.goto('/observatory');
+
+  const realms = page.getByTestId('subnav-section-realms');
+  await expect(realms).toBeVisible({ timeout: 5000 });
+  await expect(realms).toHaveAttribute('open', '');
+
+  await page.getByTestId('subnav-toggle-realms').click();
+  await expect(realms).not.toHaveAttribute('open', '');
+  await expect(page.getByTestId('subnav-section-clusters')).toHaveAttribute('open', '');
+
+  await page.getByTestId('subnav-toggle-realms').click();
+  await expect(realms).toHaveAttribute('open', '');
+});
+
+// ── A2A card ──────────────────────────────────────────────────────────────────
+
+test('selecting a resident shows the A2A card it publishes', async ({ page }) => {
+  await page.goto('/observatory');
+  await openTopologyDrawer(page, 'node-btn-ravn-huginn', /huginn/i);
+
+  const card = page.getByTestId('agent-card');
+  await expect(card).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('agent-card-kind')).toHaveText(/resident/i);
+  await expect(page.getByTestId('agent-card-url')).toContainText('agent-card.json');
+  await expect(page.getByTestId('agent-card-skills')).toBeVisible();
+});
+
+test('selecting a workflow session shows its card kind', async ({ page }) => {
+  await page.goto('/observatory');
+  await openTopologyDrawer(page, 'node-btn-run-research', /research-session/i);
+
+  await expect(page.getByTestId('agent-card-kind')).toHaveText(/workflow-session/i, {
+    timeout: 5000,
+  });
+});
+
+test('a node that publishes no card shows no A2A panel', async ({ page }) => {
+  await page.goto('/observatory');
+  await openTopologyDrawer(page, 'node-btn-host-saehrimnir', /sæhrímnir/i);
+
+  await expect(page.getByTestId('agent-card')).toHaveCount(0);
 });

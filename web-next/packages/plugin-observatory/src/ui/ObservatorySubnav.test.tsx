@@ -257,3 +257,29 @@ describe('ObservatorySubnav', () => {
     expect(screen.getByTestId('cluster-cluster-selected')).toHaveAttribute('aria-pressed', 'true');
   });
 });
+
+describe('ObservatorySubnav collapsible sections', () => {
+  it('renders every rail section as a disclosure', () => {
+    render(<ObservatorySubnav />);
+    for (const id of ['filter', 'realms', 'clusters']) {
+      expect(screen.getByTestId(`subnav-section-${id}`)).toBeInTheDocument();
+      expect(screen.getByTestId(`subnav-toggle-${id}`).tagName).toBe('SUMMARY');
+    }
+  });
+
+  it('opens every section by default', () => {
+    render(<ObservatorySubnav />);
+    for (const id of ['filter', 'realms', 'clusters']) {
+      expect(screen.getByTestId(`subnav-section-${id}`)).toHaveAttribute('open');
+    }
+  });
+
+  it('collapses a section without disturbing the others', () => {
+    render(<ObservatorySubnav />);
+    fireEvent.click(screen.getByTestId('subnav-toggle-realms'));
+
+    expect((screen.getByTestId('subnav-section-realms') as HTMLDetailsElement).open).toBe(false);
+    expect((screen.getByTestId('subnav-section-filter') as HTMLDetailsElement).open).toBe(true);
+    expect((screen.getByTestId('subnav-section-clusters') as HTMLDetailsElement).open).toBe(true);
+  });
+});

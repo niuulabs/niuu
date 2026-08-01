@@ -24,6 +24,16 @@ export type {
   AgentDirectoryFilters,
 } from './agentDirectory';
 export { findAgentTopologyNode } from './agentDirectory';
+export type { AgentMesh } from './agentMesh';
+export { deriveAgentMeshes, findMeshForNode, isMeshMember } from './agentMesh';
+export type { EdgeLayer } from './edgeLayer';
+export {
+  EDGE_LAYERS,
+  EDGE_LAYER_LABELS,
+  edgeLayer,
+  visibleEdges,
+  countEdgesByLayer,
+} from './edgeLayer';
 
 // Re-export shared primitives so consumers can import from a single package.
 export type { EntityShape, EntityCategory, TypeRegistry } from '@niuulabs/domain';
@@ -218,12 +228,56 @@ export interface TopologyEdge {
   evidence?: Record<string, string>;
 }
 
-/** Point-in-time snapshot of the live topology graph. */
+/** How a source's fragment reached the aggregator. */
+export type SourceTransport = 'pull' | 'push' | 'local' | 'static';
+
+/**
+ * Reachability of one contributing source.
+ *
+ * `stale` is distinct from `failed`: the source was reachable and simply has
+ * not reported within its TTL — a different operator situation from one that
+ * cannot be reached at all.
+ */
+export type SourceStatus = 'healthy' | 'degraded' | 'stale' | 'failed';
+
+/** Per-source health reported alongside the merged graph. */
+export interface TopologySourceHealth {
+  sourceId: string;
+  sourceKind?: string;
+  sourceName?: string;
+  transport?: SourceTransport;
+  status: SourceStatus;
+  clusterId?: string;
+  realmId?: string;
+  revision?: string;
+  nodeCount?: number;
+  lastSeen?: string;
+  message?: string;
+}
+
+/** A degradation that did not stop the snapshot being served. */
+export interface TopologyWarning {
+  sourceId?: string;
+  code?: string;
+  message?: string;
+}
+
+/**
+ * Point-in-time snapshot of the live topology graph.
+ *
+ * When the snapshot comes from the Guild aggregate it also reports how
+ * complete it is. That matters: without `sources` and `partial`, an estate
+ * where half the clusters are unreachable looks exactly like a small estate.
+ */
 export interface Topology {
   nodes: TopologyNode[];
   edges: TopologyEdge[];
   timestamp: string;
   layoutHints?: LayoutHints;
+  revision?: string;
+  sources?: TopologySourceHealth[];
+  warnings?: TopologyWarning[];
+  partial?: boolean;
 }
 
 // ── Event log ─────────────────────────────────────────────────────────────────

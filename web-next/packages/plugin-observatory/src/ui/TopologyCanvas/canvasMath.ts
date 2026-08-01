@@ -143,3 +143,75 @@ export function fitCameraToBounds(
     zoom,
   };
 }
+
+// ── Hull geometry ─────────────────────────────────────────────────────────────
+
+/** Centroid of a point set; the origin for an empty set. */
+export function centroid(points: readonly Point[]): Point {
+  if (points.length === 0) return { x: 0, y: 0 };
+  let x = 0;
+  let y = 0;
+  for (const p of points) {
+    x += p.x;
+    y += p.y;
+  }
+  return { x: x / points.length, y: y / points.length };
+}
+
+/** Cross product of OA x OB — positive when OAB turns counter-clockwise. */
+function cross(o: Point, a: Point, b: Point): number {
+  return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+}
+
+/**
+ * Convex hull by monotone chain, in O(n log n).
+ *
+ * Fewer than three points have no hull — the input is returned unchanged so
+ * callers can still draw a point or a line from the result.
+ */
+export function convexHull(points: readonly Point[]): Point[] {
+  if (points.length < 3) return [...points];
+
+  const sorted = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+
+  const lower: Point[] = [];
+  for (const p of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2]!, lower[lower.length - 1]!, p) <= 0) {
+      lower.pop();
+    }
+    lower.push(p);
+  }
+
+  const upper: Point[] = [];
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const p = sorted[i]!;
+    while (upper.length >= 2 && cross(upper[upper.length - 2]!, upper[upper.length - 1]!, p) <= 0) {
+      upper.pop();
+    }
+    upper.push(p);
+  }
+
+  lower.pop();
+  upper.pop();
+  const hull = lower.concat(upper);
+  // Collinear input collapses to a degenerate hull; fall back to the points.
+  return hull.length >= 3 ? hull : [...points];
+}
+
+/**
+ * Push each hull vertex away from the centroid so the outline clears the nodes
+ * it surrounds rather than cutting through them.
+ */
+export function expandFromCentroid(
+  points: readonly Point[],
+  origin: Point,
+  padding: number,
+): Point[] {
+  return points.map((p) => {
+    const dx = p.x - origin.x;
+    const dy = p.y - origin.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance === 0) return { x: p.x + padding, y: p.y };
+    return { x: p.x + (dx / distance) * padding, y: p.y + (dy / distance) * padding };
+  });
+}

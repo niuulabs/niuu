@@ -1,0 +1,125 @@
+/* ── A2A card panel — rendered inside the entity drawer ── */
+.obs-agent-card {
+  border-top: 1px solid var(--color-border-subtle);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.obs-agent-card__title {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.obs-agent-card__kind {
+  font-size: var(--text-2xs, 0.625rem);
+  letter-spacing: 0.14em;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-brand);
+}
+
+.obs-agent-card__subtitle {
+  margin: var(--space-2) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs, 0.625rem);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.obs-agent-card__description {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+}
+
+.obs-agent-card__muted {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.obs-agent-card__error {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-critical-fg);
+}
+
+.obs-agent-card__facts {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+}
+
+.obs-agent-card__facts dt {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs, 0.625rem);
+  color: var(--color-text-muted);
+}
+
+.obs-agent-card__facts dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.obs-agent-card__caps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.obs-agent-card__cap {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs, 0.625rem);
+  letter-spacing: 0.1em;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+}
+
+.obs-agent-card__cap--on {
+  color: var(--color-brand);
+  border-color: var(--color-brand);
+}
+
+.obs-agent-card__cap--sig-ok {
+  color: var(--color-brand);
+  border-color: var(--color-brand);
+}
+
+/* Red is reserved for failures — an invalid signature is one. */
+.obs-agent-card__cap--sig-bad {
+  color: var(--color-critical-fg);
+  border-color: var(--color-critical-bo);
+}
+
+.obs-agent-card__skills {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.obs-agent-card__skills li {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}

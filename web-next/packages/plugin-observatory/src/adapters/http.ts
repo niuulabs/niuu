@@ -142,6 +142,68 @@ async function loadTopologySnapshot(streamUrl: string): Promise<Topology | null>
   return (await response.json()) as Topology;
 }
 
+/** How often the aggregate is re-polled while anything is subscribed. */
+const AGGREGATE_POLL_MS = 15_000;
+
+/**
+ * Poll the Guild's merged topology and present it as a live stream.
+ *
+ * The aggregate spans every cluster plus every source that pushes rather than
+ * being polled, so it — not one cluster's SSE feed — is what the estate view
+ * should render. There is no server-side stream for it, so this polls; the
+ * snapshot carries a `revision` that only changes when the graph does, so an
+ * unchanged poll is dropped instead of re-rendering the canvas.
+ *
+ * Polling only runs while something is subscribed.
+ */
+export function buildObservatoryTopologyAggregateAdapter(
+  client: ApiClient,
+  { intervalMs = AGGREGATE_POLL_MS }: { intervalMs?: number } = {},
+): ILiveTopologyStream {
+  let current: Topology | null = null;
+  let revision: string | null = null;
+  const listeners = new Set<TopologyListener>();
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let inFlight = false;
+
+  async function poll(): Promise<void> {
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      const snapshot = await client.get<Topology>('/snapshot');
+      const next = snapshot.revision ?? null;
+      // No revision means the producer cannot tell us whether it changed, so
+      // publish rather than risk a view that silently stops updating.
+      if (next !== null && next === revision) return;
+      revision = next;
+      current = snapshot;
+      for (const listener of listeners) listener(snapshot);
+    } catch {
+      // A failed poll leaves the last good graph on screen; the snapshot's own
+      // `sources` and `partial` are what report per-source trouble.
+    } finally {
+      inFlight = false;
+    }
+  }
+
+  return {
+    getSnapshot: () => current,
+    subscribe(listener) {
+      listeners.add(listener);
+      if (current) listener(current);
+      void poll();
+      timer ??= setInterval(() => void poll(), intervalMs);
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0 && timer) {
+          clearInterval(timer);
+          timer = null;
+        }
+      };
+    },
+  };
+}
+
 /**
  * Wrap an SSE topology stream so it satisfies the ILiveTopologyStream contract:
  * - `getSnapshot()` returns the most recent snapshot ever received.

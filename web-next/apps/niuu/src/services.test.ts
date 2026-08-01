@@ -56,10 +56,12 @@ const ravnMocks = vi.hoisted(() => ({
 }));
 
 const observatoryMocks = vi.hoisted(() => ({
+  createMockAgentDirectory: vi.fn(() => ({ kind: 'mock-observatory-agents' })),
   createMockRegistryRepository: vi.fn(() => ({})),
   createMockTopologyStream: vi.fn(() => ({})),
   createMockEventStream: vi.fn(() => ({})),
   buildObservatoryRegistryHttpAdapter: vi.fn(() => ({})),
+  buildObservatoryTopologyAggregateAdapter: vi.fn(() => ({})),
   buildObservatoryTopologySseStream: vi.fn(() => ({})),
   buildObservatoryEventsSseStream: vi.fn(() => ({})),
   buildObservatoryAgentDirectoryHttpAdapter: vi.fn((client) => ({
@@ -429,6 +431,20 @@ describe('resolveForgeServiceBase', () => {
 describe('buildServices live base selection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('serves the observatory agent directory from the mock in demo mode', () => {
+    const services = buildServices({ demoMode: true, services: {} } as any);
+
+    expect(observatoryMocks.createMockAgentDirectory).toHaveBeenCalled();
+    expect(services['observatory.agents']).toEqual({ kind: 'mock-observatory-agents' });
+  });
+
+  it('leaves the agent directory unavailable outside demo mode', () => {
+    const services = buildServices({ demoMode: false, services: {} } as any);
+
+    expect(observatoryMocks.createMockAgentDirectory).not.toHaveBeenCalled();
+    expect(isUnavailableService(services['observatory.agents'])).toBe(true);
   });
 
   it('builds separate forge runtime and volundr catalog adapters', () => {
@@ -1709,9 +1725,11 @@ describe('buildServices', () => {
     expect(observatoryMocks.buildObservatoryRegistryHttpAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1/observatory',
     });
-    expect(observatoryMocks.buildObservatoryTopologySseStream).toHaveBeenCalledWith(
-      'http://localhost:8080/api/v1/observatory/topology',
-    );
+    // Topology reads the merged Guild aggregate, not one cluster's feed, so it
+    // is built from an ApiClient rather than a stream URL.
+    expect(observatoryMocks.buildObservatoryTopologyAggregateAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/observatory/topology',
+    });
     expect(observatoryMocks.buildObservatoryEventsSseStream).toHaveBeenCalledWith(
       'http://localhost:8080/api/v1/observatory/events',
     );
@@ -1748,9 +1766,11 @@ describe('buildServices', () => {
     expect(observatoryMocks.buildObservatoryRegistryHttpAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1/observatory',
     });
-    expect(observatoryMocks.buildObservatoryTopologySseStream).toHaveBeenCalledWith(
-      'http://localhost:8080/api/v1/observatory/topology',
-    );
+    // Topology reads the merged Guild aggregate, not one cluster's feed, so it
+    // is built from an ApiClient rather than a stream URL.
+    expect(observatoryMocks.buildObservatoryTopologyAggregateAdapter).toHaveBeenCalledWith({
+      basePath: 'http://localhost:8080/api/v1/observatory/topology',
+    });
     expect(observatoryMocks.buildObservatoryEventsSseStream).toHaveBeenCalledWith(
       'http://localhost:8080/api/v1/observatory/events',
     );

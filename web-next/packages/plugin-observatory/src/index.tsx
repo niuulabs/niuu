@@ -31,12 +31,14 @@ export const observatoryPlugin = definePlugin({
 });
 
 export {
+  createMockAgentDirectory,
   createMockRegistryRepository,
   createMockTopologyStream,
   createMockEventStream,
 } from './adapters/mock';
 export {
   buildObservatoryRegistryHttpAdapter,
+  buildObservatoryTopologyAggregateAdapter,
   buildObservatoryTopologySseStream,
   buildObservatoryEventsSseStream,
   buildObservatoryAgentDirectoryHttpAdapter,
@@ -47,6 +49,9 @@ export type {
   IEventStream,
   IAgentDirectory,
 } from './ports';
+export { AgentCardPanel } from './ui/overlays/AgentCardPanel';
+export { LayerFilterBar } from './ui/LayerFilterBar';
+export { CollapsibleSection } from './ui/CollapsibleSection';
 export { useAgent, useAgents } from './application/useAgents';
 export type {
   EntityType,

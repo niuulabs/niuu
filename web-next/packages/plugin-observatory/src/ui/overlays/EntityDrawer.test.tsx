@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { EntityDrawer } from './EntityDrawer';
-import { createMockTopologyStream, createMockRegistryRepository } from '../../adapters/mock';
+import { createMockRegistryRepository } from '../../adapters/mock';
 import type { TopologyNode, Topology, Registry } from '../../domain';
 
 // ---------------------------------------------------------------------------
@@ -13,7 +13,7 @@ let TOPOLOGY: Topology;
 
 beforeAll(async () => {
   REGISTRY = await createMockRegistryRepository().getRegistry();
-  TOPOLOGY = createMockTopologyStream().getSnapshot()!;
+  TOPOLOGY = fixtureTopology();
 });
 
 const REALM_NODE: TopologyNode = {
@@ -170,6 +170,35 @@ const MODEL_NODE: TopologyNode = {
   provider: 'Anthropic',
   location: 'us-east',
 };
+
+/**
+ * The drawer resolves parents, members and residents out of the topology it is
+ * handed, so these tests own a small fixture rather than reaching for the demo
+ * seed. Otherwise a seed edit breaks tests of a component it has nothing to do
+ * with — which is exactly what happened when the seed grew.
+ */
+function fixtureTopology(): Topology {
+  return {
+    timestamp: '2026-08-01T12:00:00Z',
+    nodes: [
+      REALM_NODE,
+      CLUSTER_NODE,
+      HOST_NODE,
+      TING_NODE,
+      RAVN_NODE,
+      BIFROST_NODE,
+      VOLUNDR_NODE,
+      RUN_NODE,
+      MIMIR_NODE,
+      VALKYRIE_NODE,
+      PRINTER_NODE,
+      VAETTIR_NODE,
+      MODEL_NODE,
+      DEGRADED_NODE,
+    ],
+    edges: [],
+  };
+}
 
 function renderDrawer(
   node: TopologyNode | null,

@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import type { EdgeLayer } from '../domain/edgeLayer';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -7,12 +8,16 @@ export type ObservatoryFilter = 'all' | 'agents' | 'runs' | 'services' | 'device
 interface ObservatoryStoreState {
   selectedId: string | null;
   filter: ObservatoryFilter;
+  /** Layers the operator has switched off. Empty means everything is shown. */
+  hiddenLayers: ReadonlySet<EdgeLayer>;
 }
 
 interface ObservatoryStore {
   read(): ObservatoryStoreState;
   setSelected(id: string | null): void;
   setFilter(filter: ObservatoryFilter): void;
+  toggleLayer(layer: EdgeLayer): void;
+  setHiddenLayers(layers: ReadonlySet<EdgeLayer>): void;
   subscribe(fn: () => void): () => void;
 }
 
@@ -26,7 +31,11 @@ export function getObservatoryStore(): ObservatoryStore {
   if (_store) return _store;
 
   const subscribers = new Set<() => void>();
-  let state: ObservatoryStoreState = { selectedId: null, filter: 'all' };
+  let state: ObservatoryStoreState = {
+    selectedId: null,
+    filter: 'all',
+    hiddenLayers: new Set<EdgeLayer>(),
+  };
 
   _store = {
     read(): ObservatoryStoreState {
@@ -40,6 +49,17 @@ export function getObservatoryStore(): ObservatoryStore {
     setFilter(filter: ObservatoryFilter): void {
       if (state.filter === filter) return;
       state = { ...state, filter };
+      subscribers.forEach((fn) => fn());
+    },
+    toggleLayer(layer: EdgeLayer): void {
+      const next = new Set(state.hiddenLayers);
+      if (next.has(layer)) next.delete(layer);
+      else next.add(layer);
+      state = { ...state, hiddenLayers: next };
+      subscribers.forEach((fn) => fn());
+    },
+    setHiddenLayers(layers: ReadonlySet<EdgeLayer>): void {
+      state = { ...state, hiddenLayers: new Set(layers) };
       subscribers.forEach((fn) => fn());
     },
     subscribe(fn: () => void): () => void {

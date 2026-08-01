@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApiClient } from '@niuulabs/query';
 import {
   buildObservatoryRegistryHttpAdapter,
+  buildObservatoryTopologyAggregateAdapter,
   buildObservatoryTopologySseStream,
   buildObservatoryEventsSseStream,
   buildObservatoryAgentDirectoryHttpAdapter,
@@ -296,5 +297,146 @@ describe('buildObservatoryEventsSseStream', () => {
         body: 'Valhalla is reachable',
       },
     ]);
+  });
+});
+
+describe('buildObservatoryTopologyAggregateAdapter', () => {
+  /**
+   * The aggregate spans every cluster plus every source that pushes rather
+   * than being polled, so it — not one cluster's feed — is the estate view.
+   */
+  function clientReturning(...snapshots: Topology[]): { client: ApiClient; calls: () => number } {
+    let index = 0;
+    const client = {
+      get: vi.fn(async () => {
+        const snapshot = snapshots[Math.min(index, snapshots.length - 1)];
+        index += 1;
+        return snapshot as unknown;
+      }),
+    } as unknown as ApiClient;
+    return { client, calls: () => (client.get as ReturnType<typeof vi.fn>).mock.calls.length };
+  }
+
+  it('publishes the merged snapshot to a new subscriber', async () => {
+    const { client } = clientReturning(topologyA);
+    const adapter = buildObservatoryTopologyAggregateAdapter(client, { intervalMs: 10_000 });
+    const received: Topology[] = [];
+
+    const unsub = adapter.subscribe((t) => received.push(t));
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+    unsub();
+
+    expect(received[0]).toEqual(topologyA);
+    expect(adapter.getSnapshot()).toEqual(topologyA);
+    expect(client.get).toHaveBeenCalledWith('/snapshot');
+  });
+
+  it('drops an unchanged poll instead of re-rendering the canvas', async () => {
+    const withRevision: Topology = { ...topologyA, revision: 'rev-1' };
+    const { client } = clientReturning(withRevision, withRevision);
+    const adapter = buildObservatoryTopologyAggregateAdapter(client, { intervalMs: 5 });
+    const received: Topology[] = [];
+
+    const unsub = adapter.subscribe((t) => received.push(t));
+    await vi.waitFor(() =>
+      expect((client.get as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
+    unsub();
+
+    expect(received).toHaveLength(1);
+  });
+
+  it('publishes again when the revision changes', async () => {
+    const { client } = clientReturning(
+      { ...topologyA, revision: 'rev-1' },
+      { ...topologyB, revision: 'rev-2' },
+    );
+    const adapter = buildObservatoryTopologyAggregateAdapter(client, { intervalMs: 5 });
+    const received: Topology[] = [];
+
+    const unsub = adapter.subscribe((t) => received.push(t));
+    await vi.waitFor(() => expect(received).toHaveLength(2));
+    unsub();
+
+    expect(received[1]?.nodes[0]?.id).toBe('n2');
+  });
+
+  it('publishes every poll when the producer sends no revision', async () => {
+    // Otherwise a producer that omits it would leave the view frozen.
+    const { client } = clientReturning(topologyA, topologyA);
+    const adapter = buildObservatoryTopologyAggregateAdapter(client, { intervalMs: 5 });
+    const received: Topology[] = [];
+
+    const unsub = adapter.subscribe((t) => received.push(t));
+    await vi.waitFor(() => expect(received.length).toBeGreaterThanOrEqual(2));
+    unsub();
+  });
+
+  it('keeps the last good graph when a poll fails', async () => {
+    let call = 0;
+    const client = {
+      get: vi.fn(async () => {
+        call += 1;
+        if (call === 1) return { ...topologyA, revision: 'rev-1' } as unknown;
+        throw new Error('gateway down');
+      }),
+    } as unknown as ApiClient;
+    const adapter = buildObservatoryTopologyAggregateAdapter(client, { intervalMs: 5 });
+
+    const unsub = adapter.subscribe(() => {});
+    await vi.waitFor(() =>
+      expect((client.get as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(2),
+    );
+    unsub();
+
+    expect(adapter.getSnapshot()?.nodes[0]?.id).toBe('n1');
+  });
+
+  it('stops polling once the last subscriber leaves', async () => {
+    const { client } = clientReturning(topologyA);
+    const adapter = buildObservatoryTopologyAggregateAdapter(client, { intervalMs: 5 });
+
+    const unsub = adapter.subscribe(() => {});
+    await vi.waitFor(() => expect(client.get).toHaveBeenCalled());
+    unsub();
+    const afterUnsub = (client.get as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect((client.get as ReturnType<typeof vi.fn>).mock.calls.length).toBe(afterUnsub);
+  });
+
+  it('replays the cached snapshot immediately to a second subscriber', async () => {
+    const { client } = clientReturning({ ...topologyA, revision: 'rev-1' });
+    const adapter = buildObservatoryTopologyAggregateAdapter(client, { intervalMs: 10_000 });
+
+    const first = adapter.subscribe(() => {});
+    await vi.waitFor(() => expect(adapter.getSnapshot()).not.toBeNull());
+    const received: Topology[] = [];
+    const second = adapter.subscribe((t) => received.push(t));
+
+    expect(received).toHaveLength(1);
+    first();
+    second();
+  });
+
+  it('carries source health so a partial estate is visible', async () => {
+    const partial: Topology = {
+      ...topologyA,
+      partial: true,
+      sources: [
+        { sourceId: 'ymir', status: 'healthy', transport: 'pull' },
+        { sourceId: 'spark-1', status: 'stale', transport: 'push', lastSeen: '12:00:00Z' },
+      ],
+    };
+    const { client } = clientReturning(partial);
+    const adapter = buildObservatoryTopologyAggregateAdapter(client, { intervalMs: 10_000 });
+
+    const unsub = adapter.subscribe(() => {});
+    await vi.waitFor(() => expect(adapter.getSnapshot()).not.toBeNull());
+    unsub();
+
+    expect(adapter.getSnapshot()?.partial).toBe(true);
+    expect(adapter.getSnapshot()?.sources?.[1]?.status).toBe('stale');
   });
 });

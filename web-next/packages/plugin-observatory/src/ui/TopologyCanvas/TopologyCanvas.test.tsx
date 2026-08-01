@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, cleanup } from '@testing-library/react';
 import { TopologyCanvas } from './TopologyCanvas';
 import type { Topology } from '../../domain';
 import { makeCtxMock } from './test-helpers';
@@ -271,7 +271,7 @@ describe('TopologyCanvas', () => {
     expect(pct).toBeLessThanOrEqual(300);
   });
 
-  it('zoom cannot go below ZOOM_MIN (30%)', () => {
+  it('zoom cannot go below ZOOM_MIN', () => {
     render(<TopologyCanvas topology={MOCK_TOPOLOGY} />);
     const zoomDisplay = screen.getByTestId('zoom-display');
     // Click zoom out many times
@@ -279,7 +279,9 @@ describe('TopologyCanvas', () => {
       fireEvent.click(screen.getByRole('button', { name: /zoom out/i }));
     }
     const pct = parseInt(zoomDisplay.textContent ?? '0', 10);
-    expect(pct).toBeGreaterThanOrEqual(30);
+    // Asserted from config: the floor is tuned to the size of the topology, so
+    // a literal here would have to be edited every time that changes.
+    expect(pct).toBeGreaterThanOrEqual(Math.round(CANVAS.ZOOM_MIN * 100));
   });
 
   it('calls onNodeClick when a node is clicked (via canvas click)', () => {
@@ -498,5 +500,111 @@ describe('TopologyCanvas', () => {
     act(() => pendingFrame?.(1000));
 
     expect(mainCtx.fillRect).not.toHaveBeenCalled();
+  });
+
+  // ── Agent mesh ──────────────────────────────────────────────────────────────
+
+  const MESHED_TOPOLOGY: Topology = {
+    ...MOCK_TOPOLOGY,
+    nodes: [
+      ...MOCK_TOPOLOGY.nodes,
+      {
+        id: 'huginn',
+        typeId: 'ravn_long',
+        label: 'huginn',
+        parentId: 'cluster-vk',
+        status: 'healthy',
+        flockId: 'forge-mesh',
+      },
+      {
+        id: 'muninn',
+        typeId: 'ravn_long',
+        label: 'muninn',
+        parentId: 'cluster-vk',
+        status: 'healthy',
+        flockId: 'forge-mesh',
+      },
+      {
+        id: 'kvasir',
+        typeId: 'ravn_long',
+        label: 'kvasir',
+        parentId: 'cluster-vk',
+        status: 'healthy',
+        flockId: 'forge-mesh',
+      },
+    ],
+  };
+
+  function meshLabelDrawn(): boolean {
+    const calls = mainCtx.fillText.mock.calls as [string, ...unknown[]][];
+    return calls.some(([text]) => typeof text === 'string' && text.includes('FORGE-MESH'));
+  }
+
+  it('outlines no agent mesh while nothing is selected or hovered', async () => {
+    await renderCanvas(MESHED_TOPOLOGY);
+    runAnimationFrame();
+
+    expect(meshLabelDrawn()).toBe(false);
+  });
+
+  it('outlines the mesh of the selected member', async () => {
+    await renderCanvas(MESHED_TOPOLOGY, { selectedId: 'muninn' });
+    runAnimationFrame();
+
+    expect(meshLabelDrawn()).toBe(true);
+  });
+
+  it('outlines nothing when the selection is not a mesh member', async () => {
+    await renderCanvas(MESHED_TOPOLOGY, { selectedId: 'ting-0' });
+    runAnimationFrame();
+
+    expect(meshLabelDrawn()).toBe(false);
+  });
+
+  // ── Layer filtering ─────────────────────────────────────────────────────────
+
+  const LAYERED_TOPOLOGY: Topology = {
+    ...MOCK_TOPOLOGY,
+    edges: [
+      {
+        id: 'l1',
+        sourceId: 'ting-0',
+        targetId: 'bifrost-0',
+        kind: 'solid',
+        relationType: 'manages',
+      },
+      {
+        id: 'l2',
+        sourceId: 'bifrost-0',
+        targetId: 'mimir-0',
+        kind: 'dashed-long',
+        relationType: 'writes',
+      },
+    ],
+  };
+
+  it('stops drawing a layer that has been hidden', async () => {
+    await renderCanvas(LAYERED_TOPOLOGY);
+    runAnimationFrame();
+    const withAll = mainCtx.stroke.mock.calls.length;
+    expect(withAll).toBeGreaterThan(0);
+
+    // Unmount first: a second render would leave both canvases drawing.
+    cleanup();
+    mainCtx.stroke.mockClear();
+    await renderCanvas(LAYERED_TOPOLOGY, {
+      hiddenLayers: new Set(['memory', 'platform'] as const),
+    });
+    runAnimationFrame();
+
+    expect(mainCtx.stroke.mock.calls.length).toBeLessThan(withAll);
+  });
+
+  it('keeps the layout identical when a layer is hidden', async () => {
+    const before = computeLayout(LAYERED_TOPOLOGY).get('ting-0');
+    await renderCanvas(LAYERED_TOPOLOGY, { hiddenLayers: new Set(['platform'] as const) });
+    runAnimationFrame();
+
+    expect(computeLayout(LAYERED_TOPOLOGY).get('ting-0')).toEqual(before);
   });
 });

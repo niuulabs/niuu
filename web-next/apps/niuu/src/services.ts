@@ -40,14 +40,14 @@ import {
 } from '@niuulabs/plugin-ting';
 import { createMimirMockAdapter, buildMimirHttpAdapter } from '@niuulabs/plugin-mimir';
 import {
+  createMockAgentDirectory,
   createMockRegistryRepository,
   createMockTopologyStream,
   createMockEventStream,
   buildObservatoryRegistryHttpAdapter,
-  buildObservatoryTopologySseStream,
+  buildObservatoryTopologyAggregateAdapter,
   buildObservatoryEventsSseStream,
   buildObservatoryAgentDirectoryHttpAdapter,
-  type IAgentDirectory,
 } from '@niuulabs/plugin-observatory';
 import {
   createMockVolundrService,
@@ -454,7 +454,10 @@ function resolveObservatoryServiceBase(
     return explicitBase;
   }
 
-  if (serviceKey === 'observatory.agents') {
+  // Both of these are estate-wide: the Guild merges every cluster plus every
+  // source that pushes instead of being polled. A single cluster's endpoint
+  // would render a fraction of the graph and give no sign the rest exists.
+  if (serviceKey === 'observatory.agents' || serviceKey === 'observatory.topology') {
     const aggregateBase = resolveNiuuRegistryBase(config);
     if (aggregateBase) return `${aggregateBase}/observatory`;
   }
@@ -1434,14 +1437,14 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     ? buildObservatoryRegistryHttpAdapter(createApiClient(observatoryRegistryBase))
     : demoService(config, 'observatory.registry', createMockRegistryRepository);
   const observatoryTopology = observatoryTopologyBase
-    ? buildObservatoryTopologySseStream(observatoryTopologyBase)
+    ? buildObservatoryTopologyAggregateAdapter(createApiClient(observatoryTopologyBase))
     : demoService(config, 'observatory.topology', createMockTopologyStream);
   const observatoryEvents = observatoryEventsBase
     ? buildObservatoryEventsSseStream(observatoryEventsBase)
     : demoService(config, 'observatory.events', createMockEventStream);
   const observatoryAgents = observatoryAgentsBase
     ? buildObservatoryAgentDirectoryHttpAdapter(createApiClient(observatoryAgentsBase))
-    : unavailableService<IAgentDirectory>('observatory.agents');
+    : demoService(config, 'observatory.agents', createMockAgentDirectory);
   // ── Valkyrie ──
   const valkyrieBase = resolveValkyrieServiceBase(config, 'valkyrie');
   const valkyrieReviewsBase = resolveValkyrieServiceBase(config, 'valkyrie.reviews');

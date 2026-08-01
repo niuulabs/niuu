@@ -3,6 +3,7 @@ import {
   createMockRegistryRepository,
   createMockTopologyStream,
   createMockEventStream,
+  createMockAgentDirectory,
 } from './mock';
 
 describe('createMockRegistryRepository', () => {
@@ -212,5 +213,125 @@ describe('createMockEventStream', () => {
     expect(types.has('RAVN')).toBe(true);
     expect(types.has('BIFROST')).toBe(true);
     expect(types.has('MIMIR')).toBe(true);
+  });
+});
+
+// ── Agent directory ───────────────────────────────────────────────────────────
+
+describe('createMockAgentDirectory', () => {
+  it('projects every agent-bearing topology node and nothing else', async () => {
+    const page = await createMockAgentDirectory().listAgents();
+    const topology = createMockTopologyStream().getSnapshot();
+    const expected = (topology?.nodes ?? [])
+      .filter((n) => ['ravn_long', 'valkyrie', 'run'].includes(n.typeId))
+      .map((n) => n.id)
+      .sort();
+    expect(expected.length).toBeGreaterThan(0);
+    expect(page.items.map((a) => a.sourceAgentId).sort()).toEqual(expected);
+  });
+
+  it('maps node types onto directory kinds', async () => {
+    const page = await createMockAgentDirectory().listAgents();
+    const kinds = Object.fromEntries(page.items.map((a) => [a.sourceAgentId, a.kind]));
+    expect(kinds['ravn-huginn']).toBe('resident');
+    expect(kinds['run-research']).toBe('workflow-session');
+  });
+
+  it('links each entry back to the topology node it projects', async () => {
+    const directory = createMockAgentDirectory();
+    const page = await directory.listAgents();
+    const topology = createMockTopologyStream().getSnapshot();
+    for (const entry of page.items) {
+      expect(topology?.nodes.some((n) => n.id === entry.topologyNodeId)).toBe(true);
+    }
+  });
+
+  it('reports a healthy source and a complete page', async () => {
+    const page = await createMockAgentDirectory().listAgents();
+    expect(page.partial).toBe(false);
+    expect(page.warnings).toEqual([]);
+    expect(page.sources[0]?.status).toBe('healthy');
+  });
+
+  it('filters by kind', async () => {
+    const page = await createMockAgentDirectory().listAgents({ kinds: ['workflow-session'] });
+    expect(page.items.map((a) => a.sourceAgentId).sort()).toEqual(['run-coding', 'run-research']);
+    expect(page.items.every((a) => a.kind === 'workflow-session')).toBe(true);
+  });
+
+  it('filters by skill', async () => {
+    const page = await createMockAgentDirectory().listAgents({ skills: ['recall_context'] });
+    expect(page.items.map((a) => a.sourceAgentId)).toEqual(['ravn-muninn']);
+  });
+
+  it('filters by a skill shared by nobody', async () => {
+    const page = await createMockAgentDirectory().listAgents({ skills: ['not_a_skill'] });
+    expect(page.items).toEqual([]);
+  });
+
+  it('filters by tag, cluster and instance', async () => {
+    const directory = createMockAgentDirectory();
+    const residents = await directory.listAgents({ tags: ['resident'] });
+    expect(residents.items.length).toBeGreaterThan(0);
+    expect(residents.items.every((a) => a.kind === 'resident')).toBe(true);
+    expect((await directory.listAgents({ clusterIds: ['nope'] })).items).toHaveLength(0);
+    expect(
+      (await directory.listAgents({ instanceIds: ['observatory-asgard'] })).items.length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('filters by observed status', async () => {
+    const page = await createMockAgentDirectory().listAgents({ statuses: ['observing'] });
+    expect(page.items.map((a) => a.sourceAgentId).sort()).toEqual(['run-coding', 'run-research']);
+  });
+
+  it('ands the filters together', async () => {
+    const page = await createMockAgentDirectory().listAgents({
+      kinds: ['resident'],
+      skills: ['recall_context'],
+    });
+    expect(page.items.map((a) => a.sourceAgentId)).toEqual(['ravn-muninn']);
+    expect(
+      (
+        await createMockAgentDirectory().listAgents({
+          kinds: ['workflow-session'],
+          skills: ['recall_context'],
+        })
+      ).items,
+    ).toEqual([]);
+  });
+
+  it('treats an empty filter array as unfiltered', async () => {
+    const directory = createMockAgentDirectory();
+    const all = await directory.listAgents();
+    const empty = await directory.listAgents({ kinds: [], skills: [] });
+    expect(empty.items).toHaveLength(all.items.length);
+  });
+
+  it('carries a usable A2A card surface on every entry', async () => {
+    const entry = await createMockAgentDirectory().getAgent('ravn-huginn');
+    expect(entry.cardUrl).toMatch(/\.well-known\/agent-card\.json$/);
+    expect(entry.supportedInterfaces[0]?.protocolVersion).toBe('0.3.0');
+    expect(entry.capabilities).toMatchObject({ streaming: true });
+    expect(entry.skillIds.length).toBeGreaterThan(0);
+  });
+
+  it('resolves an agent by directory id as well as source id', async () => {
+    const directory = createMockAgentDirectory();
+    expect((await directory.getAgent('agent-ravn-huginn')).name).toBe('huginn');
+    expect((await directory.getAgent('ravn-huginn')).name).toBe('huginn');
+  });
+
+  it('throws for an unknown agent rather than returning empty', async () => {
+    await expect(createMockAgentDirectory().getAgent('nope')).rejects.toThrow(
+      'Unknown agent: nope',
+    );
+  });
+
+  it('hands out copies so callers cannot mutate the seed', async () => {
+    const directory = createMockAgentDirectory();
+    const first = await directory.getAgent('ravn-huginn');
+    first.name = 'mutated';
+    expect((await directory.getAgent('ravn-huginn')).name).toBe('huginn');
   });
 });
