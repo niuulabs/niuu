@@ -6,6 +6,7 @@ import type {
   TopologyListener,
   ObservatoryEventListener,
 } from '../ports';
+import { SEED_NODES, SEED_TOPOLOGY } from './seedTopology';
 import type {
   AgentDirectoryEntry,
   AgentDirectoryFilters,
@@ -14,7 +15,6 @@ import type {
   Registry,
   Topology,
   TopologyNode,
-  TopologyEdge,
   ObservatoryEvent,
 } from '../domain';
 
@@ -379,165 +379,6 @@ const SEED_REGISTRY: Registry = {
 
 // ── Seed topology ─────────────────────────────────────────────────────────────
 
-const SEED_NODES: TopologyNode[] = [
-  {
-    id: 'realm-asgard',
-    typeId: 'realm',
-    label: 'asgard',
-    parentId: null,
-    status: 'healthy',
-    zone: 'asgard',
-    vlan: 90,
-    dns: 'asgard.niuu.world',
-    purpose: 'AI / compute / dev',
-    activity: 'idle',
-  },
-  {
-    id: 'cluster-valaskjalf',
-    typeId: 'cluster',
-    label: 'valaskjálf',
-    parentId: 'realm-asgard',
-    status: 'healthy',
-    zone: 'asgard',
-    purpose: 'DGX Spark cluster',
-    activity: 'idle',
-  },
-  {
-    id: 'cluster-valhalla',
-    typeId: 'cluster',
-    label: 'valhalla',
-    parentId: 'realm-asgard',
-    status: 'healthy',
-    zone: 'asgard',
-    purpose: 'AI/ML workloads',
-    activity: 'idle',
-  },
-  {
-    id: 'host-mjolnir',
-    typeId: 'host',
-    label: 'mjölnir',
-    parentId: 'realm-asgard',
-    status: 'healthy',
-    zone: 'asgard',
-    hw: 'DGX Spark',
-    os: 'Ubuntu 24',
-    cores: 144,
-    ram: '1 TiB',
-    gpu: 'GH200',
-    activity: 'idle',
-  },
-  {
-    id: 'ting-0',
-    typeId: 'ting',
-    label: 'ting-0',
-    parentId: 'cluster-valaskjalf',
-    status: 'healthy',
-    zone: 'asgard',
-    cluster: 'valaskjalf',
-    mode: 'active',
-    activeSagas: 3,
-    pendingRuns: 2,
-    activity: 'thinking',
-  },
-  {
-    id: 'bifrost-0',
-    typeId: 'bifrost',
-    label: 'bifröst-0',
-    parentId: 'cluster-valaskjalf',
-    status: 'healthy',
-    zone: 'asgard',
-    cluster: 'valaskjalf',
-    providers: ['Anthropic', 'OpenAI', 'Google', 'Local'],
-    reqPerMin: 42,
-    cacheHitRate: 0.68,
-    activity: 'idle',
-  },
-  {
-    id: 'volundr-0',
-    typeId: 'volundr',
-    label: 'völundr-0',
-    parentId: 'cluster-valhalla',
-    status: 'healthy',
-    zone: 'asgard',
-    cluster: 'valhalla',
-    activeSessions: 5,
-    maxSessions: 20,
-    activity: 'tooling',
-  },
-  {
-    id: 'mimir-0',
-    typeId: 'mimir',
-    label: 'mímir-0',
-    parentId: 'cluster-valaskjalf',
-    status: 'healthy',
-    zone: 'asgard',
-    cluster: 'valaskjalf',
-    activity: 'reading',
-  },
-  {
-    id: 'run-0',
-    typeId: 'run',
-    label: 'run-omega',
-    parentId: 'cluster-valaskjalf',
-    status: 'observing',
-    zone: 'asgard',
-    cluster: 'valaskjalf',
-    purpose: 'refactor bifrost rule engine',
-    flockId: 'forge-mesh',
-    state: 'working',
-    activity: 'delegating',
-  },
-  {
-    id: 'ravn-huginn',
-    typeId: 'ravn_long',
-    label: 'huginn',
-    parentId: 'host-mjolnir',
-    status: 'healthy',
-    zone: 'asgard',
-    hostId: 'host-mjolnir',
-    flockId: 'forge-mesh',
-    persona: 'thought',
-    specialty: 'architecture & design',
-    tokens: 42800,
-    activity: 'thinking',
-  },
-  {
-    id: 'ravn-muninn',
-    typeId: 'ravn_long',
-    label: 'muninn',
-    parentId: 'host-mjolnir',
-    status: 'idle',
-    zone: 'asgard',
-    hostId: 'host-mjolnir',
-    flockId: 'forge-mesh',
-    persona: 'memory',
-    specialty: 'history & context',
-    tokens: 18200,
-    activity: 'idle',
-  },
-];
-
-const SEED_EDGES: TopologyEdge[] = [
-  // solid: direct coordinator link
-  { id: 'e-ting-volundr', sourceId: 'ting-0', targetId: 'volundr-0', kind: 'solid' },
-  // dashed-anim: active run dispatch
-  { id: 'e-ting-run', sourceId: 'ting-0', targetId: 'run-0', kind: 'dashed-anim' },
-  // dashed-long: raven async memory access
-  { id: 'e-huginn-mimir', sourceId: 'ravn-huginn', targetId: 'mimir-0', kind: 'dashed-long' },
-  // soft: bifrost references mimir for cache
-  { id: 'e-bifrost-mimir', sourceId: 'bifrost-0', targetId: 'mimir-0', kind: 'soft' },
-  // run: inter-raven coordination within the run
-  { id: 'e-run-huginn', sourceId: 'run-0', targetId: 'ravn-huginn', kind: 'run' },
-];
-
-const SEED_TOPOLOGY: Topology = {
-  nodes: SEED_NODES,
-  edges: SEED_EDGES,
-  timestamp: '2026-04-19T00:00:00Z',
-};
-
-// ── Seed events (web2 format: time, type, subject, body) ─────────────────────
-
 const SEED_EVENTS: ObservatoryEvent[] = [
   {
     id: 'ev-1',
@@ -633,9 +474,18 @@ function agentKindFor(node: TopologyNode): AgentKind | null {
 }
 
 const SKILLS_BY_NODE: Record<string, string[]> = {
-  'ravn-huginn': ['design_review', 'architecture_sketch', 'tradeoff_analysis'],
-  'ravn-muninn': ['recall_context', 'session_distil', 'fact_detect'],
-  'run-0': ['refactor_plan', 'apply_patch', 'verify_build'],
+  'ravn-huginn': ['gpu_pressure_probe', 'replica_warm', 'canary_triage'],
+  'ravn-muninn': ['helm_release_diff', 'cert_expiry_sweep', 'recall_context'],
+  'ravn-kvasir': ['page_compact', 'fact_promote', 'dedupe_entities'],
+  'ravn-njord': ['rollout_drain', 'pg_failover_probe', 'schema_diff'],
+  'ravn-forseti': ['trace_correlate', 'ingester_lag_watch', 'series_budget'],
+  'ravn-angrboda': ['transcode_queue', 'library_scan_window'],
+  'ravn-freyja': ['vm_rebalance', 'migration_window', 'host_pressure'],
+  'ravn-ivaldi': ['spindle_load_watch', 'nats_gap_detect', 'shift_handover'],
+  'ravn-eldhrimnir': ['direct_infer', 'model_warm', 'thermal_guard'],
+  'ravn-vidar': ['host_signature', 'evict_predict'],
+  'run-research': ['literature_sweep', 'source_triage', 'compose_brief'],
+  'run-coding': ['refactor_plan', 'apply_patch', 'verify_build'],
 };
 
 /**
