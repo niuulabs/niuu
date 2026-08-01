@@ -90,6 +90,9 @@ class SessionActivityState(StrEnum):
       message but is NOT blocked on anything.
     - ``stopped`` — the transport died (e.g. its tmux session vanished); the
       session is no longer running and the last live state is final.
+    - ``error`` — an unattended workflow reached a terminal agent/transport
+      error. The workload may remain up long enough to report diagnostics, but
+      downstream workflow state must treat this as failed.
     - ``awaiting_input`` — the session is BLOCKED on a human: an
       ``AskUserQuestion``, a confirmation, or a tool-permission prompt. This is
       the "needs attention" state — the agent cannot make progress until the
@@ -104,6 +107,7 @@ class SessionActivityState(StrEnum):
     TOOL_EXECUTING = "tool_executing"
     AWAITING_INPUT = "awaiting_input"
     STOPPED = "stopped"
+    ERROR = "error"
 
     @property
     def is_busy(self) -> bool:

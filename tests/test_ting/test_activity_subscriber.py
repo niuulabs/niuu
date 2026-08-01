@@ -429,6 +429,24 @@ class TestSubscriberLifecycle:
 
 class TestActivityEventHandling:
     @pytest.mark.asyncio
+    async def test_terminal_activity_error_fails_run_with_worker_reason(self) -> None:
+        sub, volundr, tracker, _ = _make_subscriber()
+        event = ActivityEvent(
+            session_id=SESSION_ID,
+            state="error",
+            metadata={"error": "refresh token was already used"},
+            owner_id=OWNER_ID,
+        )
+
+        await sub._on_activity_event(event, volundr, OWNER_ID)
+
+        tracker.update_run_progress.assert_awaited_once_with(
+            TRACKER_ISSUE_ID,
+            status=RunStatus.FAILED,
+            reason="refresh token was already used",
+        )
+
+    @pytest.mark.asyncio
     async def test_idle_event_triggers_completion(self) -> None:
         """Idle event with sufficient turns completes the session."""
         sub, volundr, tracker, event_bus = _make_subscriber()

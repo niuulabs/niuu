@@ -174,6 +174,8 @@ class VolundrHTTPAdapter(VolundrPort):
                 branch=source.get("branch", ""),
                 base_branch=source.get("base_branch", ""),
                 workload_type=data.get("workload_type", "default"),
+                activity_state=data.get("activity_state"),
+                activity_metadata=data.get("activity_metadata") or {},
             )
 
     async def get_session(
@@ -204,6 +206,8 @@ class VolundrHTTPAdapter(VolundrPort):
                 branch=source.get("branch", ""),
                 base_branch=source.get("base_branch", ""),
                 workload_type=data.get("workload_type", "default"),
+                activity_state=data.get("activity_state"),
+                activity_metadata=data.get("activity_metadata") or {},
             )
 
     async def list_sessions(
@@ -231,6 +235,8 @@ class VolundrHTTPAdapter(VolundrPort):
                     chat_endpoint=_public_chat_endpoint(s.get("chat_endpoint"), self._base_url),
                     cluster_name=self._name,
                     workload_type=s.get("workload_type", "default"),
+                    activity_state=s.get("activity_state"),
+                    activity_metadata=s.get("activity_metadata") or {},
                 )
                 for s in resp.json()
             ]

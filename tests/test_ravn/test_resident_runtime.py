@@ -18,7 +18,7 @@ from ravn.domain.resident_continuation import (
 )
 from ravn.drive_loop import DriveLoop
 from ravn.resident_continuation import _scheduled_wake_at
-from ravn.resident_inbox import MimirResidentInbox, ResidentInboxStatus
+from ravn.resident_inbox import LocalResidentInbox, MimirResidentInbox, ResidentInboxStatus
 from ravn.resident_runtime import ResidentHomeTrigger, ResidentRuntime, _metadata
 
 
@@ -85,6 +85,39 @@ def test_working_state_rejects_oversized_entries() -> None:
     assert validate_resident_working_state(state) == [
         "working_state.observations[0] exceeds 500 characters"
     ]
+
+
+@pytest.mark.asyncio
+async def test_a2a_push_is_persisted_and_immediately_wakes_resident(tmp_path) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    inbox = LocalResidentInbox(tmp_path / "inbox")
+    queued: list[AgentTask] = []
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime = ResidentRuntime(state=state, inbox=inbox, resident_id="ivaldi")
+    runtime.bind_enqueue(enqueue)
+    result = await runtime.submit_a2a_push(
+        {
+            "task": {
+                "id": "workflow-123",
+                "status": {"state": "TASK_STATE_FAILED"},
+                "metadata": {"error": "worker authentication failed"},
+            }
+        }
+    )
+
+    assert result["task_id"] == "workflow-123"
+    assert result["state"] == "TASK_STATE_FAILED"
+    assert result["queued"] is True
+    assert len(queued) == 1
+    assert queued[0].triggered_by == "resident:home"
+    assert "workflow-123" in queued[0].initiative_context
+    rows = await inbox.list_signals(status=ResidentInboxStatus.NEW.value, limit=10)
+    assert len(rows) == 1
+    assert rows[0][1].classification == "status_update"
 
 
 @pytest.mark.asyncio

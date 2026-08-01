@@ -384,6 +384,9 @@ class SessionService:
         # session that just transitioned.
         session.activity_state_since = state_since or datetime.now(UTC)
         session.activity_metadata = metadata
+        if state is SessionActivityState.ERROR:
+            message = str(metadata.get("error") or metadata.get("message") or "").strip()
+            session.error = message or "Workflow agent failed"
         # Treat each activity report as a liveness heartbeat so the reconciler can
         # tell a live-but-idle session from one whose broker has died.
         session.last_active = datetime.now(UTC)

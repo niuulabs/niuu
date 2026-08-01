@@ -67,7 +67,7 @@ class ActivityReportingMixin:
         """Report activity state change to Volundr.
 
         States: provisioning, active, idle, tool_executing, awaiting_input,
-        stopped. Debounces rapid transitions — only reports when the state
+        stopped, error. Debounces rapid transitions — only reports when the state
         actually changes, unless extra_metadata is attached (used by the
         heartbeat and by attention reports so they always land). The POST body
         ALWAYS carries ``state`` and ``state_since`` so a transition (including

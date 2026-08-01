@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from importlib.resources import files
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
@@ -178,6 +178,49 @@ class HttpGateway:
             )
 
         if self._resident_runtime is not None:
+            if self._config.a2a_push_enabled:
+
+                @app.post("/a2a/push")
+                async def a2a_push(
+                    request: Request,
+                    x_a2a_notification_token: str | None = Header(default=None),
+                ) -> dict[str, Any]:
+                    """Persist an authenticated A2A task update and wake the resident."""
+                    expected = self._config.a2a_push_notification_token.get_secret_value().strip()
+                    if not expected:
+                        raise HTTPException(
+                            status_code=503,
+                            detail="A2A push receiver is disabled because its token is missing",
+                        )
+                    if not x_a2a_notification_token or not secrets.compare_digest(
+                        x_a2a_notification_token,
+                        expected,
+                    ):
+                        raise HTTPException(
+                            status_code=401, detail="Invalid A2A notification token"
+                        )
+                    raw = await request.body()
+                    if len(raw) > self._config.a2a_push_max_body_bytes:
+                        raise HTTPException(
+                            status_code=413, detail="A2A callback body is too large"
+                        )
+                    try:
+                        payload = json.loads(raw)
+                    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                        raise HTTPException(
+                            status_code=400, detail="Invalid JSON callback"
+                        ) from exc
+                    if not isinstance(payload, dict):
+                        raise HTTPException(
+                            status_code=422, detail="A2A callback must be an object"
+                        )
+                    try:
+                        return await self._resident_runtime.submit_a2a_push(payload)
+                    except ValueError as exc:
+                        raise HTTPException(status_code=422, detail=str(exc)) from exc
+                    except RuntimeError as exc:
+                        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
             if self._config.resident_hud_enabled:
 
                 @app.get("/resident/hud", response_class=HTMLResponse)

@@ -69,6 +69,7 @@ from ting.api.workflows import (
 )
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.workflow_snapshot import workflow_artifact_paths_from_snapshot
+from ting.ports.a2a_push import A2APushDispatcherPort
 from ting.ports.volundr import VolundrFactory
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
@@ -124,6 +125,11 @@ def campaign_to_task(campaign: WorkflowCampaign) -> Task:
                 if campaign.metadata.get("branch")
                 else {}
             ),
+            **(
+                {"error": str(campaign.metadata["failure_error"])}
+                if campaign.metadata.get("failure_error")
+                else {}
+            ),
         }
     )
     return task
@@ -132,11 +138,9 @@ def campaign_to_task(campaign: WorkflowCampaign) -> Task:
 class WorkflowTaskHandler(RequestHandler):
     """Per-request A2A handler bound to the caller's identity.
 
-    Streaming, push notifications, and task listing are deliberately
-    unsupported: the agent card advertises ``streaming=false`` /
-    ``pushNotifications=false``, and polling ``GetTask`` is the supported
-    follow mechanism. The extended agent card IS supported — it adds the
-    caller's user-scope workflows to the public catalog.
+    Streaming remains deliberately unsupported. Task listing and durable push
+    notifications are supported; the agent card only advertises push when its
+    encrypted callback outbox is configured.
     """
 
     def __init__(
@@ -301,6 +305,7 @@ class WorkflowTaskHandler(RequestHandler):
                 )
             raise
         await _emit_campaign_event(self._request, "workflow.campaign.created", saved)
+        await self._queue_push(saved)
         return campaign_to_task(saved)
 
     async def on_get_task(
@@ -351,9 +356,10 @@ class WorkflowTaskHandler(RequestHandler):
         )
         saved = await self._campaign_repo.save_campaign(updated)
         await _emit_campaign_event(self._request, "workflow.campaign.updated", saved)
+        await self._queue_push(saved)
         return campaign_to_task(saved)
 
-    # -- Unsupported protocol surface ----------------------------------- #
+    # -- Additional protocol surface ------------------------------------ #
 
     async def on_list_tasks(
         self,
@@ -428,28 +434,87 @@ class WorkflowTaskHandler(RequestHandler):
         params: TaskPushNotificationConfig,
         context: ServerCallContext,
     ) -> TaskPushNotificationConfig:
-        raise UnsupportedOperationError("push notifications are not supported")
+        task_id = str(params.task_id or "").strip()
+        if not task_id:
+            raise InvalidParamsError("taskId is required")
+        campaign = await self._owned_campaign(task_id)
+        dispatcher = self._push_dispatcher()
+        self._validate_push_config(dispatcher, params)
+        saved = await dispatcher.save_config(
+            task_id=task_id,
+            owner_id=self._principal.user_id,
+            config=params,
+        )
+        await dispatcher.queue_campaign(campaign)
+        return saved
 
     async def on_get_task_push_notification_config(
         self,
         params: GetTaskPushNotificationConfigRequest,
         context: ServerCallContext,
     ) -> TaskPushNotificationConfig:
-        raise UnsupportedOperationError("push notifications are not supported")
+        task_id = str(params.task_id or "").strip()
+        config_id = str(params.id or "").strip()
+        if not task_id or not config_id:
+            raise InvalidParamsError("taskId and id are required")
+        await self._owned_campaign(task_id)
+        config = await self._push_dispatcher().get_config(
+            task_id=task_id,
+            owner_id=self._principal.user_id,
+            config_id=config_id,
+        )
+        if config is None:
+            raise InvalidParamsError("push notification config was not found")
+        return config
 
     async def on_list_task_push_notification_configs(
         self,
         params: ListTaskPushNotificationConfigsRequest,
         context: ServerCallContext,
     ) -> ListTaskPushNotificationConfigsResponse:
-        raise UnsupportedOperationError("push notifications are not supported")
+        task_id = str(params.task_id or "").strip()
+        if not task_id:
+            raise InvalidParamsError("taskId is required")
+        await self._owned_campaign(task_id)
+        dispatcher = self._push_dispatcher()
+        configs = await dispatcher.list_configs(
+            task_id=task_id,
+            owner_id=self._principal.user_id,
+        )
+        try:
+            offset = int(params.page_token or 0)
+        except ValueError as exc:
+            raise InvalidParamsError("pageToken must be a non-negative integer") from exc
+        if offset < 0:
+            raise InvalidParamsError("pageToken must be a non-negative integer")
+        page_size = min(
+            int(params.page_size) if params.page_size > 0 else dispatcher.max_configs_page_size,
+            dispatcher.max_configs_page_size,
+        )
+        selected = configs[offset : offset + page_size]
+        next_offset = offset + len(selected)
+        return ListTaskPushNotificationConfigsResponse(
+            configs=selected,
+            next_page_token=str(next_offset) if next_offset < len(configs) else "",
+        )
 
     async def on_delete_task_push_notification_config(
         self,
         params: DeleteTaskPushNotificationConfigRequest,
         context: ServerCallContext,
     ) -> None:
-        raise UnsupportedOperationError("push notifications are not supported")
+        task_id = str(params.task_id or "").strip()
+        config_id = str(params.id or "").strip()
+        if not task_id or not config_id:
+            raise InvalidParamsError("taskId and id are required")
+        await self._owned_campaign(task_id)
+        deleted = await self._push_dispatcher().delete_config(
+            task_id=task_id,
+            owner_id=self._principal.user_id,
+            config_id=config_id,
+        )
+        if not deleted:
+            raise InvalidParamsError("push notification config was not found")
 
     async def on_get_extended_agent_card(
         self,
@@ -558,6 +623,7 @@ class WorkflowTaskHandler(RequestHandler):
         )
         saved = await self._campaign_repo.save_campaign(updated)
         await _emit_campaign_event(self._request, "workflow.campaign.updated", saved)
+        await self._queue_push(saved)
         return campaign_to_task(saved)
 
     async def _answer_question(
@@ -614,7 +680,29 @@ class WorkflowTaskHandler(RequestHandler):
         )
         saved = await self._campaign_repo.save_campaign(updated)
         await _emit_campaign_event(self._request, "workflow.campaign.updated", saved)
+        await self._queue_push(saved)
         return campaign_to_task(saved)
+
+    def _push_dispatcher(self) -> A2APushDispatcherPort:
+        dispatcher = getattr(self._request.app.state, "a2a_push_dispatcher", None)
+        if dispatcher is None or not dispatcher.enabled:
+            raise UnsupportedOperationError("push notifications are not configured")
+        return dispatcher
+
+    async def _queue_push(self, campaign: WorkflowCampaign) -> None:
+        dispatcher = getattr(self._request.app.state, "a2a_push_dispatcher", None)
+        if dispatcher is not None and dispatcher.enabled:
+            await dispatcher.queue_campaign(campaign)
+
+    @staticmethod
+    def _validate_push_config(
+        dispatcher: A2APushDispatcherPort,
+        config: TaskPushNotificationConfig,
+    ) -> None:
+        try:
+            dispatcher.validate_config(config)
+        except ValueError as exc:
+            raise InvalidParamsError(str(exc)) from exc
 
     async def _attach_pending_questions(self, task: Task, campaign: WorkflowCampaign) -> None:
         """Attach pending peer questions to an INPUT_REQUIRED task.

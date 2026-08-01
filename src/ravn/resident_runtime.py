@@ -28,7 +28,12 @@ from ravn.domain.resident_continuation import (
 from ravn.domain.resident_state import ResidentStatePort
 from ravn.ports.trigger import TriggerPort
 from ravn.resident_continuation import _scheduled_wake_at
-from ravn.resident_inbox import ResidentInboxBackend, ResidentInboxStatus
+from ravn.resident_inbox import (
+    ResidentInboxBackend,
+    ResidentInboxClassification,
+    ResidentInboxSignal,
+    ResidentInboxStatus,
+)
 from ravn.resident_text import compact_line
 
 EnqueueResidentTask = Callable[[AgentTask], Awaitable[bool | None]]
@@ -210,6 +215,56 @@ class ResidentRuntime:
             attributes={"ravn.resident.id": self._resident_id},
         )
         return ref
+
+    async def submit_a2a_push(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Persist an A2A task update and immediately wake the resident when idle."""
+        if self._inbox is None:
+            raise RuntimeError("Resident inbox is not configured")
+        event = next(
+            (
+                payload.get(key)
+                for key in ("task", "statusUpdate", "artifactUpdate")
+                if isinstance(payload.get(key), dict)
+            ),
+            None,
+        )
+        if not isinstance(event, dict):
+            raise ValueError("A2A callback must contain task, statusUpdate, or artifactUpdate")
+        task_id = str(event.get("id") or event.get("taskId") or "").strip()
+        if not task_id:
+            raise ValueError("A2A callback does not identify a task")
+        status = event.get("status")
+        status = status if isinstance(status, dict) else {}
+        state = str(status.get("state") or event.get("state") or "TASK_STATE_UNSPECIFIED")
+        now = datetime.now(UTC)
+        normalized = json.loads(json.dumps(payload, sort_keys=True, default=str))
+        digest = hashlib.sha256(json.dumps(normalized, sort_keys=True).encode()).hexdigest()[:16]
+        signal = ResidentInboxSignal(
+            id=f"a2a-{task_id}-{digest}",
+            source="a2a:push",
+            kind="a2a.task_update",
+            summary=f"A2A task {task_id} changed to {state}.",
+            payload=normalized,
+            classification=ResidentInboxClassification.STATUS_UPDATE.value,
+            confidence=1.0,
+            status=ResidentInboxStatus.NEW.value,
+            observed_at=now.isoformat(),
+        )
+        inbox_ref = await self._inbox.write_signal(signal)
+        task = await self.next_home_task(
+            limit=1,
+            persona=None,
+            output_mode=OutputMode.SURFACE,
+        )
+        queued = bool(task and await self._enqueue_task(task))
+        if task is not None and not queued:
+            self.release_failed_task(task)
+        return {
+            "task_id": task_id,
+            "state": state,
+            "inbox_ref": inbox_ref,
+            "queued": queued,
+        }
 
     async def handle_completed_turn(
         self,

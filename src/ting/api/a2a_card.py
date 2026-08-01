@@ -50,7 +50,7 @@ def build_agent_card(
         version=package_version(),
         capabilities=AgentCapabilities(
             streaming=False,
-            push_notifications=False,
+            push_notifications=config.push_notifications_enabled,
             extended_agent_card=True,
         ),
         default_input_modes=["text/plain"],

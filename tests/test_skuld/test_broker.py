@@ -1417,6 +1417,36 @@ class TestBroker:
         assert "flock-coder" not in test_broker._peer_watches
 
     @pytest.mark.asyncio
+    async def test_peer_error_fails_room_only_workflow_once(self, test_broker):
+        participant = MagicMock(persona="specification-framer")
+        test_broker._room_bridge = MagicMock()
+        test_broker._room_bridge.participants = {"flock-framer": participant}
+        test_broker._report_activity_state = AsyncMock()
+        test_broker._finish_trace_span = AsyncMock()
+        test_broker._is_room_only_workflow_session = MagicMock(return_value=True)
+
+        frame = {
+            "data": {
+                "error": (
+                    "Your access token could not be refreshed because your refresh token "
+                    "was already used."
+                )
+            }
+        }
+        await test_broker._observe_room_peer_event("flock-framer", "error", frame)
+        await test_broker._observe_room_peer_event("flock-framer", "error", frame)
+
+        test_broker._report_activity_state.assert_awaited_once_with(
+            "error",
+            extra_metadata={
+                "failure_source": "ravn_flock",
+                "failure_peer_id": "flock-framer",
+                "failure_persona": "specification-framer",
+                "error": frame["data"]["error"],
+            },
+        )
+
+    @pytest.mark.asyncio
     async def test_peer_git_checkpoint_signals_increment_artifacts(self, test_broker):
         test_broker._room_bridge = MagicMock()
 
