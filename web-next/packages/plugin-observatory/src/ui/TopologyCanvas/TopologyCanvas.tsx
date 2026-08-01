@@ -407,19 +407,19 @@ export function TopologyCanvas({
       ctx.translate(-cam.x, -cam.y);
 
       if (topo) {
-        drawZones(ctx, topo.nodes, pos, now);
+        drawZones(ctx, topo.nodes, pos, now, cam.zoom);
         drawEdges(ctx, topo, pos, now);
 
         // Draw hosts first (background layer), then other nodes
         for (const node of topo.nodes) {
           if (node.typeId !== 'host') continue;
           const p = pos.get(node.id);
-          if (p) drawNode(ctx, node, p, node.id === hoveredId);
+          if (p) drawNode(ctx, node, p, node.id === hoveredId, cam.zoom);
         }
         for (const node of topo.nodes) {
           if (node.typeId === 'host' || node.typeId === 'mimir') continue;
           const p = pos.get(node.id);
-          if (p) drawNode(ctx, node, p, node.id === hoveredId);
+          if (p) drawNode(ctx, node, p, node.id === hoveredId, cam.zoom);
         }
 
         // Mímir last (always on top)

@@ -7,10 +7,20 @@ import {
   drawMimir,
   drawMinimap,
   nodeIconGlyph,
+  labelTier,
+  labelTierThreshold,
+  shouldDrawLabel,
+  shouldDrawNodeDetail,
+  worldFontSize,
 } from './renderer';
+import { LOD } from './config';
 import type { Topology, TopologyNode } from '../../domain';
 import type { NodePosition } from './layoutEngine';
 import { makeCtxMock } from './test-helpers';
+
+/** A zoom at which every label tier is visible, so label assertions below
+ *  test placement and content rather than level-of-detail gating. */
+const DETAIL_ZOOM = 1.5;
 
 // ── Shared test data ──────────────────────────────────────────────────────────
 
@@ -102,24 +112,24 @@ describe('drawStars', () => {
 describe('drawZones', () => {
   it('does not throw with realm and cluster nodes', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
-    expect(() => drawZones(ctx, NODES, POSITIONS, 0)).not.toThrow();
+    expect(() => drawZones(ctx, NODES, POSITIONS, 0, DETAIL_ZOOM)).not.toThrow();
   });
 
   it('calls arc for realm circles', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
-    drawZones(ctx, NODES, POSITIONS, 0);
+    drawZones(ctx, NODES, POSITIONS, 0, DETAIL_ZOOM);
     expect((ctx.arc as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
   });
 
   it('draws realm labels with fillText', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
-    drawZones(ctx, NODES, POSITIONS, 0);
+    drawZones(ctx, NODES, POSITIONS, 0, DETAIL_ZOOM);
     expect((ctx.fillText as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
   });
 
   it('handles empty node list without throwing', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
-    expect(() => drawZones(ctx, [], new Map(), 0)).not.toThrow();
+    expect(() => drawZones(ctx, [], new Map(), 0, DETAIL_ZOOM)).not.toThrow();
   });
 
   it('skips nodes with no position entry', () => {
@@ -132,7 +142,7 @@ describe('drawZones', () => {
       status: 'healthy',
     };
     // orphan has no entry in POSITIONS — should not throw
-    expect(() => drawZones(ctx, [orphan], POSITIONS, 0)).not.toThrow();
+    expect(() => drawZones(ctx, [orphan], POSITIONS, 0, DETAIL_ZOOM)).not.toThrow();
   });
 });
 
@@ -347,7 +357,7 @@ describe('drawNode', () => {
         parentId: null,
         status: 'healthy',
       };
-      expect(() => drawNode(ctx, node, pos, false)).not.toThrow();
+      expect(() => drawNode(ctx, node, pos, false, DETAIL_ZOOM)).not.toThrow();
     });
 
     it(`renders typeId="${typeId}" hovered without throwing`, () => {
@@ -359,7 +369,7 @@ describe('drawNode', () => {
         parentId: null,
         status: 'healthy',
       };
-      expect(() => drawNode(ctx, node, pos, true)).not.toThrow();
+      expect(() => drawNode(ctx, node, pos, true, DETAIL_ZOOM)).not.toThrow();
     });
   }
 
@@ -372,7 +382,7 @@ describe('drawNode', () => {
       parentId: null,
       status: 'healthy',
     };
-    drawNode(ctx, node, pos, false);
+    drawNode(ctx, node, pos, false, DETAIL_ZOOM);
     // No drawing calls should have been made
     expect((ctx.beginPath as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
     expect((ctx.fillRect as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
@@ -387,7 +397,7 @@ describe('drawNode', () => {
       parentId: null,
       status: 'healthy',
     };
-    drawNode(ctx, host, pos, false);
+    drawNode(ctx, host, pos, false, DETAIL_ZOOM);
     expect((ctx.arc as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
     const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
     expect(calls.some(([text]) => text === 'tanngrisnir')).toBe(true);
@@ -403,7 +413,7 @@ describe('drawNode', () => {
       parentId: null,
       status: 'healthy',
     };
-    drawNode(ctx, node, pos, true);
+    drawNode(ctx, node, pos, true, DETAIL_ZOOM);
     // Hovered nodes use the same rounded swatch vocabulary as the legend.
     expect((ctx.roundRect as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
     expect(ctx.stroke).toHaveBeenCalled();
@@ -418,7 +428,7 @@ describe('drawNode', () => {
       parentId: null,
       status: 'healthy',
     };
-    drawNode(ctx, node, pos, false);
+    drawNode(ctx, node, pos, false, DETAIL_ZOOM);
     expect((ctx.roundRect as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
     const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
     expect(calls.some(([text]) => text === nodeIconGlyph('service'))).toBe(true);
@@ -433,7 +443,7 @@ describe('drawNode', () => {
       parentId: null,
       status: 'healthy',
     };
-    drawNode(ctx, node, pos, false);
+    drawNode(ctx, node, pos, false, DETAIL_ZOOM);
     const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
     expect(calls.some(([text]) => text === 'ᚦ')).toBe(true);
   });
@@ -447,7 +457,7 @@ describe('drawNode', () => {
       parentId: null,
       status: 'healthy',
     };
-    drawNode(ctx, node, pos, false);
+    drawNode(ctx, node, pos, false, DETAIL_ZOOM);
     const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
     expect(calls.some(([text]) => text === 'ᚨ')).toBe(true);
   });
@@ -543,5 +553,103 @@ describe('drawMinimap', () => {
     drawMinimap(ctx, 220, 165, TOPOLOGY, POSITIONS, 0, 0, 1, 800, 600, 4200, 3600);
     const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
     expect(calls.some(([text]) => /entities/.test(text))).toBe(true);
+  });
+});
+
+// ── Level of detail ───────────────────────────────────────────────────────────
+
+describe('labelTier', () => {
+  it('treats the entities an operator scans for first as primary', () => {
+    for (const typeId of ['mimir', 'ravn_long', 'valkyrie', 'run']) {
+      expect(labelTier(typeId)).toBe('primary');
+    }
+  });
+
+  it('treats supporting infrastructure as secondary', () => {
+    for (const typeId of ['service', 'model', 'host', 'ravn_run', 'bifrost']) {
+      expect(labelTier(typeId)).toBe('secondary');
+    }
+  });
+
+  it('gives primary types a lower zoom threshold than secondary ones', () => {
+    expect(labelTierThreshold('ravn_long')).toBe(LOD.PRIMARY);
+    expect(labelTierThreshold('service')).toBe(LOD.SECONDARY);
+    expect(labelTierThreshold('ravn_long')).toBeLessThan(labelTierThreshold('service'));
+  });
+});
+
+describe('shouldDrawLabel', () => {
+  it('hides every label at overview zoom', () => {
+    expect(shouldDrawLabel('ravn_long', LOD.PRIMARY - 0.01, false)).toBe(false);
+    expect(shouldDrawLabel('service', LOD.PRIMARY, false)).toBe(false);
+  });
+
+  it('reveals primary labels before secondary ones as the camera comes in', () => {
+    const between = (LOD.PRIMARY + LOD.SECONDARY) / 2;
+    expect(shouldDrawLabel('ravn_long', between, false)).toBe(true);
+    expect(shouldDrawLabel('service', between, false)).toBe(false);
+    expect(shouldDrawLabel('service', LOD.SECONDARY, false)).toBe(true);
+  });
+
+  it('always labels an emphasised node so detail is never unreachable', () => {
+    expect(shouldDrawLabel('service', 0.01, true)).toBe(true);
+    expect(shouldDrawLabel('beacon', 0, true)).toBe(true);
+  });
+});
+
+describe('shouldDrawNodeDetail', () => {
+  it('withholds the secondary line until there is room for it', () => {
+    expect(shouldDrawNodeDetail(LOD.NODE_DETAIL - 0.01, false)).toBe(false);
+    expect(shouldDrawNodeDetail(LOD.NODE_DETAIL, false)).toBe(true);
+  });
+
+  it('shows it for an emphasised node at any zoom', () => {
+    expect(shouldDrawNodeDetail(0.1, true)).toBe(true);
+  });
+});
+
+describe('worldFontSize', () => {
+  it('keeps text a constant screen size by cancelling the camera scale', () => {
+    expect(worldFontSize(10, 0.5)).toBe(20);
+    expect(worldFontSize(10, 2)).toBe(5);
+    expect(worldFontSize(10, 1)).toBe(10);
+  });
+
+  it('falls back to the screen size for a degenerate zoom rather than dividing by zero', () => {
+    expect(worldFontSize(10, 0)).toBe(10);
+    expect(worldFontSize(10, Number.NaN)).toBe(10);
+    expect(worldFontSize(10, Number.POSITIVE_INFINITY)).toBe(10);
+  });
+});
+
+describe('drawNode level of detail', () => {
+  const pos: NodePosition = { x: 0, y: 0 };
+
+  function labelsDrawnAt(zoom: number, typeId: string): string[] {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    const node: TopologyNode = {
+      id: `n-${typeId}`,
+      typeId,
+      label: 'sample-label',
+      parentId: null,
+      status: 'healthy',
+    };
+    drawNode(ctx, node, pos, false, zoom);
+    const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
+    return calls.map(([text]) => text);
+  }
+
+  it('draws no service label at overview zoom', () => {
+    expect(labelsDrawnAt(LOD.PRIMARY - 0.01, 'service')).not.toContain('sample-label');
+  });
+
+  it('draws the service label once zoomed past its tier', () => {
+    expect(labelsDrawnAt(LOD.SECONDARY, 'service')).toContain('sample-label');
+  });
+
+  it('draws a resident label at a zoom where a service still has none', () => {
+    const between = (LOD.PRIMARY + LOD.SECONDARY) / 2;
+    expect(labelsDrawnAt(between, 'ravn_long')).toContain('sample-label');
+    expect(labelsDrawnAt(between, 'service')).not.toContain('sample-label');
   });
 });

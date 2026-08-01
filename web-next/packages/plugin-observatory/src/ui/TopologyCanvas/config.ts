@@ -109,6 +109,38 @@ export const LAYOUT = {
   MIMIR_RADIUS: 42,
 } as const;
 
+/**
+ * Level-of-detail thresholds.
+ *
+ * Labels are drawn at a constant *screen* size (see `worldFontSize`), so at low
+ * zoom a label occupies far more world space than the gap between the nodes it
+ * sits beside. Children on a cluster orbit are ~150–220 world units apart while
+ * a label is ~70–110px wide, so below these zoom levels neighbouring labels
+ * overlap by construction. Each tier is the zoom at which its labels start to
+ * fit; anything hovered or selected ignores the tier entirely so nothing
+ * becomes unreachable.
+ */
+export const LOD = {
+  /** Stat line under a realm/cluster name. */
+  CONTAINER_DETAIL: 0.3,
+  /** Residents, Mímir instances and workflow sessions. */
+  PRIMARY: 0.45,
+  /** Services, hosts, models and run agents. */
+  SECONDARY: 0.8,
+  /** The secondary line beneath any node label. */
+  NODE_DETAIL: 1.15,
+} as const;
+
+/** Label sizes in screen pixels — held constant regardless of camera zoom. */
+export const LABEL_PX = {
+  REALM: 13,
+  CLUSTER: 12,
+  CONTAINER_DETAIL: 9,
+  PRIMARY: 11,
+  SECONDARY: 10,
+  NODE_DETAIL: 9,
+} as const;
+
 /** Per-typeId hit radius for click / hover detection (world units). */
 export const HIT_RADIUS: Record<string, number> = {
   mimir: 42,

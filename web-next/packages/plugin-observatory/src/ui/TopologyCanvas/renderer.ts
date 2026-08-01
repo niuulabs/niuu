@@ -17,7 +17,52 @@ import type {
 import { humanizeObservatoryText } from '../displayLabels';
 import type { NodePosition } from './layoutEngine';
 import { zoneRadius, HOST_HALF_W, HOST_HALF_H } from './layoutEngine';
-import { NODE_SIZE, MIMIR_RUNES, LAYOUT } from './config';
+import { NODE_SIZE, MIMIR_RUNES, LAYOUT, LOD, LABEL_PX } from './config';
+
+// ── Level of detail ───────────────────────────────────────────────────────────
+
+/** Which zoom tier a node's label belongs to. */
+export type LabelTier = 'primary' | 'secondary';
+
+/**
+ * Entities that carry the story of the topology — the things an operator scans
+ * for first. They earn a label before anything else does.
+ */
+const PRIMARY_LABEL_TYPES: ReadonlySet<string> = new Set(['mimir', 'ravn_long', 'valkyrie', 'run']);
+
+export function labelTier(typeId: string): LabelTier {
+  return PRIMARY_LABEL_TYPES.has(typeId) ? 'primary' : 'secondary';
+}
+
+/** Zoom at which a given node type's label becomes legible without colliding. */
+export function labelTierThreshold(typeId: string): number {
+  return labelTier(typeId) === 'primary' ? LOD.PRIMARY : LOD.SECONDARY;
+}
+
+/**
+ * A label is drawn once the camera is zoomed far enough in that it fits beside
+ * its neighbours. Hovered and selected nodes always label, so detail is never
+ * unreachable — you can always point at a thing to find out what it is.
+ */
+export function shouldDrawLabel(typeId: string, zoom: number, emphasised: boolean): boolean {
+  if (emphasised) return true;
+  return zoom >= labelTierThreshold(typeId);
+}
+
+/** True once a node's secondary line has room to sit under its label. */
+export function shouldDrawNodeDetail(zoom: number, emphasised: boolean): boolean {
+  return emphasised || zoom >= LOD.NODE_DETAIL;
+}
+
+/**
+ * Convert a screen-pixel size into world units for the current camera, so text
+ * stays the same physical size however far out the camera sits. Without this a
+ * 10px font renders at 3px when zoomed to 0.3 and the overview is unreadable.
+ */
+export function worldFontSize(screenPx: number, zoom: number): number {
+  if (!Number.isFinite(zoom) || zoom <= 0) return screenPx;
+  return screenPx / zoom;
+}
 
 // ── Colour palette ────────────────────────────────────────────────────────────
 // These map directly to the ice-theme brand ramp used in the prototype.
@@ -176,23 +221,34 @@ function drawStructureLabel(
     font,
     color,
     uppercase = false,
+    scale = 1,
   }: {
     font: string;
     color: string;
     uppercase?: boolean;
+    /** World units per screen pixel, so the glyph and gaps track the font. */
+    scale?: number;
   },
 ): void {
   const label = uppercase ? structureLabel(node).toUpperCase() : structureLabel(node);
+  ctx.save();
+  ctx.font = font;
   const metrics = ctx.measureText?.(label);
-  const textWidth = metrics?.width ?? label.length * 7.2;
-  const glyphGap = 8;
-  const glyphWidth = 16;
+  const textWidth = metrics?.width ?? label.length * 7.2 * scale;
+  const glyphGap = 8 * scale;
+  const glyphWidth = 16 * scale;
   const startX = x - (textWidth + glyphGap + glyphWidth) / 2;
   const glyphX = startX + glyphWidth / 2;
   const textX = startX + glyphWidth + glyphGap;
 
-  ctx.save();
-  drawNodeSwatch(ctx, node.typeId, glyphX, y - 4, NODE_SIZE[node.typeId] ?? 6, false);
+  drawNodeSwatch(
+    ctx,
+    node.typeId,
+    glyphX,
+    y - 4 * scale,
+    (NODE_SIZE[node.typeId] ?? 6) * scale,
+    false,
+  );
   ctx.fillStyle = color;
   ctx.font = font;
   ctx.textAlign = 'left';
@@ -290,7 +346,10 @@ export function drawZones(
   nodes: TopologyNode[],
   positions: Map<string, NodePosition>,
   now: number,
+  zoom: number,
 ): void {
+  // World units per screen pixel — keeps container headings a constant size.
+  const scale = worldFontSize(1, zoom);
   // Draw larger structural groups first, then smaller containers on top.
   for (const typeId of ['realm', 'cluster', 'namespace'] as const) {
     for (const node of nodes) {
@@ -324,10 +383,11 @@ export function drawZones(
         ctx.arc(cx, cy, r, 0, Math.PI * 2);
         ctx.stroke();
 
-        drawStructureLabel(ctx, node, cx, cy - r - 8, {
-          font: '600 13px Inter, sans-serif',
+        drawStructureLabel(ctx, node, cx, cy - r - 8 * scale, {
+          font: `600 ${worldFontSize(LABEL_PX.REALM, zoom)}px Inter, sans-serif`,
           color: rgba(C.ice, 0.78),
           uppercase: true,
+          scale,
         });
       } else if (typeId === 'cluster') {
         const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
@@ -346,9 +406,10 @@ export function drawZones(
         ctx.stroke();
         ctx.setLineDash([]);
 
-        drawStructureLabel(ctx, node, cx, cy - r - 4, {
-          font: '10px "JetBrains Mono", monospace',
+        drawStructureLabel(ctx, node, cx, cy - r - 4 * scale, {
+          font: `${worldFontSize(LABEL_PX.CLUSTER, zoom)}px "JetBrains Mono", monospace`,
           color: rgba(C.ice, 0.58),
+          scale,
         });
       } else {
         const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
@@ -367,9 +428,10 @@ export function drawZones(
         ctx.stroke();
         ctx.setLineDash([]);
 
-        drawStructureLabel(ctx, node, cx, cy - r - 4, {
-          font: '10px "JetBrains Mono", monospace',
+        drawStructureLabel(ctx, node, cx, cy - r - 4 * scale, {
+          font: `${worldFontSize(LABEL_PX.CLUSTER, zoom)}px "JetBrains Mono", monospace`,
           color: rgba(C.ice, 0.62),
+          scale,
         });
       }
     }
@@ -1025,6 +1087,7 @@ export function drawNode(
   node: TopologyNode,
   pos: NodePosition,
   hovered: boolean,
+  zoom: number,
 ): void {
   if (node.typeId === 'mimir') return; // handled by drawMimir separately
   if (node.typeId === 'realm' || node.typeId === 'cluster' || node.typeId === 'namespace') return;
@@ -1060,10 +1123,13 @@ export function drawNode(
     ctx.stroke();
     ctx.setLineDash([]);
 
-    ctx.fillStyle = rgba(C.ice, 0.82);
-    ctx.font = `${hovered ? 600 : 500} 10px "JetBrains Mono", monospace`;
-    ctx.textAlign = 'center';
-    ctx.fillText(humanizeObservatoryText(node.label), x, y - runRadius - 8);
+    if (shouldDrawLabel(node.typeId, zoom, hovered)) {
+      const px = worldFontSize(LABEL_PX.PRIMARY, zoom);
+      ctx.fillStyle = rgba(C.ice, 0.82);
+      ctx.font = `${hovered ? 600 : 500} ${px}px "JetBrains Mono", monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText(humanizeObservatoryText(node.label), x, y - runRadius - px * 0.6);
+    }
     ctx.restore();
     return;
   }
@@ -1073,32 +1139,19 @@ export function drawNode(
 
   drawNodeSwatch(ctx, node.typeId, x, y, size, hovered);
 
-  // Label below node for key types and hovered nodes
-  const showLabel =
-    [
-      'ting',
-      'bifrost',
-      'volundr',
-      'valkyrie',
-      'ravn_long',
-      'trigger',
-      'stage',
-      'gate',
-      'cond',
-      'resource',
-      'end',
-    ].includes(node.typeId) ||
-    (node.typeId === 'service' && ['observatory', 'niuu', 'ravn'].includes(node.svcType ?? '')) ||
-    hovered;
-  if (showLabel) {
-    const placement = workflowLabelPlacement(node, size);
-    ctx.fillStyle = rgba(C.moon, hovered ? 0.95 : 0.75);
-    ctx.font = `${hovered ? 600 : 500} 10px Inter, sans-serif`;
-    ctx.textAlign = placement.align;
-    ctx.textBaseline = placement.baseline;
-    ctx.fillText(humanizeObservatoryText(node.label), x + placement.dx, y + placement.dy);
-    ctx.textBaseline = 'alphabetic';
-  }
+  // Labels resolve with the camera rather than from a fixed type allowlist:
+  // the graph is far too dense to label everything at overview zoom.
+  if (!shouldDrawLabel(node.typeId, zoom, hovered)) return;
+
+  const tier = labelTier(node.typeId);
+  const px = worldFontSize(tier === 'primary' ? LABEL_PX.PRIMARY : LABEL_PX.SECONDARY, zoom);
+  const placement = workflowLabelPlacement(node, size);
+  ctx.fillStyle = rgba(C.moon, hovered ? 0.95 : 0.75);
+  ctx.font = `${hovered ? 600 : 500} ${px}px Inter, sans-serif`;
+  ctx.textAlign = placement.align;
+  ctx.textBaseline = placement.baseline;
+  ctx.fillText(humanizeObservatoryText(node.label), x + placement.dx, y + placement.dy);
+  ctx.textBaseline = 'alphabetic';
 }
 
 // ── Minimap ───────────────────────────────────────────────────────────────────
