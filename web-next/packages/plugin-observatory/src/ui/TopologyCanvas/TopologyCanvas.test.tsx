@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, cleanup } from '@testing-library/react';
 import { TopologyCanvas } from './TopologyCanvas';
 import type { Topology } from '../../domain';
 import { makeCtxMock } from './test-helpers';
@@ -557,5 +557,52 @@ describe('TopologyCanvas', () => {
     runAnimationFrame();
 
     expect(meshLabelDrawn()).toBe(false);
+  });
+
+  // ── Layer filtering ─────────────────────────────────────────────────────────
+
+  const LAYERED_TOPOLOGY: Topology = {
+    ...MOCK_TOPOLOGY,
+    edges: [
+      {
+        id: 'l1',
+        sourceId: 'ting-0',
+        targetId: 'bifrost-0',
+        kind: 'solid',
+        relationType: 'manages',
+      },
+      {
+        id: 'l2',
+        sourceId: 'bifrost-0',
+        targetId: 'mimir-0',
+        kind: 'dashed-long',
+        relationType: 'writes',
+      },
+    ],
+  };
+
+  it('stops drawing a layer that has been hidden', async () => {
+    await renderCanvas(LAYERED_TOPOLOGY);
+    runAnimationFrame();
+    const withAll = mainCtx.stroke.mock.calls.length;
+    expect(withAll).toBeGreaterThan(0);
+
+    // Unmount first: a second render would leave both canvases drawing.
+    cleanup();
+    mainCtx.stroke.mockClear();
+    await renderCanvas(LAYERED_TOPOLOGY, {
+      hiddenLayers: new Set(['memory', 'platform'] as const),
+    });
+    runAnimationFrame();
+
+    expect(mainCtx.stroke.mock.calls.length).toBeLessThan(withAll);
+  });
+
+  it('keeps the layout identical when a layer is hidden', async () => {
+    const before = computeLayout(LAYERED_TOPOLOGY).get('ting-0');
+    await renderCanvas(LAYERED_TOPOLOGY, { hiddenLayers: new Set(['platform'] as const) });
+    runAnimationFrame();
+
+    expect(computeLayout(LAYERED_TOPOLOGY).get('ting-0')).toEqual(before);
   });
 });

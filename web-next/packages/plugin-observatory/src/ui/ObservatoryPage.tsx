@@ -4,6 +4,7 @@ import { useRegistry } from '../application/useRegistry';
 import { useObservatoryStore } from '../application/useObservatoryStore';
 import type { TopologyNode } from '../domain';
 import { TopologyCanvas } from './TopologyCanvas';
+import { LayerFilterBar } from './LayerFilterBar';
 import { EntityDrawer } from './overlays/EntityDrawer';
 import { AgentCardPanel } from './overlays/AgentCardPanel';
 import { EventLog } from './overlays/EventLog';
@@ -25,7 +26,7 @@ export function ObservatoryPage() {
   const events = useEvents();
   const { data: registry } = useRegistry();
   const [storeState, store] = useObservatoryStore();
-  const { selectedId } = storeState;
+  const { selectedId, hiddenLayers } = storeState;
 
   const selectedNode: TopologyNode | null =
     selectedId && topology ? (topology.nodes.find((n) => n.id === selectedId) ?? null) : null;
@@ -47,10 +48,13 @@ export function ObservatoryPage() {
       data-testid="observatory-page"
       className="niuu:relative niuu:flex niuu:flex-col niuu:h-full niuu:overflow-hidden"
     >
+      <LayerFilterBar topology={topology} />
+
       <TopologyCanvas
         topology={topology}
         onNodeClick={handleNodeClick}
         selectedId={selectedId}
+        hiddenLayers={hiddenLayers}
         className="niuu:flex-1 niuu:min-h-0"
       />
 

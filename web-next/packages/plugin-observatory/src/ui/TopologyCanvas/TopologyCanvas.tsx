@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { select } from 'd3-selection';
 import { zoom, zoomIdentity, type D3ZoomEvent, type ZoomBehavior } from 'd3-zoom';
-import type { Topology } from '../../domain';
+import type { EdgeLayer, Topology } from '../../domain';
+import { visibleEdges } from '../../domain';
 import { deriveAgentMeshes, findMeshForNode } from '../../domain/agentMesh';
 import {
   clampZoom,
@@ -33,6 +34,8 @@ export interface TopologyCanvasProps {
   onNodeClick?: (nodeId: string) => void;
   /** Currently selected node — drives which agent mesh is outlined. */
   selectedId?: string | null;
+  /** Connection layers the operator has switched off. */
+  hiddenLayers?: ReadonlySet<EdgeLayer>;
   /** Show the minimap panel (default true). */
   showMinimap?: boolean;
   /** Extra CSS class applied to the wrapper div. */
@@ -54,6 +57,7 @@ export function TopologyCanvas({
   topology,
   onNodeClick,
   selectedId = null,
+  hiddenLayers,
   showMinimap = true,
   className,
   style,
@@ -75,6 +79,14 @@ export function TopologyCanvas({
   // Compute layout whenever topology changes (memoised — pure function)
   const positions = useMemo(() => (topology ? computeLayout(topology) : new Map()), [topology]);
   const agentMeshes = useMemo(() => deriveAgentMeshes(topology), [topology]);
+
+  // Layers filter what is drawn, never the layout: hiding a connection must not
+  // make the nodes jump.
+  const drawnTopology = useMemo<Topology | null>(() => {
+    if (!topology) return null;
+    if (!hiddenLayers || hiddenLayers.size === 0) return topology;
+    return { ...topology, edges: visibleEdges(topology.edges, hiddenLayers) };
+  }, [hiddenLayers, topology]);
   const topologySignature = useMemo(() => {
     if (!topology) return 'empty';
     return topology.nodes
@@ -86,7 +98,7 @@ export function TopologyCanvas({
   // Stable reference to drawing data so the rAF loop always reads fresh values
   // without being re-subscribed on every state tick.
   const drawRef = useRef({
-    topology,
+    topology: drawnTopology,
     positions,
     hoveredId: null as string | null,
     agentMeshes,
@@ -95,13 +107,13 @@ export function TopologyCanvas({
 
   useEffect(() => {
     drawRef.current = {
-      topology,
+      topology: drawnTopology,
       positions,
       hoveredId: hoveredIdRef.current,
       agentMeshes,
       selectedId,
     };
-  }, [agentMeshes, positions, selectedId, topology]);
+  }, [agentMeshes, drawnTopology, positions, selectedId]);
 
   const cameraToZoomTransform = useCallback((cam: Camera) => {
     const { w, h } = sizeRef.current;

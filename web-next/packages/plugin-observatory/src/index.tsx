@@ -49,6 +49,7 @@ export type {
   IAgentDirectory,
 } from './ports';
 export { AgentCardPanel } from './ui/overlays/AgentCardPanel';
+export { LayerFilterBar } from './ui/LayerFilterBar';
 export { useAgent, useAgents } from './application/useAgents';
 export type {
   EntityType,
