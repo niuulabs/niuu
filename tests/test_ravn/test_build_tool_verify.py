@@ -9,7 +9,11 @@ from typing import Any
 
 import ravn.adapters.tools.build_tool as build_tool_mod
 from ravn.adapters.tools.build_tool import DEFAULT_MAX_REPAIR_ATTEMPTS, BuildTool
-from ravn.ports.tool_build_backend import ToolBuildInputRequiredError, ToolBuildResult
+from ravn.ports.tool_build_backend import (
+    ToolBuildInputRequiredError,
+    ToolBuildPendingError,
+    ToolBuildResult,
+)
 from ravn.valkyrie_evolution.tool_verification import VerificationResult
 
 _ECHO_TOOL = "def run(payload):\n    return {'echo': payload}\n"
@@ -324,6 +328,53 @@ async def test_commissioned_build_question_is_persisted_and_resumed(tmp_path) ->
             "continuation_answer": "All namespaces, read-only.",
         }
     )
+
+    assert resumed.is_error is False
+    assert len(requests) == 2
+    assert len(registered) == 1
+    assert list((tmp_path / "arts" / "pending-builds").glob("*.json")) == []
+
+
+async def test_commissioned_build_push_pending_resumes_without_answer(tmp_path) -> None:
+    requests: list[Any] = []
+
+    class _Backend:
+        name = "a2a"
+
+        async def build(self, request: Any) -> ToolBuildResult:
+            requests.append(request)
+            if not request.continuation:
+                raise ToolBuildPendingError(
+                    task_id="task-push-1",
+                    push_registered=True,
+                    continuation={
+                        "task_id": "task-push-1",
+                        "input_kind": "pending",
+                        "push_registered": True,
+                    },
+                )
+            assert request.continuation["input_kind"] == "pending"
+            assert "answer" not in request.continuation
+            return ToolBuildResult(
+                manifest=_manifest(),
+                tool_code=_ECHO_TOOL,
+                test_code=_ECHO_TEST,
+                requirements=[],
+                provenance={"builder": "remote"},
+            )
+
+    tool, registered = _tool(tmp_path, build_backend=_Backend())
+    first = await tool.execute({"manifest": _manifest(), "build_request": "build an echo tool"})
+
+    assert first.is_error is False
+    pending = json.loads(first.content)
+    assert pending["status"] == "pending"
+    assert pending["push_registered"] is True
+    assert pending["resume_with"] == {"continuation_task_id": "task-push-1"}
+    assert "Do not poll" in pending["next_step"]
+    assert registered == []
+
+    resumed = await tool.execute({"continuation_task_id": "task-push-1"})
 
     assert resumed.is_error is False
     assert len(requests) == 2

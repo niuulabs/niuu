@@ -11,6 +11,7 @@ import pytest
 
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
+from ting.ports.volundr import ActivityEvent
 
 
 def _campaign(
@@ -199,6 +200,70 @@ async def test_terminal_activity_error_fails_running_campaign() -> None:
     emitted = event_bus.emit.await_args.args[0]
     assert emitted.event == "workflow.campaign.failed"
     assert emitted.data["error"] == "refresh token was already used"
+
+
+@pytest.mark.asyncio
+async def test_sse_terminal_event_completes_and_queues_push_without_session_read() -> None:
+    adapter = _Adapter()
+    campaign = _campaign()
+    repo = AsyncMock()
+    repo.get_active_campaign_by_session.return_value = campaign
+    repo.save_campaign = AsyncMock(side_effect=lambda value: value)
+    push_dispatcher = AsyncMock()
+    projector = WorkflowCampaignProjector(
+        repo=repo,
+        volundr_factory=_Factory(adapter),
+        event_bus=AsyncMock(),
+        push_dispatcher=push_dispatcher,
+    )
+
+    handled = await projector.handle_activity(
+        ActivityEvent(
+            session_id=campaign.session_id,
+            state="",
+            metadata={},
+            owner_id=campaign.owner_id,
+            session_status="stopped",
+        ),
+        campaign.owner_id,
+    )
+
+    assert handled is True
+    saved = repo.save_campaign.await_args.args[0]
+    assert saved.status == WorkflowCampaignStatus.COMPLETED
+    push_dispatcher.queue_campaign.assert_awaited_once_with(saved)
+
+
+@pytest.mark.asyncio
+async def test_sse_error_event_fails_and_queues_error_push() -> None:
+    campaign = _campaign()
+    repo = AsyncMock()
+    repo.get_active_campaign_by_session.return_value = campaign
+    repo.save_campaign = AsyncMock(side_effect=lambda value: value)
+    event_bus = AsyncMock()
+    push_dispatcher = AsyncMock()
+    projector = WorkflowCampaignProjector(
+        repo=repo,
+        volundr_factory=_Factory(_Adapter()),
+        event_bus=event_bus,
+        push_dispatcher=push_dispatcher,
+    )
+
+    await projector.handle_activity(
+        ActivityEvent(
+            session_id=campaign.session_id,
+            state="error",
+            metadata={"error": "refresh token was already used"},
+            owner_id=campaign.owner_id,
+        ),
+        campaign.owner_id,
+    )
+
+    saved = repo.save_campaign.await_args.args[0]
+    assert saved.status == WorkflowCampaignStatus.FAILED
+    assert saved.metadata["failure_error"] == "refresh token was already used"
+    assert event_bus.emit.await_args.args[0].event == "workflow.campaign.failed"
+    push_dispatcher.queue_campaign.assert_awaited_once_with(saved)
 
 
 class TestConnectionAffinity:

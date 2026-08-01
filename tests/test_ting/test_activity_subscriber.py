@@ -29,6 +29,7 @@ from ting.domain.services.activity_subscriber import (
     _coerce_str,
     _coerce_str_list,
 )
+from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.ports.dispatcher_repository import DispatcherRepository
 from ting.ports.volundr import ActivityEvent, SpawnRequest, VolundrPort, VolundrSession
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
@@ -358,6 +359,15 @@ def _make_subscriber(
     e = event_bus or InMemoryEventBus()
     c = config or _default_config()
     factory = StubVolundrFactory(v)
+    campaign_projector = (
+        WorkflowCampaignProjector(
+            repo=workflow_campaign_repo,
+            volundr_factory=factory,  # type: ignore[arg-type]
+            event_bus=e,
+        )
+        if workflow_campaign_repo is not None
+        else None
+    )
     sub = SessionActivitySubscriber(
         volundr_factory=factory,
         tracker_factory=tf,
@@ -365,7 +375,7 @@ def _make_subscriber(
         event_bus=e,
         config=c,
         review_engine=review_engine,  # type: ignore[arg-type]
-        workflow_campaign_repo=workflow_campaign_repo,
+        workflow_campaign_projector=campaign_projector,
     )
     return sub, v, t, e
 
@@ -608,6 +618,7 @@ class TestActivityEventHandling:
         await sub._on_activity_event(event, _volundr, OWNER_ID)
 
         campaign = next(iter(campaign_repo.campaigns.values()))
+        assert campaign.status == WorkflowCampaignStatus.BLOCKED
         assert campaign.active_stage_id == "plan-review-gate"
         assert campaign.metadata["pending_workflow_gates"] == [
             {
@@ -620,6 +631,8 @@ class TestActivityEventHandling:
             }
         ]
         bus_event = await asyncio.wait_for(q.get(), timeout=1.0)
+        if bus_event.event == "workflow.campaign.updated":
+            bus_event = await asyncio.wait_for(q.get(), timeout=1.0)
         assert bus_event.event == "workflow.campaign.feedback_requested"
         assert bus_event.data["session_id"] == full_session_id
 
