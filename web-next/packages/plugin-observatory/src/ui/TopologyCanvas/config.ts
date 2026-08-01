@@ -8,8 +8,15 @@ export const CANVAS = {
   WORLD_W: 4200,
   WORLD_H: 3600,
 
-  /** Zoom limits (task spec: 0.3×–3×). */
-  ZOOM_MIN: 0.3,
+  /**
+   * Zoom limits.
+   *
+   * The floor was 0.3×, which predates a topology of this size: eight clusters
+   * across five realms do not fit on screen at 0.3×, so "fit to bounds" clamped
+   * to the minimum and the whole graph could never be seen at once. The floor
+   * has to be low enough that fitting the full world is reachable.
+   */
+  ZOOM_MIN: 0.12,
   ZOOM_MAX: 3.0,
 
   /** Multiplicative zoom step per scroll tick. */

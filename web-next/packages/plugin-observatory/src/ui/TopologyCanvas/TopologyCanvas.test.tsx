@@ -271,7 +271,7 @@ describe('TopologyCanvas', () => {
     expect(pct).toBeLessThanOrEqual(300);
   });
 
-  it('zoom cannot go below ZOOM_MIN (30%)', () => {
+  it('zoom cannot go below ZOOM_MIN', () => {
     render(<TopologyCanvas topology={MOCK_TOPOLOGY} />);
     const zoomDisplay = screen.getByTestId('zoom-display');
     // Click zoom out many times
@@ -279,7 +279,9 @@ describe('TopologyCanvas', () => {
       fireEvent.click(screen.getByRole('button', { name: /zoom out/i }));
     }
     const pct = parseInt(zoomDisplay.textContent ?? '0', 10);
-    expect(pct).toBeGreaterThanOrEqual(30);
+    // Asserted from config: the floor is tuned to the size of the topology, so
+    // a literal here would have to be edited every time that changes.
+    expect(pct).toBeGreaterThanOrEqual(Math.round(CANVAS.ZOOM_MIN * 100));
   });
 
   it('calls onNodeClick when a node is clicked (via canvas click)', () => {

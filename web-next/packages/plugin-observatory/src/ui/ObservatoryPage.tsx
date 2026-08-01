@@ -50,13 +50,31 @@ export function ObservatoryPage() {
     >
       <LayerFilterBar topology={topology} />
 
-      <TopologyCanvas
-        topology={topology}
-        onNodeClick={handleNodeClick}
-        selectedId={selectedId}
-        hiddenLayers={hiddenLayers}
-        className="niuu:flex-1 niuu:min-h-0"
-      />
+      {/*
+        Overlays are absolutely positioned, so they anchor to this stage rather
+        than the page — otherwise they cover the filter bar and swallow its
+        clicks.
+      */}
+      <div className="niuu:relative niuu:flex-1 niuu:min-h-0">
+        <TopologyCanvas
+          topology={topology}
+          onNodeClick={handleNodeClick}
+          selectedId={selectedId}
+          hiddenLayers={hiddenLayers}
+          className="niuu:absolute niuu:inset-0"
+        />
+
+        <ConnectionLegend topology={topology} registry={registry ?? null} />
+        <EventLog events={events} />
+        <EntityDrawer
+          node={selectedNode}
+          topology={topology}
+          registry={registry ?? null}
+          onClose={handleDrawerClose}
+          onNodeSelect={handleNodeSelect}
+          footer={<AgentCardPanel node={selectedNode} />}
+        />
+      </div>
 
       {/* Accessible hidden node list — keyboard / screen-reader alternative to canvas hit-testing */}
       <ul data-testid="topology-node-list" aria-label="Topology nodes" className="niuu:sr-only">
@@ -72,17 +90,6 @@ export function ObservatoryPage() {
           </li>
         ))}
       </ul>
-
-      <ConnectionLegend topology={topology} registry={registry ?? null} />
-      <EventLog events={events} />
-      <EntityDrawer
-        node={selectedNode}
-        topology={topology}
-        registry={registry ?? null}
-        onClose={handleDrawerClose}
-        onNodeSelect={handleNodeSelect}
-        footer={<AgentCardPanel node={selectedNode} />}
-      />
     </div>
   );
 }
