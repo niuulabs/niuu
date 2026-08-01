@@ -834,3 +834,52 @@ async def test_topology_from_remote_cluster_does_not_emit_self_loop() -> None:
     cluster = next(node for node in snapshot["nodes"] if node["id"] == "cluster-noatun")
     assert cluster["parentId"] is None
     assert not any(edge["sourceId"] == edge["targetId"] for edge in snapshot["edges"])
+
+
+# ── Registry-driven entity types ─────────────────────────────────────────────
+# The set of renderable types is the registry's job, not a constant in this
+# module. A hardcoded set drifted from the registry and silently downgraded
+# realms, models and runs to `service` for months.
+
+
+def _entity(kind: str, name: str = "thing") -> DiscoveredEntity:
+    return DiscoveredEntity(id=f"e-{kind}", kind=kind, name=name, cluster="ymir")
+
+
+@pytest.mark.parametrize("kind", ["realm", "model", "run", "ravn_run"])
+def test_seed_types_are_not_downgraded_to_service(kind: str) -> None:
+    snapshot = topology_from_discovery(DiscoveryResult(entities=[_entity(kind)]))
+
+    node = next(n for n in snapshot["nodes"] if n["id"] == f"e-{kind}")
+    assert node["typeId"] == kind
+
+
+def test_registry_types_override_the_seed() -> None:
+    """An operator can register a new type without a code change."""
+    snapshot = topology_from_discovery(
+        DiscoveryResult(entities=[_entity("weathervane")]),
+        known_type_ids={"weathervane"},
+    )
+
+    node = next(n for n in snapshot["nodes"] if n["id"] == "e-weathervane")
+    assert node["typeId"] == "weathervane"
+
+
+def test_unregistered_type_renders_as_service_but_says_so() -> None:
+    snapshot = topology_from_discovery(
+        DiscoveryResult(entities=[_entity("weathervane")]),
+        known_type_ids={"service"},
+    )
+
+    node = next(n for n in snapshot["nodes"] if n["id"] == "e-weathervane")
+    assert node["typeId"] == "service"
+
+    warnings = [e for e in snapshot["events"] if e.get("subject") == "registry"]
+    assert len(warnings) == 1
+    assert "weathervane" in warnings[0]["body"]
+
+
+def test_no_registry_warning_when_every_type_is_known() -> None:
+    snapshot = topology_from_discovery(DiscoveryResult(entities=[_entity("mimir")]))
+
+    assert [e for e in snapshot["events"] if e.get("subject") == "registry"] == []

@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 import socket
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,26 +18,25 @@ import httpx
 from niuu.ports.http_auth import HttpAuthPort
 from niuu.utils import import_class, resolve_secret_kwargs
 from observatory.contracts import ObservatoryEdge, ObservatoryEvent, ObservatorySnapshot
+from observatory.data import REGISTRY
 
 logger = logging.getLogger(__name__)
 _SERVICE_ACCOUNT_ROOT = Path("/var/run/secrets/kubernetes.io/serviceaccount")
-_KNOWN_TYPE_IDS = {
-    "bifrost",
-    "beacon",
-    "cluster",
-    "host",
-    "mimir",
-    "namespace",
-    "printer",
-    "ravn_long",
-    "service",
-    "skuld",
-    "ting",
-    "valkyrie",
-    "vaettir",
-    "volundr",
-    "warden",
-}
+#: Entity types recognised when no live registry is supplied.
+#:
+#: Derived from the registry seed rather than written out by hand. A literal set
+#: here inevitably drifts from the registry — that drift is exactly why realms,
+#: models and runs were being silently downgraded to ``service``. The registry is
+#: the configurable, API-editable source of truth; this is only its in-code
+#: default for callers that have no repository to read from.
+_SEED_TYPE_IDS = frozenset(str(entry.get("id", "")) for entry in REGISTRY.get("types", []))
+
+
+def default_type_ids() -> frozenset[str]:
+    """Entity type ids known from the registry seed."""
+    return _SEED_TYPE_IDS
+
+
 _COMPONENT_TYPES = {
     "agent": "ravn_long",
     "api": "volundr",
@@ -1096,7 +1095,7 @@ class KubernetesDiscoveryAdapter:
             entity_metadata["visibility"] = visibility
         return DiscoveredEntity(
             id=entity_id,
-            kind=type_id if type_id in _KNOWN_TYPE_IDS else "service",
+            kind=type_id if type_id in _SEED_TYPE_IDS else "service",
             name=display_name,
             cluster=cluster,
             namespace=namespace,
@@ -1169,8 +1168,21 @@ def build_discovery_adapter(configs: list[Any]) -> DiscoveryAdapter:
     return CompositeDiscoveryAdapter(adapters)
 
 
-def topology_from_discovery(result: DiscoveryResult) -> ObservatorySnapshot:
-    """Materialize an Observatory topology from canonical discovered entities."""
+def topology_from_discovery(
+    result: DiscoveryResult,
+    *,
+    known_type_ids: Collection[str] | None = None,
+) -> ObservatorySnapshot:
+    """Materialize an Observatory topology from canonical discovered entities.
+
+    ``known_type_ids`` should come from the live registry, which is the
+    configurable source of truth for entity types. An entity whose kind is not
+    registered still renders — as a ``service`` — but says so in an event, so a
+    missing type is visible to an operator instead of silently flattening the
+    graph. Omit it to fall back to the registry seed.
+    """
+    type_ids = frozenset(known_type_ids) if known_type_ids is not None else _SEED_TYPE_IDS
+    unregistered: set[str] = set()
     nodes: dict[str, dict[str, Any]] = {}
     edges: dict[str, ObservatoryEdge] = {}
 
@@ -1217,7 +1229,9 @@ def topology_from_discovery(result: DiscoveryResult) -> ObservatorySnapshot:
         if parent_id == entity.id:
             parent_id = None
 
-        node = _entity_to_node(entity, parent_id=parent_id)
+        if entity.kind and entity.kind not in type_ids:
+            unregistered.add(entity.kind)
+        node = _entity_to_node(entity, parent_id=parent_id, known_type_ids=type_ids)
         nodes[node["id"]] = node
 
     for edge in result.edges:
@@ -1225,11 +1239,29 @@ def topology_from_discovery(result: DiscoveryResult) -> ObservatorySnapshot:
         if resolved and resolved["sourceId"] != resolved["targetId"]:
             edges[resolved["id"]] = resolved
 
+    events = list(result.events)
+    if unregistered:
+        # Rendering an unknown kind as `service` keeps the graph usable, but
+        # doing it quietly is how realms and models disappeared for months.
+        kinds = ", ".join(sorted(unregistered))
+        events.append(
+            {
+                "id": f"observatory:registry:unregistered:{_slug(kinds)}",
+                "type": "warning",
+                "level": "warning",
+                "service": "observatory",
+                "subject": "registry",
+                "body": f"Entity types not registered, rendered as service: {kinds}",
+                "message": f"Entity types not registered, rendered as service: {kinds}",
+                "timestamp": _iso(),
+            }
+        )
+
     return {
         "timestamp": _iso(),
         "nodes": list(nodes.values()),
         "edges": list(edges.values()),
-        "events": result.events,
+        "events": events,
         "layoutHints": {"mode": "pack", "scope": "world"},
     }
 
@@ -1306,10 +1338,15 @@ def _resolve_node_ref(ref: str, nodes: dict[str, dict[str, Any]]) -> str:
     return candidates[0] if len(set(candidates)) == 1 else ""
 
 
-def _entity_to_node(entity: DiscoveredEntity, *, parent_id: str | None) -> dict[str, Any]:
+def _entity_to_node(
+    entity: DiscoveredEntity,
+    *,
+    parent_id: str | None,
+    known_type_ids: Collection[str],
+) -> dict[str, Any]:
     node: dict[str, Any] = {
         "id": entity.id,
-        "typeId": entity.kind if entity.kind in _KNOWN_TYPE_IDS else "service",
+        "typeId": entity.kind if entity.kind in known_type_ids else "service",
         "label": entity.name,
         "parentId": parent_id,
         "status": entity.status,
@@ -1398,7 +1435,7 @@ def _singular_resource_kind(kind: str) -> str:
 
 def _type_id_for_component(component: str, app_name: str = "") -> str:
     normalized = _slug(component)
-    if normalized in _KNOWN_TYPE_IDS:
+    if normalized in _SEED_TYPE_IDS:
         return normalized
     mapped = _COMPONENT_TYPES.get(component) or _COMPONENT_TYPES.get(normalized)
     if mapped:

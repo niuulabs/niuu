@@ -339,6 +339,21 @@ def create_app(
 ) -> FastAPI:
     """Create the Observatory ASGI app."""
     loaded_settings = apply_service_database_settings(settings or Settings(), "observatory")
+    app: FastAPI | None = None
+
+    async def registry_type_ids() -> list[str]:
+        """Entity types the registry currently knows about.
+
+        Resolved per call rather than captured at construction: the repository
+        is attached during lifespan, and operators can edit the registry through
+        the API at any time without a restart.
+        """
+        repository = getattr(app.state, "registry_repository", None) if app else None
+        if repository is None:
+            raise RuntimeError("Registry repository is not ready")
+        registry = await repository.get_registry()
+        return [str(entry.get("id", "")) for entry in registry.get("types", [])]
+
     discovery = discovery_service
     if discovery is None:
         guild_cfg = loaded_settings.observatory.guild
@@ -347,6 +362,7 @@ def create_app(
             auth=_create_http_auth_adapter(guild_cfg.auth),
             timeout_seconds=guild_cfg.timeout_seconds,
             discovery_adapter=build_discovery_adapter(loaded_settings.observatory.discovery),
+            registry_type_ids=registry_type_ids,
         )
     directory = agent_directory_service
     if directory is None:
