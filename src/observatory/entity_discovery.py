@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import socket
@@ -1319,13 +1321,39 @@ def topology_from_discovery(
             }
         )
 
+    node_list = list(nodes.values())
+    edge_list = list(edges.values())
     return {
         "timestamp": _iso(),
-        "nodes": list(nodes.values()),
-        "edges": list(edges.values()),
+        "revision": _revision(node_list, edge_list, events),
+        "nodes": node_list,
+        "edges": edge_list,
         "events": events,
         "layoutHints": {"mode": "pack", "scope": "world"},
     }
+
+
+def _revision(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    events: list[Mapping[str, Any]],
+) -> str:
+    """Stable digest of graph content, ignoring when it was materialized.
+
+    Only event *ids* participate, not whole events: adapters stamp their events
+    with a fresh timestamp on every poll, so digesting them whole would make the
+    revision change even when nothing about the topology did.
+    """
+    payload = json.dumps(
+        {
+            "nodes": sorted(nodes, key=lambda node: str(node.get("id", ""))),
+            "edges": sorted(edges, key=lambda edge: str(edge.get("id", ""))),
+            "events": sorted(str(event.get("id", "")) for event in events),
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 def _resolve_edge(

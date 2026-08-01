@@ -309,6 +309,59 @@ class TestObservatoryApp:
         assert "event: topology.snapshot" in first_chunk
         assert second_chunk == ": keepalive\n\n"
 
+    def test_topology_stream_emits_keepalive_when_only_the_timestamp_moved(
+        self, monkeypatch
+    ) -> None:
+        """The bug this replaces: every materialization gets a fresh timestamp,
+        so comparing it resent the whole snapshot on every tick."""
+
+        class _RestampingService(_FakeDiscoveryService):
+            def __init__(self) -> None:
+                self._tick = 0
+
+            async def get_topology_snapshot(
+                self, headers: dict[str, str] | None = None
+            ) -> dict[str, object]:
+                snapshot = await super().get_topology_snapshot(headers=headers)
+                self._tick += 1
+                snapshot["timestamp"] = f"2026-05-13T12:00:0{self._tick}Z"
+                snapshot["revision"] = "unchanged"
+                return snapshot
+
+        async def _fast_sleep(_seconds: float) -> None:
+            return None
+
+        monkeypatch.setattr("observatory.app.asyncio.sleep", _fast_sleep)
+        stream = _topology_stream(_RestampingService())
+        first_chunk = asyncio.run(anext(stream))
+        second_chunk = asyncio.run(anext(stream))
+
+        assert "event: topology.snapshot" in first_chunk
+        assert second_chunk == ": keepalive\n\n"
+
+    def test_topology_stream_resends_when_the_revision_changes(self, monkeypatch) -> None:
+        class _ChangingService(_FakeDiscoveryService):
+            def __init__(self) -> None:
+                self._tick = 0
+
+            async def get_topology_snapshot(
+                self, headers: dict[str, str] | None = None
+            ) -> dict[str, object]:
+                snapshot = await super().get_topology_snapshot(headers=headers)
+                self._tick += 1
+                snapshot["revision"] = f"rev-{self._tick}"
+                return snapshot
+
+        async def _fast_sleep(_seconds: float) -> None:
+            return None
+
+        monkeypatch.setattr("observatory.app.asyncio.sleep", _fast_sleep)
+        stream = _topology_stream(_ChangingService())
+        asyncio.run(anext(stream))
+        second_chunk = asyncio.run(anext(stream))
+
+        assert "event: topology.snapshot" in second_chunk
+
     def test_events_stream_emits_keepalive_when_no_new_events(self, monkeypatch) -> None:
         async def _fast_sleep(_seconds: float) -> None:
             return None

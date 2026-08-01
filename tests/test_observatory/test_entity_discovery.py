@@ -1066,3 +1066,47 @@ def test_placement_names_are_carried_on_the_node() -> None:
     assert node["host"] == "saehrimnir"
     assert node["clusterName"] == ""
     assert node["namespace"] == ""
+
+
+# ── Snapshot revision ────────────────────────────────────────────────────────
+# The SSE stream deduped on `timestamp`, which topology_from_discovery
+# re-stamps on every materialization, so it never matched and every tick
+# resent the whole snapshot.
+
+
+def test_revision_is_stable_across_materializations_of_the_same_graph() -> None:
+    result = DiscoveryResult(entities=[_entity("mimir")])
+
+    assert (
+        topology_from_discovery(result)["revision"] == topology_from_discovery(result)["revision"]
+    )
+
+
+def test_revision_changes_when_the_graph_does() -> None:
+    one = topology_from_discovery(DiscoveryResult(entities=[_entity("mimir")]))
+    two = topology_from_discovery(DiscoveryResult(entities=[_entity("mimir"), _entity("bifrost")]))
+
+    assert one["revision"] != two["revision"]
+
+
+def test_revision_ignores_volatile_event_timestamps() -> None:
+    """Adapters re-stamp their events every poll; that is not a graph change."""
+
+    def snapshot(stamp: str) -> str:
+        return topology_from_discovery(
+            DiscoveryResult(
+                entities=[_entity("mimir")],
+                events=[{"id": "e-1", "type": "info", "timestamp": stamp}],
+            )
+        )["revision"]
+
+    assert snapshot("2026-08-01T12:00:00Z") == snapshot("2026-08-01T12:00:30Z")
+
+
+def test_revision_changes_when_a_new_event_appears() -> None:
+    base = topology_from_discovery(DiscoveryResult(entities=[_entity("mimir")]))
+    with_event = topology_from_discovery(
+        DiscoveryResult(entities=[_entity("mimir")], events=[{"id": "e-1", "type": "info"}])
+    )
+
+    assert base["revision"] != with_event["revision"]

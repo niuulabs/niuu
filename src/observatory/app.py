@@ -89,13 +89,20 @@ async def _topology_stream(
     discovery: ObservatoryDiscoveryService,
     headers: dict[str, str] | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Yield topology snapshots whenever the local view changes."""
-    last_timestamp: str | None = None
+    """Yield topology snapshots whenever the local view changes.
+
+    Deduped on `revision`, which only changes when the graph does. The previous
+    check compared `timestamp`, which is re-stamped on every materialization, so
+    it never matched and the full snapshot went out on every tick regardless of
+    whether anything had changed. `timestamp` remains the fallback for a
+    producer that supplies no revision.
+    """
+    last_marker: str | None = None
     while True:
         snapshot = await discovery.get_topology_snapshot(headers=headers)
-        timestamp = str(snapshot.get("timestamp") or "")
-        if timestamp != last_timestamp:
-            last_timestamp = timestamp
+        marker = str(snapshot.get("revision") or snapshot.get("timestamp") or "")
+        if marker != last_marker:
+            last_marker = marker
             yield _to_sse(snapshot, event="topology.snapshot")
         else:
             yield ": keepalive\n\n"
