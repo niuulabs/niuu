@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 import socket
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -299,8 +299,13 @@ class DiscoveredEntity:
     id: str
     kind: str
     name: str
+    # Placement. Every level is optional and they are not a fixed hierarchy: a
+    # Kubernetes workload arrives with a cluster and a namespace, a resident on
+    # a bare-metal Spark with a host and a realm and neither of the others.
+    realm: str = ""
     cluster: str = ""
     namespace: str = ""
+    host: str = ""
     status: str = "unknown"
     parent_id: str | None = None
     labels: dict[str, str] = field(default_factory=dict)
@@ -1186,10 +1191,38 @@ def topology_from_discovery(
     nodes: dict[str, dict[str, Any]] = {}
     edges: dict[str, ObservatoryEdge] = {}
 
+    # An adapter may discover a realm or a host as an entity in its own right.
+    # Prefer that real node over a synthesised container so the same host does
+    # not appear twice under two different ids.
+    declared_realms = _declared_containers(result.entities, "realm")
+    declared_hosts = _declared_containers(result.entities, "host")
+
     for entity in sorted(
         result.entities,
-        key=lambda item: (item.cluster, item.namespace, item.kind, item.name),
+        key=lambda item: (
+            item.realm,
+            item.cluster,
+            item.namespace,
+            item.host,
+            item.kind,
+            item.name,
+        ),
     ):
+        realm_id = declared_realms.get(entity.realm) or _realm_id(entity.realm)
+        if entity.realm and entity.realm not in declared_realms:
+            nodes.setdefault(
+                realm_id,
+                {
+                    "id": realm_id,
+                    "typeId": "realm",
+                    "label": entity.realm,
+                    "parentId": None,
+                    "status": "healthy",
+                    "sourceKind": "discovery",
+                    "layoutHints": {"mode": "pack", "scope": "world", "packGroup": "realm"},
+                },
+            )
+
         cluster_id = _cluster_id(entity.cluster)
         if entity.cluster:
             nodes.setdefault(
@@ -1205,8 +1238,12 @@ def topology_from_discovery(
                     "layoutHints": {"mode": "pack", "scope": "world", "packGroup": "cluster"},
                 },
             )
+            # Filled in rather than set at creation: whichever entity mentions
+            # the cluster first may not be the one that knows its realm.
+            if entity.realm and not nodes[cluster_id].get("parentId"):
+                nodes[cluster_id]["parentId"] = realm_id
+
         namespace_id = _namespace_id(entity.cluster, entity.namespace)
-        parent_id = entity.parent_id
         if entity.cluster and entity.namespace:
             nodes.setdefault(
                 namespace_id,
@@ -1222,9 +1259,34 @@ def topology_from_discovery(
                     "layoutHints": {"mode": "pack", "scope": "cluster", "packGroup": "namespace"},
                 },
             )
-            parent_id = parent_id or namespace_id
-        elif entity.cluster:
-            parent_id = parent_id or cluster_id
+
+        host_id = declared_hosts.get(entity.host) or _host_id(entity.cluster, entity.host)
+        if entity.host and entity.host not in declared_hosts:
+            nodes.setdefault(
+                host_id,
+                {
+                    "id": host_id,
+                    "typeId": "host",
+                    "label": entity.host,
+                    "parentId": cluster_id
+                    if entity.cluster
+                    else realm_id
+                    if entity.realm
+                    else None,
+                    "status": "unknown",
+                    "sourceKind": "discovery",
+                    "clusterName": entity.cluster,
+                    "layoutHints": {"mode": "pack", "scope": "cluster", "packGroup": "host"},
+                },
+            )
+
+        parent_id = entity.parent_id or _innermost_container(
+            entity,
+            namespace_id=namespace_id,
+            host_id=host_id,
+            cluster_id=cluster_id,
+            realm_id=realm_id,
+        )
 
         if parent_id == entity.id:
             parent_id = None
@@ -1352,8 +1414,12 @@ def _entity_to_node(
         "status": entity.status,
         "sourceKind": entity.source_kind,
         "sourceId": entity.source_uid or entity.id,
+        # Placement carried as names, matching `clusterName`/`namespace`. Empty
+        # is meaningful: it says this entity genuinely has no such container.
+        "realm": entity.realm,
         "clusterName": entity.cluster,
         "namespace": entity.namespace,
+        "host": entity.host,
         "labels": entity.labels,
         "endpoints": entity.endpoints,
         "layoutHints": {"mode": "pack", "scope": "node", "packGroup": entity.kind},
@@ -1416,6 +1482,53 @@ def _cluster_id(cluster: str) -> str:
 
 def _namespace_id(cluster: str, namespace: str) -> str:
     return f"namespace-{_slug(cluster or 'unknown')}-{_slug(namespace or 'unknown')}"
+
+
+def _realm_id(realm: str) -> str:
+    return f"realm-{_slug(realm or 'unknown')}"
+
+
+def _host_id(cluster: str, host: str) -> str:
+    """Host ids are cluster-scoped: two clusters may both have a `node-1`.
+
+    A host outside any cluster is keyed on its name alone, which is what makes
+    a bare-metal box addressable without inventing a cluster for it.
+    """
+    if not cluster:
+        return f"host-{_slug(host or 'unknown')}"
+    return f"host-{_slug(cluster)}-{_slug(host or 'unknown')}"
+
+
+def _declared_containers(entities: Iterable[DiscoveredEntity], kind: str) -> dict[str, str]:
+    """Map container name to node id for entities that declare themselves one."""
+    return {entity.name: entity.id for entity in entities if entity.kind == kind and entity.name}
+
+
+def _innermost_container(
+    entity: DiscoveredEntity,
+    *,
+    namespace_id: str,
+    host_id: str,
+    cluster_id: str,
+    realm_id: str,
+) -> str | None:
+    """Pick the tightest container that actually applies to this entity.
+
+    Namespace wins over host for a Kubernetes workload because that is the
+    containment the graph is drawn around; the host stays a sibling under the
+    cluster. Outside Kubernetes there is no namespace, so the host becomes the
+    container — and an entity with no placement at all stays top-level rather
+    than being forced under a fabricated cluster.
+    """
+    if entity.cluster and entity.namespace:
+        return namespace_id
+    if entity.host:
+        return host_id
+    if entity.cluster:
+        return cluster_id
+    if entity.realm:
+        return realm_id
+    return None
 
 
 def _singular_resource_kind(kind: str) -> str:

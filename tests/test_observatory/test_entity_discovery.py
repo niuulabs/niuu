@@ -883,3 +883,186 @@ def test_no_registry_warning_when_every_type_is_known() -> None:
     snapshot = topology_from_discovery(DiscoveryResult(entities=[_entity("mimir")]))
 
     assert [e for e in snapshot["events"] if e.get("subject") == "registry"] == []
+
+
+# ── Placement outside Kubernetes ─────────────────────────────────────────────
+# Residents also run as bare-metal systemd units and as Docker containers on a
+# workstation. Forcing every entity under a synthesised cluster/namespace is
+# what made the graph Kubernetes-shaped.
+
+
+def _node(snapshot: dict, node_id: str) -> dict:
+    return next(n for n in snapshot["nodes"] if n["id"] == node_id)
+
+
+def test_bare_metal_resident_is_placed_on_its_host_not_a_fake_cluster() -> None:
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(
+                    id="ravn-ivaldi",
+                    kind="ravn_long",
+                    name="ivaldi",
+                    realm="sparks",
+                    host="saehrimnir",
+                )
+            ]
+        )
+    )
+
+    assert _node(snapshot, "ravn-ivaldi")["parentId"] == "host-saehrimnir"
+    assert not [n for n in snapshot["nodes"] if n["typeId"] == "cluster"]
+    assert not [n for n in snapshot["nodes"] if n["typeId"] == "namespace"]
+
+
+def test_a_host_outside_a_cluster_hangs_from_its_realm() -> None:
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(
+                    id="ravn-ivaldi",
+                    kind="ravn_long",
+                    name="ivaldi",
+                    realm="sparks",
+                    host="saehrimnir",
+                )
+            ]
+        )
+    )
+
+    assert _node(snapshot, "host-saehrimnir")["parentId"] == "realm-sparks"
+    assert _node(snapshot, "realm-sparks")["parentId"] is None
+
+
+def test_an_entity_with_no_placement_stays_top_level() -> None:
+    snapshot = topology_from_discovery(
+        DiscoveryResult(entities=[DiscoveredEntity(id="lonely", kind="mimir", name="mímir")])
+    )
+
+    assert _node(snapshot, "lonely")["parentId"] is None
+    assert len(snapshot["nodes"]) == 1
+
+
+def test_a_cluster_is_nested_under_its_realm() -> None:
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(
+                    id="svc", kind="service", name="api", realm="asgard", cluster="ymir"
+                )
+            ]
+        )
+    )
+
+    assert _node(snapshot, "cluster-ymir")["parentId"] == "realm-asgard"
+
+
+def test_a_clusters_realm_is_filled_in_by_a_later_entity() -> None:
+    """Whichever entity mentions the cluster first may not know its realm."""
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(id="a", kind="service", name="a", cluster="ymir"),
+                DiscoveredEntity(id="b", kind="service", name="b", realm="asgard", cluster="ymir"),
+            ]
+        )
+    )
+
+    assert _node(snapshot, "cluster-ymir")["parentId"] == "realm-asgard"
+
+
+def test_namespace_still_wins_for_a_kubernetes_workload_on_a_named_host() -> None:
+    """The host stays a sibling under the cluster; namespace is the containment
+    the graph is drawn around."""
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(
+                    id="pod-1",
+                    kind="service",
+                    name="api",
+                    cluster="ymir",
+                    namespace="niuu",
+                    host="node-1",
+                )
+            ]
+        )
+    )
+
+    assert _node(snapshot, "pod-1")["parentId"] == "namespace-ymir-niuu"
+    assert _node(snapshot, "host-ymir-node-1")["parentId"] == "cluster-ymir"
+
+
+def test_host_ids_are_cluster_scoped_so_two_clusters_can_both_have_node_1() -> None:
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(id="a", kind="service", name="a", cluster="ymir", host="node-1"),
+                DiscoveredEntity(id="b", kind="service", name="b", cluster="noatun", host="node-1"),
+            ]
+        )
+    )
+
+    host_ids = {n["id"] for n in snapshot["nodes"] if n["typeId"] == "host"}
+    assert host_ids == {"host-ymir-node-1", "host-noatun-node-1"}
+
+
+def test_a_discovered_host_is_not_duplicated_by_a_synthesised_one() -> None:
+    """An adapter that discovers the host itself owns that node."""
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(
+                    id="local:saehrimnir", kind="host", name="saehrimnir", realm="sparks"
+                ),
+                DiscoveredEntity(
+                    id="ravn-ivaldi",
+                    kind="ravn_long",
+                    name="ivaldi",
+                    realm="sparks",
+                    host="saehrimnir",
+                ),
+            ]
+        )
+    )
+
+    hosts = [n for n in snapshot["nodes"] if n["typeId"] == "host"]
+    assert [h["id"] for h in hosts] == ["local:saehrimnir"]
+    assert _node(snapshot, "ravn-ivaldi")["parentId"] == "local:saehrimnir"
+
+
+def test_a_discovered_realm_is_not_duplicated_by_a_synthesised_one() -> None:
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(id="realm:sparks", kind="realm", name="sparks"),
+                DiscoveredEntity(id="ravn-ivaldi", kind="ravn_long", name="ivaldi", realm="sparks"),
+            ]
+        )
+    )
+
+    realms = [n for n in snapshot["nodes"] if n["typeId"] == "realm"]
+    assert [r["id"] for r in realms] == ["realm:sparks"]
+    assert _node(snapshot, "ravn-ivaldi")["parentId"] == "realm:sparks"
+
+
+def test_placement_names_are_carried_on_the_node() -> None:
+    snapshot = topology_from_discovery(
+        DiscoveryResult(
+            entities=[
+                DiscoveredEntity(
+                    id="ravn-ivaldi",
+                    kind="ravn_long",
+                    name="ivaldi",
+                    realm="sparks",
+                    host="saehrimnir",
+                )
+            ]
+        )
+    )
+
+    node = _node(snapshot, "ravn-ivaldi")
+    assert node["realm"] == "sparks"
+    assert node["host"] == "saehrimnir"
+    assert node["clusterName"] == ""
+    assert node["namespace"] == ""
