@@ -38,6 +38,7 @@ export {
 } from './adapters/mock';
 export {
   buildObservatoryRegistryHttpAdapter,
+  buildObservatoryTopologyAggregateAdapter,
   buildObservatoryTopologySseStream,
   buildObservatoryEventsSseStream,
   buildObservatoryAgentDirectoryHttpAdapter,

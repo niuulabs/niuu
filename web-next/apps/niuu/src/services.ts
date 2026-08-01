@@ -45,7 +45,7 @@ import {
   createMockTopologyStream,
   createMockEventStream,
   buildObservatoryRegistryHttpAdapter,
-  buildObservatoryTopologySseStream,
+  buildObservatoryTopologyAggregateAdapter,
   buildObservatoryEventsSseStream,
   buildObservatoryAgentDirectoryHttpAdapter,
 } from '@niuulabs/plugin-observatory';
@@ -454,7 +454,10 @@ function resolveObservatoryServiceBase(
     return explicitBase;
   }
 
-  if (serviceKey === 'observatory.agents') {
+  // Both of these are estate-wide: the Guild merges every cluster plus every
+  // source that pushes instead of being polled. A single cluster's endpoint
+  // would render a fraction of the graph and give no sign the rest exists.
+  if (serviceKey === 'observatory.agents' || serviceKey === 'observatory.topology') {
     const aggregateBase = resolveNiuuRegistryBase(config);
     if (aggregateBase) return `${aggregateBase}/observatory`;
   }
@@ -1432,7 +1435,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     ? buildObservatoryRegistryHttpAdapter(createApiClient(observatoryRegistryBase))
     : demoService(config, 'observatory.registry', createMockRegistryRepository);
   const observatoryTopology = observatoryTopologyBase
-    ? buildObservatoryTopologySseStream(observatoryTopologyBase)
+    ? buildObservatoryTopologyAggregateAdapter(createApiClient(observatoryTopologyBase))
     : demoService(config, 'observatory.topology', createMockTopologyStream);
   const observatoryEvents = observatoryEventsBase
     ? buildObservatoryEventsSseStream(observatoryEventsBase)
