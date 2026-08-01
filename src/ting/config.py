@@ -1088,6 +1088,13 @@ class A2AConfig(BaseModel):
         default_factory=list,
         description="Exact HTTPS origins allowed to receive A2A task callbacks.",
     )
+    push_auth: HttpAuthAdapterConfig = Field(
+        default_factory=HttpAuthAdapterConfig,
+        description=(
+            "Dynamic auth adapter used by Ting for A2A callbacks. Production "
+            "deployments should use short-lived workload identity credentials."
+        ),
+    )
     push_timeout_seconds: float = Field(
         default=10.0,
         ge=1.0,

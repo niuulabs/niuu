@@ -29,6 +29,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
+from niuu.ports.workload_identity import WorkloadIdentityVerifier
+from niuu.utils import resolve_secret_kwargs
 from ravn.adapters.channels.gateway import RavnGateway
 from ravn.config import HttpChannelConfig
 from ravn.domain.events import RavnEvent
@@ -77,15 +79,25 @@ class HttpGateway:
         config: HttpChannelConfig,
         gateway: RavnGateway,
         resident_runtime: Any | None = None,
+        a2a_push_verifier: WorkloadIdentityVerifier | None = None,
     ) -> None:
         self._config = config
         self._gateway = gateway
         self._resident_runtime = resident_runtime
+        self._a2a_push_verifier = a2a_push_verifier or self._build_a2a_push_verifier()
         self._resident_status_provider: (
             Callable[[], dict[str, Any] | Awaitable[dict[str, Any]]] | None
         ) = None
         self._translator_cls: type[EventTranslatorPort] = _import_class(config.translator)
         self._app = self._build_app()
+
+    def _build_a2a_push_verifier(self) -> WorkloadIdentityVerifier | None:
+        auth = self._config.a2a_push_auth
+        if not auth.adapter.strip():
+            return None
+        kwargs = resolve_secret_kwargs(auth.kwargs, auth.secret_kwargs_env)
+        verifier_class = _import_class(auth.adapter)
+        return verifier_class(**kwargs)
 
     @property
     def app(self) -> FastAPI:
@@ -183,22 +195,37 @@ class HttpGateway:
                 @app.post("/a2a/push")
                 async def a2a_push(
                     request: Request,
-                    x_a2a_notification_token: str | None = Header(default=None),
+                    authorization: str | None = Header(default=None),
                 ) -> dict[str, Any]:
-                    """Persist an authenticated A2A task update and wake the resident."""
-                    expected = self._config.a2a_push_notification_token.get_secret_value().strip()
-                    if not expected:
+                    """Persist a workload-authenticated A2A task update and wake the resident."""
+                    if self._a2a_push_verifier is None:
                         raise HTTPException(
                             status_code=503,
-                            detail="A2A push receiver is disabled because its token is missing",
+                            detail="A2A push receiver has no workload identity verifier",
                         )
-                    if not x_a2a_notification_token or not secrets.compare_digest(
-                        x_a2a_notification_token,
-                        expected,
-                    ):
+                    scheme, _, presented = (authorization or "").partition(" ")
+                    if scheme.casefold() != "bearer" or not presented.strip():
                         raise HTTPException(
-                            status_code=401, detail="Invalid A2A notification token"
+                            status_code=401,
+                            detail="A2A callback requires a bearer workload identity",
                         )
+                    try:
+                        claims = await self._a2a_push_verifier.verify(presented.strip())
+                    except Exception as exc:
+                        logger.warning(
+                            "Rejected A2A callback workload identity: %s",
+                            type(exc).__name__,
+                        )
+                        raise HTTPException(
+                            status_code=401,
+                            detail="Invalid A2A callback workload identity",
+                        ) from exc
+                    for claim, expected in self._config.a2a_push_required_claims.items():
+                        if claims.get(claim) != expected:
+                            raise HTTPException(
+                                status_code=403,
+                                detail="A2A callback workload is not authorized",
+                            )
                     raw = await request.body()
                     if len(raw) > self._config.a2a_push_max_body_bytes:
                         raise HTTPException(

@@ -189,10 +189,6 @@ def _build_tool_build_backend(
         kwargs["activity_emitter"] = activity_emitter
     if _constructor_accepts_kwarg(cls, "push_callback_url"):
         kwargs["push_callback_url"] = settings.gateway.platform.a2a_push_callback_url
-    if _constructor_accepts_kwarg(cls, "push_notification_token"):
-        kwargs["push_notification_token"] = (
-            settings.gateway.platform.a2a_push_notification_token.get_secret_value().strip()
-        )
     return cls(**kwargs)
 
 

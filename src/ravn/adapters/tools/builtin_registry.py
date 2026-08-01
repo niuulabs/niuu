@@ -404,9 +404,6 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "activity_emitter": ctx.get("a2a_activity_emitter"),
             "default_connection_id": s.gateway.platform.a2a_default_connection_id,
             "push_callback_url": s.gateway.platform.a2a_push_callback_url,
-            "push_notification_token": (
-                s.gateway.platform.a2a_push_notification_token.get_secret_value().strip()
-            ),
         },
     ),
     "ting_plan": BuiltinToolDef(

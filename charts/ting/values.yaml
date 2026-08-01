@@ -165,6 +165,10 @@ a2a:
   extraArtifactFiles: []
   # -- Public origin for interface URLs on the card. Leave empty to use the request base URL.
   publicBaseUrl: ""
+  # -- Dynamic auth adapter used for outbound A2A push callbacks.
+  pushAuth:
+    adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
+    kwargs: {}
 
 # Review configuration
 review:

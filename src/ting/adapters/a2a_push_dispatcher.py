@@ -11,6 +11,7 @@ import httpx
 from a2a.types import TaskPushNotificationConfig
 from google.protobuf.json_format import MessageToDict
 
+from niuu.ports.http_auth import HttpAuthPort
 from ting.domain.models import WorkflowCampaign
 from ting.ports.a2a_push import A2APushConfigRepositoryPort, A2APushDelivery
 
@@ -36,6 +37,7 @@ class A2APushDispatcher:
         self,
         *,
         repo: A2APushConfigRepositoryPort,
+        auth: HttpAuthPort,
         allowed_callback_origins: list[str],
         timeout_seconds: float,
         poll_seconds: float,
@@ -48,6 +50,7 @@ class A2APushDispatcher:
         max_configs_page_size: int,
     ) -> None:
         self._repo = repo
+        self._auth = auth
         self._allowed_origins = frozenset(
             callback_origin(origin) for origin in allowed_callback_origins
         )
@@ -84,9 +87,14 @@ class A2APushDispatcher:
         origin = callback_origin(config.url)
         if origin not in self._allowed_origins:
             raise ValueError(f"A2A push callback origin is not allowed: {origin}")
+        if config.token or config.authentication.credentials:
+            raise ValueError(
+                "A2A push callback inline credentials are not supported; "
+                "use the configured workload identity"
+            )
         scheme = config.authentication.scheme.strip().lower()
-        if scheme and scheme != "bearer":
-            raise ValueError("A2A push callback authentication supports bearer only")
+        if scheme != "bearer":
+            raise ValueError("A2A push callback authentication must declare bearer")
 
     async def save_config(
         self,
@@ -161,12 +169,15 @@ class A2APushDispatcher:
         config = delivery.config
         try:
             self.validate_config(config)
-            headers: dict[str, str] = {"A2A-Version": "1.0"}
-            if config.token:
-                headers["X-A2A-Notification-Token"] = config.token
-            if config.authentication.scheme.lower() == "bearer":
-                headers["Authorization"] = f"Bearer {config.authentication.credentials}"
+            headers: dict[str, str] = {"A2A-Version": "1.0", **self._auth.headers()}
             response = await self._client.post(config.url, json=delivery.payload, headers=headers)
+            if response.status_code == 401 and self._auth.invalidate():
+                headers = {"A2A-Version": "1.0", **self._auth.headers()}
+                response = await self._client.post(
+                    config.url,
+                    json=delivery.payload,
+                    headers=headers,
+                )
             response.raise_for_status()
         except Exception as exc:
             attempts = delivery.attempt_count + 1

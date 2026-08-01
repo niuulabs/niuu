@@ -942,7 +942,6 @@ async def test_a2a_backend_suspends_for_push_and_resumes_with_one_get() -> None:
         client,
         workflow_id="wf-1",
         push_callback_url="https://ivaldi.example/a2a/push",
-        push_notification_token="callback-secret",
     )
 
     with pytest.raises(ToolBuildPendingError) as raised:
@@ -963,7 +962,8 @@ async def test_a2a_backend_suspends_for_push_and_resumes_with_one_get() -> None:
     registration = client.post_bodies[1]["params"]
     assert registration["taskId"] == "task-1"
     assert registration["url"] == "https://ivaldi.example/a2a/push"
-    assert registration["token"] == "callback-secret"
+    assert registration["authentication"] == {"scheme": "Bearer"}
+    assert "token" not in registration
 
     result = await backend.build(replace(_request(), continuation=raised.value.continuation))
 
