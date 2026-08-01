@@ -40,6 +40,7 @@ import {
 } from '@niuulabs/plugin-ting';
 import { createMimirMockAdapter, buildMimirHttpAdapter } from '@niuulabs/plugin-mimir';
 import {
+  createMockAgentDirectory,
   createMockRegistryRepository,
   createMockTopologyStream,
   createMockEventStream,
@@ -47,7 +48,6 @@ import {
   buildObservatoryTopologySseStream,
   buildObservatoryEventsSseStream,
   buildObservatoryAgentDirectoryHttpAdapter,
-  type IAgentDirectory,
 } from '@niuulabs/plugin-observatory';
 import {
   createMockVolundrService,
@@ -1439,7 +1439,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     : demoService(config, 'observatory.events', createMockEventStream);
   const observatoryAgents = observatoryAgentsBase
     ? buildObservatoryAgentDirectoryHttpAdapter(createApiClient(observatoryAgentsBase))
-    : unavailableService<IAgentDirectory>('observatory.agents');
+    : demoService(config, 'observatory.agents', createMockAgentDirectory);
   // ── Valkyrie ──
   const valkyrieBase = resolveValkyrieServiceBase(config, 'valkyrie');
   const valkyrieReviewsBase = resolveValkyrieServiceBase(config, 'valkyrie.reviews');

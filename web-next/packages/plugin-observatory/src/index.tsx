@@ -31,6 +31,7 @@ export const observatoryPlugin = definePlugin({
 });
 
 export {
+  createMockAgentDirectory,
   createMockRegistryRepository,
   createMockTopologyStream,
   createMockEventStream,

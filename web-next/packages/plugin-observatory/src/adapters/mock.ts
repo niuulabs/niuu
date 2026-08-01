@@ -1,11 +1,22 @@
 import type {
+  IAgentDirectory,
   IRegistryRepository,
   ILiveTopologyStream,
   IEventStream,
   TopologyListener,
   ObservatoryEventListener,
 } from '../ports';
-import type { Registry, Topology, TopologyNode, TopologyEdge, ObservatoryEvent } from '../domain';
+import type {
+  AgentDirectoryEntry,
+  AgentDirectoryFilters,
+  AgentDirectoryPage,
+  AgentKind,
+  Registry,
+  Topology,
+  TopologyNode,
+  TopologyEdge,
+  ObservatoryEvent,
+} from '../domain';
 
 // ── Seed registry (mirrors the earlier prototype DEFAULT_REGISTRY seed data) ──
 
@@ -472,6 +483,7 @@ const SEED_NODES: TopologyNode[] = [
     zone: 'asgard',
     cluster: 'valaskjalf',
     purpose: 'refactor bifrost rule engine',
+    flockId: 'forge-mesh',
     state: 'working',
     activity: 'delegating',
   },
@@ -483,6 +495,7 @@ const SEED_NODES: TopologyNode[] = [
     status: 'healthy',
     zone: 'asgard',
     hostId: 'host-mjolnir',
+    flockId: 'forge-mesh',
     persona: 'thought',
     specialty: 'architecture & design',
     tokens: 42800,
@@ -496,6 +509,7 @@ const SEED_NODES: TopologyNode[] = [
     status: 'idle',
     zone: 'asgard',
     hostId: 'host-mjolnir',
+    flockId: 'forge-mesh',
     persona: 'memory',
     specialty: 'history & context',
     tokens: 18200,
@@ -604,6 +618,143 @@ export function createMockEventStream(): IEventStream {
       return () => {
         // mock: events already emitted synchronously; no interval to clear
       };
+    },
+  };
+}
+
+// ── Agent directory (A2A) ─────────────────────────────────────────────────────
+
+/** Which directory kind a topology node projects as. */
+function agentKindFor(node: TopologyNode): AgentKind | null {
+  if (node.typeId === 'ravn_long') return 'resident';
+  if (node.typeId === 'valkyrie') return 'steward';
+  if (node.typeId === 'run') return 'workflow-session';
+  return null;
+}
+
+const SKILLS_BY_NODE: Record<string, string[]> = {
+  'ravn-huginn': ['design_review', 'architecture_sketch', 'tradeoff_analysis'],
+  'ravn-muninn': ['recall_context', 'session_distil', 'fact_detect'],
+  'run-0': ['refactor_plan', 'apply_patch', 'verify_build'],
+};
+
+/**
+ * Project the agent-bearing seed nodes into directory entries.
+ *
+ * The card fields mirror the shape a real A2A agent card carries so the UI can
+ * be built against the same contract the HTTP adapter returns.
+ */
+function seedAgents(): AgentDirectoryEntry[] {
+  return SEED_NODES.flatMap((node) => {
+    const kind = agentKindFor(node);
+    if (!kind) return [];
+
+    const clusterId = node.cluster ?? node.zone ?? 'valaskjalf';
+    const host = `${node.label}.${clusterId}.asgard.niuu.world`;
+    const skillIds = SKILLS_BY_NODE[node.id] ?? [];
+
+    return [
+      {
+        id: `agent-${node.id}`,
+        canonicalId: `niuu:agent:${node.id}`,
+        sourceAgentId: node.id,
+        sourceInstanceId: `observatory-${clusterId}`,
+        clusterId,
+        environmentId: null,
+        topologyNodeId: node.id,
+        name: node.label,
+        description:
+          node.purpose ?? node.specialty ?? `${kind} projected from topology node ${node.id}`,
+        kind,
+        cardUrl: `https://${host}/.well-known/agent-card.json`,
+        cardVersion: '0.0.1',
+        cardHash: `sha256:${node.id}`,
+        signatureVerified: kind === 'workflow-session' ? null : true,
+        signatureKeyIds: kind === 'workflow-session' ? [] : ['niuu-a2a-signing'],
+        signatureKeyFingerprints: kind === 'workflow-session' ? [] : ['SHA256:mock-fingerprint'],
+        skillIds,
+        tags: [kind, clusterId],
+        defaultInputModes: ['text/plain', 'application/json'],
+        defaultOutputModes: ['text/plain', 'application/json'],
+        supportedInterfaces: [
+          {
+            url: `https://${host}/a2a`,
+            protocolBinding: 'JSONRPC',
+            protocolVersion: '0.3.0',
+            tenant: 'niuu.world',
+          },
+        ],
+        capabilities: {
+          streaming: true,
+          pushNotifications: kind !== 'workflow-session',
+          stateTransitionHistory: true,
+        },
+        securitySchemes: { oauth2: { type: 'oauth2', flows: { clientCredentials: {} } } },
+        securityRequirements: [{ oauth2: [] }],
+        observedStatus: node.status,
+        activity: node.activity ?? 'idle',
+        lastSeen: SEED_TOPOLOGY.timestamp,
+        ownerId: null,
+        tenantId: 'niuu.world',
+        visibility: 'realm',
+        provenance: [
+          {
+            sourceAgentId: node.id,
+            sourceInstanceId: `observatory-${clusterId}`,
+            clusterId,
+            environmentId: null,
+            topologyNodeId: node.id,
+          },
+        ],
+      },
+    ];
+  });
+}
+
+const SEED_AGENTS: AgentDirectoryEntry[] = seedAgents();
+
+/** Every filter is AND-ed; each is satisfied when the entry matches any value. */
+function matchesFilters(entry: AgentDirectoryEntry, filters: AgentDirectoryFilters): boolean {
+  const anyOf = (values: readonly string[] | undefined, has: (value: string) => boolean) =>
+    !values || values.length === 0 || values.some(has);
+
+  return (
+    anyOf(filters.skills, (skill) => entry.skillIds.includes(skill)) &&
+    anyOf(filters.tags, (tag) => entry.tags.includes(tag)) &&
+    anyOf(filters.kinds, (kind) => entry.kind === kind) &&
+    anyOf(filters.statuses, (status) => entry.observedStatus === status) &&
+    anyOf(filters.clusterIds, (clusterId) => entry.clusterId === clusterId) &&
+    anyOf(filters.instanceIds, (instanceId) => entry.sourceInstanceId === instanceId) &&
+    anyOf(filters.environmentIds, (envId) => entry.environmentId === envId)
+  );
+}
+
+export function createMockAgentDirectory(): IAgentDirectory {
+  return {
+    async listAgents(filters: AgentDirectoryFilters = {}): Promise<AgentDirectoryPage> {
+      const items = SEED_AGENTS.filter((entry) => matchesFilters(entry, filters));
+      return structuredClone({
+        items,
+        warnings: [],
+        sources: [
+          {
+            instanceId: 'observatory-valaskjalf',
+            clusterId: 'valaskjalf',
+            status: 'healthy' as const,
+            revision: SEED_TOPOLOGY.timestamp,
+            message: '',
+          },
+        ],
+        partial: false,
+        revision: SEED_TOPOLOGY.timestamp,
+      });
+    },
+
+    async getAgent(agentId: string): Promise<AgentDirectoryEntry> {
+      const entry = SEED_AGENTS.find((a) => a.id === agentId || a.sourceAgentId === agentId);
+      // Fail loudly: a missing agent is a wiring bug, not an empty result.
+      if (!entry) throw new Error(`Unknown agent: ${agentId}`);
+      return structuredClone(entry);
     },
   };
 }
