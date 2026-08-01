@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
@@ -24,7 +23,11 @@ from niuu.domain.models import (
     Principal,
     RegisteredInstance,
 )
-from niuu.domain.observatory import ObservatoryFragment, TopologySourceHealth
+from niuu.domain.observatory import (
+    ObservatoryFragment,
+    TopologySnapshot,
+    TopologySourceHealth,
+)
 from niuu.domain.services.agent_directory import AgentDirectoryAggregationService
 from niuu.domain.services.instances import (
     InstanceAccessError,
@@ -32,6 +35,9 @@ from niuu.domain.services.instances import (
     InstanceValidationError,
 )
 from niuu.domain.services.observatory_fragments import ObservatoryFragmentInboxService
+from niuu.domain.services.observatory_topology import (
+    ObservatoryTopologyAggregationService,
+)
 from niuu.domain.services.token_scope import TOPOLOGY_PUSH_SCOPE, require_build_scope
 
 
@@ -303,311 +309,6 @@ def _iso(ts: datetime) -> str:
     return ts.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _probe_status(probe: InstanceTestResponse) -> str:
-    if probe.ok:
-        return "healthy"
-    if probe.status_code is None and not probe.message:
-        return "unknown"
-    return "failed"
-
-
-def _kind_type_id(kind: InstanceKind) -> str:
-    if kind is InstanceKind.VOLUNDR:
-        return "volundr"
-    if kind is InstanceKind.TING:
-        return "ting"
-    if kind is InstanceKind.BIFROST:
-        return "bifrost"
-    if kind is InstanceKind.MIMIR:
-        return "mimir"
-    return "service"
-
-
-def _kind_svc_type(kind: InstanceKind) -> str:
-    return kind.value
-
-
-def _overlay_instance_nodes(
-    nodes: list[dict[str, Any]],
-    edges: list[dict[str, str]],
-    instances: list[RegisteredInstance],
-    probe_by_id: dict[str, InstanceTestResponse],
-) -> None:
-    per_kind_index: dict[InstanceKind, int] = {}
-
-    for instance in instances:
-        probe = probe_by_id[instance.id]
-        kind_index = per_kind_index.get(instance.kind, 0)
-        per_kind_index[instance.kind] = kind_index + 1
-        cluster_name = _instance_cluster_name(instance)
-        namespace = _instance_namespace(instance)
-        parent_id = (
-            _ensure_deployment_cluster_node(
-                nodes,
-                cluster_name=cluster_name,
-                namespace=namespace,
-            )
-            if cluster_name
-            else _ensure_deployment_cluster_node(
-                nodes,
-                cluster_name="unknown",
-                namespace=namespace,
-            )
-        )
-        node_id = f"instance:{instance.kind.value}:{_slug(instance.slug or instance.name)}"
-        type_id = _kind_type_id(instance.kind)
-        svc_type = _kind_svc_type(instance.kind)
-        node_payload: dict[str, Any] = {
-            "id": node_id,
-            "typeId": type_id,
-            "label": instance.name,
-            "parentId": parent_id,
-            "status": _probe_status(probe),
-            "svcType": svc_type,
-            "slug": instance.slug,
-            "baseUrl": instance.base_url,
-            "visibility": instance.visibility.value,
-            "default": instance.is_default,
-            "enabled": instance.enabled,
-            "sourceKind": svc_type,
-            "sourceId": instance.id,
-            "clusterName": cluster_name,
-            "namespace": namespace,
-            "layoutHints": {
-                "mode": "pack",
-                "scope": "node",
-                "packGroup": svc_type,
-                "order": 0 if instance.is_default else 10 + kind_index,
-            },
-        }
-        nodes.append(node_payload)
-
-        if instance.kind is InstanceKind.BIFROST:
-            for model_index, provider in enumerate(("Anthropic", "OpenAI", "Local")):
-                model_id = f"{node_id}:model:{model_index}"
-                nodes.append(
-                    {
-                        "id": model_id,
-                        "typeId": "model",
-                        "label": provider.lower(),
-                        "parentId": node_id,
-                        "status": "healthy",
-                        "provider": provider,
-                        "location": "external" if provider != "Local" else "internal",
-                    }
-                )
-                edges.append(
-                    {
-                        "id": f"edge:{model_id}",
-                        "sourceId": node_id,
-                        "targetId": model_id,
-                        "kind": "soft",
-                        "relationType": "uses",
-                        "label": "uses",
-                        "confidence": "inferred",
-                        "evidence": {
-                            "adapter": "rest_instances",
-                            "field": "InstanceKind.BIFROST",
-                        },
-                    }
-                )
-
-
-def _ravn_wardens_url(base_url: str) -> str:
-    if base_url.rstrip("/").endswith("/api/v1/ravn"):
-        return build_remote_url(base_url, "", "/wardens")
-    if base_url.rstrip("/").endswith("/ravn"):
-        return build_remote_url(base_url, "", "/wardens")
-    return build_remote_url(base_url, "/api/v1/ravn", "/wardens")
-
-
-async def _load_ravn_wardens(
-    instance: RegisteredInstance,
-    request: Request,
-) -> list[dict[str, Any]]:
-    try:
-        remote_url = _ravn_wardens_url(instance.base_url)
-    except ValueError:
-        return []
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            response = await client.get(remote_url, headers=_forward_headers(request))
-            response.raise_for_status()
-            payload = response.json()
-    except Exception:
-        return []
-    return payload if isinstance(payload, list) else []
-
-
-def _warden_status(warden: dict[str, Any]) -> str:
-    runtime = warden.get("runtime") if isinstance(warden.get("runtime"), dict) else {}
-    supervisor = warden.get("supervisor") if isinstance(warden.get("supervisor"), dict) else {}
-    observation = (
-        supervisor.get("observation") if isinstance(supervisor.get("observation"), dict) else {}
-    )
-    observed_status = str(observation.get("status") or "").lower()
-    if str(runtime.get("state") or "").lower() == "active":
-        return "healthy"
-    if observed_status == "running":
-        return "healthy"
-    if observed_status in {"degraded", "missing"}:
-        return "failed"
-    return "unknown"
-
-
-def _overlay_ravn_warden_nodes(
-    nodes: list[dict[str, Any]],
-    edges: list[dict[str, str]],
-    events: list[dict[str, str]],
-    *,
-    ravn_instance: RegisteredInstance,
-    wardens: list[dict[str, Any]],
-    now: datetime,
-) -> None:
-    if not wardens:
-        return
-
-    ravn_slug = _slug(ravn_instance.slug or ravn_instance.name)
-    ravn_node_id = f"instance:{ravn_instance.kind.value}:{ravn_slug}"
-    ravn_node = next((node for node in nodes if node["id"] == ravn_node_id), None)
-    parent_id = ravn_node.get("parentId") if ravn_node else "cluster-unknown"
-    cluster_name = str(ravn_node.get("clusterName") or "") if ravn_node else ""
-    namespace = str(ravn_node.get("namespace") or "") if ravn_node else ""
-    mimir_node = next((node for node in nodes if node.get("typeId") == "mimir"), None)
-    mimir_node_id = str(mimir_node.get("id")) if mimir_node else ""
-
-    for index, warden in enumerate(wardens):
-        warden_id = str(warden.get("id") or "").strip()
-        if not warden_id:
-            continue
-        mimir = warden.get("mimir") if isinstance(warden.get("mimir"), dict) else {}
-        schedules = warden.get("schedules") if isinstance(warden.get("schedules"), dict) else {}
-        node_id = f"warden:{warden_id}"
-        nodes.append(
-            {
-                "id": node_id,
-                "typeId": "ravn_long",
-                "label": str(warden.get("name") or warden_id),
-                "parentId": parent_id,
-                "status": _warden_status(warden),
-                "svcType": "ravn",
-                "persona": str(warden.get("persona") or ""),
-                "model": str(warden.get("model") or ""),
-                "sourceKind": "warden",
-                "sourceId": warden_id,
-                "baseUrl": ravn_instance.base_url,
-                "deployment": str(warden.get("deployment") or ""),
-                "clusterName": cluster_name,
-                "namespace": namespace,
-                "mimirMounts": list(mimir.get("mount_names") or []),
-                "writeMount": str(mimir.get("write_mount") or ""),
-                "dreamCycle": str(schedules.get("dream_cycle_cron_expression") or ""),
-                "layoutHints": {
-                    "mode": "pack",
-                    "scope": "node",
-                    "packGroup": "ravn",
-                    "order": 20 + index,
-                },
-            }
-        )
-        edges.append(
-            {
-                "id": f"edge:ravn-instance:{ravn_instance.id}:warden:{warden_id}",
-                "sourceId": ravn_node_id,
-                "targetId": node_id,
-                "kind": "soft",
-                "relationType": "manages",
-                "label": "manages",
-                "confidence": "observed",
-                "evidence": {
-                    "adapter": "rest_instances",
-                    "field": "/api/v1/ravn/wardens",
-                },
-            }
-        )
-        if mimir_node_id:
-            edges.append(
-                {
-                    "id": f"edge:warden:{warden_id}:mimir",
-                    "sourceId": node_id,
-                    "targetId": mimir_node_id,
-                    "kind": "dashed-long",
-                    "relationType": "writes",
-                    "label": "writes",
-                    "confidence": "observed",
-                    "evidence": {
-                        "adapter": "rest_instances",
-                        "field": "warden.mimir",
-                    },
-                }
-            )
-        events.append(
-            {
-                "id": f"warden:{warden_id}:discovered",
-                "level": "info",
-                "service": "ravn",
-                "message": (
-                    f"{warden.get('name') or warden_id} discovered through {ravn_instance.name}"
-                ),
-                "timestamp": _iso(now),
-            }
-        )
-
-
-async def _build_observatory_snapshot(
-    instances: list[RegisteredInstance],
-    request: Request | None = None,
-) -> dict[str, Any]:
-    now = datetime.now(UTC)
-    probes = await asyncio.gather(*[_probe_instance(instance) for instance in instances])
-    probe_by_id = {instance.id: probe for instance, probe in zip(instances, probes, strict=False)}
-
-    nodes: list[dict[str, Any]] = []
-    edges: list[dict[str, str]] = []
-    events: list[dict[str, str]] = []
-
-    _overlay_instance_nodes(nodes, edges, instances, probe_by_id)
-
-    if request is not None:
-        ravn_instances = [instance for instance in instances if instance.kind is InstanceKind.RAVN]
-        ravn_warden_groups = await asyncio.gather(
-            *[_load_ravn_wardens(instance, request) for instance in ravn_instances]
-        )
-        for ravn_instance, wardens in zip(ravn_instances, ravn_warden_groups, strict=False):
-            _overlay_ravn_warden_nodes(
-                nodes,
-                edges,
-                events,
-                ravn_instance=ravn_instance,
-                wardens=wardens,
-                now=now,
-            )
-
-    for instance in instances:
-        probe = probe_by_id[instance.id]
-        events.append(
-            {
-                "id": f"instance:{instance.id}:{'up' if probe.ok else 'down'}",
-                "level": "info" if probe.ok else "warning",
-                "service": instance.kind.value,
-                "message": probe.message,
-                "timestamp": _iso(now),
-            }
-        )
-
-    return {
-        "timestamp": _iso(now),
-        "layoutHints": {
-            "mode": "pack",
-            "scope": "world",
-        },
-        "nodes": nodes,
-        "edges": edges,
-        "events": events,
-    }
-
-
 async def _load_remote_sessions(
     instance: RegisteredInstance,
     request: Request,
@@ -659,6 +360,7 @@ def create_instances_router(
     embedded_forge_app: ASGIApp | None = None,
     agent_directory: AgentDirectoryAggregationService | None = None,
     fragment_inbox: ObservatoryFragmentInboxService | None = None,
+    topology: ObservatoryTopologyAggregationService | None = None,
 ) -> APIRouter:
     """Create the shared instance registry router."""
     router = APIRouter(prefix="/api/v1/niuu", tags=["Shared"])
@@ -810,13 +512,27 @@ def create_instances_router(
         )
         return [_to_response(instance) for instance in instances]
 
-    @router.get("/observatory/snapshot")
+    @router.get(
+        "/observatory/snapshot",
+        response_model=TopologySnapshot,
+        response_model_by_alias=True,
+        summary="Merged topology across every reporting source",
+    )
     async def get_observatory_snapshot(
         request: Request,
         principal: Principal = Depends(extract_principal),
-    ) -> dict[str, Any]:
-        instances = await service.list_visible(principal, enabled_only=True)
-        return await _build_observatory_snapshot(instances, request=request)
+    ) -> TopologySnapshot:
+        if topology is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Topology aggregation is not configured",
+            )
+        instances = await service.list_visible(
+            principal,
+            kind=InstanceKind.OBSERVATORY,
+            enabled_only=True,
+        )
+        return await topology.get_snapshot(instances, headers=_forward_headers(request))
 
     @router.put(
         "/observatory/fragments/{source_id}",
