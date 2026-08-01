@@ -877,6 +877,7 @@ class KubernetesDiscoveryAdapter:
         self,
         cluster: str = "",
         namespace: str = "",
+        realm: str = "",
         label_selector: str = "niuu.world/cluster",
         include_kinds: list[str] | None = None,
         timeout_seconds: float = 10.0,
@@ -885,8 +886,11 @@ class KubernetesDiscoveryAdapter:
     ) -> None:
         self._cluster = cluster
         self._namespace = namespace
+        # Nothing labels a cluster with its realm, so it comes from config.
+        self._realm = realm
         self._label_selector = label_selector
         self._include_kinds = include_kinds or [
+            "nodes",
             "deployments",
             "statefulsets",
             "daemonsets",
@@ -932,14 +936,14 @@ class KubernetesDiscoveryAdapter:
                     path = self._path_for_kind(kind)
                     if not path:
                         continue
+                    # Nodes are cluster infrastructure, not niuu workloads, so
+                    # they carry none of our labels. Filtering them by the
+                    # workload selector would return nothing at all.
+                    selector = None if kind == "nodes" else self._label_selector
                     response = await client.get(
                         f"{base_url}{path}",
                         headers=headers,
-                        params=(
-                            {"labelSelector": self._label_selector}
-                            if self._label_selector
-                            else None
-                        ),
+                        params={"labelSelector": selector} if selector else None,
                     )
                     if response.status_code == 403:
                         events.append(_adapter_warning("kubernetes", f"Forbidden listing {kind}"))
@@ -949,6 +953,11 @@ class KubernetesDiscoveryAdapter:
                     for item in payload.get("items", []) if isinstance(payload, dict) else []:
                         if isinstance(item, dict):
                             resource_kind = _singular_resource_kind(kind)
+                            if resource_kind == "node":
+                                node = self._node_entity(item)
+                                if node is not None:
+                                    entities.append(node)
+                                continue
                             entity = self._entity_from_k8s(resource_kind, item)
                             if entity is not None:
                                 entities.append(entity)
@@ -986,7 +995,62 @@ class KubernetesDiscoveryAdapter:
             if namespace:
                 return f"/apis/gateway.networking.k8s.io/v1/namespaces/{namespace}/httproutes"
             return "/apis/gateway.networking.k8s.io/v1/httproutes"
+        if kind == "nodes":
+            return "/api/v1/nodes"
         return ""
+
+    def _node_entity(self, item: dict[str, Any]) -> DiscoveredEntity | None:
+        """Turn a Kubernetes Node into a host.
+
+        Hosts are what make the graph show where things actually run — which
+        box, with which GPU — rather than an undifferentiated cluster blob.
+        """
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        name = str(metadata.get("name") or "").strip()
+        if not name:
+            return None
+
+        status = item.get("status") if isinstance(item.get("status"), dict) else {}
+        capacity = status.get("capacity") if isinstance(status.get("capacity"), dict) else {}
+        node_info = status.get("nodeInfo") if isinstance(status.get("nodeInfo"), dict) else {}
+        labels = _clean_map(metadata.get("labels"))
+        # Read roles from the raw labels: `node-role.kubernetes.io/control-plane`
+        # conventionally has an empty value, which `_clean_map` drops.
+        raw_labels = metadata.get("labels") if isinstance(metadata.get("labels"), dict) else {}
+
+        node_metadata: dict[str, Any] = {
+            "os": str(node_info.get("osImage") or ""),
+            "hw": str(node_info.get("architecture") or ""),
+            "kernel": str(node_info.get("kernelVersion") or ""),
+            "kubelet": str(node_info.get("kubeletVersion") or ""),
+            "cores": _int_quantity(capacity.get("cpu")),
+            "ram": _memory_gib(capacity.get("memory")),
+            "roles": sorted(
+                str(key).split("/", 1)[1]
+                for key in raw_labels
+                if str(key).startswith("node-role.kubernetes.io/")
+            ),
+        }
+        gpu_count = _int_quantity(capacity.get("nvidia.com/gpu"))
+        if gpu_count:
+            node_metadata["gpu"] = labels.get("nvidia.com/gpu.product") or "nvidia"
+            node_metadata["gpuCount"] = gpu_count
+
+        return DiscoveredEntity(
+            id=f"host:{_slug(self._cluster or 'unknown')}:{_slug(name)}",
+            kind="host",
+            name=name,
+            realm=self._realm,
+            cluster=self._cluster or "unknown",
+            # Deliberately no `host=`: a host is placed by its cluster, and
+            # naming itself would make it its own parent.
+            status="healthy" if _condition_status(item, "Ready") else "failed",
+            labels=labels,
+            source_adapter=self.__class__.__name__,
+            source_kind="kubernetes:node",
+            source_uid=str(metadata.get("uid") or ""),
+            metadata=node_metadata,
+        )
 
     def _entity_from_k8s(self, resource_kind: str, item: dict[str, Any]) -> DiscoveredEntity | None:
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
@@ -1002,13 +1066,16 @@ class KubernetesDiscoveryAdapter:
         cluster = (
             self._cluster if cluster_label.lower() in {"", "unknown"} else cluster_label
         ) or "unknown"
-        component = (
-            labels.get("niuu.world/kind")
-            or labels.get("observatory.niuu.world/type")
-            or labels.get("app.kubernetes.io/component")
+        declared_component = labels.get("niuu.world/kind") or labels.get(
+            "observatory.niuu.world/type"
         )
+        component = declared_component or labels.get("app.kubernetes.io/component")
         app_name = labels.get("app.kubernetes.io/name")
-        type_id = _type_id_for_component(component or "", app_name or "")
+        type_id = _type_id_for_component(
+            component or "",
+            app_name or "",
+            declared=bool(declared_component),
+        )
         logical_name = labels.get("niuu.world/entity-id") or labels.get("niuu.world/service-id")
         display_name = labels.get("niuu.world/display-name") or ""
         if labels.get("niuu.world/warden-id"):
@@ -1046,12 +1113,22 @@ class KubernetesDiscoveryAdapter:
         visibility = annotations.get("observatory.niuu.world/a2a-visibility")
         if visibility:
             entity_metadata["visibility"] = visibility
+        spec = item.get("spec") if isinstance(item.get("spec"), dict) else {}
         return DiscoveredEntity(
             id=entity_id,
-            kind=type_id if type_id in _SEED_TYPE_IDS else "service",
+            # No downgrade here. Whether a kind is renderable is the registry's
+            # call, made once in `topology_from_discovery`; flattening it at the
+            # adapter would hide an operator-registered type from the code that
+            # knows about it.
+            kind=type_id,
             name=display_name,
+            realm=self._realm,
             cluster=cluster,
             namespace=namespace,
+            # Only a pod knows which box it landed on. Namespace still decides
+            # containment; this is what lets the graph relate a workload to
+            # the host underneath it.
+            host=str(spec.get("nodeName") or "") if resource_kind == "pod" else "",
             status=_status_from_k8s(resource_kind, item),
             labels=labels,
             annotations=annotations,
@@ -1471,6 +1548,46 @@ def _innermost_container(
     return None
 
 
+def _int_quantity(value: Any) -> int:
+    """Parse a Kubernetes count quantity, tolerating milli-CPU suffixes."""
+    raw = str(value or "").strip()
+    if not raw:
+        return 0
+    if raw.endswith("m"):
+        # 3500m CPU is 3 whole cores for display purposes.
+        try:
+            return int(float(raw[:-1]) / 1000)
+        except ValueError:
+            return 0
+    try:
+        return int(float(raw))
+    except ValueError:
+        return 0
+
+
+_MEMORY_UNITS = {"Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4}
+
+
+def _memory_gib(value: Any) -> int:
+    """Convert a Kubernetes memory quantity to whole GiB.
+
+    Node capacity arrives as `263849876Ki`, which is unreadable in a tooltip.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return 0
+    for suffix, multiplier in _MEMORY_UNITS.items():
+        if raw.endswith(suffix):
+            try:
+                return int(float(raw[: -len(suffix)]) * multiplier / 1024**3)
+            except ValueError:
+                return 0
+    try:
+        return int(float(raw) / 1024**3)
+    except ValueError:
+        return 0
+
+
 def _singular_resource_kind(kind: str) -> str:
     return {
         "deployments": "deployment",
@@ -1486,8 +1603,19 @@ def _singular_resource_kind(kind: str) -> str:
     }.get(kind, kind.rstrip("s"))
 
 
-def _type_id_for_component(component: str, app_name: str = "") -> str:
+def _type_id_for_component(component: str, app_name: str = "", *, declared: bool = False) -> str:
+    """Best guess at an entity type for a Kubernetes workload.
+
+    `declared` means the component came from a deliberate niuu/observatory
+    label rather than a generic `app.kubernetes.io/component`. A declaration is
+    taken verbatim so an operator can register a new type and label workloads
+    with it, without a code change; a generic component is only a hint, so it
+    stays a lookup and falls back to `service` rather than inventing a type
+    from whatever a third-party chart happened to write.
+    """
     normalized = _slug(component)
+    if declared and normalized:
+        return normalized
     if normalized in _SEED_TYPE_IDS:
         return normalized
     mapped = _COMPONENT_TYPES.get(component) or _COMPONENT_TYPES.get(normalized)

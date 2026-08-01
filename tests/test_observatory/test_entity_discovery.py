@@ -1073,3 +1073,260 @@ def test_revision_changes_when_a_new_event_appears() -> None:
     )
 
     assert base["revision"] != with_event["revision"]
+
+
+# ── Kubernetes hosts ─────────────────────────────────────────────────────────
+# Hosts are what make the graph show where things actually run — which box,
+# with which GPU — rather than an undifferentiated cluster blob.
+
+
+def _service_account(tmp_path) -> str:
+    root = tmp_path / "sa"
+    root.mkdir()
+    (root / "token").write_text("token", encoding="utf-8")
+    return str(root)
+
+
+def _node_item(
+    name: str = "spark-1",
+    *,
+    gpu: str | None = None,
+    ready: bool = True,
+) -> dict:
+    labels = {"node-role.kubernetes.io/control-plane": ""}
+    capacity = {"cpu": "112", "memory": "263849876Ki"}
+    if gpu:
+        labels["nvidia.com/gpu.product"] = gpu
+        capacity["nvidia.com/gpu"] = "4"
+    return {
+        "metadata": {"name": name, "uid": f"uid-{name}", "labels": labels},
+        "status": {
+            "capacity": capacity,
+            "nodeInfo": {
+                "osImage": "Ubuntu 24.04.1 LTS",
+                "architecture": "arm64",
+                "kernelVersion": "6.11.0",
+                "kubeletVersion": "v1.31.4",
+            },
+            "conditions": [{"type": "Ready", "status": "True" if ready else "False"}],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_nodes_are_discovered_as_hosts_with_their_hardware(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/nodes"
+        return httpx.Response(200, json={"items": [_node_item(gpu="NVIDIA-GB10")]})
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        realm="asgard",
+        include_kinds=["nodes"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    host = result.entities[0]
+    assert host.kind == "host"
+    assert host.name == "spark-1"
+    assert host.cluster == "ymir"
+    assert host.realm == "asgard"
+    assert host.metadata["cores"] == 112
+    assert host.metadata["ram"] == 251  # 263849876Ki rendered in whole GiB
+    assert host.metadata["gpu"] == "NVIDIA-GB10"
+    assert host.metadata["gpuCount"] == 4
+    assert host.metadata["os"] == "Ubuntu 24.04.1 LTS"
+    assert host.metadata["roles"] == ["control-plane"]
+
+
+@pytest.mark.asyncio
+async def test_a_node_without_a_gpu_reports_none(tmp_path, monkeypatch) -> None:
+    """Absent is different from zero — the UI should not show a GPU chip."""
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        include_kinds=["nodes"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(
+            lambda _r: httpx.Response(200, json={"items": [_node_item()]})
+        ),
+    )
+
+    result = await adapter.discover()
+
+    assert "gpu" not in result.entities[0].metadata
+
+
+@pytest.mark.asyncio
+async def test_a_not_ready_node_is_failed(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        include_kinds=["nodes"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(
+            lambda _r: httpx.Response(200, json={"items": [_node_item(ready=False)]})
+        ),
+    )
+
+    result = await adapter.discover()
+
+    assert result.entities[0].status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_nodes_are_listed_without_the_workload_label_selector(tmp_path, monkeypatch) -> None:
+    """Nodes carry none of our labels; filtering them would return nothing."""
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.params.get("labelSelector"))
+        return httpx.Response(200, json={"items": []})
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        label_selector="niuu.world/cluster=ymir",
+        include_kinds=["nodes", "pods"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    await adapter.discover()
+
+    assert seen == [None, "niuu.world/cluster=ymir"]
+
+
+@pytest.mark.asyncio
+async def test_a_host_hangs_from_its_cluster_not_from_itself(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        realm="asgard",
+        include_kinds=["nodes"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(
+            lambda _r: httpx.Response(200, json={"items": [_node_item()]})
+        ),
+    )
+
+    snapshot = topology_from_discovery(await adapter.discover())
+
+    host = next(n for n in snapshot["nodes"] if n["typeId"] == "host")
+    assert host["parentId"] == "cluster-ymir"
+    assert _node(snapshot, "cluster-ymir")["parentId"] == "realm-asgard"
+
+
+@pytest.mark.asyncio
+async def test_a_pod_records_the_host_it_landed_on(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "metadata": {
+                            "name": "niuu-ravn-abc",
+                            "namespace": "volundr",
+                            "uid": "uid-pod",
+                            "labels": {"niuu.world/cluster": "ymir"},
+                        },
+                        "spec": {"nodeName": "spark-1"},
+                        "status": {"phase": "Running"},
+                    }
+                ]
+            },
+        )
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        include_kinds=["pods"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    assert result.entities[0].host == "spark-1"
+
+
+@pytest.mark.asyncio
+async def test_an_operator_declared_type_is_taken_verbatim(tmp_path, monkeypatch) -> None:
+    """Registering a type and labelling workloads with it must not need a code
+    change — that is the whole point of the registry."""
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "metadata": {
+                            "name": "weathervane",
+                            "namespace": "volundr",
+                            "labels": {
+                                "niuu.world/cluster": "ymir",
+                                "niuu.world/kind": "weathervane",
+                            },
+                        },
+                        "status": {"replicas": 1, "readyReplicas": 1, "availableReplicas": 1},
+                    }
+                ]
+            },
+        )
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        include_kinds=["deployments"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    assert result.entities[0].kind == "weathervane"
+
+
+@pytest.mark.asyncio
+async def test_a_generic_component_label_stays_a_guess(tmp_path, monkeypatch) -> None:
+    """A third-party chart's component name must not invent an entity type."""
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "metadata": {
+                            "name": "sidecar-thing",
+                            "namespace": "volundr",
+                            "labels": {
+                                "niuu.world/cluster": "ymir",
+                                "app.kubernetes.io/component": "some-vendor-sidecar",
+                            },
+                        },
+                        "status": {"replicas": 1, "readyReplicas": 1, "availableReplicas": 1},
+                    }
+                ]
+            },
+        )
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        include_kinds=["deployments"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    assert result.entities[0].kind == "service"
