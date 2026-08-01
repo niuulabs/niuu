@@ -48,6 +48,7 @@ export type {
   IEventStream,
   IAgentDirectory,
 } from './ports';
+export { AgentCardPanel } from './ui/overlays/AgentCardPanel';
 export { useAgent, useAgents } from './application/useAgents';
 export type {
   EntityType,

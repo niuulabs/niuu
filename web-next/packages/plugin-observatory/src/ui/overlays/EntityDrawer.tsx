@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, type ReactNode } from 'react';
 import { Sparkline, StateDot } from '@niuulabs/ui';
 import type { DotState } from '@niuulabs/ui';
 import type { TopologyNode, Topology, Registry, NodeActivity } from '../../domain';
@@ -12,6 +12,12 @@ export interface EntityDrawerProps {
   registry: Registry | null;
   onClose: () => void;
   onNodeSelect?: (node: TopologyNode) => void;
+  /**
+   * Slot rendered at the foot of the drawer. The drawer stays a pure function
+   * of its props; anything needing a service (such as the A2A card) is composed
+   * in by the page.
+   */
+  footer?: ReactNode;
 }
 
 // ── Activity dot ──────────────────────────────────────────────────────────────
@@ -395,6 +401,7 @@ export function EntityDrawer({
   registry,
   onClose,
   onNodeSelect,
+  footer,
 }: EntityDrawerProps) {
   const entityType = node ? registry?.types.find((t) => t.id === node.typeId) : undefined;
   const residents =
@@ -624,6 +631,7 @@ export function EntityDrawer({
           </div>
         </>
       )}
+      {footer}
     </aside>
   );
 }

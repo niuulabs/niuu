@@ -7,6 +7,7 @@ import {
   createMockTopologyStream,
   createMockEventStream,
   createMockRegistryRepository,
+  createMockAgentDirectory,
 } from '../adapters/mock';
 import { makeCtxMock } from './TopologyCanvas/test-helpers';
 import { __resetObservatoryStore } from '../application/useObservatoryStore';
@@ -29,6 +30,7 @@ function wrap(ui: React.ReactNode) {
           'observatory.topology': createMockTopologyStream(),
           'observatory.events': createMockEventStream(),
           'observatory.registry': createMockRegistryRepository(),
+          'observatory.agents': createMockAgentDirectory(),
         }}
       >
         {ui}

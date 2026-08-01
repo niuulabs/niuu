@@ -5,6 +5,7 @@ import { useObservatoryStore } from '../application/useObservatoryStore';
 import type { TopologyNode } from '../domain';
 import { TopologyCanvas } from './TopologyCanvas';
 import { EntityDrawer } from './overlays/EntityDrawer';
+import { AgentCardPanel } from './overlays/AgentCardPanel';
 import { EventLog } from './overlays/EventLog';
 import { ConnectionLegend } from './overlays/ConnectionLegend';
 import { humanizeObservatoryText } from './displayLabels';
@@ -76,6 +77,7 @@ export function ObservatoryPage() {
         registry={registry ?? null}
         onClose={handleDrawerClose}
         onNodeSelect={handleNodeSelect}
+        footer={<AgentCardPanel node={selectedNode} />}
       />
     </div>
   );
