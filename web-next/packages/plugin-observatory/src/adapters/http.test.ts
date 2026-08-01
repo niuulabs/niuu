@@ -300,7 +300,6 @@ describe('buildObservatoryEventsSseStream', () => {
   });
 });
 
-
 describe('buildObservatoryTopologyAggregateAdapter', () => {
   /**
    * The aggregate spans every cluster plus every source that pushes rather
@@ -340,9 +339,7 @@ describe('buildObservatoryTopologyAggregateAdapter', () => {
 
     const unsub = adapter.subscribe((t) => received.push(t));
     await vi.waitFor(() =>
-      expect(
-        (client.get as ReturnType<typeof vi.fn>).mock.calls.length,
-      ).toBeGreaterThanOrEqual(2),
+      expect((client.get as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(2),
     );
     unsub();
 
@@ -388,9 +385,7 @@ describe('buildObservatoryTopologyAggregateAdapter', () => {
 
     const unsub = adapter.subscribe(() => {});
     await vi.waitFor(() =>
-      expect(
-        (client.get as ReturnType<typeof vi.fn>).mock.calls.length,
-      ).toBeGreaterThanOrEqual(2),
+      expect((client.get as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(2),
     );
     unsub();
 
