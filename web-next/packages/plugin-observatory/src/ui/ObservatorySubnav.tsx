@@ -3,6 +3,7 @@ import { useTopology } from '../application/useTopology';
 import { useObservatoryStore, type ObservatoryFilter } from '../application/useObservatoryStore';
 import type { TopologyNode } from '../domain';
 import './ObservatorySubnav.css';
+import { CollapsibleSection } from './CollapsibleSection';
 
 // ── Filter section config ─────────────────────────────────────────────────────
 
@@ -78,10 +79,11 @@ export function ObservatorySubnav() {
   return (
     <div className="obs-subnav" data-testid="observatory-subnav">
       {/* Section 1: Entity filter */}
-      <div className="obs-subnav__section">
-        <div className="obs-subnav__label">
-          Filter <span className="obs-subnav__label-dot">·</span>
-        </div>
+      <CollapsibleSection
+        title="Filter"
+        testId="filter"
+        meta={<span className="obs-subnav__label-dot">·</span>}
+      >
         {FILTER_ROWS.map((row) => {
           const count = row.count(nodes);
           const active = filter === row.id;
@@ -103,13 +105,14 @@ export function ObservatorySubnav() {
             </button>
           );
         })}
-      </div>
+      </CollapsibleSection>
 
       {/* Section 2: Realms */}
-      <div className="obs-subnav__section">
-        <div className="obs-subnav__label">
-          Realms <span className="obs-subnav__count">{realms.length}</span>
-        </div>
+      <CollapsibleSection
+        title="Realms"
+        testId="realms"
+        meta={<span className="obs-subnav__count">{realms.length}</span>}
+      >
         {realms.map((realm) => (
           <button
             key={realm.id}
@@ -132,13 +135,14 @@ export function ObservatorySubnav() {
             )}
           </button>
         ))}
-      </div>
+      </CollapsibleSection>
 
       {/* Section 3: Clusters + Active runs */}
-      <div className="obs-subnav__section">
-        <div className="obs-subnav__label">
-          Clusters <span className="obs-subnav__count">{clusters.length}</span>
-        </div>
+      <CollapsibleSection
+        title="Clusters"
+        testId="clusters"
+        meta={<span className="obs-subnav__count">{clusters.length}</span>}
+      >
         {clusters.map((cluster) => (
           <button
             key={cluster.id}
@@ -187,7 +191,7 @@ export function ObservatorySubnav() {
             })}
           </>
         )}
-      </div>
+      </CollapsibleSection>
     </div>
   );
 }

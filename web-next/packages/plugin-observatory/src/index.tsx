@@ -50,6 +50,7 @@ export type {
 } from './ports';
 export { AgentCardPanel } from './ui/overlays/AgentCardPanel';
 export { LayerFilterBar } from './ui/LayerFilterBar';
+export { CollapsibleSection } from './ui/CollapsibleSection';
 export { useAgent, useAgents } from './application/useAgents';
 export type {
   EntityType,

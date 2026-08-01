@@ -94,3 +94,43 @@
   color: var(--color-text-muted);
   flex-shrink: 0;
 }
+
+/* ── Collapsible sections ──
+   The label is now a <summary>, so the marker is suppressed and replaced with
+   a chevron that reflects the element's own open state. */
+.obs-subnav__label {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.obs-subnav__label::-webkit-details-marker {
+  display: none;
+}
+
+.obs-subnav__label:hover {
+  color: var(--color-text-secondary);
+}
+
+.obs-subnav__label:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: -2px;
+}
+
+.obs-subnav__label-text {
+  flex: 1;
+}
+
+.obs-subnav__chevron {
+  width: 0.3125rem;
+  height: 0.3125rem;
+  flex: none;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 160ms ease;
+}
+
+.obs-subnav__section[open] > .obs-subnav__label > .obs-subnav__chevron {
+  transform: rotate(45deg);
+}
