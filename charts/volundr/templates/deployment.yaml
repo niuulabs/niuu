@@ -155,6 +155,20 @@ spec:
                   name: {{ .secretName }}
                   key: {{ .secretKey }}
             {{- end }}
+            {{- range .Values.codexCredentialBroker.secretKwargs }}
+            - name: CODEX_CREDENTIAL_BROKER_SK_{{ .kwarg | upper }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
+            {{- range .Values.credentialEnrollmentRunner.secretKwargs }}
+            - name: CREDENTIAL_ENROLLMENT_RUNNER_SK_{{ .kwarg | upper }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
             {{- range $index, $controller := .Values.residentRuntimeControllers }}
             {{- range $controller.secretKwargs }}
             - name: RESIDENT_CONTROLLER_{{ $index }}_SK_{{ .kwarg | upper }}

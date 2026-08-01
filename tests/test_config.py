@@ -90,6 +90,10 @@ class TestSettings:
         settings = Settings()
 
         assert isinstance(settings.database, DatabaseConfig)
+        assert settings.codex_credential_broker.adapter.endswith(".DisabledCodexCredentialBroker")
+        assert settings.credential_enrollment_runner.adapter.endswith(
+            ".UnsupportedCredentialEnrollmentRunner"
+        )
 
     def test_nested_configuration(self):
         """Test nested configuration."""

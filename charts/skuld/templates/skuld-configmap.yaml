@@ -35,6 +35,9 @@ data:
     skip_permissions: {{ .Values.broker.skipPermissions }}
     agent_teams: {{ .Values.broker.agentTeams | default false }}
     cli_type: {{ .Values.broker.cliType | default "claude" | quote }}
+    codex_auth:
+      adapter: {{ dig "codexAuth" "adapter" "skuld.codex_auth.HostCodexAuthProvider" .Values.broker | quote }}
+      kwargs: {{ dig "codexAuth" "kwargs" dict .Values.broker | toJson }}
     host: "0.0.0.0"
     port: 8081
     persistence_mount_path: {{ .Values.persistence.mountPath | default "/volundr/sessions" | quote }}

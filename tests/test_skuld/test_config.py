@@ -53,6 +53,7 @@ class TestSkuldSettings:
         assert s.volundr_api_url == ""
         assert s.session.id == "unknown"
         assert s.session.name == "unknown"
+        assert s.codex_auth.adapter == "skuld.codex_auth.HostCodexAuthProvider"
         assert s.session.model == "claude-opus-4-8"
         assert s.observability.service_name == "skuld"
         assert s.persistence_mount_path == "/volundr/sessions"

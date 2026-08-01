@@ -25,6 +25,18 @@ class IntegrationResponse(BaseModel):
     created_at: str = Field(description="ISO 8601 creation timestamp")
     updated_at: str = Field(description="ISO 8601 last update timestamp")
     slug: str = Field(default="", description="Catalog entry slug")
+    credential_status: str = Field(
+        default="unknown",
+        description="Safe credential lifecycle state; secret values are never returned",
+    )
+    credential_error_code: str | None = Field(
+        default=None,
+        description="Machine-readable credential failure code",
+    )
+    credential_status_updated_at: str | None = Field(
+        default=None,
+        description="ISO 8601 timestamp of the latest credential state transition",
+    )
 
     @model_serializer(mode="wrap")
     def _serialize_with_camel_case_aliases(self, handler):
@@ -34,10 +46,20 @@ class IntegrationResponse(BaseModel):
         data["credentialName"] = data["credential_name"]
         data["createdAt"] = data["created_at"]
         data["updatedAt"] = data["updated_at"]
+        data["credentialStatus"] = data["credential_status"]
+        data["credentialErrorCode"] = data["credential_error_code"]
+        data["credentialStatusUpdatedAt"] = data["credential_status_updated_at"]
         return data
 
     @classmethod
-    def from_connection(cls, conn: IntegrationConnection) -> IntegrationResponse:
+    def from_connection(
+        cls,
+        conn: IntegrationConnection,
+        *,
+        credential_status: str = "unknown",
+        credential_error_code: str | None = None,
+        credential_status_updated_at: str | None = None,
+    ) -> IntegrationResponse:
         """Create response from domain model."""
         return cls(
             id=conn.id,
@@ -50,6 +72,9 @@ class IntegrationResponse(BaseModel):
             created_at=conn.created_at.isoformat(),
             updated_at=conn.updated_at.isoformat(),
             slug=conn.slug,
+            credential_status=credential_status,
+            credential_error_code=credential_error_code,
+            credential_status_updated_at=credential_status_updated_at,
         )
 
 
