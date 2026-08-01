@@ -38,7 +38,7 @@ from niuu.domain.services.observatory_fragments import ObservatoryFragmentInboxS
 from niuu.domain.services.observatory_topology import (
     ObservatoryTopologyAggregationService,
 )
-from niuu.domain.services.token_scope import TOPOLOGY_PUSH_SCOPE, require_build_scope
+from niuu.domain.services.token_scope import TOPOLOGY_PUSH_SCOPE, require_scope
 
 
 class InstanceResponse(BaseModel):
@@ -544,7 +544,7 @@ def create_instances_router(
         source_id: str,
         fragment: ObservatoryFragment,
         principal: Principal = Depends(extract_principal),
-        _scope: None = Depends(require_build_scope(TOPOLOGY_PUSH_SCOPE)),
+        _scope: None = Depends(require_scope(TOPOLOGY_PUSH_SCOPE)),
     ) -> TopologySourceHealth:
         """Accept a fragment from a source the aggregator cannot reach.
 
@@ -585,7 +585,7 @@ def create_instances_router(
     async def delete_observatory_fragment(
         source_id: str,
         principal: Principal = Depends(extract_principal),
-        _scope: None = Depends(require_build_scope(TOPOLOGY_PUSH_SCOPE)),
+        _scope: None = Depends(require_scope(TOPOLOGY_PUSH_SCOPE)),
     ) -> None:
         del principal
         if fragment_inbox is None:
