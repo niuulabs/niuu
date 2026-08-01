@@ -3032,6 +3032,12 @@ class Broker(
                 )
             )
             asyncio.create_task(
+                self._report_activity_state(
+                    "error",
+                    extra_metadata={"error": visible_error},
+                )
+            )
+            asyncio.create_task(
                 self._report_timeline_event(
                     {
                         "t": self._artifacts.duration_seconds,

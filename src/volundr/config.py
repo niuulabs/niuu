@@ -264,6 +264,24 @@ class PodManagerConfig(BaseModel):
     )
 
 
+def _default_codex_credential_broker() -> DynamicAdapterConfig:
+    return DynamicAdapterConfig(
+        adapter=(
+            "volundr.adapters.outbound.codex_credential_broker."
+            "DisabledCodexCredentialBroker"
+        )
+    )
+
+
+def _default_credential_enrollment_runner() -> DynamicAdapterConfig:
+    return DynamicAdapterConfig(
+        adapter=(
+            "volundr.adapters.outbound.credential_enrollment_runner."
+            "UnsupportedCredentialEnrollmentRunner"
+        )
+    )
+
+
 class ResidentProfileConfig(BaseModel):
     """One operator-approved resident backend and engine combination."""
 
@@ -1675,6 +1693,17 @@ class Settings(BaseSettings):
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)
     credential_store: CredentialStoreConfig = Field(default_factory=CredentialStoreConfig)
+    codex_credential_broker: DynamicAdapterConfig = Field(
+        default_factory=_default_codex_credential_broker,
+        description=(
+            "Configured Codex token broker. Local mode defaults to the disabled adapter so "
+            "the host Codex login remains authoritative."
+        ),
+    )
+    credential_enrollment_runner: DynamicAdapterConfig = Field(
+        default_factory=_default_credential_enrollment_runner,
+        description="Trusted interactive-login runner, independent of the session pod manager.",
+    )
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     secret_injection: SecretInjectionConfig = Field(default_factory=SecretInjectionConfig)
     resource_provider: ResourceProviderConfig = Field(default_factory=ResourceProviderConfig)

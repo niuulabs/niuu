@@ -218,12 +218,14 @@ class TestValuesDefaults:
         assert len(secrets) == 1
         assert secrets[0]["envVar"] == "ANTHROPIC_API_KEY"
 
-    def test_skuld_codex_env_secrets_has_openai_key(self, values_yaml):
-        """Test skuld-codex defaults have OPENAI_API_KEY in envSecrets."""
+    def test_skuld_codex_has_no_static_auth_projection(self, values_yaml):
+        """Codex subscription auth comes from the access-only broker."""
         secrets = values_yaml["sessionDefinitions"]["skuldCodex"]["defaults"]["envSecrets"]
-        assert isinstance(secrets, list)
-        assert len(secrets) == 1
-        assert secrets[0]["envVar"] == "OPENAI_API_KEY"
+        credential_files = values_yaml["sessionDefinitions"]["skuldCodex"]["defaults"][
+            "homeVolume"
+        ]["credentialFiles"]
+        assert secrets == []
+        assert credential_files["secretName"] == ""
 
 
 class TestHelpersTemplate:

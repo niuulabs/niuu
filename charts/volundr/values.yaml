@@ -330,6 +330,23 @@ podManager:
   # Each entry: { kwarg: "name", secretName: "k8s-secret", secretKey: "key" }
   secretKwargs: []
 
+# Codex subscription credentials are centrally refreshed by Völundr. Session
+# workloads receive only the access token and account metadata.
+codexCredentialBroker:
+  adapter: "volundr.adapters.outbound.codex_credential_broker.OpenBaoCodexCredentialBroker"
+  kwargs:
+    oauth_token_url: "https://auth.openai.com/oauth/token"
+    oauth_client_id: "app_EMoamEEZ73f0CkXaXp7hrann"
+    refresh_skew_seconds: 300
+  secretKwargs: []
+
+# Trusted login runner is independent of the selected session pod manager.
+# Clusters with OpenShell configure OpenShellCredentialEnrollmentRunner here.
+credentialEnrollmentRunner:
+  adapter: "volundr.adapters.outbound.credential_enrollment_runner.UnsupportedCredentialEnrollmentRunner"
+  kwargs: {}
+  secretKwargs: []
+
 # Operator-approved resident deployment profiles for this target. Profiles are
 # hidden from the API until explicitly configured and enabled; backend-specific
 # deployment details remain server-side.
@@ -1242,17 +1259,15 @@ sessionDefinitions:
         enabled: true
         mountPath: "/volundr/home"
         credentialFiles:
-          # -- Pre-existing K8s secret containing Codex credential files
-          secretName: "codex-credentials"
+          # Codex subscription credentials are supplied access-only by the
+          # central broker; auth.json is never projected into the session.
+          secretName: ""
           # -- Codex stores config under .codex/
           destDir: ".codex"
           secretMountPath: "/volundr/secrets/credential-files"
 
-      # Secrets injected as env vars into the skuld broker container.
-      envSecrets:
-        - envVar: OPENAI_API_KEY
-          secretName: openai-api-key
-          secretKey: api-key
+      # Subscription sessions do not use a static OpenAI API key.
+      envSecrets: []
 
       # Plain env vars injected into the skuld broker container.
       envVars: []

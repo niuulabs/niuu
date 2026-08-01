@@ -10,6 +10,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
+from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
 from volundr.adapters.outbound.resident_container_spec import (
     resident_flock_labels,
     resident_flock_profile_configured,
@@ -45,7 +46,7 @@ HELMRELEASE_VERSION = "v2"
 HELMRELEASE_PLURAL = "helmreleases"
 
 
-class FluxPodManager(PodManager, ResidentRuntimeController):
+class FluxPodManager(BrokeredCredentialPodManager, PodManager, ResidentRuntimeController):
     """Flux-native implementation of PodManager.
 
     Creates / deletes HelmRelease CRs via the Kubernetes API.
@@ -72,6 +73,8 @@ class FluxPodManager(PodManager, ResidentRuntimeController):
         code_path: str = "/",
         gateway_domain: str | None = None,
         session_defaults: dict | None = None,
+        codex_auth_adapter: str = "skuld.codex_auth.VolundrCodexAuthProvider",
+        codex_auth_kwargs: dict | None = None,
         **_extra: object,
     ):
         self._namespace = namespace
@@ -89,6 +92,10 @@ class FluxPodManager(PodManager, ResidentRuntimeController):
         self._code_path = code_path
         self._gateway_domain = gateway_domain
         self._session_defaults = session_defaults or {}
+        self._configure_brokered_credentials(
+            codex_auth_adapter=codex_auth_adapter,
+            codex_auth_kwargs=codex_auth_kwargs,
+        )
         self._api_client = None
 
     async def _get_api(self):
@@ -260,6 +267,7 @@ class FluxPodManager(PodManager, ResidentRuntimeController):
         spec: SessionSpec,
     ) -> PodStartResult:
         """Create a HelmRelease CR for the session."""
+        spec = self._with_brokered_credentials(spec)
         release_name = self._release_name(session)
 
         # Merge session defaults with spec values from contributors
@@ -539,6 +547,7 @@ class FluxPodManager(PodManager, ResidentRuntimeController):
         if runtime.model:
             runtime_values["session"]["model"] = runtime.model
         _deep_merge(values, runtime_values)
+        values = self._with_brokered_credential_values(values)
         _inject_workload_exchange_env(values)
         return values
 

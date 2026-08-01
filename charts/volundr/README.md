@@ -688,14 +688,13 @@ Session definitions are Kubernetes custom resources that describe how session po
 | `sessionDefinitions.skuldCodex.helm.repo` | string | `"oci://ghcr.io/niuulabs/charts"` | Helm repository URL |
 | `sessionDefinitions.skuldCodex.helm.repoName` | string | `""` | Name of HelmRepository or OCIRepository CR in cluster |
 | `sessionDefinitions.skuldCodex.helm.version` | string | `"0.1.0"` | Chart version constraint |
-| `sessionDefinitions.skuldCodex.defaults.session.model` | string | `"o4-mini"` | Default Codex model |
-| `sessionDefinitions.skuldCodex.defaults.broker.cliType` | string | `"codex"` | AI CLI backend |
-| `sessionDefinitions.skuldCodex.defaults.broker.transport` | string | `"subprocess"` | Codex always uses subprocess transport |
-| `sessionDefinitions.skuldCodex.defaults.broker.transportAdapter` | string | `"skuld.transports.codex.CodexSubprocessTransport"` | Fully-qualified transport adapter class path |
+| `sessionDefinitions.skuldCodex.defaults.session.model` | string | `""` | Empty uses the subscription's Codex default model |
+| `sessionDefinitions.skuldCodex.defaults.broker.cliType` | string | `"codex-ws"` | Codex app-server WebSocket backend |
+| `sessionDefinitions.skuldCodex.defaults.broker.transportAdapter` | string | `"skuld.transports.codex_ws.CodexWebSocketTransport"` | Fully-qualified transport adapter class path |
 | `sessionDefinitions.skuldCodex.defaults.broker.skipPermissions` | bool | `true` | Skip prompts and use `approvalPolicy=never` with `danger-full-access` |
 | `sessionDefinitions.skuldCodex.defaults.image.repository` | string | `"ghcr.io/niuulabs/skuld"` | Session image repository |
 | `sessionDefinitions.skuldCodex.defaults.image.tag` | string | `"latest"` | Session image tag |
-| `sessionDefinitions.skuldCodex.defaults.homeVolume.credentialFiles.secretName` | string | `"codex-credentials"` | K8s secret containing Codex credential files |
+| `sessionDefinitions.skuldCodex.defaults.homeVolume.credentialFiles.secretName` | string | `""` | Intentionally empty; subscription auth is supplied by the central access-token broker |
 | `sessionDefinitions.skuldCodex.defaults.homeVolume.credentialFiles.destDir` | string | `".codex"` | Codex stores config under `.codex/` |
 
 > Remaining skuld-codex fields follow the same structure as skuld-claude. See `values.yaml` for full details.
@@ -869,7 +868,6 @@ This chart expects secrets to be created externally (via External Secrets or man
 | GitHub token (configurable) | `token` | `git.github.existingSecret` -- GitHub API access |
 | GitLab token (configurable) | `token` | `git.gitlab.existingSecret` -- GitLab API access |
 | `claude-credentials` | (credential files) | Session pods -- Claude credential files symlinked into `$HOME/.claude/` |
-| `codex-credentials` | (credential files) | Session pods -- Codex credential files symlinked into `$HOME/.codex/` |
 
 ### Creating Secrets
 

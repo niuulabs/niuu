@@ -52,6 +52,30 @@ def _openshell_credential_values(mappings: list[CredentialMapping]) -> dict[str,
     }
 
 
+def _codex_auth_values(
+    context: SessionContext,
+    registry: IntegrationRegistry | None,
+) -> dict[str, object]:
+    if registry is None:
+        return {}
+    for connection in context.integration_connections:
+        definition = registry.get_definition(connection.slug)
+        enrollment = definition.credential_enrollment if definition is not None else None
+        if enrollment is None or enrollment.method != "codex_device":
+            continue
+        return {
+            "broker": {
+                "codexAuth": {
+                    "kwargs": {
+                        "credential_name": connection.credential_name,
+                        "credential_field": enrollment.credential_field,
+                    }
+                }
+            }
+        }
+    return {}
+
+
 class SecretInjectionContributor(SessionContributor):
     """Returns PodSpecAdditions for secret injection (agent injector, hostPath, etc.).
 
@@ -214,6 +238,9 @@ class SecretInjectionContributor(SessionContributor):
             return SessionContribution()
 
         values = _openshell_credential_values(mappings)
+        codex_values = _codex_auth_values(context, self._registry)
+        if codex_values:
+            values.update(codex_values)
         if context.runtime_backend == "openshell":
             return SessionContribution(values=values)
 

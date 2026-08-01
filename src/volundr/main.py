@@ -42,6 +42,7 @@ from volundr.adapters.inbound.rest_audit import (
     create_audit_router,
     create_canonical_audit_router,
 )
+from volundr.adapters.inbound.rest_codex_credentials import create_codex_credentials_router
 from volundr.adapters.inbound.rest_credentials import create_canonical_credentials_router
 from volundr.adapters.inbound.rest_events import create_events_router
 from volundr.adapters.inbound.rest_git import create_git_router
@@ -102,7 +103,9 @@ from volundr.catalog import build_catalog
 from volundr.composition_builders import (  # noqa: F401
     _create_archive_store,
     _create_authorization_adapter,
+    _create_codex_credential_broker,
     _create_contributors,
+    _create_credential_enrollment_runner,
     _create_external_session_providers,
     _create_gateway_adapter,
     _create_http_auth_adapter,
@@ -115,7 +118,7 @@ from volundr.composition_builders import (  # noqa: F401
 )
 from volundr.config import Settings
 from volundr.domain.models import SessionStatus
-from volundr.domain.ports import CredentialEnrollmentRunnerPort, OpenShellCredentialGrantPort
+from volundr.domain.ports import OpenShellCredentialGrantPort
 from volundr.domain.services import (
     ChronicleService,
     ExternalSessionService,
@@ -483,17 +486,11 @@ def create_app(
             pod_manager = _create_pod_manager(settings)
             resident_controllers = _create_resident_controllers(settings, pod_manager)
             credential_refresh_lock = PostgresCredentialRefreshLock(pool)
-            if hasattr(pod_manager, "set_credential_refresh_lock"):
-                pod_manager.set_credential_refresh_lock(credential_refresh_lock)
             if hasattr(pod_manager, "set_session_repository"):
                 pod_manager.set_session_repository(repository)
             if hasattr(pod_manager, "set_workload_token_issuer"):
                 pod_manager.set_workload_token_issuer(workload_identity_service)
             for controller in resident_controllers:
-                if controller is not pod_manager and hasattr(
-                    controller, "set_credential_refresh_lock"
-                ):
-                    controller.set_credential_refresh_lock(credential_refresh_lock)
                 if hasattr(controller, "set_resident_runtime_repository"):
                     controller.set_resident_runtime_repository(resident_runtime_repository)
                 if controller is not pod_manager and hasattr(
@@ -611,6 +608,12 @@ def create_app(
 
             # Credential store (pluggable: memory, Vault, Infisical)
             credential_store = _create_credential_store(settings)
+            codex_credential_broker = _create_codex_credential_broker(
+                settings,
+                credential_store=credential_store,
+                refresh_lock=credential_refresh_lock,
+            )
+            credential_enrollment_runner = _create_credential_enrollment_runner(settings)
             credential_service = CredentialService(
                 store=credential_store,
                 strategies=SecretMountStrategyRegistry(),
@@ -663,16 +666,12 @@ def create_app(
             integration_repo = PostgresIntegrationRepository(pool)
             mapping_repository = PostgresMappingRepository(pool)
             tracker_factory = TrackerFactory(credential_store)
-            credential_enrollment_service = (
-                CredentialEnrollmentService(
-                    repository=PostgresCredentialEnrollmentRepository(pool),
-                    runner=pod_manager,
-                    integration_repository=integration_repo,
-                    integration_registry=integration_registry,
-                    credential_store=credential_store,
-                )
-                if isinstance(pod_manager, CredentialEnrollmentRunnerPort)
-                else None
+            credential_enrollment_service = CredentialEnrollmentService(
+                repository=PostgresCredentialEnrollmentRepository(pool),
+                runner=credential_enrollment_runner,
+                integration_repository=integration_repo,
+                integration_registry=integration_registry,
+                credential_store=credential_store,
             )
             default_tracker = (
                 LinearAdapter(api_key=settings.linear.api_key)
@@ -926,6 +925,7 @@ def create_app(
             app.include_router(forge_router)
             app.include_router(create_resident_runtimes_router(resident_runtime_service))
             app.state.resident_runtime_service = resident_runtime_service
+            app.include_router(create_codex_credentials_router(codex_credential_broker))
             credential_grant_brokers = {
                 id(adapter): adapter
                 for adapter in [pod_manager, *resident_controllers]

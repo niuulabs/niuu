@@ -76,6 +76,30 @@ data:
       secret_kwargs_env: {}
       {{- end }}
 
+    codex_credential_broker:
+      adapter: {{ .Values.codexCredentialBroker.adapter | quote }}
+      kwargs: {{ .Values.codexCredentialBroker.kwargs | default dict | toJson }}
+      {{- if .Values.codexCredentialBroker.secretKwargs }}
+      secret_kwargs_env:
+        {{- range .Values.codexCredentialBroker.secretKwargs }}
+        {{ .kwarg }}: CODEX_CREDENTIAL_BROKER_SK_{{ .kwarg | upper }}
+        {{- end }}
+      {{- else }}
+      secret_kwargs_env: {}
+      {{- end }}
+
+    credential_enrollment_runner:
+      adapter: {{ .Values.credentialEnrollmentRunner.adapter | quote }}
+      kwargs: {{ .Values.credentialEnrollmentRunner.kwargs | default dict | toJson }}
+      {{- if .Values.credentialEnrollmentRunner.secretKwargs }}
+      secret_kwargs_env:
+        {{- range .Values.credentialEnrollmentRunner.secretKwargs }}
+        {{ .kwarg }}: CREDENTIAL_ENROLLMENT_RUNNER_SK_{{ .kwarg | upper }}
+        {{- end }}
+      {{- else }}
+      secret_kwargs_env: {}
+      {{- end }}
+
     resident_runtimes:
       reconciliation_interval_seconds: {{ .Values.residentRuntimeReconciliationIntervalSeconds | default 10.0 }}
       controllers:{{ if not .Values.residentRuntimeControllers }} []{{ else }}

@@ -19,8 +19,7 @@ import socket
 import tarfile
 import threading
 import time
-from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -30,7 +29,6 @@ from uuid import UUID
 
 import grpc
 import httpx
-import jwt
 import yaml
 from google.protobuf import struct_pb2
 from openshell._proto import datamodel_pb2, openshell_pb2, openshell_pb2_grpc, sandbox_pb2
@@ -43,6 +41,7 @@ from niuu.domain.services.token_scope import (
 )
 from niuu.ports.session_proxy import SessionProxyTarget
 from niuu.ports.workload_identity import WorkloadTokenIssuer
+from volundr.adapters.outbound.brokered_credentials import BrokeredCredentialPodManager
 from volundr.adapters.outbound.local_process import LocalProcessPodManager
 from volundr.adapters.outbound.resident_container_spec import (
     image_from_values as _shared_image_from_values,
@@ -90,8 +89,6 @@ from volundr.domain.models import (
     SessionStatus,
 )
 from volundr.domain.ports import (
-    CredentialEnrollmentRunnerPort,
-    CredentialRefreshLockPort,
     CredentialStorePort,
     OpenShellCredentialGrantPort,
     OpenShellCredentialGrantToken,
@@ -134,27 +131,12 @@ DEFAULT_SPIFFE_JWKS_URI = (
 DEFAULT_SPIFFE_ISSUER = "https://spire-spiffe-oidc-discovery-provider.spire.svc.cluster.local"
 DEFAULT_SPIFFE_AUDIENCE = DEFAULT_CREDENTIAL_TOKEN_ENDPOINT
 DEFAULT_SPIFFE_SUBJECT_PREFIX = "spiffe://niuu.world/openshell/sandbox/"
-DEFAULT_CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
-DEFAULT_CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
-DEFAULT_CODEX_REFRESH_SKEW_SECONDS = 300
-DEFAULT_CODEX_OAUTH_TIMEOUT_SECONDS = 15.0
 DEFAULT_CREDENTIAL_ENROLLMENT_CHALLENGE_TIMEOUT_SECONDS = 30.0
 CODEX_DEVICE_ENROLLMENT_METHOD = "codex_device"
 CODEX_ENROLLMENT_HOME = "/tmp/niuu-codex-enrollment"
 CODEX_ENROLLMENT_AUTH_PATH = f"{CODEX_ENROLLMENT_HOME}/auth.json"
 CODEX_ENROLLMENT_LOG_PATH = "/tmp/niuu-codex-enrollment.log"
 CODEX_ENROLLMENT_PID_PATH = "/tmp/niuu-codex-enrollment.pid"
-CODEX_AUTH_FORMAT = "codex_auth_json"
-CODEX_ACCESS_TOKEN_ENV = "CODEX_AUTH_ACCESS_TOKEN"
-CODEX_ACCOUNT_ID_ENV = "CODEX_AUTH_ACCOUNT_ID"
-CODEX_ACCESS_TOKEN_REFERENCE = f"openshell:resolve:env:{CODEX_ACCESS_TOKEN_ENV}"
-CODEX_AUTH_STATE_METADATA_KEY = "auth_state"
-CODEX_AUTH_ERROR_CODE_METADATA_KEY = "auth_error_code"
-CODEX_AUTH_STATE_UPDATED_AT_METADATA_KEY = "auth_state_updated_at"
-CODEX_AUTH_LAST_REFRESHED_AT_METADATA_KEY = "auth_last_refreshed_at"
-CODEX_AUTH_STATE_ACTIVE = "active"
-CODEX_AUTH_STATE_REQUIRED = "auth_required"
-CODEX_AUTH_REFRESH_FAILED = "refresh_failed"
 HERMES_API_SERVER_KEY_ENV = "API_SERVER_KEY"
 HERMES_API_SERVER_DEFAULT_PORT = 8642
 HERMES_INTERNAL_SERVICE_URL = "http://hermes-api.internal"
@@ -165,9 +147,9 @@ SECRET_ENV_KEYS = {
     "GH_TOKEN",
     "GITHUB_TOKEN",
     "GITHUB_PERSONAL_ACCESS_TOKEN",
-    CODEX_ACCESS_TOKEN_ENV,
+    "CODEX_AUTH_ACCESS_TOKEN",
     "CODEX_AUTH_REFRESH_TOKEN",
-    CODEX_ACCOUNT_ID_ENV,
+    "CODEX_AUTH_ACCOUNT_ID",
     "CODEX_AUTH_ID_TOKEN",
     PLATFORM_ACCESS_TOKEN_ENV,
     HERMES_API_SERVER_KEY_ENV,
@@ -767,8 +749,8 @@ class OpenShellTcpForwarder:
 
 
 class OpenShellGatewayPodManager(
+    BrokeredCredentialPodManager,
     PodManager,
-    CredentialEnrollmentRunnerPort,
     OpenShellCredentialGrantPort,
     ResidentRuntimeController,
     ResidentRuntimeLogReader,
@@ -808,14 +790,11 @@ class OpenShellGatewayPodManager(
         spiffe_audience: str = DEFAULT_SPIFFE_AUDIENCE,
         spiffe_subject_prefix: str = DEFAULT_SPIFFE_SUBJECT_PREFIX,
         spiffe_ca_cert_path: str = "",
-        codex_oauth_token_url: str = DEFAULT_CODEX_OAUTH_TOKEN_URL,
-        codex_oauth_client_id: str = DEFAULT_CODEX_OAUTH_CLIENT_ID,
-        codex_refresh_skew_seconds: int = DEFAULT_CODEX_REFRESH_SKEW_SECONDS,
-        codex_oauth_timeout_seconds: float = DEFAULT_CODEX_OAUTH_TIMEOUT_SECONDS,
         credential_enrollment_challenge_timeout_seconds: float = (
             DEFAULT_CREDENTIAL_ENROLLMENT_CHALLENGE_TIMEOUT_SECONDS
         ),
-        codex_oauth_client: httpx.AsyncClient | None = None,
+        codex_auth_adapter: str = "skuld.codex_auth.VolundrCodexAuthProvider",
+        codex_auth_kwargs: dict | None = None,
         sandbox_policy: dict[str, Any] | None = None,
         client: OpenShellGatewayClient | None = None,
         **_extra: object,
@@ -847,16 +826,13 @@ class OpenShellGatewayPodManager(
         self._workload_audience = workload_audience
         self._workload_audiences = tuple(workload_audiences or [workload_audience])
         self._workload_roles = tuple(workload_roles or ["volundr:developer"])
-        self._codex_oauth_token_url = codex_oauth_token_url
-        self._codex_oauth_client_id = codex_oauth_client_id
-        self._codex_refresh_skew_seconds = int(codex_refresh_skew_seconds)
-        self._codex_oauth_timeout_seconds = float(codex_oauth_timeout_seconds)
         self._credential_enrollment_challenge_timeout_seconds = float(
             credential_enrollment_challenge_timeout_seconds
         )
-        self._codex_oauth_client = codex_oauth_client
-        self._codex_refresh_locks: dict[tuple[str, str], asyncio.Lock] = {}
-        self._credential_refresh_lock: CredentialRefreshLockPort | None = None
+        self._configure_brokered_credentials(
+            codex_auth_adapter=codex_auth_adapter,
+            codex_auth_kwargs=codex_auth_kwargs,
+        )
         self._spiffe_subject_prefix = spiffe_subject_prefix.rstrip("/") + "/"
         self._spiffe_verifier = JwtWorkloadIdentityVerifier(
             issuer=spiffe_issuer,
@@ -886,10 +862,6 @@ class OpenShellGatewayPodManager(
     def set_credential_store(self, store: CredentialStorePort) -> None:
         """Inject credential store for resolving OpenShell launch credentials."""
         self._credential_store = store
-
-    def set_credential_refresh_lock(self, lock: CredentialRefreshLockPort) -> None:
-        """Inject the cross-replica coordinator for rotating user credentials."""
-        self._credential_refresh_lock = lock
 
     def set_session_repository(self, repository: SessionRepository) -> None:
         """Inject session persistence for sandbox-to-owner grant authorization."""
@@ -1215,6 +1187,7 @@ class OpenShellGatewayPodManager(
         )
 
     async def start(self, session: Session, spec: SessionSpec) -> PodStartResult:
+        spec = self._with_brokered_credentials(spec)
         sandbox_name = self._sandbox_name(session)
         session_id = str(session.id)
         env = self._build_env(session, spec)
@@ -1387,7 +1360,7 @@ class OpenShellGatewayPodManager(
     ) -> ResidentRuntimeObservation:
         if not self.supports(profile):
             raise RuntimeError(f"OpenShell does not support resident profile {profile.id!r}")
-        values = _resident_profile_values(profile)
+        values = self._with_brokered_credential_values(_resident_profile_values(profile))
         subject = self._resident_subject(runtime)
         sandbox_name = self._resident_sandbox_name(runtime)
         env = self._resident_environment(runtime, values)
@@ -1555,7 +1528,7 @@ class OpenShellGatewayPodManager(
                 ],
             )
         processes_ready = False
-        values = _resident_profile_values(profile)
+        values = self._with_brokered_credential_values(_resident_profile_values(profile))
         processes = self._resident_processes(runtime, values)
         service_name, service_port = _resident_service(
             values, self._service_name, self._service_port
@@ -1596,7 +1569,7 @@ class OpenShellGatewayPodManager(
     ) -> ResidentRuntimeObservation:
         if not self.supports(profile):
             raise RuntimeError(f"OpenShell does not support resident profile {profile.id!r}")
-        values = _resident_profile_values(profile)
+        values = self._with_brokered_credential_values(_resident_profile_values(profile))
         sandbox = await asyncio.to_thread(
             self._client.get_sandbox,
             self._resident_sandbox_name(runtime),
@@ -1620,10 +1593,7 @@ class OpenShellGatewayPodManager(
             sandbox_id=sandbox.id,
             files=files,
         )
-        env = {
-            **self._resident_environment(runtime, values),
-            **await self._resident_credential_environment(runtime, values),
-        }
+        env = self._resident_environment(runtime, values)
         if runtime.engine is ResidentEngine.OPENCLAW:
             if self._credential_store is None:
                 raise RuntimeError("OpenClaw residents require the configured credential store")
@@ -1923,6 +1893,7 @@ class OpenShellGatewayPodManager(
         broker = values.get("broker")
         if isinstance(broker, dict):
             env.update(_resident_broker_environment(broker))
+        env.update(self._brokered_credential_environment_values(values))
         extra_env = values.get("env")
         if isinstance(extra_env, dict):
             env.update(_string_dict(extra_env))
@@ -2091,14 +2062,6 @@ class OpenShellGatewayPodManager(
 
         if self._credential_store is None:
             raise ValueError("credential store is unavailable")
-        credential_format = str(config.get("volundr_credential_format") or "")
-        if credential_format == CODEX_AUTH_FORMAT:
-            return await self._exchange_codex_credential(
-                workload=workload,
-                credential_name=credential_name,
-                credential_field=credential_field,
-            )
-
         values = await self._credential_store.get_value("user", workload.owner_id, credential_name)
         value = values.get(credential_field) if values else None
         if not value or "\x00" in value or "\r" in value or "\n" in value:
@@ -2139,127 +2102,6 @@ class OpenShellGatewayPodManager(
             access_token=issued.token,
             expires_in=expires_in,
         )
-
-    async def _exchange_codex_credential(
-        self,
-        *,
-        workload: OpenShellWorkloadSubject,
-        credential_name: str,
-        credential_field: str,
-    ) -> OpenShellCredentialGrantToken:
-        if self._credential_store is None or not workload.owner_id:
-            raise ValueError("credential grant dependencies are unavailable")
-
-        async with self._hold_credential_refresh_lock(workload.owner_id, credential_name):
-            stored = await self._credential_store.get("user", workload.owner_id, credential_name)
-            values = await self._credential_store.get_value(
-                "user", workload.owner_id, credential_name
-            )
-            raw_auth = values.get(credential_field) if values else None
-            auth = _parse_codex_auth_document(raw_auth)
-            access_token = str(auth["tokens"]["access_token"])
-            remaining = _jwt_remaining_seconds(access_token)
-
-            if remaining <= self._codex_refresh_skew_seconds:
-                try:
-                    auth = await self._refresh_codex_auth(auth)
-                except ValueError as exc:
-                    if stored is not None and values is not None:
-                        await self._credential_store.store(
-                            "user",
-                            workload.owner_id,
-                            credential_name,
-                            stored.secret_type,
-                            values,
-                            _codex_auth_metadata(
-                                stored.metadata,
-                                state=CODEX_AUTH_STATE_REQUIRED,
-                                error_code=CODEX_AUTH_REFRESH_FAILED,
-                            ),
-                        )
-                    raise ValueError("Codex authentication requires reconnection") from exc
-                access_token = str(auth["tokens"]["access_token"])
-                remaining = _jwt_remaining_seconds(access_token)
-                if stored is None or values is None:
-                    raise ValueError("Codex credential metadata is unavailable")
-                updated_values = dict(values)
-                updated_values[credential_field] = json.dumps(auth, separators=(",", ":"))
-                await self._credential_store.store(
-                    "user",
-                    workload.owner_id,
-                    credential_name,
-                    stored.secret_type,
-                    updated_values,
-                    _codex_auth_metadata(
-                        stored.metadata,
-                        state=CODEX_AUTH_STATE_ACTIVE,
-                        refreshed=True,
-                    ),
-                )
-
-        return OpenShellCredentialGrantToken(
-            access_token=access_token,
-            expires_in=max(remaining, 1),
-        )
-
-    @asynccontextmanager
-    async def _hold_credential_refresh_lock(
-        self,
-        owner_id: str,
-        credential_name: str,
-    ) -> AsyncIterator[None]:
-        if self._credential_refresh_lock is not None:
-            async with self._credential_refresh_lock.hold(
-                "user",
-                owner_id,
-                credential_name,
-            ):
-                yield
-            return
-
-        lock_key = (owner_id, credential_name)
-        lock = self._codex_refresh_locks.setdefault(lock_key, asyncio.Lock())
-        async with lock:
-            yield
-
-    async def _refresh_codex_auth(self, auth: dict[str, Any]) -> dict[str, Any]:
-        tokens = dict(auth["tokens"])
-        refresh_token = str(tokens.get("refresh_token") or "")
-        if not refresh_token:
-            raise ValueError("Codex OAuth refresh token is unavailable")
-
-        request_data = {
-            "grant_type": "refresh_token",
-            "client_id": self._codex_oauth_client_id,
-            "refresh_token": refresh_token,
-        }
-        try:
-            if self._codex_oauth_client is not None:
-                response = await self._codex_oauth_client.post(
-                    self._codex_oauth_token_url,
-                    data=request_data,
-                )
-            else:
-                async with httpx.AsyncClient(timeout=self._codex_oauth_timeout_seconds) as client:
-                    response = await client.post(self._codex_oauth_token_url, data=request_data)
-            response.raise_for_status()
-            payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise ValueError("Codex OAuth token refresh failed") from exc
-
-        access_token = str(payload.get("access_token") or "")
-        if not access_token:
-            raise ValueError("Codex OAuth token refresh returned no access token")
-        tokens["access_token"] = access_token
-        if payload.get("refresh_token"):
-            tokens["refresh_token"] = str(payload["refresh_token"])
-        if payload.get("id_token"):
-            tokens["id_token"] = str(payload["id_token"])
-
-        refreshed = dict(auth)
-        refreshed["tokens"] = tokens
-        refreshed["last_refresh"] = datetime.now(UTC).isoformat()
-        return refreshed
 
     async def _cleanup_resources(
         self,
@@ -2326,8 +2168,7 @@ class OpenShellGatewayPodManager(
         values: dict[str, Any],
     ) -> OpenShellCredentialContext:
         mappings = _credential_mappings_from_values(values)
-        codex_auth = _codex_auth_from_values(values)
-        if not mappings and not codex_auth:
+        if not mappings:
             return OpenShellCredentialContext(
                 files={}, providers=(), environment={}, process_environment={}
             )
@@ -2341,29 +2182,13 @@ class OpenShellGatewayPodManager(
         environment: dict[str, str] = {}
         process_environment: dict[str, str] = {}
         try:
-            if codex_auth:
-                await self._resolve_codex_auth(
-                    subject,
-                    codex_auth,
-                    providers=providers,
-                    environment=environment,
-                )
             for mapping in mappings:
-                mapping_credential_name = str(
-                    mapping.get("credentialName") or mapping.get("credential_name") or ""
-                )
-                if codex_auth and mapping_credential_name == codex_auth["credential_name"]:
-                    # codexAuth owns this credential through its scoped provider grant.
-                    mapping = dict(mapping)
-                    mapping.pop("env_mappings", None)
-                    mapping["envMappings"] = {}
                 await self._resolve_credential_mapping(
                     subject,
                     mapping,
                     files=files,
                     providers=providers,
                     process_environment=process_environment,
-                    excluded_env_names={"OPENAI_API_KEY"} if codex_auth else set(),
                 )
         except Exception:
             for provider_name in reversed(providers):
@@ -2418,75 +2243,6 @@ class OpenShellGatewayPodManager(
         )
         return (provider_name,)
 
-    async def _resolve_codex_auth(
-        self,
-        subject: OpenShellWorkloadSubject,
-        config: dict[str, str],
-        *,
-        providers: list[str],
-        environment: dict[str, str],
-    ) -> None:
-        credential_name = config["credential_name"]
-        credential_field = config["auth_field"]
-        environment.update(await self._codex_runtime_environment(subject, config))
-
-        provider_name = _provider_grant_name(
-            session_id=str(subject.id),
-            credential_name=credential_name,
-            field_name=credential_field,
-            env_name=CODEX_ACCESS_TOKEN_ENV,
-        )
-        profile = _provider_profile(
-            profile_id=provider_name,
-            env_name=CODEX_ACCESS_TOKEN_ENV,
-            token_endpoint=self._credential_token_endpoint,
-            cache_ttl_seconds=0,
-        )
-        providers.append(provider_name)
-        await asyncio.to_thread(
-            self._client.create_provider_grant,
-            profile=profile,
-            provider_name=provider_name,
-            config=self._grant_binding(
-                subject,
-                volundr_credential_name=credential_name,
-                volundr_credential_field=credential_field,
-                volundr_credential_format=CODEX_AUTH_FORMAT,
-            ),
-        )
-
-    async def _resident_credential_environment(
-        self,
-        runtime: ResidentRuntime,
-        values: dict[str, Any],
-    ) -> dict[str, str]:
-        codex_auth = _codex_auth_from_values(values)
-        if not codex_auth:
-            return {}
-        return await self._codex_runtime_environment(
-            self._resident_subject(runtime),
-            codex_auth,
-        )
-
-    async def _codex_runtime_environment(
-        self,
-        subject: OpenShellWorkloadSubject,
-        config: dict[str, str],
-    ) -> dict[str, str]:
-        if self._credential_store is None or not subject.owner_id:
-            raise RuntimeError("OpenShell Codex auth requires an owned workload")
-        values = await self._credential_store.get_value(
-            "user",
-            subject.owner_id,
-            config["credential_name"],
-        )
-        raw_auth = values.get(config["auth_field"]) if values else None
-        auth = _parse_codex_auth_document(raw_auth)
-        return {
-            CODEX_ACCESS_TOKEN_ENV: CODEX_ACCESS_TOKEN_REFERENCE,
-            CODEX_ACCOUNT_ID_ENV: str(auth["tokens"]["account_id"]),
-        }
-
     async def _resolve_credential_mapping(
         self,
         subject: OpenShellWorkloadSubject,
@@ -2495,18 +2251,11 @@ class OpenShellGatewayPodManager(
         files: dict[str, bytes],
         providers: list[str],
         process_environment: dict[str, str],
-        excluded_env_names: set[str] | None = None,
     ) -> None:
         credential_name = str(mapping.get("credentialName") or mapping.get("credential_name") or "")
         if not credential_name:
             return
         env_mappings = _string_dict(mapping.get("envMappings") or mapping.get("env_mappings") or {})
-        if excluded_env_names:
-            env_mappings = {
-                env_name: field_name
-                for env_name, field_name in env_mappings.items()
-                if env_name not in excluded_env_names
-            }
         file_mappings = _string_dict(
             mapping.get("fileMappings") or mapping.get("file_mappings") or {}
         )
@@ -2645,6 +2394,7 @@ class OpenShellGatewayPodManager(
 
     def _build_env(self, session: Session, spec: SessionSpec) -> dict[str, str]:
         env = LocalProcessPodManager._build_env(spec, Path(self._sandbox_workspace))
+        env.update(self._brokered_credential_environment(spec))
         env["SKULD__SESSION__ID"] = str(session.id)
         env["SKULD__SESSION__NAME"] = session.name
         env["SKULD__SESSION__WORKSPACE_DIR"] = self._sandbox_workspace
@@ -3474,7 +3224,22 @@ def _provider_profile(
 
 def _codex_enrollment_profile(profile_id: str) -> Any:
     """Network-only OpenShell provider used during a Codex device login."""
-    target = _provider_target(CODEX_ACCESS_TOKEN_ENV)
+    target = {
+        "hosts": (
+            "api.openai.com",
+            "auth.openai.com",
+            "chatgpt.com",
+            "ab.chatgpt.com",
+            "files.openai.com",
+            "*.oaiusercontent.com",
+        ),
+        "binaries": (
+            "/usr/bin/codex",
+            "/usr/local/bin/codex",
+            "/opt/niuu/bin/codex",
+            "/usr/lib/node_modules/@openai/**",
+        ),
+    }
     endpoints = [
         sandbox_pb2.NetworkEndpoint(
             host=host,
@@ -3601,26 +3366,6 @@ def _provider_target(env_name: str, config: Any = None) -> dict[str, Any]:
             ),
             "endpoints": endpoints,
             "binaries": binaries,
-            "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
-        }
-    if env_name == CODEX_ACCESS_TOKEN_ENV:
-        return {
-            "auth_style": "bearer",
-            "header_name": "Authorization",
-            "hosts": (
-                "api.openai.com",
-                "auth.openai.com",
-                "chatgpt.com",
-                "ab.chatgpt.com",
-                "files.openai.com",
-                "*.oaiusercontent.com",
-            ),
-            "binaries": (
-                "/usr/bin/codex",
-                "/usr/local/bin/codex",
-                "/opt/niuu/bin/codex",
-                "/usr/lib/node_modules/@openai/**",
-            ),
             "category": openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
         }
     if env_name == "OPENAI_API_KEY":
@@ -3848,24 +3593,6 @@ def _credential_mappings_from_values(values: dict[str, Any]) -> list[dict[str, A
     return [mapping for mapping in raw_mappings if isinstance(mapping, dict)]
 
 
-def _codex_auth_from_spec(spec: SessionSpec) -> dict[str, str]:
-    return _codex_auth_from_values(spec.values)
-
-
-def _codex_auth_from_values(values: dict[str, Any]) -> dict[str, str]:
-    openshell_values = values.get("openshell")
-    if not isinstance(openshell_values, dict):
-        return {}
-    raw = openshell_values.get("codexAuth") or openshell_values.get("codex_auth")
-    if not isinstance(raw, dict):
-        return {}
-    credential_name = str(raw.get("credentialName") or raw.get("credential_name") or "").strip()
-    auth_field = str(raw.get("authField") or raw.get("auth_field") or "").strip()
-    if not credential_name or not auth_field:
-        raise RuntimeError("OpenShell codexAuth requires credentialName and authField")
-    return {"credential_name": credential_name, "auth_field": auth_field}
-
-
 def _parse_codex_auth_document(raw: object) -> dict[str, Any]:
     if not isinstance(raw, str) or not raw.strip():
         raise ValueError("Codex auth document is unavailable")
@@ -3899,42 +3626,6 @@ def _parse_codex_device_challenge(output: str) -> tuple[str, str] | None:
     if not verification_uri or code_match is None:
         return None
     return verification_uri, code_match.group(0)
-
-
-def _codex_auth_metadata(
-    metadata: dict[str, Any],
-    *,
-    state: str,
-    error_code: str = "",
-    refreshed: bool = False,
-) -> dict[str, Any]:
-    now = datetime.now(UTC).isoformat()
-    updated = dict(metadata)
-    updated[CODEX_AUTH_STATE_METADATA_KEY] = state
-    updated[CODEX_AUTH_STATE_UPDATED_AT_METADATA_KEY] = now
-    if error_code:
-        updated[CODEX_AUTH_ERROR_CODE_METADATA_KEY] = error_code
-    else:
-        updated.pop(CODEX_AUTH_ERROR_CODE_METADATA_KEY, None)
-    if refreshed:
-        updated[CODEX_AUTH_LAST_REFRESHED_AT_METADATA_KEY] = now
-    return updated
-
-
-def _jwt_remaining_seconds(token: str) -> int:
-    try:
-        claims = jwt.decode(
-            token,
-            options={
-                "verify_signature": False,
-                "verify_aud": False,
-                "verify_exp": False,
-            },
-        )
-        expires_at = int(claims["exp"])
-    except (jwt.PyJWTError, KeyError, TypeError, ValueError) as exc:
-        raise ValueError("Codex OAuth access token is not a valid expiring JWT") from exc
-    return expires_at - int(time.time())
 
 
 def _string_dict(value: object) -> dict[str, str]:

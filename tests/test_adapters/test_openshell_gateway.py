@@ -11,7 +11,6 @@ import sys
 import tarfile
 import time
 import types
-from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
@@ -404,6 +403,18 @@ def test_native_tcp_forward_uses_authenticated_sandbox_relay(
     bridge.close()
 
 
+def test_openshell_uses_shared_kubernetes_credential_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    brokered = importlib.import_module("volundr.adapters.outbound.brokered_credentials")
+
+    assert issubclass(
+        adapter.OpenShellGatewayPodManager,
+        brokered.BrokeredCredentialPodManager,
+    )
+
+
 class _FakeWorkloadTokenIssuer:
     def __init__(self) -> None:
         self.requests: list[dict] = []
@@ -617,12 +628,7 @@ def _resident_profile() -> ResidentDeploymentProfile:
                     "skipPermissions": True,
                 },
                 "session": {"reasoningEffort": "high"},
-                "openshell": {
-                    "codexAuth": {
-                        "credentialName": "codex-credentials",
-                        "authField": "auth.json",
-                    },
-                },
+                "openshell": {},
                 "resident": {
                     "dailyBudgetUsd": "100.0",
                     "platform": {
@@ -1163,7 +1169,7 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
         "volundr.niuu.io/resident": str(runtime.id),
         "volundr.niuu.io/runtime": "ravn",
     }
-    assert len(client.provider_grants) == 2
+    assert len(client.provider_grants) == 1
     assert all(
         grant["config"]["volundr_subject_kind"] == "resident"
         and grant["config"]["volundr_subject_id"] == str(runtime.id)
@@ -1187,6 +1193,10 @@ async def test_resident_controller_deploys_real_sandbox_and_processes(
     ]
     assert client.execs[0]["env"]["SKULD_BOOTSTRAP_FOREGROUND"] == "true"
     assert client.execs[0]["env"]["NIUU_CONFIG"] == "/sandbox/.volundr/skuld.yaml"
+    assert client.execs[0]["env"]["SKULD__CODEX_AUTH__ADAPTER"] == (
+        "skuld.codex_auth.VolundrCodexAuthProvider"
+    )
+    assert client.execs[0]["env"]["SKULD__CODEX_AUTH__KWARGS"] == "{}"
     assert "SKULD_CONFIG" not in client.execs[0]["env"]
     assert client.execs[1]["env"]["SKULD__TRANSPORT_ADAPTER"] == (
         "skuld.transports.codex_ws.CodexWebSocketTransport"
@@ -1383,10 +1393,10 @@ async def test_resident_restart_reuses_sandbox_and_dynamic_provider_environment(
         "/sandbox/.volundr/ravn.yaml",
         "/sandbox/.volundr/skuld.yaml",
     }
-    assert client.execs[-1]["env"][adapter.CODEX_ACCESS_TOKEN_ENV] == (
-        adapter.CODEX_ACCESS_TOKEN_REFERENCE
+    assert client.execs[-1]["env"]["SKULD__CODEX_AUTH__ADAPTER"] == (
+        "skuld.codex_auth.VolundrCodexAuthProvider"
     )
-    assert client.execs[-1]["env"][adapter.CODEX_ACCOUNT_ID_ENV] == "account-from-openbao"
+    assert client.execs[-1]["env"]["SKULD__CODEX_AUTH__KWARGS"] == "{}"
     assert client.execs[-1]["env"]["RESIDENT_MODE"] == "active"
     assert client.execs[-1]["env"]["SKULD__TRANSPORT_ADAPTER"] == (
         "skuld.transports.codex_ws.CodexWebSocketTransport"
@@ -1732,7 +1742,7 @@ async def test_start_rejects_platform_reporting_without_workload_issuer(
 
 
 @pytest.mark.asyncio
-async def test_start_uses_dynamic_codex_grant_without_projecting_oauth_file(
+async def test_start_uses_central_codex_broker_without_openshell_token_grant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter = _import_adapter(monkeypatch)
@@ -1750,23 +1760,16 @@ async def test_start_uses_dynamic_codex_grant_without_projecting_oauth_file(
     )
     spec = SessionSpec(
         values={
-            "openshell": {
+            "broker": {
                 "codexAuth": {
-                    "credentialName": "codex-credentials",
-                    "authField": "auth.json",
-                },
+                    "kwargs": {
+                        "credential_name": "codex-credentials",
+                        "credential_field": "auth.json",
+                    }
+                }
+            },
+            "openshell": {
                 "credentialMappings": [
-                    {
-                        "credentialName": "codex-credentials",
-                        "envMappings": {
-                            "CODEX_CREDENTIALS_AUTH.JSON": "auth.json",
-                            "CODEX_CREDENTIALS_CONFIG.TOML": "config.toml",
-                        },
-                    },
-                    {
-                        "credentialName": "openai-credential",
-                        "envMappings": {"OPENAI_API_KEY": "api_key"},
-                    },
                     {
                         "credentialName": "github-credential",
                         "envMappings": {"GITHUB_PERSONAL_ACCESS_TOKEN": "token"},
@@ -1781,30 +1784,17 @@ async def test_start_uses_dynamic_codex_grant_without_projecting_oauth_file(
 
     assert client.written_files == []
     assert client.created is not None
-    assert client.created["env"][adapter.CODEX_ACCESS_TOKEN_ENV] == (
-        adapter.CODEX_ACCESS_TOKEN_REFERENCE
+    assert client.created["env"]["SKULD__CODEX_AUTH__ADAPTER"] == (
+        "skuld.codex_auth.VolundrCodexAuthProvider"
     )
-    assert client.created["env"][adapter.CODEX_ACCOUNT_ID_ENV] == "account-from-openbao"
-    assert len(client.provider_grants) == 2
-    assert {grant["profile"].credentials[0].env_vars[0] for grant in client.provider_grants} == {
-        adapter.CODEX_ACCESS_TOKEN_ENV,
-        "GITHUB_PERSONAL_ACCESS_TOKEN",
+    assert json.loads(client.created["env"]["SKULD__CODEX_AUTH__KWARGS"]) == {
+        "credential_name": "codex-credentials",
+        "credential_field": "auth.json",
     }
-    grant = next(
-        grant
-        for grant in client.provider_grants
-        if grant["profile"].credentials[0].env_vars == [adapter.CODEX_ACCESS_TOKEN_ENV]
-    )
-    assert grant["profile"].credentials[0].env_vars == [adapter.CODEX_ACCESS_TOKEN_ENV]
-    assert grant["profile"].credentials[0].token_grant.cache_ttl_seconds == 0
-    assert {endpoint.host for endpoint in grant["profile"].endpoints} >= {
-        "api.openai.com",
-        "auth.openai.com",
-        "chatgpt.com",
-        "*.oaiusercontent.com",
-    }
-    assert grant["config"]["volundr_credential_format"] == adapter.CODEX_AUTH_FORMAT
-    assert grant["config"]["volundr_credential_field"] == "auth.json"
+    assert len(client.provider_grants) == 1
+    assert client.provider_grants[0]["profile"].credentials[0].env_vars == [
+        "GITHUB_PERSONAL_ACCESS_TOKEN"
+    ]
 
 
 @pytest.mark.asyncio
@@ -2408,247 +2398,6 @@ async def test_platform_grant_mints_resident_bound_workload_token(
     assert issuer.requests[0]["claims"] == {
         "resident_id": str(runtime.id),
         "sandbox_id": sandbox_id,
-    }
-
-
-@pytest.mark.asyncio
-async def test_codex_credential_grant_reads_access_token_from_openbao_document(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    session = _session()
-    sandbox_id = str(uuid4())
-    provider_name = f"volundr-{session.id.hex[:12]}-codexgrant"
-    audience = f"{adapter.GRANT_AUDIENCE_PREFIX}{provider_name}"
-    client = _FakeOpenShellGatewayClient(adapter)
-    client.grant_sandbox = adapter.OpenShellSandbox(
-        id=sandbox_id,
-        name="forge-test",
-        phase=adapter.openshell_pb2.SANDBOX_PHASE_READY,
-        labels={"volundr.niuu.io/session": str(session.id)},
-        providers=(provider_name,),
-    )
-    client.grant_provider = types.SimpleNamespace(
-        type=provider_name,
-        config={
-            "volundr_session_id": str(session.id),
-            "volundr_credential_name": "codex-credentials",
-            "volundr_credential_field": "auth.json",
-            "volundr_credential_format": adapter.CODEX_AUTH_FORMAT,
-        },
-    )
-
-    class Credential:
-        token_grant = types.SimpleNamespace(audience=audience)
-
-        def HasField(self, name: str) -> bool:  # noqa: N802
-            return name == "token_grant"
-
-    client.grant_profile = types.SimpleNamespace(credentials=[Credential()])
-    store = _FakeCredentialStore(
-        {"codex-credentials": {"auth.json": _codex_auth_document(expires_in=3600)}}
-    )
-    manager = adapter.OpenShellGatewayPodManager(client=client)
-    manager.set_session_repository(_FakeSessionRepository(session))
-    manager.set_credential_store(store)
-
-    class Verifier:
-        async def verify(self, _token: str):
-            return {"sub": f"{adapter.DEFAULT_SPIFFE_SUBJECT_PREFIX}{sandbox_id}"}
-
-    manager._spiffe_verifier = Verifier()
-    expected_access_token = json.loads(store.values["codex-credentials"]["auth.json"])["tokens"][
-        "access_token"
-    ]
-
-    token = await manager.exchange_credential_grant(
-        client_assertion="signed-svid",
-        client_assertion_type=adapter.OAUTH_CLIENT_ASSERTION_TYPE,
-        grant_type="client_credentials",
-        audience=audience,
-        scope="",
-    )
-
-    assert token.access_token == expected_access_token
-    assert token.expires_in > 3000
-    assert store.stores == []
-
-
-@pytest.mark.asyncio
-async def test_codex_credential_grant_refreshes_and_persists_rotated_oauth_tokens(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    session = _session()
-    sandbox_id = str(uuid4())
-    provider_name = f"volundr-{session.id.hex[:12]}-codexgrant"
-    audience = f"{adapter.GRANT_AUDIENCE_PREFIX}{provider_name}"
-    client = _FakeOpenShellGatewayClient(adapter)
-    client.grant_sandbox = adapter.OpenShellSandbox(
-        id=sandbox_id,
-        name="forge-test",
-        phase=adapter.openshell_pb2.SANDBOX_PHASE_READY,
-        labels={"volundr.niuu.io/session": str(session.id)},
-        providers=(provider_name,),
-    )
-    client.grant_provider = types.SimpleNamespace(
-        type=provider_name,
-        config={
-            "volundr_session_id": str(session.id),
-            "volundr_credential_name": "codex-credentials",
-            "volundr_credential_field": "auth.json",
-            "volundr_credential_format": adapter.CODEX_AUTH_FORMAT,
-        },
-    )
-
-    class Credential:
-        token_grant = types.SimpleNamespace(audience=audience)
-
-        def HasField(self, name: str) -> bool:  # noqa: N802
-            return name == "token_grant"
-
-    client.grant_profile = types.SimpleNamespace(credentials=[Credential()])
-    store = _FakeCredentialStore(
-        {
-            "codex-credentials": {
-                "auth.json": _codex_auth_document(expires_in=-60),
-                "config.toml": 'model = "gpt-5"',
-            }
-        }
-    )
-    refreshed_access_token = jwt.encode(
-        {"sub": "user", "exp": int(time.time()) + 7200},
-        key="",
-        algorithm="none",
-    )
-
-    class OAuthResponse:
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict:
-            return {
-                "access_token": refreshed_access_token,
-                "refresh_token": "rotated-refresh-token",
-                "id_token": "rotated-id-token",
-            }
-
-    class OAuthClient:
-        def __init__(self) -> None:
-            self.posts: list[dict] = []
-
-        async def post(self, url: str, data: dict):
-            self.posts.append({"url": url, "data": dict(data)})
-            return OAuthResponse()
-
-    oauth_client = OAuthClient()
-    manager = adapter.OpenShellGatewayPodManager(
-        client=client,
-        codex_oauth_client=oauth_client,
-    )
-    manager.set_session_repository(_FakeSessionRepository(session))
-    manager.set_credential_store(store)
-
-    class Verifier:
-        async def verify(self, _token: str):
-            return {"sub": f"{adapter.DEFAULT_SPIFFE_SUBJECT_PREFIX}{sandbox_id}"}
-
-    manager._spiffe_verifier = Verifier()
-
-    token = await manager.exchange_credential_grant(
-        client_assertion="signed-svid",
-        client_assertion_type=adapter.OAUTH_CLIENT_ASSERTION_TYPE,
-        grant_type="client_credentials",
-        audience=audience,
-        scope="",
-    )
-
-    assert token.access_token == refreshed_access_token
-    assert token.expires_in > 7000
-    assert oauth_client.posts == [
-        {
-            "url": adapter.DEFAULT_CODEX_OAUTH_TOKEN_URL,
-            "data": {
-                "grant_type": "refresh_token",
-                "client_id": adapter.DEFAULT_CODEX_OAUTH_CLIENT_ID,
-                "refresh_token": "refresh-from-openbao",
-            },
-        }
-    ]
-    assert len(store.stores) == 1
-    persisted = json.loads(store.stores[0]["data"]["auth.json"])
-    assert persisted["tokens"]["access_token"] == refreshed_access_token
-    assert persisted["tokens"]["refresh_token"] == "rotated-refresh-token"
-    assert persisted["tokens"]["id_token"] == "rotated-id-token"
-    assert store.stores[0]["data"]["config.toml"] == 'model = "gpt-5"'
-    assert store.stores[0]["metadata"][adapter.CODEX_AUTH_STATE_METADATA_KEY] == "active"
-    assert adapter.CODEX_AUTH_LAST_REFRESHED_AT_METADATA_KEY in store.stores[0]["metadata"]
-
-
-@pytest.mark.asyncio
-async def test_codex_credential_refresh_uses_distributed_owner_scoped_lock(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    manager = adapter.OpenShellGatewayPodManager(client=_FakeOpenShellGatewayClient(adapter))
-    held: list[tuple[str, str, str]] = []
-
-    class RefreshLock:
-        @asynccontextmanager
-        async def hold(self, owner_type: str, owner_id: str, name: str):
-            held.append((owner_type, owner_id, name))
-            yield
-
-    manager.set_credential_refresh_lock(RefreshLock())
-
-    async with manager._hold_credential_refresh_lock("owner-1", "codex-main"):
-        pass
-
-    assert held == [("user", "owner-1", "codex-main")]
-
-
-@pytest.mark.asyncio
-async def test_codex_refresh_failure_marks_only_owners_credential_auth_required(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _import_adapter(monkeypatch)
-    store = _FakeCredentialStore(
-        {"codex-main": {"auth.json": _codex_auth_document(expires_in=-60)}}
-    )
-
-    class FailingOAuthClient:
-        async def post(self, _url: str, data: dict):
-            raise adapter.httpx.HTTPError(f"refresh rejected for {data['refresh_token'][:3]}")
-
-    manager = adapter.OpenShellGatewayPodManager(
-        client=_FakeOpenShellGatewayClient(adapter),
-        codex_oauth_client=FailingOAuthClient(),
-    )
-    manager.set_credential_store(store)
-    workload = adapter.OpenShellWorkloadSubject(
-        id=uuid4(),
-        kind="session",
-        name="test",
-        owner_id="owner-1",
-        tenant_id="tenant-1",
-    )
-
-    with pytest.raises(ValueError, match="requires reconnection"):
-        await manager._exchange_codex_credential(
-            workload=workload,
-            credential_name="codex-main",
-            credential_field="auth.json",
-        )
-
-    assert len(store.stores) == 1
-    assert store.stores[0]["owner_id"] == "owner-1"
-    assert store.stores[0]["name"] == "codex-main"
-    assert store.stores[0]["metadata"] == {
-        adapter.CODEX_AUTH_STATE_METADATA_KEY: adapter.CODEX_AUTH_STATE_REQUIRED,
-        adapter.CODEX_AUTH_STATE_UPDATED_AT_METADATA_KEY: store.stores[0]["metadata"][
-            adapter.CODEX_AUTH_STATE_UPDATED_AT_METADATA_KEY
-        ],
-        adapter.CODEX_AUTH_ERROR_CODE_METADATA_KEY: adapter.CODEX_AUTH_REFRESH_FAILED,
     }
 
 

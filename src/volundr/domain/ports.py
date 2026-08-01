@@ -169,6 +169,32 @@ class OpenShellCredentialGrantToken:
     token_type: str = "Bearer"
 
 
+@dataclass(frozen=True)
+class CodexAuthTokens:
+    """Externally managed ChatGPT tokens safe to expose to one user workload."""
+
+    access_token: str
+    account_id: str
+    expires_in: int
+    plan_type: str = ""
+
+
+class CodexCredentialBrokerPort(ABC):
+    """Resolve and rotate a user's Codex credential without exposing its refresh token."""
+
+    @abstractmethod
+    async def get_tokens(
+        self,
+        *,
+        owner_id: str,
+        credential_name: str,
+        credential_field: str,
+        force_refresh: bool = False,
+        previous_access_token_sha256: str = "",
+    ) -> CodexAuthTokens:
+        """Return an access token and account metadata for one user credential."""
+
+
 class OpenShellCredentialGrantPort(ABC):
     """Exchange an OpenShell sandbox JWT-SVID for one authorized credential."""
 
