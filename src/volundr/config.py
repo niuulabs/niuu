@@ -1489,11 +1489,6 @@ class ObservatoryGuildConfig(BaseModel):
         default="http://localhost:8080",
         description="Base URL for the mounted Guild/niuu API host.",
     )
-    timeout_seconds: float = Field(
-        default=10.0,
-        description="HTTP timeout for Observatory Guild discovery calls.",
-    )
-    auth: HttpAuthAdapterConfig = Field(default_factory=HttpAuthAdapterConfig)
 
 
 class AgentDirectoryConfig(BaseModel):

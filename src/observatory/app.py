@@ -18,14 +18,12 @@ from niuu.domain.agent_directory import (
     AgentDirectoryPage,
 )
 from niuu.domain.models import Principal
-from niuu.ports.http_auth import HttpAuthPort
 from niuu.service_databases import apply_service_database_settings, database_pool
 from niuu.settings_schema import (
     SettingsFieldSchema,
     SettingsProviderSchema,
     SettingsSectionSchema,
 )
-from niuu.utils import import_class, resolve_secret_kwargs
 from observatory.a2a_cards import HttpAgentCardResolver
 from observatory.agent_directory import AgentDirectoryService
 from observatory.discovery import ObservatoryDiscoveryService
@@ -68,12 +66,6 @@ def _discovery(request: Request) -> ObservatoryDiscoveryService:
 
 def _agent_directory(request: Request) -> AgentDirectoryService:
     return request.app.state.agent_directory_service
-
-
-def _create_http_auth_adapter(config) -> HttpAuthPort:
-    cls = import_class(config.adapter)
-    kwargs = resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
-    return cls(**kwargs)
 
 
 def _forward_headers(request: Request) -> dict[str, str]:
@@ -287,14 +279,6 @@ def create_router() -> APIRouter:
                             description="Guild endpoint used for Observatory discovery.",
                             read_only=True,
                         ),
-                        SettingsFieldSchema(
-                            key="guild_auth_adapter",
-                            label="Guild Auth Adapter",
-                            type="text",
-                            value=request.app.state.guild_auth_adapter,
-                            description="Dynamic auth adapter used for Guild requests.",
-                            read_only=True,
-                        ),
                     ],
                 )
             ],
@@ -366,8 +350,6 @@ def create_app(
         guild_cfg = loaded_settings.observatory.guild
         discovery = ObservatoryDiscoveryService(
             guild_url=guild_cfg.url,
-            auth=_create_http_auth_adapter(guild_cfg.auth),
-            timeout_seconds=guild_cfg.timeout_seconds,
             discovery_adapter=build_discovery_adapter(loaded_settings.observatory.discovery),
             registry_type_ids=registry_type_ids,
         )
@@ -411,7 +393,6 @@ def create_app(
     app.state.discovery_service = discovery
     app.state.agent_directory_service = directory
     app.state.guild_url = getattr(discovery, "guild_url", getattr(discovery, "base_url", ""))
-    app.state.guild_auth_adapter = loaded_settings.observatory.guild.auth.adapter
 
     @app.get("/health", tags=["Health"])
     async def health() -> dict[str, object]:

@@ -5,7 +5,6 @@ import json
 import httpx
 import pytest
 
-from niuu.adapters.outbound.http_auth import NoAuthHeaderAdapter
 from observatory.discovery import ObservatoryDiscoveryService
 from observatory.entity_discovery import (
     CompositeDiscoveryAdapter,
@@ -458,7 +457,6 @@ async def test_warden_spec_discovery_emits_semantic_relationships(tmp_path) -> N
 async def test_observatory_discovery_uses_adapters_without_demo_nodes() -> None:
     service = ObservatoryDiscoveryService(
         guild_url="http://guild.test",
-        auth=NoAuthHeaderAdapter(),
         discovery_adapter=CompositeDiscoveryAdapter(
             [
                 _StaticAdapter(

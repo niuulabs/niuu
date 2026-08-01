@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from niuu.adapters.outbound.http_auth import NoAuthHeaderAdapter
 from observatory.discovery import ObservatoryDiscoveryService
 from observatory.entity_discovery import DiscoveredEntity, DiscoveryResult
 
@@ -24,7 +23,6 @@ class _SequenceAdapter:
 async def test_discovery_materializes_adapter_entities() -> None:
     service = ObservatoryDiscoveryService(
         guild_url="http://guild.test",
-        auth=NoAuthHeaderAdapter(),
         discovery_adapter=_SequenceAdapter(
             DiscoveryResult(
                 entities=[
@@ -63,7 +61,6 @@ async def test_discovery_materializes_adapter_entities() -> None:
 async def test_discovery_without_adapter_reports_warning() -> None:
     service = ObservatoryDiscoveryService(
         guild_url="http://guild.test",
-        auth=NoAuthHeaderAdapter(),
         ttl_seconds=0,
     )
 
@@ -90,7 +87,6 @@ async def test_discovery_uses_cache_and_returns_deep_copies() -> None:
     )
     service = ObservatoryDiscoveryService(
         guild_url="http://guild.test",
-        auth=NoAuthHeaderAdapter(),
         discovery_adapter=adapter,
         ttl_seconds=60,
     )
