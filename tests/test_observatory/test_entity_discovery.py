@@ -5,13 +5,17 @@ import pytest
 
 from observatory.discovery import ObservatoryDiscoveryService
 from observatory.entity_discovery import (
+    BifrostCatalogDiscoveryAdapter,
     CompositeDiscoveryAdapter,
     DiscoveredEntity,
     DiscoveryResult,
     FluxHelmReleaseSessionDiscoveryAdapter,
     KubernetesDiscoveryAdapter,
+    MimirDiscoveryAdapter,
+    RavnResidentsDiscoveryAdapter,
     RavnValkyrieDiscoveryAdapter,
     StaticRelationshipDiscoveryAdapter,
+    TingWorkDiscoveryAdapter,
     VolundrSessionsDiscoveryAdapter,
     WardenSpecDiscoveryAdapter,
     topology_from_discovery,
@@ -1330,3 +1334,255 @@ async def test_a_generic_component_label_stays_a_guess(tmp_path, monkeypatch) ->
     result = await adapter.discover()
 
     assert result.entities[0].kind == "service"
+
+
+# ── Service adapters ─────────────────────────────────────────────────────────
+# These are what fill the graph in beyond bare Kubernetes objects, and what
+# replaced the Guild's fabricated Bifröst model children.
+
+
+def _routed(routes: dict[str, object]) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path not in routes:
+            return httpx.Response(404, json={"detail": request.url.path})
+        return httpx.Response(200, json=routes[request.url.path])
+
+    return httpx.MockTransport(handler)
+
+
+@pytest.mark.asyncio
+async def test_bifrost_discovers_the_real_catalogue_not_a_hardcoded_one() -> None:
+    adapter = BifrostCatalogDiscoveryAdapter(
+        base_url="http://bifrost.test",
+        cluster="ymir",
+        transport=_routed(
+            {
+                "/api/v1/bifrost/models": [
+                    {
+                        "id": "nemotron-super",
+                        "name": "Nemotron Super",
+                        "vendor": "nvidia",
+                        "tier": "large",
+                        "enabled": True,
+                        "supports_tools": True,
+                    },
+                    {"id": "claude-opus-5", "name": "Opus 5", "vendor": "anthropic"},
+                ],
+                "/api/v1/bifrost/providers": [
+                    {
+                        "key": "saehrimnir",
+                        "vendor": "nvidia",
+                        "base_url": "http://vllm.volundr.svc.cluster.local",
+                        "model_ids": ["nemotron-super"],
+                    },
+                    {
+                        "key": "anthropic",
+                        "vendor": "anthropic",
+                        "base_url": "https://api.anthropic.com",
+                        "model_ids": ["claude-opus-5"],
+                    },
+                ],
+            }
+        ),
+    )
+
+    result = await adapter.discover()
+
+    models = {e.metadata["modelId"]: e for e in result.entities if e.kind == "model"}
+    assert set(models) == {"nemotron-super", "claude-opus-5"}
+    assert models["nemotron-super"].metadata["location"] == "internal"
+    assert models["claude-opus-5"].metadata["location"] == "external"
+
+
+@pytest.mark.asyncio
+async def test_bifrost_model_edges_are_observed_from_provider_config() -> None:
+    """The old fabricated children were labelled `inferred`, which made a
+    hardcoded guess look like a weak observation."""
+    adapter = BifrostCatalogDiscoveryAdapter(
+        base_url="http://bifrost.test",
+        cluster="ymir",
+        transport=_routed(
+            {
+                "/api/v1/bifrost/models": [{"id": "m-1", "name": "M1"}],
+                "/api/v1/bifrost/providers": [
+                    {"key": "p", "base_url": "https://api.example.test", "model_ids": ["m-1"]}
+                ],
+            }
+        ),
+    )
+
+    result = await adapter.discover()
+
+    assert result.edges[0]["confidence"] == "observed"
+    assert result.edges[0]["evidence"]["field"] == "base_url"
+
+
+@pytest.mark.asyncio
+async def test_a_model_no_provider_serves_gets_no_edge() -> None:
+    adapter = BifrostCatalogDiscoveryAdapter(
+        base_url="http://bifrost.test",
+        cluster="ymir",
+        transport=_routed(
+            {
+                "/api/v1/bifrost/models": [{"id": "orphan", "name": "Orphan"}],
+                "/api/v1/bifrost/providers": [],
+            }
+        ),
+    )
+
+    result = await adapter.discover()
+
+    assert result.edges == []
+    assert next(e for e in result.entities if e.kind == "model").metadata["location"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_ravn_discovers_residents_including_non_cluster_ones() -> None:
+    adapter = RavnResidentsDiscoveryAdapter(
+        base_url="http://ravn.test",
+        cluster="ymir",
+        transport=_routed(
+            {
+                "/api/v1/ravn/ravens": [
+                    {
+                        "id": "ivaldi",
+                        "resident_name": "Ivaldi",
+                        "persona_name": "Workshop Steward",
+                        "status": "online",
+                        "model": "nemotron",
+                        "deployment": "local",
+                        "location": "saehrimnir",
+                        "flock_id": "workshop",
+                    }
+                ]
+            }
+        ),
+    )
+
+    result = await adapter.discover()
+
+    resident = result.entities[0]
+    assert resident.kind == "ravn_long"
+    assert resident.name == "Ivaldi"
+    assert resident.host == "saehrimnir"
+    assert resident.status == "healthy"
+    assert resident.metadata["deployment"] == "local"
+
+
+@pytest.mark.asyncio
+async def test_a_resident_in_a_flock_gets_a_membership_edge() -> None:
+    adapter = RavnResidentsDiscoveryAdapter(
+        base_url="http://ravn.test",
+        cluster="ymir",
+        transport=_routed(
+            {"/api/v1/ravn/ravens": [{"id": "a", "resident_name": "A", "flock_id": "workshop"}]}
+        ),
+    )
+
+    result = await adapter.discover()
+
+    assert result.edges[0]["relationType"] == "member_of"
+    assert result.edges[0]["targetId"] == "flock:workshop"
+
+
+@pytest.mark.asyncio
+async def test_a_resident_without_a_flock_gets_no_membership_edge() -> None:
+    adapter = RavnResidentsDiscoveryAdapter(
+        base_url="http://ravn.test",
+        cluster="ymir",
+        transport=_routed({"/api/v1/ravn/ravens": [{"id": "a", "resident_name": "A"}]}),
+    )
+
+    assert (await adapter.discover()).edges == []
+
+
+@pytest.mark.asyncio
+async def test_ting_reports_what_is_in_flight() -> None:
+    adapter = TingWorkDiscoveryAdapter(
+        base_url="http://ting.test",
+        cluster="ymir",
+        transport=_routed({"/api/v1/ting/runs/summary": {"running": 2, "completed": 9}}),
+    )
+
+    result = await adapter.discover()
+
+    ting = result.entities[0]
+    assert ting.kind == "ting"
+    assert ting.status == "healthy"
+    assert ting.metadata["activeRuns"] == 2
+    assert ting.metadata["totalRuns"] == 11
+
+
+@pytest.mark.asyncio
+async def test_ting_with_nothing_running_is_idle_not_failed() -> None:
+    adapter = TingWorkDiscoveryAdapter(
+        base_url="http://ting.test",
+        cluster="ymir",
+        transport=_routed({"/api/v1/ting/runs/summary": {"completed": 3}}),
+    )
+
+    assert (await adapter.discover()).entities[0].status == "idle"
+
+
+@pytest.mark.asyncio
+async def test_mimir_reports_pages_and_mounts() -> None:
+    adapter = MimirDiscoveryAdapter(
+        base_url="http://mimir.test",
+        cluster="ymir",
+        transport=_routed(
+            {
+                "/api/v1/mimir/stats": {
+                    "page_count": 203,
+                    "categories": ["runbooks"],
+                    "healthy": True,
+                },
+                "/api/v1/mimir/mounts": [
+                    {
+                        "name": "shared",
+                        "role": "primary",
+                        "status": "ok",
+                        "pages": 203,
+                        "size_kb": 900,
+                    },
+                ],
+            }
+        ),
+    )
+
+    result = await adapter.discover()
+
+    mimir = result.entities[0]
+    assert mimir.kind == "mimir"
+    assert mimir.status == "healthy"
+    assert mimir.metadata["pages"] == 203
+    assert mimir.metadata["mountCount"] == 1
+    assert mimir.metadata["mounts"][0]["name"] == "shared"
+
+
+@pytest.mark.asyncio
+async def test_an_unhealthy_mimir_is_failed() -> None:
+    adapter = MimirDiscoveryAdapter(
+        base_url="http://mimir.test",
+        cluster="ymir",
+        transport=_routed(
+            {"/api/v1/mimir/stats": {"page_count": 0, "healthy": False}, "/api/v1/mimir/mounts": []}
+        ),
+    )
+
+    assert (await adapter.discover()).entities[0].status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_service_warns_instead_of_raising() -> None:
+    """One dead service must not empty the graph the others contributed to."""
+    adapter = MimirDiscoveryAdapter(
+        base_url="http://mimir.test",
+        cluster="ymir",
+        transport=httpx.MockTransport(lambda _r: httpx.Response(503)),
+    )
+
+    result = await adapter.discover()
+
+    assert result.entities == []
+    assert result.events[0]["level"] == "warning"
+    assert "mimir" in result.events[0]["subject"]

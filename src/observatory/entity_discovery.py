@@ -786,6 +786,332 @@ class FluxHelmReleaseSessionDiscoveryAdapter:
         return not self._image_tags or image_tag in self._image_tags
 
 
+class _HttpServiceDiscoveryAdapter:
+    """Shared plumbing for adapters that read one niuu service over HTTP.
+
+    Each subclass supplies `collect`; failures become a warning event rather
+    than an exception, because one unreachable service must not empty the graph
+    the other adapters contributed to.
+    """
+
+    warning_name = "service"
+
+    def __init__(
+        self,
+        base_url: str,
+        cluster: str = "",
+        realm: str = "",
+        namespace: str = "",
+        timeout_seconds: float = 5.0,
+        auth_adapter: str = "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter",
+        auth_kwargs: dict[str, Any] | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._cluster = cluster
+        self._realm = realm
+        self._namespace = namespace
+        self._timeout_seconds = timeout_seconds
+        self._auth: HttpAuthPort = import_class(auth_adapter)(**(auth_kwargs or {}))
+        self._transport = transport
+
+    async def discover(self) -> DiscoveryResult:
+        try:
+            headers = await asyncio.to_thread(self._auth.headers)
+            async with httpx.AsyncClient(
+                timeout=self._timeout_seconds,
+                follow_redirects=True,
+                transport=self._transport,
+            ) as client:
+                return await self.collect(client, headers)
+        except Exception as exc:
+            return DiscoveryResult(
+                events=[_adapter_warning(self.warning_name, f"{self._base_url}: {exc}")]
+            )
+
+    async def collect(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+    ) -> DiscoveryResult:
+        raise NotImplementedError
+
+    async def _json(self, client: httpx.AsyncClient, headers: dict[str, str], path: str) -> Any:
+        response = await client.get(f"{self._base_url}{path}", headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+    def _entity(self, kind: str, name: str, entity_id: str, **kwargs: Any) -> DiscoveredEntity:
+        return DiscoveredEntity(
+            id=entity_id,
+            kind=kind,
+            name=name,
+            realm=self._realm,
+            cluster=self._cluster,
+            namespace=self._namespace,
+            source_adapter=self.__class__.__name__,
+            **kwargs,
+        )
+
+
+class BifrostCatalogDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
+    """Discover the real model catalogue from Bifröst.
+
+    This replaces the three model children the Guild used to fabricate for
+    every Bifröst (Anthropic, OpenAI, Local) from a hardcoded list. Models here
+    are the ones actually configured, and each is attributed to the provider
+    that serves it — which is also what makes local-vs-hosted visible.
+    """
+
+    warning_name = "bifrost"
+
+    async def collect(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+    ) -> DiscoveryResult:
+        models = await self._json(client, headers, "/api/v1/bifrost/models")
+        providers = await self._json(client, headers, "/api/v1/bifrost/providers")
+        providers = providers if isinstance(providers, list) else []
+        models = models if isinstance(models, list) else []
+
+        gateway_id = f"bifrost:{_slug(self._cluster or 'unknown')}"
+        entities = [
+            self._entity(
+                "bifrost",
+                "Bifröst",
+                gateway_id,
+                status="healthy",
+                endpoints={"internal": self._base_url},
+                metadata={
+                    "providers": len(providers),
+                    "models": len(models),
+                    "vendors": sorted(
+                        {
+                            str(p.get("vendor") or "")
+                            for p in providers
+                            if isinstance(p, dict) and p.get("vendor")
+                        }
+                    ),
+                },
+            )
+        ]
+        edges: list[ObservatoryEdge] = []
+
+        # A provider's base_url is real configuration, so "this model is served
+        # from here" is observed rather than guessed.
+        served_by = {
+            str(model_id): provider
+            for provider in providers
+            if isinstance(provider, dict)
+            for model_id in (provider.get("model_ids") or [])
+        }
+
+        for model in models:
+            if not isinstance(model, dict) or not model.get("id"):
+                continue
+            model_id = str(model["id"])
+            provider = served_by.get(model_id) or {}
+            base_url = str(provider.get("base_url") or "")
+            node_id = f"model:{_slug(self._cluster or 'unknown')}:{_slug(model_id)}"
+            entities.append(
+                self._entity(
+                    "model",
+                    str(model.get("name") or model_id),
+                    node_id,
+                    parent_id=gateway_id,
+                    status="healthy" if model.get("enabled", True) else "idle",
+                    metadata={
+                        "modelId": model_id,
+                        "vendor": str(model.get("vendor") or ""),
+                        "provider": str(model.get("provider") or provider.get("key") or ""),
+                        "tier": str(model.get("tier") or ""),
+                        "location": _model_location(base_url),
+                        "supportsTools": bool(model.get("supports_tools")),
+                        "supportsThinking": bool(model.get("supports_thinking")),
+                        "vramRequired": model.get("vram_required"),
+                        "costPerMillionTokens": model.get("cost_per_million_tokens"),
+                    },
+                )
+            )
+            if base_url:
+                edges.append(
+                    _edge(
+                        source_id=gateway_id,
+                        target_id=node_id,
+                        relation_type="routes_to",
+                        source_adapter=self.__class__.__name__,
+                        evidence_field="base_url",
+                        confidence="observed",
+                    )
+                )
+
+        return DiscoveryResult(entities=entities, edges=edges)
+
+
+class RavnResidentsDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
+    """Discover long-running residents from Ravn's fleet projection.
+
+    This is also how residents outside Kubernetes reach the graph when the
+    Ravn that knows about them is reachable: the projection already carries
+    local and container deployments, not only cluster ones.
+    """
+
+    warning_name = "ravn-residents"
+
+    async def collect(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+    ) -> DiscoveryResult:
+        payload = await self._json(client, headers, "/api/v1/ravn/ravens")
+        ravens = payload if isinstance(payload, list) else []
+        entities: list[DiscoveredEntity] = []
+        edges: list[ObservatoryEdge] = []
+
+        for raven in ravens:
+            if not isinstance(raven, dict) or not raven.get("id"):
+                continue
+            raven_id = str(raven["id"])
+            name = str(raven.get("resident_name") or raven.get("persona_name") or raven_id)
+            node_id = f"ravn:{_slug(self._cluster or 'unknown')}:{_slug(raven_id)}"
+            flock_id = str(raven.get("flock_id") or "")
+            entities.append(
+                self._entity(
+                    "ravn_long",
+                    name,
+                    node_id,
+                    # A resident reports where it runs; a local or container
+                    # deployment has no cluster placement to inherit.
+                    host=str(raven.get("location") or ""),
+                    status=_status_from_valkyrie(str(raven.get("status") or "")),
+                    endpoints=(
+                        {"chat": str(raven["chat_endpoint"])} if raven.get("chat_endpoint") else {}
+                    ),
+                    metadata={
+                        "persona": str(raven.get("persona_name") or ""),
+                        "model": str(raven.get("model") or ""),
+                        "deployment": str(raven.get("deployment") or raven.get("backend") or ""),
+                        "engine": str(raven.get("engine") or ""),
+                        "flockId": flock_id,
+                        "flockRole": str(raven.get("flock_role") or ""),
+                        "peerId": str(raven.get("peer_id") or ""),
+                        "desiredState": raven.get("desired_state"),
+                        "observedState": raven.get("observed_state"),
+                    },
+                )
+            )
+            if flock_id:
+                # Flock membership is declared by the resident's own config,
+                # which is what makes a mesh visible as more than co-location.
+                edges.append(
+                    _edge(
+                        source_id=node_id,
+                        target_id=f"flock:{_slug(flock_id)}",
+                        relation_type="member_of",
+                        source_adapter=self.__class__.__name__,
+                        evidence_field="flock_id",
+                        confidence="observed",
+                    )
+                )
+
+        return DiscoveryResult(entities=entities, edges=edges)
+
+
+class TingWorkDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
+    """Discover the dispatcher and what it currently has in flight."""
+
+    warning_name = "ting"
+
+    async def collect(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+    ) -> DiscoveryResult:
+        summary = await self._json(client, headers, "/api/v1/ting/runs/summary")
+        counts = {str(k): int(v) for k, v in summary.items()} if isinstance(summary, dict) else {}
+        active = sum(count for state, count in counts.items() if state.lower() == "running")
+        return DiscoveryResult(
+            entities=[
+                self._entity(
+                    "ting",
+                    "Ting",
+                    f"ting:{_slug(self._cluster or 'unknown')}",
+                    status="healthy" if active else "idle",
+                    endpoints={"internal": self._base_url},
+                    metadata={
+                        "runsByStatus": counts,
+                        "activeRuns": active,
+                        "totalRuns": sum(counts.values()),
+                    },
+                )
+            ]
+        )
+
+
+class MimirDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
+    """Discover a Mímir and the mounts it serves."""
+
+    warning_name = "mimir"
+
+    async def collect(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+    ) -> DiscoveryResult:
+        stats = await self._json(client, headers, "/api/v1/mimir/stats")
+        mounts = await self._json(client, headers, "/api/v1/mimir/mounts")
+        stats = stats if isinstance(stats, dict) else {}
+        mounts = mounts if isinstance(mounts, list) else []
+
+        node_id = f"mimir:{_slug(self._cluster or 'unknown')}"
+        return DiscoveryResult(
+            entities=[
+                self._entity(
+                    "mimir",
+                    "Mímir",
+                    node_id,
+                    status="healthy" if stats.get("healthy") else "failed",
+                    endpoints={"internal": self._base_url},
+                    metadata={
+                        "pages": int(stats.get("page_count") or 0),
+                        "categories": list(stats.get("categories") or []),
+                        "mountCount": len(mounts),
+                        "mounts": [
+                            {
+                                "name": str(mount.get("name") or ""),
+                                "role": str(mount.get("role") or ""),
+                                "status": str(mount.get("status") or ""),
+                                "pages": int(mount.get("pages") or 0),
+                                "sizeKb": int(mount.get("size_kb") or 0),
+                            }
+                            for mount in mounts
+                            if isinstance(mount, dict)
+                        ],
+                    },
+                )
+            ]
+        )
+
+
+def _model_location(base_url: str) -> str:
+    """Where a model is served from, judged by its provider endpoint.
+
+    A cluster-internal or loopback URL means the weights run on our hardware;
+    anything else is a hosted API. This is read from real provider config, so
+    it is an observation rather than a guess.
+    """
+    if not base_url:
+        return "unknown"
+    lowered = base_url.lower()
+    if any(
+        marker in lowered
+        for marker in ("localhost", "127.0.0.1", ".svc.cluster.local", ".internal")
+    ):
+        return "internal"
+    return "external"
+
+
 class RavnValkyrieDiscoveryAdapter:
     """Discover cross-cluster Valkyries from Ravn's live dashboard projection."""
 
