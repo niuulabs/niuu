@@ -939,6 +939,7 @@ class IntegrationDefinitionConfig(BaseModel):
     auth_type: str = "api_key"
     oauth: OAuthSpecConfig | None = None
     file_mounts: dict[str, str] = Field(default_factory=dict)
+    credential_enrollment: dict[str, str] | None = None
 
 
 def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
@@ -1048,6 +1049,20 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 "properties": {"api_key": {"label": "API Key", "type": "password"}},
             },
             env_from_credentials={"OPENAI_API_KEY": "api_key"},
+        ),
+        IntegrationDefinitionConfig(
+            slug="codex",
+            name="OpenAI Codex (ChatGPT)",
+            description="User-scoped ChatGPT subscription login for Codex runtimes",
+            integration_type="ai_provider",
+            icon="openai",
+            credential_schema={},
+            auth_type="device_code",
+            credential_enrollment={
+                "method": "codex_device",
+                "credential_field": "auth.json",
+                "default_credential_name": "codex-credentials",
+            },
         ),
         IntegrationDefinitionConfig(
             slug="telegram",

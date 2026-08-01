@@ -12,6 +12,7 @@ from niuu.adapters.inbound.rest_credentials_settings import create_credentials_s
 from niuu.adapters.inbound.rest_integrations_settings import create_integrations_settings_router
 from niuu.adapters.inbound.rest_pats import create_pats_router
 from niuu.adapters.inbound.rest_realms import create_realms_router
+from niuu.adapters.postgres_credential_refresh_lock import PostgresCredentialRefreshLock
 from niuu.adapters.postgres_realms import PostgresRealmRepository
 from niuu.cors import apply_cors_middleware
 from niuu.domain.services.pat import PATService
@@ -76,6 +77,9 @@ from volundr.adapters.outbound.postgres_communication_cursors import (
 from volundr.adapters.outbound.postgres_communication_routes import (
     PostgresCommunicationRouteRepository,
 )
+from volundr.adapters.outbound.postgres_credential_enrollments import (
+    PostgresCredentialEnrollmentRepository,
+)
 from volundr.adapters.outbound.postgres_device_tokens import PostgresDeviceTokenRepository
 from volundr.adapters.outbound.postgres_integrations import PostgresIntegrationRepository
 from volundr.adapters.outbound.postgres_launch_specs import PostgresLaunchSpecRepository
@@ -111,7 +115,7 @@ from volundr.composition_builders import (  # noqa: F401
 )
 from volundr.config import Settings
 from volundr.domain.models import SessionStatus
-from volundr.domain.ports import OpenShellCredentialGrantPort
+from volundr.domain.ports import CredentialEnrollmentRunnerPort, OpenShellCredentialGrantPort
 from volundr.domain.services import (
     ChronicleService,
     ExternalSessionService,
@@ -127,6 +131,7 @@ from volundr.domain.services import (
 from volundr.domain.services.attention_notifier import PushAttentionNotifier
 from volundr.domain.services.communication_ingress import CommunicationIngressService
 from volundr.domain.services.credential import CredentialService
+from volundr.domain.services.credential_enrollment import CredentialEnrollmentService
 from volundr.domain.services.event_ingestion import EventIngestionService
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
 from volundr.domain.services.resident_runtime import (
@@ -141,6 +146,7 @@ from volundr.infrastructure.database import database_pool
 
 # Interval for periodic stats and heartbeat broadcasts (seconds)
 BROADCAST_INTERVAL = 30
+CREDENTIAL_ENROLLMENT_RECONCILE_INTERVAL_SECONDS = 30
 
 logger = logging.getLogger(__name__)
 
@@ -336,6 +342,30 @@ async def _reconcile_resident_runtimes_loop(
             logger.exception("Resident runtime reconcile iteration failed")
 
 
+async def _reconcile_credential_enrollments_loop(
+    service: CredentialEnrollmentService,
+    *,
+    interval_seconds: float = CREDENTIAL_ENROLLMENT_RECONCILE_INTERVAL_SECONDS,
+) -> None:
+    """Destroy expired interactive-login sandboxes independently of the UI."""
+    logger.info(
+        "Credential enrollment reconciliation started, interval=%.1fs",
+        interval_seconds,
+    )
+    while True:
+        try:
+            count = await service.expire_stale()
+            if count:
+                logger.info("Expired %d stale credential enrollment(s)", count)
+            await asyncio.sleep(interval_seconds)
+        except asyncio.CancelledError:
+            logger.info("Credential enrollment reconciliation task cancelled")
+            break
+        except Exception:
+            logger.exception("Credential enrollment reconciliation iteration failed")
+            await asyncio.sleep(interval_seconds)
+
+
 def _create_otel_providers(otel_cfg):  # pragma: no cover
     """Build OTel TracerProvider + MeterProvider from config.
 
@@ -452,11 +482,18 @@ def create_app(
             workload_identity_service = create_workload_identity_service(settings.workload_identity)
             pod_manager = _create_pod_manager(settings)
             resident_controllers = _create_resident_controllers(settings, pod_manager)
+            credential_refresh_lock = PostgresCredentialRefreshLock(pool)
+            if hasattr(pod_manager, "set_credential_refresh_lock"):
+                pod_manager.set_credential_refresh_lock(credential_refresh_lock)
             if hasattr(pod_manager, "set_session_repository"):
                 pod_manager.set_session_repository(repository)
             if hasattr(pod_manager, "set_workload_token_issuer"):
                 pod_manager.set_workload_token_issuer(workload_identity_service)
             for controller in resident_controllers:
+                if controller is not pod_manager and hasattr(
+                    controller, "set_credential_refresh_lock"
+                ):
+                    controller.set_credential_refresh_lock(credential_refresh_lock)
                 if hasattr(controller, "set_resident_runtime_repository"):
                     controller.set_resident_runtime_repository(resident_runtime_repository)
                 if controller is not pod_manager and hasattr(
@@ -626,6 +663,17 @@ def create_app(
             integration_repo = PostgresIntegrationRepository(pool)
             mapping_repository = PostgresMappingRepository(pool)
             tracker_factory = TrackerFactory(credential_store)
+            credential_enrollment_service = (
+                CredentialEnrollmentService(
+                    repository=PostgresCredentialEnrollmentRepository(pool),
+                    runner=pod_manager,
+                    integration_repository=integration_repo,
+                    integration_registry=integration_registry,
+                    credential_store=credential_store,
+                )
+                if isinstance(pod_manager, CredentialEnrollmentRunnerPort)
+                else None
+            )
             default_tracker = (
                 LinearAdapter(api_key=settings.linear.api_key)
                 if settings.linear.enabled and settings.linear.api_key
@@ -924,6 +972,7 @@ def create_app(
                     tracker_factory,
                     registry=integration_registry,
                     credential_store=credential_store,
+                    credential_enrollment_service=credential_enrollment_service,
                 )
             )
             app.include_router(
@@ -1204,6 +1253,13 @@ def create_app(
                     flock_adapter=resident_flock_adapter,
                 )
             )
+            credential_enrollment_reconcile_task = (
+                asyncio.create_task(
+                    _reconcile_credential_enrollments_loop(credential_enrollment_service)
+                )
+                if credential_enrollment_service is not None
+                else None
+            )
             if settings.telegram_ingress.enabled:
                 await telegram_ingress.start()
             else:
@@ -1247,6 +1303,12 @@ def create_app(
                     await resident_reconcile_task
                 except asyncio.CancelledError:
                     pass
+                if credential_enrollment_reconcile_task is not None:
+                    credential_enrollment_reconcile_task.cancel()
+                    try:
+                        await credential_enrollment_reconcile_task
+                    except asyncio.CancelledError:
+                        pass
                 if resident_flock_adapter is not None:
                     await resident_flock_adapter.stop()
                 await resident_runtime_service.close()

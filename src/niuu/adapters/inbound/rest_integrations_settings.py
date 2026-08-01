@@ -47,6 +47,9 @@ def create_integrations_settings_router() -> APIRouter:
                             test_path="/api/v1/integrations/{id}/test",
                             oauth_authorize_path="/api/v1/integrations/oauth/{slug}/authorize",
                             oauth_disconnect_path="/api/v1/integrations/oauth/{slug}/disconnect",
+                            enrollment_start_path="/api/v1/integrations/enrollments",
+                            enrollment_status_path="/api/v1/integrations/enrollments/{id}",
+                            enrollment_cancel_path="/api/v1/integrations/enrollments/{id}",
                         )
                     ],
                 )

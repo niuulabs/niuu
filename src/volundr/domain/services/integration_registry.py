@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 
 from volundr.domain.models import (
+    CredentialEnrollmentSpec,
     IntegrationConnection,
     IntegrationDefinition,
     IntegrationType,
@@ -128,6 +129,15 @@ def definitions_from_config(
                 extra_token_params=oauth_raw.get("extra_token_params", {}),
             )
 
+        enrollment_raw = item.get("credential_enrollment")
+        enrollment_spec: CredentialEnrollmentSpec | None = None
+        if enrollment_raw and isinstance(enrollment_raw, dict):
+            enrollment_spec = CredentialEnrollmentSpec(
+                method=enrollment_raw["method"],
+                credential_field=enrollment_raw["credential_field"],
+                default_credential_name=enrollment_raw["default_credential_name"],
+            )
+
         defn = IntegrationDefinition(
             slug=item["slug"],
             name=item["name"],
@@ -142,6 +152,7 @@ def definitions_from_config(
             auth_type=item.get("auth_type", "api_key"),
             oauth=oauth_spec,
             file_mounts=item.get("file_mounts", {}),
+            credential_enrollment=enrollment_spec,
         )
         result.append(defn)
         logger.debug("Loaded integration definition: %s", defn.slug)

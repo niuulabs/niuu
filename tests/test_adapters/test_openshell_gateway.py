@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import importlib
 import io
 import json
@@ -10,6 +11,9 @@ import sys
 import tarfile
 import time
 import types
+from contextlib import asynccontextmanager
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -22,6 +26,8 @@ from volundr.adapters.outbound.hermes_gateway import (
     HERMES_LEGACY_CREDENTIAL_NAME,
 )
 from volundr.domain.models import (
+    CredentialEnrollment,
+    CredentialEnrollmentState,
     GitSource,
     PodSpecAdditions,
     ResidentBackend,
@@ -431,6 +437,111 @@ def _codex_auth_document(*, expires_in: int = 3600) -> str:
             },
         }
     )
+
+
+def _credential_enrollment() -> CredentialEnrollment:
+    now = datetime.now(UTC)
+    return CredentialEnrollment(
+        id=uuid4(),
+        connection_id=str(uuid4()),
+        owner_id="owner-1",
+        tenant_id="tenant-1",
+        provider_slug="codex",
+        credential_name="codex-credentials",
+        method="codex_device",
+        state=CredentialEnrollmentState.PENDING,
+        runner_ref={},
+        verification_uri="",
+        user_code="",
+        expires_at=now + timedelta(minutes=15),
+        error_code="",
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def test_parses_codex_device_login_challenge_without_ansi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    output = (
+        "\x1b[1mOpen https://auth.openai.com/codex/device in your browser\x1b[0m\n"
+        "Enter code ABCD-EFGH\n"
+    )
+
+    assert adapter._parse_codex_device_challenge(output) == (
+        "https://auth.openai.com/codex/device",
+        "ABCD-EFGH",
+    )
+
+
+@pytest.mark.asyncio
+async def test_codex_device_enrollment_runs_in_workspace_free_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    outputs = iter(
+        [
+            (0, ""),
+            (
+                0,
+                "Open https://auth.openai.com/codex/device\nEnter code ABCD-EFGH\n",
+            ),
+        ]
+    )
+
+    def exec_script(**kwargs):
+        client.bootstrap_execs.append(kwargs)
+        return next(outputs)
+
+    client.exec_script = exec_script
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+    enrollment = _credential_enrollment()
+
+    started = await manager.start_enrollment(enrollment)
+
+    assert started.state == CredentialEnrollmentState.AWAITING_USER
+    assert started.verification_uri == "https://auth.openai.com/codex/device"
+    assert started.user_code == "ABCD-EFGH"
+    assert client.created is not None
+    assert client.created["providers"] == (started.runner_ref["provider_name"],)
+    assert "workspace" not in client.created
+    assert "owner-1" not in str(client.created["labels"])
+    assert client.provider_grants[0]["profile"].credentials == []
+    assert client.execs[0]["command"] == ("codex", "login", "--device-auth")
+
+
+@pytest.mark.asyncio
+async def test_codex_device_enrollment_returns_auth_document_only_when_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    client = _FakeOpenShellGatewayClient(adapter)
+    auth_document = _codex_auth_document()
+    encoded = base64.b64encode(auth_document.encode()).decode()
+    client.exec_script = lambda **_kwargs: (0, f"complete\n{encoded}")
+    manager = adapter.OpenShellGatewayPodManager(client=client)
+    enrollment = replace(
+        _credential_enrollment(),
+        state=CredentialEnrollmentState.AWAITING_USER,
+        runner_ref={
+            "sandbox_id": "sandbox-id",
+            "sandbox_name": "enroll-1",
+            "provider_name": "provider-1",
+            "profile_id": "provider-1",
+        },
+    )
+
+    result = await manager.poll_enrollment(enrollment)
+
+    assert result.state == CredentialEnrollmentState.COMPLETE
+    assert result.credential_data == {"auth.json": auth_document}
+
+    await manager.cancel_enrollment(enrollment)
+
+    assert client.deleted == ["enroll-1"]
+    assert len(client.deleted_grants) == 1
 
 
 class _FakeSessionRepository:
@@ -2470,6 +2581,75 @@ async def test_codex_credential_grant_refreshes_and_persists_rotated_oauth_token
     assert persisted["tokens"]["refresh_token"] == "rotated-refresh-token"
     assert persisted["tokens"]["id_token"] == "rotated-id-token"
     assert store.stores[0]["data"]["config.toml"] == 'model = "gpt-5"'
+    assert store.stores[0]["metadata"][adapter.CODEX_AUTH_STATE_METADATA_KEY] == "active"
+    assert adapter.CODEX_AUTH_LAST_REFRESHED_AT_METADATA_KEY in store.stores[0]["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_codex_credential_refresh_uses_distributed_owner_scoped_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    manager = adapter.OpenShellGatewayPodManager(client=_FakeOpenShellGatewayClient(adapter))
+    held: list[tuple[str, str, str]] = []
+
+    class RefreshLock:
+        @asynccontextmanager
+        async def hold(self, owner_type: str, owner_id: str, name: str):
+            held.append((owner_type, owner_id, name))
+            yield
+
+    manager.set_credential_refresh_lock(RefreshLock())
+
+    async with manager._hold_credential_refresh_lock("owner-1", "codex-main"):
+        pass
+
+    assert held == [("user", "owner-1", "codex-main")]
+
+
+@pytest.mark.asyncio
+async def test_codex_refresh_failure_marks_only_owners_credential_auth_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    store = _FakeCredentialStore(
+        {"codex-main": {"auth.json": _codex_auth_document(expires_in=-60)}}
+    )
+
+    class FailingOAuthClient:
+        async def post(self, _url: str, data: dict):
+            raise adapter.httpx.HTTPError(f"refresh rejected for {data['refresh_token'][:3]}")
+
+    manager = adapter.OpenShellGatewayPodManager(
+        client=_FakeOpenShellGatewayClient(adapter),
+        codex_oauth_client=FailingOAuthClient(),
+    )
+    manager.set_credential_store(store)
+    workload = adapter.OpenShellWorkloadSubject(
+        id=uuid4(),
+        kind="session",
+        name="test",
+        owner_id="owner-1",
+        tenant_id="tenant-1",
+    )
+
+    with pytest.raises(ValueError, match="requires reconnection"):
+        await manager._exchange_codex_credential(
+            workload=workload,
+            credential_name="codex-main",
+            credential_field="auth.json",
+        )
+
+    assert len(store.stores) == 1
+    assert store.stores[0]["owner_id"] == "owner-1"
+    assert store.stores[0]["name"] == "codex-main"
+    assert store.stores[0]["metadata"] == {
+        adapter.CODEX_AUTH_STATE_METADATA_KEY: adapter.CODEX_AUTH_STATE_REQUIRED,
+        adapter.CODEX_AUTH_STATE_UPDATED_AT_METADATA_KEY: store.stores[0]["metadata"][
+            adapter.CODEX_AUTH_STATE_UPDATED_AT_METADATA_KEY
+        ],
+        adapter.CODEX_AUTH_ERROR_CODE_METADATA_KEY: adapter.CODEX_AUTH_REFRESH_FAILED,
+    }
 
 
 @pytest.mark.asyncio

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -19,11 +20,17 @@ from volundr.adapters.inbound.rest_integrations import (
 from volundr.adapters.outbound.jira import JiraAdapter
 from volundr.adapters.outbound.memory_integrations import InMemoryIntegrationRepository
 from volundr.domain.models import (
+    CredentialEnrollment,
+    CredentialEnrollmentState,
     IntegrationConnection,
     Principal,
     TrackerIssue,
 )
 from volundr.domain.ports import CredentialStorePort
+from volundr.domain.services.credential_enrollment import (
+    CredentialEnrollmentError,
+    CredentialEnrollmentService,
+)
 from volundr.domain.services.integration_registry import (
     IntegrationRegistry,
     definitions_from_config,
@@ -681,6 +688,7 @@ class TestIntegrationEndpoints:
                 },
                 "auth_type": "oauth2_authorization_code",
                 "oauth_scopes": ["read", "write"],
+                "credential_enrollment": None,
             }
         ]
 
@@ -691,6 +699,94 @@ class TestIntegrationEndpoints:
         response = integration_client.get("/api/v1/integrations/catalog")
         assert response.status_code == 200
         assert response.json() == []
+
+    def test_device_enrollment_endpoint_returns_secret_free_challenge(
+        self,
+        integration_repo: InMemoryIntegrationRepository,
+        tracker_factory: TrackerFactory,
+        mock_principal: Principal,
+    ):
+        now = datetime.now(UTC)
+        enrollment = CredentialEnrollment(
+            id=uuid4(),
+            connection_id=str(uuid4()),
+            owner_id=mock_principal.user_id,
+            tenant_id=mock_principal.tenant_id,
+            provider_slug="codex",
+            credential_name="codex-credentials",
+            method="codex_device",
+            state=CredentialEnrollmentState.AWAITING_USER,
+            runner_ref={"sandbox_id": "private-runner-ref"},
+            verification_uri="https://auth.openai.com/codex/device",
+            user_code="ABCD-EFGH",
+            expires_at=now + timedelta(minutes=15),
+            error_code="",
+            created_at=now,
+            updated_at=now,
+        )
+        enrollment_service = AsyncMock(spec=CredentialEnrollmentService)
+        enrollment_service.start.return_value = enrollment
+        app = FastAPI()
+
+        async def mock_extract_principal():
+            return mock_principal
+
+        app.include_router(
+            create_integrations_router(
+                integration_repo,
+                tracker_factory,
+                credential_enrollment_service=enrollment_service,
+            )
+        )
+        from volundr.adapters.inbound.auth import extract_principal
+
+        app.dependency_overrides[extract_principal] = mock_extract_principal
+
+        response = TestClient(app).post(
+            "/api/v1/integrations/enrollments",
+            json={"slug": "codex", "credentialName": "codex-credentials"},
+        )
+
+        assert response.status_code == 201
+        assert response.json()["verificationUri"] == enrollment.verification_uri
+        assert response.json()["userCode"] == "ABCD-EFGH"
+        assert "runner_ref" not in response.json()
+        enrollment_service.start.assert_awaited_once_with(
+            principal=mock_principal,
+            slug="codex",
+            credential_name="codex-credentials",
+            connection_id="",
+        )
+
+    def test_device_enrollment_lookup_hides_foreign_or_missing_attempts(
+        self,
+        integration_repo: InMemoryIntegrationRepository,
+        tracker_factory: TrackerFactory,
+        mock_principal: Principal,
+    ):
+        enrollment_service = AsyncMock(spec=CredentialEnrollmentService)
+        enrollment_service.get.side_effect = CredentialEnrollmentError(
+            "Credential enrollment not found"
+        )
+        app = FastAPI()
+
+        async def mock_extract_principal():
+            return mock_principal
+
+        app.include_router(
+            create_integrations_router(
+                integration_repo,
+                tracker_factory,
+                credential_enrollment_service=enrollment_service,
+            )
+        )
+        from volundr.adapters.inbound.auth import extract_principal
+
+        app.dependency_overrides[extract_principal] = mock_extract_principal
+
+        response = TestClient(app).get(f"/api/v1/integrations/enrollments/{uuid4()}")
+
+        assert response.status_code == 404
 
 
 class TestIntegrationTestEndpointBranches:

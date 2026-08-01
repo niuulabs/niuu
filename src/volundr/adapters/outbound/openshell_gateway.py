@@ -8,6 +8,7 @@ removed; service/runtime auth belongs at this gateway boundary.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import io
 import json
@@ -18,8 +19,9 @@ import socket
 import tarfile
 import threading
 import time
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -69,6 +71,9 @@ from volundr.adapters.outbound.resident_container_spec import (
     runtime_processes_from_values as _shared_runtime_processes_from_values,
 )
 from volundr.domain.models import (
+    CredentialEnrollment,
+    CredentialEnrollmentPoll,
+    CredentialEnrollmentState,
     ResidentBackend,
     ResidentCapability,
     ResidentCondition,
@@ -85,6 +90,8 @@ from volundr.domain.models import (
     SessionStatus,
 )
 from volundr.domain.ports import (
+    CredentialEnrollmentRunnerPort,
+    CredentialRefreshLockPort,
     CredentialStorePort,
     OpenShellCredentialGrantPort,
     OpenShellCredentialGrantToken,
@@ -131,10 +138,23 @@ DEFAULT_CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 DEFAULT_CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 DEFAULT_CODEX_REFRESH_SKEW_SECONDS = 300
 DEFAULT_CODEX_OAUTH_TIMEOUT_SECONDS = 15.0
+DEFAULT_CREDENTIAL_ENROLLMENT_CHALLENGE_TIMEOUT_SECONDS = 30.0
+CODEX_DEVICE_ENROLLMENT_METHOD = "codex_device"
+CODEX_ENROLLMENT_HOME = "/tmp/niuu-codex-enrollment"
+CODEX_ENROLLMENT_AUTH_PATH = f"{CODEX_ENROLLMENT_HOME}/auth.json"
+CODEX_ENROLLMENT_LOG_PATH = "/tmp/niuu-codex-enrollment.log"
+CODEX_ENROLLMENT_PID_PATH = "/tmp/niuu-codex-enrollment.pid"
 CODEX_AUTH_FORMAT = "codex_auth_json"
 CODEX_ACCESS_TOKEN_ENV = "CODEX_AUTH_ACCESS_TOKEN"
 CODEX_ACCOUNT_ID_ENV = "CODEX_AUTH_ACCOUNT_ID"
 CODEX_ACCESS_TOKEN_REFERENCE = f"openshell:resolve:env:{CODEX_ACCESS_TOKEN_ENV}"
+CODEX_AUTH_STATE_METADATA_KEY = "auth_state"
+CODEX_AUTH_ERROR_CODE_METADATA_KEY = "auth_error_code"
+CODEX_AUTH_STATE_UPDATED_AT_METADATA_KEY = "auth_state_updated_at"
+CODEX_AUTH_LAST_REFRESHED_AT_METADATA_KEY = "auth_last_refreshed_at"
+CODEX_AUTH_STATE_ACTIVE = "active"
+CODEX_AUTH_STATE_REQUIRED = "auth_required"
+CODEX_AUTH_REFRESH_FAILED = "refresh_failed"
 HERMES_API_SERVER_KEY_ENV = "API_SERVER_KEY"
 HERMES_API_SERVER_DEFAULT_PORT = 8642
 HERMES_INTERNAL_SERVICE_URL = "http://hermes-api.internal"
@@ -748,6 +768,7 @@ class OpenShellTcpForwarder:
 
 class OpenShellGatewayPodManager(
     PodManager,
+    CredentialEnrollmentRunnerPort,
     OpenShellCredentialGrantPort,
     ResidentRuntimeController,
     ResidentRuntimeLogReader,
@@ -791,6 +812,9 @@ class OpenShellGatewayPodManager(
         codex_oauth_client_id: str = DEFAULT_CODEX_OAUTH_CLIENT_ID,
         codex_refresh_skew_seconds: int = DEFAULT_CODEX_REFRESH_SKEW_SECONDS,
         codex_oauth_timeout_seconds: float = DEFAULT_CODEX_OAUTH_TIMEOUT_SECONDS,
+        credential_enrollment_challenge_timeout_seconds: float = (
+            DEFAULT_CREDENTIAL_ENROLLMENT_CHALLENGE_TIMEOUT_SECONDS
+        ),
         codex_oauth_client: httpx.AsyncClient | None = None,
         sandbox_policy: dict[str, Any] | None = None,
         client: OpenShellGatewayClient | None = None,
@@ -827,8 +851,12 @@ class OpenShellGatewayPodManager(
         self._codex_oauth_client_id = codex_oauth_client_id
         self._codex_refresh_skew_seconds = int(codex_refresh_skew_seconds)
         self._codex_oauth_timeout_seconds = float(codex_oauth_timeout_seconds)
+        self._credential_enrollment_challenge_timeout_seconds = float(
+            credential_enrollment_challenge_timeout_seconds
+        )
         self._codex_oauth_client = codex_oauth_client
         self._codex_refresh_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._credential_refresh_lock: CredentialRefreshLockPort | None = None
         self._spiffe_subject_prefix = spiffe_subject_prefix.rstrip("/") + "/"
         self._spiffe_verifier = JwtWorkloadIdentityVerifier(
             issuer=spiffe_issuer,
@@ -859,6 +887,10 @@ class OpenShellGatewayPodManager(
         """Inject credential store for resolving OpenShell launch credentials."""
         self._credential_store = store
 
+    def set_credential_refresh_lock(self, lock: CredentialRefreshLockPort) -> None:
+        """Inject the cross-replica coordinator for rotating user credentials."""
+        self._credential_refresh_lock = lock
+
     def set_session_repository(self, repository: SessionRepository) -> None:
         """Inject session persistence for sandbox-to-owner grant authorization."""
         self._session_repository = repository
@@ -873,6 +905,197 @@ class OpenShellGatewayPodManager(
     def set_workload_token_issuer(self, issuer: WorkloadTokenIssuer) -> None:
         """Inject the configured issuer for session-bound platform tokens."""
         self._workload_token_issuer = issuer
+
+    def supports_enrollment(self, method: str) -> bool:
+        """Return whether this OpenShell runner implements an enrollment method."""
+        return method == CODEX_DEVICE_ENROLLMENT_METHOD
+
+    async def start_enrollment(
+        self,
+        enrollment: CredentialEnrollment,
+    ) -> CredentialEnrollment:
+        """Start a Codex device-code login in a workspace-free OpenShell sandbox."""
+        if not self.supports_enrollment(enrollment.method):
+            raise ValueError("unsupported credential enrollment method")
+
+        sandbox_name = f"enroll-{enrollment.id.hex[:21]}"
+        provider_name = f"volundr-enroll-{enrollment.id.hex[:12]}"
+        profile = _codex_enrollment_profile(provider_name)
+        grant = OpenShellProviderGrant(provider_name=provider_name, profile_id=provider_name)
+        labels = {
+            "app.kubernetes.io/managed-by": "volundr",
+            "volundr.niuu.io/credential-enrollment": str(enrollment.id),
+            "volundr.niuu.io/integration-connection": enrollment.connection_id,
+        }
+        environment = {
+            "CODEX_HOME": CODEX_ENROLLMENT_HOME,
+            "HOME": "/tmp/niuu-enrollment-home",
+            "NO_COLOR": "1",
+        }
+        try:
+            await asyncio.to_thread(self._client.ensure_providers_v2)
+            await asyncio.to_thread(
+                self._client.create_provider_grant,
+                profile=profile,
+                provider_name=provider_name,
+                config={"volundr_enrollment_id": str(enrollment.id)},
+            )
+            sandbox = await asyncio.to_thread(
+                self._client.create_sandbox,
+                name=sandbox_name,
+                image=self._sandbox_image,
+                env=environment,
+                labels=labels,
+                providers=(provider_name,),
+                policy=self._sandbox_policy,
+            )
+            ready = await self._wait_for_sandbox_name(sandbox.name, self._ready_timeout)
+            config_exit, _ = await asyncio.to_thread(
+                self._client.exec_script,
+                sandbox_id=ready.id,
+                script=(
+                    "umask 077\n"
+                    f"mkdir -p {shlex.quote(CODEX_ENROLLMENT_HOME)} "
+                    f"{shlex.quote(environment['HOME'])}\n"
+                    f"printf '%s\\n' 'cli_auth_credentials_store = \"file\"' > "
+                    f"{shlex.quote(f'{CODEX_ENROLLMENT_HOME}/config.toml')}\n"
+                ),
+                env=environment,
+            )
+            if config_exit != 0:
+                raise RuntimeError("Codex enrollment home initialization failed")
+            launch_exit = await asyncio.to_thread(
+                self._client.exec_detached,
+                sandbox_id=ready.id,
+                command=("codex", "login", "--device-auth"),
+                env=environment,
+                log_path=CODEX_ENROLLMENT_LOG_PATH,
+                pid_path=CODEX_ENROLLMENT_PID_PATH,
+            )
+            if launch_exit != 0:
+                raise RuntimeError("Codex device login failed to start")
+            verification_uri, user_code = await self._wait_for_codex_device_challenge(
+                ready.id,
+                environment,
+            )
+        except Exception:
+            await self._cleanup_credential_enrollment(sandbox_name, grant)
+            raise
+
+        return replace(
+            enrollment,
+            state=CredentialEnrollmentState.AWAITING_USER,
+            runner_ref={
+                "sandbox_id": ready.id,
+                "sandbox_name": sandbox_name,
+                "provider_name": provider_name,
+                "profile_id": provider_name,
+            },
+            verification_uri=verification_uri,
+            user_code=user_code,
+            updated_at=datetime.now(UTC),
+        )
+
+    async def poll_enrollment(
+        self,
+        enrollment: CredentialEnrollment,
+    ) -> CredentialEnrollmentPoll:
+        """Inspect a Codex enrollment and return its secret only on completion."""
+        if not self.supports_enrollment(enrollment.method):
+            return CredentialEnrollmentPoll(
+                state=CredentialEnrollmentState.FAILED,
+                error_code="unsupported_method",
+            )
+        sandbox_id = enrollment.runner_ref.get("sandbox_id", "")
+        if not sandbox_id:
+            return CredentialEnrollmentPoll(
+                state=CredentialEnrollmentState.FAILED,
+                error_code="runner_missing",
+            )
+        script = (
+            f"if [ -s {shlex.quote(CODEX_ENROLLMENT_AUTH_PATH)} ]; then\n"
+            "  printf 'complete\\n'\n"
+            f"  base64 {shlex.quote(CODEX_ENROLLMENT_AUTH_PATH)} | tr -d '\\n'\n"
+            f"elif [ -s {shlex.quote(CODEX_ENROLLMENT_PID_PATH)} ] "
+            f'&& kill -0 "$(cat {shlex.quote(CODEX_ENROLLMENT_PID_PATH)})" 2>/dev/null; then\n'
+            "  printf 'awaiting_user\\n'\n"
+            "else\n"
+            "  printf 'failed\\n'\n"
+            "fi\n"
+        )
+        exit_code, output = await asyncio.to_thread(
+            self._client.exec_script,
+            sandbox_id=sandbox_id,
+            script=script,
+            env={"CODEX_HOME": CODEX_ENROLLMENT_HOME},
+        )
+        if exit_code != 0:
+            return CredentialEnrollmentPoll(
+                state=CredentialEnrollmentState.FAILED,
+                error_code="runner_unavailable",
+            )
+        state, _, payload = output.partition("\n")
+        if state.strip() == "awaiting_user":
+            return CredentialEnrollmentPoll(state=CredentialEnrollmentState.AWAITING_USER)
+        if state.strip() != "complete" or not payload.strip():
+            return CredentialEnrollmentPoll(
+                state=CredentialEnrollmentState.FAILED,
+                error_code="provider_login_failed",
+            )
+        try:
+            auth_json = base64.b64decode(payload.strip(), validate=True).decode("utf-8")
+            _parse_codex_auth_document(auth_json)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ValueError("Codex enrollment returned an invalid credential document") from exc
+        return CredentialEnrollmentPoll(
+            state=CredentialEnrollmentState.COMPLETE,
+            credential_data={"auth.json": auth_json},
+        )
+
+    async def cancel_enrollment(self, enrollment: CredentialEnrollment) -> None:
+        """Destroy the enrollment sandbox and its network-only provider grant."""
+        sandbox_name = enrollment.runner_ref.get("sandbox_name", "")
+        provider_name = enrollment.runner_ref.get("provider_name", "")
+        profile_id = enrollment.runner_ref.get("profile_id", provider_name)
+        if not sandbox_name:
+            return
+        grant = OpenShellProviderGrant(provider_name=provider_name, profile_id=profile_id)
+        await self._cleanup_credential_enrollment(sandbox_name, grant)
+
+    async def _wait_for_codex_device_challenge(
+        self,
+        sandbox_id: str,
+        environment: dict[str, str],
+    ) -> tuple[str, str]:
+        deadline = time.monotonic() + self._credential_enrollment_challenge_timeout_seconds
+        while time.monotonic() < deadline:
+            exit_code, output = await asyncio.to_thread(
+                self._client.exec_script,
+                sandbox_id=sandbox_id,
+                script=(
+                    f"if [ -f {shlex.quote(CODEX_ENROLLMENT_LOG_PATH)} ]; then "
+                    f"sed -n '1,120p' {shlex.quote(CODEX_ENROLLMENT_LOG_PATH)}; fi\n"
+                ),
+                env=environment,
+            )
+            if exit_code == 0:
+                challenge = _parse_codex_device_challenge(output)
+                if challenge is not None:
+                    return challenge
+            await asyncio.sleep(READY_POLL_INTERVAL)
+        raise TimeoutError("Codex device login did not produce a challenge in time")
+
+    async def _cleanup_credential_enrollment(
+        self,
+        sandbox_name: str,
+        grant: OpenShellProviderGrant,
+    ) -> None:
+        try:
+            await asyncio.to_thread(self._client.delete_sandbox, sandbox_name)
+            await self._wait_for_sandbox_deleted(sandbox_name)
+        finally:
+            if grant.provider_name:
+                await asyncio.to_thread(self._client.delete_provider_grant, grant)
 
     @staticmethod
     def _session_subject(session: Session) -> OpenShellWorkloadSubject:
@@ -1927,9 +2150,7 @@ class OpenShellGatewayPodManager(
         if self._credential_store is None or not workload.owner_id:
             raise ValueError("credential grant dependencies are unavailable")
 
-        lock_key = (workload.owner_id, credential_name)
-        lock = self._codex_refresh_locks.setdefault(lock_key, asyncio.Lock())
-        async with lock:
+        async with self._hold_credential_refresh_lock(workload.owner_id, credential_name):
             stored = await self._credential_store.get("user", workload.owner_id, credential_name)
             values = await self._credential_store.get_value(
                 "user", workload.owner_id, credential_name
@@ -1940,7 +2161,23 @@ class OpenShellGatewayPodManager(
             remaining = _jwt_remaining_seconds(access_token)
 
             if remaining <= self._codex_refresh_skew_seconds:
-                auth = await self._refresh_codex_auth(auth)
+                try:
+                    auth = await self._refresh_codex_auth(auth)
+                except ValueError as exc:
+                    if stored is not None and values is not None:
+                        await self._credential_store.store(
+                            "user",
+                            workload.owner_id,
+                            credential_name,
+                            stored.secret_type,
+                            values,
+                            _codex_auth_metadata(
+                                stored.metadata,
+                                state=CODEX_AUTH_STATE_REQUIRED,
+                                error_code=CODEX_AUTH_REFRESH_FAILED,
+                            ),
+                        )
+                    raise ValueError("Codex authentication requires reconnection") from exc
                 access_token = str(auth["tokens"]["access_token"])
                 remaining = _jwt_remaining_seconds(access_token)
                 if stored is None or values is None:
@@ -1953,13 +2190,37 @@ class OpenShellGatewayPodManager(
                     credential_name,
                     stored.secret_type,
                     updated_values,
-                    stored.metadata,
+                    _codex_auth_metadata(
+                        stored.metadata,
+                        state=CODEX_AUTH_STATE_ACTIVE,
+                        refreshed=True,
+                    ),
                 )
 
         return OpenShellCredentialGrantToken(
             access_token=access_token,
             expires_in=max(remaining, 1),
         )
+
+    @asynccontextmanager
+    async def _hold_credential_refresh_lock(
+        self,
+        owner_id: str,
+        credential_name: str,
+    ) -> AsyncIterator[None]:
+        if self._credential_refresh_lock is not None:
+            async with self._credential_refresh_lock.hold(
+                "user",
+                owner_id,
+                credential_name,
+            ):
+                yield
+            return
+
+        lock_key = (owner_id, credential_name)
+        lock = self._codex_refresh_locks.setdefault(lock_key, asyncio.Lock())
+        async with lock:
+            yield
 
     async def _refresh_codex_auth(self, auth: dict[str, Any]) -> dict[str, Any]:
         tokens = dict(auth["tokens"])
@@ -3211,6 +3472,32 @@ def _provider_profile(
     )
 
 
+def _codex_enrollment_profile(profile_id: str) -> Any:
+    """Network-only OpenShell provider used during a Codex device login."""
+    target = _provider_target(CODEX_ACCESS_TOKEN_ENV)
+    endpoints = [
+        sandbox_pb2.NetworkEndpoint(
+            host=host,
+            port=443,
+            protocol="rest",
+            tls="terminate",
+            enforcement="enforce",
+            access="full",
+        )
+        for host in target["hosts"]
+    ]
+    binaries = [sandbox_pb2.NetworkBinary(path=path) for path in target["binaries"]]
+    return openshell_pb2.ProviderProfile(
+        id=profile_id,
+        display_name="Niuu Codex device enrollment",
+        description="Workspace-free network access for one user-initiated Codex login",
+        category=openshell_pb2.PROVIDER_PROFILE_CATEGORY_AGENT,
+        credentials=[],
+        endpoints=endpoints,
+        binaries=binaries,
+    )
+
+
 def _platform_provider_profile(
     *,
     profile_id: str,
@@ -3594,6 +3881,44 @@ def _parse_codex_auth_document(raw: object) -> dict[str, Any]:
     if missing:
         raise ValueError("Codex auth document is missing required OAuth fields")
     return auth
+
+
+def _parse_codex_device_challenge(output: str) -> tuple[str, str] | None:
+    clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output)
+    verification_uri = ""
+    for candidate in re.findall(r"https://[^\s<>\"']+", clean):
+        candidate = candidate.rstrip(".,);]")
+        hostname = (urlparse(candidate).hostname or "").lower()
+        if hostname == "chatgpt.com" or hostname.endswith(".openai.com"):
+            verification_uri = candidate
+            break
+    code_match = re.search(
+        r"(?<![A-Z0-9])[A-Z0-9]{4,8}(?:-[A-Z0-9]{4,8})+(?![A-Z0-9])",
+        clean.upper(),
+    )
+    if not verification_uri or code_match is None:
+        return None
+    return verification_uri, code_match.group(0)
+
+
+def _codex_auth_metadata(
+    metadata: dict[str, Any],
+    *,
+    state: str,
+    error_code: str = "",
+    refreshed: bool = False,
+) -> dict[str, Any]:
+    now = datetime.now(UTC).isoformat()
+    updated = dict(metadata)
+    updated[CODEX_AUTH_STATE_METADATA_KEY] = state
+    updated[CODEX_AUTH_STATE_UPDATED_AT_METADATA_KEY] = now
+    if error_code:
+        updated[CODEX_AUTH_ERROR_CODE_METADATA_KEY] = error_code
+    else:
+        updated.pop(CODEX_AUTH_ERROR_CODE_METADATA_KEY, None)
+    if refreshed:
+        updated[CODEX_AUTH_LAST_REFRESHED_AT_METADATA_KEY] = now
+    return updated
 
 
 def _jwt_remaining_seconds(token: str) -> int:

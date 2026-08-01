@@ -33,6 +33,14 @@ function buildInitialDraft(section: RemoteSettingsSectionSchema | null): Record<
 
 type ProviderStatus = 'ready' | 'loading' | 'missing' | 'idle' | 'error';
 
+const CREDENTIAL_ENROLLMENT_STATUS_INTERVAL_MS = 2000;
+const TERMINAL_CREDENTIAL_ENROLLMENT_STATES = new Set([
+  'complete',
+  'failed',
+  'expired',
+  'cancelled',
+]);
+
 interface PersonalAccessTokenRecord {
   id: string;
   name: string;
@@ -101,6 +109,16 @@ interface IntegrationCatalogEntry {
   credentialSchema?: IntegrationCatalogSchema;
   config_schema?: IntegrationCatalogSchema;
   configSchema?: IntegrationCatalogSchema;
+  credential_enrollment?: CredentialEnrollmentCatalogSpec | null;
+  credentialEnrollment?: CredentialEnrollmentCatalogSpec | null;
+}
+
+interface CredentialEnrollmentCatalogSpec {
+  method: string;
+  credential_field?: string;
+  credentialField?: string;
+  default_credential_name?: string;
+  defaultCredentialName?: string;
 }
 
 interface IntegrationConnectionRecord {
@@ -116,6 +134,24 @@ interface IntegrationConnectionRecord {
   updatedAt?: string;
   updated_at?: string;
   config?: Record<string, unknown>;
+  credentialStatus?: string;
+  credential_status?: string;
+  credentialErrorCode?: string | null;
+  credential_error_code?: string | null;
+  credentialStatusUpdatedAt?: string | null;
+  credential_status_updated_at?: string | null;
+}
+
+interface CredentialEnrollmentRecord {
+  id: string;
+  connectionId: string;
+  providerSlug: string;
+  credentialName: string;
+  state: 'pending' | 'awaiting_user' | 'complete' | 'failed' | 'expired' | 'cancelled';
+  verificationUri: string;
+  userCode: string;
+  expiresAt: string;
+  errorCode: string;
 }
 
 interface NormalizedSettingsSection {
@@ -232,6 +268,17 @@ function isOauthIntegration(entry: IntegrationCatalogEntry | null): boolean {
   return authType === 'oauth2_authorization_code' || authType === 'oauth_token';
 }
 
+function isDeviceCodeIntegration(entry: IntegrationCatalogEntry | null): boolean {
+  if (!entry) return false;
+  return (entry.authType ?? entry.auth_type) === 'device_code';
+}
+
+function enrollmentSpec(
+  entry: IntegrationCatalogEntry | null,
+): CredentialEnrollmentCatalogSpec | null {
+  return entry?.credentialEnrollment ?? entry?.credential_enrollment ?? null;
+}
+
 function formatTimestamp(value?: string | null): string {
   if (!value) return '—';
   const date = new Date(value);
@@ -268,6 +315,11 @@ function normalizeIntegrationRecord(integration: IntegrationConnectionRecord) {
     enabled: integration.enabled !== false,
     createdAt: integration.createdAt ?? integration.created_at ?? '',
     updatedAt: integration.updatedAt ?? integration.updated_at ?? '',
+    credentialStatus: integration.credentialStatus ?? integration.credential_status ?? 'unknown',
+    credentialErrorCode:
+      integration.credentialErrorCode ?? integration.credential_error_code ?? null,
+    credentialStatusUpdatedAt:
+      integration.credentialStatusUpdatedAt ?? integration.credential_status_updated_at ?? null,
   };
 }
 
@@ -967,6 +1019,8 @@ function IntegrationsResourceCard({
   const [credentialValues, setCredentialValues] = useState<Record<string, string>>({});
   const [configValues, setConfigValues] = useState<Record<string, string>>({});
   const [oauthPendingSlug, setOauthPendingSlug] = useState<string | null>(null);
+  const [credentialEnrollment, setCredentialEnrollment] =
+    useState<CredentialEnrollmentRecord | null>(null);
   const [lastTestStatus, setLastTestStatus] = useState<Record<string, string>>({});
 
   const catalogQuery = useQuery({
@@ -1000,6 +1054,7 @@ function IntegrationsResourceCard({
   const selectedConnection =
     integrationsQuery.data?.find((integration) => (integration.slug ?? '') === selectedCatalogId) ??
     null;
+  const selectedEnrollmentSpec = enrollmentSpec(selectedEntry);
 
   const credentialSchema = useMemo(
     () =>
@@ -1011,7 +1066,10 @@ function IntegrationsResourceCard({
     [selectedEntry],
   );
   const effectiveCredentialName =
-    credentialName || (selectedEntry ? `${selectedCatalogId}-credential` : '');
+    credentialName ||
+    selectedEnrollmentSpec?.defaultCredentialName ||
+    selectedEnrollmentSpec?.default_credential_name ||
+    (selectedEntry ? `${selectedCatalogId}-credential` : '');
   const effectiveCredentialValues =
     Object.keys(credentialValues).length > 0
       ? credentialValues
@@ -1145,7 +1203,75 @@ function IntegrationsResourceCard({
     },
   });
 
+  const enrollmentMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedEntry || !resource.enrollmentStartPath) {
+        throw new Error('Interactive credential enrollment is unavailable');
+      }
+      return client.post<CredentialEnrollmentRecord>(resource.enrollmentStartPath, {
+        slug: selectedEntry.slug ?? selectedEntry.id,
+        credential_name: effectiveCredentialName,
+        connection_id: selectedConnection?.id ?? '',
+      });
+    },
+    onSuccess: (enrollment) => {
+      setCredentialEnrollment(enrollment);
+    },
+  });
+
+  const enrollmentQuery = useQuery({
+    queryKey: [
+      'settings-resource',
+      providerId,
+      resource.id,
+      'credential-enrollment',
+      credentialEnrollment?.id,
+    ],
+    enabled: Boolean(
+      credentialEnrollment?.id &&
+      resource.enrollmentStatusPath &&
+      !TERMINAL_CREDENTIAL_ENROLLMENT_STATES.has(credentialEnrollment.state),
+    ),
+    queryFn: () =>
+      client.get<CredentialEnrollmentRecord>(
+        resource.enrollmentStatusPath!.replace('{id}', credentialEnrollment!.id),
+      ),
+    refetchInterval: (query) => {
+      const state = (query.state.data as CredentialEnrollmentRecord | undefined)?.state;
+      return state && TERMINAL_CREDENTIAL_ENROLLMENT_STATES.has(state)
+        ? false
+        : CREDENTIAL_ENROLLMENT_STATUS_INTERVAL_MS;
+    },
+  });
+
+  const currentEnrollment = enrollmentQuery.data ?? credentialEnrollment;
+
+  useEffect(() => {
+    if (currentEnrollment?.state !== 'complete') return;
+    void queryClient.invalidateQueries({
+      queryKey: ['settings-resource', providerId, resource.id, 'integrations'],
+    });
+  }, [currentEnrollment?.state, providerId, queryClient, resource.id]);
+
+  const cancelEnrollmentMutation = useMutation({
+    mutationFn: async (enrollmentId: string) => {
+      if (!resource.enrollmentCancelPath) {
+        throw new Error('Interactive credential enrollment is unavailable');
+      }
+      return client.delete<CredentialEnrollmentRecord>(
+        resource.enrollmentCancelPath.replace('{id}', enrollmentId),
+      );
+    },
+    onSuccess: (enrollment) => {
+      setCredentialEnrollment(enrollment);
+    },
+  });
+
   const selectedIsOauth = isOauthIntegration(selectedEntry);
+  const selectedIsDeviceCode = isDeviceCodeIntegration(selectedEntry);
+  const selectedCredentialReady = ['active', 'configured'].includes(
+    selectedConnection?.credentialStatus ?? '',
+  );
   const availableCredentials = credentialsQuery.data ?? [];
 
   return (
@@ -1173,7 +1299,13 @@ function IntegrationsResourceCard({
               )}
               onClick={() => {
                 setSelectedId(key);
-                setCredentialName(`${key}-credential`);
+                const spec = enrollmentSpec(entry);
+                setCredentialName(
+                  spec?.defaultCredentialName ??
+                    spec?.default_credential_name ??
+                    `${key}-credential`,
+                );
+                setCredentialEnrollment(null);
                 setSelectedExistingCredential('');
                 setCredentialValues(
                   buildInitialResourceValues(
@@ -1205,6 +1337,7 @@ function IntegrationsResourceCard({
           onSubmit={(event) => {
             event.preventDefault();
             if (!selectedEntry) return;
+            if (selectedIsDeviceCode || selectedIsOauth) return;
             if (!selectedIsOauth && createInlineCredential && !credentialName.trim()) return;
             if (!selectedIsOauth && !createInlineCredential && !selectedExistingCredential) return;
             void createMutation.mutateAsync();
@@ -1221,7 +1354,91 @@ function IntegrationsResourceCard({
             </div>
           </div>
 
-          {selectedIsOauth ? (
+          {selectedIsDeviceCode ? (
+            <div className="settings-resource__actions">
+              {selectedConnection ? (
+                <span
+                  className={cn(
+                    'settings-shell__status',
+                    selectedCredentialReady
+                      ? 'settings-shell__status--success'
+                      : 'settings-shell__status--error',
+                  )}
+                >
+                  {selectedCredentialReady
+                    ? `Connected as ${selectedConnection.credentialName}`
+                    : 'Reconnect required'}
+                </span>
+              ) : null}
+              {currentEnrollment?.state === 'awaiting_user' ? (
+                <div className="settings-resource__row-note">
+                  Open{' '}
+                  <a href={currentEnrollment.verificationUri} target="_blank" rel="noreferrer">
+                    the provider login page
+                  </a>{' '}
+                  and enter code <strong>{currentEnrollment.userCode}</strong>.
+                </div>
+              ) : null}
+              {currentEnrollment?.state === 'complete' ? (
+                <span className="settings-shell__status settings-shell__status--success">
+                  Codex account connected.
+                </span>
+              ) : null}
+              {currentEnrollment &&
+              TERMINAL_CREDENTIAL_ENROLLMENT_STATES.has(currentEnrollment.state) &&
+              currentEnrollment.state !== 'complete' ? (
+                <span className="settings-shell__status settings-shell__status--error">
+                  Login {currentEnrollment.state.replace('_', ' ')}. Start it again to retry.
+                </span>
+              ) : null}
+              {enrollmentMutation.isError ? (
+                <span className="settings-shell__status settings-shell__status--error">
+                  Could not start the Codex login. Retry or contact an administrator.
+                </span>
+              ) : null}
+              {enrollmentQuery.isError ? (
+                <span className="settings-shell__status settings-shell__status--error">
+                  Could not read the Codex login status. The login remains safe to retry.
+                </span>
+              ) : null}
+              {cancelEnrollmentMutation.isError ? (
+                <span className="settings-shell__status settings-shell__status--error">
+                  Could not cancel the Codex login. It will be removed automatically after expiry.
+                </span>
+              ) : null}
+              <button
+                type="button"
+                className="settings-shell__save-button settings-shell__save-button--secondary"
+                disabled={
+                  enrollmentMutation.isPending ||
+                  currentEnrollment?.state === 'pending' ||
+                  currentEnrollment?.state === 'awaiting_user' ||
+                  !resource.enrollmentStartPath
+                }
+                onClick={() => {
+                  enrollmentMutation.mutate();
+                }}
+              >
+                {enrollmentMutation.isPending
+                  ? 'Starting…'
+                  : selectedConnection
+                    ? 'Reconnect Codex'
+                    : 'Connect Codex'}
+              </button>
+              {currentEnrollment?.state === 'awaiting_user' ? (
+                <button
+                  type="button"
+                  className="settings-resource__row-action"
+                  disabled={cancelEnrollmentMutation.isPending}
+                  onClick={() => {
+                    cancelEnrollmentMutation.mutate(currentEnrollment.id);
+                  }}
+                >
+                  Cancel login
+                </button>
+              ) : null}
+            </div>
+          ) : selectedIsOauth ? (
             <div className="settings-resource__actions">
               {selectedConnection ? (
                 <span className="settings-shell__status settings-shell__status--success">
@@ -1369,7 +1586,8 @@ function IntegrationsResourceCard({
                 </div>
                 <div className="settings-resource__row-meta">
                   {formatIntegrationType(integration.integrationType)} ·{' '}
-                  {integration.credentialName} · {integration.enabled ? 'enabled' : 'disabled'}
+                  {integration.credentialName} · {integration.enabled ? 'enabled' : 'disabled'} ·{' '}
+                  {integration.credentialStatus.replace(/_/g, ' ')}
                 </div>
                 {lastTestStatus[integration.id] ? (
                   <div className="settings-resource__row-note">

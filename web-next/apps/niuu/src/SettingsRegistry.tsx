@@ -61,6 +61,9 @@ export interface RemoteSettingsIntegrationsResource {
   testPath: string;
   oauthAuthorizePath: string;
   oauthDisconnectPath: string;
+  enrollmentStartPath?: string;
+  enrollmentStatusPath?: string;
+  enrollmentCancelPath?: string;
 }
 
 export type RemoteSettingsResource =
