@@ -184,7 +184,6 @@ def test_build_tool_build_backend_injects_a2a_activity_emitter() -> None:
         gateway={
             "platform": {
                 "a2a_push_callback_url": "https://ivaldi.example/a2a/push",
-                "a2a_push_notification_token": "push-secret",
             }
         },
         resident_evolution={
@@ -199,7 +198,6 @@ def test_build_tool_build_backend_injects_a2a_activity_emitter() -> None:
     assert backend is not None
     assert backend._activity_emitter is emitter
     assert backend._push_callback_url == "https://ivaldi.example/a2a/push"
-    assert backend._push_notification_token == "push-secret"
 
 
 # ---------------------------------------------------------------------------

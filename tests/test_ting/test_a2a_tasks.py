@@ -932,7 +932,7 @@ class TestPushNotifications:
                 "taskId": campaign.slug,
                 "id": "ivaldi-callback",
                 "url": "https://resident.example/a2a/push",
-                "token": "notification-secret",
+                "authentication": {"scheme": "Bearer"},
             },
         ).json()["result"]
 

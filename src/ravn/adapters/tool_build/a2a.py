@@ -80,7 +80,6 @@ class A2AToolBuildBackend(ToolBuildBackend):
         model: str = "",
         connection_id: str = "",
         push_callback_url: str = "",
-        push_notification_token: str = "",
         max_poll_attempts: int = 120,
         poll_interval_seconds: float = 5.0,
         gate_reviewer: GateReviewer | None = None,
@@ -111,7 +110,6 @@ class A2AToolBuildBackend(ToolBuildBackend):
         self._model = model
         self._connection_id = connection_id
         self._push_callback_url = push_callback_url.strip()
-        self._push_notification_token = push_notification_token.strip()
         self._max_poll_attempts = max_poll_attempts
         self._poll_interval = poll_interval_seconds
         # INPUT_REQUIRED handling. A pending peer QUESTION (help_needed) is
@@ -1016,7 +1014,7 @@ class A2AToolBuildBackend(ToolBuildBackend):
                 "taskId": task_id,
                 "id": f"ravn-tool-build-{uuid4()}",
                 "url": self._push_callback_url,
-                "token": self._push_notification_token,
+                "authentication": {"scheme": "Bearer"},
             },
         )
 

@@ -87,7 +87,7 @@ def test_status_endpoint_no_sessions():
     assert resp.json()["session_count"] == 0
 
 
-def test_a2a_push_requires_token_and_wakes_resident():
+def test_a2a_push_requires_workload_identity_and_wakes_resident():
     runtime = MagicMock()
     runtime.submit_a2a_push = AsyncMock(
         return_value={
@@ -111,25 +111,54 @@ def test_a2a_push_requires_token_and_wakes_resident():
     }
 
     assert client.post("/a2a/push", json=payload).status_code == 503
+    verifier = MagicMock()
+    verifier.verify = AsyncMock(return_value={"workload_service": "ting"})
     configured_gateway = HttpGateway(
         _make_http_config(
             a2a_push_enabled=True,
-            a2a_push_notification_token="push-secret",
+            a2a_push_required_claims={"workload_service": "ting"},
         ),
         _make_gateway_mock(),
         resident_runtime=runtime,
+        a2a_push_verifier=verifier,
     )
     client = TestClient(configured_gateway.app)
     assert client.post("/a2a/push", json=payload).status_code == 401
     response = client.post(
         "/a2a/push",
         json=payload,
-        headers={"X-A2A-Notification-Token": "push-secret"},
+        headers={"Authorization": "Bearer workload-token"},
     )
 
     assert response.status_code == 200
     assert response.json()["queued"] is True
+    verifier.verify.assert_awaited_once_with("workload-token")
     runtime.submit_a2a_push.assert_awaited_once_with(payload)
+
+
+def test_a2a_push_rejects_non_ting_workload() -> None:
+    runtime = MagicMock()
+    runtime.submit_a2a_push = AsyncMock()
+    verifier = MagicMock()
+    verifier.verify = AsyncMock(return_value={"workload_service": "other"})
+    gateway = HttpGateway(
+        _make_http_config(
+            a2a_push_enabled=True,
+            a2a_push_required_claims={"workload_service": "ting"},
+        ),
+        _make_gateway_mock(),
+        resident_runtime=runtime,
+        a2a_push_verifier=verifier,
+    )
+
+    response = TestClient(gateway.app).post(
+        "/a2a/push",
+        json={"task": {"id": "task-1"}},
+        headers={"Authorization": "Bearer wrong-workload"},
+    )
+
+    assert response.status_code == 403
+    runtime.submit_a2a_push.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

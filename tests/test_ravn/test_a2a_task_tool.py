@@ -265,7 +265,6 @@ async def test_a2a_task_registers_push_and_reports_delivery_mode() -> None:
         agent_directory=_Directory(agent),
         client=client,
         push_callback_url="https://resident.example/a2a/push",
-        push_notification_token="notification-secret",
     )
 
     result = await tool.execute(
@@ -286,7 +285,8 @@ async def test_a2a_task_registers_push_and_reports_delivery_mode() -> None:
     registration = client.posts[1][1]["params"]
     assert registration["taskId"] == "task-push"
     assert registration["url"] == "https://resident.example/a2a/push"
-    assert registration["token"] == "notification-secret"
+    assert registration["authentication"] == {"scheme": "Bearer"}
+    assert "token" not in registration
 
 
 @pytest.mark.asyncio
@@ -300,7 +300,6 @@ async def test_a2a_task_keeps_polling_available_when_push_registration_fails() -
         agent_directory=_Directory(agent),
         client=client,
         push_callback_url="https://resident.example/a2a/push",
-        push_notification_token="notification-secret",
     )
 
     result = await tool.execute(

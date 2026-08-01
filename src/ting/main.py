@@ -576,6 +576,7 @@ def create_app(
                 )
                 a2a_push_dispatcher = A2APushDispatcher(
                     repo=a2a_push_repo,
+                    auth=_create_http_auth_adapter(settings.a2a.push_auth),
                     allowed_callback_origins=settings.a2a.push_callback_allowed_origins,
                     timeout_seconds=settings.a2a.push_timeout_seconds,
                     poll_seconds=settings.a2a.push_poll_seconds,

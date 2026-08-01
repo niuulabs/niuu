@@ -38,7 +38,6 @@ class A2ATaskTool(ToolPort):
         activity_emitter: Callable[[dict[str, object]], Awaitable[None]] | None = None,
         default_connection_id: str = "",
         push_callback_url: str = "",
-        push_notification_token: str = "",
     ) -> None:
         self._directory = agent_directory
         self._client = client
@@ -50,7 +49,6 @@ class A2ATaskTool(ToolPort):
         self._activity_emitter = activity_emitter
         self._default_connection_id = default_connection_id.strip()
         self._push_callback_url = push_callback_url.strip()
-        self._push_notification_token = push_notification_token.strip()
 
     @property
     def name(self) -> str:
@@ -261,7 +259,7 @@ class A2ATaskTool(ToolPort):
                 "taskId": task_id,
                 "id": f"ravn-{uuid4()}",
                 "url": self._push_callback_url,
-                "token": self._push_notification_token,
+                "authentication": {"scheme": "Bearer"},
             },
         )
 

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 import respx
-from a2a.types import TaskPushNotificationConfig
+from a2a.types import AuthenticationInfo, TaskPushNotificationConfig
 from cryptography.fernet import Fernet
 
 from ting.adapters.a2a_push_dispatcher import A2APushDispatcher, callback_origin
@@ -18,7 +18,7 @@ def _config() -> TaskPushNotificationConfig:
         task_id="task-1",
         id="callback-1",
         url="https://resident.example/a2a/push",
-        token="notification-secret",
+        authentication=AuthenticationInfo(scheme="Bearer"),
     )
 
 
@@ -34,9 +34,13 @@ def _delivery() -> A2APushDelivery:
     )
 
 
-def _dispatcher(repo: MagicMock) -> A2APushDispatcher:
+def _dispatcher(repo: MagicMock, auth: MagicMock | None = None) -> A2APushDispatcher:
+    auth = auth or MagicMock()
+    auth.headers.return_value = {"Authorization": "Bearer workload-token"}
+    auth.invalidate.return_value = True
     return A2APushDispatcher(
         repo=repo,
+        auth=auth,
         allowed_callback_origins=["https://resident.example"],
         timeout_seconds=10.0,
         poll_seconds=1.0,
@@ -61,7 +65,7 @@ def test_callback_origin_requires_allowlisted_https_shape() -> None:
 
 
 @pytest.mark.asyncio
-async def test_push_delivery_uses_standard_token_header_and_marks_delivered() -> None:
+async def test_push_delivery_uses_workload_bearer_and_marks_delivered() -> None:
     repo = MagicMock()
     repo.mark_delivered = AsyncMock()
     repo.retry_later = AsyncMock()
@@ -73,7 +77,34 @@ async def test_push_delivery_uses_standard_token_header_and_marks_delivered() ->
         await dispatcher._deliver(_delivery())
 
     assert route.called
-    assert route.calls[0].request.headers["X-A2A-Notification-Token"] == ("notification-secret")
+    assert route.calls[0].request.headers["Authorization"] == "Bearer workload-token"
+    assert "X-A2A-Notification-Token" not in route.calls[0].request.headers
+    repo.mark_delivered.assert_awaited_once()
+    repo.retry_later.assert_not_awaited()
+    await dispatcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_push_delivery_refreshes_rejected_workload_identity_once() -> None:
+    repo = MagicMock()
+    repo.mark_delivered = AsyncMock()
+    repo.retry_later = AsyncMock()
+    auth = MagicMock()
+    auth.headers.side_effect = [
+        {"Authorization": "Bearer expired-token"},
+        {"Authorization": "Bearer fresh-token"},
+    ]
+    auth.invalidate.return_value = True
+    dispatcher = _dispatcher(repo, auth)
+    with respx.mock:
+        route = respx.post("https://resident.example/a2a/push").mock(
+            side_effect=[httpx.Response(401), httpx.Response(204)]
+        )
+        await dispatcher._deliver(_delivery())
+
+    assert route.call_count == 2
+    assert route.calls[1].request.headers["Authorization"] == "Bearer fresh-token"
+    auth.invalidate.assert_called_once_with()
     repo.mark_delivered.assert_awaited_once()
     repo.retry_later.assert_not_awaited()
     await dispatcher.stop()
@@ -95,7 +126,7 @@ async def test_push_delivery_retries_without_dropping_failed_event() -> None:
 
 
 @pytest.mark.asyncio
-async def test_repository_encrypts_callback_credentials_before_storage() -> None:
+async def test_repository_encrypts_callback_config_before_storage() -> None:
     pool = MagicMock()
     pool.execute = AsyncMock(return_value="INSERT 0 1")
     repo = PostgresA2APushConfigRepository(
@@ -112,5 +143,15 @@ async def test_repository_encrypts_callback_credentials_before_storage() -> None
 
     encrypted = pool.execute.await_args.args[-1]
     assert isinstance(encrypted, bytes)
-    assert b"notification-secret" not in encrypted
+    assert b"resident.example" not in encrypted
     assert repo._decrypt(encrypted) == saved
+
+
+def test_push_config_rejects_inline_credentials() -> None:
+    repo = MagicMock()
+    dispatcher = _dispatcher(repo)
+    config = _config()
+    config.token = "legacy-token"
+
+    with pytest.raises(ValueError, match="inline credentials"):
+        dispatcher.validate_config(config)

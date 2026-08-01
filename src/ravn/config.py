@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, SecretStr, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     EnvSettingsSource,
@@ -42,6 +42,7 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from niuu.config_models import WorkloadIdentityVerifierConfig
 from niuu.domain.observability import ObservabilityConfig
 from niuu.mesh.config import MeshNatsConfig
 
@@ -999,9 +1000,13 @@ class HttpChannelConfig(BaseModel):
         default=False,
         description="Accept authenticated A2A task callbacks and wake the resident.",
     )
-    a2a_push_notification_token: SecretStr = Field(
-        default=SecretStr(""),
-        description="A2A callback verification token; set through a secret config override.",
+    a2a_push_auth: WorkloadIdentityVerifierConfig = Field(
+        default_factory=lambda: WorkloadIdentityVerifierConfig(name="a2a-push", adapter=""),
+        description="JWT verifier used to authenticate A2A callback workloads.",
+    )
+    a2a_push_required_claims: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Exact JWT claims required on an authenticated A2A callback.",
     )
     a2a_push_max_body_bytes: int = Field(
         default=1_048_576,
@@ -1167,10 +1172,6 @@ class PlatformToolsConfig(BaseModel):
     a2a_push_callback_url: str = Field(
         default="",
         description=("Public HTTPS callback registered for A2A tasks that advertise push support."),
-    )
-    a2a_push_notification_token: SecretStr = Field(
-        default=SecretStr(""),
-        description="Token sent to the configured A2A callback; inject through secret config.",
     )
     a2a_message_max_chars: int = Field(
         default=12_000,
