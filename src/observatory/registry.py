@@ -186,6 +186,54 @@ def normalize_registry(registry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def merge_seed_into(stored: dict[str, Any], seed: dict[str, Any]) -> dict[str, Any]:
+    """Additively bring a stored registry up to the seed.
+
+    Entity types are the configurable source of truth for what discovery may
+    emit, so a registry frozen at first install silently caps the graph — any
+    type added to the seed afterwards never reaches a deployed cluster.
+
+    The merge is deliberately one-way and additive: types the seed has and the
+    store lacks are appended, and field descriptors missing from an existing
+    type are added, but nothing an operator has edited or removed is
+    overwritten. Returns the stored registry unchanged when there is nothing to
+    add, so callers can skip a pointless write.
+    """
+    stored_types = list(stored.get("types") or [])
+    by_id = {str(entry.get("id", "")): entry for entry in stored_types}
+    changed = False
+
+    for seed_type in seed.get("types") or []:
+        type_id = str(seed_type.get("id", ""))
+        if not type_id:
+            continue
+        existing = by_id.get(type_id)
+        if existing is None:
+            stored_types.append(deepcopy(seed_type))
+            changed = True
+            continue
+
+        known_fields = {str(f.get("key", "")) for f in existing.get("fields") or []}
+        for field in seed_type.get("fields") or []:
+            if str(field.get("key", "")) not in known_fields:
+                existing.setdefault("fields", []).append(deepcopy(field))
+                changed = True
+
+    seed_version = int(seed.get("version") or 0)
+    if int(stored.get("version") or 0) < seed_version:
+        changed = True
+
+    if not changed:
+        return stored
+
+    merged = {
+        **stored,
+        "version": max(int(stored.get("version") or 0), seed_version),
+        "types": stored_types,
+    }
+    return normalize_registry(merged)
+
+
 def seed_registry_payload() -> dict[str, Any]:
     """Return a deep copy of the built-in Observatory registry seed."""
     return normalize_registry(deepcopy(DEFAULT_REGISTRY))
@@ -223,10 +271,24 @@ class PostgresObservatoryRegistryRepository:
             REGISTRY_KEY,
         )
         if int(existing or 0) > 0:
+            await self._upgrade_seeded()
             return
 
         registry = seed_registry_payload()
         await self._upsert_registry(registry)
+
+    async def _upgrade_seeded(self) -> None:
+        """Fold newly seeded types into an already-seeded registry."""
+        row = await self._pool.fetchrow(
+            "SELECT payload FROM observatory_registries WHERE registry_key = $1",
+            REGISTRY_KEY,
+        )
+        if row is None:
+            return
+        stored = normalize_registry(json.loads(row["payload"]))
+        merged = merge_seed_into(stored, seed_registry_payload())
+        if merged is not stored:
+            await self._upsert_registry(merged)
 
     async def get_registry(self) -> dict[str, Any]:
         row = await self._pool.fetchrow(
@@ -327,6 +389,8 @@ class InMemoryObservatoryRegistryRepository:
     async def ensure_seeded(self) -> None:
         if self.registry is None:
             self.registry = seed_registry_payload()
+            return
+        self.registry = merge_seed_into(self.registry, seed_registry_payload())
 
     async def get_registry(self) -> dict[str, Any]:
         await self.ensure_seeded()
