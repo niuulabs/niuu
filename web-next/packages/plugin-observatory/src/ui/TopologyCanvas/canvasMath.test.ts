@@ -8,6 +8,9 @@ import {
   defaultCamera,
   fitCameraToBounds,
   type Camera,
+  centroid,
+  convexHull,
+  expandFromCentroid,
 } from './canvasMath';
 import { CANVAS } from './config';
 
@@ -225,5 +228,92 @@ describe('fitCameraToBounds', () => {
 
   it('falls back to default camera for missing bounds', () => {
     expect(fitCameraToBounds(null, 1200, 800)).toEqual(defaultCamera());
+  });
+});
+
+// ── Hull geometry ─────────────────────────────────────────────────────────────
+
+describe('centroid', () => {
+  it('averages the points', () => {
+    expect(
+      centroid([
+        { x: 0, y: 0 },
+        { x: 10, y: 0 },
+        { x: 10, y: 10 },
+        { x: 0, y: 10 },
+      ]),
+    ).toEqual({
+      x: 5,
+      y: 5,
+    });
+  });
+
+  it('returns the origin for an empty set rather than NaN', () => {
+    expect(centroid([])).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe('convexHull', () => {
+  it('drops a point enclosed by the others', () => {
+    const hull = convexHull([
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+      { x: 10, y: 10 },
+      { x: 0, y: 10 },
+      { x: 5, y: 5 },
+    ]);
+    expect(hull).toHaveLength(4);
+    expect(hull).not.toContainEqual({ x: 5, y: 5 });
+  });
+
+  it('returns the input when there is no hull to compute', () => {
+    expect(convexHull([])).toEqual([]);
+    expect(convexHull([{ x: 1, y: 2 }])).toEqual([{ x: 1, y: 2 }]);
+    const pair = [
+      { x: 0, y: 0 },
+      { x: 4, y: 4 },
+    ];
+    expect(convexHull(pair)).toEqual(pair);
+  });
+
+  it('falls back to the input for collinear points instead of collapsing', () => {
+    const line = [
+      { x: 0, y: 0 },
+      { x: 1, y: 1 },
+      { x: 2, y: 2 },
+    ];
+    expect(convexHull(line)).toEqual(line);
+  });
+
+  it('does not mutate its input', () => {
+    const points = [
+      { x: 3, y: 0 },
+      { x: 0, y: 0 },
+      { x: 0, y: 3 },
+    ];
+    const snapshot = JSON.stringify(points);
+    convexHull(points);
+    expect(JSON.stringify(points)).toBe(snapshot);
+  });
+});
+
+describe('expandFromCentroid', () => {
+  it('pushes each vertex outward by the padding', () => {
+    const origin = { x: 0, y: 0 };
+    const expanded = expandFromCentroid(
+      [
+        { x: 10, y: 0 },
+        { x: 0, y: 10 },
+      ],
+      origin,
+      5,
+    );
+    expect(expanded[0]).toEqual({ x: 15, y: 0 });
+    expect(expanded[1]).toEqual({ x: 0, y: 15 });
+  });
+
+  it('offsets a point sitting on the centroid rather than dividing by zero', () => {
+    const expanded = expandFromCentroid([{ x: 2, y: 2 }], { x: 2, y: 2 }, 6);
+    expect(expanded[0]).toEqual({ x: 8, y: 2 });
   });
 });

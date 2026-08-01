@@ -24,6 +24,8 @@ export type {
   AgentDirectoryFilters,
 } from './agentDirectory';
 export { findAgentTopologyNode } from './agentDirectory';
+export type { AgentMesh } from './agentMesh';
+export { deriveAgentMeshes, findMeshForNode, isMeshMember } from './agentMesh';
 
 // Re-export shared primitives so consumers can import from a single package.
 export type { EntityShape, EntityCategory, TypeRegistry } from '@niuulabs/domain';

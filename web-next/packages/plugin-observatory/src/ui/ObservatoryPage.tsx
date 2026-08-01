@@ -49,6 +49,7 @@ export function ObservatoryPage() {
       <TopologyCanvas
         topology={topology}
         onNodeClick={handleNodeClick}
+        selectedId={selectedId}
         className="niuu:flex-1 niuu:min-h-0"
       />
 

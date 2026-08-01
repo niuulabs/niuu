@@ -499,4 +499,63 @@ describe('TopologyCanvas', () => {
 
     expect(mainCtx.fillRect).not.toHaveBeenCalled();
   });
+
+  // ── Agent mesh ──────────────────────────────────────────────────────────────
+
+  const MESHED_TOPOLOGY: Topology = {
+    ...MOCK_TOPOLOGY,
+    nodes: [
+      ...MOCK_TOPOLOGY.nodes,
+      {
+        id: 'huginn',
+        typeId: 'ravn_long',
+        label: 'huginn',
+        parentId: 'cluster-vk',
+        status: 'healthy',
+        flockId: 'forge-mesh',
+      },
+      {
+        id: 'muninn',
+        typeId: 'ravn_long',
+        label: 'muninn',
+        parentId: 'cluster-vk',
+        status: 'healthy',
+        flockId: 'forge-mesh',
+      },
+      {
+        id: 'kvasir',
+        typeId: 'ravn_long',
+        label: 'kvasir',
+        parentId: 'cluster-vk',
+        status: 'healthy',
+        flockId: 'forge-mesh',
+      },
+    ],
+  };
+
+  function meshLabelDrawn(): boolean {
+    const calls = mainCtx.fillText.mock.calls as [string, ...unknown[]][];
+    return calls.some(([text]) => typeof text === 'string' && text.includes('FORGE-MESH'));
+  }
+
+  it('outlines no agent mesh while nothing is selected or hovered', async () => {
+    await renderCanvas(MESHED_TOPOLOGY);
+    runAnimationFrame();
+
+    expect(meshLabelDrawn()).toBe(false);
+  });
+
+  it('outlines the mesh of the selected member', async () => {
+    await renderCanvas(MESHED_TOPOLOGY, { selectedId: 'muninn' });
+    runAnimationFrame();
+
+    expect(meshLabelDrawn()).toBe(true);
+  });
+
+  it('outlines nothing when the selection is not a mesh member', async () => {
+    await renderCanvas(MESHED_TOPOLOGY, { selectedId: 'ting-0' });
+    runAnimationFrame();
+
+    expect(meshLabelDrawn()).toBe(false);
+  });
 });

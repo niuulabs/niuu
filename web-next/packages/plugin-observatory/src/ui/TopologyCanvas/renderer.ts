@@ -17,7 +17,9 @@ import type {
 import { humanizeObservatoryText } from '../displayLabels';
 import type { NodePosition } from './layoutEngine';
 import { zoneRadius, HOST_HALF_W, HOST_HALF_H } from './layoutEngine';
-import { NODE_SIZE, MIMIR_RUNES, LAYOUT, LOD, LABEL_PX } from './config';
+import { NODE_SIZE, MIMIR_RUNES, LAYOUT, LOD, LABEL_PX, MESH_HULL } from './config';
+import type { Point } from './canvasMath';
+import { centroid, convexHull, expandFromCentroid } from './canvasMath';
 
 // ── Level of detail ───────────────────────────────────────────────────────────
 
@@ -1223,4 +1225,68 @@ export function drawMinimap(
   ctx.fillText(`${topology.nodes.length} entities`, 4, H - 4);
   ctx.textAlign = 'right';
   ctx.fillText('MINIMAP', W - 4, H - 4);
+}
+
+// ── Agent mesh ────────────────────────────────────────────────────────────────
+
+/**
+ * Outline the agent mesh the operator is currently engaging with.
+ *
+ * Members are scattered across clusters, so the shape has to be derived from
+ * their positions rather than read off a container. Nothing is drawn for a
+ * mesh with fewer than two placed members.
+ */
+export function drawAgentMesh(
+  ctx: CanvasRenderingContext2D,
+  memberPoints: readonly Point[],
+  label: string,
+  zoom: number,
+): void {
+  if (memberPoints.length < 2) return;
+
+  const origin = centroid(memberPoints);
+  const outline = expandFromCentroid(convexHull(memberPoints), origin, MESH_HULL.PADDING);
+
+  ctx.save();
+  ctx.beginPath();
+  if (outline.length < 3) {
+    // Two members: a capsule reads better than a degenerate polygon.
+    const [a, b] = outline as [Point, Point];
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+  } else {
+    // Trace midpoint-to-midpoint with each vertex as the control point, which
+    // rounds the hull without needing a corner-by-corner arc solve.
+    const last = outline[outline.length - 1]!;
+    const first = outline[0]!;
+    ctx.moveTo((first.x + last.x) / 2, (first.y + last.y) / 2);
+    for (let i = 0; i < outline.length; i++) {
+      const current = outline[i]!;
+      const next = outline[(i + 1) % outline.length]!;
+      ctx.quadraticCurveTo(
+        current.x,
+        current.y,
+        (current.x + next.x) / 2,
+        (current.y + next.y) / 2,
+      );
+    }
+    ctx.closePath();
+    ctx.fillStyle = rgba(C.valk, MESH_HULL.FILL_ALPHA);
+    ctx.fill();
+  }
+
+  ctx.setLineDash(MESH_HULL.DASH.map((d) => d));
+  ctx.strokeStyle = rgba(C.valk, MESH_HULL.STROKE_ALPHA);
+  ctx.lineWidth = worldFontSize(1.4, zoom);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  if (label) {
+    const px = worldFontSize(LABEL_PX.PRIMARY, zoom);
+    ctx.fillStyle = rgba(C.valk, 0.7);
+    ctx.font = `600 ${px}px "JetBrains Mono", monospace`;
+    ctx.textAlign = 'center';
+    ctx.fillText(humanizeObservatoryText(label).toUpperCase(), origin.x, origin.y);
+  }
+  ctx.restore();
 }

@@ -12,6 +12,7 @@ import {
   shouldDrawLabel,
   shouldDrawNodeDetail,
   worldFontSize,
+  drawAgentMesh,
 } from './renderer';
 import { LOD } from './config';
 import type { Topology, TopologyNode } from '../../domain';
@@ -651,5 +652,54 @@ describe('drawNode level of detail', () => {
     const between = (LOD.PRIMARY + LOD.SECONDARY) / 2;
     expect(labelsDrawnAt(between, 'ravn_long')).toContain('sample-label');
     expect(labelsDrawnAt(between, 'service')).not.toContain('sample-label');
+  });
+});
+
+describe('drawAgentMesh', () => {
+  const A = { x: 0, y: 0 };
+  const B = { x: 100, y: 0 };
+  const C2 = { x: 100, y: 100 };
+  const D = { x: 0, y: 100 };
+
+  it('draws nothing for a mesh with fewer than two placed members', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    drawAgentMesh(ctx, [], 'forge', 1);
+    drawAgentMesh(ctx, [A], 'forge', 1);
+    expect(ctx.stroke).not.toHaveBeenCalled();
+  });
+
+  it('outlines and fills a hull for three or more members', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    drawAgentMesh(ctx, [A, B, C2, D], 'forge-mesh', 1);
+    expect(ctx.fill).toHaveBeenCalled();
+    expect(ctx.stroke).toHaveBeenCalled();
+    expect(ctx.quadraticCurveTo).toHaveBeenCalled();
+  });
+
+  it('draws a capsule rather than a polygon for exactly two members', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    drawAgentMesh(ctx, [A, B], 'pair', 1);
+    expect(ctx.stroke).toHaveBeenCalled();
+    expect(ctx.fill).not.toHaveBeenCalled();
+  });
+
+  it('labels the mesh at its centroid in upper case', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    drawAgentMesh(ctx, [A, B, C2, D], 'forge-mesh', 1);
+    const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [
+      string,
+      number,
+      number,
+    ][];
+    const entry = calls.find(([text]) => text.includes('FORGE'));
+    expect(entry).toBeDefined();
+    expect(entry?.[1]).toBe(50);
+    expect(entry?.[2]).toBe(50);
+  });
+
+  it('omits the label when the mesh has no name', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    drawAgentMesh(ctx, [A, B, C2, D], '', 1);
+    expect(ctx.fillText).not.toHaveBeenCalled();
   });
 });

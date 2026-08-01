@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { select } from 'd3-selection';
 import { zoom, zoomIdentity, type D3ZoomEvent, type ZoomBehavior } from 'd3-zoom';
 import type { Topology } from '../../domain';
+import { deriveAgentMeshes, findMeshForNode } from '../../domain/agentMesh';
 import {
   clampZoom,
   applyKeyPan,
@@ -12,6 +13,7 @@ import {
 } from './canvasMath';
 import { computeLayout, computeLayoutBounds, HOST_HALF_W, HOST_HALF_H } from './layoutEngine';
 import {
+  drawAgentMesh,
   drawStars,
   drawZones,
   drawEdges,
@@ -29,6 +31,8 @@ export interface TopologyCanvasProps {
   topology: Topology | null;
   /** Called when the user clicks a node. */
   onNodeClick?: (nodeId: string) => void;
+  /** Currently selected node — drives which agent mesh is outlined. */
+  selectedId?: string | null;
   /** Show the minimap panel (default true). */
   showMinimap?: boolean;
   /** Extra CSS class applied to the wrapper div. */
@@ -49,6 +53,7 @@ export interface TopologyCanvasProps {
 export function TopologyCanvas({
   topology,
   onNodeClick,
+  selectedId = null,
   showMinimap = true,
   className,
   style,
@@ -69,6 +74,7 @@ export function TopologyCanvas({
 
   // Compute layout whenever topology changes (memoised — pure function)
   const positions = useMemo(() => (topology ? computeLayout(topology) : new Map()), [topology]);
+  const agentMeshes = useMemo(() => deriveAgentMeshes(topology), [topology]);
   const topologySignature = useMemo(() => {
     if (!topology) return 'empty';
     return topology.nodes
@@ -79,11 +85,23 @@ export function TopologyCanvas({
 
   // Stable reference to drawing data so the rAF loop always reads fresh values
   // without being re-subscribed on every state tick.
-  const drawRef = useRef({ topology, positions, hoveredId: null as string | null });
+  const drawRef = useRef({
+    topology,
+    positions,
+    hoveredId: null as string | null,
+    agentMeshes,
+    selectedId,
+  });
 
   useEffect(() => {
-    drawRef.current = { topology, positions, hoveredId: hoveredIdRef.current };
-  }, [positions, topology]);
+    drawRef.current = {
+      topology,
+      positions,
+      hoveredId: hoveredIdRef.current,
+      agentMeshes,
+      selectedId,
+    };
+  }, [agentMeshes, positions, selectedId, topology]);
 
   const cameraToZoomTransform = useCallback((cam: Camera) => {
     const { w, h } = sizeRef.current;
@@ -408,6 +426,20 @@ export function TopologyCanvas({
 
       if (topo) {
         drawZones(ctx, topo.nodes, pos, now, cam.zoom);
+
+        // Only the mesh being engaged with is outlined; several at once would
+        // stack overlapping hulls across every cluster.
+        const focusedMesh =
+          findMeshForNode(drawRef.current.agentMeshes, hoveredId) ??
+          findMeshForNode(drawRef.current.agentMeshes, drawRef.current.selectedId);
+        if (focusedMesh) {
+          const memberPoints = focusedMesh.memberIds
+            .map((id) => pos.get(id))
+            .filter((p): p is NonNullable<typeof p> => !!p)
+            .map((p) => ({ x: p.x, y: p.y }));
+          drawAgentMesh(ctx, memberPoints, focusedMesh.id, cam.zoom);
+        }
+
         drawEdges(ctx, topo, pos, now);
 
         // Draw hosts first (background layer), then other nodes

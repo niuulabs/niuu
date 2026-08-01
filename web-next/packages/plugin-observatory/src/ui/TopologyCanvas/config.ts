@@ -131,6 +131,23 @@ export const LOD = {
   NODE_DETAIL: 1.15,
 } as const;
 
+/**
+ * Agent-mesh hull rendering.
+ *
+ * A mesh spans clusters by design, so several hulls drawn at once overlap each
+ * other and everything beneath them. Only the mesh under the cursor or the
+ * current selection is outlined.
+ */
+export const MESH_HULL = {
+  /** World units the outline stands off from its outermost member. */
+  PADDING: 46,
+  /** Corner rounding applied when tracing the expanded hull. */
+  CORNER_RADIUS: 26,
+  FILL_ALPHA: 0.05,
+  STROKE_ALPHA: 0.34,
+  DASH: [12, 9],
+} as const;
+
 /** Label sizes in screen pixels — held constant regardless of camera zoom. */
 export const LABEL_PX = {
   REALM: 13,
