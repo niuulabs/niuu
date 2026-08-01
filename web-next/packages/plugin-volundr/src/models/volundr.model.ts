@@ -176,7 +176,7 @@ export interface VolundrSession {
   taskType?: string;
   archivedAt?: Date;
   trackerIssue?: TrackerIssue;
-  activityState?: 'active' | 'idle' | 'tool_executing' | 'awaiting_input' | null;
+  activityState?: 'active' | 'idle' | 'tool_executing' | 'awaiting_input' | 'error' | null;
   /** True when the session is blocked waiting on the user (awaiting_input). */
   needsAttention?: boolean;
   ownerId?: string;

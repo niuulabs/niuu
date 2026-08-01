@@ -87,6 +87,51 @@ def test_status_endpoint_no_sessions():
     assert resp.json()["session_count"] == 0
 
 
+def test_a2a_push_requires_token_and_wakes_resident():
+    runtime = MagicMock()
+    runtime.submit_a2a_push = AsyncMock(
+        return_value={
+            "task_id": "task-1",
+            "state": "TASK_STATE_COMPLETED",
+            "inbox_ref": "resident/inbox/task-1",
+            "queued": True,
+        }
+    )
+    gateway = HttpGateway(
+        _make_http_config(a2a_push_enabled=True),
+        _make_gateway_mock(),
+        resident_runtime=runtime,
+    )
+    client = TestClient(gateway.app)
+    payload = {
+        "task": {
+            "id": "task-1",
+            "status": {"state": "TASK_STATE_COMPLETED"},
+        }
+    }
+
+    assert client.post("/a2a/push", json=payload).status_code == 503
+    configured_gateway = HttpGateway(
+        _make_http_config(
+            a2a_push_enabled=True,
+            a2a_push_notification_token="push-secret",
+        ),
+        _make_gateway_mock(),
+        resident_runtime=runtime,
+    )
+    client = TestClient(configured_gateway.app)
+    assert client.post("/a2a/push", json=payload).status_code == 401
+    response = client.post(
+        "/a2a/push",
+        json=payload,
+        headers={"X-A2A-Notification-Token": "push-secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["queued"] is True
+    runtime.submit_a2a_push.assert_awaited_once_with(payload)
+
+
 # ---------------------------------------------------------------------------
 # POST /chat
 # ---------------------------------------------------------------------------

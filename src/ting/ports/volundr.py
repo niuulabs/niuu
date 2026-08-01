@@ -71,13 +71,16 @@ class VolundrSession:
     branch: str = ""
     base_branch: str = ""
     workload_type: str = "default"
+    activity_state: str | None = None
+    activity_metadata: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class ActivityEvent:
     """An activity or session lifecycle event received from Volundr SSE.
 
-    For activity events: state is "active"/"idle"/"tool_executing", session_status is empty.
+    For activity events: state is "active"/"idle"/"tool_executing"/"error",
+    session_status is empty.
     For session lifecycle events: session_status is "stopped"/"failed"/etc., state is empty.
     """
 

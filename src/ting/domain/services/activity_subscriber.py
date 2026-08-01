@@ -293,6 +293,10 @@ class SessionActivitySubscriber:
             await self._on_session_failed(event, volundr, owner_id)
             return
 
+        if event.state == "error":
+            await self._on_session_failed(event, volundr, owner_id)
+            return
+
         if await self._maybe_handle_help_needed(event, owner_id):
             return
 
@@ -784,7 +788,10 @@ class SessionActivitySubscriber:
             )
             return
 
-        await self._handle_failure(run, tracker, owner_id, reason=f"Session {event.session_status}")
+        reason = str(event.metadata.get("error") or event.metadata.get("message") or "").strip()
+        if not reason:
+            reason = f"Session {event.session_status or event.state or 'failed'}"
+        await self._handle_failure(run, tracker, owner_id, reason=reason)
 
     async def _try_handle_reviewer_failure(self, session_id: str, reason: str) -> None:
         """If the failed session is a tracked reviewer, hand off to review_engine."""

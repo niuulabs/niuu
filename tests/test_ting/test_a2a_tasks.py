@@ -252,6 +252,71 @@ class RecordingVolundrFactory:
         return list(self._adapters)
 
 
+class InMemoryPushRepository:
+    def __init__(self) -> None:
+        self.configs: dict[tuple[str, str, str], Any] = {}
+
+    async def save_config(self, *, task_id: str, owner_id: str, config):
+        saved = type(config)()
+        saved.CopyFrom(config)
+        saved.task_id = task_id
+        saved.id = saved.id or "push-1"
+        self.configs[(task_id, owner_id, saved.id)] = saved
+        return saved
+
+    async def get_for_owner(self, *, task_id: str, owner_id: str, config_id: str):
+        return self.configs.get((task_id, owner_id, config_id))
+
+    async def list_for_owner(self, *, task_id: str, owner_id: str):
+        return [
+            config
+            for (stored_task, stored_owner, _), config in self.configs.items()
+            if stored_task == task_id and stored_owner == owner_id
+        ]
+
+    async def delete_for_owner(self, *, task_id: str, owner_id: str, config_id: str):
+        return self.configs.pop((task_id, owner_id, config_id), None) is not None
+
+
+class RecordingPushDispatcher:
+    enabled = True
+    max_configs_page_size = 100
+
+    def __init__(self) -> None:
+        self.repo = InMemoryPushRepository()
+        self.queued: list[str] = []
+
+    def validate_config(self, config) -> None:
+        if not config.url.startswith("https://resident.example/"):
+            raise ValueError("callback origin is not allowed")
+        if config.authentication.scheme and config.authentication.scheme.casefold() != "bearer":
+            raise ValueError("unsupported authentication scheme")
+
+    async def save_config(self, *, task_id: str, owner_id: str, config):
+        return await self.repo.save_config(task_id=task_id, owner_id=owner_id, config=config)
+
+    async def get_config(self, *, task_id: str, owner_id: str, config_id: str):
+        return await self.repo.get_for_owner(
+            task_id=task_id,
+            owner_id=owner_id,
+            config_id=config_id,
+        )
+
+    async def list_configs(self, *, task_id: str, owner_id: str):
+        return await self.repo.list_for_owner(task_id=task_id, owner_id=owner_id)
+
+    async def delete_config(self, *, task_id: str, owner_id: str, config_id: str):
+        return await self.repo.delete_for_owner(
+            task_id=task_id,
+            owner_id=owner_id,
+            config_id=config_id,
+        )
+
+    async def queue_campaign(self, campaign: WorkflowCampaign) -> int:
+        self.queued.append(campaign.slug)
+        return 1
+
+
 def _make_workflow(*, name: str = "tool-builder") -> WorkflowDefinition:
     now = datetime.now(UTC)
     return WorkflowDefinition(
@@ -336,6 +401,7 @@ def _make_client(
     campaign_repo: WorkflowCampaignRepository | None = None,
     volundr: RecordingVolundrPort | None = None,
     settings: Settings | None = None,
+    push_dispatcher: Any | None = None,
 ) -> tuple[TestClient, InMemoryCampaignRepository, RecordingVolundrPort]:
     workflow_repo = workflow_repo or InMemoryWorkflowRepository()
     campaigns = campaign_repo or InMemoryCampaignRepository()
@@ -344,6 +410,7 @@ def _make_client(
     app.include_router(create_a2a_router())
     app.include_router(create_research_router())
     app.state.settings = settings or Settings(auth=AuthConfig(allow_anonymous_dev=False))
+    app.state.a2a_push_dispatcher = push_dispatcher
     app.dependency_overrides[resolve_workflow_repo] = lambda: workflow_repo
     app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaigns
     app.dependency_overrides[resolve_volundr_factory] = lambda: RecordingVolundrFactory([port])
@@ -677,6 +744,25 @@ class TestGetTask:
         assert result["id"] == campaign.slug
         assert result["status"]["state"] == expected_state
 
+    def test_failed_task_exposes_worker_error(self) -> None:
+        campaign = _make_campaign(status=WorkflowCampaignStatus.FAILED)
+        campaign = WorkflowCampaign(
+            **{
+                **campaign.__dict__,
+                "metadata": {
+                    **campaign.metadata,
+                    "failure_error": "refresh token was already used",
+                },
+            }
+        )
+        client, _, _ = _make_client(campaign_repo=InMemoryCampaignRepository([campaign]))
+
+        response = _rpc(client, "GetTask", {"id": campaign.slug})
+
+        result = response.json()["result"]
+        assert result["status"]["state"] == "TASK_STATE_FAILED"
+        assert result["metadata"]["error"] == "refresh token was already used"
+
     def test_unknown_task_is_not_found(self) -> None:
         client, _, _ = _make_client()
 
@@ -828,6 +914,93 @@ class TestProtocolSurface:
         )
 
         assert response.status_code == 401
+
+
+class TestPushNotifications:
+    def test_create_get_list_and_delete_owned_callback(self) -> None:
+        campaign = _make_campaign()
+        dispatcher = RecordingPushDispatcher()
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([campaign]),
+            push_dispatcher=dispatcher,
+        )
+
+        created = _rpc(
+            client,
+            "CreateTaskPushNotificationConfig",
+            {
+                "taskId": campaign.slug,
+                "id": "ivaldi-callback",
+                "url": "https://resident.example/a2a/push",
+                "token": "notification-secret",
+            },
+        ).json()["result"]
+
+        assert created["taskId"] == campaign.slug
+        assert created["id"] == "ivaldi-callback"
+        assert dispatcher.queued == [campaign.slug]
+        fetched = _rpc(
+            client,
+            "GetTaskPushNotificationConfig",
+            {"taskId": campaign.slug, "id": "ivaldi-callback"},
+        ).json()["result"]
+        assert fetched["url"] == "https://resident.example/a2a/push"
+        listed = _rpc(
+            client,
+            "ListTaskPushNotificationConfigs",
+            {"taskId": campaign.slug},
+        ).json()["result"]
+        assert [config["id"] for config in listed["configs"]] == ["ivaldi-callback"]
+        deleted = _rpc(
+            client,
+            "DeleteTaskPushNotificationConfig",
+            {"taskId": campaign.slug, "id": "ivaldi-callback"},
+        )
+        assert deleted.status_code == 200
+        assert dispatcher.repo.configs == {}
+
+    def test_rejects_unowned_or_unallowlisted_callback(self) -> None:
+        campaign = _make_campaign()
+        dispatcher = RecordingPushDispatcher()
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([campaign]),
+            push_dispatcher=dispatcher,
+        )
+
+        unowned = _rpc(
+            client,
+            "CreateTaskPushNotificationConfig",
+            {
+                "taskId": campaign.slug,
+                "url": "https://resident.example/a2a/push",
+            },
+            headers=_headers(user_id="user-2"),
+        ).json()["error"]
+        assert unowned["code"] == -32001
+        unsafe = _rpc(
+            client,
+            "CreateTaskPushNotificationConfig",
+            {
+                "taskId": campaign.slug,
+                "url": "https://attacker.example/a2a/push",
+            },
+        ).json()["error"]
+        assert unsafe["code"] == -32602
+        assert dispatcher.repo.configs == {}
+
+    def test_push_methods_are_unsupported_when_outbox_is_disabled(self) -> None:
+        campaign = _make_campaign()
+        client, _, _ = _make_client(
+            campaign_repo=InMemoryCampaignRepository([campaign]),
+        )
+
+        error = _rpc(
+            client,
+            "CreateTaskPushNotificationConfig",
+            {"taskId": campaign.slug, "url": "https://resident.example/a2a/push"},
+        ).json()["error"]
+
+        assert error["code"] == -32004
 
 
 class TestExtendedAgentCard:

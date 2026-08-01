@@ -807,6 +807,7 @@ function toSessionState(session: VolundrSession): Session['state'] {
     case 'running':
       if (session.needsAttention || session.activityState === 'awaiting_input')
         return 'awaiting_input';
+      if (session.activityState === 'error') return 'failed';
       return session.activityState === 'idle' ? 'idle' : 'running';
     case 'stopping':
       return 'terminating';
@@ -1098,6 +1099,7 @@ function toPodStatus(session: VolundrSession): Cluster['pods'][number]['status']
     case 'provisioning':
       return 'pending';
     case 'running':
+      if (session.activityState === 'error') return 'failed';
       return session.activityState === 'idle' ? 'idle' : 'running';
     case 'failed':
     case 'error':

@@ -49,14 +49,23 @@ class _Adapter:
         help_requests: list | None = None,
         gates: list | None = None,
         blocker_error: Exception | None = None,
+        activity_state: str | None = None,
+        activity_metadata: dict | None = None,
     ) -> None:
         self._session_status = session_status
         self._help_requests = help_requests or []
         self._gates = gates or []
         self._blocker_error = blocker_error
+        self._activity_state = activity_state
+        self._activity_metadata = activity_metadata or {}
 
     async def get_session(self, session_id, *, auth_token=None, principal=None):
-        return SimpleNamespace(status=self._session_status, name="tool-build-test")
+        return SimpleNamespace(
+            status=self._session_status,
+            name="tool-build-test",
+            activity_state=self._activity_state,
+            activity_metadata=self._activity_metadata,
+        )
 
     async def get_help_requests(self, session_id, *, auth_token=None, principal=None):
         if self._blocker_error is not None:
@@ -170,6 +179,26 @@ async def test_stopped_session_completes_without_blocker_checks() -> None:
 
     saved = repo.save_campaign.await_args.args[0]
     assert saved.status == WorkflowCampaignStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_terminal_activity_error_fails_running_campaign() -> None:
+    adapter = _Adapter(
+        session_status="running",
+        activity_state="error",
+        activity_metadata={"error": "refresh token was already used"},
+        blocker_error=RuntimeError("must not be called"),
+    )
+    projector, repo, event_bus = _projector(adapter)
+
+    await projector._refresh_campaign(_campaign())
+
+    saved = repo.save_campaign.await_args.args[0]
+    assert saved.status == WorkflowCampaignStatus.FAILED
+    assert saved.metadata["failure_error"] == "refresh token was already used"
+    emitted = event_bus.emit.await_args.args[0]
+    assert emitted.event == "workflow.campaign.failed"
+    assert emitted.data["error"] == "refresh token was already used"
 
 
 class TestConnectionAffinity:

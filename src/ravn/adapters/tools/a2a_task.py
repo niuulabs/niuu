@@ -36,6 +36,9 @@ class A2ATaskTool(ToolPort):
         result_max_chars: int = _DEFAULT_RESULT_MAX_CHARS,
         message_max_chars: int = _DEFAULT_MESSAGE_MAX_CHARS,
         activity_emitter: Callable[[dict[str, object]], Awaitable[None]] | None = None,
+        default_connection_id: str = "",
+        push_callback_url: str = "",
+        push_notification_token: str = "",
     ) -> None:
         self._directory = agent_directory
         self._client = client
@@ -45,6 +48,9 @@ class A2ATaskTool(ToolPort):
         self._result_max_chars = max(1_000, result_max_chars)
         self._message_max_chars = max(1_000, message_max_chars)
         self._activity_emitter = activity_emitter
+        self._default_connection_id = default_connection_id.strip()
+        self._push_callback_url = push_callback_url.strip()
+        self._push_notification_token = push_notification_token.strip()
 
     @property
     def name(self) -> str:
@@ -56,7 +62,9 @@ class A2ATaskTool(ToolPort):
             "Interact with a peer skill discovered through capability_list. "
             "Operations: start a task, get its current state/artifacts, reply when "
             "it requests input, or cancel it. Preserve agent_id and task_id from "
-            "the response for later turns. The peer and skill are your choice."
+            "the response for later turns. A start response with push_registered=true "
+            "will wake the resident on state changes, so do not repeatedly poll it. "
+            "The peer and skill are your choice."
         )
 
     @property
@@ -187,6 +195,19 @@ class A2ATaskTool(ToolPort):
             (task.get("id") if isinstance(task, dict) else "") or input.get("task_id") or ""
         )
         state = str(status.get("state") or "")
+        push_registered: bool | None = None
+        if operation == "start" and task_id and self._push_callback_url:
+            push_registered = False
+            if bool(agent.capabilities.get("pushNotifications")):
+                try:
+                    await self._register_push(endpoint, task_id)
+                    push_registered = True
+                except _A2ATaskError as exc:
+                    logger.warning(
+                        "A2A push registration failed for task %s; polling remains available: %s",
+                        task_id,
+                        exc,
+                    )
         result_attributes = {
             "a2a.agent.id": agent.id,
             "a2a.operation": operation,
@@ -217,6 +238,7 @@ class A2ATaskTool(ToolPort):
                     500,
                 ),
                 "source_tool": self.name,
+                **({"push_registered": push_registered} if push_registered is not None else {}),
             }
         )
         return ToolResult(
@@ -227,7 +249,20 @@ class A2ATaskTool(ToolPort):
                 result=result,
                 requested_task_id=str(input.get("task_id") or "").strip(),
                 max_chars=self._result_max_chars,
+                push_registered=push_registered,
             ),
+        )
+
+    async def _register_push(self, endpoint: str, task_id: str) -> None:
+        await self._rpc(
+            endpoint,
+            "CreateTaskPushNotificationConfig",
+            {
+                "taskId": task_id,
+                "id": f"ravn-{uuid4()}",
+                "url": self._push_callback_url,
+                "token": self._push_notification_token,
+            },
         )
 
     async def _emit_activity(self, activity: dict[str, object]) -> None:
@@ -259,6 +294,8 @@ class A2ATaskTool(ToolPort):
             metadata = dict(supplied_metadata) if isinstance(supplied_metadata, dict) else {}
             self._validate_metadata(metadata)
             metadata["skillId"] = skill_id
+            if self._default_connection_id:
+                metadata.setdefault("connectionId", self._default_connection_id)
             trace_context = get_observability().inject()
             if trace_context:
                 metadata["traceContext"] = trace_context
@@ -410,6 +447,7 @@ def _render_response_payload(
     result: dict[str, Any],
     requested_task_id: str,
     max_chars: int,
+    push_registered: bool | None = None,
 ) -> str:
     embedded = result.get("task")
     task = embedded if isinstance(embedded, dict) else result
@@ -445,6 +483,8 @@ def _render_response_payload(
             "directory": [item.model_dump(by_alias=True) for item in agent.provenance[:8]],
         },
     }
+    if push_registered is not None:
+        payload["push_registered"] = push_registered
     message = status.get("message") or status.get("update")
     if message:
         payload["status_message"] = _truncate(str(message), 2_000)

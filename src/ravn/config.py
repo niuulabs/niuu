@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import (
     BaseSettings,
     EnvSettingsSource,
@@ -995,6 +995,19 @@ class HttpChannelConfig(BaseModel):
             "operator-question and answer endpoints. Missing tokens disable those endpoints."
         ),
     )
+    a2a_push_enabled: bool = Field(
+        default=False,
+        description="Accept authenticated A2A task callbacks and wake the resident.",
+    )
+    a2a_push_notification_token: SecretStr = Field(
+        default=SecretStr(""),
+        description="A2A callback verification token; set through a secret config override.",
+    )
+    a2a_push_max_body_bytes: int = Field(
+        default=1_048_576,
+        ge=1024,
+        description="Maximum accepted A2A callback body size.",
+    )
     resident_hud_enabled: bool = Field(
         default=False,
         description="Expose the resident's read-only HUD and live data endpoints.",
@@ -1146,6 +1159,18 @@ class PlatformToolsConfig(BaseModel):
             "Use this for platform workflow facades or other stable peers that are not "
             "projected by an Observatory Agent Directory."
         ),
+    )
+    a2a_default_connection_id: str = Field(
+        default="",
+        description="Default Volundr target injected into newly started A2A workflows.",
+    )
+    a2a_push_callback_url: str = Field(
+        default="",
+        description=("Public HTTPS callback registered for A2A tasks that advertise push support."),
+    )
+    a2a_push_notification_token: SecretStr = Field(
+        default=SecretStr(""),
+        description="Token sent to the configured A2A callback; inject through secret config.",
     )
     a2a_message_max_chars: int = Field(
         default=12_000,

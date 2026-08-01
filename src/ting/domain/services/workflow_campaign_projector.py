@@ -8,6 +8,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
+from ting.ports.a2a_push import A2APushDispatcherPort
 from ting.ports.event_bus import EventBusPort, TingEvent
 from ting.ports.volundr import VolundrFactory
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
@@ -24,11 +25,13 @@ class WorkflowCampaignProjector:
         repo: WorkflowCampaignRepository,
         volundr_factory: VolundrFactory,
         event_bus: EventBusPort,
+        push_dispatcher: A2APushDispatcherPort | None = None,
         interval_seconds: float = 15.0,
     ) -> None:
         self._repo = repo
         self._volundr_factory = volundr_factory
         self._event_bus = event_bus
+        self._push_dispatcher = push_dispatcher
         self._interval_seconds = interval_seconds
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
@@ -83,7 +86,12 @@ class WorkflowCampaignProjector:
         session = await adapter.get_session(campaign.session_id)
         if session is None:
             return
-        next_status = _status_from_session(session.status, fallback=campaign.status)
+        activity_state = str(getattr(session, "activity_state", "") or "").strip().lower()
+        next_status = (
+            WorkflowCampaignStatus.FAILED
+            if activity_state == "error"
+            else _status_from_session(session.status, fallback=campaign.status)
+        )
         if next_status == WorkflowCampaignStatus.RUNNING:
             # Volundr's lifecycle status never says "waiting" — blocked-ness is
             # a session-internal condition (a peer's pending help question or a
@@ -140,11 +148,21 @@ class WorkflowCampaignProjector:
             return
 
         now = datetime.now(UTC)
+        metadata = dict(campaign.metadata)
+        if next_status == WorkflowCampaignStatus.FAILED:
+            activity_metadata = getattr(session, "activity_metadata", {}) or {}
+            failure_error = str(
+                activity_metadata.get("error") or activity_metadata.get("message") or ""
+            ).strip()
+            if failure_error:
+                metadata["failure_error"] = failure_error
+
         updated = WorkflowCampaign(
             **{
                 **campaign.__dict__,
                 "session_name": session.name,
                 "status": next_status,
+                "metadata": metadata,
                 "updated_at": now,
                 "last_activity_at": now,
                 "completed_at": now
@@ -170,9 +188,16 @@ class WorkflowCampaignProjector:
                     "session_id": saved.session_id,
                     "workflow_id": str(saved.workflow_id),
                     "active_stage_id": saved.active_stage_id,
+                    **(
+                        {"error": str(saved.metadata["failure_error"])}
+                        if saved.metadata.get("failure_error")
+                        else {}
+                    ),
                 },
             )
         )
+        if self._push_dispatcher is not None:
+            await self._push_dispatcher.queue_campaign(saved)
 
 
 _PENDING_BLOCKER_STATUSES = frozenset({"", "pending", "open", "waiting", "help_needed", "blocked"})

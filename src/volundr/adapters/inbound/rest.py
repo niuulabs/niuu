@@ -806,7 +806,7 @@ class SessionResponse(BaseModel):
         default=None,
         description=(
             "Current activity state "
-            "(provisioning/active/idle/tool_executing/awaiting_input/stopped)"
+            "(provisioning/active/idle/tool_executing/awaiting_input/stopped/error)"
         ),
     )
     activity_state_since: str | None = Field(
