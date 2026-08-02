@@ -24,7 +24,7 @@ export function ObservatorySubnav() {
       <ObservatoryRailSections
         topology={topology}
         selectedId={selectedId}
-        onSelect={(nodeId) => store.setSelected(nodeId)}
+        onSelect={(nodeId, options) => store.setSelected(nodeId, options)}
       />
     </div>
   );

@@ -25,6 +25,7 @@ describe('useObservatoryStore', () => {
 
     expect(result.current[0]).toEqual({
       selectedId: null,
+      focusId: null,
       filter: 'all',
       hiddenLayers: new Set(CALM_HIDDEN_LAYERS),
       hiddenCompute: new Set(),
@@ -40,6 +41,7 @@ describe('useObservatoryStore', () => {
 
     expect(result.current[0]).toEqual({
       selectedId: 'agent-1',
+      focusId: 'agent-1',
       filter: 'agents',
       hiddenLayers: new Set(CALM_HIDDEN_LAYERS),
       hiddenCompute: new Set(),
@@ -48,6 +50,17 @@ describe('useObservatoryStore', () => {
     expect(notify).toHaveBeenCalledTimes(2);
 
     unsubscribe();
+  });
+
+  it('holds a selection the camera should not travel to', () => {
+    // Picking a mesh marks its members without flying to one of them.
+    const store = getObservatoryStore();
+    const { result } = renderHook(() => useObservatoryStore());
+
+    act(() => store.setSelected('mesh-member-1', { focus: false }));
+
+    expect(result.current[0].selectedId).toBe('mesh-member-1');
+    expect(result.current[0].focusId).toBeNull();
   });
 });
 

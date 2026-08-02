@@ -19,7 +19,15 @@ import './ObservatoryRailSections.css';
 interface Props {
   topology: Topology | null;
   selectedId: string | null;
-  onSelect: (nodeId: string) => void;
+  /**
+   * `focus` says whether picking this row is also a request to go there.
+   *
+   * A resident row is: the node may be off screen. A mesh row is not — its
+   * members are scattered across clusters, which is the point of a mesh, so
+   * flying to whichever one sorts first frames the least representative thing
+   * in it and hides the rest.
+   */
+  onSelect: (nodeId: string, options?: { focus?: boolean }) => void;
 }
 
 /**
@@ -138,7 +146,8 @@ export function ObservatoryRailSections({ topology, selectedId, onSelect }: Prop
               badgeTone="amber"
               tone="mesh"
               selected={mesh.memberIds.some((member) => member === selectedId)}
-              onSelect={onSelect}
+              // Marked, not travelled to: the pulse already says who is in it.
+              onSelect={(nodeId) => onSelect(nodeId, { focus: false })}
             />
           ))
         )}

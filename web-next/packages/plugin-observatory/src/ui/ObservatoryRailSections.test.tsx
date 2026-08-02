@@ -33,6 +33,41 @@ describe('ObservatoryRailSections', () => {
     expect(screen.getByTestId('rail-row-ivaldi')).toHaveTextContent('ravn · eitri');
   });
 
+  it('marks a mesh without asking the camera to fly to one member', () => {
+    // A mesh spans clusters on purpose, so travelling to whichever member
+    // sorts first frames the least representative thing in it.
+    const onSelect = vi.fn();
+    render(
+      <ObservatoryRailSections
+        topology={topology([
+          node('bryn', 'valkyrie', { flockId: 'flock-k8s', cluster: 'eitri' }),
+          node('eir', 'valkyrie', { flockId: 'flock-k8s', cluster: 'noatun' }),
+        ])}
+        selectedId={null}
+        onSelect={onSelect}
+      />,
+    );
+
+    return userEvent.click(screen.getByTestId('rail-row-mesh-flock-k8s')).then(() => {
+      expect(onSelect).toHaveBeenCalledWith('bryn', { focus: false });
+    });
+  });
+
+  it('asks the camera to travel when a resident is picked', () => {
+    const onSelect = vi.fn();
+    render(
+      <ObservatoryRailSections
+        topology={topology([node('ivaldi', 'ravn_long', { cluster: 'eitri' })])}
+        selectedId={null}
+        onSelect={onSelect}
+      />,
+    );
+
+    return userEvent.click(screen.getByTestId('rail-row-ivaldi')).then(() => {
+      expect(onSelect).toHaveBeenCalledWith('ivaldi');
+    });
+  });
+
   it('states why a section is empty instead of rendering nothing', () => {
     // A deployment with no residents yet is not the same as a rail that lost
     // its section, and the operator has to be able to tell.

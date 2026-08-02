@@ -64,6 +64,12 @@ export interface TopologyCanvasProps {
   onNodeClick?: (nodeId: string | null) => void;
   /** Currently selected node — drives which agent mesh is outlined. */
   selectedId?: string | null;
+  /**
+   * The node the camera should travel to. Defaults to the selection, which is
+   * usually the same thing — but selecting a mesh is not a request to fly to
+   * one of its members.
+   */
+  focusId?: string | null;
   /** Connection layers the operator has switched off. */
   hiddenLayers?: ReadonlySet<EdgeLayer>;
   /**
@@ -94,6 +100,7 @@ export function TopologyCanvas({
   registry = null,
   onNodeClick,
   selectedId = null,
+  focusId,
   hiddenLayers,
   hiddenCompute,
   showMinimap = true,
@@ -255,21 +262,23 @@ export function TopologyCanvas({
   const focusTargetRef = useRef<Camera | null>(null);
   const lastFocusedIdRef = useRef<string | null>(null);
 
+  const travelTo = focusId === undefined ? selectedId : focusId;
+
   useEffect(() => {
-    if (!selectedId) {
+    if (!travelTo) {
       lastFocusedIdRef.current = null;
       return;
     }
-    if (lastFocusedIdRef.current === selectedId) return;
-    const target = positions.get(selectedId);
+    if (lastFocusedIdRef.current === travelTo) return;
+    const target = positions.get(travelTo);
     if (!target) return;
-    lastFocusedIdRef.current = selectedId;
+    lastFocusedIdRef.current = travelTo;
     focusTargetRef.current = {
       x: target.x,
       y: target.y,
       zoom: Math.max(camRef.current.zoom, FOCUS_ZOOM),
     };
-  }, [positions, selectedId]);
+  }, [positions, travelTo]);
 
   // ── Canvas sizing ───────────────────────────────────────────────────────────
 
@@ -589,15 +598,15 @@ export function TopologyCanvas({
         const { styleFor: resolveStyle, neighbours: adjacency, selectedId: sel } = drawRef.current;
         // Pointing at a thing is a question about that thing. Everything it
         // does not touch steps back so the answer is readable.
-        const focusId = hoveredId ?? null;
-        const litIds = focusId ? (adjacency.get(focusId) ?? new Set<string>()) : null;
+        const pointedAt = hoveredId ?? null;
+        const litIds = pointedAt ? (adjacency.get(pointedAt) ?? new Set<string>()) : null;
         const muted = drawRef.current.hiddenCompute;
         const alphaForNode = (node: TopologyNode): number => {
           // A switched-off compute class outranks hover: the operator has said
           // they are not interested in it at all.
           if (muted?.has(resolveStyle(node).computeClass)) return FILTERED_ALPHA;
-          if (!focusId) return 1;
-          if (node.id === focusId || litIds?.has(node.id)) return 1;
+          if (!pointedAt) return 1;
+          if (node.id === pointedAt || litIds?.has(node.id)) return 1;
           return DIMMED_ALPHA;
         };
 
@@ -625,7 +634,9 @@ export function TopologyCanvas({
         drawEdges(ctx, topo, pos, now, {
           styleFor: resolveStyle,
           alphaFor: (edge) =>
-            !focusId || edge.sourceId === focusId || edge.targetId === focusId ? 1 : DIMMED_ALPHA,
+            !pointedAt || edge.sourceId === pointedAt || edge.targetId === pointedAt
+              ? 1
+              : DIMMED_ALPHA,
         });
 
         const paint = (node: TopologyNode) => {

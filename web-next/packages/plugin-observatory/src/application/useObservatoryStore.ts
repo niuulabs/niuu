@@ -8,6 +8,16 @@ export type ObservatoryFilter = 'all' | 'agents' | 'runs' | 'services' | 'device
 
 interface ObservatoryStoreState {
   selectedId: string | null;
+  /**
+   * The node the camera should travel to, or null when it should stay put.
+   *
+   * Separate from `selectedId` because not every selection is a request to go
+   * somewhere. Picking a resident out of the rail is — it may be off screen.
+   * Picking a mesh is not: its members are scattered across clusters, which is
+   * the entire point of a mesh, so flying to whichever one happens to be first
+   * frames the least representative thing in it.
+   */
+  focusId: string | null;
   filter: ObservatoryFilter;
   /** Layers the operator has switched off. Empty means everything is shown. */
   hiddenLayers: ReadonlySet<EdgeLayer>;
@@ -19,7 +29,7 @@ interface ObservatoryStoreState {
 
 interface ObservatoryStore {
   read(): ObservatoryStoreState;
-  setSelected(id: string | null): void;
+  setSelected(id: string | null, options?: { focus?: boolean }): void;
   setFilter(filter: ObservatoryFilter): void;
   toggleLayer(layer: EdgeLayer): void;
   setHiddenLayers(layers: ReadonlySet<EdgeLayer>): void;
@@ -48,6 +58,7 @@ export function getObservatoryStore(): ObservatoryStore {
   const subscribers = new Set<() => void>();
   let state: ObservatoryStoreState = {
     selectedId: null,
+    focusId: null,
     filter: 'all',
     // Opens calm. Platform wiring and telemetry are the two layers that
     // dominate by edge count and say the least about what the estate is doing,
@@ -62,9 +73,10 @@ export function getObservatoryStore(): ObservatoryStore {
     read(): ObservatoryStoreState {
       return state;
     },
-    setSelected(id: string | null): void {
+    setSelected(id: string | null, options?: { focus?: boolean }): void {
       if (state.selectedId === id) return;
-      state = { ...state, selectedId: id };
+      const focus = options?.focus ?? true;
+      state = { ...state, selectedId: id, focusId: focus ? id : null };
       subscribers.forEach((fn) => fn());
     },
     setFilter(filter: ObservatoryFilter): void {

@@ -948,7 +948,6 @@ class BifrostCatalogDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
             model_id = str(model["id"])
             provider = served_by.get(model_id) or {}
             base_url = str(provider.get("base_url") or "")
-            node_id = f"model:{_slug(self._cluster or 'unknown')}:{_slug(model_id)}"
             location = _model_location(
                 base_url,
                 provider,
@@ -960,17 +959,25 @@ class BifrostCatalogDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
             cloud_id = self._cloud_id(vendor) if outside else ""
             if cloud_id and cloud_id not in clouds:
                 clouds[cloud_id] = vendor
+            served_cluster, served_realm = _served_from(base_url, self._internal_domains)
+            # Identity follows the thing that answers, not the gateway that
+            # asks. Keying on the local Bifröst made one vLLM on valaskjalf
+            # into two nodes because two gateways route to it, and one hosted
+            # Claude into three.
+            node_id = self._model_node_id(model_id, vendor, outside, served_cluster)
             metadata = {
                 "modelId": model_id,
                 "vendor": vendor,
                 "provider": str(model.get("provider") or provider.get("key") or ""),
                 "tier": str(model.get("tier") or ""),
                 "location": location,
+                "servedFrom": base_url,
                 "supportsTools": bool(model.get("supports_tools")),
                 "supportsThinking": bool(model.get("supports_thinking")),
                 "vramRequired": model.get("vram_required"),
                 "costPerMillionTokens": model.get("cost_per_million_tokens"),
             }
+            status = "healthy" if model.get("enabled", True) else "idle"
             if outside:
                 entities.append(
                     DiscoveredEntity(
@@ -980,19 +987,37 @@ class BifrostCatalogDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
                         # No realm, cluster or namespace: a hosted model has no
                         # placement in our estate to inherit.
                         parent_id=cloud_id,
-                        status="healthy" if model.get("enabled", True) else "idle",
+                        status=status,
+                        source_adapter=self.__class__.__name__,
+                        metadata=metadata,
+                    )
+                )
+            elif served_cluster:
+                # The hostname says which cluster answers, so the model is
+                # drawn there rather than inside the gateway that calls it.
+                entities.append(
+                    DiscoveredEntity(
+                        id=node_id,
+                        kind="model",
+                        name=str(model.get("name") or model_id),
+                        realm=served_realm,
+                        cluster=served_cluster,
+                        parent_id=f"cluster-{_slug(served_cluster)}",
+                        status=status,
                         source_adapter=self.__class__.__name__,
                         metadata=metadata,
                     )
                 )
             else:
+                # No endpoint to read, so the gateway's own process is the only
+                # place it can be answering from — which is where it is drawn.
                 entities.append(
                     self._entity(
                         "model",
                         str(model.get("name") or model_id),
                         node_id,
                         parent_id=gateway_id,
-                        status="healthy" if model.get("enabled", True) else "idle",
+                        status=status,
                         metadata=metadata,
                     )
                 )
@@ -1024,6 +1049,25 @@ class BifrostCatalogDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
         )
 
         return DiscoveryResult(entities=entities, edges=edges)
+
+    def _model_node_id(
+        self,
+        model_id: str,
+        vendor: str,
+        outside: bool,
+        served_cluster: str,
+    ) -> str:
+        """One node per model per thing that serves it.
+
+        A gateway-scoped id gave every Bifröst its own copy of the same model,
+        so the canvas showed Claude Fable 5 three times and one vLLM twice. The
+        server is what makes two models the same model, exactly as one cloud
+        per vendor is shared by every cluster routing to it.
+        """
+        if outside:
+            return f"model:{_slug(vendor or 'unknown')}:{_slug(model_id)}"
+        where = served_cluster or self._cluster or "unknown"
+        return f"model:{_slug(where)}:{_slug(model_id)}"
 
     @staticmethod
     def _cloud_id(vendor: str) -> str:
@@ -1317,6 +1361,34 @@ def _model_location(
 def _normalized_domains(domains: Collection[str]) -> list[str]:
     """Config may name a zone with a leading dot or stray whitespace."""
     return [d.strip().lower().lstrip(".") for d in domains if d and d.strip().strip(".")]
+
+
+def _served_from(base_url: str, internal_domains: Collection[str] = ()) -> tuple[str, str]:
+    """The cluster and realm a self-hosted endpoint actually answers from.
+
+    Weights on our own hardware were drawn inside whichever Bifröst routed to
+    them, which says the models run in that cluster. They do not:
+    `nemotron-3-super-vllm.valaskjalf.asgard.niuu.world` is answered by GPUs on
+    valaskjalf, and both valhalla's and noatun's gateways call it.
+
+    Every ingress in the estate is named `<service>.<cluster>.<realm>.<zone>`,
+    so the hostname states the placement. Returns empty strings for anything
+    that does not — a cluster-local Service, an unnamed default, a vendor host
+    — because a model whose placement cannot be read must not be given one.
+    """
+    host = (urlsplit(base_url).hostname or "").lower() if base_url else ""
+    if not host:
+        return "", ""
+    for domain in _normalized_domains(internal_domains):
+        if not host.endswith(f".{domain}"):
+            continue
+        labels = host[: -len(domain) - 1].split(".")
+        if len(labels) < 3:
+            # `yggdrasil.niuu.world` names no cluster, and neither does a
+            # two-label host: the convention needs service, cluster and realm.
+            return "", ""
+        return labels[-2], labels[-1]
+    return "", ""
 
 
 #: Keys a gateway reports for its own bookkeeping, dropped before the device

@@ -132,13 +132,13 @@ describe('ObservatorySubnav', () => {
   it('calls setSelected when a realm is clicked', () => {
     render(<ObservatorySubnav />);
     fireEvent.click(screen.getByTestId('rail-row-cluster-valaskjalf'));
-    expect(mockSetSelected).toHaveBeenCalledWith('cluster-valaskjalf');
+    expect(mockSetSelected).toHaveBeenCalledWith('cluster-valaskjalf', undefined);
   });
 
   it('calls setSelected when a cluster is clicked', () => {
     render(<ObservatorySubnav />);
     fireEvent.click(screen.getByTestId('rail-row-cluster-valaskjalf'));
-    expect(mockSetSelected).toHaveBeenCalledWith('cluster-valaskjalf');
+    expect(mockSetSelected).toHaveBeenCalledWith('cluster-valaskjalf', undefined);
   });
 });
 

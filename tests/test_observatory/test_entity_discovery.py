@@ -1962,13 +1962,121 @@ async def test_our_own_gpus_behind_our_own_ingress_are_not_someone_elses() -> No
 
     nemotron = by_model["nvidia/nemotron-3-super"]
     assert nemotron.metadata["location"] == "internal"
-    assert nemotron.parent_id == "bifrost:valhalla"
-    assert nemotron.cluster == "valhalla"
+    # valhalla's gateway routes to it; valaskjalf's GPUs answer it.
+    assert nemotron.parent_id == "cluster-valaskjalf"
+    assert nemotron.cluster == "valaskjalf"
     # And no cloud was invented for it out of the provider key.
     assert {e.name for e in result.entities if e.kind == "cloud"} == {"Anthropic"}
 
     # A real vendor endpoint is still outside, so the rule has not gone soft.
     assert by_model["claude-opus-5"].metadata["location"] == "external"
+
+
+def test_a_hostname_that_names_no_cluster_places_nothing() -> None:
+    """Placement is claimed only where the hostname actually states it."""
+    from observatory.entity_discovery import _served_from
+
+    domains = ["niuu.world"]
+    assert _served_from("https://qwen.valaskjalf.asgard.niuu.world", domains) == (
+        "valaskjalf",
+        "asgard",
+    )
+    # Not the estate's convention: no cluster label to read.
+    assert _served_from("https://yggdrasil.niuu.world", domains) == ("", "")
+    assert _served_from("https://vllm.svc.cluster.local", domains) == ("", "")
+    assert _served_from("https://api.anthropic.com", domains) == ("", "")
+    assert _served_from("", domains) == ("", "")
+
+
+@pytest.mark.asyncio
+async def test_two_gateways_routing_to_one_server_report_one_model() -> None:
+    """A model is one model however many gateways call it.
+
+    Keying a node on the Bifröst that saw it gave each gateway its own copy, so
+    the canvas drew one vLLM on valaskjalf twice and one hosted Claude three
+    times. What makes two models the same model is the thing that answers
+    them — the same reasoning that gives every cluster one shared Anthropic
+    cloud rather than one each.
+    """
+    catalogue = {
+        "/api/v1/bifrost/models": [
+            {"id": "nvidia/nemotron-3-super", "vendor": "valaskjalf-nemotron"},
+            {"id": "claude-opus-5", "vendor": "anthropic"},
+        ],
+        "/api/v1/bifrost/providers": [
+            {
+                "key": "valaskjalf-nemotron",
+                "vendor": "valaskjalf-nemotron",
+                "base_url": "https://nemotron-3-super-vllm.valaskjalf.asgard.niuu.world",
+                "model_ids": ["nvidia/nemotron-3-super"],
+            },
+            {
+                "key": "anthropic",
+                "vendor": "anthropic",
+                "base_url": "https://api.anthropic.com",
+                "model_ids": ["claude-opus-5"],
+            },
+        ],
+    }
+
+    results = []
+    for cluster in ("valhalla", "noatun"):
+        adapter = BifrostCatalogDiscoveryAdapter(
+            base_url="http://bifrost.test",
+            cluster=cluster,
+            internal_domains=["niuu.world"],
+            transport=_routed(catalogue),
+        )
+        results.append(await adapter.discover())
+
+    ids = [{e.id for e in r.entities if e.kind == "model"} for r in results]
+    assert ids[0] == ids[1]
+    assert ids[0] == {
+        "model:valaskjalf:nvidia-nemotron-3-super",
+        "model:anthropic:claude-opus-5",
+    }
+    # Each gateway still reports that it routes there, so the merge keeps two
+    # edges into one node rather than two nodes with one edge each.
+    assert {e["sourceId"] for r in results for e in r.edges} == {
+        "bifrost:valhalla",
+        "bifrost:noatun",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_model_with_no_endpoint_stays_with_the_gateway_serving_it() -> None:
+    """An empty base URL means the gateway's own process answers it.
+
+    Ollama models configured with no endpoint really are served from wherever
+    Bifröst runs, so the gateway is the honest placement — and the id stays
+    gateway-scoped, because two clusters each running their own Ollama with
+    `llama3.2:latest` are two different servers.
+    """
+    adapter = BifrostCatalogDiscoveryAdapter(
+        base_url="http://bifrost.test",
+        cluster="ymir",
+        internal_domains=["niuu.world"],
+        transport=_routed(
+            {
+                "/api/v1/bifrost/models": [{"id": "llama3.2:latest", "vendor": "local"}],
+                "/api/v1/bifrost/providers": [
+                    {
+                        "key": "local",
+                        "vendor": "local",
+                        "base_url": "",
+                        "model_ids": ["llama3.2:latest"],
+                    }
+                ],
+            }
+        ),
+    )
+
+    result = await adapter.discover()
+
+    (model,) = [e for e in result.entities if e.kind == "model"]
+    assert model.id == "model:ymir:llama3-2-latest"
+    assert model.parent_id == "bifrost:ymir"
+    assert model.metadata["location"] == "internal"
 
 
 @pytest.mark.asyncio

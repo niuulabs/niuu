@@ -593,6 +593,27 @@ describe('TopologyCanvas', () => {
     expect(meshHighlightDrawn()).toBe(false);
   });
 
+  it('marks a mesh without moving the camera when told not to travel', async () => {
+    // Selecting a mesh from the rail passes focusId={null}: the pulse says who
+    // is in it, and flying to one scattered member says the opposite.
+    await renderCanvas(MESHED_TOPOLOGY, { selectedId: 'muninn', focusId: null });
+    const before = screen.getByTestId('zoom-display').textContent;
+    runAnimationFrame();
+    runAnimationFrame(1100);
+
+    expect(meshHighlightDrawn()).toBe(true);
+    expect(screen.getByTestId('zoom-display').textContent).toBe(before);
+  });
+
+  it('still travels to a member selected on its own', async () => {
+    await renderCanvas(MESHED_TOPOLOGY, { selectedId: 'muninn', focusId: 'muninn' });
+    const before = screen.getByTestId('zoom-display').textContent;
+    runAnimationFrame();
+    runAnimationFrame(1100);
+
+    expect(screen.getByTestId('zoom-display').textContent).not.toBe(before);
+  });
+
   // ── Layer filtering ─────────────────────────────────────────────────────────
 
   const LAYERED_TOPOLOGY: Topology = {
