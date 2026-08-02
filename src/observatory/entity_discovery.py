@@ -1558,14 +1558,29 @@ class CompositeDiscoveryAdapter:
         entities_by_id: dict[str, DiscoveredEntity] = {}
         edges_by_id: dict[str, ObservatoryEdge] = {}
         events: list[ObservatoryEvent] = []
-        for adapter in self._adapters:
+
+        # Adapters are independent — each reads a different API and none needs
+        # another's output — so a sequential loop made the fragment take the
+        # sum of their latencies rather than the slowest. On ymir that is five
+        # adapters, three of them making outbound calls, and it pushed the
+        # response past the caller's timeout.
+        #
+        # Results are folded in adapter order regardless of completion order,
+        # so a merge conflict resolves the same way it did before.
+        async def _run(adapter: DiscoveryAdapter) -> DiscoveryResult:
             try:
-                result = await adapter.discover()
+                return await adapter.discover()
             except Exception as exc:
                 logger.warning("Observatory discovery adapter failed: %s", exc)
-                result = DiscoveryResult(
-                    events=[_adapter_warning(adapter.__class__.__name__, str(exc))]
+                return DiscoveryResult(
+                    events=[
+                        _adapter_warning(adapter.__class__.__name__, str(exc) or type(exc).__name__)
+                    ]
                 )
+
+        results = await asyncio.gather(*(_run(adapter) for adapter in self._adapters))
+
+        for result in results:
             for entity in result.entities:
                 entities_by_id[entity.id] = _merge_discovered_entity(
                     entities_by_id.get(entity.id),

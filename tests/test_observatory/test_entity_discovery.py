@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import httpx
+import asyncio
+import time
 import pytest
 
 from observatory.discovery import ObservatoryDiscoveryService
@@ -1802,3 +1804,35 @@ async def test_the_pod_census_is_skipped_when_no_host_was_discovered(tmp_path, m
     await adapter.discover()
 
     assert "/api/v1/pods" not in seen
+
+
+@pytest.mark.asyncio
+async def test_adapters_run_concurrently_not_end_to_end() -> None:
+    """A fragment should take the slowest adapter, not the sum of them.
+
+    Ymir runs five adapters, three of which call out to Bifrost, Ravn and
+    Ting. Sequentially that came to ~8.5s and pushed the fragment past the
+    Guild's timeout, which is why the richest source was the one that kept
+    dropping out of the estate.
+    """
+
+    class _SlowAdapter:
+        def __init__(self, entity_id: str) -> None:
+            self.entity_id = entity_id
+
+        async def discover(self) -> DiscoveryResult:
+            await asyncio.sleep(0.15)
+            return DiscoveryResult(
+                entities=[DiscoveredEntity(id=self.entity_id, kind="service", name=self.entity_id)]
+            )
+
+    adapters = [_SlowAdapter(f"svc-{i}") for i in range(5)]
+    composite = CompositeDiscoveryAdapter(adapters)  # type: ignore[arg-type]
+
+    started = time.perf_counter()
+    result = await composite.discover()
+    elapsed = time.perf_counter() - started
+
+    assert len(result.entities) == 5
+    # Five 0.15s adapters: ~0.15s concurrently, ~0.75s end to end.
+    assert elapsed < 0.5
