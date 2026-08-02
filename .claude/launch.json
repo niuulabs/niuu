@@ -4,20 +4,38 @@
     {
       "name": "niuu-platform",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "echo 'attaching to already-running ./start-dev stack on :8080'; while curl -s -o /dev/null -m 2 http://192.168.1.106:8080/health; do sleep 5; done"],
+      "runtimeArgs": [
+        "-c",
+        "echo 'attaching to already-running ./start-dev stack on :8080'; while curl -s -o /dev/null -m 2 http://192.168.1.106:8080/health; do sleep 5; done"
+      ],
       "port": 8080
     },
     {
       "name": "niuu-platform-bridge",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-c", "import socket,threading,sys\ndef pipe(a,b):\n    try:\n        while True:\n            d=a.recv(65536)\n            if not d: break\n            b.sendall(d)\n    except OSError: pass\n    finally:\n        try: b.shutdown(socket.SHUT_WR)\n        except OSError: pass\ns=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',8081)); s.listen(64)\nprint('bridge 127.0.0.1:8081 -> 192.168.1.106:8080', flush=True)\nwhile True:\n    c,_=s.accept()\n    u=socket.socket(); u.connect(('192.168.1.106',8080))\n    threading.Thread(target=pipe,args=(c,u),daemon=True).start()\n    threading.Thread(target=pipe,args=(u,c),daemon=True).start()"],
+      "runtimeArgs": [
+        "-c",
+        "import socket,threading,sys\ndef pipe(a,b):\n    try:\n        while True:\n            d=a.recv(65536)\n            if not d: break\n            b.sendall(d)\n    except OSError: pass\n    finally:\n        try: b.shutdown(socket.SHUT_WR)\n        except OSError: pass\ns=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',8081)); s.listen(64)\nprint('bridge 127.0.0.1:8081 -> 192.168.1.106:8080', flush=True)\nwhile True:\n    c,_=s.accept()\n    u=socket.socket(); u.connect(('192.168.1.106',8080))\n    threading.Thread(target=pipe,args=(c,u),daemon=True).start()\n    threading.Thread(target=pipe,args=(u,c),daemon=True).start()"
+      ],
       "port": 8081
     },
     {
       "name": "niuu-docs",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "cd /Users/jozefvaneenbergen/git/niuu/software/volundr-ravn-room-cli && exec uv run --with mkdocs-material mkdocs serve -a 127.0.0.1:8123"],
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/jozefvaneenbergen/git/niuu/software/volundr-ravn-room-cli && exec uv run --with mkdocs-material mkdocs serve -a 127.0.0.1:8123"
+      ],
       "port": 8123
+    },
+    {
+      "name": "niuu-web-next",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/jozefvaneenbergen/git/niuu/software/volundr/web-next && exec pnpm --filter @niuulabs/niuu exec vite --port 5199 --strictPort"
+      ],
+      "port": 5199
     }
   ]
 }

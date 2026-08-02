@@ -115,6 +115,7 @@ function normalizeObservatoryEvent(raw: unknown): ObservatoryEvent | null {
     type: toObservatoryEventType(payload),
     subject,
     body,
+    level: payload.level === 'warning' ? 'warning' : 'info',
   };
 }
 

@@ -92,7 +92,6 @@ export { EntityDrawer } from './ui/overlays/EntityDrawer';
 export type { EntityDrawerProps } from './ui/overlays/EntityDrawer';
 export { EventLog } from './ui/overlays/EventLog';
 export type { EventLogProps } from './ui/overlays/EventLog';
-export { ConnectionLegend } from './ui/overlays/ConnectionLegend';
 export { Minimap } from './ui/overlays/Minimap';
 export type { MinimapProps } from './ui/overlays/Minimap';
 export { ObservatorySubnav } from './ui/ObservatorySubnav';

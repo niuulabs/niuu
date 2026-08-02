@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  CALM_HIDDEN_LAYERS,
   __resetObservatoryStore,
   getObservatoryStore,
   useObservatoryStore,
@@ -22,7 +23,13 @@ describe('useObservatoryStore', () => {
 
     const { result } = renderHook(() => useObservatoryStore());
 
-    expect(result.current[0]).toEqual({ selectedId: null, filter: 'all', hiddenLayers: new Set() });
+    expect(result.current[0]).toEqual({
+      selectedId: null,
+      filter: 'all',
+      hiddenLayers: new Set(CALM_HIDDEN_LAYERS),
+      hiddenCompute: new Set(),
+      presenting: false,
+    });
 
     act(() => {
       store.setSelected('agent-1');
@@ -34,7 +41,9 @@ describe('useObservatoryStore', () => {
     expect(result.current[0]).toEqual({
       selectedId: 'agent-1',
       filter: 'agents',
-      hiddenLayers: new Set(),
+      hiddenLayers: new Set(CALM_HIDDEN_LAYERS),
+      hiddenCompute: new Set(),
+      presenting: false,
     });
     expect(notify).toHaveBeenCalledTimes(2);
 
@@ -47,8 +56,11 @@ describe('layer visibility', () => {
     __resetObservatoryStore();
   });
 
-  it('starts with every layer shown', () => {
-    expect(getObservatoryStore().read().hiddenLayers.size).toBe(0);
+  it('opens calm rather than showing every layer at once', () => {
+    // Platform and telemetry dominate by edge count; leading with them makes
+    // the first look a hairball.
+    const { hiddenLayers } = getObservatoryStore().read();
+    expect([...hiddenLayers].sort()).toEqual([...CALM_HIDDEN_LAYERS].sort());
   });
 
   it('toggles a layer off and back on', () => {

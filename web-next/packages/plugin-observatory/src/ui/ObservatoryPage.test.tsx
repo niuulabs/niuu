@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { ObservatoryPage } from './ObservatoryPage';
@@ -10,7 +10,7 @@ import {
   createMockAgentDirectory,
 } from '../adapters/mock';
 import { makeCtxMock } from './TopologyCanvas/test-helpers';
-import { __resetObservatoryStore } from '../application/useObservatoryStore';
+import { __resetObservatoryStore, getObservatoryStore } from '../application/useObservatoryStore';
 
 beforeEach(() => {
   // Reset the module-level singleton to prevent state leaking between tests.
@@ -104,37 +104,54 @@ describe('ObservatoryPage', () => {
     expect(screen.getByTestId('node-btn-realm-asgard')).toBeInTheDocument();
   });
 
-  it('clicking a node opens the EntityDrawer', () => {
+  it('clicking a node shows it in the inspector', () => {
     wrap(<ObservatoryPage />);
-    const realmBtn = screen.getByTestId('node-btn-realm-asgard');
-    fireEvent.click(realmBtn);
-    // Drawer should be open — title "asgard" appears in the dialog
-    expect(screen.getByRole('dialog', { name: /asgard/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('node-btn-realm-asgard'));
+
+    expect(screen.getByTestId('inspector')).toHaveTextContent(/asgard/i);
   });
 
-  it('drawer closes when the close button is clicked', () => {
+  it('shows a prompt in the inspector until something is selected', () => {
+    // The inspector is a column now, not a dialog: it has no close button and
+    // is always present, so "nothing selected" needs its own state.
+    wrap(<ObservatoryPage />);
+
+    expect(screen.getByTestId('inspector-empty')).toBeInTheDocument();
+  });
+
+  it('navigates from the inspector to a connected node', () => {
     wrap(<ObservatoryPage />);
     fireEvent.click(screen.getByTestId('node-btn-realm-asgard'));
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /close/i }));
-    expect(screen.queryByRole('dialog')).toBeNull();
+
+    const peer = screen.queryAllByTestId(/^insp-peer-/)[0];
+    if (peer) {
+      fireEvent.click(peer);
+      expect(screen.getByTestId('inspector')).toBeInTheDocument();
+    }
   });
 
-  it('clicking a resident in the drawer navigates to that node', () => {
+  it('renders the signal ticker rather than a floating event log', () => {
+    // The mockup docks the feed beneath the stage; a floating overlay covered
+    // the canvas it was describing.
     wrap(<ObservatoryPage />);
-    // Open realm drawer — realm contains clusters and host
-    fireEvent.click(screen.getByTestId('node-btn-realm-asgard'));
-    expect(screen.getByRole('dialog', { name: /asgard/i })).toBeInTheDocument();
-    // Click a resident (cluster-valaskjalf)
-    const residentBtn = screen.getByTestId('resident-cluster-valaskjalf');
-    fireEvent.click(residentBtn);
-    // Drawer should now show the cluster node
-    expect(screen.getByRole('dialog', { name: /valask/i })).toBeInTheDocument();
+    expect(screen.getByTestId('signal-ticker')).toBeInTheDocument();
   });
 
-  it('renders the EventLog overlay', () => {
+  it('docks the inspector and leaves the header to the shell', () => {
     wrap(<ObservatoryPage />);
-    expect(screen.getByTestId('event-log')).toBeInTheDocument();
+    expect(screen.getByLabelText('Inspector')).toBeInTheDocument();
+    // The readout lives in the shell's topbar slot. Drawing it here too gave
+    // the estate two headers stating the same counts.
+    expect(screen.queryByTestId('observatory-readout')).not.toBeInTheDocument();
+  });
+
+  it('clears the stage in present mode', () => {
+    wrap(<ObservatoryPage />);
+    expect(screen.getByTestId('observatory-page')).toHaveAttribute('data-presenting', 'false');
+
+    act(() => getObservatoryStore().setPresenting(true));
+    expect(screen.getByTestId('observatory-page')).toHaveAttribute('data-presenting', 'true');
   });
 
   it('renders the Minimap overlay with topology', () => {

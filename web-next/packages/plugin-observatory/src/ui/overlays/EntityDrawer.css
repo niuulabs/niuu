@@ -14,6 +14,14 @@
   animation: obs-drawer-slide-in 240ms ease;
 }
 
+/* Docked: the inspector column positions it, so drop the overlay geometry. */
+.obs-entity-drawer__panel--docked {
+  position: static;
+  width: 100%;
+  border-left: 0;
+  animation: none;
+}
+
 @keyframes obs-drawer-slide-in {
   from {
     transform: translateX(12px);

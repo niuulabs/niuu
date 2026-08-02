@@ -186,22 +186,37 @@ def normalize_registry(registry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+#: Fields the seed owns outright: the mark a type wears on the canvas.
+#:
+#: Everything else on a type — its label, description, containment rules and
+#: field descriptors — is operator data and is never overwritten. `shape` is
+#: not: it names one of a fixed set of glyphs the canvas knows how to draw, and
+#: a stored value the vocabulary has dropped renders as a fallback box forever.
+#: The seed is the only thing that knows the current vocabulary, so on a
+#: version bump it wins. `size` travels with it because the two were chosen
+#: together — a rack at a dot's size is a smear.
+_SEED_OWNED_KEYS = ("shape", "size")
+
+
 def merge_seed_into(stored: dict[str, Any], seed: dict[str, Any]) -> dict[str, Any]:
-    """Additively bring a stored registry up to the seed.
+    """Bring a stored registry up to the seed.
 
     Entity types are the configurable source of truth for what discovery may
     emit, so a registry frozen at first install silently caps the graph — any
     type added to the seed afterwards never reaches a deployed cluster.
 
-    The merge is deliberately one-way and additive: types the seed has and the
-    store lacks are appended, and field descriptors missing from an existing
-    type are added, but nothing an operator has edited or removed is
-    overwritten. Returns the stored registry unchanged when there is nothing to
-    add, so callers can skip a pointless write.
+    The merge is one-way: types the seed has and the store lacks are appended,
+    field descriptors missing from an existing type are added, and the
+    presentation keys the seed owns (`_SEED_OWNED_KEYS`) are refreshed on a
+    version bump. Everything an operator can meaningfully edit — labels,
+    descriptions, containment, their own types and fields — is left alone.
+    Returns the stored registry unchanged when there is nothing to do, so
+    callers can skip a pointless write.
     """
     stored_types = list(stored.get("types") or [])
     by_id = {str(entry.get("id", "")): entry for entry in stored_types}
     changed = False
+    upgrading = int(stored.get("version") or 0) < int(seed.get("version") or 0)
 
     for seed_type in seed.get("types") or []:
         type_id = str(seed_type.get("id", ""))
@@ -212,6 +227,12 @@ def merge_seed_into(stored: dict[str, Any], seed: dict[str, Any]) -> dict[str, A
             stored_types.append(deepcopy(seed_type))
             changed = True
             continue
+
+        if upgrading:
+            for key in _SEED_OWNED_KEYS:
+                if key in seed_type and existing.get(key) != seed_type[key]:
+                    existing[key] = deepcopy(seed_type[key])
+                    changed = True
 
         known_fields = {str(f.get("key", "")) for f in existing.get("fields") or []}
         for field in seed_type.get("fields") or []:

@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import type { EdgeLayer } from '../domain/edgeLayer';
+import type { ComputeClass } from '../domain/computeClass';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -10,6 +11,10 @@ interface ObservatoryStoreState {
   filter: ObservatoryFilter;
   /** Layers the operator has switched off. Empty means everything is shown. */
   hiddenLayers: ReadonlySet<EdgeLayer>;
+  /** Compute classes switched off. Their nodes fade rather than disappear. */
+  hiddenCompute: ReadonlySet<ComputeClass>;
+  /** Present mode: rail, inspector and feed step aside, leaving the graph. */
+  presenting: boolean;
 }
 
 interface ObservatoryStore {
@@ -18,8 +23,18 @@ interface ObservatoryStore {
   setFilter(filter: ObservatoryFilter): void;
   toggleLayer(layer: EdgeLayer): void;
   setHiddenLayers(layers: ReadonlySet<EdgeLayer>): void;
+  toggleCompute(compute: ComputeClass): void;
+  setHiddenCompute(compute: ReadonlySet<ComputeClass>): void;
+  setPresenting(presenting: boolean): void;
   subscribe(fn: () => void): () => void;
 }
+
+/**
+ * The layers the calm view puts down — and the state the Observatory opens in.
+ * Exported so the filter strip's `calm` button and the initial state cannot
+ * disagree about what calm means.
+ */
+export const CALM_HIDDEN_LAYERS: readonly EdgeLayer[] = ['platform', 'observability'];
 
 // ── Module-level singleton ────────────────────────────────────────────────────
 // All three plugin slots (content, subnav, topbar) share state through this
@@ -34,7 +49,13 @@ export function getObservatoryStore(): ObservatoryStore {
   let state: ObservatoryStoreState = {
     selectedId: null,
     filter: 'all',
-    hiddenLayers: new Set<EdgeLayer>(),
+    // Opens calm. Platform wiring and telemetry are the two layers that
+    // dominate by edge count and say the least about what the estate is doing,
+    // so showing everything at once makes the first look a hairball. Both are
+    // one click away in the filter strip.
+    hiddenLayers: new Set<EdgeLayer>(CALM_HIDDEN_LAYERS),
+    hiddenCompute: new Set<ComputeClass>(),
+    presenting: false,
   };
 
   _store = {
@@ -60,6 +81,22 @@ export function getObservatoryStore(): ObservatoryStore {
     },
     setHiddenLayers(layers: ReadonlySet<EdgeLayer>): void {
       state = { ...state, hiddenLayers: new Set(layers) };
+      subscribers.forEach((fn) => fn());
+    },
+    toggleCompute(compute: ComputeClass): void {
+      const next = new Set(state.hiddenCompute);
+      if (next.has(compute)) next.delete(compute);
+      else next.add(compute);
+      state = { ...state, hiddenCompute: next };
+      subscribers.forEach((fn) => fn());
+    },
+    setHiddenCompute(compute: ReadonlySet<ComputeClass>): void {
+      state = { ...state, hiddenCompute: new Set(compute) };
+      subscribers.forEach((fn) => fn());
+    },
+    setPresenting(presenting: boolean): void {
+      if (state.presenting === presenting) return;
+      state = { ...state, presenting };
       subscribers.forEach((fn) => fn());
     },
     subscribe(fn: () => void): () => void {

@@ -1,41 +1,34 @@
-import { useMemo } from 'react';
 import { useTopology } from '../application/useTopology';
+import { useObservatoryStore } from '../application/useObservatoryStore';
+import { ObservatoryReadout } from './ObservatoryReadout';
 import './ObservatoryTopbar.css';
 
-const RAVN_KINDS = new Set(['ravn_long', 'ravn_run']);
-
 /**
- * ObservatoryTopbar — topbar-right slot for the Observatory plugin.
+ * The Observatory's half of the shell topbar.
  *
- * Renders three stat chips: realms count, ravens count (accented), runs count (accented).
- * Matches the web2 prototype `ObservatoryTopbar` component.
+ * The shell already puts the plugin's name, subtitle and tabs on the left of
+ * this bar, so the page must not draw a header of its own — doing that is how
+ * the estate ended up stating its realm count twice, in two shapes, a few
+ * pixels apart. Everything the mockup's header carries that the shell does
+ * not — the readout, and the way into present mode — belongs here.
  */
 export function ObservatoryTopbar() {
   const topology = useTopology();
-
-  const stats = useMemo(() => {
-    const nodes = topology?.nodes ?? [];
-    return {
-      realms: nodes.filter((n) => n.typeId === 'realm').length,
-      ravens: nodes.filter((n) => RAVN_KINDS.has(n.typeId)).length,
-      runs: nodes.filter((n) => n.typeId === 'run').length,
-    };
-  }, [topology]);
+  const [{ presenting }, store] = useObservatoryStore();
 
   return (
     <div className="obs-topbar" data-testid="observatory-topbar">
-      <div className="obs-topbar__stat">
-        <span className="obs-topbar__label">realms</span>
-        <strong className="obs-topbar__value">{stats.realms}</strong>
-      </div>
-      <div className="obs-topbar__stat obs-topbar__stat--accent">
-        <span className="obs-topbar__label">ravens</span>
-        <strong className="obs-topbar__value">{stats.ravens}</strong>
-      </div>
-      <div className="obs-topbar__stat obs-topbar__stat--accent">
-        <span className="obs-topbar__label">runs</span>
-        <strong className="obs-topbar__value">{stats.runs}</strong>
-      </div>
+      <ObservatoryReadout topology={topology} />
+      <button
+        type="button"
+        className="obs-topbar__present"
+        data-testid="present-toggle"
+        aria-pressed={presenting}
+        title="Hide the rail, inspector and feed — the graph alone"
+        onClick={() => store.setPresenting(!presenting)}
+      >
+        Present
+      </button>
     </div>
   );
 }

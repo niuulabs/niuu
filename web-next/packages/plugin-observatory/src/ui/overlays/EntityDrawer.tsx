@@ -18,6 +18,12 @@ export interface EntityDrawerProps {
    * in by the page.
    */
   footer?: ReactNode;
+  /**
+   * Render in place rather than as an overlay. The inspector column owns its
+   * own position in the shell grid; floating over the stage there would cover
+   * the canvas it is describing.
+   */
+  docked?: boolean;
 }
 
 // ── Activity dot ──────────────────────────────────────────────────────────────
@@ -402,6 +408,7 @@ export function EntityDrawer({
   onClose,
   onNodeSelect,
   footer,
+  docked = false,
 }: EntityDrawerProps) {
   const entityType = node ? registry?.types.find((t) => t.id === node.typeId) : undefined;
   const residents =
@@ -440,7 +447,7 @@ export function EntityDrawer({
     <aside
       role="dialog"
       aria-label={humanizeObservatoryText(node.label)}
-      className="obs-entity-drawer__panel"
+      className={`obs-entity-drawer__panel${docked ? ' obs-entity-drawer__panel--docked' : ''}`}
     >
       <button className="obs-entity-drawer__close-btn" aria-label="Close" onClick={onClose}>
         <span aria-hidden="true">✕</span>

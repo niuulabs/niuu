@@ -93,6 +93,15 @@
 
   /* ── Critical (reserved — red only) ───────────────────── */
   --color-critical: #ef4444;
+
+  /*
+   * Observatory accent hues, from docs/mockups/observatory/index.html.
+   * Distinct from the blue-tone scale: spring marks residents, amber marks
+   * meshes, violet marks work that leaves our own hardware.
+   */
+  --color-accent-spring: #8fd400;
+  --color-accent-amber: #f59e0b;
+  --color-accent-violet: #8b7cf0;
   --color-critical-fg: #fca5a5;
   --color-critical-bg: color-mix(in srgb, #ef4444 15%, transparent);
   --color-critical-bo: color-mix(in srgb, #ef4444 35%, transparent);

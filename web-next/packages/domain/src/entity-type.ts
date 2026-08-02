@@ -1,26 +1,33 @@
 import { z } from 'zod';
 
 /**
- * Shape primitives used by the Observatory canvas and Registry editor.
- * Every EntityType maps to one of these SVG shapes (20×20 viewBox).
+ * The marks the Observatory canvas can draw. Every EntityType wears one.
+ *
+ * This is the whole vocabulary and it has no synonyms: each name is one mark,
+ * and the canvas implements exactly these. A type declaring anything else is a
+ * registry that has drifted from the seed, not a shape to be guessed at.
  *
  * Owner: **Observatory** (`plugin-observatory`).
  */
 export const entityShapeSchema = z.enum([
+  // containers
   'ring',
   'ring-dashed',
-  'rounded-rect',
-  'diamond',
-  'triangle',
-  'hex',
-  'chevron',
-  'square',
-  'square-sm',
-  'pentagon',
+  // agents and sessions
+  'agent',
   'halo',
+  'triangle',
+  // platform workloads
+  'box',
+  'hex',
+  'pentagon',
+  'square-sm',
+  // hardware, models and stores
+  'rack',
+  'hex-flat',
+  'cylinder',
+  'beacon',
   'mimir',
-  'mimir-small',
-  'dot',
 ]);
 
 export type EntityShape = z.infer<typeof entityShapeSchema>;

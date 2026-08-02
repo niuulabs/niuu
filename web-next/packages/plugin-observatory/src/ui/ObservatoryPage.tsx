@@ -5,38 +5,37 @@ import { useObservatoryStore } from '../application/useObservatoryStore';
 import type { TopologyNode } from '../domain';
 import { TopologyCanvas } from './TopologyCanvas';
 import { LayerFilterBar } from './LayerFilterBar';
-import { EntityDrawer } from './overlays/EntityDrawer';
+import { SignalTicker } from './SignalTicker';
+import { Inspector } from './overlays/Inspector';
 import { AgentCardPanel } from './overlays/AgentCardPanel';
-import { EventLog } from './overlays/EventLog';
-import { ConnectionLegend } from './overlays/ConnectionLegend';
 import { humanizeObservatoryText } from './displayLabels';
+import './ObservatoryShell.css';
 
 /**
- * Observatory page — full-viewport topology canvas.
+ * Observatory page.
  *
- * Data is sourced from the live topology stream via useTopology().
- * The canvas renders Mímir at (0,0), realms around it, clusters inside
- * realms, hosts on the perimeter, and all 5 connection-line kinds.
+ * Laid out after `docs/mockups/observatory/index.html`: layer filters across
+ * the top, then stage / inspector with the signal ticker under the stage.
  *
- * Selection state is shared via the Observatory store so that the subnav
- * slot can also open entity drawers (e.g. clicking a realm in the subnav).
+ * The mockup's header and left rail are not built here. The shell already
+ * gives every plugin a topbar and a rail, and drawing a second set produced
+ * exactly what you would expect — the plugin's name twice, its realm count
+ * twice, and two Topology labels. The header's Observatory-specific half (the
+ * readout, the present toggle) goes in the shell's `topbarRight` slot; the
+ * rail goes in `subnav`.
  */
 export function ObservatoryPage() {
   const topology = useTopology();
   const events = useEvents();
   const { data: registry } = useRegistry();
   const [storeState, store] = useObservatoryStore();
-  const { selectedId, hiddenLayers } = storeState;
+  const { selectedId, hiddenLayers, hiddenCompute, presenting } = storeState;
 
   const selectedNode: TopologyNode | null =
     selectedId && topology ? (topology.nodes.find((n) => n.id === selectedId) ?? null) : null;
 
   function handleNodeClick(nodeId: string) {
     store.setSelected(nodeId);
-  }
-
-  function handleDrawerClose() {
-    store.setSelected(null);
   }
 
   function handleNodeSelect(node: TopologyNode) {
@@ -46,35 +45,40 @@ export function ObservatoryPage() {
   return (
     <div
       data-testid="observatory-page"
-      className="niuu:relative niuu:flex niuu:flex-col niuu:h-full niuu:overflow-hidden"
+      className={`obs-shell${presenting ? ' obs-shell--present' : ''}`}
+      data-presenting={presenting}
     >
-      <LayerFilterBar topology={topology} />
+      <div className="obs-shell__filt">
+        <LayerFilterBar topology={topology} />
+      </div>
 
       {/*
-        Overlays are absolutely positioned, so they anchor to this stage rather
-        than the page — otherwise they cover the filter bar and swallow its
-        clicks.
+        Overlays are absolutely positioned, so they anchor to the stage rather
+        than the page — otherwise they cover the filter bar and swallow clicks.
       */}
-      <div className="niuu:relative niuu:flex-1 niuu:min-h-0">
+      <main className="obs-shell__stage">
         <TopologyCanvas
           topology={topology}
+          registry={registry ?? null}
           onNodeClick={handleNodeClick}
           selectedId={selectedId}
           hiddenLayers={hiddenLayers}
+          hiddenCompute={hiddenCompute}
           className="niuu:absolute niuu:inset-0"
         />
+      </main>
 
-        <ConnectionLegend topology={topology} registry={registry ?? null} />
-        <EventLog events={events} />
-        <EntityDrawer
+      <SignalTicker events={events} />
+
+      <aside className="obs-shell__insp" aria-label="Inspector">
+        <Inspector
           node={selectedNode}
           topology={topology}
           registry={registry ?? null}
-          onClose={handleDrawerClose}
           onNodeSelect={handleNodeSelect}
-          footer={<AgentCardPanel node={selectedNode} />}
+          footer={(mode) => <AgentCardPanel node={selectedNode} mode={mode} />}
         />
-      </div>
+      </aside>
 
       {/* Accessible hidden node list — keyboard / screen-reader alternative to canvas hit-testing */}
       <ul data-testid="topology-node-list" aria-label="Topology nodes" className="niuu:sr-only">

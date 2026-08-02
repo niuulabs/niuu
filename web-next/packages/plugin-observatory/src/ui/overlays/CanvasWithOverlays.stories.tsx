@@ -4,7 +4,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { EntityDrawer } from './EntityDrawer';
 import { EventLog } from './EventLog';
-import { ConnectionLegend } from './ConnectionLegend';
 import { Minimap } from './Minimap';
 import {
   createMockTopologyStream,
@@ -122,7 +121,6 @@ function CanvasWithOverlaysDemo() {
       </div>
 
       {/* Overlays */}
-      <ConnectionLegend topology={topology} registry={registry ?? null} />
       <EventLog events={events} />
       <Minimap topology={topology} selectedNodeId={selectedNode?.id} />
       <EntityDrawer

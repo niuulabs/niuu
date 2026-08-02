@@ -1122,6 +1122,8 @@ async def test_nodes_are_discovered_as_hosts_with_their_hardware(tmp_path, monke
     monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/pods":
+            return httpx.Response(200, json={"items": []})
         assert request.url.path == "/api/v1/nodes"
         return httpx.Response(200, json={"items": [_node_item(gpu="NVIDIA-GB10")]})
 
@@ -1414,7 +1416,8 @@ async def test_bifrost_model_edges_are_observed_from_provider_config() -> None:
     result = await adapter.discover()
 
     assert result.edges[0]["confidence"] == "observed"
-    assert result.edges[0]["evidence"]["field"] == "base_url"
+    # model_ids, not base_url: the catalogue API does not expose provider URLs.
+    assert result.edges[0]["evidence"]["field"] == "model_ids"
 
 
 @pytest.mark.asyncio
@@ -1628,3 +1631,174 @@ def test_node_roles_require_an_exact_domain_match() -> None:
     )
 
     assert roles == ["control-plane", "worker"]
+
+
+# ── What production actually returns ─────────────────────────────────────────
+# Bifröst's catalogue API exposes no provider base URLs — every provider came
+# back with base_url "" — so keying the routes_to edge off it produced none at
+# all, and every model read "unknown" location.
+
+
+@pytest.mark.asyncio
+async def test_models_are_linked_to_their_provider_without_a_base_url() -> None:
+    adapter = BifrostCatalogDiscoveryAdapter(
+        base_url="http://bifrost.test",
+        cluster="ymir",
+        transport=_routed(
+            {
+                "/api/v1/bifrost/models": [
+                    {"id": "nemotron", "name": "Nemotron"},
+                    {"id": "opus", "name": "Opus"},
+                ],
+                "/api/v1/bifrost/providers": [
+                    {"key": "local", "vendor": "nvidia", "base_url": "", "model_ids": ["nemotron"]},
+                    {
+                        "key": "anthropic",
+                        "vendor": "anthropic",
+                        "base_url": "",
+                        "model_ids": ["opus"],
+                    },
+                ],
+            }
+        ),
+    )
+
+    result = await adapter.discover()
+
+    assert len(result.edges) == 2
+    assert {e["relationType"] for e in result.edges} == {"routes_to"}
+    assert result.edges[0]["evidence"]["field"] == "model_ids"
+
+
+@pytest.mark.asyncio
+async def test_self_hosted_and_vendor_providers_are_told_apart_without_urls() -> None:
+    """`local` means our own silicon; a named vendor means traffic leaves."""
+    adapter = BifrostCatalogDiscoveryAdapter(
+        base_url="http://bifrost.test",
+        cluster="ymir",
+        transport=_routed(
+            {
+                "/api/v1/bifrost/models": [
+                    {"id": "nemotron", "name": "Nemotron"},
+                    {"id": "opus", "name": "Opus"},
+                ],
+                "/api/v1/bifrost/providers": [
+                    {"key": "local", "base_url": "", "model_ids": ["nemotron"]},
+                    {"key": "anthropic", "base_url": "", "model_ids": ["opus"]},
+                ],
+            }
+        ),
+    )
+
+    result = await adapter.discover()
+
+    loc = {
+        e.metadata["modelId"]: e.metadata["location"] for e in result.entities if e.kind == "model"
+    }
+    assert loc == {"nemotron": "internal", "opus": "external"}
+
+
+def test_a_url_still_wins_over_provider_identity() -> None:
+    from observatory.entity_discovery import _model_location
+
+    # An explicit internal host beats a vendor-sounding key, and vice versa.
+    assert (
+        _model_location("http://vllm.volundr.svc.cluster.local", {"key": "anthropic"}) == "internal"
+    )
+    assert _model_location("https://api.anthropic.com", {"key": "local"}) == "external"
+    assert _model_location("", None) == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_names_the_fault_instead_of_only_the_url() -> None:
+    """httpx.ReadTimeout stringifies to "", which produced a warning body of
+    just the URL — it said nothing, twice."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("")
+
+    adapter = MimirDiscoveryAdapter(
+        base_url="http://mimir.test",
+        cluster="ymir",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    assert "ReadTimeout" in result.events[0]["body"]
+
+
+def _pod_on(node_name: str) -> dict:
+    return {"metadata": {"name": f"pod-{node_name}"}, "spec": {"nodeName": node_name}}
+
+
+@pytest.mark.asyncio
+async def test_a_host_carries_how_many_pods_it_runs(tmp_path, monkeypatch) -> None:
+    """The census is unselected: a cluster's load is every pod, not only ours."""
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/pods":
+            # No label selector — counting only our own workloads would report
+            # a fraction of the cluster and present it as the whole.
+            assert "labelSelector" not in request.url.params
+            return httpx.Response(
+                200,
+                json={"items": [_pod_on("spark-1"), _pod_on("spark-1"), _pod_on("other")]},
+            )
+        return httpx.Response(200, json={"items": [_node_item()]})
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        include_kinds=["nodes"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    assert result.entities[0].metadata["pods"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_host_carries_no_pod_count_when_the_census_is_refused(tmp_path, monkeypatch):
+    """403 means "not allowed to look", which is not the same as zero pods."""
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/pods":
+            return httpx.Response(403, json={"message": "forbidden"})
+        return httpx.Response(200, json={"items": [_node_item()]})
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        include_kinds=["nodes"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    assert "pods" not in result.entities[0].metadata
+    assert any("Forbidden listing pods" in str(event) for event in result.events)
+
+
+@pytest.mark.asyncio
+async def test_the_pod_census_is_skipped_when_no_host_was_discovered(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(200, json={"items": []})
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        include_kinds=["nodes"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    await adapter.discover()
+
+    assert "/api/v1/pods" not in seen

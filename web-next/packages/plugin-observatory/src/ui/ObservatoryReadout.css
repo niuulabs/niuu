@@ -1,0 +1,43 @@
+/* Sits inside the header's own frame, so the cells are separated by rules
+   rather than carrying a second border around the group. */
+.obs-readout {
+  display: flex;
+  margin-left: auto;
+}
+
+.obs-readout__cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 4px 12px;
+  border-left: 1px solid var(--color-border-subtle, rgb(255 255 255 / 6%));
+  min-width: 62px;
+}
+
+.obs-readout__cell:first-child {
+  border-left: 0;
+}
+
+.obs-readout__k {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary, rgb(255 255 255 / 45%));
+  white-space: nowrap;
+}
+
+.obs-readout__v {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary, rgb(255 255 255 / 92%));
+  line-height: 1.1;
+}
+
+.obs-readout__v--spring {
+  color: var(--color-accent-spring);
+}
+
+.obs-readout__v--amber {
+  color: var(--color-accent-amber);
+}

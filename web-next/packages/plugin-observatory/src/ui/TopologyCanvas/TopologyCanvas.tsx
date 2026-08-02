@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { select } from 'd3-selection';
 import { zoom, zoomIdentity, type D3ZoomEvent, type ZoomBehavior } from 'd3-zoom';
-import type { EdgeLayer, Topology } from '../../domain';
+import type { EdgeLayer, Registry, Topology, TopologyNode } from '../../domain';
 import { visibleEdges } from '../../domain';
 import { deriveAgentMeshes, findMeshForNode } from '../../domain/agentMesh';
+import { computeClassMap, type ComputeClass } from '../../domain/computeClass';
 import {
   clampZoom,
   applyKeyPan,
@@ -22,20 +23,55 @@ import {
   drawMimir,
   drawMinimap,
   getStructureLabelBounds,
+  realmBounds,
+  realmLabelBounds,
+  structureLabel,
 } from './renderer';
+import { buildTypeStyles, nodeStyle, type NodeStyle } from './nodeStyle';
 import { CANVAS, HIT_RADIUS } from './config';
 import './TopologyCanvas.css';
+
+/**
+ * How far back everything the operator is not tracing is pushed when they
+ * point at something. Matched to the mockup: enough that the traced path is
+ * unmistakable, not so far that the rest of the estate disappears.
+ */
+const DIMMED_ALPHA = 0.26;
+
+/**
+ * How far back a switched-off compute class goes. Further than a mere dim:
+ * the operator has said they do not want to see it, but its nodes still hold
+ * their place so the shape of the estate does not change under them.
+ */
+const FILTERED_ALPHA = 0.16;
+
+/** Zoom the camera settles at when a selection is made from outside the canvas. */
+const FOCUS_ZOOM = 1.1;
+
+/** Fraction of the remaining distance the camera closes each frame. */
+const FOCUS_EASING = 0.14;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface TopologyCanvasProps {
   topology: Topology | null;
+  /**
+   * Entity registry. Supplies each type's glyph and size, so what the canvas
+   * draws follows the registry rather than a table baked into the bundle.
+   */
+  registry?: Registry | null;
   /** Called when the user clicks a node. */
   onNodeClick?: (nodeId: string) => void;
   /** Currently selected node — drives which agent mesh is outlined. */
   selectedId?: string | null;
   /** Connection layers the operator has switched off. */
   hiddenLayers?: ReadonlySet<EdgeLayer>;
+  /**
+   * Compute classes the operator has switched off. Their nodes fade rather
+   * than disappear — a filtered-out cluster leaving a hole in the layout would
+   * read as an outage.
+   */
+  hiddenCompute?: ReadonlySet<ComputeClass>;
   /** Show the minimap panel (default true). */
   showMinimap?: boolean;
   /** Extra CSS class applied to the wrapper div. */
@@ -55,9 +91,11 @@ export interface TopologyCanvasProps {
  */
 export function TopologyCanvas({
   topology,
+  registry = null,
   onNodeClick,
   selectedId = null,
   hiddenLayers,
+  hiddenCompute,
   showMinimap = true,
   className,
   style,
@@ -95,6 +133,42 @@ export function TopologyCanvas({
       .join('|');
   }, [topology]);
 
+  // Glyph, size and hue per node. Memoised per topology + registry so the rAF
+  // loop is never resolving styles sixty times a second.
+  const styleFor = useMemo(() => {
+    const typeStyles = buildTypeStyles(registry);
+    const classes = computeClassMap(topology?.nodes ?? []);
+    const byNode = new Map<string, NodeStyle>(
+      (topology?.nodes ?? []).map((node) => [
+        node.id,
+        nodeStyle(node, typeStyles, classes.get(node.id)),
+      ]),
+    );
+    return (node: TopologyNode): NodeStyle => byNode.get(node.id) ?? nodeStyle(node, typeStyles);
+  }, [registry, topology]);
+
+  // Who touches whom, so pointing at a node can fade everything it does not
+  // reach. Built from the drawn edges, so a hidden layer also stops counting
+  // as a connection — otherwise a filtered-out link would still keep a node lit.
+  const neighbours = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const edge of drawnTopology?.edges ?? []) {
+      if (!map.has(edge.sourceId)) map.set(edge.sourceId, new Set());
+      if (!map.has(edge.targetId)) map.set(edge.targetId, new Set());
+      map.get(edge.sourceId)!.add(edge.targetId);
+      map.get(edge.targetId)!.add(edge.sourceId);
+    }
+    return map;
+  }, [drawnTopology]);
+
+  const reducedMotion = useMemo(
+    () =>
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    [],
+  );
+
   // Stable reference to drawing data so the rAF loop always reads fresh values
   // without being re-subscribed on every state tick.
   const drawRef = useRef({
@@ -103,6 +177,9 @@ export function TopologyCanvas({
     hoveredId: null as string | null,
     agentMeshes,
     selectedId,
+    styleFor,
+    neighbours,
+    hiddenCompute,
   });
 
   useEffect(() => {
@@ -112,8 +189,11 @@ export function TopologyCanvas({
       hoveredId: hoveredIdRef.current,
       agentMeshes,
       selectedId,
+      styleFor,
+      neighbours,
+      hiddenCompute,
     };
-  }, [agentMeshes, drawnTopology, positions, selectedId]);
+  }, [agentMeshes, drawnTopology, hiddenCompute, neighbours, positions, selectedId, styleFor]);
 
   const cameraToZoomTransform = useCallback((cam: Camera) => {
     const { w, h } = sizeRef.current;
@@ -158,6 +238,35 @@ export function TopologyCanvas({
     const bounds = computeLayoutBounds(topology, positions);
     syncCamera(fitCameraToBounds(bounds, sizeRef.current.w, sizeRef.current.h, 86), false);
   }, [positions, syncCamera, topology]);
+
+  // ── Selection focus ─────────────────────────────────────────────────────────
+
+  /**
+   * Where the camera is travelling to, or null when it is at rest.
+   *
+   * Selecting a resident in the rail or following a peer link in the inspector
+   * is useless if the thing you selected is off screen, so the camera goes to
+   * it. It eases rather than jumping: a cut loses the operator's sense of where
+   * they were, and this graph has no landmarks to re-orient against.
+   */
+  const focusTargetRef = useRef<Camera | null>(null);
+  const lastFocusedIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedId) {
+      lastFocusedIdRef.current = null;
+      return;
+    }
+    if (lastFocusedIdRef.current === selectedId) return;
+    const target = positions.get(selectedId);
+    if (!target) return;
+    lastFocusedIdRef.current = selectedId;
+    focusTargetRef.current = {
+      x: target.x,
+      y: target.y,
+      zoom: Math.max(camRef.current.zoom, FOCUS_ZOOM),
+    };
+  }, [positions, selectedId]);
 
   // ── Canvas sizing ───────────────────────────────────────────────────────────
 
@@ -270,13 +379,19 @@ export function TopologyCanvas({
     const { topology: topo, positions: pos } = drawRef.current;
     if (!topo) return null;
 
+    // A realm's only target is its name: the hull covers every cluster inside
+    // it, so a whole-rectangle hit box would swallow every click meant for
+    // its contents.
     for (const node of topo.nodes) {
-      if (
-        node.typeId !== 'realm' &&
-        node.typeId !== 'cluster' &&
-        node.typeId !== 'namespace' &&
-        node.typeId !== 'run'
-      ) {
+      if (node.typeId !== 'realm') continue;
+      const hull = realmBounds(node, topo.nodes, pos);
+      if (!hull) continue;
+      const box = realmLabelBounds(hull, structureLabel(node).toUpperCase(), cam.zoom);
+      if (wx >= box.x0 && wx <= box.x1 && wy >= box.y0 && wy <= box.y1) return node.id;
+    }
+
+    for (const node of topo.nodes) {
+      if (node.typeId !== 'cluster' && node.typeId !== 'namespace' && node.typeId !== 'run') {
         continue;
       }
       const p = pos.get(node.id);
@@ -313,7 +428,11 @@ export function TopologyCanvas({
         );
         if ((wx - p.x) ** 2 + (wy - p.y) ** 2 < containerRadius * containerRadius) return node.id;
       } else {
-        const r = HIT_RADIUS[node.typeId] ?? HIT_RADIUS['ting']!;
+        // The glyph is what the operator is aiming at, so it decides the
+        // target: a triangle and a rack of the same nominal size do not
+        // present the same area to a cursor.
+        const glyph = drawRef.current.styleFor(node).radius;
+        const r = Math.max(glyph + 4, HIT_RADIUS[node.typeId] ?? HIT_RADIUS['ting']!);
         if ((wx - p.x) ** 2 + (wy - p.y) ** 2 < r * r) return node.id;
       }
     }
@@ -415,6 +534,21 @@ export function TopologyCanvas({
         return;
       }
 
+      const focus = focusTargetRef.current;
+      if (focus) {
+        const current = camRef.current;
+        const next = {
+          x: current.x + (focus.x - current.x) * FOCUS_EASING,
+          y: current.y + (focus.y - current.y) * FOCUS_EASING,
+          zoom: current.zoom + (focus.zoom - current.zoom) * FOCUS_EASING,
+        };
+        const settled =
+          Math.hypot(focus.x - next.x, focus.y - next.y) < 1 &&
+          Math.abs(focus.zoom - next.zoom) < 0.005;
+        syncCamera(settled ? focus : next, true);
+        if (settled) focusTargetRef.current = null;
+      }
+
       const dpr = window.devicePixelRatio || 1;
       const cam = camRef.current;
 
@@ -437,6 +571,21 @@ export function TopologyCanvas({
       ctx.translate(-cam.x, -cam.y);
 
       if (topo) {
+        const { styleFor: resolveStyle, neighbours: adjacency, selectedId: sel } = drawRef.current;
+        // Pointing at a thing is a question about that thing. Everything it
+        // does not touch steps back so the answer is readable.
+        const focusId = hoveredId ?? null;
+        const litIds = focusId ? (adjacency.get(focusId) ?? new Set<string>()) : null;
+        const muted = drawRef.current.hiddenCompute;
+        const alphaForNode = (node: TopologyNode): number => {
+          // A switched-off compute class outranks hover: the operator has said
+          // they are not interested in it at all.
+          if (muted?.has(resolveStyle(node).computeClass)) return FILTERED_ALPHA;
+          if (!focusId) return 1;
+          if (node.id === focusId || litIds?.has(node.id)) return 1;
+          return DIMMED_ALPHA;
+        };
+
         drawZones(ctx, topo.nodes, pos, now, cam.zoom);
 
         // Only the mesh being engaged with is outlined; several at once would
@@ -452,25 +601,45 @@ export function TopologyCanvas({
           drawAgentMesh(ctx, memberPoints, focusedMesh.id, cam.zoom);
         }
 
-        drawEdges(ctx, topo, pos, now);
+        drawEdges(ctx, topo, pos, now, {
+          styleFor: resolveStyle,
+          alphaFor: (edge) =>
+            !focusId || edge.sourceId === focusId || edge.targetId === focusId ? 1 : DIMMED_ALPHA,
+        });
 
-        // Draw hosts first (background layer), then other nodes
-        for (const node of topo.nodes) {
-          if (node.typeId !== 'host') continue;
+        const paint = (node: TopologyNode) => {
           const p = pos.get(node.id);
-          if (p) drawNode(ctx, node, p, node.id === hoveredId, cam.zoom);
+          if (!p) return;
+          drawNode(ctx, node, p, node.id === hoveredId, cam.zoom, {
+            now,
+            style: resolveStyle(node),
+            alpha: alphaForNode(node),
+            selected: node.id === sel,
+            reducedMotion,
+          });
+        };
+
+        // Hosts sit behind what they hold; Mímir sits above everything.
+        for (const node of topo.nodes) {
+          if (node.typeId === 'host') paint(node);
         }
         for (const node of topo.nodes) {
           if (node.typeId === 'host' || node.typeId === 'mimir') continue;
-          const p = pos.get(node.id);
-          if (p) drawNode(ctx, node, p, node.id === hoveredId, cam.zoom);
+          paint(node);
         }
 
-        // Mímir last (always on top)
         for (const node of topo.nodes) {
           if (node.typeId !== 'mimir') continue;
           const p = pos.get(node.id);
-          if (p) drawMimir(ctx, p, now, node.parentId ? 0.8 : 1, node.label.toUpperCase());
+          if (!p) continue;
+          drawMimir(ctx, p, now, {
+            scale: node.parentId ? 0.8 : 1,
+            label: node.label.toUpperCase(),
+            colour: resolveStyle(node).colour,
+            alpha: alphaForNode(node),
+            zoom: cam.zoom,
+            reducedMotion,
+          });
         }
       }
 
@@ -506,7 +675,7 @@ export function TopologyCanvas({
       cancelled = true;
       cancelAnimationFrame(rafId);
     };
-  }, [showMinimap]);
+  }, [reducedMotion, showMinimap, syncCamera]);
 
   // ── Render ──────────────────────────────────────────────────────────────────
 

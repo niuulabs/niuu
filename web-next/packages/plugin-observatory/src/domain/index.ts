@@ -143,6 +143,8 @@ export interface TopologyNode {
   activity?: NodeActivity;
   zone?: string;
   cluster?: string | null;
+  /** Realm name as discovery reported it; empty when the node has no realm. */
+  realm?: string | null;
   hostId?: string | null;
   flockId?: string | null;
   sourceId?: string;
@@ -297,4 +299,10 @@ export interface ObservatoryEvent {
   type: ObservatoryEventType;
   subject: string;
   body: string;
+  /**
+   * Severity as the producer reported it. Discovery adapters emit `warning`
+   * when they cannot reach a service, which is the difference between
+   * "nothing is deployed" and "we cannot see" — worth keeping visible.
+   */
+  level?: 'info' | 'warning';
 }

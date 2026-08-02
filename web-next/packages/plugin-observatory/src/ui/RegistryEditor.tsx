@@ -12,20 +12,20 @@ type TabId = 'types' | 'containment' | 'json';
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const ALL_SHAPES: EntityShape[] = [
-  'dot',
+  'box',
   'ring',
   'ring-dashed',
-  'rounded-rect',
-  'diamond',
+  'rack',
+  'agent',
   'triangle',
   'hex',
-  'chevron',
-  'square',
-  'square-sm',
+  'hex-flat',
   'pentagon',
+  'square-sm',
+  'cylinder',
+  'beacon',
   'halo',
   'mimir',
-  'mimir-small',
 ];
 
 const ALL_COLORS: ShapeColor[] = [
@@ -210,7 +210,7 @@ function TypePreviewDrawer({
                     : 'niuu:border-border-subtle niuu:hover:border-border'
                 }`}
               >
-                <ShapeSvg shape="square" color={c} size={24} />
+                <ShapeSvg shape="box" color={c} size={24} />
               </button>
             ))}
           </div>
