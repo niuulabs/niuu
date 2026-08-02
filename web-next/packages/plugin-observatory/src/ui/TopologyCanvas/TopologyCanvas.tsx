@@ -60,8 +60,8 @@ export interface TopologyCanvasProps {
    * draws follows the registry rather than a table baked into the bundle.
    */
   registry?: Registry | null;
-  /** Called when the user clicks a node. */
-  onNodeClick?: (nodeId: string) => void;
+  /** Fired with the node clicked, or `null` when empty space was clicked. */
+  onNodeClick?: (nodeId: string | null) => void;
   /** Currently selected node — drives which agent mesh is outlined. */
   selectedId?: string | null;
   /** Connection layers the operator has switched off. */
@@ -110,6 +110,9 @@ export function TopologyCanvas({
   const lastFitKeyRef = useRef('');
   const suppressZoomAdjustmentRef = useRef(false);
   const isDraggingRef = useRef(false);
+  // Held in a ref so the keydown listener is bound once rather than rebound
+  // whenever the parent hands down a new callback identity.
+  const onNodeClickRef = useRef(onNodeClick);
   const hoveredIdRef = useRef<string | null>(null);
   const [zoomPct, setZoomPct] = useState(Math.round(CANVAS.INITIAL_ZOOM * 100));
   const [viewportSize, setViewportSize] = useState({ w: 0, h: 0 });
@@ -352,6 +355,10 @@ export function TopologyCanvas({
     };
   }, [cameraToZoomTransform, zoomTransformToCamera]);
 
+  useEffect(() => {
+    onNodeClickRef.current = onNodeClick;
+  }, [onNodeClick]);
+
   // ── Keyboard pan (arrow keys) ───────────────────────────────────────────────
 
   useEffect(() => {
@@ -359,6 +366,11 @@ export function TopologyCanvas({
     if (!canvas) return;
 
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onNodeClickRef.current?.(null);
+        return;
+      }
       const panKeys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
       if (!panKeys.includes(e.key)) return;
       e.preventDefault();
@@ -459,8 +471,11 @@ export function TopologyCanvas({
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       const rect = canvasRef.current!.getBoundingClientRect();
-      const hitId = hitTest(e.clientX - rect.left, e.clientY - rect.top);
-      if (hitId) onNodeClick?.(hitId);
+      // Empty space reports null rather than nothing, so clicking away clears
+      // the selection — otherwise a mesh, once picked, pulsed until another
+      // node was chosen and there was no way to simply stop looking at it.
+      // d3-zoom's clickDistance(8) means a pan never reaches here.
+      onNodeClick?.(hitTest(e.clientX - rect.left, e.clientY - rect.top));
     },
     [hitTest, onNodeClick],
   );

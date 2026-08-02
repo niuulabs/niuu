@@ -112,6 +112,19 @@ describe('ObservatoryPage', () => {
     expect(screen.getByTestId('inspector')).toHaveTextContent(/asgard/i);
   });
 
+  it('puts a node down when its row is picked again', () => {
+    // A selected mesh member pulses every member of its mesh. Without a way to
+    // deselect, that ran until some other node was chosen.
+    wrap(<ObservatoryPage />);
+    const row = screen.getByTestId('node-btn-realm-asgard');
+
+    fireEvent.click(row);
+    expect(screen.getByTestId('inspector')).toHaveTextContent(/asgard/i);
+
+    fireEvent.click(row);
+    expect(screen.getByTestId('inspector-empty')).toBeInTheDocument();
+  });
+
   it('shows a prompt in the inspector until something is selected', () => {
     // The inspector is a column now, not a dialog: it has no close button and
     // is always present, so "nothing selected" needs its own state.

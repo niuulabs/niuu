@@ -34,12 +34,24 @@ export function ObservatoryPage() {
   const selectedNode: TopologyNode | null =
     selectedId && topology ? (topology.nodes.find((n) => n.id === selectedId) ?? null) : null;
 
-  function handleNodeClick(nodeId: string) {
+  function handleNodeClick(nodeId: string | null) {
+    // null is a click on empty canvas — the operator is done looking at this.
     store.setSelected(nodeId);
   }
 
+  /**
+   * Pick a node up, or put it down if it was already held.
+   *
+   * Used by the controls that report `aria-pressed`, where pressing again has
+   * to release. It is also the only way to stop a mesh pulsing without picking
+   * something else instead.
+   */
+  function toggleSelected(nodeId: string) {
+    store.setSelected(nodeId === selectedId ? null : nodeId);
+  }
+
   function handleNodeSelect(node: TopologyNode) {
-    store.setSelected(node.id);
+    toggleSelected(node.id);
   }
 
   return (
@@ -86,7 +98,7 @@ export function ObservatoryPage() {
           <li key={node.id}>
             <button
               data-testid={`node-btn-${node.id}`}
-              onClick={() => handleNodeClick(node.id)}
+              onClick={() => toggleSelected(node.id)}
               aria-pressed={selectedId === node.id}
             >
               {humanizeObservatoryText(node.label)}

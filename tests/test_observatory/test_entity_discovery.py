@@ -1542,6 +1542,131 @@ async def test_hosted_models_sit_in_a_vendor_cloud_not_in_the_cluster() -> None:
 
 
 @pytest.mark.asyncio
+async def test_our_own_gpus_behind_our_own_ingress_are_not_someone_elses() -> None:
+    """Where the request travels is not the question; whose silicon answers is.
+
+    valhalla serves Nemotron and Qwen from GPUs in valaskjalf, reached through
+    our own public ingress rather than a cluster-local Service. Classifying by
+    hostname suffix alone called both of them vendor-hosted, so the estate's
+    own weights were drawn outside the estate — and, once hosted models moved
+    into vendor clouds, into a cloud named after a provider key.
+    """
+    adapter = BifrostCatalogDiscoveryAdapter(
+        base_url="http://bifrost.test",
+        cluster="valhalla",
+        internal_domains=["niuu.world"],
+        transport=_routed(
+            {
+                "/api/v1/bifrost/models": [
+                    {"id": "nvidia/nemotron-3-super", "vendor": "valaskjalf-nemotron"},
+                    {"id": "claude-opus-5", "vendor": "anthropic"},
+                ],
+                "/api/v1/bifrost/providers": [
+                    {
+                        "key": "valaskjalf-nemotron",
+                        "vendor": "valaskjalf-nemotron",
+                        "base_url": "https://nemotron-3-super-vllm.valaskjalf.asgard.niuu.world",
+                        "model_ids": ["nvidia/nemotron-3-super"],
+                    },
+                    {
+                        "key": "anthropic",
+                        "vendor": "anthropic",
+                        "base_url": "https://api.anthropic.com",
+                        "model_ids": ["claude-opus-5"],
+                    },
+                ],
+            }
+        ),
+    )
+
+    result = await adapter.discover()
+    by_model = {e.metadata["modelId"]: e for e in result.entities if e.kind == "model"}
+
+    nemotron = by_model["nvidia/nemotron-3-super"]
+    assert nemotron.metadata["location"] == "internal"
+    assert nemotron.parent_id == "bifrost:valhalla"
+    assert nemotron.cluster == "valhalla"
+    # And no cloud was invented for it out of the provider key.
+    assert {e.name for e in result.entities if e.kind == "cloud"} == {"Anthropic"}
+
+    # A real vendor endpoint is still outside, so the rule has not gone soft.
+    assert by_model["claude-opus-5"].metadata["location"] == "external"
+
+
+@pytest.mark.asyncio
+async def test_a_lookalike_domain_is_not_our_domain() -> None:
+    """`niuu.world.evil.test` and `notniuu.world` must not read as ours."""
+    adapter = BifrostCatalogDiscoveryAdapter(
+        base_url="http://bifrost.test",
+        cluster="ymir",
+        internal_domains=[".niuu.world "],  # config may be untidy
+        transport=_routed(
+            {
+                "/api/v1/bifrost/models": [
+                    {"id": "impostor", "vendor": "acme"},
+                    {"id": "suffix-impostor", "vendor": "acme"},
+                    {"id": "genuine", "vendor": "acme"},
+                ],
+                "/api/v1/bifrost/providers": [
+                    {
+                        "key": "a",
+                        "base_url": "https://niuu.world.evil.test",
+                        "model_ids": ["impostor"],
+                    },
+                    {
+                        "key": "b",
+                        "base_url": "https://notniuu.world",
+                        "model_ids": ["suffix-impostor"],
+                    },
+                    {"key": "c", "base_url": "https://niuu.world", "model_ids": ["genuine"]},
+                ],
+            }
+        ),
+    )
+
+    result = await adapter.discover()
+    by_model = {e.metadata["modelId"]: e for e in result.entities if e.kind == "model"}
+
+    assert by_model["impostor"].metadata["location"] == "external"
+    assert by_model["suffix-impostor"].metadata["location"] == "external"
+    # The zone apex itself is ours.
+    assert by_model["genuine"].metadata["location"] == "internal"
+
+
+@pytest.mark.asyncio
+async def test_a_model_with_no_provider_falls_back_to_its_own_vendor() -> None:
+    """valhalla lists nine models its provider config never mentions.
+
+    With nothing but an absent provider to go on they were all reported
+    `unknown`, so genuinely metered Claude and GPT calls were drawn inside the
+    cluster. The model's own vendor is real configuration and answers it.
+    """
+    adapter = BifrostCatalogDiscoveryAdapter(
+        base_url="http://bifrost.test",
+        cluster="valhalla",
+        transport=_routed(
+            {
+                "/api/v1/bifrost/models": [
+                    {"id": "claude-opus-5", "vendor": "anthropic"},
+                    {"id": "llama3.2:latest", "vendor": "local"},
+                    {"id": "nameless", "vendor": ""},
+                ],
+                "/api/v1/bifrost/providers": [],
+            }
+        ),
+    )
+
+    result = await adapter.discover()
+    by_model = {e.metadata["modelId"]: e for e in result.entities if e.kind == "model"}
+
+    assert by_model["claude-opus-5"].metadata["location"] == "external"
+    assert by_model["llama3.2:latest"].metadata["location"] == "internal"
+    # Nothing to read: say so rather than assert a cost either way.
+    assert by_model["nameless"].metadata["location"] == "unknown"
+    assert by_model["nameless"].parent_id == "bifrost:valhalla"
+
+
+@pytest.mark.asyncio
 async def test_two_clusters_calling_one_vendor_share_its_cloud() -> None:
     """Two Bifrosts calling Anthropic are calling the same Anthropic."""
     routes = {

@@ -353,6 +353,38 @@ describe('TopologyCanvas', () => {
 
     fireEvent.click(canvas, { clientX: CANVAS_RECT.left + 40, clientY: CANVAS_RECT.top + 40 });
 
+    // Reported as "nothing here", never as a node that was not hit.
+    expect(onNodeClick).toHaveBeenCalledWith(null);
+  });
+
+  it('reports a click on empty space as a deselect', async () => {
+    // Without this a mesh, once picked, pulsed until some other node was
+    // chosen — there was no way to simply stop looking at it.
+    const onNodeClick = vi.fn();
+    const canvas = await renderCanvas(MOCK_TOPOLOGY, { onNodeClick });
+
+    // Far outside the packed layout, so nothing can be under the cursor.
+    fireEvent.click(canvas, { clientX: CANVAS_RECT.left + 2, clientY: CANVAS_RECT.top + 2 });
+
+    expect(onNodeClick).toHaveBeenCalledWith(null);
+  });
+
+  it('deselects on Escape', async () => {
+    const onNodeClick = vi.fn();
+    const canvas = await renderCanvas(MOCK_TOPOLOGY, { onNodeClick, selectedId: 'ting-0' });
+
+    fireEvent.keyDown(canvas, { key: 'Escape' });
+
+    expect(onNodeClick).toHaveBeenCalledWith(null);
+  });
+
+  it('leaves the selection alone for any other key', async () => {
+    const onNodeClick = vi.fn();
+    const canvas = await renderCanvas(MOCK_TOPOLOGY, { onNodeClick, selectedId: 'ting-0' });
+
+    fireEvent.keyDown(canvas, { key: 'ArrowLeft' });
+    fireEvent.keyDown(canvas, { key: 'a' });
+
     expect(onNodeClick).not.toHaveBeenCalled();
   });
 

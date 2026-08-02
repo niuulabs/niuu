@@ -868,6 +868,21 @@ class BifrostCatalogDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
 
     warning_name = "bifrost"
 
+    def __init__(
+        self,
+        *args: Any,
+        internal_domains: list[str] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """`internal_domains` is the DNS zone this estate owns.
+
+        Weights on our own GPUs are often reached through our own public
+        ingress rather than a cluster-local Service, so without this they are
+        indistinguishable from a vendor endpoint.
+        """
+        super().__init__(*args, **kwargs)
+        self._internal_domains = list(internal_domains or [])
+
     async def collect(
         self,
         client: httpx.AsyncClient,
@@ -923,7 +938,12 @@ class BifrostCatalogDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
             provider = served_by.get(model_id) or {}
             base_url = str(provider.get("base_url") or "")
             node_id = f"model:{_slug(self._cluster or 'unknown')}:{_slug(model_id)}"
-            location = _model_location(base_url, provider)
+            location = _model_location(
+                base_url,
+                provider,
+                model_vendor=str(model.get("vendor") or ""),
+                internal_domains=self._internal_domains,
+            )
             vendor = str(model.get("vendor") or "")
             outside = location == "external"
             cloud_id = self._cloud_id(vendor) if outside else ""
@@ -1214,35 +1234,55 @@ def _vendor_label(vendor: str) -> str:
     return _VENDOR_LABELS.get(key, vendor.strip().title())
 
 
-def _model_location(base_url: str, provider: Mapping[str, Any] | None = None) -> str:
+def _model_location(
+    base_url: str,
+    provider: Mapping[str, Any] | None = None,
+    model_vendor: str = "",
+    internal_domains: Collection[str] = (),
+) -> str:
     """Where a model is served from: our hardware, or someone else's.
 
-    Prefers the provider's endpoint host. Matched against the parsed host,
+    Read off the provider's endpoint host, matched against the parsed host and
     never against the whole URL — a substring test would read
     `https://localhost.example.com/` and
     `https://api.vendor.test/?v=.svc.cluster.local` as internal, and this value
     is what tells an operator whether their traffic leaves the building.
 
-    Bifröst's catalogue API does not expose provider base URLs (every provider
-    returns ""), so when there is no host the provider's own identity is the
-    available signal: its key or vendor naming a self-hosted runtime. That is
-    still read from real configuration, not guessed from a name pattern.
+    `internal_domains` is the DNS zone the estate owns, from configuration.
+    Without it the only internal hosts were cluster-local ones, so weights
+    running on our own GPUs but reached through our own public ingress —
+    `nemotron-3-super-vllm.valaskjalf.asgard.niuu.world` — were reported as
+    someone else's hardware. Where a request *travels* is not the question;
+    whose silicon answers it is.
+
+    When a provider exposes no base URL, identity is the available signal:
+    the provider key, the provider vendor, or the model's own vendor naming a
+    self-hosted runtime. All three are real configuration rather than a guess
+    from a name pattern.
     """
     host = (urlsplit(base_url).hostname or "").lower() if base_url else ""
     if host:
         if host in _INTERNAL_HOSTS or host.endswith(_INTERNAL_HOST_SUFFIXES):
+            return "internal"
+        if any(host == d or host.endswith(f".{d}") for d in _normalized_domains(internal_domains)):
             return "internal"
         return "external"
 
     identity = {
         str((provider or {}).get("key") or "").lower(),
         str((provider or {}).get("vendor") or "").lower(),
+        model_vendor.strip().lower(),
     }
     if identity & _SELF_HOSTED_PROVIDERS:
         return "internal"
     if identity - {""}:
         return "external"
     return "unknown"
+
+
+def _normalized_domains(domains: Collection[str]) -> list[str]:
+    """Config may name a zone with a leading dot or stray whitespace."""
+    return [d.strip().lower().lstrip(".") for d in domains if d and d.strip().strip(".")]
 
 
 class RavnValkyrieDiscoveryAdapter:
