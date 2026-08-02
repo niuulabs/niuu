@@ -373,6 +373,12 @@ async def test_a_workload_can_state_what_it_is_without_a_service_to_ask(
                                 "niuu.world/persona": "workshop-steward",
                                 "niuu.world/autonomy": "guarded",
                             },
+                            "annotations": {
+                                # A sentence cannot be a label value.
+                                "niuu.world/specialty": (
+                                    "Workshop steward; forms hypotheses, runs experiments"
+                                ),
+                            },
                         }
                     }
                 ]
@@ -392,6 +398,7 @@ async def test_a_workload_can_state_what_it_is_without_a_service_to_ask(
     assert resident.metadata["engine"] == "ravn"
     assert resident.metadata["persona"] == "workshop-steward"
     assert resident.metadata["autonomy"] == "guarded"
+    assert resident.metadata["specialty"].startswith("Workshop steward;")
 
 
 @pytest.mark.asyncio

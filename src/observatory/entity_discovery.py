@@ -2016,9 +2016,9 @@ class KubernetesDiscoveryAdapter:
             "component": component or "",
             "app": app_name or "",
             **{
-                field: labels[label]
-                for label, field in _DECLARED_FIELD_LABELS.items()
-                if labels.get(label)
+                field: str(annotations.get(key) or labels.get(key) or "")
+                for key, field in _DECLARED_FIELD_KEYS.items()
+                if annotations.get(key) or labels.get(key)
             },
             "resources": [
                 {
@@ -2580,7 +2580,7 @@ def _memory_gib(value: Any) -> int:
 _ATTACHMENT_ONLY_KINDS = frozenset({"configmap", "persistentvolumeclaim"})
 
 
-#: Labels a workload can use to say what it is, when no service can be asked.
+#: Keys a workload can use to say what it is, when no service can be asked.
 #:
 #: Most of what the graph knows about a resident comes from a Ravn fleet API,
 #: and a cluster running a standalone resident has no such API — eitri's
@@ -2588,7 +2588,11 @@ _ATTACHMENT_ONLY_KINDS = frozenset({"configmap", "persistentvolumeclaim"})
 #: specialty, next to residents that had all three. These let the workload
 #: state it itself, the same way `observatory.niuu.world/type` already lets it
 #: state its kind.
-_DECLARED_FIELD_LABELS = {
+#:
+#: Read from annotations first: a Kubernetes label value cannot hold a comma,
+#: a semicolon or a space, and a specialty is a sentence. Labels still work for
+#: the short ones, so a workload can use whichever fits.
+_DECLARED_FIELD_KEYS = {
     "niuu.world/engine": "engine",
     "niuu.world/persona": "persona",
     "niuu.world/specialty": "specialty",
