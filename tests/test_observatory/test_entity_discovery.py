@@ -1572,6 +1572,33 @@ async def test_device_status_reflects_reachability_and_faults() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_device_cannot_overwrite_its_own_node_identity() -> None:
+    """Metadata extends a node; it must not be able to rewrite it.
+
+    A Laevateinn record carries both `id` and `host` — the machine's own id
+    and the address the gateway reaches it on. Splatted onto the node they
+    replaced the node id and its placement, which is a corrupted graph rather
+    than a cosmetic clash.
+    """
+    record = json.loads(json.dumps(_DEVICE_RECORD))
+    record["host"] = "127.0.0.1"
+    result = await _gateway_adapter(record).discover()
+
+    topology = topology_from_discovery(
+        result,
+        known_type_ids={"printer", "realm", "cluster", "namespace"},
+    )
+    printer = next(n for n in topology["nodes"] if n["typeId"] == "printer")
+
+    assert printer["id"] == "printer:eitri:printer-01"
+    assert printer["namespace"] == "laevateinn"
+    # The device's own address does not become its placement on a host.
+    assert printer["host"] == ""
+    # It is still readable, just not as a node field.
+    assert printer["machineName"] == "Laevateinn MSLA-8K"
+
+
+@pytest.mark.asyncio
 async def test_an_unreachable_gateway_names_itself() -> None:
     adapter = LaevateinnGatewayDiscoveryAdapter(
         base_url="http://gateway-03.test",

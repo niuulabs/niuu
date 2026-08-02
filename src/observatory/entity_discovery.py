@@ -2125,6 +2125,29 @@ def _resolve_node_ref(ref: str, nodes: dict[str, dict[str, Any]]) -> str:
     return candidates[0] if len(set(candidates)) == 1 else ""
 
 
+#: Node fields an adapter's metadata must never overwrite. These carry the
+#: node's identity and placement; a source that happens to use the same key
+#: for something of its own would otherwise corrupt the graph.
+_RESERVED_NODE_KEYS = frozenset(
+    {
+        "id",
+        "typeId",
+        "label",
+        "parentId",
+        "status",
+        "sourceKind",
+        "sourceId",
+        "realm",
+        "clusterName",
+        "namespace",
+        "host",
+        "labels",
+        "endpoints",
+        "layoutHints",
+    }
+)
+
+
 def _entity_to_node(
     entity: DiscoveredEntity,
     *,
@@ -2149,7 +2172,12 @@ def _entity_to_node(
         "endpoints": entity.endpoints,
         "layoutHints": {"mode": "pack", "scope": "node", "packGroup": entity.kind},
     }
-    node.update(entity.metadata)
+    # Metadata is the extension point for kind-specific fields, but it must
+    # not be able to rewrite the node's own. A device that reports its `id`
+    # and its `host` — both of which Laevateinn does — silently replaced the
+    # node id and its placement, which is a corrupted graph rather than a
+    # cosmetic clash.
+    node.update({k: v for k, v in entity.metadata.items() if k not in _RESERVED_NODE_KEYS})
     return node
 
 
