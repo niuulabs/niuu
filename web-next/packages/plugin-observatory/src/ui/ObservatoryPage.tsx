@@ -79,7 +79,7 @@ export function ObservatoryPage() {
           topology={topology}
           registry={registry ?? null}
           onNodeSelect={handleNodeSelect}
-          footer={<AgentCardPanel node={selectedNode} />}
+          footer={(mode) => <AgentCardPanel node={selectedNode} mode={mode} />}
         />
       </aside>
 

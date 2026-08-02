@@ -123,3 +123,12 @@
   font-size: var(--text-xs);
   color: var(--color-text-secondary);
 }
+
+.obs-agent-card__json {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  white-space: pre;
+  overflow-x: auto;
+}

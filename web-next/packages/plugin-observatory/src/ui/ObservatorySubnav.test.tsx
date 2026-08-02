@@ -106,41 +106,6 @@ describe('ObservatorySubnav', () => {
     expect(screen.getByTestId('observatory-subnav')).toBeInTheDocument();
   });
 
-  it('renders all 5 filter buttons', () => {
-    render(<ObservatorySubnav />);
-    expect(screen.getByTestId('filter-all')).toBeInTheDocument();
-    expect(screen.getByTestId('filter-agents')).toBeInTheDocument();
-    expect(screen.getByTestId('filter-runs')).toBeInTheDocument();
-    expect(screen.getByTestId('filter-services')).toBeInTheDocument();
-    expect(screen.getByTestId('filter-devices')).toBeInTheDocument();
-  });
-
-  it('renders correct total count for "all" filter', () => {
-    render(<ObservatorySubnav />);
-    // 9 nodes total
-    const allBtn = screen.getByTestId('filter-all');
-    expect(allBtn).toHaveTextContent('9');
-  });
-
-  it('renders agents filter with correct count', () => {
-    render(<ObservatorySubnav />);
-    // ravn_long only
-    const agentsBtn = screen.getByTestId('filter-agents');
-    expect(agentsBtn).toHaveTextContent('1');
-  });
-
-  it('renders runs filter with correct count', () => {
-    render(<ObservatorySubnav />);
-    const runsBtn = screen.getByTestId('filter-runs');
-    expect(runsBtn).toHaveTextContent('1');
-  });
-
-  it('counts only service nodes as services', () => {
-    render(<ObservatorySubnav />);
-    const servicesBtn = screen.getByTestId('filter-services');
-    expect(servicesBtn).toHaveTextContent('1');
-  });
-
   it('renders both realms in the realms section', () => {
     render(<ObservatorySubnav />);
     expect(screen.getByTestId('realm-realm-asgard')).toBeInTheDocument();
@@ -157,18 +122,6 @@ describe('ObservatorySubnav', () => {
     expect(screen.getByTestId('cluster-cluster-valaskjalf')).toBeInTheDocument();
   });
 
-  it('renders active run in runs section', () => {
-    render(<ObservatorySubnav />);
-    expect(screen.getByTestId('run-run-1')).toBeInTheDocument();
-    expect(screen.getByText('refactor rule engine')).toBeInTheDocument();
-  });
-
-  it('calls setFilter when a filter button is clicked', () => {
-    render(<ObservatorySubnav />);
-    fireEvent.click(screen.getByTestId('filter-agents'));
-    expect(mockSetFilter).toHaveBeenCalledWith('agents');
-  });
-
   it('calls setSelected when a realm is clicked', () => {
     render(<ObservatorySubnav />);
     fireEvent.click(screen.getByTestId('realm-realm-asgard'));
@@ -180,88 +133,12 @@ describe('ObservatorySubnav', () => {
     fireEvent.click(screen.getByTestId('cluster-cluster-valaskjalf'));
     expect(mockSetSelected).toHaveBeenCalledWith('cluster-valaskjalf');
   });
-
-  it('renders with no topology (empty state)', () => {
-    vi.mocked(useTopology).mockReturnValue(null);
-    render(<ObservatorySubnav />);
-    // Should still render the subnav without crashing
-    expect(screen.getByTestId('observatory-subnav')).toBeInTheDocument();
-    // All counts should be 0
-    expect(screen.getByTestId('filter-all')).toHaveTextContent('0');
-  });
-
-  it('marks active filter with aria-pressed', () => {
-    mockUseObservatoryStore.mockReturnValue([
-      { selectedId: null, filter: 'agents' },
-      { setSelected: mockSetSelected, setFilter: mockSetFilter },
-    ]);
-    render(<ObservatorySubnav />);
-    expect(screen.getByTestId('filter-agents')).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByTestId('filter-all')).toHaveAttribute('aria-pressed', 'false');
-  });
-
-  it('renders selection and run metadata fallbacks', () => {
-    vi.mocked(useTopology).mockReturnValue({
-      ...MOCK_TOPOLOGY,
-      nodes: [
-        {
-          id: 'realm-no-vlan',
-          typeId: 'realm',
-          label: 'utgard',
-          parentId: null,
-          status: 'healthy',
-        },
-        {
-          id: 'cluster-selected',
-          typeId: 'cluster',
-          label: 'selected cluster',
-          parentId: 'realm-no-vlan',
-          status: 'healthy',
-        },
-        {
-          id: 'run-forming',
-          typeId: 'run',
-          label: 'forming fallback',
-          parentId: 'cluster-selected',
-          status: 'observing',
-          state: 'forming',
-        },
-        {
-          id: 'run-unknown',
-          typeId: 'run',
-          label: 'unknown fallback',
-          parentId: 'cluster-selected',
-          status: 'observing',
-        },
-      ],
-    });
-    mockUseObservatoryStore.mockReturnValue([
-      { selectedId: 'realm-no-vlan', filter: 'runs' },
-      { setSelected: mockSetSelected, setFilter: mockSetFilter },
-    ]);
-    const { rerender } = render(<ObservatorySubnav />);
-
-    expect(screen.getByTestId('realm-realm-no-vlan')).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.queryByText(/vlan/i)).not.toBeInTheDocument();
-    expect(screen.getByText('forming fallback')).toBeInTheDocument();
-    expect(screen.getByText('unknown fallback')).toBeInTheDocument();
-    expect(screen.getByText('—')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('run-run-forming'));
-    expect(mockSetSelected).toHaveBeenCalledWith('run-forming');
-
-    mockUseObservatoryStore.mockReturnValue([
-      { selectedId: 'cluster-selected', filter: 'runs' },
-      { setSelected: mockSetSelected, setFilter: mockSetFilter },
-    ]);
-    rerender(<ObservatorySubnav />);
-    expect(screen.getByTestId('cluster-cluster-selected')).toHaveAttribute('aria-pressed', 'true');
-  });
 });
 
 describe('ObservatorySubnav collapsible sections', () => {
   it('renders every rail section as a disclosure', () => {
     render(<ObservatorySubnav />);
-    for (const id of ['filter', 'realms', 'clusters']) {
+    for (const id of ['realms', 'clusters']) {
       expect(screen.getByTestId(`subnav-section-${id}`)).toBeInTheDocument();
       expect(screen.getByTestId(`subnav-toggle-${id}`).tagName).toBe('SUMMARY');
     }
@@ -269,7 +146,7 @@ describe('ObservatorySubnav collapsible sections', () => {
 
   it('opens every section by default', () => {
     render(<ObservatorySubnav />);
-    for (const id of ['filter', 'realms', 'clusters']) {
+    for (const id of ['realms', 'clusters']) {
       expect(screen.getByTestId(`subnav-section-${id}`)).toHaveAttribute('open');
     }
   });
@@ -279,7 +156,6 @@ describe('ObservatorySubnav collapsible sections', () => {
     fireEvent.click(screen.getByTestId('subnav-toggle-realms'));
 
     expect((screen.getByTestId('subnav-section-realms') as HTMLDetailsElement).open).toBe(false);
-    expect((screen.getByTestId('subnav-section-filter') as HTMLDetailsElement).open).toBe(true);
     expect((screen.getByTestId('subnav-section-clusters') as HTMLDetailsElement).open).toBe(true);
   });
 });

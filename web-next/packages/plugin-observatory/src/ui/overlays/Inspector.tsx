@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { Registry, Topology, TopologyNode } from '../../domain';
 import { humanizeObservatoryText } from '../displayLabels';
 import './Inspector.css';
@@ -8,9 +8,22 @@ export interface InspectorProps {
   topology: Topology | null;
   registry: Registry | null;
   onNodeSelect?: (node: TopologyNode) => void;
-  /** Composed in by the page — anything needing a service, such as the A2A card. */
-  footer?: ReactNode;
+  /**
+   * Composed in by the page — anything needing a service, such as the A2A
+   * card. Receives the selected tab so the card can render itself or its raw
+   * JSON, as the mockup's segmented control does.
+   */
+  footer?: (mode: Exclude<CardMode, 'resident'>) => ReactNode;
 }
+
+/** Inspector tabs, after the mockup: the entity, its card, or the raw card. */
+export type CardMode = 'resident' | 'card' | 'json';
+
+const CARD_MODES: ReadonlyArray<[CardMode, string]> = [
+  ['resident', 'Resident'],
+  ['card', 'A2A card'],
+  ['json', 'JSON'],
+];
 
 /** Placement as the mockup writes it: `cluster · realm`, lowercased. */
 function placementOf(node: TopologyNode): string {
@@ -128,6 +141,8 @@ function detailRows(node: TopologyNode): [string, string][] {
  * asserting a blank.
  */
 export function Inspector({ node, topology, registry, onNodeSelect, footer }: InspectorProps) {
+  const [mode, setMode] = useState<CardMode>('resident');
+
   if (!node) {
     return (
       <div className="obs-insp obs-insp--empty" data-testid="inspector-empty">
@@ -163,37 +178,61 @@ export function Inspector({ node, topology, registry, onNodeSelect, footer }: In
         </div>
       </header>
 
-      {entityType?.description ? (
-        <Block title="What it is">
-          <p className="obs-insp__note">{entityType.description}</p>
-        </Block>
+      {footer ? (
+        <div className="obs-insp__seg" role="tablist" aria-label="Inspector view">
+          {CARD_MODES.map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              className="obs-insp__segbtn"
+              aria-selected={mode === value}
+              data-testid={`insp-tab-${value}`}
+              onClick={() => setMode(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       ) : null}
 
-      <Block title="Detail">
-        <KeyValues rows={detailRows(node)} />
-      </Block>
-
-      <Block title="Connected to">
-        <NodeList
-          nodes={connected}
-          emptyText="Nothing yet."
-          onNodeSelect={onNodeSelect}
-          testId="inspector-connected"
-        />
-      </Block>
-
-      {peers.length > 0 ? (
-        <Block title={`The other ${peers.length}`}>
-          <NodeList
-            nodes={peers}
-            emptyText="None."
-            onNodeSelect={onNodeSelect}
-            testId="inspector-peers"
-          />
-        </Block>
+      {mode !== 'resident' && footer ? (
+        <div className="obs-insp__footer">{footer(mode)}</div>
       ) : null}
 
-      {footer ? <div className="obs-insp__footer">{footer}</div> : null}
+      {mode === 'resident' ? (
+        <>
+          {entityType?.description ? (
+            <Block title="What it is">
+              <p className="obs-insp__note">{entityType.description}</p>
+            </Block>
+          ) : null}
+
+          <Block title="Detail">
+            <KeyValues rows={detailRows(node)} />
+          </Block>
+
+          <Block title="Connected to">
+            <NodeList
+              nodes={connected}
+              emptyText="Nothing yet."
+              onNodeSelect={onNodeSelect}
+              testId="inspector-connected"
+            />
+          </Block>
+
+          {peers.length > 0 ? (
+            <Block title={`The other ${peers.length}`}>
+              <NodeList
+                nodes={peers}
+                emptyText="None."
+                onNodeSelect={onNodeSelect}
+                testId="inspector-peers"
+              />
+            </Block>
+          ) : null}
+        </>
+      ) : null}
     </div>
   );
 }

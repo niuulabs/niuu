@@ -6,6 +6,8 @@ import './AgentCardPanel.css';
 export interface AgentCardPanelProps {
   /** The node the drawer is showing. Null closes the panel. */
   node: TopologyNode | null;
+  /** `json` shows the card exactly as served, for copying into a request. */
+  mode?: 'card' | 'json';
 }
 
 /** Capability flags every A2A card is expected to declare. */
@@ -31,7 +33,7 @@ function signatureLabel(entry: AgentDirectoryEntry): { text: string; state: stri
  * Not every node is an agent, so the panel renders nothing rather than an empty
  * shell when the directory has no entry projecting this node.
  */
-export function AgentCardPanel({ node }: AgentCardPanelProps) {
+export function AgentCardPanel({ node, mode = 'card' }: AgentCardPanelProps) {
   const { data, isLoading, isError, error } = useAgents();
 
   const entry = useMemo<AgentDirectoryEntry | null>(() => {
@@ -66,6 +68,15 @@ export function AgentCardPanel({ node }: AgentCardPanelProps) {
 
   const iface = entry.supportedInterfaces[0];
   const signature = signatureLabel(entry);
+
+  if (mode === 'json') {
+    // The card exactly as served, so it can be copied into a request.
+    return (
+      <pre className="obs-agent-card__json" data-testid="agent-card-json">
+        {JSON.stringify(entry, null, 2)}
+      </pre>
+    );
+  }
 
   return (
     <section className="obs-agent-card" data-testid="agent-card">

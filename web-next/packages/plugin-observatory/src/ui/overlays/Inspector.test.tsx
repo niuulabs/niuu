@@ -120,17 +120,38 @@ describe('Inspector', () => {
     expect(onNodeSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 'mimir-2' }));
   });
 
-  it('renders the composed footer', () => {
+  it('offers the resident / card / JSON tabs only when a card slot is composed in', () => {
+    const { rerender } = render(<Inspector node={mimir} topology={topology} registry={registry} />);
+    expect(screen.queryByTestId('insp-tab-json')).not.toBeInTheDocument();
+
+    rerender(
+      <Inspector
+        node={mimir}
+        topology={topology}
+        registry={registry}
+        footer={(mode) => <span>card:{mode}</span>}
+      />,
+    );
+
+    expect(screen.getByTestId('insp-tab-resident')).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('shows the card slot only once a card tab is chosen', async () => {
     render(
       <Inspector
         node={mimir}
         topology={topology}
         registry={registry}
-        footer={<span>a2a card</span>}
+        footer={(mode) => <span>card:{mode}</span>}
       />,
     );
+    expect(screen.queryByText(/^card:/)).not.toBeInTheDocument();
 
-    expect(screen.getByText('a2a card')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('insp-tab-json'));
+
+    expect(screen.getByText('card:json')).toBeInTheDocument();
+    // The entity body gives way to the card, as the mockup's segmented view does.
+    expect(screen.queryByText('Detail')).not.toBeInTheDocument();
   });
 
   it('falls back to the type id when the registry is absent', () => {

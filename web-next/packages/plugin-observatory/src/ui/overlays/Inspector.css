@@ -192,3 +192,34 @@
 .obs-insp__footer {
   padding: 13px 16px;
 }
+
+/* Segmented control: resident / A2A card / JSON, as the mockup's .seg row. */
+.obs-insp__seg {
+  display: flex;
+  gap: 4px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--color-border-subtle, rgb(255 255 255 / 8%));
+}
+
+.obs-insp__segbtn {
+  flex: 1;
+  padding: 4px 6px;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary, rgb(255 255 255 / 45%));
+  background: none;
+  border: 1px solid var(--color-border-subtle, rgb(255 255 255 / 10%));
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.obs-insp__segbtn[aria-selected='true'] {
+  color: var(--color-text-primary, rgb(255 255 255 / 92%));
+  border-color: var(--color-accent, #58a6ff);
+}
+
+.obs-insp__segbtn:focus-visible {
+  outline: 2px solid var(--color-accent, #58a6ff);
+  outline-offset: 1px;
+}
