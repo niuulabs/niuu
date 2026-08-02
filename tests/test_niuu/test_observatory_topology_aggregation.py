@@ -122,6 +122,22 @@ class TestPullAggregation:
         assert [warning.code for warning in snapshot.warnings] == ["source_unreachable"]
 
     @pytest.mark.asyncio
+    async def test_an_unreachable_source_says_what_went_wrong(self) -> None:
+        """Several httpx transport errors stringify to "".
+
+        That turned every unreachable source into "Observatory Ymir: " — a
+        warning that names the source and then says nothing, indistinguishable
+        between a DNS failure, a timeout and a refused connection. It blocked a
+        real diagnosis on ymir, so the class name is the floor.
+        """
+        service = _service({"obs-b": ConnectionResetError()})
+
+        snapshot = await service.get_snapshot([_instance("obs-b")], headers={})
+
+        assert snapshot.warnings[0].message.endswith("ConnectionResetError")
+        assert snapshot.sources[0].message == "ConnectionResetError"
+
+    @pytest.mark.asyncio
     async def test_health_records_node_counts_per_source(self) -> None:
         service = _service({"obs-a": _fragment("obs-a", node_ids=["a-1", "a-2"])})
 
