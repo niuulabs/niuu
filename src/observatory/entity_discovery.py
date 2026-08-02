@@ -751,7 +751,18 @@ class FluxHelmReleaseSessionDiscoveryAdapter:
                                 "generation": metadata.get("generation"),
                             }
                         ],
+                        **_flock_summary(values),
                     },
+                )
+            )
+            entities.extend(
+                _flock_member_entities(
+                    values,
+                    session_entity_id=entity_id,
+                    session_id=session_id,
+                    cluster=self._cluster,
+                    namespace=self._namespace,
+                    source_adapter=self.__class__.__name__,
                 )
             )
             if self._cluster:
@@ -1501,6 +1512,85 @@ class RavnValkyrieDiscoveryAdapter:
             )
         entities.extend(_flock_entities(flock_ids, self.__class__.__name__))
         return DiscoveryResult(entities=entities, edges=edges)
+
+
+def _flock_personas(values: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """The agents a flock session was launched with.
+
+    Volundr writes the whole flock definition into the HelmRelease it creates,
+    so the membership of a running workflow is already on the cluster — the
+    adapter simply never looked inside.
+    """
+    flock = values.get("flock")
+    if not isinstance(flock, Mapping):
+        return []
+    personas = flock.get("personas")
+    if not isinstance(personas, list):
+        return []
+    return [p for p in personas if isinstance(p, Mapping) and str(p.get("name") or "").strip()]
+
+
+def _flock_summary(values: Mapping[str, Any]) -> dict[str, Any]:
+    """What the session itself should say about being a flock."""
+    personas = _flock_personas(values)
+    if not personas:
+        return {}
+    flock = values.get("flock")
+    budget = flock.get("daily_budget_usd") if isinstance(flock, Mapping) else None
+    return {
+        "workloadType": "ravn_flock",
+        "memberCount": len(personas),
+        "dailyBudgetUsd": budget,
+    }
+
+
+def _flock_member_entities(
+    values: Mapping[str, Any],
+    *,
+    session_entity_id: str,
+    session_id: str,
+    cluster: str,
+    namespace: str,
+    source_adapter: str,
+) -> list[DiscoveredEntity]:
+    """One node per agent in a running flock, grouped as that flock's mesh.
+
+    A workflow launched through Ting runs several agents in one room, and the
+    canvas drew the room as a single opaque node — the collaboration, which is
+    the whole point of a flock, was invisible. `flockId` is the session, so the
+    members group into exactly one mesh per running workflow.
+    """
+    personas = _flock_personas(values)
+    if len(personas) < 2:
+        # One agent is not a collaboration, and a mesh of one draws nothing.
+        return []
+
+    members: list[DiscoveredEntity] = []
+    for persona in personas:
+        name = str(persona.get("name") or "").strip()
+        llm = persona.get("llm") if isinstance(persona.get("llm"), Mapping) else {}
+        members.append(
+            DiscoveredEntity(
+                id=f"{session_entity_id}:member:{_slug(name)}",
+                kind="ravn_run",
+                name=name,
+                cluster=cluster,
+                namespace=namespace,
+                parent_id=session_entity_id,
+                status="healthy",
+                source_adapter=source_adapter,
+                source_kind="flux-helmrelease:flock-persona",
+                metadata={
+                    "flockId": session_id,
+                    "persona": name,
+                    "model": str((llm or {}).get("model") or ""),
+                    "consumes": [str(e) for e in persona.get("consumes_event_types") or []],
+                    "produces": [str(e) for e in persona.get("produces_event_types") or []],
+                    "iterationBudget": persona.get("iteration_budget"),
+                },
+            )
+        )
+    return members
 
 
 class KubernetesDiscoveryAdapter:

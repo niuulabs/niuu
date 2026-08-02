@@ -1503,6 +1503,99 @@ def _gateway_adapter(record: dict[str, object], **kwargs: object):
     )
 
 
+def _flock_release(name: str, session_id: str, personas: list[dict]) -> dict:
+    return {
+        "metadata": {"name": name, "uid": f"uid-{session_id}", "generation": 1},
+        "spec": {
+            "values": {
+                "image": {"tag": "dev"},
+                "session": {"id": session_id, "name": "research-campaign"},
+                "flock": {"daily_budget_usd": 25, "personas": personas},
+            }
+        },
+        "status": {"conditions": [{"type": "Ready", "status": "True"}]},
+    }
+
+
+def _flux_adapter(items: list[dict], tmp_path) -> FluxHelmReleaseSessionDiscoveryAdapter:
+    return FluxHelmReleaseSessionDiscoveryAdapter(
+        cluster="valhalla",
+        image_tags=["dev"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"items": items})),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_running_flock_shows_the_agents_inside_it(tmp_path) -> None:
+    """A workflow's agents were on the cluster all along, unread.
+
+    Volundr writes the whole flock definition into the HelmRelease it creates,
+    so the membership of a running workflow is already there. The canvas drew
+    the room as one opaque node, which hid the collaboration that is the entire
+    point of a flock.
+    """
+    personas = [
+        {
+            "name": "research-framer",
+            "llm": {"model": "gpt-5.5"},
+            "iteration_budget": 16,
+            "consumes_event_types": ["research.requested"],
+        },
+        {
+            "name": "research-scholar",
+            "llm": {"model": "gpt-5.5"},
+            "consumes_event_types": ["research.framed"],
+        },
+        {"name": "research-reviewer", "llm": {"model": "gpt-5.5"}},
+    ]
+    adapter = _flux_adapter([_flock_release("skuld-abc", "abc", personas)], tmp_path)
+
+    result = await adapter.discover()
+
+    session = next(e for e in result.entities if e.kind == "skuld")
+    assert session.metadata["workloadType"] == "ravn_flock"
+    assert session.metadata["memberCount"] == 3
+
+    members = [e for e in result.entities if e.kind == "ravn_run"]
+    assert [m.name for m in members] == ["research-framer", "research-scholar", "research-reviewer"]
+    # Every member shares the session's flock id, so they derive as one mesh.
+    assert {m.metadata["flockId"] for m in members} == {"abc"}
+    assert all(m.parent_id == session.id for m in members)
+    assert members[0].metadata["model"] == "gpt-5.5"
+    assert members[0].metadata["consumes"] == ["research.requested"]
+
+
+@pytest.mark.asyncio
+async def test_a_single_agent_session_is_not_dressed_up_as_a_mesh(tmp_path) -> None:
+    """One agent is not a collaboration, and a mesh of one draws nothing."""
+    adapter = _flux_adapter(
+        [_flock_release("skuld-solo", "solo", [{"name": "lone-worker"}])], tmp_path
+    )
+
+    result = await adapter.discover()
+
+    assert not [e for e in result.entities if e.kind == "ravn_run"]
+    # It is still truthfully a flock workload — it just is not a collaboration,
+    # so nothing is drawn as a mesh.
+    session = next(e for e in result.entities if e.kind == "skuld")
+    assert session.metadata["workloadType"] == "ravn_flock"
+    assert session.metadata["memberCount"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_plain_session_carries_no_flock_fields(tmp_path) -> None:
+    release = _flock_release("skuld-plain", "plain", [])
+    del release["spec"]["values"]["flock"]
+    adapter = _flux_adapter([release], tmp_path)
+
+    result = await adapter.discover()
+
+    session = next(e for e in result.entities if e.kind == "skuld")
+    assert "workloadType" not in session.metadata
+    assert not [e for e in result.entities if e.kind == "ravn_run"]
+
+
 @pytest.mark.asyncio
 async def test_the_registry_type_comes_from_config_not_from_this_module() -> None:
     """Nothing here decides what a device *is*.
