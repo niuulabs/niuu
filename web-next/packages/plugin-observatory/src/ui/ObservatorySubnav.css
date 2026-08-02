@@ -28,7 +28,7 @@
   padding: var(--space-1) var(--space-4);
   /* Section headings recede: they name the list, they are not part of it.
      At the row's own size they competed with the entries beneath them. */
-  font-size: 0.45rem;
+  font-size: 0.54rem;
   font-weight: 600;
   color: var(--color-text-muted);
   text-transform: uppercase;
@@ -98,7 +98,7 @@
 
 .obs-subnav__count {
   font-family: var(--font-mono);
-  font-size: 0.5rem;
+  font-size: 0.6rem;
   color: var(--color-text-muted);
   flex-shrink: 0;
 }

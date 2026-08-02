@@ -70,6 +70,21 @@ export function worldFontSize(screenPx: number, zoom: number): number {
   return screenPx / zoom;
 }
 
+/**
+ * A world-space size that only *starts* growing once the camera pulls past
+ * the reference scale.
+ *
+ * `worldFontSize` holds a label at a constant screen size, which is right for
+ * a node's name — it has to stay readable. It is wrong for a realm: the realm
+ * itself shrinks as you zoom out, so a name pinned to 22 screen pixels ends up
+ * larger than the region it names. This keeps the name a fixed fraction of the
+ * world until 0.5x, then stops it disappearing entirely.
+ */
+export function regionFontSize(worldPx: number, zoom: number): number {
+  if (!Number.isFinite(zoom) || zoom <= 0) return worldPx;
+  return worldPx * Math.max(1, 0.5 / zoom);
+}
+
 // ── Colour palette ────────────────────────────────────────────────────────────
 // These map directly to the ice-theme brand ramp used in the prototype.
 const C = {
@@ -221,9 +236,9 @@ export interface StructureLabelBounds {
  * make the realm swallow every click meant for its contents.
  */
 export function realmLabelBounds(hull: RealmBounds, label: string, zoom: number): RealmBounds {
-  const px = worldFontSize(LABEL_PX.REALM * 1.7, zoom);
-  const inset = worldFontSize(26, zoom);
-  const baseline = hull.y1 - worldFontSize(22, zoom);
+  const px = regionFontSize(LABEL_PX.REALM * 1.7, zoom);
+  const inset = regionFontSize(26, zoom);
+  const baseline = hull.y1 - regionFontSize(22, zoom);
   const width = Math.max(label.length * px * 0.68, px * 4);
   return {
     x0: hull.x0 + inset - px * 0.3,
@@ -431,9 +446,9 @@ export function drawZones(
 
         // Along the bottom edge. Cluster names sit above their circles near
         // the hull's top, so a top-left realm label lands on top of them.
-        const px = worldFontSize(LABEL_PX.REALM * 1.7, zoom);
-        const inset = worldFontSize(26, zoom);
-        const baseline = hull.y1 - worldFontSize(22, zoom);
+        const px = regionFontSize(LABEL_PX.REALM * 1.7, zoom);
+        const inset = regionFontSize(26, zoom);
+        const baseline = hull.y1 - regionFontSize(22, zoom);
         ctx.save();
         ctx.font = `600 ${px}px "JetBrains Mono", monospace`;
         ctx.fillStyle = rgba(C.ice, 0.5);
@@ -441,7 +456,7 @@ export function drawZones(
         ctx.fillText(structureLabel(node).toUpperCase(), hull.x0 + inset, baseline);
         const dns = (node as unknown as Record<string, unknown>)['dns'];
         if (typeof dns === 'string' && dns && zoom > LOD.CONTAINER_DETAIL) {
-          ctx.font = `${worldFontSize(LABEL_PX.CONTAINER_DETAIL, zoom)}px "JetBrains Mono", monospace`;
+          ctx.font = `${regionFontSize(LABEL_PX.CONTAINER_DETAIL, zoom)}px "JetBrains Mono", monospace`;
           ctx.fillStyle = rgba(C.dim, 0.95);
           ctx.fillText(dns, hull.x0 + inset, baseline - px * 0.95);
         }

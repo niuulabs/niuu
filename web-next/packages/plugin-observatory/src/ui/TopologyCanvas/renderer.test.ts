@@ -11,6 +11,7 @@ import {
   shouldDrawLabel,
   shouldDrawNodeDetail,
   worldFontSize,
+  regionFontSize,
   drawAgentMesh,
 } from './renderer';
 import { LOD } from './config';
@@ -709,5 +710,26 @@ describe('drawAgentMesh', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
     drawAgentMesh(ctx, [A, B, C2, D], '', 1);
     expect(ctx.fillText).not.toHaveBeenCalled();
+  });
+});
+
+describe('regionFontSize', () => {
+  it('holds a region label at a fixed world size while zoomed in', () => {
+    // A realm's name belongs to the region, not to the screen: at and above
+    // the reference scale it stays the same size as the thing it names.
+    expect(regionFontSize(22, 1)).toBe(22);
+    expect(regionFontSize(22, 2)).toBe(22);
+  });
+
+  it('grows it only enough to stay legible once zoomed out', () => {
+    // Held at a constant *screen* size the name outgrew its own realm, which
+    // shrinks as the camera pulls back.
+    expect(regionFontSize(22, 0.25)).toBe(44);
+    expect(regionFontSize(22, 0.25)).toBeLessThan(worldFontSize(22, 0.25));
+  });
+
+  it('survives a nonsense zoom', () => {
+    expect(regionFontSize(22, 0)).toBe(22);
+    expect(regionFontSize(22, Number.NaN)).toBe(22);
   });
 });
