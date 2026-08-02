@@ -6,7 +6,7 @@ import { makeCtxMock } from './test-helpers';
 import { computeLayout, computeLayoutBounds } from './layoutEngine';
 import { fitCameraToBounds, type Camera } from './canvasMath';
 import { CANVAS } from './config';
-import { getStructureLabelBounds } from './renderer';
+import { realmBounds, realmLabelBounds, structureLabel } from './renderer';
 
 const CANVAS_RECT = { left: 24, top: 16, width: 480, height: 320 };
 const MINIMAP_RECT = { left: 260, top: 180, width: CANVAS.MINIMAP_W, height: CANVAS.MINIMAP_H };
@@ -381,13 +381,12 @@ describe('TopologyCanvas', () => {
     const canvas = await renderCanvas(MOCK_TOPOLOGY, { onNodeClick });
     const positions = computeLayout(MOCK_TOPOLOGY);
     const camera = fittedCamera(MOCK_TOPOLOGY);
+    // A realm's label hangs off its hull, so its target comes from the hull
+    // rather than from the realm's own position.
     const realmNode = MOCK_TOPOLOGY.nodes.find((node) => node.id === 'realm-asgard')!;
-    const labelBounds = getStructureLabelBounds(realmNode, positions.get(realmNode.id)!)!;
-    const point = worldToClientPoint(
-      labelBounds.x + labelBounds.width / 2,
-      labelBounds.y + labelBounds.height / 2,
-      camera,
-    );
+    const hull = realmBounds(realmNode, MOCK_TOPOLOGY.nodes, positions)!;
+    const box = realmLabelBounds(hull, structureLabel(realmNode).toUpperCase(), camera.zoom);
+    const point = worldToClientPoint((box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2, camera);
 
     await waitFor(() =>
       expect(screen.getByTestId('zoom-display')).toHaveTextContent(

@@ -30,6 +30,7 @@ export function makeCtxMock(): unknown {
     setTransform: vi.fn(),
     setLineDash: vi.fn(),
     createRadialGradient: vi.fn().mockReturnValue(gradient),
+    createLinearGradient: vi.fn().mockReturnValue(gradient),
     fillStyle: '',
     strokeStyle: '',
     lineWidth: 1,

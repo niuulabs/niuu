@@ -22,7 +22,7 @@ import { zoneRadius, HOST_HALF_W, HOST_HALF_H } from './layoutEngine';
 import { NODE_SIZE, MIMIR_RUNES, LAYOUT, LOD, LABEL_PX, MESH_HULL } from './config';
 import type { Point } from './canvasMath';
 import { centroid, convexHull, expandFromCentroid } from './canvasMath';
-import { drawGlyph } from './shapes';
+import { drawGlyph, roundRectPath } from './shapes';
 import { nodeStyle, type NodeStyle } from './nodeStyle';
 
 // ── Level of detail ───────────────────────────────────────────────────────────
@@ -152,45 +152,6 @@ export function nodeSwatchSize(typeId: string, size = NODE_SIZE[typeId] ?? 6): n
   return Math.max(20, Math.min(30, size * 2.1));
 }
 
-function drawNodeSwatch(
-  ctx: CanvasRenderingContext2D,
-  typeId: string,
-  cx: number,
-  cy: number,
-  size = NODE_SIZE[typeId] ?? 6,
-  hovered = false,
-): void {
-  const col = nodeColour(typeId);
-  const box = nodeSwatchSize(typeId, size);
-  const half = box / 2;
-  const radius = Math.max(5, box * 0.27);
-
-  ctx.save();
-  if (hovered) {
-    ctx.strokeStyle = rgba(C.moon, 0.72);
-    ctx.lineWidth = 1.4;
-    ctx.beginPath();
-    ctx.roundRect(cx - half - 4, cy - half - 4, box + 8, box + 8, radius + 3);
-    ctx.stroke();
-  }
-
-  ctx.fillStyle = rgba(col, hovered ? 0.2 : 0.14);
-  ctx.strokeStyle = rgba(col, hovered ? 1 : 0.9);
-  ctx.lineWidth = hovered ? 1.3 : 1;
-  ctx.beginPath();
-  ctx.roundRect(cx - half, cy - half, box, box, radius);
-  ctx.fill();
-  ctx.stroke();
-
-  ctx.fillStyle = rgba(col, 0.96);
-  ctx.font = `700 ${Math.max(10, Math.round(box * 0.55))}px "JetBrains Mono", monospace`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(nodeIconGlyph(typeId), cx, cy + 0.5);
-  ctx.textBaseline = 'alphabetic';
-  ctx.restore();
-}
-
 export function workflowLabelPlacement(
   node: TopologyNode,
   size: number,
@@ -227,38 +188,21 @@ function drawStructureLabel(
     font,
     color,
     uppercase = false,
-    scale = 1,
   }: {
     font: string;
     color: string;
     uppercase?: boolean;
-    /** World units per screen pixel, so the glyph and gaps track the font. */
-    scale?: number;
   },
 ): void {
+  // Plain text, centred. A container is already drawn as a boundary; hanging
+  // an entity glyph off its name said the boundary was also a thing, and put
+  // two marks on the canvas for one cluster.
   const label = uppercase ? structureLabel(node).toUpperCase() : structureLabel(node);
   ctx.save();
   ctx.font = font;
-  const metrics = ctx.measureText?.(label);
-  const textWidth = metrics?.width ?? label.length * 7.2 * scale;
-  const glyphGap = 8 * scale;
-  const glyphWidth = 16 * scale;
-  const startX = x - (textWidth + glyphGap + glyphWidth) / 2;
-  const glyphX = startX + glyphWidth / 2;
-  const textX = startX + glyphWidth + glyphGap;
-
-  drawNodeSwatch(
-    ctx,
-    node.typeId,
-    glyphX,
-    y - 4 * scale,
-    (NODE_SIZE[node.typeId] ?? 6) * scale,
-    false,
-  );
   ctx.fillStyle = color;
-  ctx.font = font;
-  ctx.textAlign = 'left';
-  ctx.fillText(label, textX, y);
+  ctx.textAlign = 'center';
+  ctx.fillText(label, x, y);
   ctx.restore();
 }
 
@@ -269,12 +213,33 @@ export interface StructureLabelBounds {
   height: number;
 }
 
+/**
+ * Where a realm's name sits, for hit-testing.
+ *
+ * The name is the only part of a realm that can be clicked: the hull covers
+ * every cluster inside it, so treating the whole rectangle as a target would
+ * make the realm swallow every click meant for its contents.
+ */
+export function realmLabelBounds(hull: RealmBounds, label: string, zoom: number): RealmBounds {
+  const px = worldFontSize(LABEL_PX.REALM * 1.7, zoom);
+  const inset = worldFontSize(26, zoom);
+  const baseline = hull.y1 - worldFontSize(22, zoom);
+  const width = Math.max(label.length * px * 0.68, px * 4);
+  return {
+    x0: hull.x0 + inset - px * 0.3,
+    y0: baseline - px,
+    x1: hull.x0 + inset + width,
+    y1: baseline + px * 0.35,
+  };
+}
+
 export function getStructureLabelBounds(
   node: TopologyNode,
   pos: NodePosition,
 ): StructureLabelBounds | null {
+  // A realm's label hangs off its hull, not off its centre, so it cannot be
+  // derived from a position alone — `realmLabelBounds` handles it instead.
   if (
-    node.typeId !== 'realm' &&
     node.typeId !== 'cluster' &&
     node.typeId !== 'namespace' &&
     node.typeId !== 'host' &&
@@ -298,14 +263,12 @@ export function getStructureLabelBounds(
     };
   }
 
-  const label = node.typeId === 'realm' ? structureLabel(node).toUpperCase() : structureLabel(node);
-  const glyphGap = 8;
-  const glyphWidth = 16;
-  const charWidth = node.typeId === 'realm' ? 7.8 : 7.2;
+  const label = structureLabel(node);
+  const charWidth = 7.2;
   const textWidth = Math.max(label.length * charWidth, 18);
-  const totalWidth = glyphWidth + glyphGap + textWidth;
+  const totalWidth = textWidth;
   const radius =
-    node.typeId === 'realm' || node.typeId === 'cluster'
+    node.typeId === 'cluster'
       ? (pos.zoneRadius ?? zoneRadius(node.typeId))
       : node.typeId === 'namespace'
         ? Math.max(
@@ -317,8 +280,8 @@ export function getStructureLabelBounds(
             (pos.containerWidth ?? HOST_HALF_W * 2) / 2,
             (pos.containerHeight ?? HOST_HALF_H * 2) / 2,
           );
-  const labelY = pos.y - radius - (node.typeId === 'realm' ? 8 : 4);
-  const fontHeight = node.typeId === 'realm' ? 13 : 10;
+  const labelY = pos.y - radius - 4;
+  const fontHeight = 10;
 
   return {
     x: pos.x - totalWidth / 2 - 4,
@@ -347,11 +310,80 @@ export function drawStars(ctx: CanvasRenderingContext2D, w: number, h: number, n
 
 // ── Zone circles (realms + clusters) ─────────────────────────────────────────
 
+export interface RealmBounds {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+/** How far a node reaches from its centre, for hull maths. */
+function nodeExtentFor(node: TopologyNode, pos: NodePosition): number {
+  if (node.typeId === 'cluster' || node.typeId === 'realm') {
+    return pos.zoneRadius ?? zoneRadius(node.typeId);
+  }
+  if (pos.containerWidth || pos.containerHeight) {
+    return Math.max((pos.containerWidth ?? 0) / 2, (pos.containerHeight ?? 0) / 2);
+  }
+  return NODE_SIZE[node.typeId] ?? 8;
+}
+
+/**
+ * The rectangle a realm occupies: the bounding box of everything inside it.
+ *
+ * A realm is a region, not an object — it has no centre and no radius of its
+ * own, only the extent of what it contains. Drawing it as a circle sized by a
+ * constant meant a realm holding four clusters and a realm holding one were
+ * the same size, and the four-cluster one spilled over its own edge.
+ *
+ * Returns null for a realm with nothing placed inside it: a boundary around
+ * nothing is a claim that something is missing.
+ */
+export function realmBounds(
+  realm: TopologyNode,
+  nodes: readonly TopologyNode[],
+  positions: Map<string, NodePosition>,
+  padding = 78,
+): RealmBounds | null {
+  const childrenOf = new Map<string, TopologyNode[]>();
+  for (const node of nodes) {
+    if (!node.parentId) continue;
+    const bucket = childrenOf.get(node.parentId);
+    if (bucket) bucket.push(node);
+    else childrenOf.set(node.parentId, [node]);
+  }
+
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+
+  const walk = (node: TopologyNode, seen: Set<string>): void => {
+    if (seen.has(node.id)) return;
+    seen.add(node.id);
+    const pos = positions.get(node.id);
+    if (pos) {
+      const extent = nodeExtentFor(node, pos);
+      x0 = Math.min(x0, pos.x - extent);
+      y0 = Math.min(y0, pos.y - extent);
+      x1 = Math.max(x1, pos.x + extent);
+      y1 = Math.max(y1, pos.y + extent);
+    }
+    for (const child of childrenOf.get(node.id) ?? []) walk(child, seen);
+  };
+
+  const seen = new Set<string>([realm.id]);
+  for (const child of childrenOf.get(realm.id) ?? []) walk(child, seen);
+
+  if (!Number.isFinite(x0)) return null;
+  return { x0: x0 - padding, y0: y0 - padding, x1: x1 + padding, y1: y1 + padding };
+}
+
 export function drawZones(
   ctx: CanvasRenderingContext2D,
   nodes: TopologyNode[],
   positions: Map<string, NodePosition>,
-  now: number,
+  _now: number,
   zoom: number,
 ): void {
   // World units per screen pixel — keeps container headings a constant size.
@@ -373,28 +405,47 @@ export function drawZones(
       const { x: cx, y: cy } = pos;
 
       if (typeId === 'realm') {
-        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-        g.addColorStop(0, 'rgba(30,48,78,0.38)');
-        g.addColorStop(0.65, 'rgba(20,32,56,0.16)');
-        g.addColorStop(1, 'rgba(14,20,36,0.02)');
+        // A region, drawn as one: a rounded rectangle around everything it
+        // holds, rather than a circle sized by a constant that its own
+        // clusters then overflow.
+        const hull = realmBounds(node, nodes, positions);
+        if (!hull) continue;
+        const w = hull.x1 - hull.x0;
+        const h = hull.y1 - hull.y0;
+        const corner = Math.min(54, w / 2, h / 2);
+
+        const g = ctx.createLinearGradient(hull.x0, hull.y0, hull.x0, hull.y1);
+        g.addColorStop(0, rgba(C.ice, 0.03));
+        g.addColorStop(1, rgba(C.ice, 0.008));
         ctx.fillStyle = g;
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        roundRectPath(ctx, hull.x0, hull.y0, w, h, corner);
         ctx.fill();
 
-        const pulse = 0.28 + 0.06 * Math.sin(now / 5000 + node.id.charCodeAt(0) * 0.1);
-        ctx.strokeStyle = rgba(C.indigo, pulse);
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.save();
+        ctx.setLineDash([worldFontSize(14, zoom), worldFontSize(12, zoom)]);
+        ctx.strokeStyle = rgba(C.ice, 0.16);
+        ctx.lineWidth = worldFontSize(1.5, zoom);
+        roundRectPath(ctx, hull.x0, hull.y0, w, h, corner);
         ctx.stroke();
+        ctx.restore();
 
-        drawStructureLabel(ctx, node, cx, cy - r - 8 * scale, {
-          font: `600 ${worldFontSize(LABEL_PX.REALM, zoom)}px Inter, sans-serif`,
-          color: rgba(C.ice, 0.78),
-          uppercase: true,
-          scale,
-        });
+        // Along the bottom edge. Cluster names sit above their circles near
+        // the hull's top, so a top-left realm label lands on top of them.
+        const px = worldFontSize(LABEL_PX.REALM * 1.7, zoom);
+        const inset = worldFontSize(26, zoom);
+        const baseline = hull.y1 - worldFontSize(22, zoom);
+        ctx.save();
+        ctx.font = `600 ${px}px "JetBrains Mono", monospace`;
+        ctx.fillStyle = rgba(C.ice, 0.5);
+        ctx.textAlign = 'left';
+        ctx.fillText(structureLabel(node).toUpperCase(), hull.x0 + inset, baseline);
+        const dns = (node as unknown as Record<string, unknown>)['dns'];
+        if (typeof dns === 'string' && dns && zoom > LOD.CONTAINER_DETAIL) {
+          ctx.font = `${worldFontSize(LABEL_PX.CONTAINER_DETAIL, zoom)}px "JetBrains Mono", monospace`;
+          ctx.fillStyle = rgba(C.dim, 0.95);
+          ctx.fillText(dns, hull.x0 + inset, baseline - px * 0.95);
+        }
+        ctx.restore();
       } else if (typeId === 'cluster') {
         const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
         g.addColorStop(0, 'rgba(40,58,88,0.22)');
@@ -415,7 +466,6 @@ export function drawZones(
         drawStructureLabel(ctx, node, cx, cy - r - 4 * scale, {
           font: `${worldFontSize(LABEL_PX.CLUSTER, zoom)}px "JetBrains Mono", monospace`,
           color: rgba(C.ice, 0.58),
-          scale,
         });
       } else {
         const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
@@ -437,7 +487,6 @@ export function drawZones(
         drawStructureLabel(ctx, node, cx, cy - r - 4 * scale, {
           font: `${worldFontSize(LABEL_PX.CLUSTER, zoom)}px "JetBrains Mono", monospace`,
           color: rgba(C.ice, 0.62),
-          scale,
         });
       }
     }

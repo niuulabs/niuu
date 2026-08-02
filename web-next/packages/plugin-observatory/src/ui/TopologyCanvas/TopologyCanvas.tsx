@@ -23,6 +23,9 @@ import {
   drawMimir,
   drawMinimap,
   getStructureLabelBounds,
+  realmBounds,
+  realmLabelBounds,
+  structureLabel,
 } from './renderer';
 import { buildTypeStyles, nodeStyle, type NodeStyle } from './nodeStyle';
 import { CANVAS, HIT_RADIUS } from './config';
@@ -376,13 +379,19 @@ export function TopologyCanvas({
     const { topology: topo, positions: pos } = drawRef.current;
     if (!topo) return null;
 
+    // A realm's only target is its name: the hull covers every cluster inside
+    // it, so a whole-rectangle hit box would swallow every click meant for
+    // its contents.
     for (const node of topo.nodes) {
-      if (
-        node.typeId !== 'realm' &&
-        node.typeId !== 'cluster' &&
-        node.typeId !== 'namespace' &&
-        node.typeId !== 'run'
-      ) {
+      if (node.typeId !== 'realm') continue;
+      const hull = realmBounds(node, topo.nodes, pos);
+      if (!hull) continue;
+      const box = realmLabelBounds(hull, structureLabel(node).toUpperCase(), cam.zoom);
+      if (wx >= box.x0 && wx <= box.x1 && wy >= box.y0 && wy <= box.y1) return node.id;
+    }
+
+    for (const node of topo.nodes) {
+      if (node.typeId !== 'cluster' && node.typeId !== 'namespace' && node.typeId !== 'run') {
         continue;
       }
       const p = pos.get(node.id);
