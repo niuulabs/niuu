@@ -343,11 +343,6 @@ export function Inspector({ node, topology, registry, onNodeSelect, footer }: In
               {chip}
             </span>
           ))}
-          {mesh ? (
-            <span className="obs-insp__state obs-insp__state--idle">
-              {mesh.memberIds.length} in mesh
-            </span>
-          ) : null}
         </div>
       </header>
 

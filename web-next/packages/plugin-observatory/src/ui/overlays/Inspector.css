@@ -196,8 +196,12 @@
 /* One control, three positions — not three buttons that happen to sit in a
    row. The track carries the border; the selected segment is filled. */
 .obs-insp__seg {
+  /* `fit-content` as well as `inline-flex`: the track has to hug its three
+     segments whichever display the cascade lands on, or it stretches the
+     full column and the segments drift apart inside it. */
   display: inline-flex;
-  gap: 0;
+  width: fit-content;
+  gap: 2px;
   margin: 10px 16px;
   padding: 2px;
   border: 1px solid var(--color-border-subtle, rgb(255 255 255 / 10%));
@@ -206,7 +210,9 @@
 }
 
 .obs-insp__segbtn {
-  padding: 3px 12px;
+  flex: 0 0 auto;
+  padding: 4px 14px;
+  text-align: center;
   font-family: var(--font-mono);
   font-size: 9px;
   letter-spacing: 0.12em;
