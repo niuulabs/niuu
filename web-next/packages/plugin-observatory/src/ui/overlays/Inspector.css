@@ -196,11 +196,12 @@
 /* One control, three positions — not three buttons that happen to sit in a
    row. The track carries the border; the selected segment is filled. */
 .obs-insp__seg {
-  /* `fit-content` as well as `inline-flex`: the track has to hug its three
-     segments whichever display the cascade lands on, or it stretches the
-     full column and the segments drift apart inside it. */
-  display: inline-flex;
-  width: fit-content;
+  /* The panel is a flex column, so this track is a flex item: `inline-flex`
+     would be blockified to `flex`, and `align-items: normal` would stretch it
+     across the whole column with its segments adrift inside. `align-self`
+     stops the stretch at its cause, so the track hugs its three segments. */
+  display: flex;
+  align-self: start;
   gap: 2px;
   margin: 10px 16px;
   padding: 2px;
