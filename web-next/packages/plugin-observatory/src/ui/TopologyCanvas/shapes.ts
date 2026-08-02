@@ -331,38 +331,41 @@ function drawRing(ctx: CanvasRenderingContext2D, o: GlyphOptions): void {
 type GlyphFn = (ctx: CanvasRenderingContext2D, o: GlyphOptions) => void;
 
 /**
- * Registry shape → glyph.
+ * Registry shape → glyph. This is the whole vocabulary.
  *
- * Both the names the seed registry ships today and the finer marks the
- * mockup draws are listed, because an already-seeded deployment keeps whatever
- * it first stored: the registry merge is additive and never overwrites an
- * operator's type. `rounded-rect` and `rack` therefore have to mean the same
- * machine, and `diamond`/`chevron` the same resident, or a live cluster would
- * render fallbacks after this change.
+ * One name per mark. There is no alias list: two names for one glyph is how a
+ * vocabulary rots, and a registry carrying a name this table does not hold is
+ * a registry that has not been upgraded — which `merge_seed_into` fixes on the
+ * next start, rather than the canvas papering over it forever.
  */
 const GLYPHS: Readonly<Record<string, GlyphFn>> = {
   agent: drawAgent,
-  diamond: drawAgent,
-  chevron: drawAgent,
   halo: drawHalo,
   triangle: drawTriangle,
   rack: drawRack,
-  'rounded-rect': drawRack,
   pentagon: (ctx, o) => drawPolygonGlyph(ctx, o, 5, -Math.PI / 2, 0.18, 0.95, 2),
   hex: (ctx, o) => drawPolygonGlyph(ctx, o, 6, 0, 0.16, 0.9, 1.8),
   'hex-flat': drawModel,
   cylinder: drawCylinder,
   beacon: drawBeacon,
   'square-sm': drawSquareSmall,
-  square: drawBoxedDot,
-  dot: drawBoxedDot,
+  box: drawBoxedDot,
   ring: drawRing,
   'ring-dashed': drawRing,
 };
 
+/**
+ * Marks the canvas draws outside the glyph table.
+ *
+ * Mímir is drawn last, above everything, because it breathes and everything
+ * else reaches into it. It is still a shape the vocabulary contains — a type
+ * declaring it must not be downgraded to a box.
+ */
+const DEFERRED_SHAPES: ReadonlySet<string> = new Set(['mimir']);
+
 /** True when the canvas knows how to draw this registry shape. */
 export function isKnownShape(shape: string): boolean {
-  return shape in GLYPHS;
+  return shape in GLYPHS || DEFERRED_SHAPES.has(shape);
 }
 
 /**
@@ -389,19 +392,15 @@ export function drawGlyph(ctx: CanvasRenderingContext2D, options: GlyphOptions):
 export function glyphRadius(shape: string, size: number): number {
   switch (shape) {
     case 'agent':
-    case 'diamond':
-    case 'chevron':
       return size + 9;
     case 'halo':
       return size + 14;
     case 'rack':
-    case 'rounded-rect':
       return size * 1.25;
     case 'hex-flat':
       return size + 7;
-    case 'square':
+    case 'box':
     case 'square-sm':
-    case 'dot':
       return size * 1.42;
     default:
       return size;

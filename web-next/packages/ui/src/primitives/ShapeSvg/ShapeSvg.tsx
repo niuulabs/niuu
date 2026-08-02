@@ -1,20 +1,27 @@
 import type { SVGProps } from 'react';
 
+/**
+ * The marks the Observatory canvas draws, as flat SVG previews.
+ *
+ * Kept in step with `entityShapeSchema` in `@niuulabs/domain` and with the
+ * canvas' own glyph table: a registry editor that offers a shape the canvas
+ * cannot draw is offering the operator a way to break their own graph.
+ */
 export type ShapeKind =
   | 'ring'
   | 'ring-dashed'
-  | 'rounded-rect'
-  | 'diamond'
-  | 'triangle'
-  | 'hex'
-  | 'chevron'
-  | 'square'
-  | 'square-sm'
-  | 'pentagon'
+  | 'agent'
   | 'halo'
-  | 'mimir'
-  | 'mimir-small'
-  | 'dot';
+  | 'triangle'
+  | 'box'
+  | 'hex'
+  | 'pentagon'
+  | 'square-sm'
+  | 'rack'
+  | 'hex-flat'
+  | 'cylinder'
+  | 'beacon'
+  | 'mimir';
 
 /** Color tokens accepted by ShapeSvg — maps to design-token CSS variables */
 export type ShapeColor =
@@ -98,7 +105,7 @@ export function ShapeSvg({
         </svg>
       );
 
-    case 'rounded-rect':
+    case 'rack':
       return (
         <svg {...svgProps}>
           <rect
@@ -111,13 +118,25 @@ export function ShapeSvg({
             stroke={c}
             strokeWidth="1.4"
           />
+          <path d="M-5,-2 H5 M-5,1 H5" stroke={c} strokeWidth="1" opacity={0.55} />
         </svg>
       );
 
-    case 'diamond':
+    case 'agent':
       return (
         <svg {...svgProps}>
-          <path d="M0,-7 L7,0 L0,7 L-7,0 Z" fill={c} opacity={0.85} />
+          <circle
+            cx="0"
+            cy="0"
+            r="8"
+            fill="none"
+            stroke={c}
+            strokeWidth="1"
+            strokeDasharray="3 3"
+            opacity={0.6}
+          />
+          <circle cx="0" cy="0" r="5" fill="var(--color-bg-primary)" stroke={c} strokeWidth="1.6" />
+          <circle cx="0" cy="0" r="1.8" fill={c} />
         </svg>
       );
 
@@ -140,17 +159,40 @@ export function ShapeSvg({
         </svg>
       );
 
-    case 'chevron':
+    case 'hex-flat':
       return (
         <svg {...svgProps}>
-          <path d="M-6,5 L0,-6 L6,5 L0,2 Z" fill={c} />
+          <path
+            d="M-3.5,-6 L3.5,-6 L7,0 L3.5,6 L-3.5,6 L-7,0 Z"
+            fill="none"
+            stroke={c}
+            strokeWidth="1.4"
+          />
         </svg>
       );
 
-    case 'square':
+    case 'cylinder':
       return (
         <svg {...svgProps}>
-          <rect x="-6" y="-6" width="12" height="12" rx="1" fill={c} />
+          <rect
+            x="-5"
+            y="-6"
+            width="10"
+            height="12"
+            rx="3"
+            fill="none"
+            stroke={c}
+            strokeWidth="1.4"
+          />
+          <ellipse cx="0" cy="-3" rx="5" ry="1.9" fill="none" stroke={c} strokeWidth="1.2" />
+        </svg>
+      );
+
+    case 'beacon':
+      return (
+        <svg {...svgProps}>
+          <circle cx="0" cy="0" r="8" fill="none" stroke={c} strokeWidth="1" opacity={0.4} />
+          <circle cx="0" cy="0" r="3.5" fill={c} />
         </svg>
       );
 
@@ -185,7 +227,6 @@ export function ShapeSvg({
       );
 
     case 'mimir':
-    case 'mimir-small':
       return (
         <svg {...svgProps}>
           <circle cx="0" cy="0" r="5" fill="var(--color-bg-primary)" stroke={c} strokeWidth="1.4" />
@@ -203,11 +244,21 @@ export function ShapeSvg({
         </svg>
       );
 
-    case 'dot':
+    case 'box':
     default:
       return (
         <svg {...svgProps}>
-          <circle cx="0" cy="0" r="4" fill={c} />
+          <rect
+            x="-6"
+            y="-6"
+            width="12"
+            height="12"
+            rx="2"
+            fill="none"
+            stroke={c}
+            strokeWidth="1.4"
+          />
+          <circle cx="0" cy="0" r="2" fill={c} />
         </svg>
       );
   }

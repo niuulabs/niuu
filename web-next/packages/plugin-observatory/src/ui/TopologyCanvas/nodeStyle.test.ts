@@ -12,7 +12,7 @@ function registry(types: Array<Partial<Registry['types'][number]>>): Registry {
       label: 'Service',
       rune: 'ᛦ',
       icon: 'box',
-      shape: 'dot',
+      shape: 'box',
       color: 'ice-300',
       size: 8,
       border: 'solid',
@@ -46,7 +46,7 @@ describe('buildTypeStyles', () => {
     // An operator can put anything in this field through the registry API;
     // the canvas has to stay drawable whatever they put there.
     const styles = buildTypeStyles(registry([{ id: 'ting', shape: 'spiral' }]));
-    expect(styles.get('ting')?.shape).toBe('dot');
+    expect(styles.get('ting')?.shape).toBe('box');
   });
 
   it('falls back to the canvas size table when the registry size is unusable', () => {
@@ -62,7 +62,7 @@ describe('buildTypeStyles', () => {
 describe('nodeStyle', () => {
   const styles = buildTypeStyles(
     registry([
-      { id: 'ravn_long', shape: 'diamond', size: 11 },
+      { id: 'ravn_long', shape: 'agent', size: 11 },
       { id: 'model', shape: 'hex-flat', size: 13 },
     ]),
   );
@@ -88,7 +88,7 @@ describe('nodeStyle', () => {
 
   it('draws an unregistered type as a boxed dot at a sensible size', () => {
     const style = nodeStyle(node({ id: 'e', typeId: 'brand-new' }), styles);
-    expect(style.shape).toBe('dot');
+    expect(style.shape).toBe('box');
     expect(style.size).toBeGreaterThan(0);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { drawGlyph, glyphRadius, isKnownShape, polygonPath, roundRectPath } from './shapes';
+import { entityShapeSchema } from '@niuulabs/domain';
 import { makeCtxMock } from './test-helpers';
 
 type Mock = ReturnType<typeof vi.fn>;
@@ -21,26 +22,11 @@ function draw(shape: string, overrides: Record<string, unknown> = {}) {
 }
 
 describe('shape vocabulary', () => {
-  it('knows the shapes the seed registry declares', () => {
-    for (const shape of [
-      'ring',
-      'ring-dashed',
-      'rounded-rect',
-      'diamond',
-      'triangle',
-      'hex',
-      'chevron',
-      'square',
-      'square-sm',
-      'pentagon',
-      'dot',
-      'halo',
-      'hex-flat',
-      'beacon',
-      'cylinder',
-      'rack',
-      'agent',
-    ]) {
+  it('draws every shape the domain schema allows', () => {
+    // The schema is the contract between the registry and the canvas. A name
+    // it permits but the canvas cannot draw is a silent fallback in
+    // production, so the two have to stay in step.
+    for (const shape of entityShapeSchema.options) {
       expect(isKnownShape(shape)).toBe(true);
     }
   });
@@ -49,10 +35,20 @@ describe('shape vocabulary', () => {
     expect(isKnownShape('spiral')).toBe(false);
   });
 
+  it('has no synonyms — one name per mark', () => {
+    // Aliases are how a vocabulary rots: two names for one glyph and nobody
+    // can say which is current.
+    expect(isKnownShape('diamond')).toBe(false);
+    expect(isKnownShape('chevron')).toBe(false);
+    expect(isKnownShape('rounded-rect')).toBe(false);
+    expect(isKnownShape('dot')).toBe(false);
+    expect(isKnownShape('square')).toBe(false);
+  });
+
   it('falls back to the boxed dot rather than drawing nothing', () => {
-    // A registry edit must never be able to blank the canvas.
+    // A registry that has drifted must never be able to blank the canvas.
     const unknown = draw('spiral');
-    const fallback = draw('dot');
+    const fallback = draw('box');
     expect((unknown.arcTo as Mock).mock.calls.length).toBe(
       (fallback.arcTo as Mock).mock.calls.length,
     );

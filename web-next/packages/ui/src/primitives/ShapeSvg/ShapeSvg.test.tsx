@@ -8,18 +8,18 @@ const FORBIDDEN_RUNES = new Set(['ᛟ', 'ᛊ', 'ᛏ', 'ᛉ', 'ᚺ', 'ᚻ']);
 const ALL_SHAPES: ShapeKind[] = [
   'ring',
   'ring-dashed',
-  'rounded-rect',
-  'diamond',
-  'triangle',
-  'hex',
-  'chevron',
-  'square',
-  'square-sm',
-  'pentagon',
+  'agent',
   'halo',
+  'triangle',
+  'box',
+  'hex',
+  'pentagon',
+  'square-sm',
+  'rack',
+  'hex-flat',
+  'cylinder',
+  'beacon',
   'mimir',
-  'mimir-small',
-  'dot',
 ];
 
 describe('ShapeSvg', () => {
@@ -33,7 +33,7 @@ describe('ShapeSvg', () => {
   });
 
   it('defaults to size 20', () => {
-    render(<ShapeSvg shape="dot" />);
+    render(<ShapeSvg shape="box" />);
     const svg = screen.getByRole('img');
     expect(svg).toHaveAttribute('width', '20');
     expect(svg).toHaveAttribute('height', '20');
@@ -52,7 +52,7 @@ describe('ShapeSvg', () => {
   });
 
   it('applies explicit brand color', () => {
-    const { container } = render(<ShapeSvg shape="dot" color="brand" />);
+    const { container } = render(<ShapeSvg shape="box" color="brand" />);
     expect(container.innerHTML).toContain('var(--color-brand)');
   });
 
@@ -68,7 +68,7 @@ describe('ShapeSvg', () => {
     ['slate-300', 'var(--color-text-secondary)'],
     ['slate-400', 'var(--color-text-muted)'],
   ] satisfies [ShapeColor, string][])('color "%s" resolves to "%s"', (colorProp, expectedVar) => {
-    const { container } = render(<ShapeSvg shape="dot" color={colorProp} />);
+    const { container } = render(<ShapeSvg shape="box" color={colorProp} />);
     expect(container.innerHTML).toContain(expectedVar);
   });
 
@@ -83,23 +83,27 @@ describe('ShapeSvg', () => {
   });
 
   it('forwards className to the svg element', () => {
-    render(<ShapeSvg shape="dot" className="test-class" />);
+    render(<ShapeSvg shape="box" className="test-class" />);
     expect(screen.getByRole('img')).toHaveClass('test-class');
   });
 
-  it('mimir and mimir-small render the ᛗ glyph', () => {
+  it('mimir renders the ᛗ glyph', () => {
     const { container } = render(<ShapeSvg shape="mimir" />);
     expect(container.textContent).toContain('ᛗ');
   });
 
-  it('mimir-small renders the same SVG structure as mimir', () => {
-    const { container: a } = render(<ShapeSvg shape="mimir" />);
-    const { container: b } = render(<ShapeSvg shape="mimir-small" />);
-    // Both shapes share the same SVG output (circle + rune text)
-    expect(a.querySelector('circle')).toBeTruthy();
-    expect(b.querySelector('circle')).toBeTruthy();
-    expect(a.querySelector('text')).toBeTruthy();
-    expect(b.querySelector('text')).toBeTruthy();
+  it('previews the marks the canvas actually draws', () => {
+    // The picker offers these to an operator, so a preview that is not the
+    // canvas mark sells them a shape they will not get.
+    const { container: agent } = render(<ShapeSvg shape="agent" />);
+    expect(agent.querySelectorAll('circle')).toHaveLength(3);
+
+    const { container: rack } = render(<ShapeSvg shape="rack" />);
+    expect(rack.querySelector('rect')).toBeTruthy();
+    expect(rack.querySelector('path')).toBeTruthy();
+
+    const { container: store } = render(<ShapeSvg shape="cylinder" />);
+    expect(store.querySelector('ellipse')).toBeTruthy();
   });
 
   it('halo renders two concentric circles', () => {

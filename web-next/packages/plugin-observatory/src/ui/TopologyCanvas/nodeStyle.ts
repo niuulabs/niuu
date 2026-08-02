@@ -55,7 +55,7 @@ export function buildTypeStyles(
 ): Map<string, { shape: string; size: number }> {
   const styles = new Map<string, { shape: string; size: number }>();
   for (const type of registry?.types ?? []) {
-    const shape = typeof type.shape === 'string' && isKnownShape(type.shape) ? type.shape : 'dot';
+    const shape = typeof type.shape === 'string' && isKnownShape(type.shape) ? type.shape : 'box';
     const size =
       Number.isFinite(type.size) && type.size > 0 ? type.size : (NODE_SIZE[type.id] ?? 8);
     styles.set(type.id, { shape, size });
@@ -74,7 +74,7 @@ export function nodeStyle(
   computeClass = computeClassOf(node),
 ): NodeStyle {
   const declared = typeStyles.get(node.typeId);
-  const shape = declared?.shape ?? 'dot';
+  const shape = declared?.shape ?? 'box';
   const size = declared?.size ?? NODE_SIZE[node.typeId] ?? 8;
   const colour = STATUS_COLOUR[node.status] ?? COMPUTE_COLOUR[computeClass];
   return { shape, size, colour, computeClass, radius: glyphRadius(shape, size) };

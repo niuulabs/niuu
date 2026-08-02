@@ -42,7 +42,7 @@ const makeRegistry = (): Registry => ({
       label: 'Host',
       rune: 'ᚦ',
       icon: 'server',
-      shape: 'rounded-rect',
+      shape: 'rack',
       color: 'slate-400',
       size: 22,
       border: 'solid',

@@ -68,6 +68,34 @@ class TestMergeSeedInto:
         mimir = next(entry for entry in merged["types"] if entry["id"] == "mimir")
         assert mimir["label"] == "Our Mimir"
 
+    def test_refreshes_the_glyph_a_type_wears(self) -> None:
+        """A shape the canvas no longer draws has to be replaced, not kept.
+
+        `shape` names one of a fixed set of marks. A registry frozen on a name
+        the vocabulary has dropped renders every one of those entities as a
+        fallback box, which looks like a bug and cannot be fixed by the
+        operator without hand-editing the registry.
+        """
+        stored = _stale_registry([_type("host")])
+
+        merged = merge_seed_into(stored, seed_registry_payload())
+
+        host = next(entry for entry in merged["types"] if entry["id"] == "host")
+        seed_host = next(
+            entry for entry in seed_registry_payload()["types"] if entry["id"] == "host"
+        )
+        assert host["shape"] == seed_host["shape"]
+        assert host["size"] == seed_host["size"]
+
+    def test_leaves_the_glyph_alone_once_the_version_matches(self) -> None:
+        """Only an upgrade refreshes presentation; a steady state does not."""
+        current = seed_registry_payload()
+        current["types"][0]["shape"] = "ring-dashed"
+
+        merged = merge_seed_into(current, seed_registry_payload())
+
+        assert merged["types"][0]["shape"] == "ring-dashed"
+
     def test_adds_missing_field_descriptors_to_an_existing_type(self) -> None:
         stored = _stale_registry(
             [_type("mimir", fields=[{"key": "pages", "label": "Pages", "type": "number"}])]
