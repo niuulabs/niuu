@@ -163,7 +163,14 @@ class ObservatoryTopologyAggregationService:
                         None,
                     )
                 except Exception as exc:  # one bad source must not empty the graph
-                    logger.warning("Topology fragment unavailable from %s: %s", instance.name, exc)
+                    # Same reason the API field is described rather than
+                    # stringified: several transport errors render as "", and a
+                    # log line that names the source then stops is not a log.
+                    logger.warning(
+                        "Topology fragment unavailable from %s: %s",
+                        instance.name,
+                        self._describe(exc),
+                    )
                     return instance, None, exc
 
         return list(await asyncio.gather(*(load(instance) for instance in instances)))
