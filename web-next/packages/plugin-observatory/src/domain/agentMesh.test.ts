@@ -84,6 +84,52 @@ describe('deriveAgentMeshes', () => {
     expect(meshes.map((m) => m.label)).toEqual(['research-campaign-investigate-the-gateway']);
   });
 
+  it('carries the kind and transport its source declared', () => {
+    const flock: TopologyNode = {
+      id: 'flock:flock-k8s',
+      typeId: 'flock',
+      label: 'K8s Valkyries',
+      parentId: null,
+      status: 'healthy',
+      flockId: 'flock-k8s',
+      meshKind: 'standing',
+      meshTransport: 'nats',
+      purpose: 'kubernetes operations',
+    };
+    const [mesh] = deriveAgentMeshes(
+      topology([
+        flock,
+        node('bryn', 'valkyrie', 'flock-k8s'),
+        node('eir', 'valkyrie', 'flock-k8s'),
+      ]),
+    );
+
+    expect(mesh?.kind).toBe('standing');
+    expect(mesh?.transport).toBe('nats');
+    expect(mesh?.purpose).toBe('kubernetes operations');
+  });
+
+  it('takes the declaration off its members when the flock has no node', () => {
+    const member = (id: string): TopologyNode => ({
+      ...node(id, 'ravn_run', 'session-1'),
+      meshKind: 'workflow',
+      meshTransport: 'nng',
+    });
+    const [mesh] = deriveAgentMeshes(topology([member('a'), member('b')]));
+
+    expect(mesh?.kind).toBe('workflow');
+    expect(mesh?.transport).toBe('nng');
+  });
+
+  it('claims no transport when nothing declared one', () => {
+    const [mesh] = deriveAgentMeshes(
+      topology([node('a', 'ravn_long', 'pair'), node('b', 'ravn_long', 'pair')]),
+    );
+
+    expect(mesh?.transport).toBeUndefined();
+    expect(mesh?.kind).toBeUndefined();
+  });
+
   it('falls back to the flock id when members are scattered', () => {
     const here: TopologyNode = { ...node('a', 'ravn_long', 'roaming'), parentId: 'cluster-a' };
     const there: TopologyNode = { ...node('b', 'ravn_long', 'roaming'), parentId: 'cluster-b' };

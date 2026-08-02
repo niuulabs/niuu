@@ -1210,23 +1210,46 @@ def _flock_node_id(flock_id: str) -> str:
     return f"flock:{_slug(flock_id)}"
 
 
-def _flock_entities(flock_ids: Iterable[str], source_adapter: str) -> list[DiscoveredEntity]:
+def _flock_entities(
+    flock_ids: Iterable[str],
+    source_adapter: str,
+    described: Mapping[str, Mapping[str, Any]] | None = None,
+) -> list[DiscoveredEntity]:
     """The flocks that anything actually belongs to.
 
     `member_of` edges pointed at a `flock:` id that nothing emitted, so every
     mesh edge dangled and the canvas drew no connection between agents that
     are demonstrably on the same mesh.
+
+    `described` carries what the source knows about a flock beyond its id — its
+    name, what it is for, and the subject its members talk over. A flock named
+    from its id alone is a fallback, used only for one nothing described.
     """
-    return [
-        DiscoveredEntity(
-            id=_flock_node_id(flock_id),
-            kind="flock",
-            name=humanize_flock(flock_id),
-            source_adapter=source_adapter,
-            metadata={"flockId": flock_id},
+    records = described or {}
+    entities: list[DiscoveredEntity] = []
+    for flock_id in sorted({f for f in flock_ids if f}):
+        record = records.get(flock_id, {})
+        subject = str(record.get("natsSubject") or "").strip()
+        entities.append(
+            DiscoveredEntity(
+                id=_flock_node_id(flock_id),
+                kind="flock",
+                name=str(record.get("name") or "").strip() or humanize_flock(flock_id),
+                source_adapter=source_adapter,
+                metadata={
+                    "flockId": flock_id,
+                    "purpose": str(record.get("domain") or "").strip(),
+                    # A standing flock of residents, as opposed to the flock a
+                    # workflow session runs for as long as it lasts.
+                    "meshKind": "standing",
+                    # Claimed only where there is evidence: a NATS subject is
+                    # how a Flokk mesh actually carries traffic.
+                    "meshTransport": "nats" if subject else "",
+                    "meshSubject": subject,
+                },
+            )
         )
-        for flock_id in sorted({f for f in flock_ids if f})
-    ]
+    return entities
 
 
 def humanize_flock(flock_id: str) -> str:
@@ -1510,7 +1533,12 @@ class RavnValkyrieDiscoveryAdapter:
                     },
                 )
             )
-        entities.extend(_flock_entities(flock_ids, self.__class__.__name__))
+        described = {
+            str(item.get("id") or ""): item
+            for item in payload.get("flocks", [])
+            if isinstance(item, dict) and str(item.get("id") or "")
+        }
+        entities.extend(_flock_entities(flock_ids, self.__class__.__name__, described))
         return DiscoveryResult(entities=entities, edges=edges)
 
 
@@ -1530,6 +1558,26 @@ def _flock_personas(values: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [p for p in personas if isinstance(p, Mapping) and str(p.get("name") or "").strip()]
 
 
+def _release_env(values: Mapping[str, Any], name: str) -> str:
+    """One environment variable as the release declares it."""
+    for var in values.get("envVars") or []:
+        if isinstance(var, Mapping) and str(var.get("name") or "") == name:
+            return str(var.get("value") or "").strip()
+    return ""
+
+
+def _mesh_transport(values: Mapping[str, Any]) -> str:
+    """What the members of this session's flock actually talk over.
+
+    Skuld is told its transport by name when Volundr writes the release, so the
+    canvas can say `nng` because the workload says `nng` — not because a flock
+    is assumed to use one. A mesh that is switched off claims no transport.
+    """
+    if _release_env(values, "SKULD__MESH__ENABLED").lower() != "true":
+        return ""
+    return _release_env(values, "SKULD__MESH__TRANSPORT").lower()
+
+
 def _flock_summary(values: Mapping[str, Any]) -> dict[str, Any]:
     """What the session itself should say about being a flock."""
     personas = _flock_personas(values)
@@ -1541,6 +1589,10 @@ def _flock_summary(values: Mapping[str, Any]) -> dict[str, Any]:
         "workloadType": "ravn_flock",
         "memberCount": len(personas),
         "dailyBudgetUsd": budget,
+        # This flock lasts exactly as long as the session does, unlike the
+        # standing flock a resident belongs to.
+        "meshKind": "workflow",
+        "meshTransport": _mesh_transport(values),
     }
 
 
@@ -1565,6 +1617,7 @@ def _flock_member_entities(
         # One agent is not a collaboration, and a mesh of one draws nothing.
         return []
 
+    transport = _mesh_transport(values)
     members: list[DiscoveredEntity] = []
     for persona in personas:
         name = str(persona.get("name") or "").strip()
@@ -1582,6 +1635,8 @@ def _flock_member_entities(
                 source_kind="flux-helmrelease:flock-persona",
                 metadata={
                     "flockId": session_id,
+                    "meshKind": "workflow",
+                    "meshTransport": transport,
                     "persona": name,
                     "model": str((llm or {}).get("model") or ""),
                     "consumes": [str(e) for e in persona.get("consumes_event_types") or []],

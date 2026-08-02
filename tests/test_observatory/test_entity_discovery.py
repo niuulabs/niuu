@@ -572,14 +572,68 @@ async def test_valkyries_are_connected_to_the_flock_they_report() -> None:
     assert len(flocks) == 1
     # One node for the mesh, not one per member and not one per cluster.
     assert flocks[0].id == "flock:flock-k8s"
+    # Nothing described this flock, so its id has to serve as its name.
     assert flocks[0].name == "K8S flock"
     assert not flocks[0].cluster
+    assert flocks[0].metadata["meshKind"] == "standing"
+    # No subject was reported, so no transport is claimed.
+    assert flocks[0].metadata["meshTransport"] == ""
 
     members = [e for e in result.entities if e.kind == "valkyrie"]
     assert len(members) == 3
     assert {e["sourceId"] for e in result.edges} == {m.id for m in members}
     assert {e["targetId"] for e in result.edges} == {"flock:flock-k8s"}
     assert all(e["relationType"] == "member_of" for e in result.edges)
+
+
+@pytest.mark.asyncio
+async def test_a_flock_is_named_and_described_by_the_ravn_that_runs_it() -> None:
+    """Ravn already knows what a flock is called and what it talks over.
+
+    The flock node was built from its id alone — `flock-k8s` became
+    "K8S flock" and said nothing about what the mesh is for or how its members
+    reach each other. The dashboard reports all three.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "environments": [{"id": "env-k8s-eitri"}],
+                "valkyries": [
+                    {
+                        "id": f"valkyrie-{name}",
+                        "name": name,
+                        "environmentId": "env-k8s-eitri",
+                        "flockId": "flock-k8s",
+                    }
+                    for name in ("Bryn", "Eir")
+                ],
+                "flocks": [
+                    {
+                        "id": "flock-k8s",
+                        "name": "K8s Valkyries",
+                        "domain": "kubernetes operations",
+                        "natsSubject": "flock.k8s.>",
+                    }
+                ],
+            },
+        )
+
+    adapter = RavnValkyrieDiscoveryAdapter(
+        base_url="https://ravn.example",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    (flock,) = [e for e in result.entities if e.kind == "flock"]
+    assert flock.name == "K8s Valkyries"
+    assert flock.metadata["purpose"] == "kubernetes operations"
+    assert flock.metadata["meshKind"] == "standing"
+    # A NATS subject is evidence of the transport, not a guess about it.
+    assert flock.metadata["meshTransport"] == "nats"
+    assert flock.metadata["meshSubject"] == "flock.k8s.>"
 
 
 @pytest.mark.asyncio
@@ -1503,7 +1557,12 @@ def _gateway_adapter(record: dict[str, object], **kwargs: object):
     )
 
 
-def _flock_release(name: str, session_id: str, personas: list[dict]) -> dict:
+def _flock_release(
+    name: str,
+    session_id: str,
+    personas: list[dict],
+    env: list[dict] | None = None,
+) -> dict:
     return {
         "metadata": {"name": name, "uid": f"uid-{session_id}", "generation": 1},
         "spec": {
@@ -1511,6 +1570,12 @@ def _flock_release(name: str, session_id: str, personas: list[dict]) -> dict:
                 "image": {"tag": "dev"},
                 "session": {"id": session_id, "name": "research-campaign"},
                 "flock": {"daily_budget_usd": 25, "personas": personas},
+                "envVars": env
+                if env is not None
+                else [
+                    {"name": "SKULD__MESH__ENABLED", "value": "true"},
+                    {"name": "SKULD__MESH__TRANSPORT", "value": "nng"},
+                ],
             }
         },
         "status": {"conditions": [{"type": "Ready", "status": "True"}]},
@@ -1564,6 +1629,50 @@ async def test_a_running_flock_shows_the_agents_inside_it(tmp_path) -> None:
     assert all(m.parent_id == session.id for m in members)
     assert members[0].metadata["model"] == "gpt-5.5"
     assert members[0].metadata["consumes"] == ["research.requested"]
+
+
+@pytest.mark.asyncio
+async def test_a_workflow_flock_reports_the_transport_it_was_given(tmp_path) -> None:
+    """Skuld is told its transport by name, so the canvas can say it.
+
+    A mesh drawn as peering over a protocol it does not use is worse than one
+    that says nothing, so this is read from the release rather than assumed
+    from the fact that a flock exists at all.
+    """
+    personas = [{"name": "framer"}, {"name": "reviewer"}]
+    adapter = _flux_adapter([_flock_release("skuld-abc", "abc", personas)], tmp_path)
+
+    result = await adapter.discover()
+
+    session = next(e for e in result.entities if e.kind == "skuld")
+    assert session.metadata["meshKind"] == "workflow"
+    assert session.metadata["meshTransport"] == "nng"
+    members = [e for e in result.entities if e.kind == "ravn_run"]
+    assert {m.metadata["meshTransport"] for m in members} == {"nng"}
+
+
+@pytest.mark.asyncio
+async def test_a_flock_with_its_mesh_switched_off_claims_no_transport(tmp_path) -> None:
+    personas = [{"name": "framer"}, {"name": "reviewer"}]
+    adapter = _flux_adapter(
+        [
+            _flock_release(
+                "skuld-off",
+                "off",
+                personas,
+                env=[
+                    {"name": "SKULD__MESH__ENABLED", "value": "false"},
+                    {"name": "SKULD__MESH__TRANSPORT", "value": "nng"},
+                ],
+            )
+        ],
+        tmp_path,
+    )
+
+    result = await adapter.discover()
+
+    session = next(e for e in result.entities if e.kind == "skuld")
+    assert session.metadata["meshTransport"] == ""
 
 
 @pytest.mark.asyncio

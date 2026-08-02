@@ -147,6 +147,12 @@ export interface TopologyNode {
   realm?: string | null;
   hostId?: string | null;
   flockId?: string | null;
+  /** `workflow` when this flock lives and dies with a session, else `standing`. */
+  meshKind?: string;
+  /** Transport the flock's members peer over, as its source declared it. */
+  meshTransport?: string;
+  /** Subject the mesh carries traffic on, where the transport has one. */
+  meshSubject?: string;
   sourceId?: string;
   sourceKind?: string;
   layoutHints?: LayoutHints;

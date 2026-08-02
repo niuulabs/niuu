@@ -17,6 +17,9 @@ const MESH_MEMBER_TYPES: ReadonlySet<string> = new Set([
   'run',
 ]);
 
+/** How a mesh came to exist, which decides how long it lasts. */
+export type MeshKind = 'workflow' | 'standing';
+
 export interface AgentMesh {
   /** The `flockId` shared by every member. */
   id: string;
@@ -30,6 +33,27 @@ export interface AgentMesh {
   label: string;
   /** Member node ids, in stable topology order. */
   memberIds: string[];
+  /**
+   * Whether this flock runs for a workflow or stands on its own.
+   *
+   * A workflow's flock is created with its session and dies with it; a
+   * standing flock of residents outlives any one piece of work. They read
+   * identically on the canvas otherwise, which made a transient room look
+   * like part of the estate.
+   */
+  kind?: MeshKind;
+  /**
+   * The transport its members actually talk over — `nats`, `nng`, whatever
+   * comes next. Absent when no source declared one; never guessed, because a
+   * mesh drawn as peering over a protocol it does not use is worse than a
+   * mesh that admits it does not know.
+   */
+  transport?: string;
+  /**
+   * What the mesh is for, where its source says so — a flock's domain reads
+   * better than three residents' specialties stitched together.
+   */
+  purpose?: string;
 }
 
 /** True when a node can belong to an agent mesh. */
@@ -57,18 +81,44 @@ export function deriveAgentMeshes(topology: Topology | null): AgentMesh[] {
   }
 
   const byId = new Map(topology.nodes.map((node) => [node.id, node]));
-  const flockLabels = new Map(
+  const flockNodes = new Map(
     topology.nodes
       .filter((node) => node.typeId === 'flock' && node.flockId)
-      .map((node) => [node.flockId as string, node.label]),
+      .map((node) => [node.flockId as string, node]),
   );
 
   const meshes: AgentMesh[] = [];
   for (const [id, memberIds] of byFlock) {
     if (memberIds.length < 2) continue;
-    meshes.push({ id, label: meshLabel(id, memberIds, byId, flockLabels), memberIds });
+    // The flock's own node speaks for the mesh where there is one; otherwise
+    // the members do, and they all carry the same declaration.
+    const speakers = [flockNodes.get(id), ...memberIds.map((memberId) => byId.get(memberId))];
+    const kind = firstDeclared(speakers, (node) => node.meshKind);
+    const transport = firstDeclared(speakers, (node) => node.meshTransport);
+    const purpose = firstDeclared(speakers, (node) => node.purpose);
+    meshes.push({
+      id,
+      label: meshLabel(id, memberIds, byId, flockNodes),
+      memberIds,
+      ...(kind === 'workflow' || kind === 'standing' ? { kind } : {}),
+      ...(transport ? { transport } : {}),
+      ...(purpose ? { purpose } : {}),
+    });
   }
   return meshes;
+}
+
+/** The first value any of these nodes actually declared, if any did. */
+function firstDeclared(
+  nodes: Array<TopologyNode | undefined>,
+  read: (node: TopologyNode) => string | undefined,
+): string | undefined {
+  for (const node of nodes) {
+    if (!node) continue;
+    const value = read(node)?.trim();
+    if (value) return value;
+  }
+  return undefined;
 }
 
 /**
@@ -84,9 +134,9 @@ function meshLabel(
   id: string,
   memberIds: string[],
   byId: Map<string, TopologyNode>,
-  flockLabels: Map<string, string>,
+  flockNodes: Map<string, TopologyNode>,
 ): string {
-  const declared = flockLabels.get(id);
+  const declared = flockNodes.get(id)?.label;
   if (declared) return declared;
 
   const parents = new Set(memberIds.map((memberId) => byId.get(memberId)?.parentId ?? null));

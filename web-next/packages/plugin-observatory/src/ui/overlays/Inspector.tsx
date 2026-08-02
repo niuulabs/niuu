@@ -389,10 +389,14 @@ export function Inspector({ node, topology, registry, onNodeSelect, footer }: In
           ) : null}
 
           {mesh ? (
-            <Block title={`Mesh · ${mesh.label}`}>
+            <Block
+              title={`${mesh.kind === 'workflow' ? 'Workflow flock' : 'Mesh'} · ${mesh.label}`}
+            >
               <p className="obs-insp__note">
-                {mesh.memberIds.length} residents peer directly, so a finding by one becomes
+                {mesh.memberIds.length} agents peer directly
+                {mesh.transport ? ` over ${mesh.transport}` : ''}, so a finding by one becomes
                 evidence for all.
+                {mesh.kind === 'workflow' ? ' This flock lasts as long as its session does.' : ''}
               </p>
               <NodeList
                 nodes={meshMembers}

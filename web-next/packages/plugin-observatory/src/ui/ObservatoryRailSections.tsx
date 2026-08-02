@@ -133,7 +133,7 @@ export function ObservatoryRailSections({ topology, selectedId, onSelect }: Prop
               // grouping, not a node the canvas can select on its own.
               id={mesh.memberIds[0] ?? mesh.id}
               name={mesh.label}
-              sub={meshSubtitle(mesh.memberIds, topology)}
+              sub={meshSubtitle(mesh, topology)}
               badge={mesh.memberIds.length}
               badgeTone="amber"
               tone="mesh"

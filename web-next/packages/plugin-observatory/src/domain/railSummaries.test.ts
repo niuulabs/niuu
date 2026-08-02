@@ -6,6 +6,7 @@ import {
   placementSubtitle,
   residentSubtitle,
 } from './railSummaries';
+import type { AgentMesh } from './agentMesh';
 import type { Topology, TopologyNode } from './index';
 
 function node(id: string, typeId: string, over: Record<string, unknown> = {}): TopologyNode {
@@ -14,6 +15,10 @@ function node(id: string, typeId: string, over: Record<string, unknown> = {}): T
 
 function topology(nodes: TopologyNode[]): Topology {
   return { timestamp: '2026-08-02T00:00:00Z', nodes, edges: [] };
+}
+
+function mesh(memberIds: string[], over: Partial<AgentMesh> = {}): AgentMesh {
+  return { id: 'm', label: 'm', memberIds, ...over };
 }
 
 describe('clusterSummaries', () => {
@@ -105,15 +110,37 @@ describe('row subtitles', () => {
       node('b', 'ravn_run', { role: 'verify', cluster: 'ymir' }),
       node('c', 'ravn_run', { role: 'ship', cluster: 'ymir' }),
     ]);
-    expect(meshSubtitle(['a', 'b', 'c'], topo)).toBe('build · verify · ship');
+    expect(meshSubtitle(mesh(['a', 'b', 'c']), topo)).toBe('build · verify · ship');
   });
 
-  it('calls a mesh built around a session a workflow', () => {
+  it('leads with the kind and the transport its members peer over', () => {
+    // A room that dies with its session must not read like estate
+    // infrastructure, and who peers with whom is only half of what a mesh is.
     const topo = topology([
-      node('r', 'run', { cluster: 'valhalla' }),
+      node('r', 'ravn_run', { cluster: 'valhalla' }),
       node('a', 'ravn_run', { cluster: 'valhalla' }),
     ]);
-    expect(meshSubtitle(['r', 'a'], topo)).toBe('workflow · valhalla');
+    expect(meshSubtitle(mesh(['r', 'a'], { kind: 'workflow', transport: 'nng' }), topo)).toBe(
+      'workflow · nng · valhalla',
+    );
+  });
+
+  it('prefers a standing flock stated purpose over its members specialties', () => {
+    const topo = topology([
+      node('a', 'valkyrie', { specialty: 'Pattern-minded state maintainer', cluster: 'ymir' }),
+      node('b', 'valkyrie', { specialty: 'Pattern-minded state maintainer', cluster: 'eitri' }),
+    ]);
+    expect(
+      meshSubtitle(
+        mesh(['a', 'b'], { kind: 'standing', transport: 'nats', purpose: 'kubernetes operations' }),
+        topo,
+      ),
+    ).toBe('flock · nats · kubernetes operations');
+  });
+
+  it('says nothing about a transport no source declared', () => {
+    const topo = topology([node('a', 'ravn_long', { cluster: 'ymir' })]);
+    expect(meshSubtitle(mesh(['a'], { kind: 'standing' }), topo)).toBe('flock · ymir');
   });
 
   it('names the host a resident runs on over its cluster', () => {
@@ -130,7 +157,7 @@ describe('row subtitles', () => {
       node('b', 'ravn_long', { cluster: 'eitri' }),
       node('c', 'ravn_long'),
     ]);
-    expect(meshSubtitle(['a', 'b', 'c'], topo)).toBe('eitri · local · ymir');
+    expect(meshSubtitle(mesh(['a', 'b', 'c']), topo)).toBe('eitri · local · ymir');
   });
 });
 

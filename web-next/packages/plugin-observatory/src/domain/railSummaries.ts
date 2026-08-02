@@ -8,6 +8,7 @@
  */
 
 import type { Topology, TopologyNode } from './index';
+import type { AgentMesh } from './agentMesh';
 import { computeClassMap, type ComputeClass } from './computeClass';
 
 function numberField(node: TopologyNode, key: string): number | null {
@@ -152,31 +153,38 @@ export function mimirBadge(node: TopologyNode): string | null {
 }
 
 /**
- * What a mesh is for, read off the members it actually has.
+ * What a mesh is, what it talks over, and what it is for.
  *
- * A mesh exists to do something, and its members say what: a resident's
- * specialty and a run agent's role are exactly the `build · verify · ship`
- * the design calls for, without anyone having to write a description that
- * would then go stale. Where members declare nothing, fall back to the
- * clusters the mesh reaches across — scattered members are the other thing
- * worth knowing about a mesh.
+ * The first token is the one the rail colours, so it carries the distinction
+ * that matters most: a `workflow` flock is a room that dies with its session,
+ * while a standing `flock` is part of the estate. They looked identical
+ * before, so a transient room read as permanent infrastructure.
+ *
+ * Then the transport — `nats`, `nng`, whatever comes next — because who peers
+ * with whom is only half the story of a mesh. It is shown only where a source
+ * declared one; a protocol is not something to guess at.
+ *
+ * Then what the mesh is for: its own stated purpose, else what its members
+ * say they do, else the clusters it reaches across.
  */
-export function meshSubtitle(memberIds: readonly string[], topology: Topology | null): string {
+export function meshSubtitle(mesh: AgentMesh, topology: Topology | null): string {
   const byId = nodeIndex(topology);
   const doing: string[] = [];
   const where = new Set<string>();
-  let workflow = false;
 
-  for (const id of memberIds) {
+  for (const id of mesh.memberIds) {
     const member = byId.get(id);
     if (!member) continue;
-    if (member.typeId === 'run') workflow = true;
     where.add(clusterNameOf(member, byId) || 'local');
     const what = textField(member, 'specialty') || textField(member, 'role');
     if (what && !doing.includes(what)) doing.push(what);
   }
 
-  const places = [...where].sort().join(' · ');
-  if (doing.length > 0) return doing.slice(0, 3).join(' · ');
-  return workflow ? ['workflow', places].filter(Boolean).join(' · ') : places;
+  const about =
+    mesh.purpose ||
+    (doing.length > 0 ? doing.slice(0, 3).join(' · ') : '') ||
+    [...where].sort().join(' · ');
+  const kind = mesh.kind === 'workflow' ? 'workflow' : mesh.kind === 'standing' ? 'flock' : '';
+
+  return [kind, mesh.transport, about].filter(Boolean).join(' · ');
 }
