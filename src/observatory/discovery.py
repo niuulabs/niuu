@@ -106,11 +106,16 @@ class ObservatoryDiscoveryService:
         # A stale answer is the right one here: the snapshot describes an
         # estate that changes over minutes, and the alternative on offer is not
         # a fresher answer but no answer at all.
-        if cached is not None and not self._refreshing:
-            self._refreshing = True
-            task = asyncio.create_task(self._refresh(cache_key, headers=headers))
-            self._background.add(task)
-            task.add_done_callback(self._background.discard)
+        # Any caller holding a stale entry is served from it. Gating this on
+        # "am I the one who started the refresh" sent every *other* caller
+        # during those seconds down to the lock below, where they waited out
+        # the rebuild anyway — which is the whole cost this exists to avoid.
+        if cached is not None:
+            if not self._refreshing:
+                self._refreshing = True
+                task = asyncio.create_task(self._refresh(cache_key, headers=headers))
+                self._background.add(task)
+                task.add_done_callback(self._background.discard)
             return cached[1]
 
         async with self._lock:

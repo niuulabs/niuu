@@ -144,3 +144,44 @@ async def test_an_expired_cache_serves_stale_while_it_rebuilds() -> None:
     release.set()  # and the refresh really was running behind it
     await asyncio.sleep(0.1)
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_every_caller_during_a_refresh_is_served_stale() -> None:
+    """Not just the one that started it.
+
+    Gating the stale path on "did I start the refresh" sent every other
+    caller down to the lock, where it waited out the rebuild anyway — which
+    is the cost the stale path exists to avoid. On ymir that left the Guild
+    still timing out intermittently after the first fix.
+    """
+    release = asyncio.Event()
+    calls = 0
+
+    class _BlockingAdapter:
+        async def discover(self):  # noqa: ANN202
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                await release.wait()
+            return DiscoveryResult(
+                entities=[DiscoveredEntity(id=f"svc-{calls}", kind="service", name="svc")]
+            )
+
+    service = ObservatoryDiscoveryService(
+        guild_url="http://guild.test",
+        ttl_seconds=1.0,
+        discovery_adapter=_BlockingAdapter(),
+    )
+
+    await service.get_topology_snapshot()
+    await asyncio.sleep(1.2)
+
+    await asyncio.wait_for(service.get_topology_snapshot(), timeout=1.0)  # starts refresh
+    # Three more while that refresh is still wedged open.
+    for _ in range(3):
+        await asyncio.wait_for(service.get_topology_snapshot(), timeout=1.0)
+
+    release.set()
+    await asyncio.sleep(0.1)
+    assert calls == 2  # one initial build, one refresh — not one per caller
