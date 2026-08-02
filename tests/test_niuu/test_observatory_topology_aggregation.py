@@ -219,6 +219,70 @@ class TestMerge:
         assert snapshot.warnings == []
 
     @pytest.mark.asyncio
+    async def test_the_cluster_that_owns_a_node_beats_a_peer_referencing_it(self) -> None:
+        """A placeholder must not outrank the real thing.
+
+        An Observatory that references a peer's cluster synthesises a stub for
+        it with no placement, while the Observatory in that cluster emits the
+        real node under its realm. Keeping whichever arrived first let the stub
+        win, and the realm — left with no children — had no rectangle left to
+        draw. On the live estate every realm but ymir's vanished this way.
+        """
+        stub = ObservatoryFragment(
+            nodes=[
+                TopologyNode(id="cluster-eitri", type_id="cluster", label="eitri"),
+                TopologyNode(
+                    id="cluster-ymir",
+                    type_id="cluster",
+                    label="ymir",
+                    parent_id="realm-ginnungagap",
+                ),
+            ],
+            meta=FragmentMeta(source_id="obs-ymir", cluster_id="ymir", revision="r"),
+        )
+        owner = ObservatoryFragment(
+            nodes=[
+                TopologyNode(
+                    id="cluster-eitri",
+                    type_id="cluster",
+                    label="eitri",
+                    parent_id="realm-svartalfheim",
+                )
+            ],
+            meta=FragmentMeta(source_id="obs-eitri", cluster_id="eitri", revision="r"),
+        )
+        service = _service({"obs-ymir": stub, "obs-eitri": owner})
+
+        snapshot = await service.get_snapshot(
+            [_instance("obs-ymir"), _instance("obs-eitri")], headers={}
+        )
+
+        by_id = {node.id: node for node in snapshot.nodes}
+        # The owner's placement survives even though the stub was seen first.
+        assert by_id["cluster-eitri"].parent_id == "realm-svartalfheim"
+        assert by_id["cluster-ymir"].parent_id == "realm-ginnungagap"
+        # Not a conflict worth reporting — one source simply knows more.
+        assert snapshot.warnings == []
+
+    @pytest.mark.asyncio
+    async def test_a_placed_node_beats_a_bare_reference_even_without_ownership(self) -> None:
+        bare = ObservatoryFragment(
+            nodes=[TopologyNode(id="host-1", type_id="host", label="host-1")],
+            meta=FragmentMeta(source_id="obs-a", cluster_id="", revision="r"),
+        )
+        placed = ObservatoryFragment(
+            nodes=[
+                TopologyNode(id="host-1", type_id="host", label="host-1", parent_id="cluster-x")
+            ],
+            meta=FragmentMeta(source_id="obs-b", cluster_id="", revision="r"),
+        )
+        service = _service({"obs-a": bare, "obs-b": placed})
+
+        snapshot = await service.get_snapshot([_instance("obs-a"), _instance("obs-b")], headers={})
+
+        assert snapshot.nodes[0].parent_id == "cluster-x"
+
+    @pytest.mark.asyncio
     async def test_a_contested_node_id_is_reported_rather_than_resolved_silently(self) -> None:
         first = ObservatoryFragment(
             nodes=[TopologyNode(id="contested", type_id="host", label="from-a")],

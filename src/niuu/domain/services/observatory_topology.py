@@ -185,15 +185,40 @@ class ObservatoryTopologyAggregationService:
             return []
 
 
+def _claim_authority(node: TopologyNode, fragment_cluster: str) -> int:
+    """How much weight a source's claim on a node carries.
+
+    2 — the source speaks for the cluster this node belongs to.
+    1 — the claim at least places the node under a parent.
+    0 — a bare reference, synthesised because some other node pointed at it.
+    """
+    # Discovery stamps placement as `clusterName`, which reaches the model as
+    # an extra field rather than the declared `cluster_id`; read both so the
+    # rule is not quietly dead.
+    extra = node.model_extra or {}
+    cluster = (node.cluster_id or str(extra.get("clusterName") or "")).strip()
+    if fragment_cluster and cluster and fragment_cluster == cluster:
+        return 2
+    return 1 if node.parent_id else 0
+
+
 def _merge(
     fragments: list[ObservatoryFragment],
 ) -> tuple[list[TopologyNode], list[TopologyEdge], list[TopologyEvent], list[TopologyWarning]]:
-    """Combine fragments, keeping the first claim on any contested id.
+    """Combine fragments, preferring the source that speaks for a node.
 
-    Two sources claiming the same node id is a real condition — an overlapping
-    discovery scope, or two hosts announcing the same name — and it is reported
-    rather than resolved silently, because whichever way it is resolved the
-    graph is showing something an operator did not intend.
+    Two sources claiming the same node id is usually not a conflict: an
+    Observatory that merely *references* a peer's cluster synthesises a
+    placeholder for it, carrying no placement, while the Observatory in that
+    cluster emits the real thing. Keeping whichever arrived first let a
+    placeholder win, and a cluster whose parent was lost that way took its
+    realm off the canvas with it — a realm with no children has no rectangle
+    to draw. Every realm but ymir's and vanaheim's disappeared this way.
+
+    So a claim that places a node beats one that does not, and a source that
+    declares itself the owner of that cluster beats both. Two claims of equal
+    authority that genuinely disagree are still a real condition, and are
+    reported rather than resolved silently.
     """
     nodes: dict[str, TopologyNode] = {}
     edges: dict[str, TopologyEdge] = {}
@@ -201,15 +226,27 @@ def _merge(
     warnings: list[TopologyWarning] = []
     claimed_by: dict[str, str] = {}
 
+    authority: dict[str, int] = {}
+
     for fragment in fragments:
         source_id = fragment.meta.source_id if fragment.meta else ""
+        fragment_cluster = fragment.meta.cluster_id if fragment.meta else ""
         for node in fragment.nodes:
+            rank = _claim_authority(node, fragment_cluster)
             existing = nodes.get(node.id)
             if existing is None:
                 nodes[node.id] = node
                 claimed_by[node.id] = source_id
+                authority[node.id] = rank
                 continue
             if existing.model_dump() == node.model_dump():
+                continue
+            if rank > authority.get(node.id, 0):
+                nodes[node.id] = node
+                claimed_by[node.id] = source_id
+                authority[node.id] = rank
+                continue
+            if rank < authority.get(node.id, 0):
                 continue
             warnings.append(
                 TopologyWarning(
