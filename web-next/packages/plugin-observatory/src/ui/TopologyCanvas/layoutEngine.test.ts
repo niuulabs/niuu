@@ -10,7 +10,7 @@ import {
   HOST_HALF_W,
   HOST_HALF_H,
 } from './layoutEngine';
-import { LAYOUT } from './config';
+import { LAYOUT, NODE_SIZE } from './config';
 import type { Topology } from '../../domain';
 
 // ── Shared test topology ──────────────────────────────────────────────────────
@@ -1080,5 +1080,103 @@ describe('computeLayoutBounds', () => {
     };
 
     expect(computeLayoutBounds(topology, new Map())).toBeNull();
+  });
+});
+
+describe('nested containment', () => {
+  /**
+   * Valhalla's Skuld namespace holds seven workflow sessions, each running a
+   * flock of agents. Sizing containers by child count packed the namespace
+   * first, while the sessions inside it still measured as bare dots — each
+   * then grew to hold six agents and drove straight through its neighbours.
+   */
+  function nestedTopology(sessions: number, membersEach: number): Topology {
+    const nodes: Topology['nodes'] = [
+      {
+        id: 'cluster-valhalla',
+        typeId: 'cluster',
+        label: 'valhalla',
+        parentId: null,
+        status: 'healthy',
+      },
+      {
+        id: 'ns-skuld',
+        typeId: 'namespace',
+        label: 'skuld',
+        parentId: 'cluster-valhalla',
+        status: 'healthy',
+      },
+    ];
+    for (let s = 0; s < sessions; s += 1) {
+      nodes.push({
+        id: `session-${s}`,
+        typeId: 'skuld',
+        label: `session-${s}`,
+        parentId: 'ns-skuld',
+        status: 'healthy',
+      });
+      for (let m = 0; m < membersEach; m += 1) {
+        nodes.push({
+          id: `session-${s}:member-${m}`,
+          typeId: 'ravn_run',
+          label: `member-${m}`,
+          parentId: `session-${s}`,
+          status: 'healthy',
+          flockId: `session-${s}`,
+        });
+      }
+    }
+    return { timestamp: '2026-08-02T00:00:00Z', nodes, edges: [] };
+  }
+
+  it('keeps the agents of one session clear of the next', () => {
+    const topology = nestedTopology(7, 6);
+    const positions = computeLayout(topology);
+    const members = topology.nodes.filter((node) => node.typeId === 'ravn_run');
+
+    let closest = Number.POSITIVE_INFINITY;
+    for (const a of members) {
+      for (const b of members) {
+        if (a.parentId === b.parentId || a.id >= b.id) continue;
+        const pa = positions.get(a.id)!;
+        const pb = positions.get(b.id)!;
+        closest = Math.min(closest, Math.hypot(pa.x - pb.x, pa.y - pb.y));
+      }
+    }
+
+    // The packer reserves a gutter around every glyph, so agents that belong
+    // to different sessions should never land inside one node's extent of
+    // each other. Sizing by child count put them 17 units apart.
+    expect(closest).toBeGreaterThan(NODE_SIZE.ravn_run! * 4);
+  });
+
+  it('survives a parent cycle rather than recursing forever', () => {
+    // Malformed data, but a source that reports it should not hang the canvas.
+    const topology: Topology = {
+      timestamp: '2026-08-02T00:00:00Z',
+      nodes: [
+        { id: 'a', typeId: 'service', label: 'a', parentId: 'b', status: 'healthy' },
+        { id: 'b', typeId: 'service', label: 'b', parentId: 'a', status: 'healthy' },
+      ],
+      edges: [],
+    };
+
+    const positions = computeLayout(topology);
+
+    expect(positions.has('a')).toBe(true);
+    expect(positions.has('b')).toBe(true);
+  });
+
+  it('gives the namespace room for the sessions as they actually size', () => {
+    const topology = nestedTopology(7, 6);
+    const positions = computeLayout(topology);
+    const namespace = positions.get('ns-skuld')!;
+    const halfWidth = (namespace.containerWidth ?? 0) / 2;
+
+    for (const node of topology.nodes) {
+      if (node.typeId !== 'ravn_run') continue;
+      const pos = positions.get(node.id)!;
+      expect(Math.hypot(pos.x - namespace.x, pos.y - namespace.y)).toBeLessThanOrEqual(halfWidth);
+    }
   });
 });

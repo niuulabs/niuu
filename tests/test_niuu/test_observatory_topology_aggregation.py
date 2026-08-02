@@ -283,6 +283,63 @@ class TestMerge:
         assert snapshot.nodes[0].parent_id == "cluster-x"
 
     @pytest.mark.asyncio
+    async def test_the_owner_wins_placement_without_discarding_what_a_peer_knew(self) -> None:
+        """Ranking decides contested fields, not who gets heard at all.
+
+        Kubernetes knows where a resident runs and calls it after the resource
+        — `valkyrie-eitri-k8s`. The Ravn dashboard on ymir knows the same
+        resident as Bryn and knows which flock it peers in. Letting the owning
+        cluster replace the peer's claim outright took both away: residents
+        came back named after their workload, and the flock they shared went
+        with them, so the mesh had nothing left to group on.
+        """
+        dashboard = ObservatoryFragment(
+            nodes=[
+                TopologyNode(
+                    id="runtime:eitri:nats:valkyrie:valkyrie-eitri-k8s",
+                    type_id="valkyrie",
+                    label="Bryn",
+                    parent_id="namespace-eitri-nats",
+                    source_kind="ravn:valkyrie-dashboard",
+                    flockId="flock-k8s",
+                    clusterName="eitri",
+                )
+            ],
+            meta=FragmentMeta(source_id="obs-ymir", cluster_id="ymir", revision="r"),
+        )
+        owner = ObservatoryFragment(
+            nodes=[
+                TopologyNode(
+                    id="runtime:eitri:nats:valkyrie:valkyrie-eitri-k8s",
+                    type_id="valkyrie",
+                    label="valkyrie-eitri-k8s",
+                    parent_id="namespace-eitri-nats",
+                    status="healthy",
+                    source_kind="kubernetes",
+                    clusterName="eitri",
+                )
+            ],
+            meta=FragmentMeta(source_id="obs-eitri", cluster_id="eitri", revision="r"),
+        )
+        service = _service({"obs-ymir": dashboard, "obs-eitri": owner})
+
+        snapshot = await service.get_snapshot(
+            [_instance("obs-ymir"), _instance("obs-eitri")], headers={}
+        )
+
+        (node,) = snapshot.nodes
+        extra = node.model_extra or {}
+        # A label that only echoes the id is not a name; Bryn is.
+        assert node.label == "Bryn"
+        # The flock survives, so the members still derive into one mesh.
+        assert extra["flockId"] == "flock-k8s"
+        # The owner still wins what it actually knows.
+        assert node.status == "healthy"
+        assert node.source_kind == "kubernetes,ravn:valkyrie-dashboard"
+        # One source knowing more than another is not a conflict.
+        assert snapshot.warnings == []
+
+    @pytest.mark.asyncio
     async def test_a_contested_node_id_is_reported_rather_than_resolved_silently(self) -> None:
         first = ObservatoryFragment(
             nodes=[TopologyNode(id="contested", type_id="host", label="from-a")],

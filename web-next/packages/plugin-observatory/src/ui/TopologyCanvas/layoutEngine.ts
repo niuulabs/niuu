@@ -94,6 +94,34 @@ function nodeExtent(node: TopologyNode): number {
   return (NODE_SIZE[node.typeId] ?? 8) + 18;
 }
 
+/**
+ * How deep each node sits in the containment chain.
+ *
+ * Sizing a container needs its children's sizes already known, so the walk has
+ * to run deepest-first. Ordering by child count instead let a namespace be
+ * packed while the sessions inside it still measured as bare dots — each then
+ * grew to hold six agents and drove straight through its neighbours.
+ */
+function containmentDepth(nodes: TopologyNode[]): Map<string, number> {
+  const parentOf = new Map(nodes.map((node) => [node.id, node.parentId ?? null]));
+  const depths = new Map<string, number>();
+
+  function resolve(id: string, visiting: Set<string>): number {
+    const known = depths.get(id);
+    if (known != null) return known;
+    // A parent cycle is malformed data, not a reason to recurse forever.
+    if (visiting.has(id)) return 0;
+    visiting.add(id);
+    const parent = parentOf.get(id) ?? null;
+    const depth = parent != null && parentOf.has(parent) ? resolve(parent, visiting) + 1 : 0;
+    depths.set(id, depth);
+    return depth;
+  }
+
+  for (const node of nodes) resolve(node.id, new Set());
+  return depths;
+}
+
 function buildChildrenIndex(nodes: TopologyNode[]): Map<string | null, TopologyNode[]> {
   const index = new Map<string | null, TopologyNode[]>();
   for (const node of nodes) {
@@ -548,14 +576,13 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
   const clusterNodes = sortedNodes(nodes.filter((node) => node.typeId === 'cluster'));
   const hostNodes = sortedNodes(nodes.filter((node) => node.typeId === 'host'));
   const runNodes = sortedNodes(nodes.filter((node) => node.typeId === 'run'));
+  const depthOf = containmentDepth(nodes);
   const nestedNodes = sortedNodes(
     nodes.filter((node) => {
       if (node.typeId === 'realm' || node.typeId === 'cluster') return false;
       return (childrenByParent.get(node.id)?.length ?? 0) > 0;
     }),
-  ).sort(
-    (a, b) => (childrenByParent.get(b.id)?.length ?? 0) - (childrenByParent.get(a.id)?.length ?? 0),
-  );
+  ).sort((a, b) => (depthOf.get(b.id) ?? 0) - (depthOf.get(a.id) ?? 0));
 
   const nestedExtent: NodeExtentResolver = (node) => nestedRadii.get(node.id) ?? nodeExtent(node);
 

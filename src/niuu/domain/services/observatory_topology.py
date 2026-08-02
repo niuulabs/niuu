@@ -202,6 +202,66 @@ def _claim_authority(node: TopologyNode, fragment_cluster: str) -> int:
     return 1 if node.parent_id else 0
 
 
+def _is_empty(value: object) -> bool:
+    """True when a claim carries nothing for this field."""
+    return value is None or value == "" or value == [] or value == {}
+
+
+def _is_given_name(node: TopologyNode) -> bool:
+    """True when the label says something the node id does not already say.
+
+    A source that has never met a thing still has to call it something, and
+    what it reaches for is the identifier: Kubernetes calls the resident
+    `valkyrie-eitri-k8s` because that is what the resource is named. The Ravn
+    that runs it calls it Bryn. Both are claims on the same node; only one of
+    them is a name.
+    """
+    label = node.label.strip()
+    if not label:
+        return False
+    return label != node.id and label != node.id.rsplit(":", 1)[-1]
+
+
+def _contested_fields(left: TopologyNode, right: TopologyNode) -> list[str]:
+    """Fields both claims fill in, and fill in differently.
+
+    One source knowing more than another is not a conflict — only the fields
+    where both looked and saw something different are.
+    """
+    a = left.model_dump(by_alias=True)
+    b = right.model_dump(by_alias=True)
+    return sorted(
+        key
+        for key in a.keys() & b.keys()
+        if not _is_empty(a[key]) and not _is_empty(b[key]) and a[key] != b[key]
+    )
+
+
+def _merge_node(preferred: TopologyNode, other: TopologyNode) -> TopologyNode:
+    """Fold a weaker claim into the stronger one without losing what it knew.
+
+    Two sources describing the same node are usually describing different
+    halves of it: the cluster it runs in knows where it is, the Ravn that runs
+    it knows who it is and which flock it peers in. Replacing one claim
+    wholesale with the other discarded the half that lost — residents came
+    back named after their Kubernetes resource and with no flock, so the mesh
+    they formed had nothing left to group on and stopped being drawn.
+    """
+    merged = preferred.model_dump(by_alias=True)
+    for key, value in other.model_dump(by_alias=True).items():
+        if key not in merged or _is_empty(merged[key]):
+            merged[key] = value
+
+    if not _is_given_name(preferred) and _is_given_name(other):
+        merged["label"] = other.label
+
+    kinds = {kind for claim in (preferred, other) for kind in claim.source_kind.split(",") if kind}
+    if kinds:
+        merged["sourceKind"] = ",".join(sorted(kinds))
+
+    return TopologyNode.model_validate(merged)
+
+
 def _merge(
     fragments: list[ObservatoryFragment],
 ) -> tuple[list[TopologyNode], list[TopologyEdge], list[TopologyEvent], list[TopologyWarning]]:
@@ -216,9 +276,11 @@ def _merge(
     to draw. Every realm but ymir's and vanaheim's disappeared this way.
 
     So a claim that places a node beats one that does not, and a source that
-    declares itself the owner of that cluster beats both. Two claims of equal
-    authority that genuinely disagree are still a real condition, and are
-    reported rather than resolved silently.
+    declares itself the owner of that cluster beats both. Ranking decides who
+    wins a contested field, never who is heard: claims are folded together, so
+    the loser's knowledge survives. Only fields both sources filled in
+    differently are a real disagreement, and those are reported rather than
+    resolved silently.
     """
     nodes: dict[str, TopologyNode] = {}
     edges: dict[str, TopologyEdge] = {}
@@ -242,11 +304,17 @@ def _merge(
             if existing.model_dump() == node.model_dump():
                 continue
             if rank > authority.get(node.id, 0):
-                nodes[node.id] = node
+                nodes[node.id] = _merge_node(node, existing)
                 claimed_by[node.id] = source_id
                 authority[node.id] = rank
                 continue
             if rank < authority.get(node.id, 0):
+                nodes[node.id] = _merge_node(existing, node)
+                continue
+
+            contested = _contested_fields(existing, node)
+            nodes[node.id] = _merge_node(existing, node)
+            if not contested:
                 continue
             warnings.append(
                 TopologyWarning(
@@ -254,7 +322,8 @@ def _merge(
                     code="node_id_conflict",
                     message=(
                         f"Node '{node.id}' claimed by both '{claimed_by.get(node.id, 'unknown')}' "
-                        f"and '{source_id}'; keeping the first"
+                        f"and '{source_id}', which disagree on {', '.join(contested)}; "
+                        "keeping the first"
                     ),
                 )
             )

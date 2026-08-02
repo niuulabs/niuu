@@ -389,7 +389,7 @@ export function Inspector({ node, topology, registry, onNodeSelect, footer }: In
           ) : null}
 
           {mesh ? (
-            <Block title={`Mesh · ${mesh.id}`}>
+            <Block title={`Mesh · ${mesh.label}`}>
               <p className="obs-insp__note">
                 {mesh.memberIds.length} residents peer directly, so a finding by one becomes
                 evidence for all.

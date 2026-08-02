@@ -132,7 +132,7 @@ export function ObservatoryRailSections({ topology, selectedId, onSelect }: Prop
               // Selecting a mesh focuses a member: the mesh is a derived
               // grouping, not a node the canvas can select on its own.
               id={mesh.memberIds[0] ?? mesh.id}
-              name={mesh.id}
+              name={mesh.label}
               sub={meshSubtitle(mesh.memberIds, topology)}
               badge={mesh.memberIds.length}
               badgeTone="amber"

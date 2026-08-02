@@ -40,8 +40,65 @@ describe('deriveAgentMeshes', () => {
       ]),
     );
     expect(meshes).toEqual([
-      { id: 'forge', memberIds: ['huginn', 'muninn'] },
-      { id: 'ops', memberIds: ['kvasir', 'forseti'] },
+      { id: 'forge', label: 'forge', memberIds: ['huginn', 'muninn'] },
+      { id: 'ops', label: 'ops', memberIds: ['kvasir', 'forseti'] },
+    ]);
+  });
+
+  it('names a mesh after the flock node that declares it', () => {
+    const flock: TopologyNode = {
+      id: 'flock:flock-k8s',
+      typeId: 'flock',
+      label: 'K8S flock',
+      parentId: null,
+      status: 'healthy',
+      flockId: 'flock-k8s',
+    };
+    const meshes = deriveAgentMeshes(
+      topology([
+        flock,
+        node('bryn', 'valkyrie', 'flock-k8s'),
+        node('eir', 'valkyrie', 'flock-k8s'),
+      ]),
+    );
+
+    expect(meshes.map((m) => m.label)).toEqual(['K8S flock']);
+  });
+
+  it('names a workflow mesh after the session its members run in', () => {
+    // The flock id of a workflow is the session UUID — an honest identifier
+    // and a useless name. The session node is named after the work.
+    const session: TopologyNode = {
+      id: 'session-1',
+      typeId: 'skuld',
+      label: 'research-campaign-investigate-the-gateway',
+      parentId: 'namespace-skuld',
+      status: 'healthy',
+    };
+    const member = (id: string): TopologyNode => ({
+      ...node(id, 'ravn_run', '42fdc3ee-5722-4fa3-9a6b-81560e8a48b5'),
+      parentId: 'session-1',
+    });
+    const meshes = deriveAgentMeshes(topology([session, member('framer'), member('skeptic')]));
+
+    expect(meshes.map((m) => m.label)).toEqual(['research-campaign-investigate-the-gateway']);
+  });
+
+  it('falls back to the flock id when members are scattered', () => {
+    const here: TopologyNode = { ...node('a', 'ravn_long', 'roaming'), parentId: 'cluster-a' };
+    const there: TopologyNode = { ...node('b', 'ravn_long', 'roaming'), parentId: 'cluster-b' };
+
+    expect(deriveAgentMeshes(topology([here, there])).map((m) => m.label)).toEqual(['roaming']);
+  });
+
+  it('falls back to the flock id when the shared parent is not in the graph', () => {
+    const orphan = (id: string): TopologyNode => ({
+      ...node(id, 'ravn_run', 'session-gone'),
+      parentId: 'session-gone',
+    });
+
+    expect(deriveAgentMeshes(topology([orphan('a'), orphan('b')])).map((m) => m.label)).toEqual([
+      'session-gone',
     ]);
   });
 
@@ -65,7 +122,7 @@ describe('deriveAgentMeshes', () => {
         node('s', 'service'),
       ]),
     );
-    expect(meshes).toEqual([{ id: 'forge', memberIds: ['a', 'b'] }]);
+    expect(meshes).toEqual([{ id: 'forge', label: 'forge', memberIds: ['a', 'b'] }]);
   });
 
   it('preserves topology order so the hull does not shuffle between frames', () => {

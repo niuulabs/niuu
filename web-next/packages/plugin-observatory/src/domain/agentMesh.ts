@@ -20,6 +20,14 @@ const MESH_MEMBER_TYPES: ReadonlySet<string> = new Set([
 export interface AgentMesh {
   /** The `flockId` shared by every member. */
   id: string;
+  /**
+   * What to call the mesh.
+   *
+   * A workflow's flock is identified by its session id, which is a UUID — an
+   * honest identifier and a useless name. The graph already carries something
+   * readable: the flock's own node, or the session the members run inside.
+   */
+  label: string;
   /** Member node ids, in stable topology order. */
   memberIds: string[];
 }
@@ -48,12 +56,47 @@ export function deriveAgentMeshes(topology: Topology | null): AgentMesh[] {
     else byFlock.set(flockId, [node.id]);
   }
 
+  const byId = new Map(topology.nodes.map((node) => [node.id, node]));
+  const flockLabels = new Map(
+    topology.nodes
+      .filter((node) => node.typeId === 'flock' && node.flockId)
+      .map((node) => [node.flockId as string, node.label]),
+  );
+
   const meshes: AgentMesh[] = [];
   for (const [id, memberIds] of byFlock) {
     if (memberIds.length < 2) continue;
-    meshes.push({ id, memberIds });
+    meshes.push({ id, label: meshLabel(id, memberIds, byId, flockLabels), memberIds });
   }
   return meshes;
+}
+
+/**
+ * A readable name for a mesh, from what the graph already knows.
+ *
+ * The flock's own node names it when there is one. Otherwise the members of a
+ * workflow flock all sit inside the session running them, and that session is
+ * named after the work — `research-campaign-investigate-…` rather than the
+ * UUID that identifies it. Only when neither exists does the id have to serve
+ * as the name.
+ */
+function meshLabel(
+  id: string,
+  memberIds: string[],
+  byId: Map<string, TopologyNode>,
+  flockLabels: Map<string, string>,
+): string {
+  const declared = flockLabels.get(id);
+  if (declared) return declared;
+
+  const parents = new Set(memberIds.map((memberId) => byId.get(memberId)?.parentId ?? null));
+  if (parents.size === 1) {
+    const [only] = parents;
+    const parent = only ? byId.get(only) : undefined;
+    if (parent?.label) return parent.label;
+  }
+
+  return id;
 }
 
 /** The mesh a given node belongs to, if any. */
