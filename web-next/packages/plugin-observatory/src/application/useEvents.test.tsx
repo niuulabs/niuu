@@ -59,6 +59,38 @@ describe('useEvents', () => {
     expect(result.current.map((event) => event.id)).toEqual(['evt-1']);
   });
 
+  it('drops an event when the condition it reported clears', () => {
+    // Discovery warnings are conditions, not incidents. Without a retraction
+    // a warning stayed on the log until a hundred newer events pushed it off,
+    // so a fault fixed an hour ago read exactly like one still happening.
+    const harness = createStreamHarness();
+    const { result } = renderHook(() => useEvents(), { wrapper: wrap(harness.stream) });
+
+    act(() => {
+      harness.emit(createEvent('discovery:ravn'));
+      harness.emit(createEvent('evt-other'));
+    });
+    expect(result.current.map((e) => e.id)).toEqual(['discovery:ravn', 'evt-other']);
+
+    act(() => {
+      harness.emit({ ...createEvent('discovery:ravn'), resolved: true });
+    });
+
+    expect(result.current.map((e) => e.id)).toEqual(['evt-other']);
+  });
+
+  it('ignores a retraction for something it never showed', () => {
+    const harness = createStreamHarness();
+    const { result } = renderHook(() => useEvents(), { wrapper: wrap(harness.stream) });
+
+    act(() => {
+      harness.emit(createEvent('evt-1'));
+      harness.emit({ ...createEvent('never-seen'), resolved: true });
+    });
+
+    expect(result.current.map((e) => e.id)).toEqual(['evt-1']);
+  });
+
   it('keeps only the most recent 100 events', () => {
     const harness = createStreamHarness();
     const { result } = renderHook(() => useEvents(), { wrapper: wrap(harness.stream) });

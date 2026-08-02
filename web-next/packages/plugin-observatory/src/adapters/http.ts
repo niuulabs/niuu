@@ -116,6 +116,7 @@ function normalizeObservatoryEvent(raw: unknown): ObservatoryEvent | null {
     subject,
     body,
     level: payload.level === 'warning' ? 'warning' : 'info',
+    ...(payload.resolved === true ? { resolved: true } : {}),
   };
 }
 

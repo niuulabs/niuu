@@ -294,6 +294,14 @@ export type ObservatoryEventType = 'RUN' | 'RAVN' | 'TING' | 'MIMIR' | 'BIFROST'
  */
 export interface ObservatoryEvent {
   id: string;
+  /**
+   * True when this frame retracts an earlier event rather than reporting one.
+   *
+   * Discovery warnings are conditions, not incidents — present for as long as
+   * the fault lasts and absent once it is fixed. Without a retraction the log
+   * kept showing a Ravn as unreachable long after it came back.
+   */
+  resolved?: boolean;
   /** HH:MM:SS — display time extracted from ISO timestamp at emit time. */
   time: string;
   type: ObservatoryEventType;

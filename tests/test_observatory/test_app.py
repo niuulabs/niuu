@@ -373,6 +373,72 @@ class TestObservatoryApp:
         assert "event: observatory.event" in first_chunk
         assert second_chunk == ": keepalive\n\n"
 
+    def test_events_stream_retracts_a_warning_once_it_clears(self, monkeypatch) -> None:
+        """A discovery warning is a condition, not an incident.
+
+        Remembering ids forever and only emitting new ones meant a cleared
+        warning was never retracted, so a Ravn that came back an hour ago
+        still read as unreachable — indistinguishable from one still down.
+        """
+
+        async def _fast_sleep(_seconds: float) -> None:
+            return None
+
+        monkeypatch.setattr("observatory.app.asyncio.sleep", _fast_sleep)
+
+        class _ClearingService:
+            guild_url = "http://guild.test"
+            base_url = "http://guild.test"
+
+            def __init__(self) -> None:
+                self._calls = 0
+
+            async def get_events(
+                self,
+                headers: dict[str, str] | None = None,
+            ) -> list[dict[str, str]]:
+                del headers
+                self._calls += 1
+                if self._calls == 1:
+                    return [{"id": "discovery:ravn", "message": "unreachable"}]
+                return []
+
+        stream = _events_stream(_ClearingService())
+        first = asyncio.run(anext(stream))
+        second = asyncio.run(anext(stream))
+
+        assert "discovery:ravn" in first
+        assert '"resolved": true' in second or "'resolved': True" in second
+        assert "discovery:ravn" in second
+
+        # And once retracted it is not announced again on every later tick.
+        third = asyncio.run(anext(stream))
+        assert third == ": keepalive\n\n"
+
+    def test_events_stream_does_not_re_announce_a_persisting_warning(self, monkeypatch) -> None:
+        async def _fast_sleep(_seconds: float) -> None:
+            return None
+
+        monkeypatch.setattr("observatory.app.asyncio.sleep", _fast_sleep)
+
+        class _StuckService:
+            guild_url = "http://guild.test"
+            base_url = "http://guild.test"
+
+            async def get_events(
+                self,
+                headers: dict[str, str] | None = None,
+            ) -> list[dict[str, str]]:
+                del headers
+                return [{"id": "discovery:ting", "message": "401"}]
+
+        stream = _events_stream(_StuckService())
+        first = asyncio.run(anext(stream))
+        second = asyncio.run(anext(stream))
+
+        assert "discovery:ting" in first
+        assert second == ": keepalive\n\n"
+
     def test_registry_errors_return_http_statuses(self) -> None:
         app = create_app(
             registry_repository=_RaisingRepository(),

@@ -106,17 +106,33 @@ async def _events_stream(
     discovery: ObservatoryDiscoveryService,
     headers: dict[str, str] | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Replay current events, then emit fresh ones whenever they change."""
-    seen_ids: set[str] = set()
+    """Replay current events, then emit changes — including things clearing.
+
+    A discovery warning is a *condition*, not an incident: it is present in
+    every snapshot for as long as the fault lasts, and simply absent once it
+    is fixed. Remembering ids forever and only ever emitting new ones meant a
+    cleared warning was never retracted, so an unreachable Ravn that came back
+    an hour ago still read as unreachable — indistinguishable from one that is
+    still down. Anything that disappears from the snapshot is now announced as
+    resolved so the client can drop it.
+    """
+    previous: set[str] = set()
     while True:
+        items = await discovery.get_events(headers=headers)
+        current = {str(item.get("id") or "") for item in items} - {""}
+
         emitted = False
-        for item in await discovery.get_events(headers=headers):
-            event_id = str(item.get("id") or "")
-            if event_id in seen_ids:
+        for item in items:
+            if str(item.get("id") or "") in previous:
                 continue
-            seen_ids.add(event_id)
             emitted = True
             yield _to_sse(item, event="observatory.event")
+
+        for resolved_id in sorted(previous - current):
+            emitted = True
+            yield _to_sse({"id": resolved_id, "resolved": True}, event="observatory.event")
+
+        previous = current
         if not emitted:
             yield ": keepalive\n\n"
         await asyncio.sleep(KEEPALIVE_INTERVAL)
