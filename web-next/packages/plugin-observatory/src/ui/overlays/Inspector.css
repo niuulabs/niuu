@@ -19,11 +19,10 @@
 .obs-insp__head {
   padding: 14px 16px 12px;
   border-bottom: 1px solid var(--color-border-subtle, rgb(255 255 255 / 8%));
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--color-accent, #58a6ff) 9%, transparent),
-    transparent
-  );
+  /* The head sits on the same ground as the rest of the panel. A tinted
+     slab behind it read as a different surface and made the whole column
+     look washed out. */
+  background: transparent;
 }
 
 .obs-insp__kind {
@@ -194,29 +193,38 @@
 }
 
 /* Segmented control: resident / A2A card / JSON, as the mockup's .seg row. */
+/* One control, three positions — not three buttons that happen to sit in a
+   row. The track carries the border; the selected segment is filled. */
 .obs-insp__seg {
-  display: flex;
-  gap: 4px;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--color-border-subtle, rgb(255 255 255 / 8%));
+  display: inline-flex;
+  gap: 0;
+  margin: 10px 16px;
+  padding: 2px;
+  border: 1px solid var(--color-border-subtle, rgb(255 255 255 / 10%));
+  border-radius: 999px;
+  background: var(--color-bg-tertiary, rgb(255 255 255 / 3%));
 }
 
 .obs-insp__segbtn {
-  flex: 1;
-  padding: 4px 6px;
+  padding: 3px 12px;
+  font-family: var(--font-mono);
   font-size: 9px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--color-text-tertiary, rgb(255 255 255 / 45%));
   background: none;
-  border: 1px solid var(--color-border-subtle, rgb(255 255 255 / 10%));
-  border-radius: 3px;
+  border: 0;
+  border-radius: 999px;
   cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 130ms ease,
+    color 130ms ease;
 }
 
 .obs-insp__segbtn[aria-selected='true'] {
-  color: var(--color-text-primary, rgb(255 255 255 / 92%));
-  border-color: var(--color-accent, #58a6ff);
+  color: var(--color-bg-primary, #0b0e14);
+  background: var(--color-brand);
 }
 
 .obs-insp__segbtn:focus-visible {

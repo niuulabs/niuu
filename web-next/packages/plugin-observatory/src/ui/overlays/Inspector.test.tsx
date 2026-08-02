@@ -102,6 +102,16 @@ describe('Inspector', () => {
     expect(screen.getByTestId('inspector-mesh')).toHaveTextContent('same mesh');
   });
 
+  it('carries counts into the header rather than burying them in a table', () => {
+    const resident = node('r', 'ravn_long', { learnedTools: 3, queue: 5, a2aTasks: 0 });
+    render(<Inspector node={resident} topology={topology} registry={registry} />);
+
+    expect(screen.getByText('3 learned tools')).toBeInTheDocument();
+    expect(screen.getByText('5 queued')).toBeInTheDocument();
+    // A zero count is not worth a chip — it says nothing happened.
+    expect(screen.queryByText('0 a2a')).not.toBeInTheDocument();
+  });
+
   it('says nothing about a mesh for a node that is in none', () => {
     render(<Inspector node={mimir} topology={topology} registry={registry} />);
     expect(screen.queryByTestId('inspector-mesh')).not.toBeInTheDocument();

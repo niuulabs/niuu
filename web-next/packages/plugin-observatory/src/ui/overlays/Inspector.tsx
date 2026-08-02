@@ -122,9 +122,31 @@ export function eyebrowOf(node: TopologyNode, typeLabel?: string): string[] {
 
 /** Under the name: the model it thinks with, or what it is made of. */
 export function headlineOf(node: TopologyNode): string {
-  return [field(node, 'model'), field(node, 'specialty'), field(node, 'hw')]
+  const uptime = field(node, 'uptime');
+  return [
+    field(node, 'model'),
+    field(node, 'specialty'),
+    field(node, 'hw'),
+    uptime && `up ${uptime}`,
+  ]
     .filter(Boolean)
     .join(' · ');
+}
+
+/** Chips beside the status: the counts worth carrying into the header. */
+const HEADER_COUNTS: ReadonlyArray<[label: string, key: string]> = [
+  ['learned tools', 'learnedTools'],
+  ['queued', 'queue'],
+  ['a2a', 'a2aTasks'],
+];
+
+export function headerChips(node: TopologyNode): string[] {
+  const chips: string[] = [];
+  for (const [label, key] of HEADER_COUNTS) {
+    const value = (node as unknown as Record<string, unknown>)[key];
+    if (typeof value === 'number' && value > 0) chips.push(`${value} ${label}`);
+  }
+  return chips;
 }
 
 /** What it is doing right now, when it reports it. */
@@ -140,9 +162,16 @@ export function activityOf(node: TopologyNode): string {
  */
 const RUNTIME_KEYS: ReadonlyArray<[label: string, key: string]> = [
   ['engine', 'engine'],
+  ['model', 'model'],
   ['profile', 'profile'],
   ['deployment', 'deployment'],
+  ['registered', 'registered'],
   ['persona', 'persona'],
+  ['specialty', 'specialty'],
+  ['state', 'state'],
+  ['queue', 'queue'],
+  ['a2a tasks', 'a2aTasks'],
+  ['learned tools', 'learnedTools'],
   ['host', 'hostId'],
   ['workload', 'workload'],
   ['tokens', 'tokens'],
@@ -309,6 +338,11 @@ export function Inspector({ node, topology, registry, onNodeSelect, footer }: In
         {headlineOf(node) ? <div className="obs-insp__sub">{headlineOf(node)}</div> : null}
         <div className="obs-insp__chips">
           <span className={`obs-insp__state obs-insp__state--${node.status}`}>{node.status}</span>
+          {headerChips(node).map((chip) => (
+            <span key={chip} className="obs-insp__state obs-insp__state--idle">
+              {chip}
+            </span>
+          ))}
           {mesh ? (
             <span className="obs-insp__state obs-insp__state--idle">
               {mesh.memberIds.length} in mesh
