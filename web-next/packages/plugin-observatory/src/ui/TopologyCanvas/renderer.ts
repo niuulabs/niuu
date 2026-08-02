@@ -358,7 +358,7 @@ export function realmBounds(
   realm: TopologyNode,
   nodes: readonly TopologyNode[],
   positions: Map<string, NodePosition>,
-  padding = 78,
+  padding = LAYOUT.REALM_HULL_PADDING,
 ): RealmBounds | null {
   const childrenOf = new Map<string, TopologyNode[]>();
   for (const node of nodes) {
