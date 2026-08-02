@@ -566,7 +566,13 @@ export function computeLayout(topology: Topology): Map<string, NodePosition> {
 
   const worldContainerExtent: NodeExtentResolver = (node) => {
     if (node.typeId === 'realm') {
-      return (realmRadii.get(node.id) ?? LAYOUT.REALM_INNER_RADIUS) + 24;
+      // A realm is *drawn* as a rectangle bounding its contents, so the space
+      // it occupies is that rectangle's circumscribing circle — half-diagonal,
+      // not half-width. Reserving only the radius let the corners of a wide
+      // realm cross into its neighbour, which is what put SVARTALFHEIM
+      // through ASGARD.
+      const inner = realmRadii.get(node.id) ?? LAYOUT.REALM_INNER_RADIUS;
+      return (inner + LAYOUT.REALM_HULL_PADDING) * Math.SQRT2;
     }
     if (node.typeId === 'cluster') {
       return (clusterRadii.get(node.id) ?? LAYOUT.CLUSTER_INNER_RADIUS) + 20;

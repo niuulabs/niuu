@@ -40,6 +40,13 @@ export const LAYOUT = {
   /** Extra outward spacing when many realms need multiple bands. */
   REALM_RING_STEP: 340,
 
+  /**
+   * Padding between a realm's outermost content and its drawn rectangle.
+   * Shared with the renderer's `realmBounds`, so the space the layout
+   * reserves and the shape drawn into it cannot disagree.
+   */
+  REALM_HULL_PADDING: 78,
+
   /** Visual radius drawn for realm circles. */
   REALM_INNER_RADIUS: 320,
 
