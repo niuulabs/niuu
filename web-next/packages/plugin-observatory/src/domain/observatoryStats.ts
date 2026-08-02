@@ -9,13 +9,13 @@ import { deriveAgentMeshes } from './agentMesh';
  * readout is the first thing an operator trusts.
  */
 export interface ObservatoryStats {
-  realms: number;
-  clusters: number;
-  hosts: number;
+  realms: number | null;
+  clusters: number | null;
+  hosts: number | null;
   pods: number | null;
-  residents: number;
-  meshes: number;
-  mimirs: number;
+  residents: number | null;
+  meshes: number | null;
+  mimirs: number | null;
 }
 
 const RESIDENT_TYPES: ReadonlySet<string> = new Set(['ravn_long', 'valkyrie', 'resident']);
@@ -33,7 +33,22 @@ function sumMetric(nodes: readonly TopologyNode[], field: string): number | null
 }
 
 export function deriveObservatoryStats(topology: Topology | null): ObservatoryStats {
-  const nodes = topology?.nodes ?? [];
+  // Before a snapshot arrives there is nothing to count. Reporting zeros then
+  // states an empty estate, which is the one thing the readout must not do
+  // while it is still waiting.
+  if (!topology) {
+    return {
+      realms: null,
+      clusters: null,
+      hosts: null,
+      pods: null,
+      residents: null,
+      meshes: null,
+      mimirs: null,
+    };
+  }
+
+  const nodes = topology.nodes;
   return {
     realms: countOf(nodes, 'realm'),
     clusters: countOf(nodes, 'cluster'),

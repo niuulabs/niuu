@@ -71,6 +71,10 @@ export function computeClassMap(nodes: readonly TopologyNode[]): Map<string, Com
   const byId = new Map(nodes.map((node) => [node.id, node]));
 
   const nested = (node: TopologyNode): boolean => {
+    // A cluster does not sit inside a cluster — it is one. Same for the
+    // namespaces it holds. Without this the estate's own containers classify
+    // as bare metal and the whole rail turns green.
+    if (node.typeId === 'cluster' || node.typeId === 'namespace') return true;
     if (node.cluster) return true;
     const seen = new Set<string>([node.id]);
     let current: TopologyNode | undefined = node;

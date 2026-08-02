@@ -1,6 +1,16 @@
+import type { ReactNode } from 'react';
 import type { Topology, TopologyNode } from '../domain';
 import { deriveAgentMeshes } from '../domain/agentMesh';
+import { computeClassMap, type ComputeClass } from '../domain/computeClass';
 import { nodesOfType, RESIDENT_TYPE_IDS } from '../domain/observatoryStats';
+import {
+  clusterSummaries,
+  meshSubtitle,
+  mimirBadge,
+  nodeIndex,
+  placementSubtitle,
+  residentSubtitle,
+} from '../domain/railSummaries';
 import { CollapsibleSection } from './CollapsibleSection';
 import { humanizeObservatoryText } from './displayLabels';
 import './ObservatoryRailSections.css';
@@ -11,18 +21,21 @@ interface Props {
   onSelect: (nodeId: string) => void;
 }
 
-function placementOf(node: TopologyNode): string {
-  const parts = [node.cluster, node.hostId].filter(
-    (part): part is string => typeof part === 'string' && part.length > 0,
-  );
-  return parts.join(' · ');
-}
-
+/**
+ * A rail row: a coloured stripe, a name over its placement, and a figure.
+ *
+ * The stripe carries the compute class — the same green and blue the canvas
+ * uses — so scanning the rail and scanning the graph answer the same question
+ * the same way. `tone` overrides it where a row is not about a machine: a mesh
+ * is amber wherever its members happen to run.
+ */
 function RailRow({
   id,
   name,
   sub,
   badge,
+  badgeTone = 'plain',
+  tone,
   selected,
   onSelect,
   testId,
@@ -30,7 +43,9 @@ function RailRow({
   id: string;
   name: string;
   sub?: string;
-  badge?: string;
+  badge?: ReactNode;
+  badgeTone?: 'amber' | 'spring' | 'plain';
+  tone: ComputeClass | 'mesh';
   selected: boolean;
   onSelect: (nodeId: string) => void;
   /** Defaults to the node id; meshes pass their own so rows stay distinct. */
@@ -40,13 +55,19 @@ function RailRow({
     <button
       type="button"
       className={`obs-rail__row${selected ? ' obs-rail__row--on' : ''}`}
+      data-tone={tone}
       data-testid={`rail-row-${testId ?? id}`}
       aria-pressed={selected}
       onClick={() => onSelect(id)}
     >
+      <span className="obs-rail__stripe" aria-hidden="true" />
       <span className="obs-rail__name">{humanizeObservatoryText(name)}</span>
       {sub ? <span className="obs-rail__sub">{sub}</span> : null}
-      {badge ? <em className="obs-rail__badge">{badge}</em> : null}
+      {badge != null ? (
+        <em className="obs-rail__badge" data-tone={badgeTone}>
+          {badge}
+        </em>
+      ) : null}
     </button>
   );
 }
@@ -57,12 +78,11 @@ function Empty({ children }: { children: string }) {
 }
 
 /**
- * Meshes, residents and Mímir sections for the plugin subnav.
+ * The Observatory rail: meshes, residents, Mímir, and the estate itself.
  *
- * These live in the shell's subnav slot rather than a second column: the
+ * These live in the shell's subnav slot rather than a second column — the
  * platform already gives every plugin one rail, and the mockup's rail is that
- * rail, not an extra one. Realms and clusters stay with the subnav's own
- * sections rather than being listed twice.
+ * rail, not an extra one.
  *
  * Sections stay present when their data is absent: a deployment with no
  * residents yet should show an empty Residents section, not a rail that
@@ -72,7 +92,13 @@ export function ObservatoryRailSections({ topology, selectedId, onSelect }: Prop
   const meshes = deriveAgentMeshes(topology);
   const residents = nodesOfType(topology, RESIDENT_TYPE_IDS);
   const mimirs = nodesOfType(topology, ['mimir']);
-  const byId = new Map((topology?.nodes ?? []).map((node) => [node.id, node]));
+  const clusters = clusterSummaries(topology);
+  // Placement is resolved through containment once, here: a node's own
+  // `cluster` field is often absent, and a row that guesses "local" mislabels
+  // a Kubernetes workload as somebody's workstation.
+  const byId = nodeIndex(topology);
+  const classes = computeClassMap(topology?.nodes ?? []);
+  const toneOf = (node: TopologyNode): ComputeClass => classes.get(node.id) ?? 'own';
 
   return (
     <>
@@ -80,23 +106,22 @@ export function ObservatoryRailSections({ topology, selectedId, onSelect }: Prop
         {meshes.length === 0 ? (
           <Empty>No agent meshes discovered.</Empty>
         ) : (
-          meshes.map((mesh) => {
-            const first = byId.get(mesh.memberIds[0] ?? '');
-            return (
-              <RailRow
-                key={mesh.id}
-                testId={`mesh-${mesh.id}`}
-                // Selecting a mesh focuses a member: the mesh is a derived
-                // grouping, not a node the canvas can select on its own.
-                id={mesh.memberIds[0] ?? mesh.id}
-                name={mesh.id}
-                sub={first ? placementOf(first) : undefined}
-                badge={String(mesh.memberIds.length)}
-                selected={mesh.memberIds.some((member) => member === selectedId)}
-                onSelect={onSelect}
-              />
-            );
-          })
+          meshes.map((mesh) => (
+            <RailRow
+              key={mesh.id}
+              testId={`mesh-${mesh.id}`}
+              // Selecting a mesh focuses a member: the mesh is a derived
+              // grouping, not a node the canvas can select on its own.
+              id={mesh.memberIds[0] ?? mesh.id}
+              name={mesh.id}
+              sub={meshSubtitle(mesh.memberIds, topology)}
+              badge={mesh.memberIds.length}
+              badgeTone="amber"
+              tone="mesh"
+              selected={mesh.memberIds.some((member) => member === selectedId)}
+              onSelect={onSelect}
+            />
+          ))
         )}
       </CollapsibleSection>
 
@@ -104,12 +129,13 @@ export function ObservatoryRailSections({ topology, selectedId, onSelect }: Prop
         {residents.length === 0 ? (
           <Empty>No residents reporting.</Empty>
         ) : (
-          residents.map((node) => (
+          residents.map((node: TopologyNode) => (
             <RailRow
               key={node.id}
               id={node.id}
               name={node.label}
-              sub={placementOf(node) || node.status}
+              sub={residentSubtitle(node, byId) || node.status}
+              tone={toneOf(node)}
               selected={node.id === selectedId}
               onSelect={onSelect}
             />
@@ -117,22 +143,52 @@ export function ObservatoryRailSections({ topology, selectedId, onSelect }: Prop
         )}
       </CollapsibleSection>
 
-      <CollapsibleSection
-        title="Mímir instances"
-        meta={mimirs.length}
-        testId="rail-mimir"
-        defaultOpen={false}
-      >
+      <CollapsibleSection title="Mímir instances" meta={mimirs.length} testId="rail-mimir">
         {mimirs.length === 0 ? (
           <Empty>No Mímir instances discovered.</Empty>
         ) : (
-          mimirs.map((node) => (
+          mimirs.map((node: TopologyNode) => (
             <RailRow
               key={node.id}
               id={node.id}
               name={node.label}
-              sub={placementOf(node) || undefined}
+              sub={placementSubtitle(node, byId) || undefined}
+              badge={mimirBadge(node)}
+              tone={toneOf(node)}
               selected={node.id === selectedId}
+              onSelect={onSelect}
+            />
+          ))
+        )}
+      </CollapsibleSection>
+
+      {/*
+        One section, not two. A realm listed on its own says only that a VLAN
+        exists; naming it on its clusters' rows says the same thing and shows
+        what is inside it.
+      */}
+      <CollapsibleSection title="Realms & clusters" meta={clusters.length} testId="rail-clusters">
+        {clusters.length === 0 ? (
+          <Empty>No clusters discovered.</Empty>
+        ) : (
+          clusters.map((summary) => (
+            <RailRow
+              key={summary.node.id}
+              id={summary.node.id}
+              name={summary.node.label}
+              sub={[summary.realm, summary.pods === null ? '' : `${summary.pods} pods`]
+                .filter(Boolean)
+                .join(' · ')}
+              badge={
+                summary.hosts === 0
+                  ? null
+                  : [`${summary.hosts}N`, summary.gpus ? `${summary.gpus}G` : '']
+                      .filter(Boolean)
+                      .join(' · ')
+              }
+              badgeTone={summary.gpus ? 'spring' : 'plain'}
+              tone={summary.computeClass}
+              selected={summary.node.id === selectedId}
               onSelect={onSelect}
             />
           ))

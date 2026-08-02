@@ -28,6 +28,7 @@ describe('useObservatoryStore', () => {
       filter: 'all',
       hiddenLayers: new Set(CALM_HIDDEN_LAYERS),
       hiddenCompute: new Set(),
+      presenting: false,
     });
 
     act(() => {
@@ -42,6 +43,7 @@ describe('useObservatoryStore', () => {
       filter: 'agents',
       hiddenLayers: new Set(CALM_HIDDEN_LAYERS),
       hiddenCompute: new Set(),
+      presenting: false,
     });
     expect(notify).toHaveBeenCalledTimes(2);
 

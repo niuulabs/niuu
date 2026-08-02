@@ -1,16 +1,49 @@
+/*
+ * Rail rows, after docs/mockups/observatory/index.html.
+ *
+ * Three columns of information in one row: what it is, where it is, and the
+ * one figure worth carrying — separated by weight and colour rather than by
+ * rules, so a long list still scans.
+ */
 .obs-rail__row {
   display: grid;
-  grid-template-columns: 1fr auto;
-  grid-template-areas: 'name badge' 'sub badge';
-  gap: 0 8px;
+  grid-template-columns: 3px 1fr auto;
+  grid-template-areas:
+    'stripe name badge'
+    'stripe sub  badge';
+  align-items: center;
+  gap: 0 10px;
   width: 100%;
-  padding: 6px 10px;
+  padding: 7px 10px 7px 0;
   text-align: left;
   background: none;
   border: 0;
-  border-left: 2px solid transparent;
+  border-bottom: 1px solid var(--color-border-subtle, rgb(255 255 255 / 6%));
   cursor: pointer;
   color: inherit;
+}
+
+/* The compute class, carried the same way the canvas carries it. */
+.obs-rail__stripe {
+  grid-area: stripe;
+  align-self: stretch;
+  background: var(--obs-tone, var(--color-brand));
+}
+
+.obs-rail__row[data-tone='k8s'] {
+  --obs-tone: var(--color-brand);
+}
+
+.obs-rail__row[data-tone='own'] {
+  --obs-tone: var(--color-accent-spring);
+}
+
+.obs-rail__row[data-tone='outside'] {
+  --obs-tone: var(--color-accent-violet);
+}
+
+.obs-rail__row[data-tone='mesh'] {
+  --obs-tone: var(--color-accent-amber);
 }
 
 .obs-rail__row:hover {
@@ -18,17 +51,19 @@
 }
 
 .obs-rail__row--on {
-  border-left-color: var(--color-accent, #58a6ff);
-  background: var(--color-bg-hover, rgb(255 255 255 / 6%));
+  background: var(--color-bg-hover, rgb(255 255 255 / 7%));
 }
 
 .obs-rail__row:focus-visible {
-  outline: 2px solid var(--color-accent, #58a6ff);
+  outline: 2px solid var(--color-brand);
   outline-offset: -2px;
 }
 
+/* Monospace: these are identifiers, and a proportional face makes a column of
+   them impossible to compare down the page. */
 .obs-rail__name {
   grid-area: name;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--color-text-primary, rgb(255 255 255 / 92%));
   overflow: hidden;
@@ -38,8 +73,10 @@
 
 .obs-rail__sub {
   grid-area: sub;
+  font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--color-text-tertiary, rgb(255 255 255 / 45%));
+  color: var(--obs-tone, var(--color-text-tertiary));
+  opacity: 0.75;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -48,13 +85,26 @@
 .obs-rail__badge {
   grid-area: badge;
   align-self: center;
+  font-family: var(--font-mono);
   font-style: normal;
   font-size: 10px;
   font-variant-numeric: tabular-nums;
-  padding: 1px 6px;
-  border-radius: 999px;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 4px;
   border: 1px solid var(--color-border-subtle, rgb(255 255 255 / 12%));
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.obs-rail__badge[data-tone='amber'] {
+  border-color: color-mix(in srgb, var(--color-accent-amber) 45%, transparent);
   color: var(--color-accent-amber);
+}
+
+.obs-rail__badge[data-tone='spring'] {
+  border-color: color-mix(in srgb, var(--color-accent-spring) 45%, transparent);
+  color: var(--color-accent-spring);
 }
 
 .obs-rail__empty {

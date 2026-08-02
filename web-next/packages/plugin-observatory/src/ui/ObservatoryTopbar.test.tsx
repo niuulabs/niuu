@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { ObservatoryTopbar } from './ObservatoryTopbar';
+import { __resetObservatoryStore, getObservatoryStore } from '../application/useObservatoryStore';
 
 // ── Mock useTopology ──────────────────────────────────────────────────────────
 
@@ -25,87 +26,46 @@ const MOCK_TOPOLOGY: Topology = {
   ],
 };
 
+beforeEach(() => {
+  __resetObservatoryStore();
+  vi.mocked(useTopology).mockReturnValue(MOCK_TOPOLOGY);
+});
+
 describe('ObservatoryTopbar', () => {
   it('renders the topbar container', () => {
-    vi.mocked(useTopology).mockReturnValue(MOCK_TOPOLOGY);
     render(<ObservatoryTopbar />);
     expect(screen.getByTestId('observatory-topbar')).toBeInTheDocument();
   });
 
-  it('renders the realms count label', () => {
-    vi.mocked(useTopology).mockReturnValue(MOCK_TOPOLOGY);
+  it('carries the readout, so the page never draws a second header', () => {
     render(<ObservatoryTopbar />);
-    expect(screen.getByText('realms')).toBeInTheDocument();
+    expect(screen.getByTestId('observatory-readout')).toBeInTheDocument();
+    expect(screen.getByTestId('readout-realms')).toHaveTextContent('2');
   });
 
-  it('renders the ravens count label', () => {
-    vi.mocked(useTopology).mockReturnValue(MOCK_TOPOLOGY);
-    render(<ObservatoryTopbar />);
-    expect(screen.getByText('ravens')).toBeInTheDocument();
-  });
-
-  it('renders the runs count label', () => {
-    vi.mocked(useTopology).mockReturnValue(MOCK_TOPOLOGY);
-    render(<ObservatoryTopbar />);
-    expect(screen.getByText('runs')).toBeInTheDocument();
-  });
-
-  it('shows correct realm count (2)', () => {
-    vi.mocked(useTopology).mockReturnValue(MOCK_TOPOLOGY);
-    render(<ObservatoryTopbar />);
-    // 2 realm nodes
-    const topbar = screen.getByTestId('observatory-topbar');
-    expect(topbar).toHaveTextContent('2');
-  });
-
-  it('shows correct raven count (ravn_long + ravn_run = 2)', () => {
-    vi.mocked(useTopology).mockReturnValue(MOCK_TOPOLOGY);
+  it('does not restate a count the readout already gives', () => {
+    // The old topbar had its own realms/ravens/runs chips beside the readout's
+    // REALMS / RESIDENTS cells — the same estate, counted twice, differently.
     const { container } = render(<ObservatoryTopbar />);
-    // ravens stat value
-    const ravensStat = container.querySelector('.obs-topbar__stat--accent');
-    expect(ravensStat).not.toBeNull();
-    expect(ravensStat).toHaveTextContent('2');
+    expect(container.querySelector('.obs-topbar__stat')).toBeNull();
   });
 
-  it('shows correct run count (2)', () => {
-    vi.mocked(useTopology).mockReturnValue(MOCK_TOPOLOGY);
-    const { container } = render(<ObservatoryTopbar />);
-    const accentStats = container.querySelectorAll('.obs-topbar__stat--accent');
-    // Second accent stat is runs
-    expect(accentStats[1]).toHaveTextContent('2');
-  });
-
-  it('renders zeros when topology is null', () => {
+  it('reads a null topology without inventing counts', () => {
     vi.mocked(useTopology).mockReturnValue(null);
     render(<ObservatoryTopbar />);
-    const topbar = screen.getByTestId('observatory-topbar');
-    // All three counts should be 0
-    const values = topbar.querySelectorAll('strong');
-    values.forEach((v) => expect(v.textContent).toBe('0'));
+    expect(screen.getByTestId('readout-realms')).toHaveTextContent('—');
   });
 
-  it('renders zeros when topology has no nodes', () => {
-    vi.mocked(useTopology).mockReturnValue({ timestamp: '', nodes: [], edges: [] });
+  it('toggles present mode', () => {
     render(<ObservatoryTopbar />);
-    const topbar = screen.getByTestId('observatory-topbar');
-    const values = topbar.querySelectorAll('strong');
-    values.forEach((v) => expect(v.textContent).toBe('0'));
-  });
+    const button = screen.getByTestId('present-toggle');
+    expect(button).toHaveAttribute('aria-pressed', 'false');
 
-  it('counts only ravn_long and ravn_run as ravens', () => {
-    const topo: Topology = {
-      timestamp: '',
-      edges: [],
-      nodes: [
-        { id: 'r1', typeId: 'ravn_long', label: 'r1', parentId: null, status: 'healthy' },
-        { id: 'r2', typeId: 'ravn_run', label: 'r2', parentId: null, status: 'healthy' },
-        { id: 'r3', typeId: 'service', label: 'r3', parentId: null, status: 'healthy' },
-        { id: 'w1', typeId: 'warden', label: 'w1', parentId: null, status: 'healthy' },
-      ],
-    };
-    vi.mocked(useTopology).mockReturnValue(topo);
-    const { container } = render(<ObservatoryTopbar />);
-    const ravensStat = container.querySelector('.obs-topbar__stat--accent');
-    expect(ravensStat).toHaveTextContent('2');
+    fireEvent.click(button);
+    expect(button).toHaveAttribute('aria-pressed', 'true');
+    expect(getObservatoryStore().read().presenting).toBe(true);
+
+    fireEvent.click(button);
+    expect(getObservatoryStore().read().presenting).toBe(false);
   });
 });

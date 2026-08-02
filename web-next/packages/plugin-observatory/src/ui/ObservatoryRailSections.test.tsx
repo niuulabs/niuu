@@ -23,15 +23,14 @@ describe('ObservatoryRailSections', () => {
   it('lists residents with where they run', () => {
     render(
       <ObservatoryRailSections
-        topology={topology([
-          node('ivaldi', 'ravn_long', { cluster: 'eitri', hostId: 'saehrimnir' }),
-        ])}
+        topology={topology([node('ivaldi', 'ravn_long', { cluster: 'eitri', engine: 'ravn' })])}
         selectedId={null}
         onSelect={vi.fn()}
       />,
     );
 
-    expect(screen.getByTestId('rail-row-ivaldi')).toHaveTextContent('eitri · saehrimnir');
+    // Engine first, then where it runs — what it is before where it is.
+    expect(screen.getByTestId('rail-row-ivaldi')).toHaveTextContent('ravn · eitri');
   });
 
   it('states why a section is empty instead of rendering nothing', () => {
@@ -43,6 +42,7 @@ describe('ObservatoryRailSections', () => {
 
     expect(screen.getByText('No residents reporting.')).toBeInTheDocument();
     expect(screen.getByText('No agent meshes discovered.')).toBeInTheDocument();
+    expect(screen.getByText('No clusters discovered.')).toBeInTheDocument();
     expect(screen.getByText('No Mímir instances discovered.')).toBeInTheDocument();
   });
 

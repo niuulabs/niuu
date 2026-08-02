@@ -108,29 +108,36 @@ describe('ObservatorySubnav', () => {
 
   it('renders both realms in the realms section', () => {
     render(<ObservatorySubnav />);
-    expect(screen.getByTestId('realm-realm-asgard')).toBeInTheDocument();
-    expect(screen.getByTestId('realm-realm-midgard')).toBeInTheDocument();
+    // Realms are named on their clusters' rows now, not listed on their own.
+    expect(screen.getByTestId('rail-row-cluster-valaskjalf')).toHaveTextContent('asgard');
   });
 
-  it('shows vlan for realms', () => {
+  it('names the realm on the cluster row rather than in a section of its own', () => {
     render(<ObservatorySubnav />);
-    expect(screen.getByText('vlan 90')).toBeInTheDocument();
+    expect(screen.getByTestId('rail-row-cluster-valaskjalf')).toHaveTextContent('asgard');
+  });
+
+  it('carries no node badge for a cluster with no hosts discovered', () => {
+    // Zero would read as "this cluster has no machines". Nothing reported any.
+    render(<ObservatorySubnav />);
+    const row = screen.getByTestId('rail-row-cluster-valaskjalf');
+    expect(row.querySelector('.obs-rail__badge')).toBeNull();
   });
 
   it('renders cluster in clusters section', () => {
     render(<ObservatorySubnav />);
-    expect(screen.getByTestId('cluster-cluster-valaskjalf')).toBeInTheDocument();
+    expect(screen.getByTestId('rail-row-cluster-valaskjalf')).toBeInTheDocument();
   });
 
   it('calls setSelected when a realm is clicked', () => {
     render(<ObservatorySubnav />);
-    fireEvent.click(screen.getByTestId('realm-realm-asgard'));
-    expect(mockSetSelected).toHaveBeenCalledWith('realm-asgard');
+    fireEvent.click(screen.getByTestId('rail-row-cluster-valaskjalf'));
+    expect(mockSetSelected).toHaveBeenCalledWith('cluster-valaskjalf');
   });
 
   it('calls setSelected when a cluster is clicked', () => {
     render(<ObservatorySubnav />);
-    fireEvent.click(screen.getByTestId('cluster-cluster-valaskjalf'));
+    fireEvent.click(screen.getByTestId('rail-row-cluster-valaskjalf'));
     expect(mockSetSelected).toHaveBeenCalledWith('cluster-valaskjalf');
   });
 });
@@ -138,7 +145,7 @@ describe('ObservatorySubnav', () => {
 describe('ObservatorySubnav collapsible sections', () => {
   it('renders every rail section as a disclosure', () => {
     render(<ObservatorySubnav />);
-    for (const id of ['realms', 'clusters']) {
+    for (const id of ['rail-meshes', 'rail-residents', 'rail-mimir', 'rail-clusters']) {
       expect(screen.getByTestId(`subnav-section-${id}`)).toBeInTheDocument();
       expect(screen.getByTestId(`subnav-toggle-${id}`).tagName).toBe('SUMMARY');
     }
@@ -146,16 +153,20 @@ describe('ObservatorySubnav collapsible sections', () => {
 
   it('opens every section by default', () => {
     render(<ObservatorySubnav />);
-    for (const id of ['realms', 'clusters']) {
+    for (const id of ['rail-meshes', 'rail-residents', 'rail-mimir', 'rail-clusters']) {
       expect(screen.getByTestId(`subnav-section-${id}`)).toHaveAttribute('open');
     }
   });
 
   it('collapses a section without disturbing the others', () => {
     render(<ObservatorySubnav />);
-    fireEvent.click(screen.getByTestId('subnav-toggle-realms'));
+    fireEvent.click(screen.getByTestId('subnav-toggle-rail-clusters'));
 
-    expect((screen.getByTestId('subnav-section-realms') as HTMLDetailsElement).open).toBe(false);
-    expect((screen.getByTestId('subnav-section-clusters') as HTMLDetailsElement).open).toBe(true);
+    expect((screen.getByTestId('subnav-section-rail-clusters') as HTMLDetailsElement).open).toBe(
+      false,
+    );
+    expect((screen.getByTestId('subnav-section-rail-residents') as HTMLDetailsElement).open).toBe(
+      true,
+    );
   });
 });

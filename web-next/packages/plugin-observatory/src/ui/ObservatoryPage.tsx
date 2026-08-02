@@ -5,7 +5,6 @@ import { useObservatoryStore } from '../application/useObservatoryStore';
 import type { TopologyNode } from '../domain';
 import { TopologyCanvas } from './TopologyCanvas';
 import { LayerFilterBar } from './LayerFilterBar';
-import { ObservatoryReadout } from './ObservatoryReadout';
 import { SignalTicker } from './SignalTicker';
 import { Inspector } from './overlays/Inspector';
 import { AgentCardPanel } from './overlays/AgentCardPanel';
@@ -15,20 +14,22 @@ import './ObservatoryShell.css';
 /**
  * Observatory page.
  *
- * Laid out after `docs/mockups/observatory/index.html`: a readout across the
- * top, layer filters beneath it, then stage / inspector with the signal ticker
- * under the stage alone.
+ * Laid out after `docs/mockups/observatory/index.html`: layer filters across
+ * the top, then stage / inspector with the signal ticker under the stage.
  *
- * The mockup's left rail lives in the shell's subnav slot rather than here —
- * the platform already gives every plugin one rail, and a second column would
- * just repeat it.
+ * The mockup's header and left rail are not built here. The shell already
+ * gives every plugin a topbar and a rail, and drawing a second set produced
+ * exactly what you would expect — the plugin's name twice, its realm count
+ * twice, and two Topology labels. The header's Observatory-specific half (the
+ * readout, the present toggle) goes in the shell's `topbarRight` slot; the
+ * rail goes in `subnav`.
  */
 export function ObservatoryPage() {
   const topology = useTopology();
   const events = useEvents();
   const { data: registry } = useRegistry();
   const [storeState, store] = useObservatoryStore();
-  const { selectedId, hiddenLayers, hiddenCompute } = storeState;
+  const { selectedId, hiddenLayers, hiddenCompute, presenting } = storeState;
 
   const selectedNode: TopologyNode | null =
     selectedId && topology ? (topology.nodes.find((n) => n.id === selectedId) ?? null) : null;
@@ -42,15 +43,11 @@ export function ObservatoryPage() {
   }
 
   return (
-    <div data-testid="observatory-page" className="obs-shell">
-      <header className="obs-shell__top">
-        <div className="obs-shell__brand">
-          <b>Observatory</b>
-          <span>live topology · niuu.world</span>
-        </div>
-        <ObservatoryReadout topology={topology} />
-      </header>
-
+    <div
+      data-testid="observatory-page"
+      className={`obs-shell${presenting ? ' obs-shell--present' : ''}`}
+      data-presenting={presenting}
+    >
       <div className="obs-shell__filt">
         <LayerFilterBar topology={topology} />
       </div>

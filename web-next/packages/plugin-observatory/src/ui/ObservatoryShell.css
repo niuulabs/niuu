@@ -8,45 +8,43 @@
 
   display: grid;
   grid-template-columns: minmax(0, 1fr) var(--obs-insp);
-  grid-template-rows: 54px auto minmax(0, 1fr) 118px;
+  grid-template-rows: auto minmax(0, 1fr) 118px;
   grid-template-areas:
-    'top top'
     'filt filt'
     'stage insp'
     'ticker insp';
   height: 100%;
   min-height: 0;
   overflow: hidden;
+  transition: grid-template-columns 420ms cubic-bezier(0.4, 0, 0.15, 1);
 }
 
-/* Brand and readout share one framed strip, as the mockup draws it — the
-   estate's name and its numbers are one statement, not two rows that happen
-   to sit together. */
-.obs-shell__top {
-  grid-area: top;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  margin: 8px 10px 0;
-  padding: 0 12px;
-  border: 1px solid var(--color-border-subtle, rgb(255 255 255 / 8%));
-  border-radius: 8px;
-  background: var(--color-bg-elevated, rgb(255 255 255 / 2%));
+/*
+ * Present mode — the graph, and nothing else.
+ *
+ * The inspector and feed collapse to nothing rather than being hidden in
+ * place, so the stage actually gains the room. The rail is not ours to
+ * collapse: the subnav renders empty and the shell closes it, which is why
+ * `ObservatorySubnav` returns null instead of styling itself away.
+ */
+.obs-shell--present {
+  --obs-insp: 0px;
+
+  grid-template-rows: auto minmax(0, 1fr) 0;
 }
 
-.obs-shell__brand {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--color-text-tertiary, rgb(255 255 255 / 45%));
+.obs-shell--present .obs-shell__insp,
+.obs-shell--present .obs-ticker {
+  opacity: 0;
+  pointer-events: none;
+  /* Zero the border too, not just its colour: a 1px rule on a zero-width
+     column is still a 1px column, and it shows as a seam down the stage. */
+  border-width: 0;
 }
 
-.obs-shell__brand b {
-  font-size: 13px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--color-text-primary, rgb(255 255 255 / 92%));
+.obs-shell__insp,
+.obs-ticker {
+  transition: opacity 240ms ease;
 }
 
 .obs-shell__filt {
@@ -74,7 +72,6 @@
   .obs-shell {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
-      'top'
       'filt'
       'stage'
       'ticker';

@@ -13,6 +13,8 @@ interface ObservatoryStoreState {
   hiddenLayers: ReadonlySet<EdgeLayer>;
   /** Compute classes switched off. Their nodes fade rather than disappear. */
   hiddenCompute: ReadonlySet<ComputeClass>;
+  /** Present mode: rail, inspector and feed step aside, leaving the graph. */
+  presenting: boolean;
 }
 
 interface ObservatoryStore {
@@ -23,6 +25,7 @@ interface ObservatoryStore {
   setHiddenLayers(layers: ReadonlySet<EdgeLayer>): void;
   toggleCompute(compute: ComputeClass): void;
   setHiddenCompute(compute: ReadonlySet<ComputeClass>): void;
+  setPresenting(presenting: boolean): void;
   subscribe(fn: () => void): () => void;
 }
 
@@ -52,6 +55,7 @@ export function getObservatoryStore(): ObservatoryStore {
     // one click away in the filter strip.
     hiddenLayers: new Set<EdgeLayer>(CALM_HIDDEN_LAYERS),
     hiddenCompute: new Set<ComputeClass>(),
+    presenting: false,
   };
 
   _store = {
@@ -88,6 +92,11 @@ export function getObservatoryStore(): ObservatoryStore {
     },
     setHiddenCompute(compute: ReadonlySet<ComputeClass>): void {
       state = { ...state, hiddenCompute: new Set(compute) };
+      subscribers.forEach((fn) => fn());
+    },
+    setPresenting(presenting: boolean): void {
+      if (state.presenting === presenting) return;
+      state = { ...state, presenting };
       subscribers.forEach((fn) => fn());
     },
     subscribe(fn: () => void): () => void {

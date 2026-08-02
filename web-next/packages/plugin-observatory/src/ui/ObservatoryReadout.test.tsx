@@ -35,9 +35,10 @@ describe('ObservatoryReadout', () => {
     expect(screen.getByTestId('readout-msgs-min')).toHaveTextContent('138');
   });
 
-  it('renders zeroes for an empty estate without crashing', () => {
+  it('dashes every cell while it is still waiting for a snapshot', () => {
     render(<ObservatoryReadout topology={null} />);
 
-    expect(screen.getByTestId('readout-realms')).toHaveTextContent('0');
+    expect(screen.getByTestId('readout-realms')).toHaveTextContent('—');
+    expect(screen.getByTestId('readout-residents')).toHaveTextContent('—');
   });
 });

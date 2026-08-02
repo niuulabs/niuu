@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { ObservatoryPage } from './ObservatoryPage';
@@ -10,7 +10,7 @@ import {
   createMockAgentDirectory,
 } from '../adapters/mock';
 import { makeCtxMock } from './TopologyCanvas/test-helpers';
-import { __resetObservatoryStore } from '../application/useObservatoryStore';
+import { __resetObservatoryStore, getObservatoryStore } from '../application/useObservatoryStore';
 
 beforeEach(() => {
   // Reset the module-level singleton to prevent state leaking between tests.
@@ -138,10 +138,20 @@ describe('ObservatoryPage', () => {
     expect(screen.getByTestId('signal-ticker')).toBeInTheDocument();
   });
 
-  it('renders the readout and the docked inspector', () => {
+  it('docks the inspector and leaves the header to the shell', () => {
     wrap(<ObservatoryPage />);
-    expect(screen.getByTestId('observatory-readout')).toBeInTheDocument();
     expect(screen.getByLabelText('Inspector')).toBeInTheDocument();
+    // The readout lives in the shell's topbar slot. Drawing it here too gave
+    // the estate two headers stating the same counts.
+    expect(screen.queryByTestId('observatory-readout')).not.toBeInTheDocument();
+  });
+
+  it('clears the stage in present mode', () => {
+    wrap(<ObservatoryPage />);
+    expect(screen.getByTestId('observatory-page')).toHaveAttribute('data-presenting', 'false');
+
+    act(() => getObservatoryStore().setPresenting(true));
+    expect(screen.getByTestId('observatory-page')).toHaveAttribute('data-presenting', 'true');
   });
 
   it('renders the Minimap overlay with topology', () => {

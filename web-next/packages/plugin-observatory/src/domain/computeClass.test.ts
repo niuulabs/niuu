@@ -61,6 +61,25 @@ describe('computeClassOf', () => {
   });
 });
 
+describe('computeClassMap', () => {
+  it('places a cluster in the k8s estate — it does not sit inside one', () => {
+    const counts = countNodesByComputeClass([
+      node({ id: 'c', typeId: 'cluster' }),
+      node({ id: 'ns', typeId: 'namespace' }),
+    ]);
+    expect(counts.k8s).toBe(2);
+    expect(counts.own).toBe(0);
+  });
+
+  it('inherits placement from an ancestor when the node omits it', () => {
+    const counts = countNodesByComputeClass([
+      node({ id: 'c', typeId: 'cluster', label: 'ymir' }),
+      node({ id: 'r', typeId: 'ravn_long', parentId: 'c' }),
+    ]);
+    expect(counts.k8s).toBe(2);
+  });
+});
+
 describe('countNodesByComputeClass', () => {
   it('reports a zero for a class with nothing in it', () => {
     const counts = countNodesByComputeClass([node({ id: 'a', cluster: 'ymir' })]);
