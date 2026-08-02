@@ -44,25 +44,41 @@ describe('Inspector', () => {
     expect(screen.getByTestId('inspector-empty')).toBeInTheDocument();
   });
 
-  it('heads with the registry kind, the name and the placement', () => {
+  it('places the entity in one line above its name', () => {
     render(<Inspector node={mimir} topology={topology} registry={registry} />);
 
-    expect(screen.getByText('Niuu Mímir')).toBeInTheDocument();
+    // Kind, engine, cluster, realm — so the reader never has to go down to a
+    // table to learn what they are looking at or where it lives.
+    expect(screen.getByTestId('inspector-kind')).toHaveTextContent('Niuu Mímir · ymir · asgard');
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('mímir-shared');
-    expect(screen.getByText('ymir · asgard')).toBeInTheDocument();
   });
 
-  it('explains what the entity is from the registry description', () => {
-    render(<Inspector node={mimir} topology={topology} registry={registry} />);
+  it('names the engine in the eyebrow when the adapter reported one', () => {
+    const resident = node('r', 'ravn_long', { engine: 'hermes', cluster: 'ymir' });
+    render(<Inspector node={resident} topology={topology} registry={registry} />);
 
-    expect(screen.getByText('What it is')).toBeInTheDocument();
-    expect(screen.getByText('The primary shared knowledge base.')).toBeInTheDocument();
+    expect(screen.getByTestId('inspector-kind')).toHaveTextContent('engine hermes');
   });
 
-  it('omits the description block when the registry has none', () => {
-    render(<Inspector node={node('b', 'bifrost')} topology={topology} registry={registry} />);
+  it('leads with what the entity is doing, not with its fields', () => {
+    const resident = node('r', 'ravn_long', { activity: 'compacting learnings/' });
+    render(<Inspector node={resident} topology={topology} registry={registry} />);
 
-    expect(screen.queryByText('What it is')).not.toBeInTheDocument();
+    expect(screen.getByTestId('inspector-activity')).toHaveTextContent('compacting learnings/');
+  });
+
+  it('keeps Runtime to how the thing is run', () => {
+    const resident = node('r', 'ravn_long', {
+      engine: 'hermes',
+      deployment: 'DockerContainer',
+      pages: 42,
+    });
+    render(<Inspector node={resident} topology={topology} registry={registry} />);
+
+    expect(screen.getByText('Runtime')).toBeInTheDocument();
+    expect(screen.getByText('DockerContainer')).toBeInTheDocument();
+    // `pages` is not runtime — it drops to Detail rather than crowding the top.
+    expect(screen.getByText('Detail')).toBeInTheDocument();
   });
 
   it('lists only detail rows the adapters actually populated', () => {
@@ -73,17 +89,22 @@ describe('Inspector', () => {
     expect(screen.queryByText('gpu')).not.toBeInTheDocument();
   });
 
-  it('says a node is outside the realms rather than leaving realm blank', () => {
-    render(<Inspector node={node('x', 'host')} topology={topology} registry={registry} />);
+  it('lists the mesh a resident peers in, not others of its type', () => {
+    // Two residents sharing a type share nothing. Two sharing a mesh share
+    // their findings, which is the relationship worth a section.
+    const a = node('a', 'ravn_long', { flockId: 'ops-mesh' });
+    const b = node('b2', 'ravn_long', { flockId: 'ops-mesh' });
+    const meshTopology = { ...topology, nodes: [a, b] };
 
-    expect(screen.getByText('outside the realms')).toBeInTheDocument();
+    render(<Inspector node={a} topology={meshTopology} registry={registry} />);
+
+    expect(screen.getByText('Mesh · ops-mesh')).toBeInTheDocument();
+    expect(screen.getByTestId('inspector-mesh')).toHaveTextContent('same mesh');
   });
 
-  it('counts the entity among its peers', () => {
+  it('says nothing about a mesh for a node that is in none', () => {
     render(<Inspector node={mimir} topology={topology} registry={registry} />);
-
-    expect(screen.getByText('1 of 2')).toBeInTheDocument();
-    expect(screen.getByText('The other 1')).toBeInTheDocument();
+    expect(screen.queryByTestId('inspector-mesh')).not.toBeInTheDocument();
   });
 
   it('lists what the entity is connected to', () => {
@@ -104,7 +125,7 @@ describe('Inspector', () => {
     expect(screen.getByText('Nothing yet.')).toBeInTheDocument();
   });
 
-  it('navigates to a peer when its row is clicked', async () => {
+  it('navigates to a connected node when its row is clicked', async () => {
     const onNodeSelect = vi.fn();
     render(
       <Inspector
@@ -115,9 +136,9 @@ describe('Inspector', () => {
       />,
     );
 
-    await userEvent.click(screen.getByTestId('insp-peer-mimir-2'));
+    await userEvent.click(screen.getByTestId('insp-peer-b'));
 
-    expect(onNodeSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 'mimir-2' }));
+    expect(onNodeSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 'b' }));
   });
 
   it('offers the resident / card / JSON tabs only when a card slot is composed in', () => {
