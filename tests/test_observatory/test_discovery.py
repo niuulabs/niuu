@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
+
+import pytest
+
 from observatory.discovery import ObservatoryDiscoveryService
 from observatory.entity_discovery import DiscoveredEntity, DiscoveryResult
 
@@ -97,3 +102,46 @@ async def test_discovery_uses_cache_and_returns_deep_copies() -> None:
 
     assert adapter.calls == 1
     assert not any(node["id"] == "mutated" for node in second["nodes"])
+
+
+@pytest.mark.asyncio
+async def test_an_expired_cache_serves_stale_while_it_rebuilds() -> None:
+    """The caller that lands on the expiry must not pay for the rebuild.
+
+    Rebuilding lists a whole cluster and calls out to Bifrost, Ravn and Ting —
+    ~7s on ymir. Blocking on it meant the richest source timed out of the
+    aggregate every time its cache turned over, so its meshes and edges looked
+    intermittent.
+    """
+    release = asyncio.Event()
+    calls = 0
+
+    class _BlockingAdapter:
+        async def discover(self):  # noqa: ANN202
+            nonlocal calls
+            calls += 1
+            if calls > 1:  # the first build must complete; later ones hang
+                await release.wait()
+            return DiscoveryResult(
+                entities=[DiscoveredEntity(id=f"svc-{calls}", kind="service", name="svc")]
+            )
+
+    service = ObservatoryDiscoveryService(
+        guild_url="http://guild.test",
+        # The cache clock is truncated to whole seconds, so a sub-second TTL
+        # never expires — the entry has to actually age past one.
+        ttl_seconds=1.0,
+        discovery_adapter=_BlockingAdapter(),
+    )
+
+    first = await service.get_topology_snapshot()
+    assert calls == 1
+    await asyncio.sleep(1.2)  # let the entry age past the TTL
+
+    # The rebuild is wedged open, so this can only return by serving stale.
+    stale = await asyncio.wait_for(service.get_topology_snapshot(), timeout=1.0)
+    assert [n["id"] for n in stale["nodes"]] == [n["id"] for n in first["nodes"]]
+
+    release.set()  # and the refresh really was running behind it
+    await asyncio.sleep(0.1)
+    assert calls == 2

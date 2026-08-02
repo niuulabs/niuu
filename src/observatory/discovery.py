@@ -52,6 +52,8 @@ class ObservatoryDiscoveryService:
         self._registry_type_ids = registry_type_ids
         self._lock = asyncio.Lock()
         self._cached: dict[str, tuple[datetime, DiscoverySnapshot]] = {}
+        self._refreshing = False
+        self._background: set[asyncio.Task[None]] = set()
 
     @property
     def guild_url(self) -> str:
@@ -93,6 +95,24 @@ class ObservatoryDiscoveryService:
             if now - cached_at < self._ttl:
                 return cached_snapshot
 
+        # Stale-while-revalidate. Rebuilding costs seconds — it lists a whole
+        # cluster and calls out to Bifrost, Ravn and Ting — and the caller that
+        # happened to arrive on the expiry paid all of it. On ymir, the richest
+        # source, that was ~7s against a Guild timeout, so the one Observatory
+        # carrying residents, model routing and run state dropped out of the
+        # estate every time its cache turned over, taking its meshes and edges
+        # with it and making them look intermittent.
+        #
+        # A stale answer is the right one here: the snapshot describes an
+        # estate that changes over minutes, and the alternative on offer is not
+        # a fresher answer but no answer at all.
+        if cached is not None and not self._refreshing:
+            self._refreshing = True
+            task = asyncio.create_task(self._refresh(cache_key, headers=headers))
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
+            return cached[1]
+
         async with self._lock:
             now = _utc_now()
             cached = self._cached.get(cache_key)
@@ -104,6 +124,19 @@ class ObservatoryDiscoveryService:
             snapshot = await self._discover(headers=headers)
             self._cached[cache_key] = (now, snapshot)
             return snapshot
+
+    async def _refresh(self, cache_key: str, headers: Mapping[str, str] | None) -> None:
+        """Rebuild the snapshot out of band, leaving the stale one readable."""
+        try:
+            async with self._lock:
+                snapshot = await self._discover(headers=headers)
+                self._cached[cache_key] = (_utc_now(), snapshot)
+        except Exception as exc:  # a failed refresh must not poison the cache
+            logger.warning(
+                "Observatory snapshot refresh failed: %s", str(exc) or type(exc).__name__
+            )
+        finally:
+            self._refreshing = False
 
     async def _discover(self, headers: Mapping[str, str] | None = None) -> DiscoverySnapshot:
         if self._discovery_adapter is None:
