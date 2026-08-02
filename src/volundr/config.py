@@ -1549,9 +1549,16 @@ class AgentDirectoryConfig(BaseModel):
         description="Maximum concurrent Agent Card resolutions per local directory request.",
     )
     guild_timeout_seconds: float = Field(
-        default=5.0,
+        default=20.0,
         gt=0,
-        description="Timeout for each Guild-to-Observatory directory request.",
+        description=(
+            "Timeout for each Guild-to-Observatory request. An Observatory "
+            "builds its fragment on demand, so the richest source is the "
+            "slowest: ymir runs five adapters including outbound calls to "
+            "Bifrost, Ravn and Ting and answers in ~8.5s. At the previous 5s "
+            "it timed out intermittently, and httpx.ReadTimeout carries no "
+            "message, so the failure reported as an empty string."
+        ),
     )
     guild_max_concurrency: int = Field(
         default=8,
