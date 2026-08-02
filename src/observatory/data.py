@@ -11,7 +11,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 REGISTRY: dict[str, object] = {
-    "version": 13,
+    "version": 14,
     "updatedAt": "2026-08-02T00:00:00Z",
     "types": [
         {
@@ -408,10 +408,18 @@ REGISTRY: dict[str, object] = {
             "size": 10,
             "border": "solid",
             "canContain": [],
-            "parentTypes": ["realm"],
+            # A printer reached through a gateway running in a cluster sits in
+            # that cluster's namespace; one on a bench sits in the realm.
+            "parentTypes": ["realm", "namespace", "cluster"],
             "category": "device",
             "description": "Manufacturing printer node.",
-            "fields": [{"key": "model", "label": "Model", "type": "string"}],
+            "fields": [
+                {"key": "model", "label": "Model", "type": "string"},
+                {"key": "job", "label": "Current job", "type": "string"},
+                {"key": "progressPercent", "label": "Progress %", "type": "number"},
+                {"key": "chamberTempC", "label": "Chamber °C", "type": "number"},
+                {"key": "simulated", "label": "Simulated", "type": "boolean"},
+            ],
         },
         {
             "id": "vaettir",

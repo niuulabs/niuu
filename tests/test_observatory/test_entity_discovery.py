@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 
 import httpx
@@ -14,6 +15,7 @@ from observatory.entity_discovery import (
     DiscoveryResult,
     FluxHelmReleaseSessionDiscoveryAdapter,
     KubernetesDiscoveryAdapter,
+    LaevateinnPrinterDiscoveryAdapter,
     MimirDiscoveryAdapter,
     RavnResidentsDiscoveryAdapter,
     RavnValkyrieDiscoveryAdapter,
@@ -1467,6 +1469,121 @@ async def test_bifrost_discovers_the_real_catalogue_not_a_hardcoded_one() -> Non
     assert set(models) == {"nemotron-super", "claude-opus-5"}
     assert models["nemotron-super"].metadata["location"] == "internal"
     assert models["claude-opus-5"].metadata["location"] == "external"
+
+
+_PRINTER_RECORD = {
+    "id": "printer-01",
+    "name": "Laevateinn",
+    "machineName": "Laevateinn MSLA-8K",
+    "brandName": "Niuu",
+    "firmwareVersion": "V1.0.0",
+    "mainboardId": "1aeva7e100000001",
+    "protocol": "sdcp",
+    "state": "connected",
+    "isSimulator": True,
+    "simulatorScenario": "failing_prints",
+    "status": {
+        "TempOfBox": 28.0,
+        "TempTargetBox": 30.0,
+        "TempOfUVLED": 25.0,
+        "PrintInfo": {
+            "Status": 8,
+            "CurrentLayer": 208,
+            "TotalLayer": 512,
+            "Filename": "dental-arch.ctb",
+            "ErrorNumber": 0,
+            "TaskId": "ff0ec77a",
+        },
+    },
+}
+
+
+def _printer_adapter(record: dict[str, object]) -> LaevateinnPrinterDiscoveryAdapter:
+    return LaevateinnPrinterDiscoveryAdapter(
+        base_url="http://gateway-01.test",
+        cluster="eitri",
+        realm="svartalfheim",
+        namespace="laevateinn",
+        transport=_routed({"/api/printers": [record]}),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_printer_arrives_with_the_job_it_is_running() -> None:
+    """A print farm is only useful on the canvas if it says what it is doing."""
+    result = await _printer_adapter(_PRINTER_RECORD).discover()
+
+    printer = next(e for e in result.entities if e.kind == "printer")
+    assert printer.id == "printer:eitri:printer-01"
+    assert printer.name == "Laevateinn"
+    assert printer.cluster == "eitri"
+    assert printer.namespace == "laevateinn"
+    assert printer.status == "healthy"
+    assert printer.metadata["model"] == "Laevateinn MSLA-8K"
+    assert printer.metadata["job"] == "dental-arch.ctb"
+    assert printer.metadata["currentLayer"] == 208
+    assert printer.metadata["totalLayers"] == 512
+    assert printer.metadata["progressPercent"] == 41
+    assert printer.metadata["chamberTempC"] == 28.0
+
+
+@pytest.mark.asyncio
+async def test_a_simulated_printer_says_so() -> None:
+    """A demo must not be able to pass a simulator off as a machine."""
+    result = await _printer_adapter(_PRINTER_RECORD).discover()
+
+    printer = next(e for e in result.entities if e.kind == "printer")
+    assert printer.metadata["simulated"] is True
+    assert printer.metadata["simulatorScenario"] == "failing_prints"
+
+
+@pytest.mark.asyncio
+async def test_printer_status_reflects_what_the_machine_reports() -> None:
+    async def status_for(**overrides: object) -> str:
+        record = json.loads(json.dumps(_PRINTER_RECORD))
+        for key, value in overrides.items():
+            if key == "job_status":
+                record["status"]["PrintInfo"]["Status"] = value
+            elif key == "error":
+                record["status"]["PrintInfo"]["ErrorNumber"] = value
+            else:
+                record[key] = value
+        result = await _printer_adapter(record).discover()
+        return next(e for e in result.entities if e.kind == "printer").status
+
+    assert await status_for(job_status=8) == "healthy"
+    # Not printing is not a fault — an idle machine is a working machine.
+    assert await status_for(job_status=0) == "idle"
+    assert await status_for(error=8) == "degraded"
+    # A gateway that cannot reach the machine outranks whatever it last said.
+    assert await status_for(state="disconnected") == "failed"
+
+
+@pytest.mark.asyncio
+async def test_a_printer_with_no_job_reports_no_progress() -> None:
+    record = json.loads(json.dumps(_PRINTER_RECORD))
+    record["status"]["PrintInfo"] = {"Status": 0}
+
+    result = await _printer_adapter(record).discover()
+
+    printer = next(e for e in result.entities if e.kind == "printer")
+    # Never 0% — that reads as a stalled print rather than an empty machine.
+    assert printer.metadata["progressPercent"] is None
+    assert printer.metadata["job"] == ""
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_gateway_names_itself(caplog) -> None:
+    adapter = LaevateinnPrinterDiscoveryAdapter(
+        base_url="http://gateway-03.test",
+        cluster="eitri",
+        transport=httpx.MockTransport(lambda request: httpx.Response(503)),
+    )
+
+    result = await adapter.discover()
+
+    assert not result.entities
+    assert result.events and "gateway-03.test" in result.events[0]["message"]
 
 
 @pytest.mark.asyncio

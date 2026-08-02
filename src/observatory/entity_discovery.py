@@ -1285,6 +1285,102 @@ def _normalized_domains(domains: Collection[str]) -> list[str]:
     return [d.strip().lower().lstrip(".") for d in domains if d and d.strip().strip(".")]
 
 
+#: SDCP print-job states that mean the machine is actively working. Anything
+#: else is either idle or an error, both of which the printer reports directly.
+_PRINTING_JOB_STATES = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 13, 16, 18, 19, 20})
+
+
+class LaevateinnPrinterDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
+    """Discover resin printers from one Laevateinn gateway.
+
+    Each gateway fronts the printers it can reach and reports their real
+    state — connection, current job, layer progress, temperatures — so a
+    printer appears with what it is doing rather than as a bare pod. One
+    adapter per gateway, so a gateway that goes down names itself in the
+    warning instead of silently removing its printers.
+    """
+
+    warning_name = "laevateinn"
+
+    async def collect(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+    ) -> DiscoveryResult:
+        payload = await self._json(client, headers, "/api/printers")
+        records = payload if isinstance(payload, list) else list((payload or {}).values())
+
+        entities: list[DiscoveredEntity] = []
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            printer_id = str(record.get("id") or record.get("mainboardId") or "").strip()
+            if not printer_id:
+                continue
+            status = record.get("status") if isinstance(record.get("status"), dict) else {}
+            job = status.get("PrintInfo") if isinstance(status.get("PrintInfo"), dict) else {}
+            entities.append(
+                self._entity(
+                    "printer",
+                    str(record.get("name") or record.get("machineName") or printer_id),
+                    f"printer:{_slug(self._cluster or 'unknown')}:{_slug(printer_id)}",
+                    status=_printer_status(record, job),
+                    endpoints={"gateway": self._base_url},
+                    metadata=_printer_metadata(record, status, job),
+                )
+            )
+
+        return DiscoveryResult(entities=entities)
+
+
+def _printer_status(record: Mapping[str, Any], job: Mapping[str, Any]) -> str:
+    """What the machine is doing, in the vocabulary the canvas colours by."""
+    if str(record.get("state") or "").lower() != "connected":
+        return "failed"
+    if _as_int(job.get("ErrorNumber")) or record.get("lastError"):
+        return "degraded"
+    if _as_int(job.get("Status")) in _PRINTING_JOB_STATES:
+        return "healthy"
+    return "idle"
+
+
+def _printer_metadata(
+    record: Mapping[str, Any],
+    status: Mapping[str, Any],
+    job: Mapping[str, Any],
+) -> dict[str, Any]:
+    total_layers = _as_int(job.get("TotalLayer"))
+    current_layer = _as_int(job.get("CurrentLayer"))
+    return {
+        "model": str(record.get("machineName") or ""),
+        "brand": str(record.get("brandName") or ""),
+        "firmware": str(record.get("firmwareVersion") or ""),
+        "mainboardId": str(record.get("mainboardId") or ""),
+        "protocol": str(record.get("protocol") or ""),
+        "connection": str(record.get("state") or ""),
+        "job": str(job.get("Filename") or ""),
+        "jobId": str(job.get("TaskId") or ""),
+        "currentLayer": current_layer,
+        "totalLayers": total_layers,
+        # The number an operator actually reads off a print farm board.
+        "progressPercent": round(current_layer * 100 / total_layers) if total_layers else None,
+        "errorCode": _as_int(job.get("ErrorNumber")) or None,
+        "chamberTempC": status.get("TempOfBox"),
+        "chamberTargetC": status.get("TempTargetBox"),
+        "uvLedTempC": status.get("TempOfUVLED"),
+        # A simulated printer must never be presentable as a real one.
+        "simulated": bool(record.get("isSimulator")),
+        "simulatorScenario": str(record.get("simulatorScenario") or ""),
+    }
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 class RavnValkyrieDiscoveryAdapter:
     """Discover cross-cluster Valkyries from Ravn's live dashboard projection."""
 
