@@ -11,7 +11,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 REGISTRY: dict[str, object] = {
-    "version": 14,
+    "version": 15,
     "updatedAt": "2026-08-02T00:00:00Z",
     "types": [
         {
@@ -403,7 +403,12 @@ REGISTRY: dict[str, object] = {
             "label": "Resin Printer",
             "rune": "ᛈ",
             "icon": "printer",
-            "shape": "square-sm",
+            # `shape` is seed-owned (see `_SEED_OWNED_KEYS`), so setting this
+            # through the registry API alone would silently revert on the next
+            # version bump. A print farm drawn as the same plain box any
+            # unrecognised workload gets is the one thing an operator scanning
+            # for their machines cannot afford.
+            "shape": "printer",
             "color": "slate-400",
             "size": 10,
             "border": "solid",
