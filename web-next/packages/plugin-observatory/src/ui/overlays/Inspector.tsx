@@ -112,10 +112,13 @@ function field(node: TopologyNode, key: string): string {
  */
 export function eyebrowOf(node: TopologyNode, typeLabel?: string): string[] {
   const engine = field(node, 'engine') || field(node, 'runtime');
+  // Placement always says something. A kind on its own — "resident" — is the
+  // one fact the reader already had from clicking the row.
+  const placement = node.cluster || field(node, 'hostId') || (node.realm ? '' : 'local');
   return [
     typeLabel ?? node.typeId,
     engine ? `engine ${engine}` : '',
-    node.cluster ?? '',
+    placement,
     node.realm ?? '',
   ].filter(Boolean);
 }

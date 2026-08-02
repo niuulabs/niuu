@@ -120,7 +120,7 @@ REGISTRY: dict[str, object] = {
         },
         {
             "id": "ravn_long",
-            "label": "Long-lived Ravn",
+            "label": "Resident",
             "rune": "ᚱ",
             "icon": "bird",
             "shape": "agent",
@@ -163,7 +163,7 @@ REGISTRY: dict[str, object] = {
         },
         {
             "id": "ravn_run",
-            "label": "Run Ravn",
+            "label": "Run agent",
             "rune": "ᚲ",
             "icon": "bird",
             "shape": "triangle",

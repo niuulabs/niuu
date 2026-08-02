@@ -189,7 +189,7 @@
 }
 
 .obs-insp__footer {
-  padding: 13px 16px;
+  padding: 0;
 }
 
 /* Segmented control: resident / A2A card / JSON, as the mockup's .seg row. */

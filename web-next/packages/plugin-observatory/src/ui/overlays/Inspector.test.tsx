@@ -53,6 +53,15 @@ describe('Inspector', () => {
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('mímir-shared');
   });
 
+  it('never leaves the eyebrow at the kind alone', () => {
+    // "Resident" is what the reader already knew from clicking the row. The
+    // line has to add placement, or it adds nothing.
+    const stray = node('s', 'ravn_long');
+    render(<Inspector node={stray} topology={topology} registry={registry} />);
+
+    expect(screen.getByTestId('inspector-kind')).toHaveTextContent('local');
+  });
+
   it('names the engine in the eyebrow when the adapter reported one', () => {
     const resident = node('r', 'ravn_long', { engine: 'hermes', cluster: 'ymir' });
     render(<Inspector node={resident} topology={topology} registry={registry} />);
