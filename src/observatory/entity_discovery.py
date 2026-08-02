@@ -1320,6 +1320,7 @@ class KubernetesDiscoveryAdapter:
                                         source_adapter=self.__class__.__name__,
                                     )
                                 )
+                await self._count_pods_per_node(client, base_url, headers, entities, events)
         except Exception as exc:
             events.append(_adapter_warning("kubernetes", str(exc)))
         return DiscoveryResult(
@@ -1327,6 +1328,57 @@ class KubernetesDiscoveryAdapter:
             edges=edges,
             events=events,
         )
+
+    async def _count_pods_per_node(
+        self,
+        client: httpx.AsyncClient,
+        base_url: str,
+        headers: dict[str, str],
+        entities: list[DiscoveredEntity],
+        events: list[dict[str, Any]],
+    ) -> None:
+        """Tally every pod in the cluster against the node running it.
+
+        A separate, unselected pass: the main loop lists pods through the
+        workload label selector, so counting there would report how many pods
+        *we* deployed and present it as the cluster's load — a wrong number is
+        worse than none. Only names and node assignments are read, so the
+        response is discarded immediately rather than held as entities.
+
+        A cluster that refuses the list simply has no count. The rail draws
+        nothing rather than a zero, which is the honest rendering of "not
+        allowed to look".
+        """
+        hosts = [entity for entity in entities if entity.kind == "host"]
+        if not hosts:
+            return
+
+        counts: dict[str, int] = {}
+        try:
+            response = await client.get(f"{base_url}/api/v1/pods", headers=headers)
+            if response.status_code == 403:
+                events.append(_adapter_warning("kubernetes", "Forbidden listing pods"))
+                return
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            events.append(
+                _adapter_warning("kubernetes", f"pod census failed: {exc or type(exc).__name__}")
+            )
+            return
+
+        for item in payload.get("items", []) if isinstance(payload, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            spec = item.get("spec") if isinstance(item.get("spec"), dict) else {}
+            node_name = str(spec.get("nodeName") or "").strip()
+            if node_name:
+                counts[node_name] = counts.get(node_name, 0) + 1
+
+        for host in hosts:
+            count = counts.get(host.name)
+            if count is not None:
+                host.metadata["pods"] = count
 
     def _path_for_kind(self, kind: str) -> str:
         namespace = quote(self._namespace, safe="")

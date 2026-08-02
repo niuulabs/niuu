@@ -1122,6 +1122,8 @@ async def test_nodes_are_discovered_as_hosts_with_their_hardware(tmp_path, monke
     monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/pods":
+            return httpx.Response(200, json={"items": []})
         assert request.url.path == "/api/v1/nodes"
         return httpx.Response(200, json={"items": [_node_item(gpu="NVIDIA-GB10")]})
 
@@ -1724,3 +1726,79 @@ async def test_a_timeout_names_the_fault_instead_of_only_the_url() -> None:
     result = await adapter.discover()
 
     assert "ReadTimeout" in result.events[0]["body"]
+
+
+def _pod_on(node_name: str) -> dict:
+    return {"metadata": {"name": f"pod-{node_name}"}, "spec": {"nodeName": node_name}}
+
+
+@pytest.mark.asyncio
+async def test_a_host_carries_how_many_pods_it_runs(tmp_path, monkeypatch) -> None:
+    """The census is unselected: a cluster's load is every pod, not only ours."""
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/pods":
+            # No label selector — counting only our own workloads would report
+            # a fraction of the cluster and present it as the whole.
+            assert "labelSelector" not in request.url.params
+            return httpx.Response(
+                200,
+                json={"items": [_pod_on("spark-1"), _pod_on("spark-1"), _pod_on("other")]},
+            )
+        return httpx.Response(200, json={"items": [_node_item()]})
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        include_kinds=["nodes"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    assert result.entities[0].metadata["pods"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_host_carries_no_pod_count_when_the_census_is_refused(tmp_path, monkeypatch):
+    """403 means "not allowed to look", which is not the same as zero pods."""
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/pods":
+            return httpx.Response(403, json={"message": "forbidden"})
+        return httpx.Response(200, json={"items": [_node_item()]})
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        include_kinds=["nodes"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    assert "pods" not in result.entities[0].metadata
+    assert any("Forbidden listing pods" in str(event) for event in result.events)
+
+
+@pytest.mark.asyncio
+async def test_the_pod_census_is_skipped_when_no_host_was_discovered(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(200, json={"items": []})
+
+    adapter = KubernetesDiscoveryAdapter(
+        cluster="ymir",
+        include_kinds=["nodes"],
+        service_account_root=_service_account(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+
+    await adapter.discover()
+
+    assert "/api/v1/pods" not in seen

@@ -6,6 +6,7 @@ import { nodesOfType, RESIDENT_TYPE_IDS } from '../domain/observatoryStats';
 import {
   clusterSummaries,
   meshSubtitle,
+  meshOf,
   mimirBadge,
   nodeIndex,
   placementSubtitle,
@@ -135,6 +136,10 @@ export function ObservatoryRailSections({ topology, selectedId, onSelect }: Prop
               id={node.id}
               name={node.label}
               sub={residentSubtitle(node, byId) || node.status}
+              // The mesh it belongs to, if any — the one relationship a
+              // resident has that its placement does not already state.
+              badge={meshOf(node)}
+              badgeTone="amber"
               tone={toneOf(node)}
               selected={node.id === selectedId}
               onSelect={onSelect}

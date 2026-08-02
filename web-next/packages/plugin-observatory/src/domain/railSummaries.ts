@@ -113,16 +113,24 @@ export function clusterSummaries(topology: Topology | null): ClusterSummary[] {
 }
 
 /**
- * `ravn · valaskjálf` — what a resident runs on, and where.
+ * `ravn · saehrimnir` — what a resident runs on, and the box it runs on.
  *
- * Falls back to `local` only when containment genuinely places it nowhere: a
+ * The host wins over the cluster when both are known: "which machine" is the
+ * more specific answer, and the cluster is already one row down the rail.
+ * Falls back to `local` only when containment places it nowhere at all — a
  * resident on a workstation is the case that word is for.
  */
 export function residentSubtitle(node: TopologyNode, byId?: Map<string, TopologyNode>): string {
   const engine = textField(node, 'engine') || textField(node, 'runtime');
   const where =
-    (byId ? clusterNameOf(node, byId) : node.cluster) || textField(node, 'hostId') || 'local';
+    textField(node, 'hostId') || (byId ? clusterNameOf(node, byId) : node.cluster) || 'local';
   return [engine, where].filter(Boolean).join(' · ');
+}
+
+/** The mesh a node belongs to, if it belongs to one. */
+export function meshOf(node: TopologyNode): string | null {
+  const flock = textField(node, 'flockId');
+  return flock || null;
 }
 
 /** `ymir · yggdrasil` — the placement line under a Mímir or a workload. */
@@ -143,14 +151,32 @@ export function mimirBadge(node: TopologyNode): string | null {
   return pages === null ? null : `${pages.toLocaleString()}p`;
 }
 
-/** The clusters a mesh reaches across — its members are scattered by design. */
+/**
+ * What a mesh is for, read off the members it actually has.
+ *
+ * A mesh exists to do something, and its members say what: a resident's
+ * specialty and a run agent's role are exactly the `build · verify · ship`
+ * the design calls for, without anyone having to write a description that
+ * would then go stale. Where members declare nothing, fall back to the
+ * clusters the mesh reaches across — scattered members are the other thing
+ * worth knowing about a mesh.
+ */
 export function meshSubtitle(memberIds: readonly string[], topology: Topology | null): string {
   const byId = nodeIndex(topology);
+  const doing: string[] = [];
   const where = new Set<string>();
+  let workflow = false;
+
   for (const id of memberIds) {
     const member = byId.get(id);
     if (!member) continue;
+    if (member.typeId === 'run') workflow = true;
     where.add(clusterNameOf(member, byId) || 'local');
+    const what = textField(member, 'specialty') || textField(member, 'role');
+    if (what && !doing.includes(what)) doing.push(what);
   }
-  return [...where].sort().join(' · ');
+
+  const places = [...where].sort().join(' · ');
+  if (doing.length > 0) return doing.slice(0, 3).join(' · ');
+  return workflow ? ['workflow', places].filter(Boolean).join(' · ') : places;
 }

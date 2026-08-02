@@ -99,7 +99,32 @@ describe('row subtitles', () => {
     expect(placementSubtitle(node('m', 'mimir'))).toBe('');
   });
 
-  it('lists the clusters a mesh reaches across', () => {
+  it('says what a mesh does, from what its members declare', () => {
+    const topo = topology([
+      node('a', 'ravn_long', { specialty: 'build', cluster: 'ymir' }),
+      node('b', 'ravn_run', { role: 'verify', cluster: 'ymir' }),
+      node('c', 'ravn_run', { role: 'ship', cluster: 'ymir' }),
+    ]);
+    expect(meshSubtitle(['a', 'b', 'c'], topo)).toBe('build · verify · ship');
+  });
+
+  it('calls a mesh built around a session a workflow', () => {
+    const topo = topology([
+      node('r', 'run', { cluster: 'valhalla' }),
+      node('a', 'ravn_run', { cluster: 'valhalla' }),
+    ]);
+    expect(meshSubtitle(['r', 'a'], topo)).toBe('workflow · valhalla');
+  });
+
+  it('names the host a resident runs on over its cluster', () => {
+    // "Which machine" is the more specific answer, and the cluster is already
+    // one row down the rail.
+    expect(residentSubtitle(node('a', 'ravn_long', { engine: 'ravn', hostId: 'saehrimnir' }))).toBe(
+      'ravn · saehrimnir',
+    );
+  });
+
+  it('lists the clusters a mesh reaches across when members declare nothing', () => {
     const topo = topology([
       node('a', 'ravn_long', { cluster: 'ymir' }),
       node('b', 'ravn_long', { cluster: 'eitri' }),
