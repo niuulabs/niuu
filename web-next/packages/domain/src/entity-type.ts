@@ -26,6 +26,7 @@ export const entityShapeSchema = z.enum([
   'square-sm',
   // hardware, models and stores
   'rack',
+  'printer',
   'hex-flat',
   'cylinder',
   'beacon',

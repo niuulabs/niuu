@@ -17,6 +17,7 @@ const ALL_SHAPES: ShapeKind[] = [
   'pentagon',
   'square-sm',
   'rack',
+  'printer',
   'hex-flat',
   'cylinder',
   'beacon',

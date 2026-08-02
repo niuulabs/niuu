@@ -69,6 +69,37 @@ The two coexist without conflict — same contract, same merge. When Ivaldi
 publishes eitri's farm, delete the four adapter blocks from `fleet.yaml`. The
 adapter stays useful for equipment no agent stewards yet.
 
+## The registry seed needs to stop being code
+
+Adding an entity type today means one of two things, and neither is right.
+
+- **`POST /api/v1/observatory/registry/types`** — no code, takes effect
+  immediately, but the registry is per-Observatory, so it has to be repeated
+  against every cluster and nothing records that it happened. It also drifts:
+  a cluster installed later never gets it.
+- **`src/observatory/data.py` plus a version bump** — reaches every cluster
+  and is reviewable, but it is a code change and a release to add a *kind of
+  thing*, which is exactly the sort of edit an operator should be able to make
+  without touching a repository.
+
+The seed also quietly owns `shape` and `size` — `_SEED_OWNED_KEYS` in
+`src/observatory/registry.py` refreshes them on a version bump — so a type
+restyled through the API silently reverts the next time the seed moves.
+Anything set through the API today is provisional.
+
+The shape of a fix, when there is time for it:
+
+- Types live where the rest of the estate's configuration lives, and the seed
+  becomes a bootstrap default rather than the source of truth.
+- One declaration reaches every cluster, so a type added once is not a
+  per-cluster chore.
+- Whatever an operator sets through the API survives an upgrade, including
+  presentation — or the API stops offering to set things the seed will take
+  back.
+
+Until then: add types through the API for anything cluster-specific, and
+accept that presentation changes are provisional.
+
 ## Open questions
 
 - Which side owns identity when both report the same machine? Probably the

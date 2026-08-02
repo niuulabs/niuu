@@ -19,6 +19,7 @@ export type ShapeKind =
   | 'pentagon'
   | 'square-sm'
   | 'rack'
+  | 'printer'
   | 'hex-flat'
   | 'cylinder'
   | 'beacon'
@@ -200,6 +201,16 @@ export function ShapeSvg({
             <circle cx="3" cy="0" r="3.6" />
             <circle cx="0.5" cy="2.8" r="3.2" />
           </g>
+        </svg>
+      );
+
+    case 'printer':
+      return (
+        <svg {...svgProps}>
+          <rect x="-7" y="-1" width="14" height="7" rx="1.5" fill="none" stroke={c} strokeWidth="1.4" />
+          <line x1="-5" y1="3" x2="5" y2="3" stroke={c} strokeWidth="1" opacity={0.5} />
+          <line x1="-4.5" y1="-4.5" x2="4.5" y2="-4.5" stroke={c} strokeWidth="1.6" />
+          <line x1="0" y1="-4.5" x2="0" y2="-8" stroke={c} strokeWidth="1.2" />
         </svg>
       );
 

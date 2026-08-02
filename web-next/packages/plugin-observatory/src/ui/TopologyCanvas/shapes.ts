@@ -320,6 +320,50 @@ function drawRack(ctx: CanvasRenderingContext2D, o: GlyphOptions): void {
   }
 }
 
+/**
+ * A resin printer: the build plate suspended over a vat, under a lifting arm.
+ *
+ * `square-sm` gave the print farm the same plain box as any unrecognised
+ * workload, which is the one thing an operator scanning for their machines
+ * cannot afford. This reads as equipment at a glance and still resolves at
+ * the zoom where a whole cluster is on screen.
+ */
+function drawPrinter(ctx: CanvasRenderingContext2D, o: GlyphOptions): void {
+  const { x, y, size, colour, alpha: a, zoom } = o;
+  const halfW = size * 1.05;
+
+  // Vat — the body of the machine.
+  ctx.fillStyle = hexRgba(CORE, a * 0.9);
+  ctx.strokeStyle = rgba(colour, 0.85 * a);
+  ctx.lineWidth = stroke(1.7, zoom);
+  roundRectPath(ctx, x - halfW, y - size * 0.1, halfW * 2, size * 0.95, 2.5);
+  ctx.fill();
+  ctx.stroke();
+
+  // Resin line, so the vat reads as holding something.
+  ctx.strokeStyle = rgba(colour, 0.4 * a);
+  ctx.lineWidth = stroke(1.1, zoom);
+  ctx.beginPath();
+  ctx.moveTo(x - halfW * 0.72, y + size * 0.28);
+  ctx.lineTo(x + halfW * 0.72, y + size * 0.28);
+  ctx.stroke();
+
+  // Build plate, hanging above the vat on its arm.
+  ctx.strokeStyle = rgba(colour, 0.95 * a);
+  ctx.lineWidth = stroke(1.9, zoom);
+  ctx.beginPath();
+  ctx.moveTo(x - size * 0.62, y - size * 0.62);
+  ctx.lineTo(x + size * 0.62, y - size * 0.62);
+  ctx.stroke();
+
+  // The column the plate travels on.
+  ctx.lineWidth = stroke(1.4, zoom);
+  ctx.beginPath();
+  ctx.moveTo(x, y - size * 0.62);
+  ctx.lineTo(x, y - size * 1.15);
+  ctx.stroke();
+}
+
 function drawPolygonGlyph(
   ctx: CanvasRenderingContext2D,
   o: GlyphOptions,
@@ -447,6 +491,7 @@ const GLYPHS: Readonly<Record<string, GlyphFn>> = {
   cylinder: drawCylinder,
   beacon: drawBeacon,
   'square-sm': drawSquareSmall,
+  printer: drawPrinter,
   box: drawBoxedDot,
   ring: drawRing,
   'ring-dashed': drawRing,
