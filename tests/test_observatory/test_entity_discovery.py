@@ -339,6 +339,134 @@ async def test_kubernetes_discovery_projects_declared_relationships(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_a_workload_can_state_what_it_is_without_a_service_to_ask(
+    tmp_path, monkeypatch
+) -> None:
+    """A standalone resident has no fleet API behind it.
+
+    Persona, engine and specialty reach the graph from a Ravn fleet endpoint,
+    and a cluster running only a standalone resident has none — eitri's
+    `ivaldi` arrived as a bare name beside residents that had all three. The
+    workload can now say it itself.
+    """
+    service_account = tmp_path / "sa"
+    service_account.mkdir()
+    (service_account / "token").write_text("token", encoding="utf-8")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    monkeypatch.setenv("KUBERNETES_SERVICE_PORT", "443")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "metadata": {
+                            "name": "ivaldi",
+                            "namespace": "nats",
+                            "uid": "uid-ivaldi",
+                            "labels": {
+                                "niuu.world/cluster": "eitri",
+                                "niuu.world/entity-id": "ivaldi",
+                                "observatory.niuu.world/type": "valkyrie",
+                                "niuu.world/engine": "ravn",
+                                "niuu.world/persona": "workshop-steward",
+                                "niuu.world/autonomy": "guarded",
+                            },
+                        }
+                    }
+                ]
+            },
+        )
+
+    adapter = KubernetesDiscoveryAdapter(
+        include_kinds=["deployments"],
+        service_account_root=str(service_account),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    (resident,) = result.entities
+    assert resident.kind == "valkyrie"
+    assert resident.metadata["engine"] == "ravn"
+    assert resident.metadata["persona"] == "workshop-steward"
+    assert resident.metadata["autonomy"] == "guarded"
+
+
+@pytest.mark.asyncio
+async def test_a_workloads_config_and_disk_are_not_an_agent(tmp_path, monkeypatch) -> None:
+    """The Mímir warden's ConfigMap and PVC were being drawn as a resident.
+
+    They carry only the chart's generic labels — `app.kubernetes.io/name:
+    agent` — so they grouped into an entity of their own, and the rail listed
+    a resident called `agent` that was the warden's config and its disk. The
+    warden itself was already there, correctly, from its Deployment and Pod.
+    """
+    service_account = tmp_path / "sa"
+    service_account.mkdir()
+    (service_account / "token").write_text("token", encoding="utf-8")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes.test")
+    monkeypatch.setenv("KUBERNETES_SERVICE_PORT", "443")
+
+    chart_labels = {
+        "app.kubernetes.io/name": "agent",
+        "app.kubernetes.io/component": "agent",
+        "app.kubernetes.io/instance": "mimir-shared-warden",
+        "niuu.world/cluster": "ymir",
+        "niuu.world/namespace": "volundr",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/deployments"):
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "metadata": {
+                                "name": "mimir-shared-warden-agent",
+                                "namespace": "volundr",
+                                "uid": "uid-deploy",
+                                "labels": {
+                                    **chart_labels,
+                                    "niuu.world/kind": "warden",
+                                    "niuu.world/warden-id": "mimir-shared-warden",
+                                },
+                            }
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "metadata": {
+                            "name": "mimir-shared-warden-agent-config",
+                            "namespace": "volundr",
+                            "uid": "uid-cm",
+                            "labels": dict(chart_labels),
+                        }
+                    }
+                ]
+            },
+        )
+
+    adapter = KubernetesDiscoveryAdapter(
+        include_kinds=["deployments", "configmaps"],
+        service_account_root=str(service_account),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    assert [e.name for e in result.entities] == ["mimir-shared-warden"]
+    assert [e.kind for e in result.entities] == ["warden"]
+
+
+@pytest.mark.asyncio
 async def test_kubernetes_discovery_supports_generic_tagged_objects(tmp_path, monkeypatch) -> None:
     service_account = tmp_path / "sa"
     service_account.mkdir()

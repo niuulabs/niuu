@@ -797,12 +797,12 @@ export function edgeProfile(
  *
  * The relation taxonomy is too fine to colour by (ten verbs, ten hues, no
  * legend anyone can hold in their head), so the ramp is applied at the layer
- * the filter bar exposes. Mesh traffic is the only amber on the canvas because
+ * the filter bar exposes. Mesh traffic is the only teal on the canvas because
  * it is the only traffic between agents; telemetry and plain platform wiring
  * are deliberately colourless so they recede.
  */
 export const LAYER_COLOUR: Readonly<Record<EdgeLayer, readonly [number, number, number]>> = {
-  mesh: [245, 158, 11],
+  mesh: [45, 212, 191],
   memory: [56, 189, 248],
   inference: [143, 212, 0],
   platform: [94, 108, 134],

@@ -36,7 +36,7 @@ interface Props {
  * The stripe carries the compute class — the same green and blue the canvas
  * uses — so scanning the rail and scanning the graph answer the same question
  * the same way. `tone` overrides it where a row is not about a machine: a mesh
- * is amber wherever its members happen to run.
+ * is teal wherever its members happen to run.
  */
 function RailRow({
   id,
@@ -53,7 +53,7 @@ function RailRow({
   name: string;
   sub?: string;
   badge?: ReactNode;
-  badgeTone?: 'amber' | 'spring' | 'plain' | 'quiet';
+  badgeTone?: 'mesh' | 'spring' | 'plain' | 'quiet';
   tone: ComputeClass | 'mesh';
   selected: boolean;
   onSelect: (nodeId: string) => void;
@@ -143,7 +143,7 @@ export function ObservatoryRailSections({ topology, selectedId, onSelect }: Prop
               name={mesh.label}
               sub={meshSubtitle(mesh, topology)}
               badge={mesh.memberIds.length}
-              badgeTone="amber"
+              badgeTone="mesh"
               tone="mesh"
               selected={mesh.memberIds.some((member) => member === selectedId)}
               // Marked, not travelled to: the pulse already says who is in it.

@@ -1774,6 +1774,7 @@ class KubernetesDiscoveryAdapter:
         base_url = f"https://{host}:{port}"
         headers = {"Authorization": f"Bearer {token_path.read_text(encoding='utf-8').strip()}"}
         entities: list[DiscoveredEntity] = []
+        attachments: list[tuple[DiscoveredEntity, list[ObservatoryEdge]]] = []
         edges: list[ObservatoryEdge] = []
         events: list[ObservatoryEvent] = []
         try:
@@ -1809,16 +1810,31 @@ class KubernetesDiscoveryAdapter:
                                     entities.append(node)
                                 continue
                             entity = self._entity_from_k8s(resource_kind, item)
-                            if entity is not None:
-                                entities.append(entity)
-                                edges.extend(
-                                    _relationships_from_k8s(
-                                        entity,
-                                        resource_kind=resource_kind,
-                                        item=item,
-                                        source_adapter=self.__class__.__name__,
-                                    )
-                                )
+                            if entity is None:
+                                continue
+                            relations = _relationships_from_k8s(
+                                entity,
+                                resource_kind=resource_kind,
+                                item=item,
+                                source_adapter=self.__class__.__name__,
+                            )
+                            if resource_kind in _ATTACHMENT_ONLY_KINDS and not (
+                                _declares_its_own_identity(item)
+                            ):
+                                attachments.append((entity, relations))
+                                continue
+                            entities.append(entity)
+                            edges.extend(relations)
+
+                # Attachments join a workload that already claimed their id;
+                # one that matches nothing is dropped rather than drawn.
+                claimed = {entity.id for entity in entities}
+                for entity, relations in attachments:
+                    if entity.id not in claimed:
+                        continue
+                    entities.append(entity)
+                    edges.extend(relations)
+
                 await self._count_pods_per_node(client, base_url, headers, entities, events)
         except Exception as exc:
             events.append(_adapter_warning("kubernetes", str(exc)))
@@ -1999,6 +2015,11 @@ class KubernetesDiscoveryAdapter:
         entity_metadata: dict[str, Any] = {
             "component": component or "",
             "app": app_name or "",
+            **{
+                field: labels[label]
+                for label, field in _DECLARED_FIELD_LABELS.items()
+                if labels.get(label)
+            },
             "resources": [
                 {
                     "kind": resource_kind,
@@ -2546,6 +2567,59 @@ def _memory_gib(value: Any) -> int:
         return int(float(raw) / 1024**3)
     except ValueError:
         return 0
+
+
+#: Kinds that usually describe a workload rather than being one.
+#:
+#: A warden's ConfigMap and PersistentVolumeClaim carry only the chart's
+#: generic labels, so they grouped into an entity of their own and the canvas
+#: listed a resident called `agent` — which was the warden's config and its
+#: disk, drawn as an agent. Unless one names itself (see
+#: `_declares_its_own_identity`), it now joins the workload that shares its
+#: identity or is dropped, rather than inventing a thing.
+_ATTACHMENT_ONLY_KINDS = frozenset({"configmap", "persistentvolumeclaim"})
+
+
+#: Labels a workload can use to say what it is, when no service can be asked.
+#:
+#: Most of what the graph knows about a resident comes from a Ravn fleet API,
+#: and a cluster running a standalone resident has no such API — eitri's
+#: `ivaldi` reached the canvas as a bare name with no persona, engine or
+#: specialty, next to residents that had all three. These let the workload
+#: state it itself, the same way `observatory.niuu.world/type` already lets it
+#: state its kind.
+_DECLARED_FIELD_LABELS = {
+    "niuu.world/engine": "engine",
+    "niuu.world/persona": "persona",
+    "niuu.world/specialty": "specialty",
+    "niuu.world/autonomy": "autonomy",
+    "niuu.world/warden-persona": "persona",
+    "niuu.world/warden-kind": "wardenKind",
+}
+
+
+#: Labels by which an operator says "this object *is* the thing".
+_IDENTITY_LABELS = (
+    "niuu.world/kind",
+    "observatory.niuu.world/type",
+    "niuu.world/entity-id",
+    "niuu.world/service-id",
+    "niuu.world/warden-id",
+    "niuu.world/display-name",
+)
+
+
+def _declares_its_own_identity(item: Mapping[str, Any]) -> bool:
+    """Whether this object names itself rather than being named by its chart.
+
+    A ConfigMap tagged `niuu.world/kind: printer` is how equipment with no
+    workload of its own reaches the graph, and that must keep working. A
+    ConfigMap carrying nothing but `app.kubernetes.io/name` is a detail of
+    whatever deployed it.
+    """
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    labels = _clean_map(metadata.get("labels"))
+    return any(labels.get(label) for label in _IDENTITY_LABELS)
 
 
 def _singular_resource_kind(kind: str) -> str:

@@ -96,10 +96,17 @@
 
   /*
    * Observatory accent hues, from docs/mockups/observatory/index.html.
-   * Distinct from the blue-tone scale: spring marks residents, amber marks
+   * Distinct from the blue-tone scale: spring marks residents, teal marks
    * meshes, violet marks work that leaves our own hardware.
+   *
+   * Teal replaced amber for meshes. Amber was the only warm hue on a cool
+   * canvas and sat next to red for critical and fuchsia for degraded, so a
+   * healthy mesh read as an alarm. Teal is the one arc the palette had left
+   * between memory blue and resident green. Amber stays for warnings, which
+   * is what a warm hue should mean here.
    */
   --color-accent-spring: #8fd400;
+  --color-accent-teal: #2dd4bf;
   --color-accent-amber: #f59e0b;
   --color-accent-violet: #8b7cf0;
   --color-critical-fg: #fca5a5;

@@ -29,10 +29,10 @@ export const COMPUTE_COLOUR: Readonly<Record<ComputeClass, Rgb>> = {
 /**
  * Health colours. These override the compute hue — a fault outranks placement.
  *
- * `degraded` is fuchsia rather than amber because amber is already spoken for:
- * it is the mesh layer's hue and the colour a selected mesh pulses in. A
- * degraded node drawn in it read as a mesh member, which is how eitri's print
- * farm — degraded to a machine, every one of them — looked like an agent mesh.
+ * `degraded` is fuchsia rather than a hue the layers already use. Drawing it
+ * in the mesh hue — which a selected mesh pulses in — made a degraded node
+ * read as a mesh member, which is how eitri's print farm, degraded to a
+ * machine, every one of them, looked like an agent mesh.
  * Fuchsia is used by nothing else here, and stays clear of both the violet
  * that means metered-and-outside and the red that means failed.
  */

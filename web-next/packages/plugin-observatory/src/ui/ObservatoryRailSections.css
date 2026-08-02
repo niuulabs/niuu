@@ -43,7 +43,7 @@
 }
 
 .obs-rail__row[data-tone='mesh'] {
-  --obs-tone: var(--color-accent-amber);
+  --obs-tone: var(--color-accent-teal);
 }
 
 .obs-rail__row:hover {
@@ -107,9 +107,9 @@
   white-space: nowrap;
 }
 
-.obs-rail__badge[data-tone='amber'] {
-  border-color: color-mix(in srgb, var(--color-accent-amber) 45%, transparent);
-  color: var(--color-accent-amber);
+.obs-rail__badge[data-tone='mesh'] {
+  border-color: color-mix(in srgb, var(--color-accent-teal) 45%, transparent);
+  color: var(--color-accent-teal);
 }
 
 /* A footnote, not a chip: no frame, no fill. Ten outlined pills down a

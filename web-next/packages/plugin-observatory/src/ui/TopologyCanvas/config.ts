@@ -193,10 +193,10 @@ export const MESH_PULSE = {
  *
  * Defined once because it is read both by the status table and by the agent
  * glyph, and the two drifting apart would give one concept two colours. It is
- * deliberately not amber: amber is the agent-mesh layer and the colour a
- * selected mesh pulses in, so a degraded node drawn in it read as a mesh
- * member. Fuchsia is unused elsewhere on the canvas and stays clear of the
- * violet that means metered-and-outside and the red that means failed.
+ * deliberately not the mesh hue, which a selected mesh pulses in, so a
+ * degraded node drawn in it read as a mesh member. Fuchsia is unused
+ * elsewhere on the canvas and stays clear of the violet that means
+ * metered-and-outside and the red that means failed.
  */
 export const DEGRADED_COLOUR = [217, 70, 239] as const;
 
