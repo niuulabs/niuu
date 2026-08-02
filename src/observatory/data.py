@@ -413,13 +413,7 @@ REGISTRY: dict[str, object] = {
             "parentTypes": ["realm", "namespace", "cluster"],
             "category": "device",
             "description": "Manufacturing printer node.",
-            "fields": [
-                {"key": "model", "label": "Model", "type": "string"},
-                {"key": "job", "label": "Current job", "type": "string"},
-                {"key": "progressPercent", "label": "Progress %", "type": "number"},
-                {"key": "chamberTempC", "label": "Chamber °C", "type": "number"},
-                {"key": "simulated", "label": "Simulated", "type": "boolean"},
-            ],
+            "fields": [{"key": "model", "label": "Model", "type": "string"}],
         },
         {
             "id": "vaettir",

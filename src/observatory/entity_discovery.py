@@ -1285,22 +1285,37 @@ def _normalized_domains(domains: Collection[str]) -> list[str]:
     return [d.strip().lower().lstrip(".") for d in domains if d and d.strip().strip(".")]
 
 
-#: SDCP print-job states that mean the machine is actively working. Anything
-#: else is either idle or an error, both of which the printer reports directly.
-_PRINTING_JOB_STATES = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 13, 16, 18, 19, 20})
+#: Nested blobs a gateway reports for its own use. They are hardware detail
+#: rather than anything the graph asks about, and splatting them onto a node
+#: would bury the fields that matter under hundreds of keys.
+_DEVICE_DETAIL_KEYS = frozenset({"attributes", "status", "lastError"})
 
 
-class LaevateinnPrinterDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
-    """Discover resin printers from one Laevateinn gateway.
+class LaevateinnGatewayDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
+    """Discover the devices one Laevateinn gateway fronts.
 
-    Each gateway fronts the printers it can reach and reports their real
-    state — connection, current job, layer progress, temperatures — so a
-    printer appears with what it is doing rather than as a bare pod. One
-    adapter per gateway, so a gateway that goes down names itself in the
-    warning instead of silently removing its printers.
+    The gateway reports what each device is and what it is doing; this adapter
+    passes that through and does not decide what any of it *means*. `kind`
+    comes from configuration, so which registry type these become is an
+    operator's call and a new class of device needs a config line rather than
+    a code change — the registry is the source of truth for types, not a set
+    baked into this module.
+
+    Fields are carried across as the gateway names them rather than mapped to
+    a schema written here, so a field the gateway gains appears without a
+    release, and the registry decides which of them are worth showing.
     """
 
     warning_name = "laevateinn"
+
+    def __init__(self, *args: Any, kind: str = "", **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        if not kind:
+            raise ValueError(
+                "LaevateinnGatewayDiscoveryAdapter needs a `kind`: the registry "
+                "entity type its devices should appear as"
+            )
+        self._kind = kind
 
     async def collect(
         self,
@@ -1314,71 +1329,52 @@ class LaevateinnPrinterDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
         for record in records:
             if not isinstance(record, dict):
                 continue
-            printer_id = str(record.get("id") or record.get("mainboardId") or "").strip()
-            if not printer_id:
+            device_id = str(record.get("id") or record.get("mainboardId") or "").strip()
+            if not device_id:
                 continue
-            status = record.get("status") if isinstance(record.get("status"), dict) else {}
-            job = status.get("PrintInfo") if isinstance(status.get("PrintInfo"), dict) else {}
             entities.append(
                 self._entity(
-                    "printer",
-                    str(record.get("name") or record.get("machineName") or printer_id),
-                    f"printer:{_slug(self._cluster or 'unknown')}:{_slug(printer_id)}",
-                    status=_printer_status(record, job),
+                    self._kind,
+                    str(record.get("name") or device_id),
+                    f"{_slug(self._kind)}:{_slug(self._cluster or 'unknown')}:{_slug(device_id)}",
+                    status=_device_status(record),
                     endpoints={"gateway": self._base_url},
-                    metadata=_printer_metadata(record, status, job),
+                    metadata=_device_metadata(record),
                 )
             )
 
         return DiscoveryResult(entities=entities)
 
 
-def _printer_status(record: Mapping[str, Any], job: Mapping[str, Any]) -> str:
-    """What the machine is doing, in the vocabulary the canvas colours by."""
+def _device_status(record: Mapping[str, Any]) -> str:
+    """Reachable, faulted, or working — read off what the device reports.
+
+    Deliberately shallow: whether a job is halfway or nearly done is the
+    device's business, and reading more into it would be this adapter deciding
+    what its readings mean.
+    """
     if str(record.get("state") or "").lower() != "connected":
         return "failed"
-    if _as_int(job.get("ErrorNumber")) or record.get("lastError"):
+    if record.get("lastError"):
         return "degraded"
-    if _as_int(job.get("Status")) in _PRINTING_JOB_STATES:
-        return "healthy"
-    return "idle"
+    return "healthy"
 
 
-def _printer_metadata(
-    record: Mapping[str, Any],
-    status: Mapping[str, Any],
-    job: Mapping[str, Any],
-) -> dict[str, Any]:
-    total_layers = _as_int(job.get("TotalLayer"))
-    current_layer = _as_int(job.get("CurrentLayer"))
-    return {
-        "model": str(record.get("machineName") or ""),
-        "brand": str(record.get("brandName") or ""),
-        "firmware": str(record.get("firmwareVersion") or ""),
-        "mainboardId": str(record.get("mainboardId") or ""),
-        "protocol": str(record.get("protocol") or ""),
-        "connection": str(record.get("state") or ""),
-        "job": str(job.get("Filename") or ""),
-        "jobId": str(job.get("TaskId") or ""),
-        "currentLayer": current_layer,
-        "totalLayers": total_layers,
-        # The number an operator actually reads off a print farm board.
-        "progressPercent": round(current_layer * 100 / total_layers) if total_layers else None,
-        "errorCode": _as_int(job.get("ErrorNumber")) or None,
-        "chamberTempC": status.get("TempOfBox"),
-        "chamberTargetC": status.get("TempTargetBox"),
-        "uvLedTempC": status.get("TempOfUVLED"),
-        # A simulated printer must never be presentable as a real one.
-        "simulated": bool(record.get("isSimulator")),
-        "simulatorScenario": str(record.get("simulatorScenario") or ""),
+def _device_metadata(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Everything the gateway says about a device, as it names it.
+
+    Its own nested detail blobs are dropped; the job it is running is lifted
+    out of them because that is the one thing about a device the graph is
+    actually asked to show.
+    """
+    metadata: dict[str, Any] = {
+        key: value for key, value in record.items() if key not in _DEVICE_DETAIL_KEYS
     }
-
-
-def _as_int(value: Any) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
+    status = record.get("status")
+    job = status.get("PrintInfo") if isinstance(status, Mapping) else None
+    if isinstance(job, Mapping):
+        metadata["job"] = job
+    return metadata
 
 
 class RavnValkyrieDiscoveryAdapter:

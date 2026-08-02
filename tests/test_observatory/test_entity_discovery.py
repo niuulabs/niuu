@@ -15,7 +15,7 @@ from observatory.entity_discovery import (
     DiscoveryResult,
     FluxHelmReleaseSessionDiscoveryAdapter,
     KubernetesDiscoveryAdapter,
-    LaevateinnPrinterDiscoveryAdapter,
+    LaevateinnGatewayDiscoveryAdapter,
     MimirDiscoveryAdapter,
     RavnResidentsDiscoveryAdapter,
     RavnValkyrieDiscoveryAdapter,
@@ -1471,112 +1471,112 @@ async def test_bifrost_discovers_the_real_catalogue_not_a_hardcoded_one() -> Non
     assert models["claude-opus-5"].metadata["location"] == "external"
 
 
-_PRINTER_RECORD = {
+_DEVICE_RECORD = {
     "id": "printer-01",
     "name": "Laevateinn",
     "machineName": "Laevateinn MSLA-8K",
-    "brandName": "Niuu",
     "firmwareVersion": "V1.0.0",
     "mainboardId": "1aeva7e100000001",
-    "protocol": "sdcp",
     "state": "connected",
-    "isSimulator": True,
-    "simulatorScenario": "failing_prints",
     "status": {
         "TempOfBox": 28.0,
-        "TempTargetBox": 30.0,
-        "TempOfUVLED": 25.0,
         "PrintInfo": {
             "Status": 8,
             "CurrentLayer": 208,
             "TotalLayer": 512,
             "Filename": "dental-arch.ctb",
-            "ErrorNumber": 0,
-            "TaskId": "ff0ec77a",
         },
     },
+    "attributes": {"Resolution": "7680x4320"},
 }
 
 
-def _printer_adapter(record: dict[str, object]) -> LaevateinnPrinterDiscoveryAdapter:
-    return LaevateinnPrinterDiscoveryAdapter(
+def _gateway_adapter(record: dict[str, object], **kwargs: object):
+    return LaevateinnGatewayDiscoveryAdapter(
         base_url="http://gateway-01.test",
         cluster="eitri",
         realm="svartalfheim",
         namespace="laevateinn",
+        kind=kwargs.pop("kind", "printer"),
         transport=_routed({"/api/printers": [record]}),
+        **kwargs,
     )
 
 
 @pytest.mark.asyncio
-async def test_a_printer_arrives_with_the_job_it_is_running() -> None:
-    """A print farm is only useful on the canvas if it says what it is doing."""
-    result = await _printer_adapter(_PRINTER_RECORD).discover()
+async def test_the_registry_type_comes_from_config_not_from_this_module() -> None:
+    """Nothing here decides what a device *is*.
 
-    printer = next(e for e in result.entities if e.kind == "printer")
-    assert printer.id == "printer:eitri:printer-01"
-    assert printer.name == "Laevateinn"
-    assert printer.cluster == "eitri"
-    assert printer.namespace == "laevateinn"
-    assert printer.status == "healthy"
-    assert printer.metadata["model"] == "Laevateinn MSLA-8K"
-    assert printer.metadata["job"] == "dental-arch.ctb"
-    assert printer.metadata["currentLayer"] == 208
-    assert printer.metadata["totalLayers"] == 512
-    assert printer.metadata["progressPercent"] == 41
-    assert printer.metadata["chamberTempC"] == 28.0
+    A hardcoded kind would put a second, invisible type vocabulary next to the
+    registry — the registry is the source of truth for types, and a new class
+    of device should need a config line rather than a release.
+    """
+    result = await _gateway_adapter(_DEVICE_RECORD, kind="vaettir").discover()
+
+    device = result.entities[0]
+    assert device.kind == "vaettir"
+    assert device.id == "vaettir:eitri:printer-01"
 
 
 @pytest.mark.asyncio
-async def test_a_simulated_printer_says_so() -> None:
-    """A demo must not be able to pass a simulator off as a machine."""
-    result = await _printer_adapter(_PRINTER_RECORD).discover()
-
-    printer = next(e for e in result.entities if e.kind == "printer")
-    assert printer.metadata["simulated"] is True
-    assert printer.metadata["simulatorScenario"] == "failing_prints"
+async def test_a_gateway_with_no_configured_kind_refuses_to_guess() -> None:
+    with pytest.raises(ValueError, match="kind"):
+        LaevateinnGatewayDiscoveryAdapter(base_url="http://gateway-01.test", cluster="eitri")
 
 
 @pytest.mark.asyncio
-async def test_printer_status_reflects_what_the_machine_reports() -> None:
+async def test_a_device_arrives_with_the_job_it_is_running() -> None:
+    """A farm is only useful on the canvas if it says what it is doing."""
+    result = await _gateway_adapter(_DEVICE_RECORD).discover()
+
+    device = result.entities[0]
+    assert device.kind == "printer"
+    assert device.name == "Laevateinn"
+    assert device.cluster == "eitri"
+    assert device.namespace == "laevateinn"
+    assert device.status == "healthy"
+    assert device.metadata["job"]["Filename"] == "dental-arch.ctb"
+    assert device.metadata["job"]["CurrentLayer"] == 208
+
+
+@pytest.mark.asyncio
+async def test_fields_are_carried_as_the_gateway_names_them() -> None:
+    """Mapping them to a schema written here would mean a release per field."""
+    record = json.loads(json.dumps(_DEVICE_RECORD))
+    record["somethingAddedLater"] = "value"
+
+    result = await _gateway_adapter(record).discover()
+
+    metadata = result.entities[0].metadata
+    assert metadata["machineName"] == "Laevateinn MSLA-8K"
+    assert metadata["firmwareVersion"] == "V1.0.0"
+    assert metadata["somethingAddedLater"] == "value"
+    # The gateway's own nested detail stays out: hundreds of hardware keys
+    # would bury the fields the graph is actually asked about.
+    assert "attributes" not in metadata
+    assert "status" not in metadata
+
+
+@pytest.mark.asyncio
+async def test_device_status_reflects_reachability_and_faults() -> None:
     async def status_for(**overrides: object) -> str:
-        record = json.loads(json.dumps(_PRINTER_RECORD))
-        for key, value in overrides.items():
-            if key == "job_status":
-                record["status"]["PrintInfo"]["Status"] = value
-            elif key == "error":
-                record["status"]["PrintInfo"]["ErrorNumber"] = value
-            else:
-                record[key] = value
-        result = await _printer_adapter(record).discover()
-        return next(e for e in result.entities if e.kind == "printer").status
+        record = json.loads(json.dumps(_DEVICE_RECORD))
+        record.update(overrides)
+        result = await _gateway_adapter(record).discover()
+        return result.entities[0].status
 
-    assert await status_for(job_status=8) == "healthy"
-    # Not printing is not a fault — an idle machine is a working machine.
-    assert await status_for(job_status=0) == "idle"
-    assert await status_for(error=8) == "degraded"
-    # A gateway that cannot reach the machine outranks whatever it last said.
+    assert await status_for() == "healthy"
+    assert await status_for(lastError={"ErrorCode": 8}) == "degraded"
+    # A gateway that cannot reach the device outranks whatever it last said.
     assert await status_for(state="disconnected") == "failed"
 
 
 @pytest.mark.asyncio
-async def test_a_printer_with_no_job_reports_no_progress() -> None:
-    record = json.loads(json.dumps(_PRINTER_RECORD))
-    record["status"]["PrintInfo"] = {"Status": 0}
-
-    result = await _printer_adapter(record).discover()
-
-    printer = next(e for e in result.entities if e.kind == "printer")
-    # Never 0% — that reads as a stalled print rather than an empty machine.
-    assert printer.metadata["progressPercent"] is None
-    assert printer.metadata["job"] == ""
-
-
-@pytest.mark.asyncio
-async def test_an_unreachable_gateway_names_itself(caplog) -> None:
-    adapter = LaevateinnPrinterDiscoveryAdapter(
+async def test_an_unreachable_gateway_names_itself() -> None:
+    adapter = LaevateinnGatewayDiscoveryAdapter(
         base_url="http://gateway-03.test",
         cluster="eitri",
+        kind="printer",
         transport=httpx.MockTransport(lambda request: httpx.Response(503)),
     )
 
