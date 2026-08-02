@@ -132,3 +132,88 @@
   white-space: pre;
   overflow-x: auto;
 }
+
+/* ── Sectioned card ────────────────────────────────────────────────────────
+   The card is four readings, not one paragraph with a table under it:
+   what the agent is, what it can do, what it offers, and where to reach it.
+   Each gets a heading and a rule, so a card with a section's data missing
+   still shows that the section exists. */
+
+.obs-agent-card__block {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-border-subtle, rgb(255 255 255 / 7%));
+}
+
+.obs-agent-card__block:last-child {
+  border-bottom: 0;
+}
+
+.obs-agent-card__block .obs-agent-card__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-family: var(--font-mono);
+  font-size: 0.54rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.obs-agent-card__count {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-faint);
+}
+
+.obs-agent-card__count::before {
+  content: '· ';
+}
+
+/* A card URL is long and must stay copyable, so it wraps rather than being
+   clipped — truncating the one field an operator pastes elsewhere is worse
+   than four lines of text. */
+.obs-agent-card__mono {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.obs-agent-card__skills li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    'id tag'
+    'name tag';
+  gap: 0 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--color-border-subtle, rgb(255 255 255 / 5%));
+}
+
+.obs-agent-card__skills li:last-child {
+  border-bottom: 0;
+}
+
+.obs-agent-card__skill-id {
+  grid-area: id;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-brand);
+}
+
+.obs-agent-card__skill-name {
+  grid-area: name;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.obs-agent-card__skill-tag {
+  grid-area: tag;
+  align-self: center;
+  font-style: normal;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  padding: 2px 7px;
+  border: 1px solid var(--color-border-subtle, rgb(255 255 255 / 12%));
+  border-radius: 4px;
+  color: var(--color-text-faint);
+}

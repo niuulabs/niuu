@@ -121,7 +121,9 @@ describe('AgentCardPanel', () => {
     renderPanel(directoryReturning([entry()]));
     await waitFor(() => expect(screen.getByTestId('agent-card')).toBeInTheDocument());
 
-    expect(screen.getByTestId('agent-card-kind')).toHaveTextContent('resident');
+    // The kind moved to the inspector's own eyebrow; the card states what
+    // the card states.
+    expect(screen.getByText('Agent card')).toBeInTheDocument();
     expect(screen.getByTestId('agent-card-url')).toHaveTextContent('.well-known/agent-card.json');
     expect(screen.getByText('JSONRPC')).toBeInTheDocument();
     expect(screen.getByText('A2A 0.3.0')).toBeInTheDocument();
@@ -166,13 +168,21 @@ describe('AgentCardPanel', () => {
     renderPanel(directoryReturning([entry()]));
     await waitFor(() => expect(screen.getByTestId('agent-card-skills')).toBeInTheDocument());
 
-    expect(screen.getByText('Skills · 2')).toBeInTheDocument();
+    expect(screen.getByText('Skills it advertises')).toBeInTheDocument();
+    expect(screen.getByText('2')).toBeInTheDocument();
     expect(screen.getByText('gpu_pressure_probe')).toBeInTheDocument();
+    // Both forms: the identifier a caller sends, and a name a reader scans.
+    expect(screen.getByText('Gpu pressure probe')).toBeInTheDocument();
   });
 
-  it('omits the skills block when the card advertises none', async () => {
+  it('keeps the skills section when the card advertises none', async () => {
+    // The section says the agent offers nothing, which is a reading. A missing
+    // section says only that this panel forgot to mention skills.
     renderPanel(directoryReturning([entry({ skillIds: [] })]));
     await waitFor(() => expect(screen.getByTestId('agent-card')).toBeInTheDocument());
+
+    expect(screen.getByText('Skills it advertises')).toBeInTheDocument();
+    expect(screen.getByText('None advertised.')).toBeInTheDocument();
     expect(screen.queryByTestId('agent-card-skills')).toBeNull();
   });
 
