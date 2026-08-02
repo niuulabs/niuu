@@ -802,7 +802,7 @@ class _HttpServiceDiscoveryAdapter:
         cluster: str = "",
         realm: str = "",
         namespace: str = "",
-        timeout_seconds: float = 5.0,
+        timeout_seconds: float = 15.0,
         auth_adapter: str = "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter",
         auth_kwargs: dict[str, Any] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
@@ -825,8 +825,11 @@ class _HttpServiceDiscoveryAdapter:
             ) as client:
                 return await self.collect(client, headers)
         except Exception as exc:
+            # Some httpx failures (ReadTimeout in particular) stringify to "",
+            # which produced a warning naming only the URL and no fault.
+            detail = str(exc) or type(exc).__name__
             return DiscoveryResult(
-                events=[_adapter_warning(self.warning_name, f"{self._base_url}: {exc}")]
+                events=[_adapter_warning(self.warning_name, f"{self._base_url}: {detail}")]
             )
 
     async def collect(
@@ -926,7 +929,7 @@ class BifrostCatalogDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
                         "vendor": str(model.get("vendor") or ""),
                         "provider": str(model.get("provider") or provider.get("key") or ""),
                         "tier": str(model.get("tier") or ""),
-                        "location": _model_location(base_url),
+                        "location": _model_location(base_url, provider),
                         "supportsTools": bool(model.get("supports_tools")),
                         "supportsThinking": bool(model.get("supports_thinking")),
                         "vramRequired": model.get("vram_required"),
@@ -934,14 +937,14 @@ class BifrostCatalogDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
                     },
                 )
             )
-            if base_url:
+            if provider:
                 edges.append(
                     _edge(
                         source_id=gateway_id,
                         target_id=node_id,
                         relation_type="routes_to",
                         source_adapter=self.__class__.__name__,
-                        evidence_field="base_url",
+                        evidence_field="model_ids",
                         confidence="observed",
                     )
                 )
@@ -1099,26 +1102,39 @@ _INTERNAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _INTERNAL_HOST_SUFFIXES = (".svc.cluster.local", ".internal", ".local")
 
 
-def _model_location(base_url: str) -> str:
-    """Where a model is served from, judged by its provider endpoint.
+#: Provider keys and vendors that denote weights running on our own hardware.
+_SELF_HOSTED_PROVIDERS = frozenset({"local", "self-hosted", "vllm", "ollama"})
 
-    A cluster-internal or loopback host means the weights run on our hardware;
-    anything else is a hosted API. This is read from real provider config, so
-    it is an observation rather than a guess.
 
-    Matched against the parsed host, never against the whole URL: a substring
-    test would read `https://localhost.example.com/` and
+def _model_location(base_url: str, provider: Mapping[str, Any] | None = None) -> str:
+    """Where a model is served from: our hardware, or someone else's.
+
+    Prefers the provider's endpoint host. Matched against the parsed host,
+    never against the whole URL — a substring test would read
+    `https://localhost.example.com/` and
     `https://api.vendor.test/?v=.svc.cluster.local` as internal, and this value
     is what tells an operator whether their traffic leaves the building.
+
+    Bifröst's catalogue API does not expose provider base URLs (every provider
+    returns ""), so when there is no host the provider's own identity is the
+    available signal: its key or vendor naming a self-hosted runtime. That is
+    still read from real configuration, not guessed from a name pattern.
     """
-    if not base_url:
-        return "unknown"
-    host = (urlsplit(base_url).hostname or "").lower()
-    if not host:
-        return "unknown"
-    if host in _INTERNAL_HOSTS or host.endswith(_INTERNAL_HOST_SUFFIXES):
+    host = (urlsplit(base_url).hostname or "").lower() if base_url else ""
+    if host:
+        if host in _INTERNAL_HOSTS or host.endswith(_INTERNAL_HOST_SUFFIXES):
+            return "internal"
+        return "external"
+
+    identity = {
+        str((provider or {}).get("key") or "").lower(),
+        str((provider or {}).get("vendor") or "").lower(),
+    }
+    if identity & _SELF_HOSTED_PROVIDERS:
         return "internal"
-    return "external"
+    if identity - {""}:
+        return "external"
+    return "unknown"
 
 
 class RavnValkyrieDiscoveryAdapter:
