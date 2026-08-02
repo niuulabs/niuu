@@ -93,36 +93,89 @@ function NodeList({
   );
 }
 
+/**
+ * Fields the inspector shows somewhere else — in the head, the placement line,
+ * or a dedicated block — so a Detail row would only repeat them.
+ */
+const SHOWN_ELSEWHERE: ReadonlySet<string> = new Set([
+  'id',
+  'typeId',
+  'label',
+  'parentId',
+  'status',
+  'cluster',
+  'realm',
+  'layoutHints',
+  'children',
+  'sub',
+]);
+
+/**
+ * Keys worth leading with, in the order an operator reads them: what the thing
+ * is running as, then what it is made of, then what it costs.
+ *
+ * This is an ordering hint, not an allowlist. Anything else the adapters
+ * attached follows in alphabetical order, so a field added by a discovery
+ * adapter appears here without a change to this file — the same reason the
+ * canvas takes its glyphs from the registry rather than a table.
+ */
+const DETAIL_ORDER: readonly string[] = [
+  'workload',
+  'warden',
+  'service',
+  'namespace',
+  'chart',
+  'deployment',
+  'hostId',
+  'host',
+  'engine',
+  'persona',
+  'specialty',
+  'model',
+  'provider',
+  'location',
+  'store',
+  'path',
+  'pages',
+  'categories',
+  'mounts',
+  'role',
+  'cores',
+  'ram',
+  'gpu',
+  'os',
+  'reason',
+];
+
 /** Detail rows built from what the adapters actually attached to the node. */
 function detailRows(node: TopologyNode): [string, string][] {
   const extra = node as unknown as Record<string, unknown>;
-  const text = (key: string): string => {
-    const value = extra[key];
+
+  const scalar = (value: unknown): string => {
     if (typeof value === 'string') return value;
     if (typeof value === 'number') return value.toLocaleString();
+    if (typeof value === 'boolean') return value ? 'yes' : 'no';
+    if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
+      return value.join(' · ');
+    }
     return '';
   };
+
+  const present = Object.keys(extra).filter(
+    (key) => !SHOWN_ELSEWHERE.has(key) && scalar(extra[key]) !== '',
+  );
+  const rank = (key: string) => {
+    const index = DETAIL_ORDER.indexOf(key);
+    return index === -1 ? DETAIL_ORDER.length : index;
+  };
+  present.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+
   const rows: [string, string][] = [
     ['type', node.typeId],
     ['status', node.status],
   ];
-  for (const [label, key] of [
-    ['workload', 'workload'],
-    ['namespace', 'namespace'],
-    ['host', 'hostId'],
-    ['engine', 'engine'],
-    ['persona', 'persona'],
-    ['model', 'model'],
-    ['deployment', 'deployment'],
-    ['provider', 'provider'],
-    ['location', 'location'],
-    ['pages', 'pages'],
-    ['cores', 'cores'],
-    ['ram', 'ram'],
-    ['gpu', 'gpu'],
-  ] as const) {
-    const value = text(key);
-    if (value) rows.push([label, value]);
+  for (const key of present) {
+    rows.push([humanizeObservatoryText(key).toLowerCase(), scalar(extra[key])]);
   }
   rows.push(['cluster', node.cluster ?? '']);
   rows.push(['realm', node.realm || 'outside the realms']);

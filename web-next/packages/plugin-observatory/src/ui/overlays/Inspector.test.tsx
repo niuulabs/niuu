@@ -161,3 +161,54 @@ describe('Inspector', () => {
     expect(screen.getByTestId('inspector-kind')).toHaveTextContent('mimir');
   });
 });
+
+describe('Inspector detail rows', () => {
+  it('shows a field an adapter attached without the component knowing about it', () => {
+    const node = {
+      id: 'mimir-ymir',
+      typeId: 'mimir',
+      label: 'mímir-shared',
+      parentId: null,
+      status: 'healthy',
+      cluster: 'ymir',
+      warden: 'mimir-shared-warden-agent 1/1',
+      // Nothing in the UI names this key; a new adapter field must surface
+      // rather than be silently dropped.
+      compaction: 'nightly',
+    } as unknown as TopologyNode;
+
+    render(<Inspector node={node} topology={null} registry={null} />);
+
+    expect(screen.getByText('warden')).toBeInTheDocument();
+    expect(screen.getByText('mimir-shared-warden-agent 1/1')).toBeInTheDocument();
+    expect(screen.getByText('compaction')).toBeInTheDocument();
+  });
+
+  it('does not repeat what the head already says', () => {
+    const node = {
+      id: 'n',
+      typeId: 'service',
+      label: 'observatory',
+      parentId: null,
+      status: 'healthy',
+      sub: 'ns volundr · 1/1',
+    } as unknown as TopologyNode;
+
+    render(<Inspector node={node} topology={null} registry={null} />);
+    expect(screen.queryByText('sub')).not.toBeInTheDocument();
+  });
+
+  it('renders a list field as a readable line rather than [object Object]', () => {
+    const node = {
+      id: 'h',
+      typeId: 'host',
+      label: 'baldr',
+      parentId: null,
+      status: 'healthy',
+      roles: ['control-plane', 'worker'],
+    } as unknown as TopologyNode;
+
+    render(<Inspector node={node} topology={null} registry={null} />);
+    expect(screen.getByText('control-plane · worker')).toBeInTheDocument();
+  });
+});
