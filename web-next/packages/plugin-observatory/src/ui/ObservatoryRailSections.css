@@ -75,11 +75,21 @@
   grid-area: sub;
   font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--obs-tone, var(--color-text-tertiary));
-  opacity: 0.75;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* One toned word per row. What a thing runs on earns the colour; where it
+   sits is context and stays grey. */
+.obs-rail__sub-lead {
+  color: var(--obs-tone, var(--color-text-tertiary));
+  opacity: 0.85;
+}
+
+.obs-rail__sub-rest {
+  color: var(--color-text-tertiary);
+  opacity: 0.7;
 }
 
 .obs-rail__badge {
@@ -100,6 +110,15 @@
 .obs-rail__badge[data-tone='amber'] {
   border-color: color-mix(in srgb, var(--color-accent-amber) 45%, transparent);
   color: var(--color-accent-amber);
+}
+
+/* A footnote, not a chip: no frame, no fill. Ten outlined pills down a
+   column read as ten alerts. */
+.obs-rail__badge[data-tone='quiet'] {
+  padding: 0;
+  border: 0;
+  font-size: 9px;
+  color: var(--color-text-faint);
 }
 
 .obs-rail__badge[data-tone='spring'] {

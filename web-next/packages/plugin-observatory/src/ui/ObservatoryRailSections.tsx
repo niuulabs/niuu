@@ -45,7 +45,7 @@ function RailRow({
   name: string;
   sub?: string;
   badge?: ReactNode;
-  badgeTone?: 'amber' | 'spring' | 'plain';
+  badgeTone?: 'amber' | 'spring' | 'plain' | 'quiet';
   tone: ComputeClass | 'mesh';
   selected: boolean;
   onSelect: (nodeId: string) => void;
@@ -63,13 +63,31 @@ function RailRow({
     >
       <span className="obs-rail__stripe" aria-hidden="true" />
       <span className="obs-rail__name">{humanizeObservatoryText(name)}</span>
-      {sub ? <span className="obs-rail__sub">{sub}</span> : null}
+      {sub ? <SubLine text={sub} /> : null}
       {badge != null ? (
         <em className="obs-rail__badge" data-tone={badgeTone}>
           {badge}
         </em>
       ) : null}
     </button>
+  );
+}
+
+/**
+ * The line under a row's name: first token carries the row's colour, the rest
+ * is muted.
+ *
+ * Colouring the whole line put a lit string on every row and the column read
+ * as decoration. One toned word per row is enough to group them by eye — what
+ * a thing runs on is the part worth the colour; where it sits is context.
+ */
+function SubLine({ text }: { text: string }) {
+  const [lead, ...rest] = text.split(' · ');
+  return (
+    <span className="obs-rail__sub">
+      <span className="obs-rail__sub-lead">{lead}</span>
+      {rest.length > 0 ? <span className="obs-rail__sub-rest"> · {rest.join(' · ')}</span> : null}
+    </span>
   );
 }
 
@@ -137,9 +155,10 @@ export function ObservatoryRailSections({ topology, selectedId, onSelect }: Prop
               name={node.label}
               sub={residentSubtitle(node, byId) || node.status}
               // The mesh it belongs to, if any — the one relationship a
-              // resident has that its placement does not already state.
+              // resident has that its placement does not already state. Set
+              // quietly: it is a footnote on the row, not its headline.
               badge={meshOf(node)}
-              badgeTone="amber"
+              badgeTone="quiet"
               tone={toneOf(node)}
               selected={node.id === selectedId}
               onSelect={onSelect}
