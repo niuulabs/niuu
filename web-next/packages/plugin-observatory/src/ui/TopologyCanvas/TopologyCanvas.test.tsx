@@ -6,7 +6,7 @@ import { makeCtxMock } from './test-helpers';
 import { computeLayout, computeLayoutBounds } from './layoutEngine';
 import { fitCameraToBounds, type Camera } from './canvasMath';
 import { CANVAS } from './config';
-import { realmBounds, realmLabelBounds, structureLabel } from './renderer';
+import { realmBounds, realmLabelBounds, structureLabel, LAYER_COLOUR } from './renderer';
 
 const CANVAS_RECT = { left: 24, top: 16, width: 480, height: 320 };
 const MINIMAP_RECT = { left: 260, top: 180, width: CANVAS.MINIMAP_W, height: CANVAS.MINIMAP_H };
@@ -534,30 +534,31 @@ describe('TopologyCanvas', () => {
     ],
   };
 
-  function meshLabelDrawn(): boolean {
-    const calls = mainCtx.fillText.mock.calls as [string, ...unknown[]][];
-    return calls.some(([text]) => typeof text === 'string' && text.includes('FORGE-MESH'));
+  /** Amber only ever reaches the canvas as mesh traffic or a mesh highlight. */
+  function meshHighlightDrawn(): boolean {
+    const amber = LAYER_COLOUR.mesh.join(',');
+    return mainCtx.strokeStyles.some((style) => style.includes(amber));
   }
 
-  it('outlines no agent mesh while nothing is selected or hovered', async () => {
+  it('marks no agent mesh while nothing is selected or hovered', async () => {
     await renderCanvas(MESHED_TOPOLOGY);
     runAnimationFrame();
 
-    expect(meshLabelDrawn()).toBe(false);
+    expect(meshHighlightDrawn()).toBe(false);
   });
 
-  it('outlines the mesh of the selected member', async () => {
+  it('pulses the mesh of the selected member', async () => {
     await renderCanvas(MESHED_TOPOLOGY, { selectedId: 'muninn' });
     runAnimationFrame();
 
-    expect(meshLabelDrawn()).toBe(true);
+    expect(meshHighlightDrawn()).toBe(true);
   });
 
-  it('outlines nothing when the selection is not a mesh member', async () => {
+  it('marks nothing when the selection is not a mesh member', async () => {
     await renderCanvas(MESHED_TOPOLOGY, { selectedId: 'ting-0' });
     runAnimationFrame();
 
-    expect(meshLabelDrawn()).toBe(false);
+    expect(meshHighlightDrawn()).toBe(false);
   });
 
   // ── Layer filtering ─────────────────────────────────────────────────────────

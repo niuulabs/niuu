@@ -29,10 +29,23 @@ describe('seed topology structure', () => {
     }
   });
 
-  it('roots only realms', () => {
+  it('roots realms and vendor clouds, and nothing else', () => {
+    // A vendor cloud is deliberately parentless: hosted models are not in any
+    // realm of ours, which is the whole reason they are drawn out here.
     const roots = SEED_NODES.filter((n) => n.parentId === null);
-    expect(roots.every((n) => n.typeId === 'realm')).toBe(true);
-    expect(roots).toHaveLength(5);
+    expect(new Set(roots.map((n) => n.typeId))).toEqual(new Set(['realm', 'cloud']));
+    expect(roots.filter((n) => n.typeId === 'realm')).toHaveLength(5);
+    expect(roots.filter((n) => n.typeId === 'cloud')).toHaveLength(3);
+  });
+
+  it('puts every hosted model in a cloud and every self-hosted one in a cluster', () => {
+    const models = SEED_NODES.filter((n) => n.typeId === 'model');
+    expect(models.length).toBeGreaterThan(0);
+    for (const model of models) {
+      const parent = byId.get(model.parentId ?? '');
+      expect(parent, `${model.id} has no parent`).toBeDefined();
+      expect(parent?.typeId).toBe(model.location === 'external' ? 'cloud' : 'bifrost');
+    }
   });
 
   it('contains no parent cycles', () => {

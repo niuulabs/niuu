@@ -501,14 +501,29 @@ function model(
   return { id, typeId: 'model', label, parentId, status, zone, provider, location };
 }
 
+/**
+ * Vendor clouds, mirroring what `BifrostCatalogDiscoveryAdapter` emits.
+ *
+ * A hosted model is not in our cluster — the Bifröst that calls it is. One
+ * cloud per vendor, with no cluster or realm of its own.
+ */
+const CLOUDS: TopologyNode[] = [
+  { id: 'cloud-anthropic', typeId: 'cloud', label: 'Anthropic', parentId: null, status: 'healthy' },
+  { id: 'cloud-openai', typeId: 'cloud', label: 'OpenAI', parentId: null, status: 'healthy' },
+  { id: 'cloud-xai', typeId: 'cloud', label: 'xAI', parentId: null, status: 'healthy' },
+];
+
 const MODELS: TopologyNode[] = [
+  // Self-hosted weights stay under the gateway, inside the cluster that runs
+  // them. `location` is the field compute class is read from, so it carries
+  // the vocabulary the adapter emits rather than prose.
   model(
     'model-nemotron',
     'nemotron-3-super',
     'bifrost-ymir',
     'yggdrasil',
     'valaskjalf',
-    'self-hosted · valaskjálf vLLM · 2/2',
+    'internal',
     'healthy',
   ),
   model(
@@ -517,36 +532,20 @@ const MODELS: TopologyNode[] = [
     'bifrost-ymir',
     'yggdrasil',
     'valaskjalf',
-    'self-hosted · llm-d · 0 replicas',
+    'internal',
     'idle',
   ),
   model(
     'model-claude',
     'claude-fable-5',
-    'bifrost-ymir',
-    'yggdrasil',
+    'cloud-anthropic',
+    '',
     'anthropic',
-    'metered · leaves the realm',
+    'external',
     'healthy',
   ),
-  model(
-    'model-gpt',
-    'gpt-5.6-sol',
-    'bifrost-ymir',
-    'yggdrasil',
-    'openai',
-    'metered · leaves the realm',
-    'healthy',
-  ),
-  model(
-    'model-grok',
-    'grok-build',
-    'bifrost-ymir',
-    'yggdrasil',
-    'xai',
-    'metered · leaves the realm',
-    'idle',
-  ),
+  model('model-gpt', 'gpt-5.6-sol', 'cloud-openai', '', 'openai', 'external', 'healthy'),
+  model('model-grok', 'grok-build', 'cloud-xai', '', 'xai', 'external', 'idle'),
 ];
 
 // ── Residents ─────────────────────────────────────────────────────────────────
@@ -789,6 +788,7 @@ export const SEED_NODES: TopologyNode[] = [
   ...HOSTS,
   ...COORDINATORS,
   ...MIMIRS,
+  ...CLOUDS,
   ...MODELS,
   ...SERVICES,
   ...RESIDENTS,

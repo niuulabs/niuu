@@ -13,8 +13,9 @@ import {
   worldFontSize,
   regionFontSize,
   drawAgentMesh,
+  LAYER_COLOUR,
 } from './renderer';
-import { LOD } from './config';
+import { LOD, MESH_PULSE } from './config';
 import { nodeStyle } from './nodeStyle';
 import type { Topology, TopologyNode } from '../../domain';
 import type { NodePosition } from './layoutEngine';
@@ -665,51 +666,83 @@ describe('drawNode level of detail', () => {
 });
 
 describe('drawAgentMesh', () => {
-  const A = { x: 0, y: 0 };
-  const B = { x: 100, y: 0 };
-  const C2 = { x: 100, y: 100 };
-  const D = { x: 0, y: 100 };
+  const A = { x: 0, y: 0, radius: 10 };
+  const B = { x: 100, y: 0, radius: 6 };
+  const C2 = { x: 100, y: 100, radius: 10 };
 
-  it('draws nothing for a mesh with fewer than two placed members', () => {
+  it('draws nothing when the mesh has no placed members', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
-    drawAgentMesh(ctx, [], 'forge', 1);
-    drawAgentMesh(ctx, [A], 'forge', 1);
+    drawAgentMesh(ctx, [], 0, 1);
     expect(ctx.stroke).not.toHaveBeenCalled();
   });
 
-  it('outlines and fills a hull for three or more members', () => {
+  it('marks a single member, unlike the hull it replaced', () => {
+    // A hull needs two points to exist at all, so a one-member mesh used to
+    // draw nothing and the selection read as having no effect.
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
-    drawAgentMesh(ctx, [A, B, C2, D], 'forge-mesh', 1);
-    expect(ctx.fill).toHaveBeenCalled();
+    drawAgentMesh(ctx, [A], 0, 1);
     expect(ctx.stroke).toHaveBeenCalled();
-    expect(ctx.quadraticCurveTo).toHaveBeenCalled();
   });
 
-  it('draws a capsule rather than a polygon for exactly two members', () => {
+  it('rings every member rather than enclosing the space between them', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
-    drawAgentMesh(ctx, [A, B], 'pair', 1);
-    expect(ctx.stroke).toHaveBeenCalled();
-    expect(ctx.fill).not.toHaveBeenCalled();
+    drawAgentMesh(ctx, [A, B, C2], 0, 1);
+    const centres = (ctx.arc as ReturnType<typeof vi.fn>).mock.calls.map(([x, y]) => `${x},${y}`);
+    for (const member of [A, B, C2]) {
+      expect(centres).toContain(`${member.x},${member.y}`);
+    }
+    // No path is traced *between* members: the hull this replaced joined them
+    // with lines and curves, which is what enclosed everything in between.
+    expect(ctx.moveTo).not.toHaveBeenCalled();
+    expect(ctx.lineTo).not.toHaveBeenCalled();
+    expect(ctx.quadraticCurveTo).not.toHaveBeenCalled();
   });
 
-  it('labels the mesh at its centroid in upper case', () => {
+  it('sizes each ring off that member, so one radius does not fit all', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
-    drawAgentMesh(ctx, [A, B, C2, D], 'forge-mesh', 1);
-    const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [
-      string,
-      number,
-      number,
-    ][];
-    const entry = calls.find(([text]) => text.includes('FORGE'));
-    expect(entry).toBeDefined();
-    expect(entry?.[1]).toBe(50);
-    expect(entry?.[2]).toBe(50);
+    drawAgentMesh(ctx, [A, B], 0, 1, true);
+    const radiiFor = (m: { x: number; y: number }) =>
+      (ctx.arc as ReturnType<typeof vi.fn>).mock.calls
+        .filter(([x, y]) => x === m.x && y === m.y)
+        .map(([, , r]) => r as number);
+    expect(Math.min(...radiiFor(A))).toBeGreaterThan(Math.min(...radiiFor(B)));
   });
 
-  it('omits the label when the mesh has no name', () => {
-    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
-    drawAgentMesh(ctx, [A, B, C2, D], '', 1);
-    expect(ctx.fillText).not.toHaveBeenCalled();
+  it('expands the ring as the cycle advances', () => {
+    // Per member: glow wash, halo, leading ring, trailing ring.
+    const LEADING_RING = 2;
+    const leadingRingRadiusAt = (now: number): number => {
+      const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+      drawAgentMesh(ctx, [A], now, 1);
+      const calls = (ctx.arc as ReturnType<typeof vi.fn>).mock.calls;
+      return calls[LEADING_RING]![2] as number;
+    };
+    const early = leadingRingRadiusAt(MESH_PULSE.PERIOD_MS * 0.1);
+    const late = leadingRingRadiusAt(MESH_PULSE.PERIOD_MS * 0.7);
+    expect(late).toBeGreaterThan(early);
+    // And it comes back rather than growing without bound.
+    expect(leadingRingRadiusAt(0)).toBeLessThan(early);
+  });
+
+  it('holds the rings still under reduced motion', () => {
+    const framesFor = (reduced: boolean) =>
+      [0, MESH_PULSE.PERIOD_MS * 0.5].map((now) => {
+        const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+        drawAgentMesh(ctx, [A], now, 1, reduced);
+        return JSON.stringify((ctx.arc as ReturnType<typeof vi.fn>).mock.calls);
+      });
+    const [still1, still2] = framesFor(true);
+    expect(still1).toBe(still2);
+    const [moving1, moving2] = framesFor(false);
+    expect(moving1).not.toBe(moving2);
+  });
+
+  it('draws the mesh in amber, the colour its edges already use', () => {
+    const mock = makeCtxMock();
+    drawAgentMesh(mock as unknown as CanvasRenderingContext2D, [A], 0, 1);
+    const amber = LAYER_COLOUR.mesh.join(',');
+    expect(mock.strokeStyles.length).toBeGreaterThan(0);
+    expect(mock.strokeStyles.every((s) => s.includes(amber))).toBe(true);
   });
 });
 

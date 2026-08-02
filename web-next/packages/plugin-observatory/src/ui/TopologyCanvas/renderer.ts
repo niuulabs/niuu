@@ -19,10 +19,8 @@ import { edgeLayer } from '../../domain';
 import { humanizeObservatoryText } from '../displayLabels';
 import type { NodePosition } from './layoutEngine';
 import { zoneRadius, HOST_HALF_W, HOST_HALF_H } from './layoutEngine';
-import { NODE_SIZE, MIMIR_RUNES, LAYOUT, LOD, LABEL_PX, MESH_HULL } from './config';
-import type { Point } from './canvasMath';
-import { centroid, convexHull, expandFromCentroid } from './canvasMath';
-import { drawGlyph, roundRectPath } from './shapes';
+import { NODE_SIZE, MIMIR_RUNES, LAYOUT, LOD, LABEL_PX, MESH_PULSE } from './config';
+import { cloudPath, drawGlyph, roundRectPath } from './shapes';
 import { nodeStyle, type NodeStyle } from './nodeStyle';
 
 // ── Level of detail ───────────────────────────────────────────────────────────
@@ -404,20 +402,47 @@ export function drawZones(
   // World units per screen pixel — keeps container headings a constant size.
   const scale = worldFontSize(1, zoom);
   // Draw larger structural groups first, then smaller containers on top.
-  for (const typeId of ['realm', 'cluster', 'namespace'] as const) {
+  for (const typeId of ['cloud', 'realm', 'cluster', 'namespace'] as const) {
     for (const node of nodes) {
       if (node.typeId !== typeId) continue;
       const pos = positions.get(node.id);
       if (!pos) continue;
+      const packed = Math.max((pos.containerWidth ?? 0) / 2, (pos.containerHeight ?? 0) / 2);
       const r =
         typeId === 'namespace'
-          ? Math.max(
-              (pos.containerWidth ?? LAYOUT.NAMESPACE_INNER_RADIUS * 2) / 2,
-              (pos.containerHeight ?? LAYOUT.NAMESPACE_INNER_RADIUS * 2) / 2,
-              LAYOUT.NAMESPACE_INNER_RADIUS,
-            )
-          : (pos.zoneRadius ?? zoneRadius(typeId));
+          ? Math.max(packed, LAYOUT.NAMESPACE_INNER_RADIUS)
+          : typeId === 'cloud'
+            ? // A cloud is only as big as what it holds. Its lobes sit inside
+              // its nominal radius, so the models need headroom or the
+              // outermost lands on the rim.
+              Math.max(packed * LAYOUT.CLOUD_LOBE_HEADROOM, LAYOUT.CLOUD_MIN_RADIUS)
+            : (pos.zoneRadius ?? zoneRadius(typeId));
       const { x: cx, y: cy } = pos;
+
+      if (typeId === 'cloud') {
+        // Violet, the colour metered model calls already use, because this is
+        // where those calls land. None of it is our silicon.
+        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+        g.addColorStop(0, rgba(OUTSIDE_COLOUR, 0.13));
+        g.addColorStop(1, rgba(OUTSIDE_COLOUR, 0.02));
+        ctx.fillStyle = g;
+        cloudPath(ctx, cx, cy, r);
+        ctx.fill();
+
+        ctx.save();
+        ctx.setLineDash([worldFontSize(7, zoom), worldFontSize(6, zoom)]);
+        ctx.strokeStyle = rgba(OUTSIDE_COLOUR, 0.4);
+        ctx.lineWidth = worldFontSize(1.3, zoom);
+        cloudPath(ctx, cx, cy, r);
+        ctx.stroke();
+        ctx.restore();
+
+        drawStructureLabel(ctx, node, cx, cy - r * LAYOUT.CLOUD_LABEL_OFFSET, {
+          font: `${worldFontSize(LABEL_PX.CLUSTER, zoom)}px "JetBrains Mono", monospace`,
+          color: rgba(OUTSIDE_COLOUR, 0.85),
+        });
+        continue;
+      }
 
       if (typeId === 'realm') {
         // A region, drawn as one: a rounded rectangle around everything it
@@ -1261,7 +1286,16 @@ export function drawNode(
   options: NodeDrawOptions = {},
 ): void {
   if (node.typeId === 'mimir') return; // drawn last, above everything
-  if (node.typeId === 'realm' || node.typeId === 'cluster' || node.typeId === 'namespace') return;
+  // Containers are drawn as boundaries by `drawZones`; giving one a glyph too
+  // would put two marks on the canvas for the same thing.
+  if (
+    node.typeId === 'realm' ||
+    node.typeId === 'cluster' ||
+    node.typeId === 'namespace' ||
+    node.typeId === 'cloud'
+  ) {
+    return;
+  }
 
   const now = options.now ?? 0;
   const alpha = options.alpha ?? 1;
@@ -1399,64 +1433,102 @@ export function drawMinimap(
 
 // ── Agent mesh ────────────────────────────────────────────────────────────────
 
+/** One member of the mesh being engaged with, and how big it draws. */
+export interface MeshMember {
+  x: number;
+  y: number;
+  /** The member's own outline radius, in world units. */
+  radius: number;
+}
+
 /**
- * Outline the agent mesh the operator is currently engaging with.
+ * Ring radius and alpha for one pulse phase. `t` runs 0→1 over a cycle.
  *
- * Members are scattered across clusters, so the shape has to be derived from
- * their positions rather than read off a container. Nothing is drawn for a
- * mesh with fewer than two placed members.
+ * Standoff and travel are screen pixels converted to world units, so the ring
+ * is the same size on screen however far the camera sits back. Sized in world
+ * units it vanished at exactly the zoom where a cross-cluster mesh is worth
+ * looking at.
+ */
+function pulsePhase(t: number, radius: number, zoom: number): { radius: number; alpha: number } {
+  const wrapped = t - Math.floor(t);
+  const standoff = worldFontSize(MESH_PULSE.STANDOFF_PX, zoom);
+  const travel = worldFontSize(MESH_PULSE.TRAVEL_PX, zoom);
+  return {
+    radius: radius + standoff + wrapped * travel,
+    // Ease the fade out so the ring dissolves rather than snapping off.
+    alpha: MESH_PULSE.PEAK_ALPHA * (1 - wrapped) ** 2,
+  };
+}
+
+/**
+ * Mark the members of the agent mesh the operator is engaging with.
+ *
+ * A mesh spans clusters by design, so its members share no region — the hull
+ * this replaced enclosed every unrelated node that happened to lie between
+ * them, and read as a container the mesh does not have. Pulsing each member
+ * says "these, wherever they are" and claims no territory.
+ *
+ * Two rings run half a cycle apart so there is always one expanding, over a
+ * steady halo that keeps members marked while a ring is faded out. Amber is
+ * already the canvas's mesh colour, so the pulse agrees with the mesh edges
+ * rather than introducing a second vocabulary for the same thing.
  */
 export function drawAgentMesh(
   ctx: CanvasRenderingContext2D,
-  memberPoints: readonly Point[],
-  label: string,
+  members: readonly MeshMember[],
+  now: number,
   zoom: number,
+  reducedMotion = false,
 ): void {
-  if (memberPoints.length < 2) return;
+  if (members.length === 0) return;
 
-  const origin = centroid(memberPoints);
-  const outline = expandFromCentroid(convexHull(memberPoints), origin, MESH_HULL.PADDING);
+  const cycle = (now % MESH_PULSE.PERIOD_MS) / MESH_PULSE.PERIOD_MS;
+  // Reduced motion still needs the members marked — it just holds the rings
+  // still instead of animating them.
+  const phases = reducedMotion
+    ? [{ t: 0.3, dim: 1 }]
+    : [
+        { t: cycle, dim: 1 },
+        { t: cycle + MESH_PULSE.PHASE_OFFSET, dim: MESH_PULSE.TRAILING_DIM },
+      ];
+  const halo = worldFontSize(MESH_PULSE.STANDOFF_PX, zoom);
 
   ctx.save();
-  ctx.beginPath();
-  if (outline.length < 3) {
-    // Two members: a capsule reads better than a degenerate polygon.
-    const [a, b] = outline as [Point, Point];
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-  } else {
-    // Trace midpoint-to-midpoint with each vertex as the control point, which
-    // rounds the hull without needing a corner-by-corner arc solve.
-    const last = outline[outline.length - 1]!;
-    const first = outline[0]!;
-    ctx.moveTo((first.x + last.x) / 2, (first.y + last.y) / 2);
-    for (let i = 0; i < outline.length; i++) {
-      const current = outline[i]!;
-      const next = outline[(i + 1) % outline.length]!;
-      ctx.quadraticCurveTo(
-        current.x,
-        current.y,
-        (current.x + next.x) / 2,
-        (current.y + next.y) / 2,
-      );
-    }
-    ctx.closePath();
-    ctx.fillStyle = rgba(C.valk, MESH_HULL.FILL_ALPHA);
+
+  for (const member of members) {
+    // A filled wash first: at low zoom the member's glyph is a few pixels, so
+    // an outline alone has almost nothing to outline.
+    const glow = ctx.createRadialGradient(
+      member.x,
+      member.y,
+      0,
+      member.x,
+      member.y,
+      member.radius + halo,
+    );
+    glow.addColorStop(0, rgba(LAYER_COLOUR.mesh, MESH_PULSE.GLOW_ALPHA));
+    glow.addColorStop(1, rgba(LAYER_COLOUR.mesh, 0));
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(member.x, member.y, member.radius + halo, 0, Math.PI * 2);
     ctx.fill();
+
+    ctx.lineWidth = worldFontSize(MESH_PULSE.HALO_LINE_WIDTH, zoom);
+    ctx.beginPath();
+    ctx.arc(member.x, member.y, member.radius + halo, 0, Math.PI * 2);
+    ctx.strokeStyle = rgba(LAYER_COLOUR.mesh, MESH_PULSE.HALO_ALPHA);
+    ctx.stroke();
+
+    ctx.lineWidth = worldFontSize(MESH_PULSE.LINE_WIDTH, zoom);
+    for (const phase of phases) {
+      const ring = pulsePhase(phase.t, member.radius, zoom);
+      if (ring.alpha <= 0.01) continue;
+      ctx.beginPath();
+      ctx.arc(member.x, member.y, ring.radius, 0, Math.PI * 2);
+      ctx.strokeStyle = rgba(LAYER_COLOUR.mesh, ring.alpha * phase.dim);
+      ctx.stroke();
+    }
   }
 
-  ctx.setLineDash(MESH_HULL.DASH.map((d) => d));
-  ctx.strokeStyle = rgba(C.valk, MESH_HULL.STROKE_ALPHA);
-  ctx.lineWidth = worldFontSize(1.4, zoom);
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  if (label) {
-    const px = worldFontSize(LABEL_PX.PRIMARY, zoom);
-    ctx.fillStyle = rgba(C.valk, 0.7);
-    ctx.font = `600 ${px}px "JetBrains Mono", monospace`;
-    ctx.textAlign = 'center';
-    ctx.fillText(humanizeObservatoryText(label).toUpperCase(), origin.x, origin.y);
-  }
   ctx.restore();
 }

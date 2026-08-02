@@ -10,6 +10,7 @@ import type { SVGProps } from 'react';
 export type ShapeKind =
   | 'ring'
   | 'ring-dashed'
+  | 'cloud'
   | 'agent'
   | 'halo'
   | 'triangle'
@@ -185,6 +186,20 @@ export function ShapeSvg({
             strokeWidth="1.4"
           />
           <ellipse cx="0" cy="-3" rx="5" ry="1.9" fill="none" stroke={c} strokeWidth="1.2" />
+        </svg>
+      );
+
+    case 'cloud':
+      return (
+        <svg {...svgProps}>
+          {/* Lobes as separate circles: at swatch size the union reads as a
+              cloud without needing the canvas's silhouette trace. */}
+          <g fill="none" stroke={c} strokeWidth="1.2" strokeDasharray="2 2">
+            <circle cx="-4.5" cy="1.5" r="3.4" />
+            <circle cx="-1" cy="-1.8" r="4.2" />
+            <circle cx="3" cy="0" r="3.6" />
+            <circle cx="0.5" cy="2.8" r="3.2" />
+          </g>
         </svg>
       );
 

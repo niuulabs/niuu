@@ -910,6 +910,12 @@ class BifrostCatalogDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
             for model_id in (provider.get("model_ids") or [])
         }
 
+        # A vendor's models are not in the cluster — the Bifröst that routes to
+        # them is. Parenting them to the gateway drew every hosted Claude and
+        # GPT inside the cluster rectangle, which says the estate runs them.
+        # They get their own container per vendor instead, outside any cluster.
+        clouds: dict[str, str] = {}
+
         for model in models:
             if not isinstance(model, dict) or not model.get("id"):
                 continue
@@ -917,26 +923,48 @@ class BifrostCatalogDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
             provider = served_by.get(model_id) or {}
             base_url = str(provider.get("base_url") or "")
             node_id = f"model:{_slug(self._cluster or 'unknown')}:{_slug(model_id)}"
-            entities.append(
-                self._entity(
-                    "model",
-                    str(model.get("name") or model_id),
-                    node_id,
-                    parent_id=gateway_id,
-                    status="healthy" if model.get("enabled", True) else "idle",
-                    metadata={
-                        "modelId": model_id,
-                        "vendor": str(model.get("vendor") or ""),
-                        "provider": str(model.get("provider") or provider.get("key") or ""),
-                        "tier": str(model.get("tier") or ""),
-                        "location": _model_location(base_url, provider),
-                        "supportsTools": bool(model.get("supports_tools")),
-                        "supportsThinking": bool(model.get("supports_thinking")),
-                        "vramRequired": model.get("vram_required"),
-                        "costPerMillionTokens": model.get("cost_per_million_tokens"),
-                    },
+            location = _model_location(base_url, provider)
+            vendor = str(model.get("vendor") or "")
+            outside = location == "external"
+            cloud_id = self._cloud_id(vendor) if outside else ""
+            if cloud_id and cloud_id not in clouds:
+                clouds[cloud_id] = vendor
+            metadata = {
+                "modelId": model_id,
+                "vendor": vendor,
+                "provider": str(model.get("provider") or provider.get("key") or ""),
+                "tier": str(model.get("tier") or ""),
+                "location": location,
+                "supportsTools": bool(model.get("supports_tools")),
+                "supportsThinking": bool(model.get("supports_thinking")),
+                "vramRequired": model.get("vram_required"),
+                "costPerMillionTokens": model.get("cost_per_million_tokens"),
+            }
+            if outside:
+                entities.append(
+                    DiscoveredEntity(
+                        id=node_id,
+                        kind="model",
+                        name=str(model.get("name") or model_id),
+                        # No realm, cluster or namespace: a hosted model has no
+                        # placement in our estate to inherit.
+                        parent_id=cloud_id,
+                        status="healthy" if model.get("enabled", True) else "idle",
+                        source_adapter=self.__class__.__name__,
+                        metadata=metadata,
+                    )
                 )
-            )
+            else:
+                entities.append(
+                    self._entity(
+                        "model",
+                        str(model.get("name") or model_id),
+                        node_id,
+                        parent_id=gateway_id,
+                        status="healthy" if model.get("enabled", True) else "idle",
+                        metadata=metadata,
+                    )
+                )
             if provider:
                 edges.append(
                     _edge(
@@ -949,7 +977,32 @@ class BifrostCatalogDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
                     )
                 )
 
+        # Emitted last so a cloud only exists once something is served from it.
+        # One per vendor rather than one shared "outside": an operator asking
+        # where their tokens go is asking which vendor, not whether it is
+        # remote.
+        entities.extend(
+            DiscoveredEntity(
+                id=cloud_id,
+                kind="cloud",
+                name=_vendor_label(vendor),
+                source_adapter=self.__class__.__name__,
+                metadata={"vendor": vendor},
+            )
+            for cloud_id, vendor in sorted(clouds.items())
+        )
+
         return DiscoveryResult(entities=entities, edges=edges)
+
+    @staticmethod
+    def _cloud_id(vendor: str) -> str:
+        """One cloud per vendor, shared by every cluster that routes to it.
+
+        Deliberately not scoped by cluster: two Bifrösts calling Anthropic are
+        calling the same Anthropic, and drawing one cloud per cluster would
+        claim otherwise.
+        """
+        return f"cloud:{_slug(vendor or 'unknown')}"
 
 
 class RavnResidentsDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
@@ -971,6 +1024,7 @@ class RavnResidentsDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
         ravens = payload if isinstance(payload, list) else []
         entities: list[DiscoveredEntity] = []
         edges: list[ObservatoryEdge] = []
+        flock_ids: set[str] = set()
 
         for raven in ravens:
             if not isinstance(raven, dict) or not raven.get("id"):
@@ -1005,12 +1059,13 @@ class RavnResidentsDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
                 )
             )
             if flock_id:
+                flock_ids.add(flock_id)
                 # Flock membership is declared by the resident's own config,
                 # which is what makes a mesh visible as more than co-location.
                 edges.append(
                     _edge(
                         source_id=node_id,
-                        target_id=f"flock:{_slug(flock_id)}",
+                        target_id=_flock_node_id(flock_id),
                         relation_type="member_of",
                         source_adapter=self.__class__.__name__,
                         evidence_field="flock_id",
@@ -1018,6 +1073,7 @@ class RavnResidentsDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
                     )
                 )
 
+        entities.extend(_flock_entities(flock_ids, self.__class__.__name__))
         return DiscoveryResult(entities=entities, edges=edges)
 
 
@@ -1106,6 +1162,58 @@ _INTERNAL_HOST_SUFFIXES = (".svc.cluster.local", ".internal", ".local")
 _SELF_HOSTED_PROVIDERS = frozenset({"local", "self-hosted", "vllm", "ollama"})
 
 
+#: Vendor keys whose display name is not simply the key title-cased.
+_VENDOR_LABELS = {
+    "openai": "OpenAI",
+    "xai": "xAI",
+    "deepseek": "DeepSeek",
+}
+
+
+def _flock_node_id(flock_id: str) -> str:
+    """One node per flock, shared by every adapter and cluster that sees it.
+
+    A flock is a mesh, not a place: the same flock spans clusters, so its id
+    must not be scoped by one.
+    """
+    return f"flock:{_slug(flock_id)}"
+
+
+def _flock_entities(flock_ids: Iterable[str], source_adapter: str) -> list[DiscoveredEntity]:
+    """The flocks that anything actually belongs to.
+
+    `member_of` edges pointed at a `flock:` id that nothing emitted, so every
+    mesh edge dangled and the canvas drew no connection between agents that
+    are demonstrably on the same mesh.
+    """
+    return [
+        DiscoveredEntity(
+            id=_flock_node_id(flock_id),
+            kind="flock",
+            name=humanize_flock(flock_id),
+            source_adapter=source_adapter,
+            metadata={"flockId": flock_id},
+        )
+        for flock_id in sorted({f for f in flock_ids if f})
+    ]
+
+
+def humanize_flock(flock_id: str) -> str:
+    """Name a flock for a human. `flock-k8s` is an id, not a name."""
+    stripped = flock_id.removeprefix("flock-").replace("-", " ").replace("_", " ").strip()
+    if not stripped:
+        return flock_id
+    return f"{stripped.title()} flock"
+
+
+def _vendor_label(vendor: str) -> str:
+    """Name a vendor the way the vendor writes it."""
+    key = vendor.strip().lower()
+    if not key:
+        return "Outside"
+    return _VENDOR_LABELS.get(key, vendor.strip().title())
+
+
 def _model_location(base_url: str, provider: Mapping[str, Any] | None = None) -> str:
     """Where a model is served from: our hardware, or someone else's.
 
@@ -1183,6 +1291,8 @@ class RavnValkyrieDiscoveryAdapter:
             if isinstance(item, dict) and str(item.get("id") or "")
         }
         entities: list[DiscoveredEntity] = []
+        edges: list[ObservatoryEdge] = []
+        flock_ids: set[str] = set()
         for item in payload.get("valkyries", []):
             if not isinstance(item, dict):
                 continue
@@ -1192,12 +1302,29 @@ class RavnValkyrieDiscoveryAdapter:
                 continue
             environment = environments.get(environment_id, {})
             topology_cluster = environment_id.removeprefix("env-k8s-") or environment_id
+            flock_id = str(item.get("flockId") or "").strip()
+            node_id = (
+                f"runtime:{_slug(topology_cluster)}:{_slug(self._namespace)}:"
+                f"valkyrie:{_slug(valkyrie_id)}"
+            )
+            if flock_id:
+                # This adapter carried flockId in metadata and emitted no edge
+                # for it, so seven Valkyries demonstrably on one mesh drew no
+                # connection between them at all.
+                flock_ids.add(flock_id)
+                edges.append(
+                    _edge(
+                        source_id=node_id,
+                        target_id=_flock_node_id(flock_id),
+                        relation_type="member_of",
+                        source_adapter=self.__class__.__name__,
+                        evidence_field="flockId",
+                        confidence="observed",
+                    )
+                )
             entities.append(
                 DiscoveredEntity(
-                    id=(
-                        f"runtime:{_slug(topology_cluster)}:{_slug(self._namespace)}:"
-                        f"valkyrie:{_slug(valkyrie_id)}"
-                    ),
+                    id=node_id,
                     kind="valkyrie",
                     name=str(item.get("name") or valkyrie_id),
                     cluster=topology_cluster,
@@ -1213,12 +1340,13 @@ class RavnValkyrieDiscoveryAdapter:
                         "specialty": str(item.get("specialty") or ""),
                         "autonomy": str(item.get("autonomyMode") or ""),
                         "wakefulness": str(item.get("wakefulness") or ""),
-                        "flockId": str(item.get("flockId") or ""),
+                        "flockId": flock_id,
                         "confidence": item.get("confidence"),
                     },
                 )
             )
-        return DiscoveryResult(entities=entities)
+        entities.extend(_flock_entities(flock_ids, self.__class__.__name__))
+        return DiscoveryResult(entities=entities, edges=edges)
 
 
 class KubernetesDiscoveryAdapter:

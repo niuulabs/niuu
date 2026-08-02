@@ -83,6 +83,104 @@ export function roundRectPath(
   ctx.closePath();
 }
 
+/**
+ * The lobes of a cloud outline, as unit offsets from its centre, ordered by
+ * angle so consecutive entries are neighbours around the rim.
+ *
+ * Hand-placed rather than generated: an evenly spaced ring of equal bumps
+ * reads as a flower. What makes a cloud legible is uneven puffs over a
+ * flatter base. `r` is a fraction of the cloud's radius, and every adjacent
+ * pair is sized to overlap — `cloudPath` needs them to intersect.
+ */
+const CLOUD_LOBES: readonly { dx: number; dy: number; r: number }[] = [
+  { dx: -0.62, dy: 0.16, r: 0.4 },
+  { dx: -0.26, dy: -0.24, r: 0.52 },
+  { dx: 0.2, dy: -0.32, r: 0.46 },
+  { dx: 0.6, dy: 0.02, r: 0.42 },
+  { dx: 0.3, dy: 0.3, r: 0.4 },
+  { dx: -0.2, dy: 0.34, r: 0.42 },
+];
+
+interface Lobe {
+  x: number;
+  y: number;
+  r: number;
+}
+
+/**
+ * Where two overlapping lobes cross, on the outside.
+ *
+ * Both circles cross at two points — one on the rim, one buried inside the
+ * cloud. The outer one is the one further from the cloud's centre, and it is
+ * the only one on the silhouette. Returns null when the two do not reach each
+ * other, so a caller can fall back rather than draw a broken path.
+ */
+function outerCrossing(a: Lobe, b: Lobe, cx: number, cy: number): { x: number; y: number } | null {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const d = Math.hypot(dx, dy);
+  if (d === 0 || d > a.r + b.r || d < Math.abs(a.r - b.r)) return null;
+
+  // Distance along the centre line to the crossing chord, then out along it.
+  const along = (d * d - b.r * b.r + a.r * a.r) / (2 * d);
+  const half = Math.sqrt(Math.max(0, a.r * a.r - along * along));
+  const mx = a.x + (dx * along) / d;
+  const my = a.y + (dy * along) / d;
+  const ox = (-dy * half) / d;
+  const oy = (dx * half) / d;
+
+  const first = { x: mx + ox, y: my + oy };
+  const second = { x: mx - ox, y: my - oy };
+  return Math.hypot(first.x - cx, first.y - cy) >= Math.hypot(second.x - cx, second.y - cy)
+    ? first
+    : second;
+}
+
+/**
+ * Trace a cloud's silhouette as one closed path.
+ *
+ * Each lobe contributes only the arc between where it meets its two
+ * neighbours, so the path is the outline alone — no interior seams. Drawing
+ * the lobes as whole circles instead fills correctly but strokes as a pile of
+ * overlapping rings, which is not a cloud.
+ */
+export function cloudPath(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  radius: number,
+): void {
+  const lobes: Lobe[] = CLOUD_LOBES.map((lobe) => ({
+    x: cx + lobe.dx * radius,
+    y: cy + lobe.dy * radius,
+    r: Math.max(1, lobe.r * radius),
+  }));
+
+  ctx.beginPath();
+  let started = false;
+  for (let i = 0; i < lobes.length; i++) {
+    const lobe = lobes[i]!;
+    const previous = lobes[(i - 1 + lobes.length) % lobes.length]!;
+    const next = lobes[(i + 1) % lobes.length]!;
+    const from = outerCrossing(lobe, previous, cx, cy);
+    const to = outerCrossing(lobe, next, cx, cy);
+    if (!from || !to) continue;
+    const start = Math.atan2(from.y - lobe.y, from.x - lobe.x);
+    const end = Math.atan2(to.y - lobe.y, to.x - lobe.x);
+    if (!started) {
+      ctx.moveTo(from.x, from.y);
+      started = true;
+    }
+    // Lobes are ordered by increasing angle, so each arc runs the same way.
+    ctx.arc(lobe.x, lobe.y, lobe.r, start, end);
+  }
+  if (!started) {
+    // Degenerate geometry: a plain disc still says "a region is here".
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  }
+  ctx.closePath();
+}
+
 export function polygonPath(
   ctx: CanvasRenderingContext2D,
   cx: number,
@@ -358,10 +456,11 @@ const GLYPHS: Readonly<Record<string, GlyphFn>> = {
  * Marks the canvas draws outside the glyph table.
  *
  * Mímir is drawn last, above everything, because it breathes and everything
- * else reaches into it. It is still a shape the vocabulary contains — a type
- * declaring it must not be downgraded to a box.
+ * else reaches into it. A cloud is a region rather than an object and is
+ * traced by `drawZones`. Both are shapes the vocabulary contains — a type
+ * declaring either must not be downgraded to a box.
  */
-const DEFERRED_SHAPES: ReadonlySet<string> = new Set(['mimir']);
+const DEFERRED_SHAPES: ReadonlySet<string> = new Set(['mimir', 'cloud']);
 
 /** True when the canvas knows how to draw this registry shape. */
 export function isKnownShape(shape: string): boolean {

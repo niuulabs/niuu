@@ -38,7 +38,7 @@ describe('RegistryPage', () => {
     wrap(<RegistryPage />);
     await waitFor(() => expect(screen.getByText(/rev/)).toBeInTheDocument());
     expect(screen.getByText('7')).toBeInTheDocument();
-    expect(screen.getByText(/17 types/)).toBeInTheDocument();
+    expect(screen.getByText(/19 types/)).toBeInTheDocument();
   });
 
   it('renders the Types tab by default', async () => {

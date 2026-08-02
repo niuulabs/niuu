@@ -8,6 +8,7 @@ const FORBIDDEN_RUNES = new Set(['ᛟ', 'ᛊ', 'ᛏ', 'ᛉ', 'ᚺ', 'ᚻ']);
 const ALL_SHAPES: ShapeKind[] = [
   'ring',
   'ring-dashed',
+  'cloud',
   'agent',
   'halo',
   'triangle',

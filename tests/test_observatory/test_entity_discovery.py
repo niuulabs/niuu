@@ -523,15 +523,85 @@ async def test_ravn_valkyrie_adapter_projects_cross_cluster_dashboard() -> None:
 
     result = await adapter.discover()
 
-    assert len(result.entities) == 1
-    valkyrie = result.entities[0]
+    valkyrie = next(e for e in result.entities if e.kind == "valkyrie")
     assert valkyrie.id == "runtime:eitri:nats:valkyrie:valkyrie-eitri-k8s"
-    assert valkyrie.kind == "valkyrie"
     assert valkyrie.name == "Bryn"
     assert valkyrie.cluster == "eitri"
     assert valkyrie.status == "healthy"
     assert valkyrie.metadata["ravnEnvironmentId"] == "env-k8s-eitri"
     assert valkyrie.metadata["environmentHealth"] == "watch"
+
+
+@pytest.mark.asyncio
+async def test_valkyries_are_connected_to_the_flock_they_report() -> None:
+    """Membership was carried as metadata and drawn as nothing.
+
+    Seven Valkyries all reporting `flock-k8s` produced seven unconnected dots,
+    because this adapter emitted no edges at all and no flock node existed for
+    the residents adapter's `member_of` edges to land on either.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "environments": [{"id": "env-k8s-eitri", "health": "watch"}],
+                "valkyries": [
+                    {
+                        "id": f"valkyrie-{name}",
+                        "name": name,
+                        "environmentId": "env-k8s-eitri",
+                        "status": "online",
+                        "flockId": "flock-k8s",
+                    }
+                    for name in ("Bryn", "Eir", "Hildr")
+                ],
+            },
+        )
+
+    adapter = RavnValkyrieDiscoveryAdapter(
+        base_url="https://ravn.example",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    flocks = [e for e in result.entities if e.kind == "flock"]
+    assert len(flocks) == 1
+    # One node for the mesh, not one per member and not one per cluster.
+    assert flocks[0].id == "flock:flock-k8s"
+    assert flocks[0].name == "K8S flock"
+    assert not flocks[0].cluster
+
+    members = [e for e in result.entities if e.kind == "valkyrie"]
+    assert len(members) == 3
+    assert {e["sourceId"] for e in result.edges} == {m.id for m in members}
+    assert {e["targetId"] for e in result.edges} == {"flock:flock-k8s"}
+    assert all(e["relationType"] == "member_of" for e in result.edges)
+
+
+@pytest.mark.asyncio
+async def test_a_valkyrie_without_a_flock_gets_no_dangling_edge() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "environments": [{"id": "env-k8s-eitri"}],
+                "valkyries": [
+                    {"id": "solo", "name": "Solo", "environmentId": "env-k8s-eitri"},
+                ],
+            },
+        )
+
+    adapter = RavnValkyrieDiscoveryAdapter(
+        base_url="https://ravn.example",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await adapter.discover()
+
+    assert not result.edges
+    assert not [e for e in result.entities if e.kind == "flock"]
 
 
 @pytest.mark.asyncio
@@ -1397,6 +1467,132 @@ async def test_bifrost_discovers_the_real_catalogue_not_a_hardcoded_one() -> Non
     assert set(models) == {"nemotron-super", "claude-opus-5"}
     assert models["nemotron-super"].metadata["location"] == "internal"
     assert models["claude-opus-5"].metadata["location"] == "external"
+
+
+@pytest.mark.asyncio
+async def test_hosted_models_sit_in_a_vendor_cloud_not_in_the_cluster() -> None:
+    """A vendor's model is not in our cluster — the Bifrost calling it is.
+
+    Parenting every model to the gateway drew hosted Claude and GPT inside the
+    cluster rectangle, which reads as the estate running them.
+    """
+    adapter = BifrostCatalogDiscoveryAdapter(
+        base_url="http://bifrost.test",
+        cluster="ymir",
+        realm="asgard",
+        namespace="volundr",
+        transport=_routed(
+            {
+                "/api/v1/bifrost/models": [
+                    {"id": "local-llama", "name": "Llama", "vendor": "local"},
+                    {"id": "claude-opus-5", "name": "Opus 5", "vendor": "anthropic"},
+                    {"id": "claude-sonnet-5", "name": "Sonnet 5", "vendor": "anthropic"},
+                    {"id": "gpt-5", "name": "GPT-5", "vendor": "openai"},
+                ],
+                "/api/v1/bifrost/providers": [
+                    {
+                        "key": "local",
+                        "vendor": "local",
+                        "base_url": "http://vllm.volundr.svc.cluster.local",
+                        "model_ids": ["local-llama"],
+                    },
+                    {
+                        "key": "anthropic",
+                        "vendor": "anthropic",
+                        "base_url": "https://api.anthropic.com",
+                        "model_ids": ["claude-opus-5", "claude-sonnet-5"],
+                    },
+                    {
+                        "key": "openai",
+                        "vendor": "openai",
+                        "base_url": "https://api.openai.com",
+                        "model_ids": ["gpt-5"],
+                    },
+                ],
+            }
+        ),
+    )
+
+    result = await adapter.discover()
+    by_model = {e.metadata["modelId"]: e for e in result.entities if e.kind == "model"}
+    clouds = {e.id: e for e in result.entities if e.kind == "cloud"}
+
+    # One cloud per vendor that serves something, named as the vendor writes it.
+    assert {c.name for c in clouds.values()} == {"Anthropic", "OpenAI"}
+    # A cloud has no placement in our estate at all.
+    for cloud in clouds.values():
+        assert (cloud.cluster, cloud.namespace, cloud.realm) == ("", "", "")
+        assert not cloud.parent_id
+
+    hosted = by_model["claude-opus-5"]
+    assert hosted.parent_id in clouds
+    assert (hosted.cluster, hosted.namespace) == ("", "")
+    # Both Anthropic models land in the same cloud.
+    assert by_model["claude-sonnet-5"].parent_id == hosted.parent_id
+    assert by_model["gpt-5"].parent_id != hosted.parent_id
+
+    # Self-hosted weights stay where they actually run.
+    local = by_model["local-llama"]
+    assert local.parent_id == "bifrost:ymir"
+    assert local.cluster == "ymir"
+
+    # The gateway still routes to the hosted model — moving it out of the
+    # cluster must not sever the link that says who calls it.
+    assert any(e["targetId"] == hosted.id and e["sourceId"] == "bifrost:ymir" for e in result.edges)
+
+
+@pytest.mark.asyncio
+async def test_two_clusters_calling_one_vendor_share_its_cloud() -> None:
+    """Two Bifrosts calling Anthropic are calling the same Anthropic."""
+    routes = {
+        "/api/v1/bifrost/models": [
+            {"id": "claude-opus-5", "name": "Opus 5", "vendor": "anthropic"}
+        ],
+        "/api/v1/bifrost/providers": [
+            {
+                "key": "anthropic",
+                "vendor": "anthropic",
+                "base_url": "https://api.anthropic.com",
+                "model_ids": ["claude-opus-5"],
+            }
+        ],
+    }
+    cloud_ids = set()
+    for cluster in ("ymir", "valhalla"):
+        adapter = BifrostCatalogDiscoveryAdapter(
+            base_url="http://bifrost.test",
+            cluster=cluster,
+            transport=_routed(routes),
+        )
+        result = await adapter.discover()
+        cloud_ids.update(e.id for e in result.entities if e.kind == "cloud")
+
+    assert len(cloud_ids) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_cloud_is_emitted_when_nothing_is_hosted_outside() -> None:
+    adapter = BifrostCatalogDiscoveryAdapter(
+        base_url="http://bifrost.test",
+        cluster="ymir",
+        transport=_routed(
+            {
+                "/api/v1/bifrost/models": [{"id": "local-llama", "vendor": "local"}],
+                "/api/v1/bifrost/providers": [
+                    {
+                        "key": "local",
+                        "vendor": "local",
+                        "base_url": "http://vllm.volundr.svc.cluster.local",
+                        "model_ids": ["local-llama"],
+                    }
+                ],
+            }
+        ),
+    )
+
+    result = await adapter.discover()
+
+    assert not [e for e in result.entities if e.kind == "cloud"]
 
 
 @pytest.mark.asyncio

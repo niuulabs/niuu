@@ -14,10 +14,10 @@ describe('createMockRegistryRepository', () => {
     expect(registry.updatedAt).toBe('2026-04-15T09:24:11Z');
   });
 
-  it('returns all 17 entity types', async () => {
+  it('returns all 19 entity types', async () => {
     const repo = createMockRegistryRepository();
     const registry = await repo.getRegistry();
-    expect(registry.types.length).toBe(17);
+    expect(registry.types.length).toBe(19);
   });
 
   it('includes the four named domain entities', async () => {

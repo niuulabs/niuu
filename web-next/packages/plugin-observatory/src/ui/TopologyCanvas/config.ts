@@ -73,6 +73,15 @@ export const LAYOUT = {
 
   /** Minimum visual radius drawn for namespace containers. */
   NAMESPACE_INNER_RADIUS: 86,
+  /**
+   * A cloud's lobes bulge outward from its nominal radius but leave the
+   * corners empty, so its contents need more room than a circle of the same
+   * radius would give them.
+   */
+  CLOUD_LOBE_HEADROOM: 1.35,
+  CLOUD_MIN_RADIUS: 96,
+  /** Where the vendor name sits, as a fraction of the cloud's radius. */
+  CLOUD_LABEL_OFFSET: 0.92,
 
   /** Base orbit for child nodes inside a cluster. */
   CLUSTER_CHILD_ORBIT: 132,
@@ -146,20 +155,37 @@ export const LOD = {
 } as const;
 
 /**
- * Agent-mesh hull rendering.
+ * Agent-mesh highlight.
  *
- * A mesh spans clusters by design, so several hulls drawn at once overlap each
- * other and everything beneath them. Only the mesh under the cursor or the
- * current selection is outlined.
+ * A mesh spans clusters by design, so its members have no shape in common —
+ * a hull drawn around them enclosed everything that happened to sit between
+ * them and read as a container the mesh does not have. Pulsing the members
+ * themselves says "these, wherever they are" without claiming any region.
  */
-export const MESH_HULL = {
-  /** World units the outline stands off from its outermost member. */
-  PADDING: 46,
-  /** Corner rounding applied when tracing the expanded hull. */
-  CORNER_RADIUS: 26,
-  FILL_ALPHA: 0.05,
-  STROKE_ALPHA: 0.34,
-  DASH: [12, 9],
+export const MESH_PULSE = {
+  /**
+   * Standoff and travel are in SCREEN pixels, converted to world units per
+   * frame. In world units the ring shrank with everything else, so at the
+   * zoom where a mesh spanning four clusters is actually visible the pulse
+   * was a couple of pixels wide and could not be seen at all.
+   */
+  STANDOFF_PX: 9,
+  /** How far the ring travels outward over one cycle, in screen pixels. */
+  TRAVEL_PX: 26,
+  /** Milliseconds per pulse. Slow enough to read as breathing, not flashing. */
+  PERIOD_MS: 1700,
+  /** Ring alpha at the start of a cycle, fading to zero at the end. */
+  PEAK_ALPHA: 1,
+  /** A second ring runs half a cycle behind the first. */
+  PHASE_OFFSET: 0.5,
+  /** Dimming applied to the trailing ring. */
+  TRAILING_DIM: 0.75,
+  /** Steady halo under the rings so members stay marked mid-fade. */
+  HALO_ALPHA: 0.5,
+  /** A filled wash inside the halo, so a member reads as lit at any zoom. */
+  GLOW_ALPHA: 0.18,
+  LINE_WIDTH: 2.6,
+  HALO_LINE_WIDTH: 3.4,
 } as const;
 
 /** Label sizes in screen pixels — held constant regardless of camera zoom. */

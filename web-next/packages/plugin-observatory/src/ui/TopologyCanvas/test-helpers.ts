@@ -1,9 +1,23 @@
 import { vi } from 'vitest';
 
-/** Shared canvas 2D context stub for tests. jsdom does not implement CanvasRenderingContext2D. */
-export function makeCtxMock(): unknown {
+/**
+ * Shared canvas 2D context stub. jsdom does not implement
+ * CanvasRenderingContext2D.
+ *
+ * Spied methods are typed loosely on purpose: the drawing code calls them
+ * through the real `CanvasRenderingContext2D` type, and tests only ever read
+ * `.mock.calls` off them.
+ */
+export interface CtxMock extends Record<string, unknown> {
+  strokeStyles: string[];
+  fillStyles: string[];
+  strokeStyle: string;
+  fillStyle: string;
+}
+
+export function makeCtxMock(): CtxMock {
   const gradient = { addColorStop: vi.fn() };
-  return {
+  const ctx = {
     clearRect: vi.fn(),
     fillRect: vi.fn(),
     strokeRect: vi.fn(),
@@ -31,6 +45,11 @@ export function makeCtxMock(): unknown {
     setLineDash: vi.fn(),
     createRadialGradient: vi.fn().mockReturnValue(gradient),
     createLinearGradient: vi.fn().mockReturnValue(gradient),
+    // Every colour the caller assigns, in order. A canvas mock that only keeps
+    // the last value cannot answer "was this drawn in amber?" for a frame that
+    // paints many things — which is exactly what mesh highlighting needs.
+    strokeStyles: [] as string[],
+    fillStyles: [] as string[],
     fillStyle: '',
     strokeStyle: '',
     lineWidth: 1,
@@ -40,4 +59,17 @@ export function makeCtxMock(): unknown {
     lineCap: 'butt' as CanvasLineCap,
     lineDashOffset: 0,
   };
+  for (const prop of ['strokeStyle', 'fillStyle'] as const) {
+    const log = ctx[`${prop}s`];
+    let current = '';
+    Object.defineProperty(ctx, prop, {
+      configurable: true,
+      get: () => current,
+      set: (value: string) => {
+        current = value;
+        log.push(value);
+      },
+    });
+  }
+  return ctx;
 }

@@ -13,6 +13,8 @@ export const entityShapeSchema = z.enum([
   // containers
   'ring',
   'ring-dashed',
+  // a region outside the estate — the vendor clouds hosted models sit in
+  'cloud',
   // agents and sessions
   'agent',
   'halo',

@@ -11,7 +11,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 REGISTRY: dict[str, object] = {
-    "version": 12,
+    "version": 13,
     "updatedAt": "2026-08-02T00:00:00Z",
     "types": [
         {
@@ -340,6 +340,40 @@ REGISTRY: dict[str, object] = {
             ],
         },
         {
+            "id": "flock",
+            "label": "Flock",
+            "rune": "ᚹ",
+            "icon": "share-2",
+            # A mesh, not a place: it has no cluster and holds nothing. It is
+            # drawn so the agents on it have something to connect to.
+            "shape": "halo",
+            "color": "amber-300",
+            "size": 11,
+            "border": "dashed",
+            "canContain": [],
+            "parentTypes": [],
+            "category": "topology",
+            "description": "Agent mesh that Valkyries and residents belong to.",
+            "fields": [{"key": "flockId", "label": "Flock ID", "type": "string"}],
+        },
+        {
+            "id": "cloud",
+            "label": "Vendor cloud",
+            "rune": "ᚱ",
+            "icon": "cloud",
+            # A region, not an object: it holds the models a vendor serves and
+            # sits outside every cluster, because that is where they run.
+            "shape": "cloud",
+            "color": "violet-300",
+            "size": 18,
+            "border": "dashed",
+            "canContain": ["model"],
+            "parentTypes": [],
+            "category": "topology",
+            "description": "Models served from outside the estate, grouped by vendor.",
+            "fields": [{"key": "vendor", "label": "Vendor", "type": "string"}],
+        },
+        {
             "id": "model",
             "label": "LLM Model",
             "rune": "ᛖ",
@@ -351,7 +385,7 @@ REGISTRY: dict[str, object] = {
             "size": 13,
             "border": "solid",
             "canContain": [],
-            "parentTypes": ["bifrost", "realm"],
+            "parentTypes": ["bifrost", "realm", "cloud"],
             "category": "knowledge",
             "description": "Inference model endpoint behind Bifröst.",
             "fields": [

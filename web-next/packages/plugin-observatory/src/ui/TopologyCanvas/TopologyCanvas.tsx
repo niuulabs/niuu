@@ -588,17 +588,23 @@ export function TopologyCanvas({
 
         drawZones(ctx, topo.nodes, pos, now, cam.zoom);
 
-        // Only the mesh being engaged with is outlined; several at once would
-        // stack overlapping hulls across every cluster.
+        // Only the mesh being engaged with is marked; pulsing several at once
+        // would put half the canvas in motion and say nothing.
         const focusedMesh =
           findMeshForNode(drawRef.current.agentMeshes, hoveredId) ??
           findMeshForNode(drawRef.current.agentMeshes, drawRef.current.selectedId);
         if (focusedMesh) {
-          const memberPoints = focusedMesh.memberIds
-            .map((id) => pos.get(id))
-            .filter((p): p is NonNullable<typeof p> => !!p)
-            .map((p) => ({ x: p.x, y: p.y }));
-          drawAgentMesh(ctx, memberPoints, focusedMesh.id, cam.zoom);
+          const memberIds = new Set(focusedMesh.memberIds);
+          const members = topo.nodes.flatMap((node) => {
+            if (!memberIds.has(node.id)) return [];
+            const p = pos.get(node.id);
+            if (!p) return [];
+            // Ring off the member's own outline, so a large node does not get
+            // a ring cutting through it and a small one is not swallowed by
+            // its own.
+            return [{ x: p.x, y: p.y, radius: resolveStyle(node).size }];
+          });
+          drawAgentMesh(ctx, members, now, cam.zoom, reducedMotion);
         }
 
         drawEdges(ctx, topo, pos, now, {
