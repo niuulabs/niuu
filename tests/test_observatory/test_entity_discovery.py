@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import httpx
 import asyncio
 import time
+
+import httpx
 import pytest
 
 from observatory.discovery import ObservatoryDiscoveryService
