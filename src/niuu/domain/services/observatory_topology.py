@@ -222,18 +222,33 @@ def _is_given_name(node: TopologyNode) -> bool:
     return label != node.id and label != node.id.rsplit(":", 1)[-1]
 
 
+#: Fields two sources are expected to differ on, because they say who is
+#: speaking rather than what the node is. `_merge_node` folds them, so
+#: reporting them as a conflict warns about every node more than one source
+#: has ever seen — which is most of them.
+_PROVENANCE_FIELDS = frozenset({"sourceId", "sourceKind"})
+
+
 def _contested_fields(left: TopologyNode, right: TopologyNode) -> list[str]:
     """Fields both claims fill in, and fill in differently.
 
     One source knowing more than another is not a conflict — only the fields
-    where both looked and saw something different are.
+    where both looked and saw something different are. Nor is a difference the
+    merge already resolves by rule: a label that merely echoes the node id
+    loses to a real name deterministically, so it is not in dispute.
     """
     a = left.model_dump(by_alias=True)
     b = right.model_dump(by_alias=True)
+    settled = set(_PROVENANCE_FIELDS)
+    if _is_given_name(left) != _is_given_name(right):
+        settled.add("label")
     return sorted(
         key
         for key in a.keys() & b.keys()
-        if not _is_empty(a[key]) and not _is_empty(b[key]) and a[key] != b[key]
+        if key not in settled
+        and not _is_empty(a[key])
+        and not _is_empty(b[key])
+        and a[key] != b[key]
     )
 
 

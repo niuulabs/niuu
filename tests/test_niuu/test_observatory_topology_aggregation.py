@@ -340,6 +340,51 @@ class TestMerge:
         assert snapshot.warnings == []
 
     @pytest.mark.asyncio
+    async def test_provenance_and_a_settled_name_are_not_a_conflict(self) -> None:
+        """Two sources always differ on who is speaking.
+
+        vanaheim's own Observatory and ymir's Ravn dashboard both describe
+        Gondul. They necessarily disagree on `sourceId` and `sourceKind`, and
+        on a label the merge already settles by rule — the Kubernetes claim
+        only echoes the node id. Reporting those warned about a node that had
+        nothing wrong with it, and the SIGNAL panel is where that lands.
+        """
+        node_id = "runtime:vanaheim:nats:valkyrie:valkyrie-vanaheim-k8s"
+        dashboard = ObservatoryFragment(
+            nodes=[
+                TopologyNode(
+                    id=node_id,
+                    type_id="valkyrie",
+                    label="Gondul",
+                    parent_id="namespace-vanaheim-nats",
+                    source_id="ravn-dashboard",
+                    source_kind="ravn:valkyrie-dashboard",
+                )
+            ],
+            meta=FragmentMeta(source_id="observatory-ymir", cluster_id="ymir"),
+        )
+        owner = ObservatoryFragment(
+            nodes=[
+                TopologyNode(
+                    id=node_id,
+                    type_id="valkyrie",
+                    label="valkyrie-vanaheim-k8s",
+                    parent_id="namespace-vanaheim-nats",
+                    source_id="k8s-uid",
+                    source_kind="kubernetes",
+                )
+            ],
+            meta=FragmentMeta(source_id="observatory-vanaheim", cluster_id="vanaheim"),
+        )
+        service = _service({"obs-a": dashboard, "obs-b": owner})
+
+        snapshot = await service.get_snapshot([_instance("obs-a"), _instance("obs-b")], headers={})
+
+        (node,) = snapshot.nodes
+        assert node.label == "Gondul"
+        assert snapshot.warnings == []
+
+    @pytest.mark.asyncio
     async def test_a_contested_node_id_is_reported_rather_than_resolved_silently(self) -> None:
         first = ObservatoryFragment(
             nodes=[TopologyNode(id="contested", type_id="host", label="from-a")],
