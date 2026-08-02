@@ -5,21 +5,24 @@ import { useObservatoryStore } from '../application/useObservatoryStore';
 import type { TopologyNode } from '../domain';
 import { TopologyCanvas } from './TopologyCanvas';
 import { LayerFilterBar } from './LayerFilterBar';
+import { ObservatoryReadout } from './ObservatoryReadout';
+import { SignalTicker } from './SignalTicker';
 import { EntityDrawer } from './overlays/EntityDrawer';
 import { AgentCardPanel } from './overlays/AgentCardPanel';
-import { EventLog } from './overlays/EventLog';
 import { ConnectionLegend } from './overlays/ConnectionLegend';
 import { humanizeObservatoryText } from './displayLabels';
+import './ObservatoryShell.css';
 
 /**
- * Observatory page — full-viewport topology canvas.
+ * Observatory page.
  *
- * Data is sourced from the live topology stream via useTopology().
- * The canvas renders Mímir at (0,0), realms around it, clusters inside
- * realms, hosts on the perimeter, and all 5 connection-line kinds.
+ * Laid out after `docs/mockups/observatory/index.html`: a readout across the
+ * top, layer filters beneath it, then stage / inspector with the signal ticker
+ * under the stage alone.
  *
- * Selection state is shared via the Observatory store so that the subnav
- * slot can also open entity drawers (e.g. clicking a realm in the subnav).
+ * The mockup's left rail lives in the shell's subnav slot rather than here —
+ * the platform already gives every plugin one rail, and a second column would
+ * just repeat it.
  */
 export function ObservatoryPage() {
   const topology = useTopology();
@@ -44,18 +47,24 @@ export function ObservatoryPage() {
   }
 
   return (
-    <div
-      data-testid="observatory-page"
-      className="niuu:relative niuu:flex niuu:flex-col niuu:h-full niuu:overflow-hidden"
-    >
-      <LayerFilterBar topology={topology} />
+    <div data-testid="observatory-page" className="obs-shell">
+      <header className="obs-shell__top">
+        <div className="obs-shell__brand">
+          <b>Observatory</b>
+          <span>live topology · niuu.world</span>
+        </div>
+        <ObservatoryReadout topology={topology} />
+      </header>
+
+      <div className="obs-shell__filt">
+        <LayerFilterBar topology={topology} />
+      </div>
 
       {/*
-        Overlays are absolutely positioned, so they anchor to this stage rather
-        than the page — otherwise they cover the filter bar and swallow its
-        clicks.
+        Overlays are absolutely positioned, so they anchor to the stage rather
+        than the page — otherwise they cover the filter bar and swallow clicks.
       */}
-      <div className="niuu:relative niuu:flex-1 niuu:min-h-0">
+      <main className="obs-shell__stage">
         <TopologyCanvas
           topology={topology}
           onNodeClick={handleNodeClick}
@@ -63,9 +72,12 @@ export function ObservatoryPage() {
           hiddenLayers={hiddenLayers}
           className="niuu:absolute niuu:inset-0"
         />
-
         <ConnectionLegend topology={topology} registry={registry ?? null} />
-        <EventLog events={events} />
+      </main>
+
+      <SignalTicker events={events} />
+
+      <aside className="obs-shell__insp" aria-label="Inspector">
         <EntityDrawer
           node={selectedNode}
           topology={topology}
@@ -73,8 +85,9 @@ export function ObservatoryPage() {
           onClose={handleDrawerClose}
           onNodeSelect={handleNodeSelect}
           footer={<AgentCardPanel node={selectedNode} />}
+          docked
         />
-      </div>
+      </aside>
 
       {/* Accessible hidden node list — keyboard / screen-reader alternative to canvas hit-testing */}
       <ul data-testid="topology-node-list" aria-label="Topology nodes" className="niuu:sr-only">

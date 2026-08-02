@@ -39,6 +39,7 @@ const event1: ObservatoryEvent = {
   type: 'TING',
   subject: 'n1',
   body: 'online',
+  level: 'info',
 };
 
 const liveGuildEvent = {
@@ -295,6 +296,7 @@ describe('buildObservatoryEventsSseStream', () => {
         type: 'RUN',
         subject: 'volundr',
         body: 'Valhalla is reachable',
+        level: 'info',
       },
     ]);
   });

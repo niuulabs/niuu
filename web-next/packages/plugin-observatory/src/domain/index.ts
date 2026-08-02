@@ -297,4 +297,10 @@ export interface ObservatoryEvent {
   type: ObservatoryEventType;
   subject: string;
   body: string;
+  /**
+   * Severity as the producer reported it. Discovery adapters emit `warning`
+   * when they cannot reach a service, which is the difference between
+   * "nothing is deployed" and "we cannot see" — worth keeping visible.
+   */
+  level?: 'info' | 'warning';
 }

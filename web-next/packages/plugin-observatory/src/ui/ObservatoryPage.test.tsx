@@ -132,9 +132,17 @@ describe('ObservatoryPage', () => {
     expect(screen.getByRole('dialog', { name: /valask/i })).toBeInTheDocument();
   });
 
-  it('renders the EventLog overlay', () => {
+  it('renders the signal ticker rather than a floating event log', () => {
+    // The mockup docks the feed beneath the stage; a floating overlay covered
+    // the canvas it was describing.
     wrap(<ObservatoryPage />);
-    expect(screen.getByTestId('event-log')).toBeInTheDocument();
+    expect(screen.getByTestId('signal-ticker')).toBeInTheDocument();
+  });
+
+  it('renders the readout and the docked inspector', () => {
+    wrap(<ObservatoryPage />);
+    expect(screen.getByTestId('observatory-readout')).toBeInTheDocument();
+    expect(screen.getByLabelText('Inspector')).toBeInTheDocument();
   });
 
   it('renders the Minimap overlay with topology', () => {

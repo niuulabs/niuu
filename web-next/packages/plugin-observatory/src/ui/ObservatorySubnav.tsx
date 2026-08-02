@@ -4,6 +4,7 @@ import { useObservatoryStore, type ObservatoryFilter } from '../application/useO
 import type { TopologyNode } from '../domain';
 import './ObservatorySubnav.css';
 import { CollapsibleSection } from './CollapsibleSection';
+import { ObservatoryRailSections } from './ObservatoryRailSections';
 
 // ── Filter section config ─────────────────────────────────────────────────────
 
@@ -78,6 +79,12 @@ export function ObservatorySubnav() {
 
   return (
     <div className="obs-subnav" data-testid="observatory-subnav">
+      <ObservatoryRailSections
+        topology={topology}
+        selectedId={selectedId}
+        onSelect={(nodeId) => store.setSelected(nodeId)}
+      />
+
       {/* Section 1: Entity filter */}
       <CollapsibleSection
         title="Filter"
