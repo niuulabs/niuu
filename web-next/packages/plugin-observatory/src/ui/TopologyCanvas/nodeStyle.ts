@@ -11,7 +11,7 @@
 import type { Registry, TopologyNode } from '../../domain';
 import { computeClassOf, type ComputeClass } from '../../domain/computeClass';
 import { isKnownShape, glyphRadius } from './shapes';
-import { NODE_SIZE } from './config';
+import { DEGRADED_COLOUR, NODE_SIZE } from './config';
 
 export type Rgb = readonly [number, number, number];
 
@@ -26,9 +26,18 @@ export const COMPUTE_COLOUR: Readonly<Record<ComputeClass, Rgb>> = {
   outside: [139, 124, 240], // violet
 };
 
-/** Health colours. These override the compute hue — a fault outranks placement. */
+/**
+ * Health colours. These override the compute hue — a fault outranks placement.
+ *
+ * `degraded` is fuchsia rather than amber because amber is already spoken for:
+ * it is the mesh layer's hue and the colour a selected mesh pulses in. A
+ * degraded node drawn in it read as a mesh member, which is how eitri's print
+ * farm — degraded to a machine, every one of them — looked like an agent mesh.
+ * Fuchsia is used by nothing else here, and stays clear of both the violet
+ * that means metered-and-outside and the red that means failed.
+ */
 export const STATUS_COLOUR: Readonly<Record<string, Rgb>> = {
-  degraded: [245, 158, 11], // amber
+  degraded: [...DEGRADED_COLOUR] as Rgb, // fuchsia — see DEGRADED_COLOUR
   failed: [239, 68, 68], // red
   error: [239, 68, 68],
   unknown: [94, 108, 134],

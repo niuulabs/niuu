@@ -207,19 +207,19 @@ export function ShapeSvg({
     case 'printer':
       return (
         <svg {...svgProps}>
-          <rect
-            x="-7"
-            y="-1"
-            width="14"
-            height="7"
-            rx="1.5"
+          {/* Gantry column, build plate, the part hanging under it, and the
+              tapered vat — an MSLA machine prints upside down. */}
+          <line x1="6" y1="7" x2="6" y2="-8" stroke={c} strokeWidth="1.3" opacity={0.7} />
+          <line x1="-5" y1="-3.5" x2="6" y2="-3.5" stroke={c} strokeWidth="1.7" />
+          <path
+            d="M-2 -3.5 L-2 0 L1 0 L1 -3.5"
             fill="none"
             stroke={c}
-            strokeWidth="1.4"
+            strokeWidth="1.1"
+            opacity={0.6}
           />
-          <line x1="-5" y1="3" x2="5" y2="3" stroke={c} strokeWidth="1" opacity={0.5} />
-          <line x1="-4.5" y1="-4.5" x2="4.5" y2="-4.5" stroke={c} strokeWidth="1.6" />
-          <line x1="0" y1="-4.5" x2="0" y2="-8" stroke={c} strokeWidth="1.2" />
+          <path d="M-8 2 L8 2 L6 7 L-6 7 Z" fill="none" stroke={c} strokeWidth="1.5" />
+          <line x1="-6.5" y1="4.4" x2="6.5" y2="4.4" stroke={c} strokeWidth="1" opacity={0.5} />
         </svg>
       );
 

@@ -188,6 +188,18 @@ export const MESH_PULSE = {
   HALO_LINE_WIDTH: 3.4,
 } as const;
 
+/**
+ * The hue that means "this thing is unwell".
+ *
+ * Defined once because it is read both by the status table and by the agent
+ * glyph, and the two drifting apart would give one concept two colours. It is
+ * deliberately not amber: amber is the agent-mesh layer and the colour a
+ * selected mesh pulses in, so a degraded node drawn in it read as a mesh
+ * member. Fuchsia is unused elsewhere on the canvas and stays clear of the
+ * violet that means metered-and-outside and the red that means failed.
+ */
+export const DEGRADED_COLOUR = [217, 70, 239] as const;
+
 /** Label sizes in screen pixels — held constant regardless of camera zoom. */
 export const LABEL_PX = {
   REALM: 13,

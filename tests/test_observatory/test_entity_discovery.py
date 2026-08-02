@@ -1558,6 +1558,26 @@ async def test_fields_are_carried_as_the_gateway_names_them() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_devices_state_is_reported_as_state_not_as_a_rehearsal() -> None:
+    """Whether the thing answering is a rig or a bench is not estate state.
+
+    The graph reports what a machine is doing. Carrying the gateway's simulator
+    bookkeeping through put a caveat on the reading rather than the reading.
+    """
+    record = json.loads(json.dumps(_DEVICE_RECORD))
+    record["isSimulator"] = True
+    record["simulatorScenario"] = "failing_prints"
+
+    result = await _gateway_adapter(record).discover()
+
+    metadata = result.entities[0].metadata
+    assert "isSimulator" not in metadata
+    assert "simulatorScenario" not in metadata
+    # What it is doing still comes through in full.
+    assert metadata["job"]["Filename"] == "dental-arch.ctb"
+
+
+@pytest.mark.asyncio
 async def test_device_status_reflects_reachability_and_faults() -> None:
     async def status_for(**overrides: object) -> str:
         record = json.loads(json.dumps(_DEVICE_RECORD))
@@ -1566,9 +1586,21 @@ async def test_device_status_reflects_reachability_and_faults() -> None:
         return result.entities[0].status
 
     assert await status_for() == "healthy"
-    assert await status_for(lastError={"ErrorCode": 8}) == "degraded"
+    # A past error is not a present fault. `lastError` is never cleared, so
+    # reading it as one reported a farm running normally as entirely degraded.
+    assert await status_for(lastError={"ErrorCode": 8}) == "healthy"
     # A gateway that cannot reach the device outranks whatever it last said.
     assert await status_for(state="disconnected") == "failed"
+
+    async def with_job_error(code: int) -> str:
+        record = json.loads(json.dumps(_DEVICE_RECORD))
+        record["status"]["PrintInfo"]["ErrorNumber"] = code
+        result = await _gateway_adapter(record).discover()
+        return result.entities[0].status
+
+    # The running job's error number is the live signal.
+    assert await with_job_error(8) == "degraded"
+    assert await with_job_error(0) == "healthy"
 
 
 @pytest.mark.asyncio

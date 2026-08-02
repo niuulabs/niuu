@@ -58,10 +58,29 @@ function authOf(entry: AgentDirectoryEntry): string {
   return [names.join(' · '), ...new Set(flows)].join(' · ');
 }
 
-/** Skill ids are snake_case identifiers; the reader gets both forms. */
-function skillName(id: string): string {
-  const words = id.replace(/[_-]+/g, ' ').trim();
+/**
+ * Skills as the reader should see them: the card's own name first.
+ *
+ * Deriving a name from the id only works when ids are snake_case words. Ting's
+ * are UUIDs, so that produced `03dba0d8 4f29 560a a4e1 1fc7e5f9ee23` — the id
+ * again, with spaces. The card carries real names; use them, and fall back to
+ * the derived form only for cards that publish none.
+ */
+function skillLabel(skill: { id: string; name?: string }): string {
+  if (skill.name?.trim()) return skill.name.trim();
+  const words = skill.id.replace(/[_-]+/g, ' ').trim();
   return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** Prefer the described skills; fall back to bare ids when a card has none. */
+function skillsOf(entry: AgentDirectoryEntry): { id: string; name?: string }[] {
+  if (entry.skills?.length) return entry.skills;
+  return entry.skillIds.map((id) => ({ id }));
+}
+
+/** A UUID says nothing to a reader; only show an id that carries meaning. */
+function isOpaqueId(id: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 }
 
 function signatureLabel(entry: AgentDirectoryEntry): { text: string; state: string } {
@@ -169,16 +188,18 @@ export function AgentCardPanel({ node, mode = 'card' }: AgentCardPanelProps) {
       <section className="obs-agent-card__block">
         <h3 className="obs-agent-card__title">
           Skills it advertises
-          <span className="obs-agent-card__count">{entry.skillIds.length}</span>
+          <span className="obs-agent-card__count">{skillsOf(entry).length}</span>
         </h3>
-        {entry.skillIds.length === 0 ? (
+        {skillsOf(entry).length === 0 ? (
           <p className="obs-agent-card__muted">None advertised.</p>
         ) : (
           <ul className="obs-agent-card__skills" data-testid="agent-card-skills">
-            {entry.skillIds.map((skill) => (
-              <li key={skill}>
-                <span className="obs-agent-card__skill-id">{skill}</span>
-                <span className="obs-agent-card__skill-name">{skillName(skill)}</span>
+            {skillsOf(entry).map((skill) => (
+              <li key={skill.id}>
+                <span className="obs-agent-card__skill-name">{skillLabel(skill)}</span>
+                {isOpaqueId(skill.id) ? null : (
+                  <span className="obs-agent-card__skill-id">{skill.id}</span>
+                )}
                 {entry.tags.length > 0 ? (
                   <em className="obs-agent-card__skill-tag">{entry.tags[0]}</em>
                 ) : null}

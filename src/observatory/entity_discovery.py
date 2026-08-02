@@ -1285,10 +1285,17 @@ def _normalized_domains(domains: Collection[str]) -> list[str]:
     return [d.strip().lower().lstrip(".") for d in domains if d and d.strip().strip(".")]
 
 
-#: Nested blobs a gateway reports for its own use. They are hardware detail
-#: rather than anything the graph asks about, and splatting them onto a node
-#: would bury the fields that matter under hundreds of keys.
-_DEVICE_DETAIL_KEYS = frozenset({"attributes", "status", "lastError"})
+#: Keys a gateway reports for its own bookkeeping, dropped before the device
+#: reaches the graph.
+#:
+#: The nested blobs are hardware detail that would bury the fields that matter
+#: under hundreds of keys. The simulator flags are dropped for a different
+#: reason: the graph reports what a machine *is doing*, and whether the thing
+#: answering is a rig or a bench is not a property of the estate. A device
+#: reports its state; that state is shown as state.
+_DEVICE_DETAIL_KEYS = frozenset(
+    {"attributes", "status", "lastError", "isSimulator", "simulatorScenario"}
+)
 
 
 class LaevateinnGatewayDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
@@ -1349,15 +1356,30 @@ class LaevateinnGatewayDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
 def _device_status(record: Mapping[str, Any]) -> str:
     """Reachable, faulted, or working — read off what the device reports.
 
-    Deliberately shallow: whether a job is halfway or nearly done is the
-    device's business, and reading more into it would be this adapter deciding
-    what its readings mean.
+    The fault has to be a *current* one. `lastError` is the last error the
+    device ever raised and it is never cleared, so reading it as a fault meant
+    a machine that hiccuped once was reported broken for the rest of its life —
+    which is how a print farm running normally showed up entirely degraded.
+    The live signal is the running job's error number.
+
+    Deliberately shallow otherwise: whether a job is halfway or nearly done is
+    the device's business, and reading more into it would be this adapter
+    deciding what its readings mean.
     """
     if str(record.get("state") or "").lower() != "connected":
         return "failed"
-    if record.get("lastError"):
+    status = record.get("status")
+    job = status.get("PrintInfo") if isinstance(status, Mapping) else None
+    if isinstance(job, Mapping) and _as_int(job.get("ErrorNumber")):
         return "degraded"
     return "healthy"
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _device_metadata(record: Mapping[str, Any]) -> dict[str, Any]:

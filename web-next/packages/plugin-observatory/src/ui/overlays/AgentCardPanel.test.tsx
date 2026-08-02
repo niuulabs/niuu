@@ -175,6 +175,33 @@ describe('AgentCardPanel', () => {
     expect(screen.getByText('Gpu pressure probe')).toBeInTheDocument();
   });
 
+  it('names a skill the way its card does, not by its id', async () => {
+    // Ting's skill ids are UUIDs. Deriving a label from the id printed
+    // `03dba0d8 4f29 560a a4e1 1fc7e5f9ee23` — the id again, with spaces.
+    renderPanel(
+      directoryReturning([
+        entry({
+          skillIds: ['03dba0d8-4f29-560a-a4e1-1fc7e5f9ee23'],
+          skills: [{ id: '03dba0d8-4f29-560a-a4e1-1fc7e5f9ee23', name: 'Refactor a service' }],
+        }),
+      ]),
+    );
+
+    await waitFor(() => expect(screen.getByTestId('agent-card-skills')).toBeInTheDocument());
+    expect(screen.getByText('Refactor a service')).toBeInTheDocument();
+    // The opaque id is not shown alongside it — it tells the reader nothing.
+    expect(screen.queryByText(/03dba0d8/)).not.toBeInTheDocument();
+  });
+
+  it('still derives a label when a card publishes no skill names', async () => {
+    renderPanel(directoryReturning([entry({ skillIds: ['gpu_pressure_probe'], skills: [] })]));
+
+    await waitFor(() => expect(screen.getByTestId('agent-card-skills')).toBeInTheDocument());
+    expect(screen.getByText('Gpu pressure probe')).toBeInTheDocument();
+    // A meaningful id is still worth showing.
+    expect(screen.getByText('gpu_pressure_probe')).toBeInTheDocument();
+  });
+
   it('keeps the skills section when the card advertises none', async () => {
     // The section says the agent offers nothing, which is a reading. A missing
     // section says only that this panel forgot to mention skills.

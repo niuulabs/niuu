@@ -16,6 +16,8 @@
  * 0.6px hairline at 0.3× and the mark loses its identity.
  */
 
+import { DEGRADED_COLOUR } from './config';
+
 const TAU = Math.PI * 2;
 
 /** The dark interior every lit glyph sits on, so rims read against the field. */
@@ -212,11 +214,13 @@ export function polygonPath(
 function drawAgent(ctx: CanvasRenderingContext2D, o: GlyphOptions): void {
   const { x, y, size, colour, alpha: a, now, zoom } = o;
   const stateColour =
-    o.state === 'waiting' || o.state === 'degraded'
-      ? ([245, 158, 11] as const)
-      : o.state === 'learning'
-        ? ([143, 212, 0] as const)
-        : colour;
+    o.state === 'degraded'
+      ? DEGRADED_COLOUR
+      : o.state === 'waiting'
+        ? ([245, 158, 11] as const)
+        : o.state === 'learning'
+          ? ([143, 212, 0] as const)
+          : colour;
 
   ctx.save();
   ctx.translate(x, y);
@@ -321,46 +325,62 @@ function drawRack(ctx: CanvasRenderingContext2D, o: GlyphOptions): void {
 }
 
 /**
- * A resin printer: the build plate suspended over a vat, under a lifting arm.
+ * A resin printer, drawn the way one stands on a bench.
  *
- * `square-sm` gave the print farm the same plain box as any unrecognised
- * workload, which is the one thing an operator scanning for their machines
- * cannot afford. This reads as equipment at a glance and still resolves at
- * the zoom where a whole cluster is on screen.
+ * Tapered vat below, the build plate hanging off a gantry column to one side,
+ * and the printed part suspended under the plate — an MSLA machine prints
+ * upside down, and that silhouette is the thing that says "printer" rather
+ * than "box". A plain square said nothing a generic workload did not.
  */
 function drawPrinter(ctx: CanvasRenderingContext2D, o: GlyphOptions): void {
   const { x, y, size, colour, alpha: a, zoom } = o;
-  const halfW = size * 1.05;
+  const w = size * 1.15;
 
-  // Vat — the body of the machine.
-  ctx.fillStyle = hexRgba(CORE, a * 0.9);
-  ctx.strokeStyle = rgba(colour, 0.85 * a);
+  // Gantry column, offset to the right the way the tower actually sits.
+  ctx.strokeStyle = rgba(colour, 0.7 * a);
+  ctx.lineWidth = stroke(1.6, zoom);
+  ctx.beginPath();
+  ctx.moveTo(x + w * 0.82, y + size * 0.95);
+  ctx.lineTo(x + w * 0.82, y - size * 1.15);
+  ctx.stroke();
+
+  // Build plate on its arm, reaching left off the column.
+  ctx.strokeStyle = rgba(colour, 0.95 * a);
+  ctx.lineWidth = stroke(2, zoom);
+  ctx.beginPath();
+  ctx.moveTo(x - w * 0.55, y - size * 0.5);
+  ctx.lineTo(x + w * 0.82, y - size * 0.5);
+  ctx.stroke();
+
+  // The part hanging under the plate — an MSLA machine prints upside down.
+  ctx.strokeStyle = rgba(colour, 0.55 * a);
+  ctx.lineWidth = stroke(1.3, zoom);
+  ctx.beginPath();
+  ctx.moveTo(x - w * 0.24, y - size * 0.5);
+  ctx.lineTo(x - w * 0.24, y - size * 0.04);
+  ctx.lineTo(x + w * 0.1, y - size * 0.04);
+  ctx.lineTo(x + w * 0.1, y - size * 0.5);
+  ctx.stroke();
+
+  // Vat: a shallow tapered tub, wider at the rim than the base.
+  ctx.fillStyle = hexRgba(CORE, a * 0.92);
+  ctx.strokeStyle = rgba(colour, 0.9 * a);
   ctx.lineWidth = stroke(1.7, zoom);
-  roundRectPath(ctx, x - halfW, y - size * 0.1, halfW * 2, size * 0.95, 2.5);
+  ctx.beginPath();
+  ctx.moveTo(x - w, y + size * 0.24);
+  ctx.lineTo(x + w, y + size * 0.24);
+  ctx.lineTo(x + w * 0.74, y + size * 0.95);
+  ctx.lineTo(x - w * 0.74, y + size * 0.95);
+  ctx.closePath();
   ctx.fill();
   ctx.stroke();
 
-  // Resin line, so the vat reads as holding something.
-  ctx.strokeStyle = rgba(colour, 0.4 * a);
+  // Resin line across the vat, so it reads as holding something.
+  ctx.strokeStyle = rgba(colour, 0.45 * a);
   ctx.lineWidth = stroke(1.1, zoom);
   ctx.beginPath();
-  ctx.moveTo(x - halfW * 0.72, y + size * 0.28);
-  ctx.lineTo(x + halfW * 0.72, y + size * 0.28);
-  ctx.stroke();
-
-  // Build plate, hanging above the vat on its arm.
-  ctx.strokeStyle = rgba(colour, 0.95 * a);
-  ctx.lineWidth = stroke(1.9, zoom);
-  ctx.beginPath();
-  ctx.moveTo(x - size * 0.62, y - size * 0.62);
-  ctx.lineTo(x + size * 0.62, y - size * 0.62);
-  ctx.stroke();
-
-  // The column the plate travels on.
-  ctx.lineWidth = stroke(1.4, zoom);
-  ctx.beginPath();
-  ctx.moveTo(x, y - size * 0.62);
-  ctx.lineTo(x, y - size * 1.15);
+  ctx.moveTo(x - w * 0.8, y + size * 0.5);
+  ctx.lineTo(x + w * 0.8, y + size * 0.5);
   ctx.stroke();
 }
 

@@ -3,6 +3,14 @@ import type { Topology, TopologyNode } from './index';
 export type AgentKind = 'steward' | 'resident' | 'workflow-session';
 export type AgentDirectorySourceStatus = 'healthy' | 'degraded' | 'failed';
 
+/** One callable skill published by an A2A Agent Card. */
+export interface AgentSkill {
+  id: string;
+  name: string;
+  description?: string;
+  tags?: string[];
+}
+
 export interface AgentInterface {
   url: string;
   protocolBinding: string;
@@ -36,6 +44,12 @@ export interface AgentDirectoryEntry {
   signatureKeyIds: string[];
   signatureKeyFingerprints: string[];
   skillIds: string[];
+  /**
+   * The skills as the card describes them. Ting's skill ids are UUIDs, so a
+   * name derived from the id read as spaced-out hex; the card carries the
+   * real name and this is it.
+   */
+  skills?: AgentSkill[];
   tags: string[];
   defaultInputModes: string[];
   defaultOutputModes: string[];
