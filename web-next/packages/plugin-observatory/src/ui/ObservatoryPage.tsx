@@ -9,7 +9,6 @@ import { ObservatoryReadout } from './ObservatoryReadout';
 import { SignalTicker } from './SignalTicker';
 import { Inspector } from './overlays/Inspector';
 import { AgentCardPanel } from './overlays/AgentCardPanel';
-import { ConnectionLegend } from './overlays/ConnectionLegend';
 import { humanizeObservatoryText } from './displayLabels';
 import './ObservatoryShell.css';
 
@@ -29,7 +28,7 @@ export function ObservatoryPage() {
   const events = useEvents();
   const { data: registry } = useRegistry();
   const [storeState, store] = useObservatoryStore();
-  const { selectedId, hiddenLayers } = storeState;
+  const { selectedId, hiddenLayers, hiddenCompute } = storeState;
 
   const selectedNode: TopologyNode | null =
     selectedId && topology ? (topology.nodes.find((n) => n.id === selectedId) ?? null) : null;
@@ -63,12 +62,13 @@ export function ObservatoryPage() {
       <main className="obs-shell__stage">
         <TopologyCanvas
           topology={topology}
+          registry={registry ?? null}
           onNodeClick={handleNodeClick}
           selectedId={selectedId}
           hiddenLayers={hiddenLayers}
+          hiddenCompute={hiddenCompute}
           className="niuu:absolute niuu:inset-0"
         />
-        <ConnectionLegend topology={topology} registry={registry ?? null} />
       </main>
 
       <SignalTicker events={events} />

@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import type { EdgeLayer } from '../domain/edgeLayer';
+import type { ComputeClass } from '../domain/computeClass';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -10,6 +11,8 @@ interface ObservatoryStoreState {
   filter: ObservatoryFilter;
   /** Layers the operator has switched off. Empty means everything is shown. */
   hiddenLayers: ReadonlySet<EdgeLayer>;
+  /** Compute classes switched off. Their nodes fade rather than disappear. */
+  hiddenCompute: ReadonlySet<ComputeClass>;
 }
 
 interface ObservatoryStore {
@@ -18,6 +21,8 @@ interface ObservatoryStore {
   setFilter(filter: ObservatoryFilter): void;
   toggleLayer(layer: EdgeLayer): void;
   setHiddenLayers(layers: ReadonlySet<EdgeLayer>): void;
+  toggleCompute(compute: ComputeClass): void;
+  setHiddenCompute(compute: ReadonlySet<ComputeClass>): void;
   subscribe(fn: () => void): () => void;
 }
 
@@ -35,6 +40,7 @@ export function getObservatoryStore(): ObservatoryStore {
     selectedId: null,
     filter: 'all',
     hiddenLayers: new Set<EdgeLayer>(),
+    hiddenCompute: new Set<ComputeClass>(),
   };
 
   _store = {
@@ -60,6 +66,17 @@ export function getObservatoryStore(): ObservatoryStore {
     },
     setHiddenLayers(layers: ReadonlySet<EdgeLayer>): void {
       state = { ...state, hiddenLayers: new Set(layers) };
+      subscribers.forEach((fn) => fn());
+    },
+    toggleCompute(compute: ComputeClass): void {
+      const next = new Set(state.hiddenCompute);
+      if (next.has(compute)) next.delete(compute);
+      else next.add(compute);
+      state = { ...state, hiddenCompute: next };
+      subscribers.forEach((fn) => fn());
+    },
+    setHiddenCompute(compute: ReadonlySet<ComputeClass>): void {
+      state = { ...state, hiddenCompute: new Set(compute) };
       subscribers.forEach((fn) => fn());
     },
     subscribe(fn: () => void): () => void {

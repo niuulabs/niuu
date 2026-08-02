@@ -22,7 +22,12 @@ describe('useObservatoryStore', () => {
 
     const { result } = renderHook(() => useObservatoryStore());
 
-    expect(result.current[0]).toEqual({ selectedId: null, filter: 'all', hiddenLayers: new Set() });
+    expect(result.current[0]).toEqual({
+      selectedId: null,
+      filter: 'all',
+      hiddenLayers: new Set(),
+      hiddenCompute: new Set(),
+    });
 
     act(() => {
       store.setSelected('agent-1');
@@ -35,6 +40,7 @@ describe('useObservatoryStore', () => {
       selectedId: 'agent-1',
       filter: 'agents',
       hiddenLayers: new Set(),
+      hiddenCompute: new Set(),
     });
     expect(notify).toHaveBeenCalledTimes(2);
 

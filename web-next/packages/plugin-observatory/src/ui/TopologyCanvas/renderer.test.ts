@@ -6,7 +6,6 @@ import {
   drawNode,
   drawMimir,
   drawMinimap,
-  nodeIconGlyph,
   labelTier,
   labelTierThreshold,
   shouldDrawLabel,
@@ -15,6 +14,7 @@ import {
   drawAgentMesh,
 } from './renderer';
 import { LOD } from './config';
+import { nodeStyle } from './nodeStyle';
 import type { Topology, TopologyNode } from '../../domain';
 import type { NodePosition } from './layoutEngine';
 import { makeCtxMock } from './test-helpers';
@@ -405,8 +405,9 @@ describe('drawNode', () => {
     expect((ctx.strokeRect as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
   });
 
-  it('draws hover ring for hovered non-mimir non-host node', () => {
-    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+  it('halos a hovered node so the selection reads against the field', () => {
+    const plain = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    const hovered = makeCtxMock() as unknown as CanvasRenderingContext2D;
     const node: TopologyNode = {
       id: 'ting-0',
       typeId: 'ting',
@@ -414,13 +415,47 @@ describe('drawNode', () => {
       parentId: null,
       status: 'healthy',
     };
-    drawNode(ctx, node, pos, true, DETAIL_ZOOM);
-    // Hovered nodes use the same rounded swatch vocabulary as the legend.
-    expect((ctx.roundRect as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
-    expect(ctx.stroke).toHaveBeenCalled();
+    drawNode(plain, node, pos, false, DETAIL_ZOOM);
+    drawNode(hovered, node, pos, true, DETAIL_ZOOM);
+    expect((hovered.arc as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(
+      (plain.arc as ReturnType<typeof vi.fn>).mock.calls.length,
+    );
   });
 
-  it('draws generic nodes with the shared legend swatch glyph', () => {
+  /**
+   * The glyph is whatever the registry says it is. These assert the dispatch,
+   * not the geometry — `shapes.test.ts` covers what each mark actually draws.
+   */
+  it('draws the glyph the registry declares for the type', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    const node: TopologyNode = {
+      id: 'bf-0',
+      typeId: 'bifrost',
+      label: 'bifröst',
+      parentId: null,
+      status: 'healthy',
+    };
+    const typeStyles = new Map([['bifrost', { shape: 'pentagon', size: 15 }]]);
+    drawNode(ctx, node, pos, false, DETAIL_ZOOM, { style: nodeStyle(node, typeStyles) });
+    // A pentagon is five straight sides — no arcs, no rounded corners.
+    expect((ctx.lineTo as ReturnType<typeof vi.fn>).mock.calls.length).toBe(4);
+    expect((ctx.arcTo as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+
+  it('falls back to the boxed dot when the registry declares no glyph', () => {
+    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
+    const node: TopologyNode = {
+      id: 'svc-0',
+      typeId: 'service',
+      label: 'observatory',
+      parentId: null,
+      status: 'healthy',
+    };
+    drawNode(ctx, node, pos, false, DETAIL_ZOOM, { style: nodeStyle(node, new Map()) });
+    expect((ctx.arcTo as ReturnType<typeof vi.fn>).mock.calls.length).toBe(4);
+  });
+
+  it('labels a node with its own name, not a rune', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
     const node: TopologyNode = {
       id: 'svc-0',
@@ -430,37 +465,8 @@ describe('drawNode', () => {
       status: 'healthy',
     };
     drawNode(ctx, node, pos, false, DETAIL_ZOOM);
-    expect((ctx.roundRect as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
     const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
-    expect(calls.some(([text]) => text === nodeIconGlyph('service'))).toBe(true);
-  });
-
-  it('draws the canonical sidebar rune for ting', () => {
-    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
-    const node: TopologyNode = {
-      id: 'ting-0',
-      typeId: 'ting',
-      label: 'ting',
-      parentId: null,
-      status: 'healthy',
-    };
-    drawNode(ctx, node, pos, false, DETAIL_ZOOM);
-    const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
-    expect(calls.some(([text]) => text === 'ᚦ')).toBe(true);
-  });
-
-  it('draws the canonical sidebar rune for bifrost', () => {
-    const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
-    const node: TopologyNode = {
-      id: 'bf-0',
-      typeId: 'bifrost',
-      label: 'bifröst',
-      parentId: null,
-      status: 'healthy',
-    };
-    drawNode(ctx, node, pos, false, DETAIL_ZOOM);
-    const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
-    expect(calls.some(([text]) => text === 'ᚨ')).toBe(true);
+    expect(calls.map(([text]) => text)).toContain('observatory');
   });
 });
 
@@ -469,38 +475,40 @@ describe('drawNode', () => {
 describe('drawMimir', () => {
   it('does not throw at full scale', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
-    expect(() => drawMimir(ctx, { x: 0, y: 0 }, 0, 1, 'MÍMIR')).not.toThrow();
+    expect(() => drawMimir(ctx, { x: 0, y: 0 }, 0, { scale: 1, label: 'MÍMIR' })).not.toThrow();
   });
 
   it('does not throw at small scale (sub-Mímir)', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
-    expect(() => drawMimir(ctx, { x: 100, y: 100 }, 0, 0.4, 'Mímir/Code')).not.toThrow();
+    expect(() =>
+      drawMimir(ctx, { x: 100, y: 100 }, 0, { scale: 0.4, label: 'Mímir/Code' }),
+    ).not.toThrow();
   });
 
   it('draws orbiting rune glyphs', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
-    drawMimir(ctx, { x: 0, y: 0 }, 0, 1, 'MÍMIR');
+    drawMimir(ctx, { x: 0, y: 0 }, 0, { scale: 1, label: 'MÍMIR' });
     const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
     expect(calls.length).toBeGreaterThan(0);
   });
 
   it('draws the label text', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
-    drawMimir(ctx, { x: 0, y: 0 }, 0, 1, 'MY-LABEL');
+    drawMimir(ctx, { x: 0, y: 0 }, 0, { scale: 1, label: 'MY-LABEL' });
     const calls = (ctx.fillText as ReturnType<typeof vi.fn>).mock.calls as [string, ...unknown[]][];
     expect(calls.some(([text]) => text === 'MY-LABEL')).toBe(true);
   });
 
   it('draws the dark core circle', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
-    drawMimir(ctx, { x: 0, y: 0 }, 0, 1, 'MÍMIR');
+    drawMimir(ctx, { x: 0, y: 0 }, 0, { scale: 1, label: 'MÍMIR' });
     // At least one arc call for the core + border circles
     expect((ctx.arc as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it('creates radial gradients for the nebula effect', () => {
     const ctx = makeCtxMock() as unknown as CanvasRenderingContext2D;
-    drawMimir(ctx, { x: 0, y: 0 }, 0, 1, 'MÍMIR');
+    drawMimir(ctx, { x: 0, y: 0 }, 0, { scale: 1, label: 'MÍMIR' });
     expect(
       (ctx.createRadialGradient as ReturnType<typeof vi.fn>).mock.calls.length,
     ).toBeGreaterThan(0);

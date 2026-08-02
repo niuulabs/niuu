@@ -14,12 +14,16 @@ import type {
   EdgeKind,
   EdgeRelationType,
 } from '../../domain';
+import type { EdgeLayer } from '../../domain';
+import { edgeLayer } from '../../domain';
 import { humanizeObservatoryText } from '../displayLabels';
 import type { NodePosition } from './layoutEngine';
 import { zoneRadius, HOST_HALF_W, HOST_HALF_H } from './layoutEngine';
 import { NODE_SIZE, MIMIR_RUNES, LAYOUT, LOD, LABEL_PX, MESH_HULL } from './config';
 import type { Point } from './canvasMath';
 import { centroid, convexHull, expandFromCentroid } from './canvasMath';
+import { drawGlyph } from './shapes';
+import { nodeStyle, type NodeStyle } from './nodeStyle';
 
 // ── Level of detail ───────────────────────────────────────────────────────────
 
@@ -450,9 +454,10 @@ export function edgeHash(id: string): number {
   return hash;
 }
 
-export function nodeEdgeRadius(node: TopologyNode | undefined): number {
+export function nodeEdgeRadius(node: TopologyNode | undefined, style?: NodeStyle): number {
   if (!node) return 8;
   if (node.typeId === 'mimir') return LAYOUT.MIMIR_RADIUS;
+  if (style) return style.radius + 3;
   if (node.typeId === 'host') return Math.max(HOST_HALF_W, HOST_HALF_H);
   if (node.typeId === 'run') return 50;
   return nodeSwatchSize(node.typeId) / 2 + 3;
@@ -462,12 +467,15 @@ export function trimToNodeBoundary(
   node: TopologyNode | undefined,
   from: NodePosition,
   toward: NodePosition,
+  style?: NodeStyle,
 ): NodePosition {
   const dx = toward.x - from.x;
   const dy = toward.y - from.y;
   const distance = Math.hypot(dx, dy) || 1;
 
-  if (node?.typeId === 'host') {
+  // Without a resolved glyph, a host or session is only known by its packed
+  // extent, so an edge has to stop at the container wall.
+  if (!style && node?.typeId === 'host') {
     const hostRadius = Math.max(
       (from.containerWidth ?? HOST_HALF_W * 2) / 2,
       (from.containerHeight ?? HOST_HALF_H * 2) / 2,
@@ -476,13 +484,13 @@ export function trimToNodeBoundary(
     return { x: from.x + dx * t, y: from.y + dy * t };
   }
 
-  if (node?.typeId === 'run') {
+  if (!style && node?.typeId === 'run') {
     const runRadius = Math.max((from.containerWidth ?? 100) / 2, (from.containerHeight ?? 100) / 2);
     const t = Math.min(runRadius / distance, 1);
     return { x: from.x + dx * t, y: from.y + dy * t };
   }
 
-  const radius = nodeEdgeRadius(node);
+  const radius = nodeEdgeRadius(node, style);
   return {
     x: from.x + (dx / distance) * radius,
     y: from.y + (dy / distance) * radius,
@@ -694,6 +702,37 @@ export function edgeProfile(
   }
 }
 
+/**
+ * Layer colour — what an edge is *for*, rather than which relation verb it
+ * happens to use.
+ *
+ * The relation taxonomy is too fine to colour by (ten verbs, ten hues, no
+ * legend anyone can hold in their head), so the ramp is applied at the layer
+ * the filter bar exposes. Mesh traffic is the only amber on the canvas because
+ * it is the only traffic between agents; telemetry and plain platform wiring
+ * are deliberately colourless so they recede.
+ */
+export const LAYER_COLOUR: Readonly<Record<EdgeLayer, readonly [number, number, number]>> = {
+  mesh: [245, 158, 11],
+  memory: [56, 189, 248],
+  inference: [143, 212, 0],
+  platform: [94, 108, 134],
+  observability: [94, 108, 134],
+  signals: [56, 189, 248],
+};
+
+/** Model calls leaving the estate are metered, and are drawn as such. */
+export const OUTSIDE_COLOUR: readonly [number, number, number] = [139, 124, 240];
+
+export const LAYER_DASH: Readonly<Record<EdgeLayer, readonly number[]>> = {
+  mesh: [],
+  memory: [1, 4],
+  inference: [],
+  platform: [],
+  observability: [3, 3],
+  signals: [],
+};
+
 export function edgeRelationLane(edge: TopologyEdge): number {
   switch (edge.relationType ?? edge.kind) {
     case 'signals_to':
@@ -799,6 +838,7 @@ function drawEdge(
   nodeById: Map<string, TopologyNode>,
   positions: Map<string, NodePosition>,
   now: number,
+  options: EdgeDrawOptions = {},
 ): void {
   if (edge.sourceId === edge.targetId) return;
   const src = positions.get(edge.sourceId);
@@ -813,9 +853,22 @@ function drawEdge(
   ) {
     return;
   }
-  const start = trimToNodeBoundary(srcNode, src, dst);
-  const end = trimToNodeBoundary(dstNode, dst, src);
+  const styleFor = options.styleFor;
+  const start = trimToNodeBoundary(srcNode, src, dst, srcNode && styleFor?.(srcNode));
+  const end = trimToNodeBoundary(dstNode, dst, src, dstNode && styleFor?.(dstNode));
   const profile = edgeProfile(edge.kind, now, edge.relationType);
+
+  // The layer ramp replaces the profile's hue; the profile keeps the geometry
+  // and dash animation that make each relation legible in motion.
+  const layer = edgeLayer(edge);
+  const outsideCall =
+    layer === 'inference' && dstNode && styleFor?.(dstNode).computeClass === 'outside';
+  const colour = outsideCall ? OUTSIDE_COLOUR : LAYER_COLOUR[layer];
+  const emphasis = options.alphaFor?.(edge) ?? 1;
+  const layerDash = LAYER_DASH[layer];
+  if (layerDash.length > 0) profile.dash = [...layerDash];
+  profile.stroke = rgba(colour, 0.55 * emphasis);
+  profile.glow = rgba(colour, 0.16 * emphasis);
 
   ctx.save();
   ctx.lineCap = 'round';
@@ -958,11 +1011,19 @@ function drawEdge(
   ctx.restore();
 }
 
+export interface EdgeDrawOptions {
+  /** Resolved glyph for a node, so an edge stops at its outline. */
+  styleFor?: (node: TopologyNode) => NodeStyle;
+  /** 0–1 emphasis, used to fade everything the operator is not tracing. */
+  alphaFor?: (edge: TopologyEdge) => number;
+}
+
 export function drawEdges(
   ctx: CanvasRenderingContext2D,
   topology: Topology,
   positions: Map<string, NodePosition>,
   now: number,
+  options: EdgeDrawOptions = {},
 ): void {
   ctx.save();
   const nodeById = new Map(topology.nodes.map((node) => [node.id, node]));
@@ -971,118 +1032,161 @@ export function drawEdges(
     return priority === 0 ? a.id.localeCompare(b.id) : priority;
   });
   for (const edge of edges) {
-    drawEdge(ctx, edge, nodeById, positions, now);
+    drawEdge(ctx, edge, nodeById, positions, now, options);
   }
   ctx.restore();
 }
 
-function drawHost(
+/**
+ * The faint boundary drawn around a container that packs children.
+ *
+ * Hosts and workflow sessions are both a *thing* and a *place* — a rack with
+ * agents on it, a session with agents in it. The glyph says what it is; this
+ * ring says where its contents end. A container with nothing inside it gets no
+ * ring, because an empty boundary reads as a missing child rather than none.
+ */
+function drawContainerRing(
   ctx: CanvasRenderingContext2D,
-  node: TopologyNode,
   pos: NodePosition,
-  hovered: boolean,
+  radius: number,
+  colour: readonly [number, number, number],
+  alpha: number,
+  zoom: number,
 ): void {
-  const hullW = pos.containerWidth ?? HOST_HALF_W * 2;
-  const hullH = pos.containerHeight ?? HOST_HALF_H * 2;
-  const hostRadius = Math.max(hullW, hullH) / 2;
-
   ctx.save();
-  const hullGlow = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, hostRadius * 1.24);
-  hullGlow.addColorStop(0, hovered ? 'rgba(90,138,196,0.14)' : 'rgba(62,94,138,0.1)');
-  hullGlow.addColorStop(1, 'rgba(18,26,40,0)');
-  ctx.fillStyle = hullGlow;
+  const glow = ctx.createRadialGradient(pos.x, pos.y, radius * 0.35, pos.x, pos.y, radius);
+  glow.addColorStop(0, rgba(colour, 0.05 * alpha));
+  glow.addColorStop(1, rgba(colour, 0));
+  ctx.fillStyle = glow;
   ctx.beginPath();
-  ctx.arc(pos.x, pos.y, hostRadius + 10, 0, Math.PI * 2);
+  ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
   ctx.fill();
 
-  const fill = ctx.createRadialGradient(pos.x, pos.y, hostRadius * 0.12, pos.x, pos.y, hostRadius);
-  fill.addColorStop(0, hovered ? 'rgba(24,34,52,0.18)' : 'rgba(20,30,44,0.14)');
-  fill.addColorStop(1, hovered ? 'rgba(14,20,34,0.32)' : 'rgba(10,16,28,0.24)');
-  ctx.fillStyle = fill;
+  ctx.strokeStyle = rgba(colour, 0.22 * alpha);
+  ctx.lineWidth = worldFontSize(0.9, zoom);
+  ctx.setLineDash([worldFontSize(5, zoom), worldFontSize(6, zoom)]);
   ctx.beginPath();
-  ctx.arc(pos.x, pos.y, hostRadius, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.strokeStyle = hovered ? rgba(C.indigo, 0.48) : rgba(C.slate, 0.24);
-  ctx.lineWidth = 1;
-  ctx.setLineDash([5, 6]);
-  ctx.beginPath();
-  ctx.arc(pos.x, pos.y, hostRadius, 0, Math.PI * 2);
+  ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
   ctx.stroke();
-
-  ctx.strokeStyle = hovered ? rgba(C.ice, 0.22) : rgba(C.ice, 0.14);
-  ctx.lineWidth = 0.8;
-  ctx.setLineDash([]);
-  ctx.beginPath();
-  ctx.arc(pos.x, pos.y, Math.max(22, hostRadius - 18), 0, Math.PI * 2);
-  ctx.stroke();
-
-  drawStructureLabel(ctx, node, pos.x, pos.y - hostRadius - 8, {
-    font: `${hovered ? 600 : 500} 10px "JetBrains Mono", monospace`,
-    color: rgba(C.moon, hovered ? 0.92 : 0.74),
-  });
-
   ctx.restore();
 }
 
 // ── Mímir ─────────────────────────────────────────────────────────────────────
 
+export interface MimirDrawOptions {
+  scale?: number;
+  label?: string;
+  /** Compute-class hue, so a Mímir on your own hardware reads green. */
+  colour?: readonly [number, number, number];
+  alpha?: number;
+  zoom?: number;
+  reducedMotion?: boolean;
+}
+
+/**
+ * Mímir — a well, not a node.
+ *
+ * Memory is the one thing on this canvas everything else reaches into, so it
+ * gets the only mark with depth: dark water lit at the rim, ripples rising
+ * outward, and runes turning around it. The runes only appear once the camera
+ * is close enough for them to be glyphs rather than noise.
+ */
 export function drawMimir(
   ctx: CanvasRenderingContext2D,
   pos: NodePosition,
   now: number,
-  scale = 1,
-  label = 'MÍMIR',
+  options: MimirDrawOptions = {},
 ): void {
+  const scale = options.scale ?? 1;
+  const label = options.label ?? 'MÍMIR';
+  const colour = options.colour ?? C.moon;
+  const a = options.alpha ?? 1;
+  const zoom = options.zoom ?? 1;
   const R = LAYOUT.MIMIR_RADIUS * scale;
   const { x, y } = pos;
+  const breathe = options.reducedMotion ? 1 : 1 + 0.04 * Math.sin(now / 1900);
 
-  // Nebula glow
-  const neb = ctx.createRadialGradient(x, y, 0, x, y, R * 2.6);
-  neb.addColorStop(0, rgba([210, 230, 255], 0.62 * Math.min(1, scale + 0.2)));
-  neb.addColorStop(0.35, rgba([180, 210, 245], 0.22 * Math.min(1, scale + 0.2)));
-  neb.addColorStop(1, 'rgba(180,210,245,0)');
+  // The halo that says "everything here reads from this".
+  const neb = ctx.createRadialGradient(x, y, R * 0.9, x, y, R * 3);
+  neb.addColorStop(0, rgba(colour, 0.1 * a));
+  neb.addColorStop(1, rgba(colour, 0));
   ctx.fillStyle = neb;
   ctx.beginPath();
-  ctx.arc(x, y, R * 2.6, 0, Math.PI * 2);
+  ctx.arc(x, y, R * 3, 0, Math.PI * 2);
   ctx.fill();
 
-  // Dark core
-  ctx.fillStyle = 'rgba(9,9,11,0.95)';
+  // Dark water, tinted at the rim by the compute hue.
+  const water = ctx.createRadialGradient(x, y, R * 0.1, x, y, R * breathe);
+  water.addColorStop(0, `rgba(4,8,15,${a})`);
+  water.addColorStop(0.72, `rgba(5,12,22,${a})`);
+  water.addColorStop(1, rgba(colour, 0.22 * a));
+  ctx.fillStyle = water;
   ctx.beginPath();
-  ctx.arc(x, y, R, 0, Math.PI * 2);
+  ctx.arc(x, y, R * breathe, 0, Math.PI * 2);
   ctx.fill();
 
-  // Border
-  ctx.strokeStyle = rgba([200, 225, 255], 0.6 * Math.min(1, scale + 0.2));
-  ctx.lineWidth = 1.3;
-  ctx.beginPath();
-  ctx.arc(x, y, R, 0, Math.PI * 2);
-  ctx.stroke();
-
-  // Orbiting runes
-  const n = Math.round(16 * Math.min(1, scale + 0.3));
-  ctx.font = `${Math.round(13 * scale)}px "JetBrains Mono", monospace`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  for (let i = 0; i < n; i++) {
-    const a = (i / n) * Math.PI * 2 + now / 6000;
-    ctx.fillStyle = rgba([210, 230, 255], 0.62 + 0.25 * Math.sin(now / 700 + i));
-    ctx.fillText(
-      MIMIR_RUNES[i % MIMIR_RUNES.length] ?? 'ᚠ',
-      x + Math.cos(a) * (R + 10 * scale),
-      y + Math.sin(a) * (R + 10 * scale),
-    );
+  for (let i = 1; i <= 3; i += 1) {
+    const phase = options.reducedMotion ? 0.55 : (now / 3800 + i / 3) % 1;
+    ctx.strokeStyle = rgba(colour, 0.26 * (1 - phase) * a);
+    ctx.lineWidth = worldFontSize(1.4, zoom);
+    ctx.beginPath();
+    ctx.arc(x, y, R * (0.16 + phase * 0.8), 0, Math.PI * 2);
+    ctx.stroke();
   }
 
-  // Label
+  ctx.strokeStyle = rgba(colour, 0.72 * a);
+  ctx.lineWidth = worldFontSize(2.2, zoom);
+  ctx.beginPath();
+  ctx.arc(x, y, R * breathe, 0, Math.PI * 2);
+  ctx.stroke();
+
+  if (zoom > 0.55) {
+    const n = MIMIR_RUNES.length;
+    ctx.save();
+    ctx.font = `${worldFontSize(11, zoom)}px "JetBrains Mono", monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const spin = options.reducedMotion ? 0 : now / 24000;
+    for (let i = 0; i < n; i += 1) {
+      const t = (i / n) * Math.PI * 2 + spin;
+      ctx.fillStyle = rgba(colour, (0.4 + 0.3 * Math.sin(now / 850 + i)) * a);
+      ctx.fillText(MIMIR_RUNES[i] ?? 'ᚠ', x + Math.cos(t) * R * 1.75, y + Math.sin(t) * R * 1.75);
+    }
+    ctx.restore();
+  }
+
   ctx.textBaseline = 'alphabetic';
-  ctx.fillStyle = rgba([210, 230, 255], scale >= 0.9 ? 0.9 : 0.7);
-  ctx.font = `600 ${Math.round(11 * Math.max(0.85, scale))}px Inter, sans-serif`;
-  ctx.fillText(label, x, y + R + (scale >= 0.9 ? 42 : 22));
+  ctx.textAlign = 'center';
+  ctx.fillStyle = rgba(colour, 0.9 * a);
+  ctx.font = `${worldFontSize(LABEL_PX.PRIMARY, zoom)}px "JetBrains Mono", monospace`;
+  ctx.fillText(label, x, y + R * 1.75 + worldFontSize(19, zoom));
 }
 
 // ── Generic nodes ─────────────────────────────────────────────────────────────
+
+export interface NodeDrawOptions {
+  /** Animation clock. */
+  now?: number;
+  /** Resolved glyph, size and hue. Defaults to the boxed dot. */
+  style?: NodeStyle;
+  /**
+   * 0–1 emphasis. Anything the operator is not currently tracing drops back
+   * so the few things they are stay legible.
+   */
+  alpha?: number;
+  selected?: boolean;
+  reducedMotion?: boolean;
+}
+
+/** The second line under a node's name, when the adapters supplied one. */
+export function nodeDetailLine(node: TopologyNode): string {
+  const extra = node as unknown as Record<string, unknown>;
+  for (const key of ['sub', 'detail', 'workload', 'model', 'engine', 'hw']) {
+    const value = extra[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return '';
+}
 
 export function drawNode(
   ctx: CanvasRenderingContext2D,
@@ -1090,69 +1194,71 @@ export function drawNode(
   pos: NodePosition,
   hovered: boolean,
   zoom: number,
+  options: NodeDrawOptions = {},
 ): void {
-  if (node.typeId === 'mimir') return; // handled by drawMimir separately
+  if (node.typeId === 'mimir') return; // drawn last, above everything
   if (node.typeId === 'realm' || node.typeId === 'cluster' || node.typeId === 'namespace') return;
 
-  if (node.typeId === 'host') {
-    drawHost(ctx, node, pos, hovered);
-    return;
-  }
-
-  if (node.typeId === 'run') {
-    const { x, y } = pos;
-    const runRadius = Math.max(
-      (pos.containerWidth ?? 100) / 2,
-      (pos.containerHeight ?? 100) / 2,
-      42,
-    );
-
-    ctx.save();
-    const g = ctx.createRadialGradient(x, y, 0, x, y, runRadius);
-    g.addColorStop(0, 'rgba(56,189,248,0.12)');
-    g.addColorStop(0.72, 'rgba(30,41,59,0.05)');
-    g.addColorStop(1, 'rgba(15,23,42,0)');
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(x, y, runRadius, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.strokeStyle = rgba(C.frost, hovered ? 0.6 : 0.34);
-    ctx.lineWidth = hovered ? 1.3 : 1;
-    ctx.setLineDash([4, 5]);
-    ctx.beginPath();
-    ctx.arc(x, y, runRadius, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    if (shouldDrawLabel(node.typeId, zoom, hovered)) {
-      const px = worldFontSize(LABEL_PX.PRIMARY, zoom);
-      ctx.fillStyle = rgba(C.ice, 0.82);
-      ctx.font = `${hovered ? 600 : 500} ${px}px "JetBrains Mono", monospace`;
-      ctx.textAlign = 'center';
-      ctx.fillText(humanizeObservatoryText(node.label), x, y - runRadius - px * 0.6);
-    }
-    ctx.restore();
-    return;
-  }
-
+  const now = options.now ?? 0;
+  const alpha = options.alpha ?? 1;
+  const style = options.style ?? nodeStyle(node, new Map());
+  const emphasised = hovered || options.selected === true;
   const { x, y } = pos;
-  const size = NODE_SIZE[node.typeId] ?? 6;
 
-  drawNodeSwatch(ctx, node.typeId, x, y, size, hovered);
+  // Hosts and sessions hold their children: ring first, then the glyph on top.
+  if (node.typeId === 'host' || node.typeId === 'run') {
+    const packed = Math.max((pos.containerWidth ?? 0) / 2, (pos.containerHeight ?? 0) / 2);
+    if (packed > style.radius * 1.6) {
+      drawContainerRing(ctx, pos, packed, style.colour, alpha, zoom);
+    }
+  }
+
+  if (emphasised) {
+    ctx.fillStyle = rgba(style.colour, 0.13 * alpha);
+    ctx.beginPath();
+    ctx.arc(x, y, style.radius + 18, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  drawGlyph(ctx, {
+    shape: style.shape,
+    x,
+    y,
+    size: style.size,
+    colour: style.colour,
+    alpha,
+    now,
+    zoom,
+    reducedMotion: options.reducedMotion,
+    state: node.status,
+    progress:
+      typeof (node as unknown as Record<string, unknown>).utilisation === 'number'
+        ? ((node as unknown as Record<string, unknown>).utilisation as number)
+        : undefined,
+  });
 
   // Labels resolve with the camera rather than from a fixed type allowlist:
   // the graph is far too dense to label everything at overview zoom.
-  if (!shouldDrawLabel(node.typeId, zoom, hovered)) return;
+  if (!shouldDrawLabel(node.typeId, zoom, emphasised)) return;
 
   const tier = labelTier(node.typeId);
   const px = worldFontSize(tier === 'primary' ? LABEL_PX.PRIMARY : LABEL_PX.SECONDARY, zoom);
-  const placement = workflowLabelPlacement(node, size);
-  ctx.fillStyle = rgba(C.moon, hovered ? 0.95 : 0.75);
-  ctx.font = `${hovered ? 600 : 500} ${px}px Inter, sans-serif`;
-  ctx.textAlign = placement.align;
-  ctx.textBaseline = placement.baseline;
-  ctx.fillText(humanizeObservatoryText(node.label), x + placement.dx, y + placement.dy);
+  const labelY = y + style.radius + worldFontSize(node.typeId === 'host' ? 15 : 19, zoom);
+
+  ctx.save();
+  ctx.fillStyle = rgba(tier === 'primary' ? C.ice : C.slate, (emphasised ? 0.98 : 0.82) * alpha);
+  ctx.font = `${emphasised ? 600 : 500} ${px}px "JetBrains Mono", monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(humanizeObservatoryText(node.label), x, labelY);
+
+  const detail = nodeDetailLine(node);
+  if (detail && shouldDrawNodeDetail(zoom, emphasised)) {
+    ctx.fillStyle = rgba(C.dim, 0.9 * alpha);
+    ctx.font = `${worldFontSize(LABEL_PX.NODE_DETAIL, zoom)}px "JetBrains Mono", monospace`;
+    ctx.fillText(detail, x, labelY + worldFontSize(13, zoom));
+  }
+  ctx.restore();
   ctx.textBaseline = 'alphabetic';
 }
 

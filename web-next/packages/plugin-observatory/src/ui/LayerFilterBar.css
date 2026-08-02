@@ -66,21 +66,79 @@
   color: var(--color-text-faint);
 }
 
-.obs-layer-filter__swatch {
-  width: 0.875rem;
-  height: 0;
-  border-top: 2px solid currentColor;
+/* Groups are separated by a rule rather than a gap: the two ramps mean
+   different things and reading them as one list invites confusing a
+   connection layer with a compute class. */
+.obs-layer-filter__group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
   flex: none;
 }
 
-.obs-layer-filter__swatch--memory {
+.obs-layer-filter__group + .obs-layer-filter__group {
+  padding-left: var(--space-3);
+  margin-left: var(--space-1);
+  border-left: 1px solid var(--color-border-subtle);
+}
+
+.obs-layer-filter__group--actions {
+  margin-left: auto;
+}
+
+/* The rule inside a layer chip is that layer's actual stroke — colour and
+   dash both — so the strip is the legend as well as the control. */
+.obs-layer-filter__rule {
+  width: 0.875rem;
+  height: 0;
+  border-top: 2px solid var(--obs-layer-color, currentColor);
+  flex: none;
+}
+
+.obs-layer-filter__rule--mesh {
+  --obs-layer-color: var(--color-accent-amber);
+}
+
+.obs-layer-filter__rule--memory {
+  --obs-layer-color: var(--color-brand);
   border-top-style: dotted;
 }
 
-.obs-layer-filter__swatch--observability {
+.obs-layer-filter__rule--inference {
+  --obs-layer-color: var(--color-accent-spring);
+}
+
+.obs-layer-filter__rule--signals {
+  --obs-layer-color: var(--color-brand);
+}
+
+.obs-layer-filter__rule--platform,
+.obs-layer-filter__rule--observability {
+  --obs-layer-color: var(--color-text-faint);
+}
+
+.obs-layer-filter__rule--observability {
   border-top-style: dashed;
 }
 
-.obs-layer-filter__swatch--signals {
-  border-top-style: dashed;
+/* Compute chips carry a filled swatch — a class is a region of the canvas,
+   not a line across it. */
+.obs-layer-filter__swatch {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  flex: none;
+  background: var(--obs-compute-color, currentColor);
+}
+
+.obs-layer-filter__swatch--k8s {
+  --obs-compute-color: var(--color-brand);
+}
+
+.obs-layer-filter__swatch--own {
+  --obs-compute-color: var(--color-accent-spring);
+}
+
+.obs-layer-filter__swatch--outside {
+  --obs-compute-color: var(--color-accent-violet);
 }

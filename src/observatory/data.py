@@ -11,8 +11,8 @@ from __future__ import annotations
 from copy import deepcopy
 
 REGISTRY: dict[str, object] = {
-    "version": 10,
-    "updatedAt": "2026-06-14T00:00:00Z",
+    "version": 11,
+    "updatedAt": "2026-08-01T00:00:00Z",
     "types": [
         {
             "id": "realm",
@@ -344,9 +344,11 @@ REGISTRY: dict[str, object] = {
             "label": "LLM Model",
             "rune": "ᛖ",
             "icon": "cpu",
-            "shape": "dot",
+            # A model is not a plain workload: it is the thing that costs money
+            # per token, so it carries its own mark and a utilisation ring.
+            "shape": "hex-flat",
             "color": "slate-300",
-            "size": 7,
+            "size": 13,
             "border": "solid",
             "canContain": [],
             "parentTypes": ["bifrost", "realm"],
@@ -397,9 +399,10 @@ REGISTRY: dict[str, object] = {
             "label": "Presence Beacon",
             "rune": "ᚠ",
             "icon": "wifi",
-            "shape": "dot",
+            # A beacon emits; it pings rather than sitting there.
+            "shape": "beacon",
             "color": "slate-400",
-            "size": 5,
+            "size": 9,
             "border": "dashed",
             "canContain": [],
             "parentTypes": ["realm"],
