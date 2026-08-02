@@ -1,0 +1,194 @@
+/*
+ * Inspector column, after docs/mockups/observatory/index.html.
+ * Geometry (96px definition column, 8.5px eyebrow, 19px title) is copied from
+ * the mockup so the panel reads the same; colour comes from design tokens.
+ */
+.obs-insp {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.obs-insp--empty {
+  padding: 16px;
+  font-size: 11px;
+  color: var(--color-text-tertiary, rgb(255 255 255 / 40%));
+}
+
+.obs-insp__head {
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--color-border-subtle, rgb(255 255 255 / 8%));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-accent, #58a6ff) 9%, transparent),
+    transparent
+  );
+}
+
+.obs-insp__kind {
+  font-size: 8.5px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--color-accent, #58a6ff);
+}
+
+.obs-insp__head h2 {
+  margin: 5px 0 3px;
+  font-size: 19px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--color-text-primary, rgb(255 255 255 / 92%));
+  overflow-wrap: anywhere;
+}
+
+.obs-insp__sub {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: var(--color-text-tertiary, rgb(255 255 255 / 45%));
+}
+
+.obs-insp__chips {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.obs-insp__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 8.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--color-border-subtle, rgb(255 255 255 / 12%));
+  color: var(--color-text-secondary, rgb(255 255 255 / 70%));
+  white-space: nowrap;
+}
+
+.obs-insp__state--healthy {
+  color: var(--color-accent-spring);
+  border-color: color-mix(in srgb, var(--color-accent-spring) 40%, transparent);
+}
+
+.obs-insp__state--failed {
+  color: var(--color-critical);
+  border-color: color-mix(in srgb, var(--color-critical) 40%, transparent);
+}
+
+.obs-insp__state--degraded,
+.obs-insp__state--observing {
+  color: var(--color-accent-amber);
+  border-color: color-mix(in srgb, var(--color-accent-amber) 40%, transparent);
+}
+
+.obs-insp__block {
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--color-border-subtle, rgb(255 255 255 / 8%));
+}
+
+.obs-insp__block h3 {
+  margin: 0 0 8px;
+  font-size: 8.5px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary, rgb(255 255 255 / 45%));
+}
+
+.obs-insp__note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-secondary, rgb(255 255 255 / 70%));
+}
+
+.obs-insp__kv {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 5px 10px;
+  margin: 0;
+}
+
+.obs-insp__kvrow {
+  display: contents;
+}
+
+.obs-insp__kv dt {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--color-text-tertiary, rgb(255 255 255 / 45%));
+}
+
+.obs-insp__kv dd {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--color-text-primary, rgb(255 255 255 / 92%));
+  overflow-wrap: anywhere;
+}
+
+.obs-insp__wl {
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.obs-insp__wl li {
+  list-style: none;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--color-border-subtle, rgb(255 255 255 / 6%));
+  font-size: 10.5px;
+  color: var(--color-text-secondary, rgb(255 255 255 / 70%));
+}
+
+.obs-insp__wl li:last-child {
+  border-bottom: 0;
+}
+
+.obs-insp__wl button {
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.obs-insp__wl button:hover {
+  color: var(--color-accent, #58a6ff);
+}
+
+.obs-insp__wl button:focus-visible {
+  outline: 2px solid var(--color-accent, #58a6ff);
+  outline-offset: 2px;
+}
+
+.obs-insp__ns {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--color-text-tertiary, rgb(255 255 255 / 35%));
+}
+
+.obs-insp__rep {
+  font-size: 9.5px;
+  color: var(--color-text-tertiary, rgb(255 255 255 / 45%));
+}
+
+.obs-insp__empty {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--color-text-tertiary, rgb(255 255 255 / 40%));
+}
+
+.obs-insp__footer {
+  padding: 13px 16px;
+}

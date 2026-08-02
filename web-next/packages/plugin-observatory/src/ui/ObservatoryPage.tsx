@@ -7,7 +7,7 @@ import { TopologyCanvas } from './TopologyCanvas';
 import { LayerFilterBar } from './LayerFilterBar';
 import { ObservatoryReadout } from './ObservatoryReadout';
 import { SignalTicker } from './SignalTicker';
-import { EntityDrawer } from './overlays/EntityDrawer';
+import { Inspector } from './overlays/Inspector';
 import { AgentCardPanel } from './overlays/AgentCardPanel';
 import { ConnectionLegend } from './overlays/ConnectionLegend';
 import { humanizeObservatoryText } from './displayLabels';
@@ -36,10 +36,6 @@ export function ObservatoryPage() {
 
   function handleNodeClick(nodeId: string) {
     store.setSelected(nodeId);
-  }
-
-  function handleDrawerClose() {
-    store.setSelected(null);
   }
 
   function handleNodeSelect(node: TopologyNode) {
@@ -78,14 +74,12 @@ export function ObservatoryPage() {
       <SignalTicker events={events} />
 
       <aside className="obs-shell__insp" aria-label="Inspector">
-        <EntityDrawer
+        <Inspector
           node={selectedNode}
           topology={topology}
           registry={registry ?? null}
-          onClose={handleDrawerClose}
           onNodeSelect={handleNodeSelect}
           footer={<AgentCardPanel node={selectedNode} />}
-          docked
         />
       </aside>
 

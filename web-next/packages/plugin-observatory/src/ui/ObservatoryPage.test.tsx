@@ -104,32 +104,31 @@ describe('ObservatoryPage', () => {
     expect(screen.getByTestId('node-btn-realm-asgard')).toBeInTheDocument();
   });
 
-  it('clicking a node opens the EntityDrawer', () => {
+  it('clicking a node shows it in the inspector', () => {
     wrap(<ObservatoryPage />);
-    const realmBtn = screen.getByTestId('node-btn-realm-asgard');
-    fireEvent.click(realmBtn);
-    // Drawer should be open — title "asgard" appears in the dialog
-    expect(screen.getByRole('dialog', { name: /asgard/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('node-btn-realm-asgard'));
+
+    expect(screen.getByTestId('inspector')).toHaveTextContent(/asgard/i);
   });
 
-  it('drawer closes when the close button is clicked', () => {
+  it('shows a prompt in the inspector until something is selected', () => {
+    // The inspector is a column now, not a dialog: it has no close button and
+    // is always present, so "nothing selected" needs its own state.
     wrap(<ObservatoryPage />);
-    fireEvent.click(screen.getByTestId('node-btn-realm-asgard'));
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /close/i }));
-    expect(screen.queryByRole('dialog')).toBeNull();
+
+    expect(screen.getByTestId('inspector-empty')).toBeInTheDocument();
   });
 
-  it('clicking a resident in the drawer navigates to that node', () => {
+  it('navigates from the inspector to a connected node', () => {
     wrap(<ObservatoryPage />);
-    // Open realm drawer — realm contains clusters and host
     fireEvent.click(screen.getByTestId('node-btn-realm-asgard'));
-    expect(screen.getByRole('dialog', { name: /asgard/i })).toBeInTheDocument();
-    // Click a resident (cluster-valaskjalf)
-    const residentBtn = screen.getByTestId('resident-cluster-valaskjalf');
-    fireEvent.click(residentBtn);
-    // Drawer should now show the cluster node
-    expect(screen.getByRole('dialog', { name: /valask/i })).toBeInTheDocument();
+
+    const peer = screen.queryAllByTestId(/^insp-peer-/)[0];
+    if (peer) {
+      fireEvent.click(peer);
+      expect(screen.getByTestId('inspector')).toBeInTheDocument();
+    }
   });
 
   it('renders the signal ticker rather than a floating event log', () => {

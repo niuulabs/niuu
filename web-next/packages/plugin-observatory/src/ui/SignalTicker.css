@@ -38,7 +38,7 @@
 }
 
 .obs-ticker__row--warn .obs-ticker__msg {
-  color: var(--color-warning, #e0a458);
+  color: var(--color-accent-amber);
 }
 
 .obs-ticker__time,

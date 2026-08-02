@@ -143,6 +143,8 @@ export interface TopologyNode {
   activity?: NodeActivity;
   zone?: string;
   cluster?: string | null;
+  /** Realm name as discovery reported it; empty when the node has no realm. */
+  realm?: string | null;
   hostId?: string | null;
   flockId?: string | null;
   sourceId?: string;

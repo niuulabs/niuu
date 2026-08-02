@@ -36,9 +36,9 @@
 }
 
 .obs-readout__v--spring {
-  color: var(--color-success, #7bd88f);
+  color: var(--color-accent-spring);
 }
 
 .obs-readout__v--amber {
-  color: var(--color-warning, #e0a458);
+  color: var(--color-accent-amber);
 }
