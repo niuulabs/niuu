@@ -8,7 +8,7 @@
 
   display: grid;
   grid-template-columns: minmax(0, 1fr) var(--obs-insp);
-  grid-template-rows: 46px auto minmax(0, 1fr) 118px;
+  grid-template-rows: 54px auto minmax(0, 1fr) 118px;
   grid-template-areas:
     'top top'
     'filt filt'
@@ -19,13 +19,19 @@
   overflow: hidden;
 }
 
+/* Brand and readout share one framed strip, as the mockup draws it — the
+   estate's name and its numbers are one statement, not two rows that happen
+   to sit together. */
 .obs-shell__top {
   grid-area: top;
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 0 14px;
-  border-bottom: 1px solid var(--color-border-subtle, rgb(255 255 255 / 8%));
+  margin: 8px 10px 0;
+  padding: 0 12px;
+  border: 1px solid var(--color-border-subtle, rgb(255 255 255 / 8%));
+  border-radius: 8px;
+  background: var(--color-bg-elevated, rgb(255 255 255 / 2%));
 }
 
 .obs-shell__brand {
@@ -37,7 +43,9 @@
 }
 
 .obs-shell__brand b {
-  font-size: 14px;
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
   color: var(--color-text-primary, rgb(255 255 255 / 92%));
 }
 

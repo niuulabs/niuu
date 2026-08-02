@@ -23,10 +23,15 @@ export const EDGE_LAYERS: readonly EdgeLayer[] = [
   'signals',
 ] as const;
 
+/**
+ * Chip labels. Short on purpose: seven of these plus the compute chips share
+ * one strip, and "Mímir memory" next to "Model calls" reads as two phrases
+ * rather than two switches.
+ */
 export const EDGE_LAYER_LABELS: Readonly<Record<EdgeLayer, string>> = {
   mesh: 'Agent mesh',
-  memory: 'Mímir memory',
-  inference: 'Model calls',
+  memory: 'Mímir',
+  inference: 'Models',
   platform: 'Platform',
   observability: 'Telemetry',
   signals: 'Signals',

@@ -26,6 +26,13 @@ interface ObservatoryStore {
   subscribe(fn: () => void): () => void;
 }
 
+/**
+ * The layers the calm view puts down — and the state the Observatory opens in.
+ * Exported so the filter strip's `calm` button and the initial state cannot
+ * disagree about what calm means.
+ */
+export const CALM_HIDDEN_LAYERS: readonly EdgeLayer[] = ['platform', 'observability'];
+
 // ── Module-level singleton ────────────────────────────────────────────────────
 // All three plugin slots (content, subnav, topbar) share state through this
 // store. The content slot owns the data; subnav/topbar subscribe and read.
@@ -39,7 +46,11 @@ export function getObservatoryStore(): ObservatoryStore {
   let state: ObservatoryStoreState = {
     selectedId: null,
     filter: 'all',
-    hiddenLayers: new Set<EdgeLayer>(),
+    // Opens calm. Platform wiring and telemetry are the two layers that
+    // dominate by edge count and say the least about what the estate is doing,
+    // so showing everything at once makes the first look a hairball. Both are
+    // one click away in the filter strip.
+    hiddenLayers: new Set<EdgeLayer>(CALM_HIDDEN_LAYERS),
     hiddenCompute: new Set<ComputeClass>(),
   };
 

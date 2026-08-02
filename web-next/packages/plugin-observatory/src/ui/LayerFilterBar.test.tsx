@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { LayerFilterBar } from './LayerFilterBar';
-import { __resetObservatoryStore, getObservatoryStore } from '../application/useObservatoryStore';
+import {
+  CALM_HIDDEN_LAYERS,
+  __resetObservatoryStore,
+  getObservatoryStore,
+} from '../application/useObservatoryStore';
 import { EDGE_LAYERS } from '../domain';
 import { COMPUTE_CLASSES } from '../domain/computeClass';
 import type { Topology } from '../domain';
@@ -63,10 +67,11 @@ describe('LayerFilterBar', () => {
     expect(screen.getByTestId('layer-toggle-signals')).toHaveTextContent('0');
   });
 
-  it('starts with every layer shown', () => {
+  it('opens calm — the agent story lit, the plumbing down', () => {
     render(<LayerFilterBar topology={TOPOLOGY} />);
     for (const layer of EDGE_LAYERS) {
-      expect(screen.getByTestId(`layer-toggle-${layer}`)).toHaveAttribute('aria-pressed', 'true');
+      const pressed = CALM_HIDDEN_LAYERS.includes(layer) ? 'false' : 'true';
+      expect(screen.getByTestId(`layer-toggle-${layer}`)).toHaveAttribute('aria-pressed', pressed);
     }
   });
 
@@ -103,8 +108,11 @@ describe('LayerFilterBar', () => {
     expect(all).toBeDisabled();
   });
 
-  it('disables all while nothing is hidden', () => {
+  it('offers all while the calm view has layers down', () => {
     render(<LayerFilterBar topology={TOPOLOGY} />);
+    expect(screen.getByTestId('filter-all')).not.toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('filter-all'));
     expect(screen.getByTestId('filter-all')).toBeDisabled();
   });
 

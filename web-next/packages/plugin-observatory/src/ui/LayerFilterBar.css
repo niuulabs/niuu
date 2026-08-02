@@ -48,12 +48,34 @@
 
 .obs-layer-filter__chip[aria-pressed='true'] {
   color: var(--color-text-primary);
-  border-color: var(--color-brand);
+  border-color: var(--color-border);
 }
 
-/* A disabled layer stays legible but clearly out of play. */
+/* A layer that is off loses its frame as well as its contrast: an outlined
+   chip reads as a thing that is present, and these are the things that are
+   not being drawn. */
 .obs-layer-filter__chip[aria-pressed='false'] {
-  opacity: 0.4;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-faint);
+}
+
+.obs-layer-filter__chip[aria-pressed='false'] .obs-layer-filter__rule,
+.obs-layer-filter__chip[aria-pressed='false'] .obs-layer-filter__swatch {
+  opacity: 0.45;
+}
+
+/* Names the ramp its chips belong to — without them the strip is one long
+   run of switches with no way to tell a connection layer from a compute
+   class. */
+.obs-layer-filter__legend {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs, 0.625rem);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+  user-select: none;
 }
 
 .obs-layer-filter__chip--action:disabled {
@@ -74,12 +96,6 @@
   align-items: center;
   gap: var(--space-2);
   flex: none;
-}
-
-.obs-layer-filter__group + .obs-layer-filter__group {
-  padding-left: var(--space-3);
-  margin-left: var(--space-1);
-  border-left: 1px solid var(--color-border-subtle);
 }
 
 .obs-layer-filter__group--actions {

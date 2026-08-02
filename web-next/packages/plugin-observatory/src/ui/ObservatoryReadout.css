@@ -1,23 +1,22 @@
+/* Sits inside the header's own frame, so the cells are separated by rules
+   rather than carrying a second border around the group. */
 .obs-readout {
   display: flex;
   margin-left: auto;
-  border: 1px solid var(--color-border-subtle, rgb(255 255 255 / 8%));
-  border-radius: 6px;
-  overflow: hidden;
-  background: var(--color-bg-elevated, rgb(255 255 255 / 2%));
 }
 
 .obs-readout__cell {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 1px;
-  padding: 5px 10px;
-  border-right: 1px solid var(--color-border-subtle, rgb(255 255 255 / 6%));
+  padding: 4px 12px;
+  border-left: 1px solid var(--color-border-subtle, rgb(255 255 255 / 6%));
   min-width: 62px;
 }
 
-.obs-readout__cell:last-child {
-  border-right: 0;
+.obs-readout__cell:first-child {
+  border-left: 0;
 }
 
 .obs-readout__k {

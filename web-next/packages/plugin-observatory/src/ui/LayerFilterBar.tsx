@@ -7,7 +7,7 @@ import {
   COMPUTE_CLASS_LABELS,
   countNodesByComputeClass,
 } from '../domain/computeClass';
-import { useObservatoryStore } from '../application/useObservatoryStore';
+import { CALM_HIDDEN_LAYERS, useObservatoryStore } from '../application/useObservatoryStore';
 import './LayerFilterBar.css';
 
 export interface LayerFilterBarProps {
@@ -31,18 +31,17 @@ export function LayerFilterBar({ topology }: LayerFilterBarProps) {
   const computeCounts = useMemo(() => countNodesByComputeClass(topology?.nodes ?? []), [topology]);
   const everythingShown = hiddenLayers.size === 0 && hiddenCompute.size === 0;
 
-  /**
-   * The calm view: the agent story without the plumbing. Platform wiring and
-   * telemetry are the two layers that dominate by edge count and say the least
-   * about what the estate is doing right now.
-   */
+  /** Back to the view the Observatory opens in: the agent story, no plumbing. */
   const calm = () => {
-    store.setHiddenLayers(new Set(['platform', 'observability']));
+    store.setHiddenLayers(new Set(CALM_HIDDEN_LAYERS));
     store.setHiddenCompute(new Set());
   };
 
   return (
     <div className="obs-layer-filter" role="group" aria-label="Topology filters">
+      <span className="obs-layer-filter__legend" aria-hidden="true">
+        Layers
+      </span>
       <div className="obs-layer-filter__group" role="group" aria-label="Connection layers">
         {EDGE_LAYERS.map((layer) => {
           const shown = !hiddenLayers.has(layer);
@@ -63,6 +62,9 @@ export function LayerFilterBar({ topology }: LayerFilterBarProps) {
         })}
       </div>
 
+      <span className="obs-layer-filter__legend" aria-hidden="true">
+        Compute
+      </span>
       <div className="obs-layer-filter__group" role="group" aria-label="Compute">
         {COMPUTE_CLASSES.map((compute) => {
           const shown = !hiddenCompute.has(compute);
