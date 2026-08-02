@@ -179,3 +179,61 @@ def test_workload_identity_adapter_env_names_remain_fallback(
 
     assert adapter.headers() == {"Authorization": "Bearer env-jwt"}
     assert seen[0] == "https://env-host/exchange"
+
+
+def test_workload_identity_adapter_names_the_missing_proof_token(tmp_path) -> None:
+    """A missing projected token must be loud, not an unsigned request.
+
+    Returning no header sent the call out anonymously, so the failure only ever
+    surfaced as a 401 in the *callee's* sidecar log — which is how two clusters
+    ran their whole Observatory discovery unauthenticated without a single
+    warning on the side that was actually broken.
+    """
+    adapter = WorkloadIdentityBearerTokenAuthAdapter(
+        exchange_url="https://volundr.test/api/v1/tokens/workload/exchange",
+        token_file=str(tmp_path / "absent" / "token"),
+    )
+
+    with pytest.raises(RuntimeError, match="projected"):
+        adapter.headers()
+
+
+def test_workload_identity_adapter_rejects_an_empty_proof_token(tmp_path) -> None:
+    proof_file = tmp_path / "token"
+    proof_file.write_text("   ", encoding="utf-8")
+    adapter = WorkloadIdentityBearerTokenAuthAdapter(
+        exchange_url="https://volundr.test/api/v1/tokens/workload/exchange",
+        token_file=str(proof_file),
+    )
+
+    with pytest.raises(RuntimeError, match="empty"):
+        adapter.headers()
+
+
+def test_workload_identity_adapter_requires_an_exchange_url(tmp_path) -> None:
+    proof_file = tmp_path / "token"
+    proof_file.write_text("proof-jwt", encoding="utf-8")
+    adapter = WorkloadIdentityBearerTokenAuthAdapter(token_file=str(proof_file))
+
+    with pytest.raises(RuntimeError, match="exchange URL"):
+        adapter.headers()
+
+
+def test_workload_identity_adapter_stays_quiet_when_nothing_was_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller that never asked for workload identity is not misconfigured.
+
+    Ravn outside Kubernetes constructs this adapter by default; there is no
+    projected token there and none was ever requested, so it must degrade to
+    "no header" rather than fail the call.
+    """
+    monkeypatch.delenv("NIUU_WORKLOAD_IDENTITY_TOKEN_FILE", raising=False)
+    monkeypatch.setattr(
+        "niuu.adapters.outbound.http_auth._DEFAULT_SERVICE_ACCOUNT_TOKEN_FILE",
+        "/nonexistent/serviceaccount/token",
+    )
+
+    adapter = WorkloadIdentityBearerTokenAuthAdapter(base_url="https://volundr.test")
+
+    assert adapter.headers() == {}

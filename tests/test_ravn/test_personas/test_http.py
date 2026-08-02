@@ -365,15 +365,22 @@ class TestAuth:
         assert auth == "Bearer workload-jwt"
 
     @respx.mock
-    def test_no_auth_header_when_env_var_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_configured_but_missing_workload_token_is_not_sent_unauthenticated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Naming a token file that isn't mounted must not degrade to anonymous.
+
+        It used to: the request went out with no Authorization header and came
+        back 401, so the only evidence lived in the callee's logs.
+        """
         monkeypatch.delenv("NIUU_WORKLOAD_IDENTITY_TOKEN_FILE", raising=False)
         route = respx.get(f"{_BASE}/api/v1/personas/coder").mock(
             return_value=httpx.Response(200, json=_DETAIL_CODER)
         )
-        _adapter(workload_token_file="/tmp/definitely-missing-niuu-workload-token").load("coder")
+        adapter = _adapter(workload_token_file="/tmp/definitely-missing-niuu-workload-token")
 
-        assert route.calls.last is not None
-        assert "authorization" not in route.calls.last.request.headers
+        assert adapter.load("coder") is None
+        assert not route.calls
 
     @respx.mock
     def test_external_token_env_name_is_explicit(self, monkeypatch: pytest.MonkeyPatch) -> None:

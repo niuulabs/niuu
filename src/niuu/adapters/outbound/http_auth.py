@@ -11,6 +11,8 @@ import httpx
 
 from niuu.ports.http_auth import HttpAuthPort
 
+_DEFAULT_SERVICE_ACCOUNT_TOKEN_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
 
 class NoAuthHeaderAdapter(HttpAuthPort):
     """Emit no auth headers."""
@@ -94,16 +96,35 @@ class WorkloadIdentityBearerTokenAuthAdapter(HttpAuthPort):
         if self._token and now < self._expires_at:
             return self._token
 
+        # An operator who named a token file asked for workload identity, so a
+        # file that is not there is a misconfiguration and must be loud. These
+        # used to return "", which sent the request out unsigned — the failure
+        # then surfaced only as a 401 in the *callee's* sidecar log, attributed
+        # to nothing, which is how whole clusters ran their discovery
+        # unauthenticated with no warning on the side that was broken.
+        #
+        # Nothing configured at all is different: the caller never asked for
+        # workload identity (a Ravn outside Kubernetes, a local shell), and
+        # staying quiet there is what lets those deployments keep working.
         proof_path = self._proof_path()
         if proof_path is None:
-            return ""
+            if not self._token_file_is_configured():
+                return ""
+            raise RuntimeError(
+                "workload identity proof token not found at "
+                f"{self._configured_token_file()!r} — is the projected "
+                "serviceAccountToken volume mounted?"
+            )
         proof = proof_path.read_text(encoding="utf-8").strip()
         if not proof:
-            return ""
+            raise RuntimeError(f"workload identity proof token at {str(proof_path)!r} is empty")
 
         exchange_url = self._resolved_exchange_url()
         if not exchange_url:
-            return ""
+            raise RuntimeError(
+                "workload identity exchange URL is not configured "
+                f"(set exchange_url, base_url, or ${self._exchange_url_env})"
+            )
 
         body: dict[str, object] = {"token": proof, "audiences": self._audiences}
         if self._scopes:
@@ -125,11 +146,15 @@ class WorkloadIdentityBearerTokenAuthAdapter(HttpAuthPort):
         self._expires_at = now + max(0.0, expires_in - self._refresh_skew_seconds)
         return token
 
-    def _proof_path(self) -> Path | None:
+    def _token_file_is_configured(self) -> bool:
+        return bool(self._token_file or os.environ.get(self._token_file_env, ""))
+
+    def _configured_token_file(self) -> str:
         configured = self._token_file or os.environ.get(self._token_file_env, "")
-        if not configured:
-            configured = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-        path = Path(configured).expanduser()
+        return configured or _DEFAULT_SERVICE_ACCOUNT_TOKEN_FILE
+
+    def _proof_path(self) -> Path | None:
+        path = Path(self._configured_token_file()).expanduser()
         return path if path.exists() else None
 
     def _resolved_exchange_url(self) -> str:
