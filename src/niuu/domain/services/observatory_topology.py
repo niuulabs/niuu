@@ -70,7 +70,12 @@ class ObservatoryTopologyAggregationService:
         pulled = await self._pull(instances, headers=headers)
         for instance, fragment, error in pulled:
             if error is not None or fragment is None:
-                message = str(error) if error else "Observatory returned no fragment"
+                # Several httpx transport errors stringify to "", which turned
+                # every unreachable source into "Observatory Ymir: " — a report
+                # that names the source and then says nothing about why. The
+                # class name is the minimum that distinguishes a DNS failure
+                # from a timeout from a refused connection.
+                message = self._describe(error) if error else "Observatory returned no fragment"
                 sources.append(
                     TopologySourceHealth(
                         source_id=instance.id,
@@ -134,6 +139,10 @@ class ObservatoryTopologyAggregationService:
             warnings=warnings,
             partial=any(source.status in {"failed", "stale"} for source in sources),
         )
+
+    @staticmethod
+    def _describe(error: BaseException) -> str:
+        return str(error) or type(error).__name__
 
     async def _pull(
         self,
