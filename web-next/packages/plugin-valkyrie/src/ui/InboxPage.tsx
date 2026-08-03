@@ -165,8 +165,7 @@ function DecisionPanel({ item }: { item: ReviewItem }) {
   const [reason, setReason] = useState('');
   const [validationError, setValidationError] = useState('');
   const isOperatorQuestion =
-    typeof item.evidence.operator_question === 'object' &&
-    item.evidence.operator_question !== null;
+    typeof item.evidence.operator_question === 'object' && item.evidence.operator_question !== null;
 
   const submit = (decision: 'approved' | 'rejected') => {
     if (decision === 'rejected' && !reason.trim() && !isOperatorQuestion) {
