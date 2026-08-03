@@ -171,9 +171,42 @@ class CronCreateTool(ToolPort):
                 is_error=True,
             )
 
-        job_id = uuid4().hex
         persona = input.get("persona") or None
         priority = int(input.get("priority", 10))
+        normalized_name = name.casefold()
+        normalized_context = " ".join(context.split()).casefold()
+        for existing in self._store.list():
+            same_name = existing.name.strip().casefold() == normalized_name
+            same_context = " ".join(existing.context.split()).casefold() == normalized_context
+            if not (same_name or same_context):
+                continue
+            same_job = (
+                parse_schedule(existing.schedule) == canonical
+                and same_context
+                and existing.delivery == delivery
+                and existing.persona == persona
+                and existing.priority == priority
+                and existing.enabled
+            )
+            if same_job:
+                return ToolResult(
+                    tool_call_id="",
+                    content=(
+                        "An equivalent cron job already exists; no new job was created.\n\n"
+                        f"{_format_job(existing)}\n\nCanonical schedule form: {canonical}"
+                    ),
+                )
+            conflict = "name" if same_name else "context"
+            return ToolResult(
+                tool_call_id="",
+                content=(
+                    f"Cron job conflicts with existing {conflict} on {existing.job_id!r}. "
+                    "Delete that job explicitly before replacing its schedule or delivery."
+                ),
+                is_error=True,
+            )
+
+        job_id = uuid4().hex
 
         record = CronJobRecord(
             job_id=job_id,

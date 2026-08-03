@@ -402,6 +402,7 @@ BUILTIN_TOOLS: dict[str, BuiltinToolDef] = {
             "message_max_chars": s.gateway.platform.a2a_message_max_chars,
             "result_max_chars": s.gateway.platform.a2a_result_max_chars,
             "activity_emitter": ctx.get("a2a_activity_emitter"),
+            "activity_finder": ctx.get("a2a_activity_finder"),
             "default_connection_id": s.gateway.platform.a2a_default_connection_id,
             "push_callback_url": s.gateway.platform.a2a_push_callback_url,
         },

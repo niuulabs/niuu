@@ -114,10 +114,64 @@ async def test_a2a_push_is_persisted_and_immediately_wakes_resident(tmp_path) ->
     assert result["queued"] is True
     assert len(queued) == 1
     assert queued[0].triggered_by == "resident:home"
+    assert queued[0].output_mode == OutputMode.AMBIENT
     assert "workflow-123" in queued[0].initiative_context
     rows = await inbox.list_signals(status=ResidentInboxStatus.NEW.value, limit=10)
     assert len(rows) == 1
     assert rows[0][1].classification == "status_update"
+
+
+@pytest.mark.asyncio
+async def test_a2a_push_resumes_originating_case_and_coalesces_duplicate(tmp_path) -> None:
+    state = LocalResidentState(tmp_path / "state")
+    inbox = LocalResidentInbox(tmp_path / "inbox")
+    queued: list[AgentTask] = []
+
+    async def enqueue(task: AgentTask) -> bool:
+        queued.append(task)
+        return True
+
+    runtime = ResidentRuntime(state=state, inbox=inbox, resident_id="ivaldi")
+    runtime.bind_enqueue(enqueue)
+    await runtime.record_a2a_activity(
+        {
+            "task_id": "workflow-456",
+            "agent_id": "builder-1",
+            "skill_id": "research",
+            "state": "TASK_STATE_SUBMITTED",
+            "operation": "start",
+            "prompt": "Investigate Laevateinn",
+            "case_id": "case-laevateinn",
+            "root_correlation_id": "root-laevateinn",
+            "parent_task_id": "task-origin",
+            "mandate": "Investigate Laevateinn",
+            "turn_index": 2,
+            "case_input_tokens": 30,
+            "case_output_tokens": 12,
+            "case_started_at": "2026-08-03T10:00:00+00:00",
+            "push_registered": True,
+        }
+    )
+    push = {
+        "task": {
+            "id": "workflow-456",
+            "status": {"state": "TASK_STATE_FAILED", "message": "worker failed"},
+        }
+    }
+
+    first = await runtime.submit_a2a_push(push)
+    duplicate = await runtime.submit_a2a_push(push)
+
+    assert first["queued"] is True
+    assert duplicate["duplicate"] is True
+    assert len(queued) == 1
+    assert queued[0].resident_case_id == "case-laevateinn"
+    assert queued[0].root_correlation_id == "root-laevateinn"
+    assert queued[0].resident_turn_index == 3
+    assert queued[0].resident_mandate == "Investigate Laevateinn"
+    found = await runtime.find_a2a_tasks(query="Laevateinn")
+    assert found[0]["task_id"] == "workflow-456"
+    assert found[0]["state"] == "TASK_STATE_FAILED"
 
 
 @pytest.mark.asyncio

@@ -103,6 +103,35 @@ class _Client:
 
 
 @pytest.mark.asyncio
+async def test_a2a_task_find_uses_durable_registry_without_peer_lookup() -> None:
+    queries: list[dict[str, object]] = []
+
+    async def _find(**kwargs) -> list[dict[str, object]]:
+        queries.append(kwargs)
+        return [
+            {
+                "task_id": "task-remembered",
+                "agent_id": "agent-aggregate-1",
+                "state": "TASK_STATE_WORKING",
+            }
+        ]
+
+    directory = _Directory(_agent())
+    tool = A2ATaskTool(
+        agent_directory=directory,
+        client=_Client([]),
+        activity_finder=_find,
+    )
+
+    result = await tool.execute({"operation": "find", "query": "remembered", "active_only": True})
+
+    assert not result.is_error
+    assert json.loads(result.content)["tasks"][0]["task_id"] == "task-remembered"
+    assert queries == [{"query": "remembered", "active_only": True, "limit": 10}]
+    assert directory.lookups == []
+
+
+@pytest.mark.asyncio
 async def test_a2a_task_preserves_task_state_questions_artifacts_and_provenance() -> None:
     activities: list[dict[str, object]] = []
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -11,6 +12,7 @@ from typing import Any
 
 from ravn.domain.models import TokenUsage, TurnResult
 from ravn.domain.resident_continuation import (
+    ResidentA2ATaskRecord,
     ResidentBudgetDecision,
     ResidentBudgetLimits,
     ResidentBudgetSnapshot,
@@ -35,11 +37,18 @@ from ravn.resident_text import (
 _OPERATOR_NEEDED_PATH = "operator-needed/latest.md"
 _OPERATOR_ANSWER_PATH = "operator-answers/latest.md"
 _SCHEDULED_WAKE_PATH = "scheduled-wake/latest.md"
+_A2A_TASKS_PATH = Path("a2a-tasks")
 
 
 def _case_path(case_id: str, leaf: str) -> Path:
     case_slug = _slug(case_id)
     return Path("cases") / case_slug / leaf if case_slug else Path(leaf)
+
+
+def _a2a_task_path(task_id: str) -> Path:
+    slug = (_slug(task_id) or "task")[:80]
+    digest = hashlib.sha256(task_id.encode()).hexdigest()[:16]
+    return _A2A_TASKS_PATH / f"{slug}-{digest}.md"
 
 
 class ResidentRunBudget:
@@ -123,6 +132,15 @@ class NullResidentMemory(ResidentMemoryPort):
     async def write_working_state(self, record: ResidentWorkingStateRecord) -> str:
         return ""
 
+    async def read_a2a_task(self, task_id: str) -> ResidentMemoryEntry | None:
+        return None
+
+    async def write_a2a_task(self, record: ResidentA2ATaskRecord) -> str:
+        return ""
+
+    async def list_a2a_tasks(self) -> list[ResidentMemoryEntry]:
+        return []
+
     async def write_budget(self, snapshot: ResidentBudgetSnapshot) -> str:
         return ""
 
@@ -177,6 +195,19 @@ class LocalResidentMemory(ResidentMemoryPort):
         if not base.exists():
             return []
         files = sorted(base.rglob("*.md"), key=lambda path: path.stat().st_mtime, reverse=True)
+        terms = {
+            term
+            for term in re.findall(r"[a-z0-9][a-z0-9._:-]+", mandate.casefold())
+            if len(term) >= 3
+        }
+        if terms:
+            matching: list[Path] = []
+            for path in files:
+                content = path.read_text(encoding="utf-8").casefold()
+                if any(term in content for term in terms):
+                    matching.append(path)
+            if matching:
+                files = matching
         entries: list[ResidentMemoryEntry] = []
         for path in files[:limit]:
             content = path.read_text(encoding="utf-8")
@@ -215,6 +246,28 @@ class LocalResidentMemory(ResidentMemoryPort):
         return self._write(
             self._working_state_path(record.resident_id), _render_working_state(record)
         )
+
+    async def read_a2a_task(self, task_id: str) -> ResidentMemoryEntry | None:
+        return await self.read(str(self._prefix / _a2a_task_path(task_id)))
+
+    async def write_a2a_task(self, record: ResidentA2ATaskRecord) -> str:
+        return self._write(self._prefix / _a2a_task_path(record.task_id), _render_a2a_task(record))
+
+    async def list_a2a_tasks(self) -> list[ResidentMemoryEntry]:
+        base = self._root / self._prefix / _A2A_TASKS_PATH
+        if not base.exists():
+            return []
+        entries: list[ResidentMemoryEntry] = []
+        for path in sorted(base.glob("*.md")):
+            content = path.read_text(encoding="utf-8")
+            entries.append(
+                ResidentMemoryEntry(
+                    path=str(path.relative_to(self._root)),
+                    summary=_first_heading_or_line(content),
+                    content=content,
+                )
+            )
+        return entries
 
     async def write_budget(self, snapshot: ResidentBudgetSnapshot) -> str:
         rel = self._prefix / _case_path(snapshot.case_id, "budget/latest.md")
@@ -436,6 +489,79 @@ def _render_working_state(record: ResidentWorkingStateRecord) -> str:
         f"{signal_refs}\n\n"
         "## Evidence References\n\n"
         f"{evidence_refs}\n"
+    )
+
+
+def _render_a2a_task(record: ResidentA2ATaskRecord) -> str:
+    payload = {
+        "task_id": record.task_id,
+        "agent_id": record.agent_id,
+        "skill_id": record.skill_id,
+        "state": record.state,
+        "operation": record.operation,
+        "prompt": record.prompt,
+        "status_message": record.status_message,
+        "question": record.question,
+        "case_id": record.case_id,
+        "root_correlation_id": record.root_correlation_id,
+        "parent_task_id": record.parent_task_id,
+        "mandate": record.mandate,
+        "turn_index": record.turn_index,
+        "case_input_tokens": record.case_input_tokens,
+        "case_output_tokens": record.case_output_tokens,
+        "case_started_at": record.case_started_at,
+        "push_registered": record.push_registered,
+        "update_fingerprint": record.update_fingerprint,
+        "updated_at": record.updated_at.isoformat(),
+    }
+    return (
+        "# Resident A2A Task\n\n"
+        "```json\n"
+        f"{json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False)}\n"
+        "```\n"
+    )
+
+
+def _parse_a2a_task(content: str) -> ResidentA2ATaskRecord | None:
+    match = re.search(r"```json\s*(\{.*?\})\s*```", content, flags=re.DOTALL)
+    if match is None:
+        return None
+    try:
+        payload = json.loads(match.group(1))
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or not str(payload.get("task_id") or "").strip():
+        return None
+    raw_updated_at = str(payload.get("updated_at") or "").strip()
+    try:
+        updated_at = datetime.fromisoformat(raw_updated_at)
+    except ValueError:
+        updated_at = datetime.now(UTC)
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=UTC)
+    push_registered = payload.get("push_registered")
+    if not isinstance(push_registered, bool):
+        push_registered = None
+    return ResidentA2ATaskRecord(
+        task_id=str(payload["task_id"]),
+        agent_id=str(payload.get("agent_id") or ""),
+        skill_id=str(payload.get("skill_id") or ""),
+        state=str(payload.get("state") or "TASK_STATE_UNSPECIFIED"),
+        operation=str(payload.get("operation") or ""),
+        prompt=str(payload.get("prompt") or ""),
+        status_message=str(payload.get("status_message") or ""),
+        question=str(payload.get("question") or ""),
+        case_id=str(payload.get("case_id") or ""),
+        root_correlation_id=str(payload.get("root_correlation_id") or ""),
+        parent_task_id=str(payload.get("parent_task_id") or ""),
+        mandate=str(payload.get("mandate") or ""),
+        turn_index=int(payload.get("turn_index") or 0),
+        case_input_tokens=int(payload.get("case_input_tokens") or 0),
+        case_output_tokens=int(payload.get("case_output_tokens") or 0),
+        case_started_at=str(payload.get("case_started_at") or ""),
+        push_registered=push_registered,
+        update_fingerprint=str(payload.get("update_fingerprint") or ""),
+        updated_at=updated_at,
     )
 
 

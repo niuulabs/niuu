@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from ravn.domain.resident_continuation import (
+    ResidentA2ATaskRecord,
     ResidentBudgetSnapshot,
     ResidentMemoryEntry,
     ResidentPolicyDecisionRecord,
@@ -39,6 +40,12 @@ class ResidentStatePort(Protocol):
     async def write_turn(self, record: ResidentTurnRecord) -> str: ...
 
     async def write_working_state(self, record: ResidentWorkingStateRecord) -> str: ...
+
+    async def read_a2a_task(self, task_id: str) -> ResidentMemoryEntry | None: ...
+
+    async def write_a2a_task(self, record: ResidentA2ATaskRecord) -> str: ...
+
+    async def list_a2a_tasks(self) -> list[ResidentMemoryEntry]: ...
 
     async def write_budget(self, snapshot: ResidentBudgetSnapshot) -> str: ...
 

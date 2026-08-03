@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 
 from ravn.adapters.resident_pages import collect_pages
 from ravn.domain.resident_continuation import (
+    ResidentA2ATaskRecord,
     ResidentBudgetSnapshot,
     ResidentMemoryEntry,
     ResidentPolicyDecisionRecord,
@@ -18,16 +19,19 @@ from ravn.domain.resident_continuation import (
 from ravn.domain.resident_state import ResidentStatePort
 from ravn.ports.mimir import MimirPort
 from ravn.resident_continuation import (
+    _A2A_TASKS_PATH,
     _OPERATOR_ANSWER_PATH,
     _OPERATOR_NEEDED_PATH,
     _SCHEDULED_WAKE_PATH,
     LocalResidentMemory,
+    _a2a_task_path,
     _case_path,
     _compact_line,
     _first_heading_or_line,
     _operator_answer_is_consumed,
     _operator_marker_is_pending,
     _parse_policy_observation,
+    _render_a2a_task,
     _render_answered_operator_needed,
     _render_budget_snapshot,
     _render_consumed_operator_answer,
@@ -99,6 +103,35 @@ class MimirResidentState(ResidentStatePort):
         path = self._working_state_path(record.resident_id)
         await self._mimir.upsert_page(path, _render_working_state(record))
         return path
+
+    async def read_a2a_task(self, task_id: str) -> ResidentMemoryEntry | None:
+        return await self.read(str(Path(self._prefix) / _a2a_task_path(task_id)))
+
+    async def write_a2a_task(self, record: ResidentA2ATaskRecord) -> str:
+        path = str(Path(self._prefix) / _a2a_task_path(record.task_id))
+        await self._mimir.upsert_page(path, _render_a2a_task(record))
+        return path
+
+    async def list_a2a_tasks(self) -> list[ResidentMemoryEntry]:
+        prefix = str(Path(self._prefix) / _A2A_TASKS_PATH)
+        pages = await self._mimir.list_pages(prefix=prefix)
+        entries: list[ResidentMemoryEntry] = []
+        for page in pages:
+            path = str(getattr(page, "path", "") or "")
+            if not path.endswith(".md"):
+                continue
+            try:
+                content = await self._mimir.read_page(path)
+            except FileNotFoundError:
+                continue
+            entries.append(
+                ResidentMemoryEntry(
+                    path=path,
+                    summary=_first_heading_or_line(content),
+                    content=content,
+                )
+            )
+        return entries
 
     async def write_budget(self, snapshot: ResidentBudgetSnapshot) -> str:
         path = str(Path(self._prefix) / _case_path(snapshot.case_id, "budget/latest.md"))

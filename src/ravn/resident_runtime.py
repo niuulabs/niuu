@@ -16,6 +16,7 @@ from niuu.observability import get_observability
 from ravn.domain.models import AgentTask, OutputMode, TokenUsage, TurnResult
 from ravn.domain.resident_continuation import (
     ContinuationDecisionKind,
+    ResidentA2ATaskRecord,
     ResidentBudgetSnapshot,
     ResidentMemoryEntry,
     ResidentScheduledWakeRecord,
@@ -27,7 +28,7 @@ from ravn.domain.resident_continuation import (
 )
 from ravn.domain.resident_state import ResidentStatePort
 from ravn.ports.trigger import TriggerPort
-from ravn.resident_continuation import _scheduled_wake_at
+from ravn.resident_continuation import _parse_a2a_task, _scheduled_wake_at
 from ravn.resident_inbox import (
     ResidentInboxBackend,
     ResidentInboxClassification,
@@ -37,6 +38,15 @@ from ravn.resident_inbox import (
 from ravn.resident_text import compact_line
 
 EnqueueResidentTask = Callable[[AgentTask], Awaitable[bool | None]]
+
+_A2A_TERMINAL_STATES = frozenset(
+    {
+        "TASK_STATE_CANCELED",
+        "TASK_STATE_COMPLETED",
+        "TASK_STATE_FAILED",
+        "TASK_STATE_REJECTED",
+    }
+)
 
 _WORKING_STATE_PROTOCOL = """## Resident working-state protocol
 
@@ -178,11 +188,23 @@ class ResidentRuntime:
                 },
                 content=prior.content,
             )
+        a2a_tasks = await self.find_a2a_tasks(
+            case_id=task.resident_case_id,
+            active_only=True,
+            limit=10,
+        )
+        a2a_block = (
+            json.dumps(a2a_tasks, indent=2, sort_keys=True)
+            if a2a_tasks
+            else "(No active durable A2A task handles.)"
+        )
         return (
             f"{task.initiative_context.rstrip()}\n\n"
             "## Durable resident working state\n\n"
             f"Reference: `{state_ref}`\n\n"
             f"{state_block}\n\n"
+            "## Durable A2A task handles\n\n"
+            f"{a2a_block}\n\n"
             f"{_WORKING_STATE_PROTOCOL}\n"
         )
 
@@ -216,6 +238,103 @@ class ResidentRuntime:
         )
         return ref
 
+    async def record_a2a_activity(self, activity: Mapping[str, object]) -> str:
+        """Persist the continuation handle observed by the A2A tool."""
+        task_id = str(activity.get("task_id") or "").strip()
+        write = getattr(self._state, "write_a2a_task", None)
+        if not task_id or write is None:
+            return ""
+        existing = await self._read_a2a_record(task_id)
+
+        def value(key: str, fallback: str = "") -> str:
+            current = str(activity.get(key) or "").strip()
+            prior = str(getattr(existing, key, "") or "").strip() if existing else ""
+            return current or prior or fallback
+
+        push_registered = activity.get("push_registered")
+        if not isinstance(push_registered, bool):
+            push_registered = existing.push_registered if existing else None
+        record = ResidentA2ATaskRecord(
+            task_id=task_id,
+            agent_id=value("agent_id"),
+            skill_id=value("skill_id"),
+            state=value("state", "TASK_STATE_UNSPECIFIED"),
+            operation=value("operation"),
+            prompt=value("prompt"),
+            status_message=value("status_message"),
+            question=value("question"),
+            case_id=value("case_id"),
+            root_correlation_id=value("root_correlation_id"),
+            parent_task_id=value("parent_task_id"),
+            mandate=value("mandate"),
+            turn_index=int(activity.get("turn_index") or (existing.turn_index if existing else 0)),
+            case_input_tokens=int(
+                activity.get("case_input_tokens") or (existing.case_input_tokens if existing else 0)
+            ),
+            case_output_tokens=int(
+                activity.get("case_output_tokens")
+                or (existing.case_output_tokens if existing else 0)
+            ),
+            case_started_at=value("case_started_at"),
+            push_registered=push_registered,
+            update_fingerprint=value("update_fingerprint"),
+        )
+        return await write(record)
+
+    async def find_a2a_tasks(
+        self,
+        *,
+        query: str = "",
+        case_id: str = "",
+        active_only: bool = False,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Find durable A2A handles, with bounded legacy-memory recovery."""
+        list_tasks = getattr(self._state, "list_a2a_tasks", None)
+        entries = await list_tasks() if list_tasks is not None else []
+        records = [record for entry in entries if (record := _parse_a2a_task(entry.content))]
+        needle = query.strip().casefold()
+
+        def matches(record: ResidentA2ATaskRecord) -> bool:
+            if active_only and record.state in _A2A_TERMINAL_STATES:
+                return False
+            if case_id and record.case_id not in {"", case_id}:
+                return False
+            if not needle:
+                return True
+            haystack = " ".join(
+                (
+                    record.task_id,
+                    record.agent_id,
+                    record.skill_id,
+                    record.prompt,
+                    record.status_message,
+                    record.case_id,
+                )
+            ).casefold()
+            return needle in haystack
+
+        found = [record for record in records if matches(record)]
+        found.sort(key=lambda record: record.updated_at, reverse=True)
+        rendered = [_a2a_record_payload(record) for record in found[: max(1, limit)]]
+        if rendered or not needle:
+            return rendered
+
+        # Older turns predate the registry. Existing state search remains the
+        # recovery path; only identifier envelopes are projected back out.
+        for entry in await self._state.recall(query, limit=max(5, limit)):
+            rendered.extend(_legacy_a2a_handles(entry, query=query))
+            if len(rendered) >= limit:
+                break
+        return rendered[: max(1, limit)]
+
+    async def _read_a2a_record(self, task_id: str) -> ResidentA2ATaskRecord | None:
+        read = getattr(self._state, "read_a2a_task", None)
+        if read is None:
+            return None
+        entry = await read(task_id)
+        return _parse_a2a_task(entry.content) if entry is not None else None
+
     async def submit_a2a_push(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Persist an A2A task update and immediately wake the resident when idle."""
         if self._inbox is None:
@@ -238,7 +357,51 @@ class ResidentRuntime:
         state = str(status.get("state") or event.get("state") or "TASK_STATE_UNSPECIFIED")
         now = datetime.now(UTC)
         normalized = json.loads(json.dumps(payload, sort_keys=True, default=str))
-        digest = hashlib.sha256(json.dumps(normalized, sort_keys=True).encode()).hexdigest()[:16]
+        existing = await self._read_a2a_record(task_id)
+        semantic_update = {
+            "task_id": task_id,
+            "state": state,
+            "status_message": status.get("message") or status.get("update") or "",
+            "artifact": payload.get("artifactUpdate") or event.get("artifact") or {},
+        }
+        digest = hashlib.sha256(
+            json.dumps(semantic_update, sort_keys=True, default=str).encode()
+        ).hexdigest()[:16]
+        if existing is not None and existing.update_fingerprint == digest:
+            return {
+                "task_id": task_id,
+                "state": state,
+                "inbox_ref": "",
+                "queued": False,
+                "duplicate": True,
+            }
+        activity: dict[str, object] = {
+            "task_id": task_id,
+            "state": state,
+            "operation": "push",
+            "status_message": str(semantic_update["status_message"]),
+            "update_fingerprint": digest,
+        }
+        if existing is not None:
+            activity.update(_a2a_record_payload(existing))
+            activity.update(
+                {
+                    "state": state,
+                    "operation": "push",
+                    "status_message": str(semantic_update["status_message"]),
+                    "update_fingerprint": digest,
+                }
+            )
+            normalized["_resident"] = {
+                "case_id": existing.case_id,
+                "root_correlation_id": existing.root_correlation_id,
+                "turn_index": existing.turn_index,
+                "mandate": existing.mandate,
+                "case_input_tokens": existing.case_input_tokens,
+                "case_output_tokens": existing.case_output_tokens,
+                "case_started_at": existing.case_started_at,
+            }
+        await self.record_a2a_activity(activity)
         signal = ResidentInboxSignal(
             id=f"a2a-{task_id}-{digest}",
             source="a2a:push",
@@ -254,7 +417,7 @@ class ResidentRuntime:
         task = await self.next_home_task(
             limit=1,
             persona=None,
-            output_mode=OutputMode.SURFACE,
+            output_mode=OutputMode.AMBIENT,
         )
         queued = bool(task and await self._enqueue_task(task))
         if task is not None and not queued:
@@ -264,6 +427,7 @@ class ResidentRuntime:
             "state": state,
             "inbox_ref": inbox_ref,
             "queued": queued,
+            "duplicate": False,
         }
 
     async def handle_completed_turn(
@@ -863,9 +1027,12 @@ class ResidentRuntime:
         rows = [(ref, signal) for ref, signal in rows if ref not in self._inflight_inbox_refs()]
         if not rows:
             return None
+        origin = _a2a_signal_origin(rows[0][1])
+        if origin.get("case_id"):
+            rows = rows[:1]
         refs = [ref for ref, _signal in rows]
         digest = hashlib.sha256("\n".join(sorted(refs)).encode()).hexdigest()[:16]
-        case_id = f"resident-home-{digest}"
+        case_id = str(origin.get("case_id") or f"resident-home-{digest}")
         if case_id in self._inflight_cases:
             return None
         now = datetime.now(UTC)
@@ -923,17 +1090,19 @@ class ResidentRuntime:
             triggered_by="resident:home",
             output_mode=output_mode,
             persona=persona,
-            root_correlation_id=case_id,
+            root_correlation_id=str(origin.get("root_correlation_id") or case_id),
             resident_case_id=case_id,
-            resident_turn_index=1,
-            resident_started_at=now.isoformat(),
+            resident_turn_index=int(origin.get("turn_index") or 0) + 1,
+            resident_started_at=str(origin.get("case_started_at") or now.isoformat()),
             resident_inbox_refs=refs,
             trace_context=next(
                 (dict(signal.trace_context) for _ref, signal in rows if signal.trace_context),
                 {},
             ),
         )
-        task.resident_mandate = task.initiative_context
+        task.resident_mandate = str(origin.get("mandate") or task.initiative_context)
+        task.resident_input_tokens = int(origin.get("case_input_tokens") or 0)
+        task.resident_output_tokens = int(origin.get("case_output_tokens") or 0)
         self._inflight_cases.add(case_id)
         self._inflight_refs.update(refs)
         return task
@@ -1271,6 +1440,62 @@ def _tool_result_summaries(result: TurnResult, *, max_chars: int) -> tuple[str, 
         )
         for item in result.tool_results
     )
+
+
+def _a2a_record_payload(record: ResidentA2ATaskRecord) -> dict[str, Any]:
+    return {
+        "task_id": record.task_id,
+        "agent_id": record.agent_id,
+        "skill_id": record.skill_id,
+        "state": record.state,
+        "operation": record.operation,
+        "prompt": record.prompt,
+        "status_message": record.status_message,
+        "question": record.question,
+        "case_id": record.case_id,
+        "root_correlation_id": record.root_correlation_id,
+        "parent_task_id": record.parent_task_id,
+        "mandate": record.mandate,
+        "turn_index": record.turn_index,
+        "case_input_tokens": record.case_input_tokens,
+        "case_output_tokens": record.case_output_tokens,
+        "case_started_at": record.case_started_at,
+        "push_registered": record.push_registered,
+        "update_fingerprint": record.update_fingerprint,
+        "updated_at": record.updated_at.isoformat(),
+    }
+
+
+def _legacy_a2a_handles(entry: ResidentMemoryEntry, *, query: str) -> list[dict[str, Any]]:
+    terms = {
+        term for term in re.findall(r"[a-z0-9][a-z0-9._:-]+", query.casefold()) if len(term) >= 4
+    }
+    content = entry.content.casefold()
+    if terms and not any(term in content for term in terms):
+        return []
+    task_ids = re.findall(
+        r'(?:A2A task\s+|"task_id"\s*:\s*")([A-Za-z0-9][A-Za-z0-9._:-]{7,})',
+        entry.content,
+    )
+    agent_match = re.search(r'"agent_id"\s*:\s*"([^"]+)"', entry.content)
+    state_match = re.search(r"TASK_STATE_[A-Z_]+", entry.content)
+    return [
+        {
+            "task_id": task_id,
+            "agent_id": agent_match.group(1) if agent_match else "",
+            "state": state_match.group(0) if state_match else "TASK_STATE_UNSPECIFIED",
+            "source_ref": entry.path,
+            "recovered_from_legacy_state": True,
+        }
+        for task_id in dict.fromkeys(task_ids)
+    ]
+
+
+def _a2a_signal_origin(signal: ResidentInboxSignal) -> dict[str, Any]:
+    if signal.source != "a2a:push" or not isinstance(signal.payload, dict):
+        return {}
+    origin = signal.payload.get("_resident")
+    return dict(origin) if isinstance(origin, dict) else {}
 
 
 def _string_refs(value: Any) -> tuple[str, ...]:

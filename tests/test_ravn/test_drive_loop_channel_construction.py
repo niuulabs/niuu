@@ -25,13 +25,17 @@ from ravn.domain.models import AgentTask, OutputMode
 from ravn.drive_loop import DriveLoop
 
 
-def _make_task(task_id: str = "t1") -> AgentTask:
+def _make_task(
+    task_id: str = "t1",
+    *,
+    output_mode: OutputMode = OutputMode.SILENT,
+) -> AgentTask:
     return AgentTask(
         task_id=task_id,
         title="test",
         initiative_context="do it",
         triggered_by="test",
-        output_mode=OutputMode.SILENT,
+        output_mode=output_mode,
     )
 
 
@@ -81,8 +85,8 @@ class TestDriveLoopChannelConstruction:
     """Verify channel composition logic in _run_task."""
 
     @pytest.mark.asyncio
-    async def test_mesh_enabled_no_cascade_uses_mesh_channel(self):
-        """Mesh enabled, no direct Skuld stream → channel wraps MeshActivityChannel."""
+    async def test_silent_mode_does_not_use_mesh_channel(self):
+        """Silent work remains local even when a mesh is available."""
         dl, captured = _make_drive_loop_with_mesh(cascade_enabled=False)
         mock_mesh = AsyncMock()
         dl._mesh = mock_mesh
@@ -90,6 +94,16 @@ class TestDriveLoopChannelConstruction:
         await dl._run_task(_make_task())
 
         assert len(captured) == 1
+        assert isinstance(captured[0], SilentChannel)
+
+    @pytest.mark.asyncio
+    async def test_ambient_mode_uses_mesh_channel(self):
+        """Ambient work is routed through the mesh attention path."""
+        dl, captured = _make_drive_loop_with_mesh(cascade_enabled=False)
+        dl._mesh = AsyncMock()
+
+        await dl._run_task(_make_task(output_mode=OutputMode.AMBIENT))
+
         channel = captured[0]
         assert isinstance(channel, TaskContextChannel)
         assert isinstance(channel._channel, MeshActivityChannel)
@@ -100,7 +114,7 @@ class TestDriveLoopChannelConstruction:
         dl, captured = _make_drive_loop_with_mesh(cascade_enabled=False, mesh_enabled=False)
         dl._mesh = None
 
-        await dl._run_task(_make_task())
+        await dl._run_task(_make_task(output_mode=OutputMode.AMBIENT))
 
         assert isinstance(captured[0], SilentChannel)
 
@@ -121,7 +135,7 @@ class TestDriveLoopChannelConstruction:
         mock_mesh = AsyncMock()
         dl._mesh = mock_mesh
 
-        await dl._run_task(_make_task())
+        await dl._run_task(_make_task(output_mode=OutputMode.AMBIENT))
 
         assert isinstance(captured[0], CompositeChannel)
         channel_types = [type(ch) for ch in captured[0]._channels]
@@ -436,7 +450,7 @@ Determine whether the observations require action.
         dl._skuld_channel = mock_skuld
         dl._mesh = AsyncMock()
 
-        await dl._run_task(_make_task())
+        await dl._run_task(_make_task(output_mode=OutputMode.SURFACE))
 
         assert isinstance(captured[0], TaskContextChannel)
         assert captured[0]._channel is mock_skuld
@@ -450,7 +464,7 @@ Determine whether the observations require action.
         dl._skuld_channel = mock_skuld
         dl._mesh = AsyncMock()
 
-        await dl._run_task(_make_task())
+        await dl._run_task(_make_task(output_mode=OutputMode.SURFACE))
 
         assert isinstance(captured[0], CompositeChannel)
         channel_types = [type(ch) for ch in captured[0]._channels]
@@ -491,7 +505,7 @@ Determine whether the observations require action.
         dl._skuld_channel = mock_skuld
         dl._mesh = AsyncMock()
 
-        await dl._run_task(_make_task("failing-task"))
+        await dl._run_task(_make_task("failing-task", output_mode=OutputMode.SURFACE))
 
         emitted = [call.args[0] for call in mock_skuld.emit.await_args_list]
         error = next(event for event in emitted if event.type == "error")

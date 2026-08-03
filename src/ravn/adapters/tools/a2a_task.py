@@ -23,6 +23,8 @@ _DEFAULT_MESSAGE_MAX_CHARS = 12_000
 
 logger = logging.getLogger(__name__)
 
+A2AActivityFinder = Callable[..., Awaitable[list[dict[str, Any]]]]
+
 
 class A2ATaskTool(ToolPort):
     """Start, inspect, answer, or cancel a task on a discovered peer agent."""
@@ -36,6 +38,7 @@ class A2ATaskTool(ToolPort):
         result_max_chars: int = _DEFAULT_RESULT_MAX_CHARS,
         message_max_chars: int = _DEFAULT_MESSAGE_MAX_CHARS,
         activity_emitter: Callable[[dict[str, object]], Awaitable[None]] | None = None,
+        activity_finder: A2AActivityFinder | None = None,
         default_connection_id: str = "",
         push_callback_url: str = "",
     ) -> None:
@@ -47,6 +50,7 @@ class A2ATaskTool(ToolPort):
         self._result_max_chars = max(1_000, result_max_chars)
         self._message_max_chars = max(1_000, message_max_chars)
         self._activity_emitter = activity_emitter
+        self._activity_finder = activity_finder
         self._default_connection_id = default_connection_id.strip()
         self._push_callback_url = push_callback_url.strip()
 
@@ -58,9 +62,9 @@ class A2ATaskTool(ToolPort):
     def description(self) -> str:
         return (
             "Interact with a peer skill discovered through capability_list. "
-            "Operations: start a task, get its current state/artifacts, reply when "
-            "it requests input, or cancel it. Preserve agent_id and task_id from "
-            "the response for later turns. A start response with push_registered=true "
+            "Operations: start a task, find durable task handles, get current "
+            "state/artifacts, reply when it requests input, or cancel it. A start "
+            "response with push_registered=true "
             "will wake the resident on state changes, so do not repeatedly poll it. "
             "The peer and skill are your choice."
         )
@@ -72,7 +76,7 @@ class A2ATaskTool(ToolPort):
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["start", "get", "reply", "cancel"],
+                    "enum": ["start", "find", "get", "reply", "cancel"],
                 },
                 "agent_id": {
                     "type": "string",
@@ -103,8 +107,22 @@ class A2ATaskTool(ToolPort):
                         "review notes in answer when requesting changes."
                     ),
                 },
+                "query": {
+                    "type": "string",
+                    "description": "Task, prompt, skill, or case text to find in durable handles.",
+                },
+                "active_only": {
+                    "type": "boolean",
+                    "description": "For find, omit terminal tasks when true.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "description": "Maximum durable handles returned by find.",
+                },
             },
-            "required": ["operation", "agent_id"],
+            "required": ["operation"],
         }
 
     @property
@@ -142,8 +160,21 @@ class A2ATaskTool(ToolPort):
     async def _execute_observed(self, input: dict) -> ToolResult:
         telemetry = get_observability()
         operation = str(input.get("operation") or "").strip().lower()
-        if operation not in {"start", "get", "reply", "cancel"}:
-            return _error("operation must be start, get, reply, or cancel")
+        if operation not in {"start", "find", "get", "reply", "cancel"}:
+            return _error("operation must be start, find, get, reply, or cancel")
+        if operation == "find":
+            if self._activity_finder is None:
+                return _error("durable A2A task lookup is not configured")
+            limit = max(1, min(20, int(input.get("limit", 10))))
+            matches = await self._activity_finder(
+                query=str(input.get("query") or ""),
+                active_only=bool(input.get("active_only", False)),
+                limit=limit,
+            )
+            return ToolResult(
+                tool_call_id="",
+                content=json.dumps({"operation": "find", "tasks": matches}, indent=2),
+            )
 
         agent_id = str(input.get("agent_id") or "").strip()
         if not agent_id:

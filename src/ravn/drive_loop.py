@@ -53,7 +53,7 @@ from ravn.domain.budget import DailyBudgetTracker, compute_cost
 from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.domain.exceptions import LLMError, PromptBudgetExceededError
 from ravn.domain.help_needed import build_help_needed_event
-from ravn.domain.models import AgentTask, OutputMode
+from ravn.domain.models import AgentTask, OutputMode, TurnResult
 from ravn.domain.resident_continuation import validate_resident_working_state
 from ravn.domain.valkyrie_contracts import (
     VALKYRIE_JUDGMENT_REJECTED,
@@ -709,6 +709,24 @@ def _build_resident_valkyrie_schema_repair_prompt(
         "# call tools before this outcome; only a real event/time/operator answer wakes a turn\n"
         f"{working_state_shape}"
         "---end---"
+    )
+
+
+def _merge_repair_result(original: TurnResult, repair: TurnResult) -> TurnResult:
+    """Keep executed work when a follow-up turn only repairs the final response."""
+    return replace(
+        original,
+        response=str(getattr(repair, "response", "") or ""),
+        tool_calls=[
+            *(getattr(original, "tool_calls", []) or []),
+            *(getattr(repair, "tool_calls", []) or []),
+        ],
+        tool_results=[
+            *(getattr(original, "tool_results", []) or []),
+            *(getattr(repair, "tool_results", []) or []),
+        ],
+        usage=getattr(original, "usage") + getattr(repair, "usage"),
+        episode=getattr(repair, "episode", None) or getattr(original, "episode", None),
     )
 
 
@@ -2449,6 +2467,25 @@ class DriveLoop:
             capture_channel: CaptureChannel | None = None
             peer_id = self._settings.mesh.own_peer_id if self._settings.mesh.enabled else ""
             logger.info("drive_loop: task %s setting up channels", task.task_id)
+            external_channel: ChannelPort | None = None
+            if task.output_mode == OutputMode.AMBIENT:
+                if self._mesh is not None and peer_id:
+                    external_channel = self._wrap_activity_channel(
+                        MeshActivityChannel(self._mesh, peer_id), task
+                    )
+            elif task.output_mode in {
+                OutputMode.PRESENT,
+                OutputMode.URGENT,
+                OutputMode.SURFACE,
+            }:
+                if self._skuld_channel is not None:
+                    self._skuld_channel._persona = task.persona
+                    external_channel = self._wrap_activity_channel(self._skuld_channel, task)
+                elif self._mesh is not None and peer_id:
+                    external_channel = self._wrap_activity_channel(
+                        MeshActivityChannel(self._mesh, peer_id), task
+                    )
+
             if self._settings.cascade.enabled:
                 http_config = self._settings.gateway.channels.http
                 metadata = None
@@ -2468,31 +2505,12 @@ class DriveLoop:
                     metadata=metadata,
                 )
                 capture_channel = CaptureChannel(task.task_id, self._result_store)
-                extra: list[ChannelPort] = []
-                if self._skuld_channel is not None:
-                    self._skuld_channel._persona = task.persona  # Update persona for this task
-                    extra.append(self._wrap_activity_channel(self._skuld_channel, task))
-                elif self._mesh is not None and peer_id:
-                    extra.append(
-                        self._wrap_activity_channel(MeshActivityChannel(self._mesh, peer_id), task)
-                    )
-                if extra:
-                    channel: ChannelPort = CompositeChannel([capture_channel, *extra])
+                if external_channel is not None:
+                    channel: ChannelPort = CompositeChannel([capture_channel, external_channel])
                 else:
                     channel = capture_channel
             else:
-                sinks: list[ChannelPort] = []
-                if self._skuld_channel is not None:
-                    self._skuld_channel._persona = task.persona
-                    sinks.append(self._wrap_activity_channel(self._skuld_channel, task))
-                elif self._mesh is not None and peer_id:
-                    sinks.append(
-                        self._wrap_activity_channel(MeshActivityChannel(self._mesh, peer_id), task)
-                    )
-                if sinks:
-                    channel = CompositeChannel(sinks) if len(sinks) > 1 else sinks[0]
-                else:
-                    channel = SilentChannel()
+                channel = external_channel or SilentChannel()
             logger.info("drive_loop: task %s building agent", task.task_id)
             agent = self._agent_factory(channel, task.task_id, task.persona, task.triggered_by)
             telemetry.event(
@@ -2618,7 +2636,7 @@ class DriveLoop:
                     await self._emit_task_usage(
                         channel, task, repair_result, repair_cost_usd, agent
                     )
-                    turn_result = repair_result
+                    turn_result = _merge_repair_result(turn_result, repair_result)
                     response_text = repair_result.response
                 workflow_repair_result = await self._maybe_repair_unroutable_workflow_outcome(
                     agent=agent,
@@ -2630,7 +2648,7 @@ class DriveLoop:
                     await self._emit_task_usage(
                         channel, task, workflow_repair_result, repair_cost_usd, agent
                     )
-                    turn_result = workflow_repair_result
+                    turn_result = _merge_repair_result(turn_result, workflow_repair_result)
                     response_text = workflow_repair_result.response
                 structured_outcome, resident_outcome_valid = self._decorate_turn_result_outcome(
                     task, turn_result, response_text

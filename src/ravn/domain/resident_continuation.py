@@ -159,6 +159,31 @@ class ResidentWorkingStateRecord:
 
 
 @dataclass(frozen=True)
+class ResidentA2ATaskRecord:
+    """Durable handle for a peer task started or observed by a resident."""
+
+    task_id: str
+    agent_id: str = ""
+    skill_id: str = ""
+    state: str = "TASK_STATE_UNSPECIFIED"
+    operation: str = ""
+    prompt: str = ""
+    status_message: str = ""
+    question: str = ""
+    case_id: str = ""
+    root_correlation_id: str = ""
+    parent_task_id: str = ""
+    mandate: str = ""
+    turn_index: int = 0
+    case_input_tokens: int = 0
+    case_output_tokens: int = 0
+    case_started_at: str = ""
+    push_registered: bool | None = None
+    update_fingerprint: str = ""
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass(frozen=True)
 class ResidentScheduledWakeRecord:
     """A resident-requested wake for one durable case at a future time.
 

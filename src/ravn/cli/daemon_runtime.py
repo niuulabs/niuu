@@ -188,9 +188,39 @@ async def _run_daemon(
             if current_task is None:
                 logger.warning("a2a_activity: no task context available for task_id=%s", task_id)
                 return
+            durable_activity = {
+                **activity,
+                "case_id": current_task.resident_case_id,
+                "root_correlation_id": current_task.root_correlation_id,
+                "parent_task_id": current_task.task_id,
+                "mandate": current_task.resident_mandate or current_task.initiative_context,
+                "turn_index": current_task.resident_turn_index,
+                "case_input_tokens": current_task.resident_input_tokens,
+                "case_output_tokens": current_task.resident_output_tokens,
+                "case_started_at": current_task.resident_started_at,
+            }
+            if resident_runtime is not None:
+                await resident_runtime.record_a2a_activity(durable_activity)
             drive_loop.record_a2a_activity(
                 parent_task_id=current_task.task_id,
-                activity=activity,
+                activity=durable_activity,
+            )
+
+        async def _find_a2a_activity(
+            *,
+            query: str = "",
+            active_only: bool = False,
+            limit: int = 10,
+        ) -> list[dict[str, object]]:
+            if resident_runtime is None:
+                return []
+            current_task = drive_loop.resolve_task_context(task_id) if drive_loop else None
+            case_id = "" if query.strip() else getattr(current_task, "resident_case_id", "")
+            return await resident_runtime.find_a2a_tasks(
+                query=query,
+                case_id=case_id,
+                active_only=active_only,
+                limit=limit,
             )
 
         tools = _build_tools(
@@ -212,6 +242,7 @@ async def _run_daemon(
             ),
             permission=permission,
             a2a_activity_emitter=_emit_a2a_activity,
+            a2a_activity_finder=_find_a2a_activity,
             skill_manager=(
                 resident_learning_runtime.skills if resident_learning_runtime is not None else None
             ),

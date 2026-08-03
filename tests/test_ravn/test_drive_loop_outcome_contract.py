@@ -11,7 +11,7 @@ import pytest
 
 from niuu.domain.outcome import OutcomeField
 from ravn.domain.events import RavnEventType
-from ravn.domain.models import TokenUsage, TurnResult
+from ravn.domain.models import TokenUsage, ToolCall, ToolResult, TurnResult
 from ravn.domain.valkyrie_contracts import normalize_valkyrie_outcome
 from ravn.drive_loop import (
     _build_resident_valkyrie_schema_repair_prompt,
@@ -20,6 +20,7 @@ from ravn.drive_loop import (
     _extract_mimir_dream_counts,
     _infer_tool_written_verdict,
     _known_verdict_tokens,
+    _merge_repair_result,
     _normalize_outcome_verdict,
     _parse_outcome_for_persona,
     _resident_valkyrie_validation_result,
@@ -99,6 +100,32 @@ correlation_ids:
 
 
 class TestDriveLoopOutcomeContract:
+    def test_schema_repair_preserves_executed_tools_and_combines_usage(self) -> None:
+        original = TurnResult(
+            response="missing outcome",
+            tool_calls=[ToolCall(id="a2a-1", name="a2a_task", input={})],
+            tool_results=[
+                ToolResult(
+                    tool_call_id="a2a-1",
+                    content='{"task_id":"remote-1"}',
+                )
+            ],
+            usage=TokenUsage(input_tokens=10, output_tokens=20),
+        )
+        repair = TurnResult(
+            response=_valid_valkyrie_judgment_text(),
+            tool_calls=[],
+            tool_results=[],
+            usage=TokenUsage(input_tokens=3, output_tokens=4),
+        )
+
+        merged = _merge_repair_result(original, repair)
+
+        assert merged.response == repair.response
+        assert merged.tool_calls == original.tool_calls
+        assert merged.tool_results == original.tool_results
+        assert merged.usage == TokenUsage(input_tokens=13, output_tokens=24)
+
     def test_default_success_verdict_prefers_event_map_then_schema(self) -> None:
         assert (
             _default_success_verdict(

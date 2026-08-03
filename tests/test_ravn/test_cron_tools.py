@@ -505,6 +505,34 @@ async def test_cron_create_natural_language(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_cron_create_is_idempotent_for_equivalent_job(tmp_path):
+    store = _make_store(tmp_path)
+    tool = CronCreateTool(store)
+    request = {"name": "ping", "schedule": "30m", "context": "Ping the server."}
+
+    first = await tool.execute(request)
+    second = await tool.execute({**request, "schedule": "every 30m"})
+
+    assert not first.is_error
+    assert not second.is_error
+    assert "already exists" in second.content
+    assert len(store.list()) == 1
+
+
+@pytest.mark.asyncio
+async def test_cron_create_requires_explicit_delete_before_replacement(tmp_path):
+    store = _make_store(tmp_path)
+    tool = CronCreateTool(store)
+    await tool.execute({"name": "ping", "schedule": "30m", "context": "Ping the server."})
+
+    result = await tool.execute({"name": "ping", "schedule": "1m", "context": "Ping the server."})
+
+    assert result.is_error
+    assert "Delete that job explicitly" in result.content
+    assert len(store.list()) == 1
+
+
+@pytest.mark.asyncio
 async def test_cron_create_missing_name(tmp_path):
     store = _make_store(tmp_path)
     tool = CronCreateTool(store)

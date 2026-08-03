@@ -38,6 +38,7 @@ def _build_tools(
     session_join_manager: Any | None = None,
     permission: Any | None = None,
     a2a_activity_emitter: Callable[[dict[str, object]], Awaitable[None]] | None = None,
+    a2a_activity_finder: Callable[..., Awaitable[list[dict[str, Any]]]] | None = None,
     skill_manager: Any | None = None,
 ) -> list[Any]:
     """Build the tool list from the built-in registry, filtered by profile.
@@ -84,6 +85,7 @@ def _build_tools(
         "discovery": discovery,
         "permission": permission,
         "a2a_activity_emitter": a2a_activity_emitter,
+        "a2a_activity_finder": a2a_activity_finder,
     }
     runtime_ctx["capability_tools_provider"] = lambda: runtime_ctx.get("capability_tools", [])
 
