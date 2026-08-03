@@ -1245,6 +1245,9 @@ export function reviewEffectStatement(item: ReviewItem): string {
         `this learning on every relevant resident in ${item.flockId || 'the flock'}.`
       );
     case 'court_escalation':
+      if (typeof item.evidence.operator_question === 'object') {
+        return 'Your answer will resume the exact resident case that asked this question.';
+      }
       return 'Approving will request execution of the drafted action with operator authority.';
     case 'autonomy_change':
       return `Approving will set ${item.valkyrieId} autonomy as requested.`;

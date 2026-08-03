@@ -27,8 +27,8 @@ from ravn.domain.resident_continuation import (
     validate_resident_working_state,
 )
 from ravn.domain.resident_state import ResidentStatePort
-from ravn.ports.trigger import TriggerPort
 from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
+from ravn.ports.trigger import TriggerPort
 from ravn.resident_continuation import _parse_a2a_task, _scheduled_wake_at
 from ravn.resident_inbox import (
     ResidentInboxBackend,

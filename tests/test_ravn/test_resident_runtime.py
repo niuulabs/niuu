@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -17,6 +18,7 @@ from ravn.domain.resident_continuation import (
     validate_resident_working_state,
 )
 from ravn.drive_loop import DriveLoop
+from ravn.odin.review import JsonReviewStore, ReviewRequester
 from ravn.resident_continuation import _scheduled_wake_at
 from ravn.resident_inbox import LocalResidentInbox, MimirResidentInbox, ResidentInboxStatus
 from ravn.resident_runtime import ResidentHomeTrigger, ResidentRuntime, _metadata
@@ -734,6 +736,40 @@ async def test_operator_answer_resumes_same_case_and_is_consumed_after_success(t
         response_text="completed with staging scope",
     )
     assert await state.read_operator_answer("root-1") is None
+
+
+@pytest.mark.asyncio
+async def test_operator_question_is_filed_in_shared_review_inbox(tmp_path) -> None:
+    publisher = AsyncMock()
+    requester = ReviewRequester(
+        publisher=publisher,
+        store=JsonReviewStore(tmp_path / "reviews.json"),
+    )
+    runtime = ResidentRuntime(
+        state=LocalResidentState(tmp_path / "state"),
+        resident_id="valkyrie-noatun-k8s",
+        environment_id="noatun",
+        review_requester=requester,
+    )
+
+    await runtime.handle_completed_turn(
+        task=_task(),
+        prompt="prompt",
+        result=_result(
+            {
+                "continuation": "ask_operator",
+                "question": "May I inspect etcd logs?",
+                "reason": "operator approval is required",
+            }
+        ),
+        response_text="response",
+    )
+
+    event = publisher.publish.await_args.args[0]
+    item = event.payload
+    assert item["requested_action"] == "answer_operator_question"
+    assert item["title"].endswith("May I inspect etcd logs?")
+    assert item["evidence"]["operator_question"]["case_id"] == "root-1"
 
 
 @pytest.mark.asyncio
