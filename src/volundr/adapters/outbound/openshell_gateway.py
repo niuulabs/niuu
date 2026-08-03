@@ -137,6 +137,7 @@ CODEX_ENROLLMENT_HOME = "/tmp/niuu-codex-enrollment"
 CODEX_ENROLLMENT_AUTH_PATH = f"{CODEX_ENROLLMENT_HOME}/auth.json"
 CODEX_ENROLLMENT_LOG_PATH = "/tmp/niuu-codex-enrollment.log"
 CODEX_ENROLLMENT_PID_PATH = "/tmp/niuu-codex-enrollment.pid"
+PROVIDER_NETWORK_ONLY_CREDENTIAL = "network_only"
 HERMES_API_SERVER_KEY_ENV = "API_SERVER_KEY"
 HERMES_API_SERVER_DEFAULT_PORT = 8642
 HERMES_INTERNAL_SERVICE_URL = "http://hermes-api.internal"
@@ -458,6 +459,7 @@ class OpenShellGatewayClient:
                         metadata=datamodel_pb2.ObjectMeta(name=provider_name),
                         type=str(profile.id),
                         config=config,
+                        credentials=_provider_credential_slots(profile),
                     )
                 ),
                 timeout=self._timeout,
@@ -3222,6 +3224,19 @@ def _provider_profile(
     )
 
 
+def _provider_credential_slots(profile: Any) -> dict[str, str]:
+    """Name the credential slots a provider carries, empty until the grant fills them.
+
+    The gateway rejects a provider with no credentials at all, so a
+    network-only profile still declares one named slot that stays empty —
+    values arrive from the profile's token grant, never from this call.
+    """
+    slots = {str(credential.name): "" for credential in profile.credentials}
+    if slots:
+        return slots
+    return {PROVIDER_NETWORK_ONLY_CREDENTIAL: ""}
+
+
 def _codex_enrollment_profile(profile_id: str) -> Any:
     """Network-only OpenShell provider used during a Codex device login."""
     target = {
@@ -3233,11 +3248,19 @@ def _codex_enrollment_profile(profile_id: str) -> Any:
             "files.openai.com",
             "*.oaiusercontent.com",
         ),
+        # The login runs whichever image the cluster configured as the login
+        # runtime, and codex ships as a node shim in front of a native binary.
+        # Cover both layouts we build — the openshell sandbox image installs
+        # under /usr/lib/node_modules, the skuld image under /opt/skuld-tools —
+        # plus node itself, which is the process that actually opens the socket.
         "binaries": (
             "/usr/bin/codex",
             "/usr/local/bin/codex",
             "/opt/niuu/bin/codex",
             "/usr/lib/node_modules/@openai/**",
+            "/opt/skuld-tools/node_modules/@openai/**",
+            "/usr/bin/node",
+            "/usr/local/bin/node",
         ),
     }
     endpoints = [

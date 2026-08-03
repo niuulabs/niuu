@@ -124,6 +124,9 @@ def _import_adapter(monkeypatch: pytest.MonkeyPatch):
         "ProviderProfileCredential",
         "ProviderCredentialTokenGrant",
         "ProviderProfile",
+        "ProviderProfileImportItem",
+        "ImportProviderProfilesRequest",
+        "CreateProviderRequest",
     ):
         setattr(openshell_pb2_mod, name, _Proto)
 
@@ -2430,3 +2433,44 @@ async def test_credential_grant_rejects_provider_not_attached_to_sandbox(
             audience=f"{adapter.GRANT_AUDIENCE_PREFIX}volundr-session-grant",
             scope="",
         )
+
+
+def test_provider_grant_names_a_credential_slot_the_gateway_accepts(monkeypatch) -> None:
+    """A provider with no credentials at all is rejected by the gateway."""
+    adapter = _import_adapter(monkeypatch)
+    client = adapter.OpenShellGatewayClient(
+        endpoint="openshell.openshell.svc.cluster.local:8080",
+        token_provider=types.SimpleNamespace(token=lambda: "token", close=lambda: None),
+    )
+    created: list[object] = []
+
+    class _Stub:
+        def ImportProviderProfiles(self, _request, **_kwargs):  # noqa: N802 - gRPC stub shim.
+            return types.SimpleNamespace(imported=True, diagnostics=[])
+
+        def CreateProvider(self, request, **_kwargs):  # noqa: N802 - gRPC stub shim.
+            created.append(request)
+
+    client._stub = _Stub()
+    monkeypatch.setattr(client, "get_provider_profile", lambda _id: None)
+    monkeypatch.setattr(client, "get_provider", lambda _name: None)
+
+    network_only = adapter._codex_enrollment_profile("volundr-enroll-1")
+    client.create_provider_grant(
+        profile=network_only,
+        provider_name="volundr-enroll-1",
+        config={"volundr_enrollment_id": "1"},
+    )
+
+    slots = created[0].provider.credentials
+    assert slots == {adapter.PROVIDER_NETWORK_ONLY_CREDENTIAL: ""}
+
+
+def test_provider_grant_leaves_declared_credentials_for_the_token_grant(monkeypatch) -> None:
+    adapter = _import_adapter(monkeypatch)
+    profile = types.SimpleNamespace(
+        id="platform",
+        credentials=[types.SimpleNamespace(name="access_token")],
+    )
+
+    assert adapter._provider_credential_slots(profile) == {"access_token": ""}
