@@ -136,6 +136,18 @@ data:
       secret_kwargs_env: {}
       {{- end }}
 
+    credential_enrollment_runner:
+      adapter: {{ .Values.credentialEnrollmentRunner.adapter | quote }}
+      kwargs: {{ .Values.credentialEnrollmentRunner.kwargs | default dict | toJson }}
+      {{- if .Values.credentialEnrollmentRunner.secretKwargs }}
+      secret_kwargs_env:
+        {{- range .Values.credentialEnrollmentRunner.secretKwargs }}
+        {{ .kwarg }}: CREDENTIAL_ENROLLMENT_RUNNER_SK_{{ .kwarg | upper }}
+        {{- end }}
+      {{- else }}
+      secret_kwargs_env: {}
+      {{- end }}
+
     pat:
       token_issuer_adapter: {{ .Values.pat.token_issuer_adapter | quote }}
       token_issuer_kwargs: {{ .Values.pat.token_issuer_kwargs | toJson }}

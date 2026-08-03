@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from volundr.domain.models import (
 from volundr.domain.services.credential_enrollment import (
     CredentialEnrollmentError,
     CredentialEnrollmentService,
+    reconcile_credential_enrollments_loop,
 )
 from volundr.domain.services.integration_registry import (
     IntegrationRegistry,
@@ -250,3 +252,21 @@ async def test_cancelled_login_leaves_connection_reconnectable() -> None:
     metadata = credential_store.items[("user", "user-1", "codex-credentials")]["metadata"]
     assert metadata["auth_state"] == "auth_required"
     assert metadata["auth_error_code"] == "enrollment_cancelled"
+
+
+async def test_reconcile_loop_reaps_stale_logins_and_survives_failures() -> None:
+    sweeps: list[int] = []
+
+    class _Sweeper:
+        async def expire_stale(self) -> int:
+            sweeps.append(len(sweeps))
+            if len(sweeps) == 1:
+                return 2
+            if len(sweeps) == 2:
+                raise RuntimeError("openbao unavailable")
+            raise asyncio.CancelledError
+
+    await reconcile_credential_enrollments_loop(_Sweeper(), interval_seconds=0)
+
+    # A failing sweep must not end the loop: the next interval still runs.
+    assert len(sweeps) == 3

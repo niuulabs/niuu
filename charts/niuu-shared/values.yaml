@@ -131,6 +131,15 @@ credentialStore:
   kwargs: {}
   secretKwargs: []
 
+# Trusted login runner for interactive credential enrollment (e.g. the Codex
+# ChatGPT device login). Clusters with OpenShell configure
+# OpenShellCredentialEnrollmentRunner here; otherwise the integrations API
+# reports interactive enrollment as unavailable.
+credentialEnrollmentRunner:
+  adapter: "volundr.adapters.outbound.credential_enrollment_runner.UnsupportedCredentialEnrollmentRunner"
+  kwargs: {}
+  secretKwargs: []
+
 envoy:
   enabled: false
   image:

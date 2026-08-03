@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -286,6 +287,11 @@ def test_integrations_service_app_seeds_connections_and_linear(monkeypatch) -> N
     seed_linear = AsyncMock()
     captured: dict[str, object] = {}
     released: list[Settings] = []
+    reconciled: list[object] = []
+
+    async def _never_ending_reconcile(service: object) -> None:
+        reconciled.append(service)
+        await asyncio.Event().wait()
 
     monkeypatch.setattr(integrations_app, "database_pool", _fake_db_pool)
     monkeypatch.setattr(integrations_app, "configure_logging", lambda _logging: None)
@@ -326,12 +332,44 @@ def test_integrations_service_app_seeds_connections_and_linear(monkeypatch) -> N
     )
     monkeypatch.setattr(
         integrations_app,
-        "create_canonical_integrations_router",
-        lambda integration_repo, tracker_factory, registry, credential_store: (
-            captured.setdefault("integrations_router_repo", integration_repo),
-            captured.setdefault("integrations_router_registry", registry),
-            _dynamic_conflict_router("/api/v1/integrations/{connection_id}"),
+        "PostgresCredentialEnrollmentRepository",
+        lambda pool: ("credential-enrollments", pool),
+    )
+    monkeypatch.setattr(
+        integrations_app,
+        "_create_credential_enrollment_runner",
+        lambda _settings: SimpleNamespace(supports_enrollment=lambda _method: False),
+    )
+    monkeypatch.setattr(
+        integrations_app,
+        "CredentialEnrollmentService",
+        lambda **kwargs: (
+            captured.setdefault("enrollment_service_kwargs", kwargs),
+            SimpleNamespace(),
         )[-1],
+    )
+    monkeypatch.setattr(
+        integrations_app,
+        "reconcile_credential_enrollments_loop",
+        _never_ending_reconcile,
+    )
+
+    def _capture_integrations_router(
+        integration_repo: object,
+        tracker_factory: object,
+        registry: object,
+        credential_store: object,
+        credential_enrollment_service: object,
+    ) -> APIRouter:
+        captured["integrations_router_repo"] = integration_repo
+        captured["integrations_router_registry"] = registry
+        captured["integrations_router_enrollment_service"] = credential_enrollment_service
+        return _dynamic_conflict_router("/api/v1/integrations/{connection_id}")
+
+    monkeypatch.setattr(
+        integrations_app,
+        "create_canonical_integrations_router",
+        _capture_integrations_router,
     )
     monkeypatch.setattr(
         integrations_app,
@@ -357,6 +395,13 @@ def test_integrations_service_app_seeds_connections_and_linear(monkeypatch) -> N
     assert len(released) == 1
     assert released[0].database.name == "niuu_shared"
     assert captured["integrations_router_repo"][0] == "integrations"  # type: ignore[index]
+    # The shared integrations API owns interactive enrollment: without the service
+    # the Codex device login answers 503 no matter how the cluster is configured.
+    assert captured["integrations_router_enrollment_service"] is not None
+    enrollment_kwargs = captured["enrollment_service_kwargs"]
+    assert enrollment_kwargs["repository"][0] == "credential-enrollments"  # type: ignore[index]
+    assert enrollment_kwargs["integration_repository"][0] == "integrations"  # type: ignore[index]
+    assert reconciled == [captured["integrations_router_enrollment_service"]]
 
 
 def test_tracker_service_app_uses_linear_default_tracker(monkeypatch) -> None:

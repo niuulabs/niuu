@@ -134,7 +134,10 @@ from volundr.domain.services import (
 from volundr.domain.services.attention_notifier import PushAttentionNotifier
 from volundr.domain.services.communication_ingress import CommunicationIngressService
 from volundr.domain.services.credential import CredentialService
-from volundr.domain.services.credential_enrollment import CredentialEnrollmentService
+from volundr.domain.services.credential_enrollment import (
+    CredentialEnrollmentService,
+    reconcile_credential_enrollments_loop,
+)
 from volundr.domain.services.event_ingestion import EventIngestionService
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
 from volundr.domain.services.resident_runtime import (
@@ -149,7 +152,6 @@ from volundr.infrastructure.database import database_pool
 
 # Interval for periodic stats and heartbeat broadcasts (seconds)
 BROADCAST_INTERVAL = 30
-CREDENTIAL_ENROLLMENT_RECONCILE_INTERVAL_SECONDS = 30
 
 logger = logging.getLogger(__name__)
 
@@ -343,30 +345,6 @@ async def _reconcile_resident_runtimes_loop(
             break
         except Exception:
             logger.exception("Resident runtime reconcile iteration failed")
-
-
-async def _reconcile_credential_enrollments_loop(
-    service: CredentialEnrollmentService,
-    *,
-    interval_seconds: float = CREDENTIAL_ENROLLMENT_RECONCILE_INTERVAL_SECONDS,
-) -> None:
-    """Destroy expired interactive-login sandboxes independently of the UI."""
-    logger.info(
-        "Credential enrollment reconciliation started, interval=%.1fs",
-        interval_seconds,
-    )
-    while True:
-        try:
-            count = await service.expire_stale()
-            if count:
-                logger.info("Expired %d stale credential enrollment(s)", count)
-            await asyncio.sleep(interval_seconds)
-        except asyncio.CancelledError:
-            logger.info("Credential enrollment reconciliation task cancelled")
-            break
-        except Exception:
-            logger.exception("Credential enrollment reconciliation iteration failed")
-            await asyncio.sleep(interval_seconds)
 
 
 def _create_otel_providers(otel_cfg):  # pragma: no cover
@@ -1255,7 +1233,7 @@ def create_app(
             )
             credential_enrollment_reconcile_task = (
                 asyncio.create_task(
-                    _reconcile_credential_enrollments_loop(credential_enrollment_service)
+                    reconcile_credential_enrollments_loop(credential_enrollment_service)
                 )
                 if credential_enrollment_service is not None
                 else None
