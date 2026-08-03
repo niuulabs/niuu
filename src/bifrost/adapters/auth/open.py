@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from fastapi import Request
 
-from bifrost.auth import AgentIdentity, _read_attribution_headers
+from bifrost.auth import (
+    AgentIdentity,
+    _read_attribution_headers,
+    read_agent_id,
+    read_tenant_id,
+)
 from bifrost.ports.auth import AuthPort
 
 
@@ -24,8 +29,8 @@ class OpenAuthAdapter(AuthPort):
     def extract(self, request: Request) -> AgentIdentity:
         session_id, saga_id = _read_attribution_headers(request)
         return AgentIdentity(
-            agent_id=request.headers.get("x-agent-id", "anonymous"),
-            tenant_id=request.headers.get("x-tenant-id", "default"),
+            agent_id=read_agent_id(request),
+            tenant_id=read_tenant_id(request),
             session_id=session_id,
             saga_id=saga_id,
         )

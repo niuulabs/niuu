@@ -8,9 +8,10 @@ import json
 import logging
 import os
 import socket
+from collections import Counter
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import quote, urlsplit
@@ -129,13 +130,14 @@ def _edge(
     evidence_field: str = "",
     confidence: str = "declared",
     label: str = "",
+    rate_per_minute: float | None = None,
 ) -> ObservatoryEdge:
     edge_label = label or _RELATION_LABELS.get(relation_type, relation_type.replace("_", " "))
     edge_id = f"edge:{_slug(relation_type)}:{_slug(source_id)}:{_slug(target_id)}"
     evidence = {"adapter": source_adapter}
     if evidence_field:
         evidence["field"] = evidence_field
-    return {
+    edge: ObservatoryEdge = {
         "id": edge_id,
         "sourceId": source_id,
         "targetId": target_id,
@@ -145,6 +147,9 @@ def _edge(
         "confidence": confidence,
         "evidence": evidence,
     }
+    if rate_per_minute is not None:
+        edge["ratePerMinute"] = rate_per_minute
+    return edge
 
 
 def _status_from_k8s(kind: str, payload: dict[str, Any]) -> str:
@@ -850,8 +855,14 @@ class _HttpServiceDiscoveryAdapter:
     ) -> DiscoveryResult:
         raise NotImplementedError
 
-    async def _json(self, client: httpx.AsyncClient, headers: dict[str, str], path: str) -> Any:
-        response = await client.get(f"{self._base_url}{path}", headers=headers)
+    async def _json(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+        path: str,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        response = await client.get(f"{self._base_url}{path}", headers=headers, params=params)
         response.raise_for_status()
         return response.json()
 
@@ -1078,6 +1089,84 @@ class BifrostCatalogDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
         claim otherwise.
         """
         return f"cloud:{_slug(vendor or 'unknown')}"
+
+
+class BifrostUsageDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
+    """What actually crossed the model edges, and who asked.
+
+    Bifröst records every proxied call with its caller, provider, model,
+    latency and tokens. Nothing read it, so the canvas could say a model
+    exists but never that anything used it, and the signal log carried only
+    discovery failures — an activity panel that only ever reported breakage.
+
+    Two things come out of one poll: a line per call for the log, and a rate
+    per model edge for the canvas. Edges nothing measured keep no rate at all,
+    which is what stops the graph animating traffic it has not seen.
+    """
+
+    warning_name = "bifrost-usage"
+
+    def __init__(self, *args: Any, window_minutes: float = 5.0, **kwargs: Any) -> None:
+        """`window_minutes` is how far back a poll looks for calls.
+
+        Wide enough that a quiet estate still shows its last activity, narrow
+        enough that the rate means "now" rather than "since the pod started".
+        """
+        super().__init__(*args, **kwargs)
+        if window_minutes <= 0:
+            raise ValueError("BifrostUsageDiscoveryAdapter needs a positive window_minutes")
+        self._window_minutes = window_minutes
+
+    async def collect(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+    ) -> DiscoveryResult:
+        since = datetime.now(UTC) - timedelta(minutes=self._window_minutes)
+        payload = await self._json(
+            client,
+            headers,
+            "/api/v1/bifrost/v1/usage",
+            params={"since": since.isoformat(), "limit": _USAGE_POLL_LIMIT},
+        )
+        records = payload.get("records") if isinstance(payload, dict) else None
+        if not isinstance(records, list):
+            return DiscoveryResult()
+
+        gateway_id = f"bifrost:{_slug(self._cluster or 'unknown')}"
+        events: list[ObservatoryEvent] = []
+        calls_per_model: Counter[str] = Counter()
+
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            model = str(record.get("model") or "").strip()
+            if not model:
+                continue
+            calls_per_model[model] += 1
+            events.append(_usage_event(record, gateway_id))
+
+        edges = [
+            _edge(
+                source_id=gateway_id,
+                target_id=self._model_edge_target(model),
+                relation_type="routes_to",
+                source_adapter=self.__class__.__name__,
+                evidence_field="usage",
+                confidence="observed",
+                rate_per_minute=round(count / self._window_minutes, 2),
+            )
+            for model, count in sorted(calls_per_model.items())
+        ]
+        return DiscoveryResult(edges=edges, events=events)
+
+    def _model_edge_target(self, model_id: str) -> str:
+        """The node the catalogue adapter gave this model.
+
+        Both are derived from the same model id, so the rate lands on the edge
+        the catalogue already drew rather than creating a second one.
+        """
+        return f"model:{_slug(self._cluster or 'unknown')}:{_slug(model_id)}"
 
 
 class RavnResidentsDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
@@ -2439,6 +2528,52 @@ def _entity_to_node(
     # cosmetic clash.
     node.update({k: v for k, v in entity.metadata.items() if k not in _RESERVED_NODE_KEYS})
     return node
+
+
+#: How many usage records one poll will read. A ceiling, not a target: a
+#: gateway busier than this reports its most recent calls and an honest rate
+#: for them, rather than the adapter paging through an unbounded history.
+_USAGE_POLL_LIMIT = 200
+
+
+def _usage_event(record: Mapping[str, Any], gateway_id: str) -> ObservatoryEvent:
+    """One proxied model call, as a line for the signal log.
+
+    The caller is named when it identified itself. `anonymous` is left visible
+    rather than hidden or guessed at: a call nobody claimed is a real thing to
+    know about, and reads as the missing attribution it is.
+    """
+    model = str(record.get("model") or "")
+    provider = str(record.get("provider") or "")
+    agent = str(record.get("agent_id") or "").strip() or "anonymous"
+    latency_ms = record.get("latency_ms")
+    tokens_in = record.get("input_tokens") or 0
+    tokens_out = record.get("output_tokens") or 0
+    cost = record.get("cost_usd") or 0.0
+
+    detail = [f"→ {model}"]
+    if provider and provider != model:
+        detail.append(f"via {provider}")
+    if isinstance(latency_ms, int | float) and latency_ms > 0:
+        detail.append(f"{latency_ms / 1000:.1f}s")
+    detail.append(f"{tokens_in}/{tokens_out} tokens")
+    if isinstance(cost, int | float) and cost > 0:
+        detail.append(f"${cost:.4f}")
+
+    request_id = str(record.get("request_id") or "")
+    timestamp = str(record.get("timestamp") or _iso())
+    return {
+        # Keyed on the request so a poll overlapping the last one does not
+        # report the same call twice.
+        "id": f"bifrost:{_slug(gateway_id)}:{_slug(request_id) or _slug(timestamp)}",
+        "type": "BIFROST",
+        "level": "info",
+        "service": "bifrost",
+        "subject": agent,
+        "body": " · ".join(detail),
+        "message": " · ".join(detail),
+        "timestamp": timestamp,
+    }
 
 
 def _adapter_warning(adapter: str, message: str) -> ObservatoryEvent:

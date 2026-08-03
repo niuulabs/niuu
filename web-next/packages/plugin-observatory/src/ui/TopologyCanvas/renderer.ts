@@ -19,7 +19,7 @@ import { edgeLayer } from '../../domain';
 import { humanizeObservatoryText } from '../displayLabels';
 import type { NodePosition } from './layoutEngine';
 import { zoneRadius, HOST_HALF_W, HOST_HALF_H } from './layoutEngine';
-import { NODE_SIZE, MIMIR_RUNES, LAYOUT, LOD, LABEL_PX, MESH_PULSE } from './config';
+import { NODE_SIZE, MIMIR_RUNES, LAYOUT, LOD, LABEL_PX, MESH_PULSE, EDGE_FLOW } from './config';
 import { cloudPath, drawGlyph, roundRectPath } from './shapes';
 import { nodeStyle, type NodeStyle } from './nodeStyle';
 
@@ -1085,6 +1085,18 @@ function drawEdge(
   edgeLine(points);
   ctx.stroke();
 
+  drawEdgeFlow(
+    ctx,
+    edge,
+    edgeLine,
+    points,
+    colour,
+    now,
+    options.zoom ?? 1,
+    emphasis,
+    options.reducedMotion ?? false,
+  );
+
   if (sameParent && !directParentChild && ancestorPos && !sameRunFlow && !sameContainerEdge) {
     const awayX = midX - ancestorPos.x;
     const awayY = midY - ancestorPos.y;
@@ -1105,6 +1117,52 @@ export interface EdgeDrawOptions {
   styleFor?: (node: TopologyNode) => NodeStyle;
   /** 0–1 emphasis, used to fade everything the operator is not tracing. */
   alphaFor?: (edge: TopologyEdge) => number;
+  /** Hold the flow still for an operator who asked for no motion. */
+  reducedMotion?: boolean;
+  /** Current zoom, so flow marks stay a readable size at any scale. */
+  zoom?: number;
+}
+
+/**
+ * Marks travelling along an edge that reported a measured rate.
+ *
+ * Drawn as a dashed overlay on the edge's own path, so a mark follows the
+ * exact bundled curve the line takes. An edge with no rate gets nothing: the
+ * canvas must not animate traffic nobody observed.
+ */
+function drawEdgeFlow(
+  ctx: CanvasRenderingContext2D,
+  edge: TopologyEdge,
+  stroke: (points: Array<{ x: number; y: number }>) => void,
+  points: Array<{ x: number; y: number }>,
+  colour: readonly [number, number, number],
+  now: number,
+  zoom: number,
+  emphasis: number,
+  reducedMotion: boolean,
+): void {
+  const rate = edge.ratePerMinute;
+  if (rate == null || rate <= 0) return;
+
+  const saturation = Math.min(1, rate / EDGE_FLOW.SATURATION_PER_MINUTE);
+  const gapPx = EDGE_FLOW.MAX_GAP_PX - (EDGE_FLOW.MAX_GAP_PX - EDGE_FLOW.MIN_GAP_PX) * saturation;
+  const dash = worldFontSize(EDGE_FLOW.DASH_PX, zoom);
+  const gap = worldFontSize(gapPx, zoom);
+  const travelled = reducedMotion
+    ? 0
+    : ((now / 1000) * worldFontSize(EDGE_FLOW.SPEED_PX_PER_S, zoom)) % (dash + gap);
+
+  ctx.save();
+  ctx.lineCap = 'butt';
+  ctx.setLineDash([dash, gap]);
+  // Negative so marks travel from source to target, the way the relation reads.
+  ctx.lineDashOffset = -travelled;
+  ctx.strokeStyle = rgba(colour, EDGE_FLOW.ALPHA * emphasis);
+  ctx.lineWidth = worldFontSize(EDGE_FLOW.LINE_WIDTH, zoom);
+  ctx.beginPath();
+  stroke(points);
+  ctx.stroke();
+  ctx.restore();
 }
 
 export function drawEdges(

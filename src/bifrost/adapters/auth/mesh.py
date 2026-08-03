@@ -24,7 +24,12 @@ import re
 
 from fastapi import Request
 
-from bifrost.auth import AgentIdentity, _read_attribution_headers
+from bifrost.auth import (
+    AgentIdentity,
+    _read_attribution_headers,
+    read_agent_id,
+    read_tenant_id,
+)
 from bifrost.ports.auth import AuthPort
 
 # Matches the URI field in an Envoy XFCC header segment, e.g.:
@@ -62,8 +67,8 @@ class MeshAuthAdapter(AuthPort):
         spiffe_agent = _parse_spiffe_workload(xfcc) if xfcc else None
 
         return AgentIdentity(
-            agent_id=spiffe_agent or request.headers.get("x-agent-id", "anonymous"),
-            tenant_id=request.headers.get("x-tenant-id", "default"),
+            agent_id=spiffe_agent or read_agent_id(request),
+            tenant_id=read_tenant_id(request),
             session_id=session_id,
             saga_id=saga_id,
         )

@@ -22,13 +22,24 @@ __all__ = [
     "ANTHROPIC_API_VERSION",
     "BifrostAdapter",
     "HEADER_AGENT_ID",
+    "HEADER_LEGACY_AGENT_ID",
+    "HEADER_LEGACY_SESSION_ID",
     "HEADER_SESSION_ID",
 ]
 
 _DEFAULT_BASE_URL = "http://bifrost:8080"
 
-HEADER_AGENT_ID = "X-Ravn-Agent-Id"
-HEADER_SESSION_ID = "X-Ravn-Session-Id"
+HEADER_AGENT_ID = "X-Agent-Id"
+HEADER_SESSION_ID = "X-Session-Id"
+
+#: What this adapter used to send, and what Bifröst never read.
+#:
+#: Bifröst's auth adapters read `x-agent-id`; this one sent `X-Ravn-Agent-Id`,
+#: so every call in the estate was attributed to `anonymous` — a usage store
+#: with a column for the caller that had never seen one. Bifröst now accepts
+#: both, and these are still sent so a Bifröst on an older image keeps working.
+HEADER_LEGACY_AGENT_ID = "X-Ravn-Agent-Id"
+HEADER_LEGACY_SESSION_ID = "X-Ravn-Session-Id"
 
 
 class BifrostAdapter(AnthropicAdapter):
@@ -71,6 +82,8 @@ class BifrostAdapter(AnthropicAdapter):
         # Inject agent identity for per-agent usage tracking and cost attribution
         if self._agent_id:
             headers[HEADER_AGENT_ID] = self._agent_id
+            headers[HEADER_LEGACY_AGENT_ID] = self._agent_id
         if self._session_id:
             headers[HEADER_SESSION_ID] = self._session_id
+            headers[HEADER_LEGACY_SESSION_ID] = self._session_id
         return headers

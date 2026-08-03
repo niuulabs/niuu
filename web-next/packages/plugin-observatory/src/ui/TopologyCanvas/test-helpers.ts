@@ -11,12 +11,18 @@ import { vi } from 'vitest';
 export interface CtxMock extends Record<string, unknown> {
   strokeStyles: string[];
   fillStyles: string[];
+  /** Every dash pattern set, in order — how flow along an edge is asserted. */
+  lineDashes: number[][];
+  lineDashOffsets: number[];
   strokeStyle: string;
   fillStyle: string;
+  lineDashOffset: number;
 }
 
 export function makeCtxMock(): CtxMock {
   const gradient = { addColorStop: vi.fn() };
+  const dashes: number[][] = [];
+  const dashOffsets: number[] = [];
   const ctx = {
     clearRect: vi.fn(),
     fillRect: vi.fn(),
@@ -42,7 +48,9 @@ export function makeCtxMock(): CtxMock {
     translate: vi.fn(),
     scale: vi.fn(),
     setTransform: vi.fn(),
-    setLineDash: vi.fn(),
+    setLineDash: vi.fn(function setLineDash(this: void, pattern: number[]) {
+      dashes.push([...pattern]);
+    }),
     createRadialGradient: vi.fn().mockReturnValue(gradient),
     createLinearGradient: vi.fn().mockReturnValue(gradient),
     // Every colour the caller assigns, in order. A canvas mock that only keeps
@@ -50,6 +58,8 @@ export function makeCtxMock(): CtxMock {
     // paints many things — which is exactly what mesh highlighting needs.
     strokeStyles: [] as string[],
     fillStyles: [] as string[],
+    lineDashes: dashes,
+    lineDashOffsets: dashOffsets,
     fillStyle: '',
     strokeStyle: '',
     lineWidth: 1,
@@ -59,6 +69,17 @@ export function makeCtxMock(): CtxMock {
     lineCap: 'butt' as CanvasLineCap,
     lineDashOffset: 0,
   };
+  {
+    let offset = 0;
+    Object.defineProperty(ctx, 'lineDashOffset', {
+      configurable: true,
+      get: () => offset,
+      set: (value: number) => {
+        offset = value;
+        dashOffsets.push(value);
+      },
+    });
+  }
   for (const prop of ['strokeStyle', 'fillStyle'] as const) {
     const log = ctx[`${prop}s`];
     let current = '';

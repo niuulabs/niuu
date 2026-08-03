@@ -637,6 +637,8 @@ export function TopologyCanvas({
             !pointedAt || edge.sourceId === pointedAt || edge.targetId === pointedAt
               ? 1
               : DIMMED_ALPHA,
+          zoom: cam.zoom,
+          reducedMotion,
         });
 
         const paint = (node: TopologyNode) => {

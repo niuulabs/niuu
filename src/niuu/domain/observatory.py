@@ -132,6 +132,14 @@ class TopologyEdge(_ObservatoryModel):
     confidence: EdgeConfidence = "declared"
     evidence: dict[str, str] = Field(default_factory=dict)
 
+    #: Messages a minute actually seen crossing this relationship, or None
+    #: when nothing measures it.
+    #:
+    #: The distinction is the whole point: the canvas draws flow along an edge
+    #: that reports a rate and leaves the rest still. A graph that animates
+    #: everything is asserting traffic it has not seen, sixty times a second.
+    rate_per_minute: float | None = None
+
 
 class TopologyEvent(_ObservatoryModel):
     """A discovery-time event surfaced alongside the graph."""

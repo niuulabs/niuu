@@ -234,6 +234,15 @@ export interface TopologyEdge {
   relationType?: EdgeRelationType;
   confidence?: EdgeConfidence;
   evidence?: Record<string, string>;
+  /**
+   * Messages a minute actually seen crossing this edge, absent when nothing
+   * measures it.
+   *
+   * The canvas draws flow along an edge that reports a rate and leaves the
+   * rest still. Animating every edge would assert traffic nobody observed,
+   * sixty times a second.
+   */
+  ratePerMinute?: number;
 }
 
 /** How a source's fragment reached the aggregator. */

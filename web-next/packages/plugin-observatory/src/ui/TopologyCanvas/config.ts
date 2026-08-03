@@ -200,6 +200,32 @@ export const MESH_PULSE = {
  */
 export const DEGRADED_COLOUR = [217, 70, 239] as const;
 
+/**
+ * Flow drawn along an edge that reports an observed rate.
+ *
+ * Rendered as a travelling dash on the edge's own path rather than dots
+ * sampled along it: the paths are bundled curves, and anything that samples
+ * them approximately drifts off the line exactly where edges are densest.
+ *
+ * Rate changes the spacing between marks, never their speed. More messages
+ * should read as more traffic, not as traffic in a hurry.
+ */
+export const EDGE_FLOW = {
+  /** Length of one travelling mark, in screen pixels. */
+  DASH_PX: 5,
+  /** Gap at saturation — the densest an edge is ever drawn. */
+  MIN_GAP_PX: 30,
+  /** Gap at the lowest measurable rate: one lonely mark on a long edge. */
+  MAX_GAP_PX: 260,
+  /** Travel speed, screen pixels per second. */
+  SPEED_PX_PER_S: 38,
+  /** Calls a minute at which spacing stops tightening. */
+  SATURATION_PER_MINUTE: 30,
+  /** Marks sit brighter than the line they run along. */
+  ALPHA: 0.95,
+  LINE_WIDTH: 2.4,
+} as const;
+
 /** Label sizes in screen pixels — held constant regardless of camera zoom. */
 export const LABEL_PX = {
   REALM: 13,

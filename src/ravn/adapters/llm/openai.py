@@ -284,6 +284,8 @@ class OpenAICompatibleAdapter(LLMPort):
         system_prefix: str = "",
         request_options: dict | None = None,
         thinking_request_options: dict | None = None,
+        agent_id: str = "",
+        session_id: str = "",
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
@@ -295,6 +297,8 @@ class OpenAICompatibleAdapter(LLMPort):
         self._system_prefix = system_prefix
         self._request_options = copy.deepcopy(request_options or {})
         self._thinking_request_options = copy.deepcopy(thinking_request_options or {})
+        self._agent_id = agent_id
+        self._session_id = session_id
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -306,6 +310,15 @@ class OpenAICompatibleAdapter(LLMPort):
         }
         if self._api_key:
             headers["authorization"] = f"Bearer {self._api_key}"
+        # Attribution, when this adapter points at a gateway that tracks it.
+        # Bifröst speaks OpenAI as well as Anthropic, so a resident can route
+        # through it without changing wire protocol — but only the Anthropic
+        # adapter said who was calling, so a resident that switched arrived
+        # anonymous. Harmless against a plain vLLM, which ignores them.
+        if self._agent_id:
+            headers["x-agent-id"] = self._agent_id
+        if self._session_id:
+            headers["x-session-id"] = self._session_id
         return headers
 
     def _build_messages(
