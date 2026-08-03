@@ -51,6 +51,8 @@ from collections.abc import AsyncIterator
 
 import httpx
 
+from niuu.ports.http_auth import HttpAuthPort
+from niuu.utils import import_class
 from ravn.budget import TokenEstimator
 from ravn.domain.exceptions import LLMError
 from ravn.domain.models import (
@@ -286,6 +288,8 @@ class OpenAICompatibleAdapter(LLMPort):
         thinking_request_options: dict | None = None,
         agent_id: str = "",
         session_id: str = "",
+        auth_adapter: str = "",
+        auth_kwargs: dict | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
@@ -299,6 +303,14 @@ class OpenAICompatibleAdapter(LLMPort):
         self._thinking_request_options = copy.deepcopy(thinking_request_options or {})
         self._agent_id = agent_id
         self._session_id = session_id
+        # A gateway behind the estate's own auth needs a minted credential, not
+        # a static key: Bifröst sits behind an Envoy that validates a workload
+        # JWT on everything but health. Without this a resident could only ever
+        # talk straight to a model server, which is why none of them route
+        # through the gateway that meters and attributes their calls.
+        self._auth: HttpAuthPort | None = (
+            import_class(auth_adapter)(**(auth_kwargs or {})) if auth_adapter else None
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -320,6 +332,18 @@ class OpenAICompatibleAdapter(LLMPort):
         if self._session_id:
             headers["x-session-id"] = self._session_id
         return headers
+
+    async def _request_headers(self) -> dict[str, str]:
+        """Headers for one call, including a freshly-minted credential.
+
+        The mint runs off the event loop: it is a network round trip on the
+        rare call where the cached token has aged out, and blocking the loop
+        for it would stall every other request the resident has in flight.
+        """
+        headers = self._headers()
+        if self._auth is None:
+            return headers
+        return {**headers, **await asyncio.to_thread(self._auth.headers)}
 
     def _build_messages(
         self, messages: list[dict], system: SystemPrompt, model: str = ""
@@ -460,7 +484,9 @@ class OpenAICompatibleAdapter(LLMPort):
             thinking=thinking,
         )
 
-        async with httpx.AsyncClient(headers=self._headers(), timeout=self._timeout) as client:
+        async with httpx.AsyncClient(
+            headers=await self._request_headers(), timeout=self._timeout
+        ) as client:
             response = await self._post_with_retry(client, payload, stream=True)
 
             if response.status_code != 200:
@@ -594,7 +620,9 @@ class OpenAICompatibleAdapter(LLMPort):
             thinking=thinking,
         )
 
-        async with httpx.AsyncClient(headers=self._headers(), timeout=self._timeout) as client:
+        async with httpx.AsyncClient(
+            headers=await self._request_headers(), timeout=self._timeout
+        ) as client:
             response = await self._post_with_retry(client, payload, stream=False)
 
         if response.status_code != 200:
