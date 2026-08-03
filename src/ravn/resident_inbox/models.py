@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol
 
+from .shape import ShapeAggregate
+
 _INBOX_SIGNAL_PREFIX = "resident/inbox/signals"
+#: Coalescing queue: at most one slot per structural shape awaiting judgment.
+_INBOX_PENDING_PREFIX = "resident/inbox/signals/pending"
+#: Judged slots, subject to normal retention.
+_INBOX_PROCESSED_PREFIX = "resident/inbox/signals/processed"
 _INBOX_TRIAGE_PREFIX = "resident/inbox/triage"
 _INBOX_DECISION_PREFIX = "resident/inbox/decisions"
 _INBOX_SIGNAL_JSON_START = "<resident-inbox-signal-json>"
@@ -66,6 +73,19 @@ class ResidentInboxSignal:
     observed_at: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     processed_at: datetime | None = None
+    #: Structural slot identity. Observations sharing a shape share a slot.
+    shape_key: str = ""
+    #: How many raw observations this slot covers. 1 for an uncoalesced record.
+    observation_count: int = 1
+    #: Exact raw archive range this slot covers, inclusive.
+    first_archive_ref: str = ""
+    last_archive_ref: str = ""
+    #: Oldest observation in the slot; ``observed_at`` tracks the newest.
+    first_observed_at: str = ""
+    #: Variation across the slot's observations. Never merges across shapes.
+    aggregate: ShapeAggregate = field(default_factory=ShapeAggregate)
+    #: Resident turns that ended with an invalid outcome for this slot.
+    attempts: int = 0
 
     def with_updates(self, **updates: object) -> ResidentInboxSignal:
         return replace(self, **updates)  # type: ignore[arg-type]
@@ -122,7 +142,29 @@ class ResidentInboxBackend(Protocol):
         *,
         status: str = ResidentInboxStatus.REMEMBERED.value,
         reason: str = "resident turn recorded",
-    ) -> tuple[str, ...]: ...
+        expected: Mapping[str, str] | None = None,
+    ) -> tuple[str, ...]:
+        """Acknowledge exactly what the resident judged.
+
+        ``expected`` maps each ref to the archive reference the caller saw when
+        it listed the slot.  A slot that advanced while the turn ran is split:
+        the judged range is acknowledged and the newer observations stay
+        pending, so arrivals mid-turn are never silently swallowed.
+        """
+        ...
+
+    async def record_failed_attempt(
+        self,
+        refs: tuple[str, ...],
+        *,
+        reason: str,
+    ) -> tuple[str, ...]:
+        """Count one invalid resident outcome; return refs that became blocked.
+
+        A slot no resident turn can validly judge must stop being retried
+        forever and become visible to a human instead.
+        """
+        ...
 
 
 @dataclass(frozen=True)

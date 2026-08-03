@@ -1044,6 +1044,42 @@ def approvals_revoke(
 
 
 # ---------------------------------------------------------------------------
+# Resident inbox maintenance
+# ---------------------------------------------------------------------------
+
+
+@app.command("inbox-migrate")
+def inbox_migrate(
+    root: str = typer.Argument(help="Resident inbox root directory to migrate."),
+) -> None:
+    """Move flat resident inbox signal files into the archive and slot queue.
+
+    One-time, resumable and non-destructive: each record is archived and re-filed
+    before its original file is removed, so an interrupted run simply resumes.
+    Reports counts so the operator can reconcile before and after.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from ravn.resident_inbox import LocalResidentInbox  # noqa: PLC0415
+
+    inbox = LocalResidentInbox(root)
+    counts = asyncio.run(inbox.migrate_flat_layout())
+    archived = inbox.archive.count()
+    typer.echo(f"read       : {counts['read']}")
+    typer.echo(f"archived   : {counts['archived']}")
+    typer.echo(f"  pending  : {counts['pending']}")
+    typer.echo(f"  processed: {counts['processed']}")
+    typer.echo(f"unreadable : {counts['unreadable']}")
+    typer.echo(f"archive records now: {archived}")
+    if counts["unreadable"]:
+        typer.echo(
+            f"{counts['unreadable']} file(s) could not be parsed and were left in place.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Resume CLI (NIU-537)
 # ---------------------------------------------------------------------------
 

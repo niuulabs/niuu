@@ -2922,6 +2922,37 @@ class ResidentInboxConfig(BaseModel):
             "how often the signals directory is rescanned."
         ),
     )
+    signal_max_distinct_values: int = Field(
+        default=24,
+        description=(
+            "Distinct values a coalescing slot keeps per categorical field path. "
+            "Above this the path is recorded as high-cardinality instead of "
+            "growing without bound."
+        ),
+    )
+    signal_max_extreme_payloads: int = Field(
+        default=16,
+        description=(
+            "Full payloads a coalescing slot keeps at numeric extremes, so an "
+            "excursion is never summarised away. Bounds slot size."
+        ),
+    )
+    signal_max_invalid_attempts: int = Field(
+        default=3,
+        description=(
+            "Invalid resident outcomes tolerated for one observation slot before "
+            "it is marked blocked and escalated. Stops a slot no turn can judge "
+            "from being retried forever."
+        ),
+    )
+    signal_pending_slot_warn_threshold: int = Field(
+        default=200,
+        description=(
+            "Pending shape slots above which the inbox warns once. A large count "
+            "means a source is emitting variable field names, which defeats "
+            "coalescing and lets the queue grow with volume."
+        ),
+    )
 
 
 class ResidentStateConfig(BaseModel):

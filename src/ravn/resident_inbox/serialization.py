@@ -22,6 +22,7 @@ from .models import (
     ResidentInboxStatus,
     ResidentInboxTriage,
 )
+from .shape import ShapeAggregate
 
 
 def _signal_from_record(record: dict[str, Any], *, default_kind: str) -> ResidentInboxSignal:
@@ -164,6 +165,10 @@ def render_inbox_signal(signal: ResidentInboxSignal) -> str:
         f"- confidence: {signal.confidence:.2f}\n"
         f"- status: {signal.status}\n"
         f"- target_objective_id: {signal.target_objective_id}\n"
+        f"- shape_key: {signal.shape_key}\n"
+        f"- observation_count: {signal.observation_count}\n"
+        f"- archive_range: {signal.first_archive_ref}..{signal.last_archive_ref}\n"
+        f"- first_observed_at: {signal.first_observed_at}\n"
         f"- observed_at: {signal.observed_at}\n"
         f"- created_at: {signal.created_at.isoformat()}\n"
         f"- processed_at: {signal.processed_at.isoformat() if signal.processed_at else ''}\n\n"
@@ -224,6 +229,13 @@ def _signal_to_dict(signal: ResidentInboxSignal) -> dict[str, Any]:
         "observed_at": signal.observed_at,
         "created_at": signal.created_at.isoformat(),
         "processed_at": signal.processed_at.isoformat() if signal.processed_at else "",
+        "shape_key": signal.shape_key,
+        "observation_count": signal.observation_count,
+        "first_archive_ref": signal.first_archive_ref,
+        "last_archive_ref": signal.last_archive_ref,
+        "first_observed_at": signal.first_observed_at,
+        "aggregate": signal.aggregate.to_dict(),
+        "attempts": signal.attempts,
     }
 
 
@@ -247,6 +259,14 @@ def _signal_from_dict(data: dict[str, Any]) -> ResidentInboxSignal:
         observed_at=str(data.get("observed_at") or ""),
         created_at=_parse_datetime(data.get("created_at")),
         processed_at=_parse_optional_datetime(data.get("processed_at")),
+        shape_key=str(data.get("shape_key") or ""),
+        # Records written before coalescing existed cover exactly one observation.
+        observation_count=max(1, int(data.get("observation_count") or 1)),
+        first_archive_ref=str(data.get("first_archive_ref") or ""),
+        last_archive_ref=str(data.get("last_archive_ref") or ""),
+        first_observed_at=str(data.get("first_observed_at") or data.get("observed_at") or ""),
+        aggregate=ShapeAggregate.from_dict(data.get("aggregate")),
+        attempts=max(0, int(data.get("attempts") or 0)),
     )
 
 

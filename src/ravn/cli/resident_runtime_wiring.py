@@ -128,6 +128,14 @@ def _build_resident_inbox(
             "retention_sweep_interval_seconds",
             cfg.signal_retention_sweep_interval_seconds,
         )
+    for name, value in (
+        ("max_distinct_values", cfg.signal_max_distinct_values),
+        ("max_extreme_payloads", cfg.signal_max_extreme_payloads),
+        ("max_invalid_attempts", cfg.signal_max_invalid_attempts),
+        ("pending_slot_warn_threshold", cfg.signal_pending_slot_warn_threshold),
+    ):
+        if name in params:
+            kwargs.setdefault(name, value)
     return cls(**kwargs)
 
 

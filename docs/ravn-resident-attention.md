@@ -1,6 +1,26 @@
 # Resident Attention
 
-Status: proposal. Supersedes earlier drafts.
+Status: stages 1 and 2 implemented on `feat/resident-inbox-coalescing`. Stage 3
+remains a proposal.
+
+## Implementation status
+
+| Stage | State |
+|---|---|
+| 1 — subscription scope | Verified as a config-only change; see §3 |
+| 2 — archive and coalescing queue | Implemented for `LocalResidentInbox` |
+| 3 — learned attention | Not started; unchanged proposal |
+
+Two contract changes landed with stage 2 and are worth knowing before reading
+the rest:
+
+- **A slot's reference changes when it is judged**, because the record moves
+  from `pending/` to `processed/`. Reference resolution follows a judged slot,
+  so references held in older turn records still resolve.
+- **A payload that retypes a field is a different shape.** `progress: 99` and
+  `progress: 99.0` do not share a slot. This is the intended fail-open
+  behaviour — a schema change wakes the resident rather than folding away — but
+  it does mean an inconsistent producer creates more slots than expected.
 
 ## 1. What is actually wrong
 
@@ -45,9 +65,14 @@ makes it a metric worth watching rather than a behaviour to be nervous about.
 
 Config, not code. Hours, not weeks. Do this before anything else.
 
-The NATS adapter takes `subject` as a constructor kwarg and
-`SignalSourceConfig.kwargs` passes it straight through, so narrowing what a
-resident watches is a configuration change available today.
+**Verified:** `NatsJetStreamSignalAdapter.__init__` takes `subject` as a required
+constructor kwarg, and `EnvironmentSignalRuntime._build_adapter` passes
+`SignalSourceConfig.kwargs` straight through as `cls(**kwargs)`
+(`src/ravn/environment_signal_runtime.py:186-191`). Narrowing what a resident
+watches is a values-file change with no code involved.
+
+Ivaldi's deployed signal-source config is not in this repository, so the actual
+narrowing is an operator action against its values file.
 
 This is legitimate and is not the operator authoring a filtering rule. Two
 different things get conflated:

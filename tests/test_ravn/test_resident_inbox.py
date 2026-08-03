@@ -29,7 +29,9 @@ async def test_local_inbox_is_durable_and_preserves_acknowledged_replays(tmp_pat
         content="Please inspect the current machine state",
         metadata={"message_id": "local-1", "telegram_date": "2026-07-21T12:00:00Z"},
     )
-    assert replay_ref == ref
+    # A judged slot lives under processed/, so the replay resolves to the record
+    # that already exists rather than resurrecting it as pending work.
+    assert replay_ref.startswith("resident/inbox/signals/processed/")
     assert await restarted.list_signals(status=ResidentInboxStatus.NEW.value) == []
     assert len(await restarted.list_signals(status=ResidentInboxStatus.REMEMBERED.value)) == 1
 
