@@ -48,6 +48,16 @@ def _simple_request(**kwargs) -> AnthropicRequest:
 
 
 class TestAnthropicAdapter:
+    def test_provider_specific_chat_template_kwargs_are_not_sent(self):
+        adapter = AnthropicAdapter(api_key="test-key")
+        request = _simple_request().model_copy(
+            update={"chat_template_kwargs": {"force_nonempty_content": True}}
+        )
+
+        payload = adapter._build_payload(request, "claude-sonnet-4-20250514")
+
+        assert "chat_template_kwargs" not in payload
+
     @pytest.mark.asyncio
     @respx.mock
     async def test_complete_success(self):

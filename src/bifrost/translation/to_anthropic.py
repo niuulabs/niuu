@@ -59,6 +59,10 @@ def openai_to_anthropic(response: dict[str, Any], original_model: str) -> Anthro
 
     content: list[ContentBlock] = []
 
+    reasoning = message.get("reasoning") or message.get("reasoning_content") or ""
+    if reasoning:
+        content.append(ThinkingBlock(thinking=reasoning))
+
     # Text content — extract <thinking> tags into ThinkingBlocks.
     text = message.get("content") or ""
     if text:

@@ -10,6 +10,7 @@ from bifrost.translation.models import (
     ContentBlock,
     Message,
     TextBlock,
+    ThinkingBlock,
     ToolDefinition,
     ToolResultBlock,
     ToolUseBlock,
@@ -55,6 +56,7 @@ def _message_to_openai(msg: Message) -> list[dict[str, Any]]:
 
     tool_result_messages: list[dict[str, Any]] = []
     text_parts: list[str] = []
+    reasoning_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
 
     for block in msg.content:
@@ -75,6 +77,8 @@ def _message_to_openai(msg: Message) -> list[dict[str, Any]]:
             tool_calls.extend(_extract_tool_calls([block]))
         elif isinstance(block, TextBlock):
             text_parts.append(block.text)
+        elif isinstance(block, ThinkingBlock):
+            reasoning_parts.append(block.thinking)
 
     if tool_result_messages:
         result: list[dict[str, Any]] = []
@@ -88,6 +92,8 @@ def _message_to_openai(msg: Message) -> list[dict[str, Any]]:
     text = "".join(text_parts)
     if text:
         out["content"] = text
+    if reasoning_parts:
+        out["reasoning_content"] = "".join(reasoning_parts)
     if tool_calls:
         out["tool_calls"] = tool_calls
     if not text and not tool_calls:
@@ -158,6 +164,8 @@ def anthropic_to_openai(request: AnthropicRequest, model: str) -> dict[str, Any]
         payload["top_p"] = request.top_p
     if request.stop_sequences:
         payload["stop"] = request.stop_sequences
+    if request.chat_template_kwargs is not None:
+        payload["chat_template_kwargs"] = request.chat_template_kwargs
 
     if request.tools:
         payload["tools"] = [_tool_definition_to_openai(t) for t in request.tools]

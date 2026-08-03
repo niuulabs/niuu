@@ -125,6 +125,7 @@ class AnthropicRequest(BaseModel):
     stream: bool = False
     metadata: dict[str, Any] | None = None
     thinking: dict[str, Any] | None = None
+    chat_template_kwargs: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------

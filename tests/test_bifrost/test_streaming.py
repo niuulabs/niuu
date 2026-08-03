@@ -25,6 +25,11 @@ def _chunk(content: str | None = None, finish: str | None = None) -> str:
     return _sse({"id": "c1", "choices": [choice]})
 
 
+def _reasoning_chunk(reasoning: str, field: str = "reasoning_content") -> str:
+    delta = {field: reasoning}
+    return _sse({"id": "c1", "choices": [{"index": 0, "delta": delta, "finish_reason": None}]})
+
+
 def _tool_chunk(tc_index: int, name: str = "", args: str = "", tc_id: str = "") -> str:
     tc: dict = {"index": tc_index, "function": {}}
     if tc_id:
@@ -103,6 +108,29 @@ class TestOpenAIStreamToAnthropic:
         text_deltas = [e["delta"]["text"] for e in events if e.get("type") == "content_block_delta"]
         assert "Hello" in text_deltas
         assert " world" in text_deltas
+
+    @pytest.mark.asyncio
+    async def test_reasoning_stream_is_preserved_as_thinking(self):
+        events = await self._run(
+            _reasoning_chunk("inspect ", field="reasoning"),
+            _reasoning_chunk("the evidence"),
+            _chunk("Final answer"),
+            _chunk(finish="stop"),
+            "data: [DONE]",
+        )
+
+        starts = [
+            event["content_block"]["type"]
+            for event in events
+            if event.get("type") == "content_block_start"
+        ]
+        assert starts == ["thinking", "text"]
+        thinking = [
+            event["delta"]["thinking"]
+            for event in events
+            if event.get("delta", {}).get("type") == "thinking_delta"
+        ]
+        assert thinking == ["inspect ", "the evidence"]
 
     @pytest.mark.asyncio
     async def test_stop_reason_mapped(self):

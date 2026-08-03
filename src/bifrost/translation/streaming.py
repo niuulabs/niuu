@@ -34,7 +34,7 @@ async def openai_stream_to_anthropic(
         Anthropic-formatted SSE strings.
     """
     emitted_start = False
-    emitted_block_start = False
+    active_block_type = ""
     block_index = 0
     input_tokens = 0
     output_tokens = 0  # Updated from upstream usage if available.
@@ -87,11 +87,45 @@ async def openai_stream_to_anthropic(
         delta = choice.get("delta", {})
         finish_reason = choice.get("finish_reason")
 
+        # Reasoning delta.
+        reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+        if reasoning:
+            if active_block_type != "thinking":
+                if active_block_type:
+                    yield _sse_event(
+                        "content_block_stop",
+                        {"type": "content_block_stop", "index": block_index},
+                    )
+                    block_index += 1
+                active_block_type = "thinking"
+                yield _sse_event(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": block_index,
+                        "content_block": {"type": "thinking", "thinking": ""},
+                    },
+                )
+            yield _sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": block_index,
+                    "delta": {"type": "thinking_delta", "thinking": reasoning},
+                },
+            )
+
         # Text delta.
         text = delta.get("content")
         if text:
-            if not emitted_block_start:
-                emitted_block_start = True
+            if active_block_type != "text":
+                if active_block_type:
+                    yield _sse_event(
+                        "content_block_stop",
+                        {"type": "content_block_stop", "index": block_index},
+                    )
+                    block_index += 1
+                active_block_type = "text"
                 yield _sse_event(
                     "content_block_start",
                     {
@@ -133,12 +167,13 @@ async def openai_stream_to_anthropic(
 
     # Flush tool call accumulator as content blocks.
     if tool_call_accumulator:
-        if emitted_block_start:
+        if active_block_type:
             yield _sse_event(
                 "content_block_stop",
                 {"type": "content_block_stop", "index": block_index},
             )
             block_index += 1
+            active_block_type = ""
 
         for acc in tool_call_accumulator.values():
             try:
@@ -176,7 +211,7 @@ async def openai_stream_to_anthropic(
             )
             block_index += 1
         stop_reason = "tool_use"
-    elif emitted_block_start:
+    elif active_block_type:
         yield _sse_event(
             "content_block_stop",
             {"type": "content_block_stop", "index": block_index},

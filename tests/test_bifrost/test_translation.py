@@ -42,6 +42,42 @@ class TestAnthropicToOpenAI:
         assert payload["messages"][-1] == {"role": "user", "content": "Hello"}
         assert payload["max_tokens"] == 1024
 
+    def test_chat_template_kwargs_forwarded(self):
+        req = self._simple_request(
+            chat_template_kwargs={
+                "enable_thinking": True,
+                "force_nonempty_content": True,
+            }
+        )
+
+        payload = anthropic_to_openai(req, "gpt-4o")
+
+        assert payload["chat_template_kwargs"] == {
+            "enable_thinking": True,
+            "force_nonempty_content": True,
+        }
+
+    def test_assistant_thinking_block_becomes_reasoning_content(self):
+        req = self._simple_request(
+            messages=[
+                Message(
+                    role="assistant",
+                    content=[
+                        ThinkingBlock(thinking="Inspect first."),
+                        TextBlock(text="Done."),
+                    ],
+                )
+            ]
+        )
+
+        payload = anthropic_to_openai(req, "gpt-4o")
+
+        assert payload["messages"][0] == {
+            "role": "assistant",
+            "content": "Done.",
+            "reasoning_content": "Inspect first.",
+        }
+
     def test_system_prompt_string(self):
         req = self._simple_request(system="You are a pirate.")
         payload = anthropic_to_openai(req, "gpt-4o")
@@ -374,6 +410,17 @@ class TestOpenAIToAnthropic:
         assert resp.content[0].thinking == "Let me think about this."
         assert isinstance(resp.content[1], TextBlock)
         assert resp.content[1].text == "The answer is 42."
+
+    def test_reasoning_content_extracted(self):
+        response = self._openai_response()
+        response["choices"][0]["message"]["content"] = "The answer is 42."
+        response["choices"][0]["message"]["reasoning_content"] = "Let me think."
+
+        result = openai_to_anthropic(response, "gpt-4o")
+
+        assert isinstance(result.content[0], ThinkingBlock)
+        assert result.content[0].thinking == "Let me think."
+        assert isinstance(result.content[1], TextBlock)
 
     def test_thinking_only_no_text(self):
         r = self._openai_response()

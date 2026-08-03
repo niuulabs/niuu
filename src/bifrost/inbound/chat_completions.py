@@ -25,12 +25,12 @@ from bifrost.translation.models import (
     ContentBlock,
     Message,
     TextBlock,
+    ThinkingBlock,
     ToolChoiceAny,
     ToolChoiceAuto,
     ToolChoiceTool,
     ToolDefinition,
     ToolResultBlock,
-    extract_text_from_response,
 )
 from bifrost.translation.to_anthropic import _openai_tool_calls_to_blocks
 from bifrost.translation.to_openai import _extract_tool_calls
@@ -60,6 +60,8 @@ class _OpenAIToolCall(BaseModel):
 class _OpenAIMessage(BaseModel):
     role: str
     content: str | list[dict[str, Any]] | None = None
+    reasoning: str | None = None
+    reasoning_content: str | None = None
     tool_calls: list[_OpenAIToolCall] | None = None
     tool_call_id: str | None = None
 
@@ -77,6 +79,7 @@ class OpenAIChatRequest(BaseModel):
     tools: list[_OpenAITool] | None = None
     tool_choice: str | dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
+    chat_template_kwargs: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -116,15 +119,18 @@ def _extract_text_content(content: str | list[dict[str, Any]] | None) -> str:
 def _build_assistant_content(msg: _OpenAIMessage) -> str | list[ContentBlock]:
     """Build Anthropic content for an assistant-role message."""
     text = _extract_text_content(msg.content)
+    reasoning = msg.reasoning or msg.reasoning_content or ""
     tool_calls = msg.tool_calls or []
 
-    if not text and not tool_calls:
+    if not reasoning and not text and not tool_calls:
         return ""
 
-    if not tool_calls:
+    if not reasoning and not tool_calls:
         return text
 
     blocks: list[ContentBlock] = []
+    if reasoning:
+        blocks.append(ThinkingBlock(thinking=reasoning))
     if text:
         blocks.append(TextBlock(text=text))
 
@@ -232,6 +238,7 @@ def openai_request_to_anthropic(req: OpenAIChatRequest) -> AnthropicRequest:
         top_p=req.top_p,
         stop_sequences=stop_sequences,
         stream=req.stream,
+        chat_template_kwargs=req.chat_template_kwargs,
     )
 
 
@@ -249,11 +256,16 @@ def anthropic_response_to_openai(response: AnthropicResponse) -> dict[str, Any]:
     Returns:
         A dict ready to be JSON-serialised and returned to the caller.
     """
-    text = extract_text_from_response(response)
+    text = "".join(block.text for block in response.content if isinstance(block, TextBlock))
+    reasoning = "".join(
+        block.thinking for block in response.content if isinstance(block, ThinkingBlock)
+    )
     tool_calls = _extract_tool_calls(response.content)
     finish_reason = STOP_REASON_TO_OPENAI.get(response.stop_reason or "end_turn", "stop")
 
     message: dict[str, Any] = {"role": "assistant", "content": text or None}
+    if reasoning:
+        message["reasoning_content"] = reasoning
     if tool_calls:
         message["tool_calls"] = tool_calls
 
@@ -434,6 +446,15 @@ async def anthropic_stream_to_openai(
                         model,
                         created,
                         {"content": text},
+                    )
+
+                elif delta_type == "thinking_delta":
+                    reasoning = delta.get("thinking", "")
+                    yield _openai_chunk(
+                        message_id,
+                        model,
+                        created,
+                        {"reasoning_content": reasoning},
                     )
 
                 elif delta_type == "input_json_delta":

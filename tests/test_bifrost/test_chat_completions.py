@@ -126,6 +126,39 @@ class TestOpenAIRequestToAnthropic:
         assert result.messages[1].role == "assistant"
         assert result.messages[1].content == "Hi there!"
 
+    def test_assistant_reasoning_message_becomes_thinking_block(self):
+        req = self._req(
+            messages=[
+                {"role": "user", "content": "Hello"},
+                {
+                    "role": "assistant",
+                    "reasoning_content": "I should inspect first.",
+                    "content": "I found it.",
+                },
+            ]
+        )
+
+        content = openai_request_to_anthropic(req).messages[1].content
+        assert isinstance(content, list)
+        assert isinstance(content[0], ThinkingBlock)
+        assert content[0].thinking == "I should inspect first."
+        assert isinstance(content[1], TextBlock)
+
+    def test_chat_template_kwargs_forwarded(self):
+        req = self._req(
+            chat_template_kwargs={
+                "enable_thinking": True,
+                "force_nonempty_content": True,
+            }
+        )
+
+        result = openai_request_to_anthropic(req)
+
+        assert result.chat_template_kwargs == {
+            "enable_thinking": True,
+            "force_nonempty_content": True,
+        }
+
     def test_assistant_tool_calls_become_tool_use_blocks(self):
         req = self._req(
             messages=[
@@ -460,7 +493,7 @@ class TestAnthropicResponseToOpenAI:
         assert tc["function"]["name"] == "get_weather"
         assert json.loads(tc["function"]["arguments"]) == {"city": "Oslo"}
 
-    def test_thinking_block_wrapped_in_tags(self):
+    def test_thinking_block_uses_reasoning_content(self):
         resp = AnthropicResponse(
             id="msg_t",
             content=[ThinkingBlock(thinking="Let me think."), TextBlock(text="Answer.")],
@@ -469,9 +502,9 @@ class TestAnthropicResponseToOpenAI:
             usage=UsageInfo(),
         )
         result = anthropic_response_to_openai(resp)
-        content = result["choices"][0]["message"]["content"]
-        assert "<thinking>Let me think.</thinking>" in content
-        assert "Answer." in content
+        message = result["choices"][0]["message"]
+        assert message["reasoning_content"] == "Let me think."
+        assert message["content"] == "Answer."
 
     def test_empty_text_gives_null_content(self):
         resp = AnthropicResponse(
@@ -501,6 +534,53 @@ class TestAnthropicResponseToOpenAI:
 
 
 class TestAnthropicStreamToOpenAI:
+    @pytest.mark.asyncio
+    async def test_thinking_delta_becomes_reasoning_content(self):
+        events = [
+            "event: message_start\ndata: "
+            + json.dumps(
+                {
+                    "type": "message_start",
+                    "message": {"id": "msg_reasoning", "usage": {"input_tokens": 5}},
+                }
+            )
+            + "\n\n",
+            "event: content_block_start\ndata: "
+            + json.dumps(
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "thinking", "thinking": ""},
+                }
+            )
+            + "\n\n",
+            "event: content_block_delta\ndata: "
+            + json.dumps(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "Inspect first."},
+                }
+            )
+            + "\n\n",
+            "event: message_stop\ndata: " + json.dumps({"type": "message_stop"}) + "\n\n",
+        ]
+
+        chunks = [
+            chunk
+            async for chunk in anthropic_stream_to_openai(
+                _async_iter(events), message_id="chatcmpl-reasoning", model="gpt-4o"
+            )
+        ]
+        parsed = [json.loads(chunk[6:]) for chunk in chunks if chunk != "data: [DONE]\n\n"]
+
+        reasoning = [
+            item["choices"][0]["delta"]["reasoning_content"]
+            for item in parsed
+            if "reasoning_content" in item["choices"][0]["delta"]
+        ]
+        assert reasoning == ["Inspect first."]
+
     @pytest.mark.asyncio
     async def test_basic_text_stream(self):
         events = [

@@ -52,7 +52,10 @@ class AnthropicAdapter(ProviderPort):
 
     def _build_payload(self, request: AnthropicRequest, model: str) -> dict:
         """Serialise the request to a JSON-compatible dict for the Anthropic API."""
-        payload = request.model_dump(exclude_none=True, exclude={"stream"})
+        payload = request.model_dump(
+            exclude_none=True,
+            exclude={"chat_template_kwargs", "stream"},
+        )
         payload["model"] = model
         return payload
 
