@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { CALM_HIDDEN_LAYERS } from '../application/useObservatoryStore';
 import {
   EDGE_LAYERS,
   EDGE_LAYER_LABELS,
@@ -31,6 +32,20 @@ function edge(relationType?: EdgeRelationType): TopologyEdge {
     relationType,
   };
 }
+
+describe('the model path', () => {
+  it('keeps a caller and its gateway on the same layer', () => {
+    // `uses` is an agent reaching its gateway and `routes_to` is that gateway
+    // reaching the model. Split across layers, the calm view drew the model
+    // being called and hid who called it.
+    expect(edgeLayer({ relationType: 'uses' })).toBe('inference');
+    expect(edgeLayer({ relationType: 'routes_to' })).toBe('inference');
+  });
+
+  it('is not hidden by the view the Observatory opens in', () => {
+    expect(CALM_HIDDEN_LAYERS).not.toContain(edgeLayer({ relationType: 'uses' }));
+  });
+});
 
 describe('edgeLayer', () => {
   it('assigns a layer to every relation in the taxonomy', () => {

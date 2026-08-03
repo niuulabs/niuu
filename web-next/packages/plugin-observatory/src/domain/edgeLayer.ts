@@ -42,11 +42,15 @@ const RELATION_LAYER: Readonly<Record<EdgeRelationType, EdgeLayer>> = {
   reads: 'memory',
   writes: 'memory',
   routes_to: 'inference',
+  // The two halves of one journey. `uses` is an agent reaching its model
+  // gateway and `routes_to` is that gateway reaching the model, so splitting
+  // them across layers meant the calm view drew the model being called and
+  // hid who called it — which is the gap the caller edge exists to close.
+  uses: 'inference',
   observes: 'observability',
   signals_to: 'signals',
   contains: 'platform',
   manages: 'platform',
-  uses: 'platform',
   exposes: 'platform',
 };
 
