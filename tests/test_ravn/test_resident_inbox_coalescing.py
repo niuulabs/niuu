@@ -371,6 +371,45 @@ async def test_migration_is_resumable_and_reconciles(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_deploying_before_migrating_leaves_the_backlog_intact(tmp_path) -> None:
+    """The rollout depends on this: deploy first, migrate deliberately later.
+
+    A flat backlog written by the previous layout must be invisible to the queue
+    and untouchable by retention until an operator migrates it, so a deploy can
+    fix the write path without racing 84k files.
+    """
+    from ravn.resident_inbox import render_inbox_signal
+
+    root = tmp_path / "inbox"
+    flat_dir = root / "resident/inbox/signals"
+    flat_dir.mkdir(parents=True, exist_ok=True)
+    for index in range(25):
+        signal = _tick(index, progress=index)
+        (flat_dir / f"2026-08-03t10-{index:02d}-00z-tick-{index}.md").write_text(
+            render_inbox_signal(signal), encoding="utf-8"
+        )
+
+    inbox = LocalResidentInbox(
+        root,
+        retention_max_pages=1,
+        retention_max_age_days=0.0001,
+        retention_sweep_interval_seconds=0.0,
+    )
+    # New observations flow normally.
+    await inbox.write_signal(_tick(99, progress=99.0))
+    pending = await inbox.list_signals(limit=50)
+    assert len(pending) == 1
+    assert pending[0][1].observation_count == 1, "legacy files are not in the queue"
+
+    ref, _slot = pending[0]
+    await inbox.acknowledge((ref,))
+    time.sleep(0.02)
+    await inbox.prune_signals()
+
+    assert len(list(flat_dir.glob("*.md"))) == 25, "retention never reaches the old layout"
+
+
+@pytest.mark.asyncio
 async def test_migration_leaves_unreadable_files_in_place(tmp_path) -> None:
     root = tmp_path / "inbox"
     inbox = LocalResidentInbox(root)
