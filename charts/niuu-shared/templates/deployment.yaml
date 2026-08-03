@@ -164,6 +164,13 @@ spec:
                   name: {{ .secretName }}
                   key: {{ .secretKey }}
             {{- end }}
+            {{- range .Values.credentialEnrollmentRunner.secretKwargs }}
+            - name: CREDENTIAL_ENROLLMENT_RUNNER_SK_{{ .kwarg | upper }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
             {{- range .Values.credentialStore.secretKwargs }}
             - name: CREDENTIAL_STORE_SK_{{ .kwarg | upper }}
               valueFrom:

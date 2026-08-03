@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -24,6 +25,7 @@ from volundr.domain.ports import (
 from volundr.domain.services.integration_registry import IntegrationRegistry
 
 DEFAULT_CREDENTIAL_ENROLLMENT_TTL_SECONDS = 900
+CREDENTIAL_ENROLLMENT_RECONCILE_INTERVAL_SECONDS = 30
 
 logger = logging.getLogger(__name__)
 
@@ -369,3 +371,27 @@ class CredentialEnrollmentService:
             user_code="" if terminal else enrollment.user_code,
             updated_at=datetime.now(UTC),
         )
+
+
+async def reconcile_credential_enrollments_loop(
+    service: CredentialEnrollmentService,
+    *,
+    interval_seconds: float = CREDENTIAL_ENROLLMENT_RECONCILE_INTERVAL_SECONDS,
+) -> None:
+    """Destroy expired interactive-login sandboxes independently of the UI."""
+    logger.info(
+        "Credential enrollment reconciliation started, interval=%.1fs",
+        interval_seconds,
+    )
+    while True:
+        try:
+            count = await service.expire_stale()
+            if count:
+                logger.info("Expired %d stale credential enrollment(s)", count)
+            await asyncio.sleep(interval_seconds)
+        except asyncio.CancelledError:
+            logger.info("Credential enrollment reconciliation task cancelled")
+            break
+        except Exception:
+            logger.exception("Credential enrollment reconciliation iteration failed")
+            await asyncio.sleep(interval_seconds)

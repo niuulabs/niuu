@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -29,8 +31,16 @@ from niuu.service_runtime import (
 )
 from volundr.adapters.inbound.rest_integrations import create_canonical_integrations_router
 from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router
+from volundr.adapters.outbound.postgres_credential_enrollments import (
+    PostgresCredentialEnrollmentRepository,
+)
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
+from volundr.composition_builders import _create_credential_enrollment_runner
 from volundr.config import Settings
+from volundr.domain.services.credential_enrollment import (
+    CredentialEnrollmentService,
+    reconcile_credential_enrollments_loop,
+)
 from volundr.domain.services.integration_registry import (
     IntegrationRegistry,
     definitions_from_config,
@@ -74,6 +84,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             )
             tracker_factory = TrackerFactory(credential_store)
+            credential_enrollment_service = CredentialEnrollmentService(
+                repository=PostgresCredentialEnrollmentRepository(pool),
+                runner=_create_credential_enrollment_runner(settings),
+                integration_repository=integration_repo,
+                integration_registry=integration_registry,
+                credential_store=credential_store,
+            )
 
             if settings.integrations.seed_connections:
                 await seed_configured_integrations(
@@ -107,6 +124,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     tracker_factory,
                     registry=integration_registry,
                     credential_store=credential_store,
+                    credential_enrollment_service=credential_enrollment_service,
                 )
             )
             app.include_router(
@@ -118,9 +136,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             )
 
+            enrollment_reconcile_task = asyncio.create_task(
+                reconcile_credential_enrollments_loop(credential_enrollment_service)
+            )
             try:
                 yield
             finally:
+                enrollment_reconcile_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await enrollment_reconcile_task
                 release_credential_store(settings)
 
     app.router.lifespan_context = lifespan
