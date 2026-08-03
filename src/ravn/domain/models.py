@@ -382,6 +382,10 @@ class AgentTask:
     resident_started_at: str = ""
     resident_parent_turn_ref: str = ""
     resident_inbox_refs: list[str] = field(default_factory=list)
+    #: Archive reference each inbox slot carried when this task was built. The
+    #: inbox acknowledges against it so observations that arrive mid-turn stay
+    #: pending instead of being acknowledged unseen.
+    resident_inbox_expected: dict[str, str] = field(default_factory=dict)
     resident_answer_ref: str = ""
     resident_wake_ref: str = ""
     resident_help_published: bool = False

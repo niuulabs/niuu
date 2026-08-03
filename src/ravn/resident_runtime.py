@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -34,8 +35,11 @@ from ravn.resident_inbox import (
     ResidentInboxClassification,
     ResidentInboxSignal,
     ResidentInboxStatus,
+    aggregate_summary_lines,
 )
 from ravn.resident_text import compact_line
+
+logger = logging.getLogger(__name__)
 
 EnqueueResidentTask = Callable[[AgentTask], Awaitable[bool | None]]
 
@@ -613,6 +617,10 @@ class ResidentRuntime:
                     await self._state.consume_scheduled_wake(wake)
 
         if not outcome_valid:
+            # The turn and budget records are durable, so this attempt really
+            # happened. Count it: a slot no turn can validly judge must stop
+            # being retried forever and become visible to a human instead.
+            await self._record_invalid_outcome(task, case_id=case_id, turn_index=turn_index)
             self._inflight_cases.discard(case_id)
             self._inflight_refs.difference_update(task.resident_inbox_refs)
             return ResidentTurnDisposition(
@@ -635,6 +643,7 @@ class ResidentRuntime:
                     tuple(task.resident_inbox_refs),
                     status=ResidentInboxStatus.REMEMBERED.value,
                     reason=f"recorded by resident case {case_id} turn {turn_index}",
+                    expected=dict(task.resident_inbox_expected),
                 )
         if task.resident_answer_ref:
             answer = await self._state.read_operator_answer(case_id)
@@ -1009,6 +1018,48 @@ class ResidentRuntime:
         )
         return True
 
+    async def _record_invalid_outcome(
+        self,
+        task: AgentTask,
+        *,
+        case_id: str,
+        turn_index: int,
+    ) -> None:
+        """Count an invalid outcome against the observations it failed to judge."""
+        if self._inbox is None or not task.resident_inbox_refs:
+            return
+        telemetry = get_observability()
+        blocked = await self._inbox.record_failed_attempt(
+            tuple(task.resident_inbox_refs),
+            reason=(
+                f"blocked after repeated invalid resident outcomes; "
+                f"last case {case_id} turn {turn_index}"
+            ),
+        )
+        telemetry.count(
+            "ravn.resident.inbox_invalid_outcomes",
+            attributes={"ravn.resident.id": self._resident_id},
+        )
+        if not blocked:
+            return
+        # Escalate once: a metric alone leaves nobody looking at work that can
+        # never be judged.
+        telemetry.event(
+            "ravn.resident.inbox_blocked",
+            attributes={
+                "ravn.resident.id": self._resident_id,
+                "ravn.resident.case_id": case_id,
+                "ravn.resident.blocked_ref_count": len(blocked),
+            },
+            content={"refs": list(blocked)},
+        )
+        logger.error(
+            "resident inbox: %d observation slot(s) blocked after repeated invalid "
+            "outcomes and need operator review: %s",
+            len(blocked),
+            ", ".join(blocked),
+        )
+
     async def next_home_task(
         self,
         *,
@@ -1062,6 +1113,7 @@ class ResidentRuntime:
                 f"observed_at={signal.observed_at}; evidence_ref={evidence}; "
                 f"summary={compact_line(signal.summary, limit=280)}"
             )
+            context_lines.extend(_coalesced_evidence_lines(signal))
             raw_payload = signal.payload.get("payload", signal.payload)
             context_lines.extend(
                 (
@@ -1083,6 +1135,7 @@ class ResidentRuntime:
                     "  ```",
                 )
             )
+            context_lines.extend(_extreme_payload_lines(signal, payload_budget))
         task = AgentTask(
             task_id=_task_id("resident_home"),
             title=f"Resident home turn ({len(rows)} observations)",
@@ -1095,6 +1148,9 @@ class ResidentRuntime:
             resident_turn_index=int(origin.get("turn_index") or 0) + 1,
             resident_started_at=str(origin.get("case_started_at") or now.isoformat()),
             resident_inbox_refs=refs,
+            resident_inbox_expected={
+                ref: signal.last_archive_ref for ref, signal in rows if signal.last_archive_ref
+            },
             trace_context=next(
                 (dict(signal.trace_context) for _ref, signal in rows if signal.trace_context),
                 {},
@@ -1502,6 +1558,62 @@ def _string_refs(value: Any) -> tuple[str, ...]:
     if not isinstance(value, list | tuple):
         return ()
     return tuple(str(item).strip() for item in value if str(item).strip())
+
+
+def _coalesced_evidence_lines(signal: ResidentInboxSignal) -> list[str]:
+    """Say what a coalesced slot actually stands for.
+
+    A slot's payload is only its newest observation.  Presenting that alone
+    would hide both how many observations it represents and how far their
+    values ranged — the resident would judge one tick and unknowingly
+    acknowledge hundreds.  The structural inventory is never summarised away:
+    ranges, distinct values and the payloads at each numeric extreme all travel
+    with the slot, and the raw archive range names the durable evidence behind
+    them.
+    """
+    if signal.observation_count <= 1:
+        return []
+    lines = [
+        f"  Coalesced: {signal.observation_count} observations of this exact shape, "
+        f"{signal.first_observed_at} to {signal.observed_at}",
+        f"  Raw archive range: {signal.first_archive_ref}..{signal.last_archive_ref}",
+    ]
+    lines.extend(aggregate_summary_lines(signal.aggregate))
+    return lines
+
+
+def _extreme_payload_lines(signal: ResidentInboxSignal, budget: int) -> list[str]:
+    """Attach the full payload observed at each numeric extreme.
+
+    An excursion inside a large slot is exactly the observation a summary would
+    lose, so its whole payload travels rather than just its bound.
+    """
+    extremes = signal.aggregate.extreme_payloads
+    if signal.observation_count <= 1 or not extremes:
+        return []
+    lines = ["  Payloads at numeric extremes:"]
+    for key in sorted(extremes):
+        lines.extend(
+            (
+                f"  {key}:",
+                "  ```json",
+                _indent(
+                    _bounded(
+                        json.dumps(
+                            extremes[key],
+                            indent=2,
+                            sort_keys=True,
+                            ensure_ascii=False,
+                            default=str,
+                        ),
+                        budget,
+                    ),
+                    "  ",
+                ),
+                "  ```",
+            )
+        )
+    return lines
 
 
 def _bounded(value: Any, max_chars: int) -> str:
