@@ -287,8 +287,38 @@ def _entry_text(entry: Any) -> str:
     if isinstance(entry, str):
         return entry.strip()
     if isinstance(entry, dict):
-        return json.dumps(entry, ensure_ascii=False, sort_keys=True, default=str)
+        primary_key = next(
+            (
+                key
+                for key in ("description", "claim", "summary", "result")
+                if _entry_value(entry.get(key))
+            ),
+            None,
+        )
+        primary = _entry_value(entry.get(primary_key)) if primary_key else ""
+        details = [
+            f"{key.replace('_', ' ')}: {text}"
+            for key, value in entry.items()
+            if key != primary_key and (text := _entry_value(value))
+        ]
+        if primary and details:
+            return f"{primary} — {' · '.join(details)}"
+        return primary or " · ".join(details)
     return str(entry).strip()
+
+
+def _entry_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return ", ".join(
+            f"{key.replace('_', ' ')}: {text}"
+            for key, item in value.items()
+            if (text := _entry_value(item))
+        )
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(text for item in value if (text := _entry_value(item)))
+    return str(value).strip()
 
 
 def _section(content: str, heading: str) -> str:
