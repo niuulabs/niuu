@@ -166,10 +166,7 @@ async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
     assert second_count == 0
     assert [event.event_type for event in received] == ["signal.received"]
     assert received[0].payload["environment_id"] == "host-jozef"
-    assert [event.event_type for event in telemetry] == [
-        "valkyrie.signal_poll.completed",
-        "valkyrie.signal_poll.completed",
-    ]
+    assert [event.event_type for event in telemetry] == ["valkyrie.signal_poll.completed"]
     assert telemetry[0].payload["environment_id"] == "host-jozef"
     assert telemetry[0].payload["valkyrie_id"] == "valkyrie-host-jozef"
     assert telemetry[0].payload["source_id"] == "host-events"
@@ -185,11 +182,6 @@ async def test_runtime_publishes_and_enqueues_deduped_signal_tasks() -> None:
     assert telemetry[0].payload["nats_subject"] == (
         "ravn.environment.valkyrie.signal_poll.completed"
     )
-    assert telemetry[1].payload["collected_count"] == 1
-    assert telemetry[1].payload["new_count"] == 0
-    assert telemetry[1].payload["duplicate_count"] == 1
-    assert telemetry[1].payload["published_count"] == 0
-    assert telemetry[1].payload["enqueued_task_count"] == 0
     assert len(enqueued) == 1
     assert enqueued[0].triggered_by == "signal:signal.received"
     assert enqueued[0].root_correlation_id == received[0].correlation_id

@@ -122,6 +122,7 @@ class EnvironmentSignalRuntime:
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._tasks: list[asyncio.Task] = []
         self._untriaged: list[dict[str, Any]] = []
+        self._last_idle_poll_event_at: dict[str, float] = {}
 
     @property
     def source_count(self) -> int:
@@ -826,6 +827,20 @@ class EnvironmentSignalRuntime:
         enqueued_count: int,
         duration_ms: int,
     ) -> None:
+        # Empty and duplicate-only polls are already represented by metrics and
+        # spans. Persist them only at a bounded cadence for liveness projections.
+        if (
+            not published_events
+            and not enqueued_count
+            and not any(result is not None for result in resident_results)
+        ):
+            interval = self._settings.environment.signal_idle_poll_event_interval_seconds
+            if interval <= 0:
+                return
+            now = perf_counter()
+            previous = self._last_idle_poll_event_at.get(adapter.source_id)
+            if previous is not None and now - previous < interval:
+                return
         severity_counts: dict[str, int] = {}
         for signal in collected:
             severity_counts[signal.severity] = severity_counts.get(signal.severity, 0) + 1
@@ -877,6 +892,7 @@ class EnvironmentSignalRuntime:
             tenant_id=self._environment.tenant_id,
         )
         await self._publish_telemetry_event(event)
+        self._last_idle_poll_event_at[adapter.source_id] = perf_counter()
 
     async def _publish_resident_learning_failed(
         self,

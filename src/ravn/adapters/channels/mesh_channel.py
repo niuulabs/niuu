@@ -1,18 +1,21 @@
-"""MeshActivityChannel — publishes agent activity events to the Ravn mesh (NIU-634).
+"""MeshActivityChannel — publishes durable agent activity to the Ravn mesh (NIU-634).
 
-Bridges the ChannelPort interface to the MeshPort so that DriveLoop
-can forward thought/tool_start/tool_result/response events to any mesh
-peer without a direct WebSocket connection to Skuld.
+Bridges the ChannelPort interface to the MeshPort so that DriveLoop can forward
+task, tool, response, and outcome boundaries to any mesh peer without a direct
+WebSocket connection to Skuld. Token-level thought and usage events remain on
+live channels and metrics; persisting them would create replay noise and make
+best-effort observability contend with agent execution.
 
 Topic: ``activity.{peer_id}``
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from ravn.domain.events import RavnEvent
+from ravn.domain.events import RavnEvent, RavnEventType
 from ravn.ports.channel import ChannelPort
 
 if TYPE_CHECKING:
@@ -20,20 +23,32 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_EPHEMERAL_EVENT_TYPES = {RavnEventType.THOUGHT, RavnEventType.USAGE}
+
 
 class MeshActivityChannel(ChannelPort):
-    """Publishes each emitted RavnEvent to the mesh under ``activity.{peer_id}``.
+    """Publishes durable RavnEvent boundaries under ``activity.{peer_id}``.
 
     Used alongside SkuldChannel in a CompositeChannel so that activity events
     are delivered via Sleipnir mesh in addition to (or instead of) WebSocket.
     The collaboration mesh bridge forwards their Ravn-projected room events.
+    Publishing is best-effort and detached from the caller so a slow telemetry
+    stream cannot hold up model or tool execution.
     """
 
     def __init__(self, mesh: MeshPort, peer_id: str) -> None:
         self._mesh = mesh
         self._topic = f"activity.{peer_id}"
+        self._publishes: set[asyncio.Task[None]] = set()
 
     async def emit(self, event: RavnEvent) -> None:
+        if event.type in _EPHEMERAL_EVENT_TYPES:
+            return
+        task = asyncio.create_task(self._publish(event))
+        self._publishes.add(task)
+        task.add_done_callback(self._publishes.discard)
+
+    async def _publish(self, event: RavnEvent) -> None:
         try:
             await self._mesh.publish(event, topic=self._topic)
         except Exception:

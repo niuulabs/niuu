@@ -3457,6 +3457,15 @@ class EnvironmentConfig(BaseModel):
         default=10.0,
         description="Seconds between polling enabled signal sources.",
     )
+    signal_idle_poll_event_interval_seconds: float = Field(
+        default=300.0,
+        ge=0.0,
+        description=(
+            "Minimum seconds between durable completion events for polls that produced no "
+            "resident-visible work. Metrics still record every poll; 0 disables idle poll "
+            "events."
+        ),
+    )
     signal_dedupe_cache_size: int = Field(
         default=2048,
         description="Maximum signal ids remembered per daemon to avoid duplicate work.",

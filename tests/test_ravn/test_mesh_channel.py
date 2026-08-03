@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from asyncio import sleep
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -39,19 +40,18 @@ class TestMeshActivityChannel:
     async def test_emit_publishes_to_mesh(self):
         mesh = _make_mesh()
         ch = MeshActivityChannel(mesh, "peer-01")
-        event = _make_event()
+        event = _make_event(RavnEventType.RESPONSE)
         await ch.emit(event)
+        await sleep(0)
         mesh.publish.assert_awaited_once_with(event, topic="activity.peer-01")
 
     @pytest.mark.asyncio
-    async def test_emit_thought_event(self):
+    async def test_emit_drops_ephemeral_thought_event(self):
         mesh = _make_mesh()
         ch = MeshActivityChannel(mesh, "p1")
         event = _make_event(RavnEventType.THOUGHT)
         await ch.emit(event)
-        call_args = mesh.publish.call_args
-        assert call_args[0][0].type == RavnEventType.THOUGHT
-        assert call_args[1]["topic"] == "activity.p1"
+        mesh.publish.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_emit_response_event(self):
@@ -59,6 +59,7 @@ class TestMeshActivityChannel:
         ch = MeshActivityChannel(mesh, "p1")
         event = _make_event(RavnEventType.RESPONSE)
         await ch.emit(event)
+        await sleep(0)
         mesh.publish.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -67,6 +68,7 @@ class TestMeshActivityChannel:
         ch = MeshActivityChannel(mesh, "p1")
         event = _make_event(RavnEventType.TOOL_START)
         await ch.emit(event)
+        await sleep(0)
         mesh.publish.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -76,7 +78,8 @@ class TestMeshActivityChannel:
         mesh.publish.side_effect = RuntimeError("mesh down")
         ch = MeshActivityChannel(mesh, "p1")
         # Must not raise
-        await ch.emit(_make_event())
+        await ch.emit(_make_event(RavnEventType.ERROR))
+        await sleep(0)
 
     @pytest.mark.asyncio
     async def test_emit_logs_warning_on_exception(self):
@@ -84,5 +87,6 @@ class TestMeshActivityChannel:
         mesh.publish.side_effect = RuntimeError("mesh down")
         ch = MeshActivityChannel(mesh, "p1")
         with patch("ravn.adapters.channels.mesh_channel.logger") as mock_logger:
-            await ch.emit(_make_event())
+            await ch.emit(_make_event(RavnEventType.ERROR))
+            await sleep(0)
         mock_logger.warning.assert_called_once()

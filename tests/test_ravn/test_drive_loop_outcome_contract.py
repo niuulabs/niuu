@@ -387,9 +387,7 @@ class TestDriveLoopOutcomeContract:
         assert fields["environment_id"] == "cluster-a"
 
     def test_schema_repair_prompt_includes_required_resident_contract_shape(self) -> None:
-        task = _make_agent_task(task_id="task-valkyrie-repair-prompt")
         prompt = _build_resident_valkyrie_schema_repair_prompt(
-            task=task,
             original_response="bad",
             validation_errors=["resident Valkyrie outcome block is missing"],
             outcome_fields={},
@@ -402,9 +400,10 @@ class TestDriveLoopOutcomeContract:
         assert "working_state` must be a mapping" in prompt
         assert "empty list as `field: []`" in prompt
         assert "at most five entries per list" in prompt
+        assert "already present in this conversation" in prompt
+        assert "<initiative_context>" not in prompt
 
         working_state_prompt = _build_resident_valkyrie_schema_repair_prompt(
-            task=task,
             original_response="partial state",
             validation_errors=["working_state.hypotheses must be a list"],
             outcome_fields={"working_state": {"observations": ["signal-a"]}},

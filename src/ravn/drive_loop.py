@@ -644,7 +644,6 @@ def _validate_resident_continuation_contract(fields: Mapping[str, object]) -> li
 
 def _build_resident_valkyrie_schema_repair_prompt(
     *,
-    task: AgentTask,
     original_response: str,
     validation_errors: list[str],
     outcome_fields: dict[str, object],
@@ -677,10 +676,7 @@ def _build_resident_valkyrie_schema_repair_prompt(
         f"{json.dumps(validation_errors, indent=2)}\n\n"
         "Fields parsed from the invalid attempt, if any:\n"
         f"{json.dumps(_json_safe(outcome_fields), indent=2)}\n\n"
-        "Original autonomous task context:\n"
-        "<initiative_context>\n"
-        f"{task.initiative_context}\n"
-        "</initiative_context>\n\n"
+        "Use the original autonomous task context already present in this conversation.\n\n"
         "Previous response:\n"
         "<previous_response>\n"
         f"{original_response[:4000]}\n"
@@ -2975,7 +2971,6 @@ class DriveLoop:
             validation_errors,
         )
         repair_prompt = _build_resident_valkyrie_schema_repair_prompt(
-            task=task,
             original_response=response_text,
             validation_errors=validation_errors,
             outcome_fields=outcome_fields,
