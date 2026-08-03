@@ -28,6 +28,14 @@ class TestProviderConfig:
         assert cfg.base_url == ""
         assert cfg.models == []
         assert cfg.timeout == 120.0
+        assert cfg.chat_template_kwargs == {}
+
+    def test_chat_template_kwargs_from_config(self):
+        cfg = ProviderConfig.model_validate(
+            {"chat_template_kwargs": {"force_nonempty_content": True}}
+        )
+
+        assert cfg.chat_template_kwargs == {"force_nonempty_content": True}
 
 
 class TestBifrostConfig:

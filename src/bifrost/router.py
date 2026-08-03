@@ -60,6 +60,8 @@ def _load_adapter(
         kwargs["api_key"] = api_key
     if cfg.timeout != 120.0:
         kwargs["timeout"] = cfg.timeout
+    if cfg.chat_template_kwargs:
+        kwargs["chat_template_kwargs"] = cfg.chat_template_kwargs
     return cls(**kwargs)
 
 

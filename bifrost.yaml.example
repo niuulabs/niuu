@@ -37,6 +37,8 @@ bifrost:
   #
   # For cost_optimised routing, set cost_per_token to a relative value
   # (e.g. price per 1 000 output tokens in USD).  Lower is cheaper.
+  # OpenAI-compatible providers may enforce chat_template_kwargs; configured
+  # values override caller-supplied values before the upstream request.
   #
   providers:
     anthropic:

@@ -6,7 +6,7 @@ import fnmatch
 import os
 import re
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -50,6 +50,13 @@ class ProviderConfig(BaseModel):
         default_factory=list, description="Models supported by this provider."
     )
     timeout: float = Field(default=120.0, description="Request timeout in seconds.")
+    chat_template_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Chat-template arguments enforced on requests to OpenAI-compatible providers. "
+            "Provider values override caller-supplied values."
+        ),
+    )
     cost_per_token: float = Field(
         default=0.0,
         description=(

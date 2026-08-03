@@ -11,6 +11,8 @@ For all other behaviour this inherits from ``OpenAICompatAdapter``.
 
 from __future__ import annotations
 
+from typing import Any
+
 from bifrost.adapters.openai_compat import OpenAICompatAdapter
 
 _OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
@@ -25,8 +27,14 @@ class OllamaAdapter(OpenAICompatAdapter):
         base_url: str = _OLLAMA_DEFAULT_BASE_URL,
         api_key: str = "",
         timeout: float = 300.0,
+        chat_template_kwargs: dict[str, Any] | None = None,
     ) -> None:
-        super().__init__(base_url=base_url, api_key=api_key, timeout=timeout)
+        super().__init__(
+            base_url=base_url,
+            api_key=api_key,
+            timeout=timeout,
+            chat_template_kwargs=chat_template_kwargs,
+        )
 
     def _completions_url(self) -> str:
         # Ollama's OpenAI-compatible endpoint.
@@ -41,6 +49,7 @@ class OllamaAdapter(OpenAICompatAdapter):
 
     def _prepare_payload(self, payload: dict) -> dict:
         """Remove fields that some Ollama versions do not support."""
+        payload = super()._prepare_payload(payload)
         payload.pop("top_p", None)
         payload.pop("stream_options", None)
         return payload

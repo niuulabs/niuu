@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 
@@ -37,9 +38,11 @@ class OpenAICompatAdapter(ProviderPort):
         base_url: str = "https://api.openai.com",
         api_key: str = "",
         timeout: float = 120.0,
+        chat_template_kwargs: dict[str, Any] | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
+        self._chat_template_kwargs = dict(chat_template_kwargs or {})
         self._client = httpx.AsyncClient(timeout=timeout)
 
     def _headers(self) -> dict[str, str]:
@@ -57,6 +60,11 @@ class OpenAICompatAdapter(ProviderPort):
         Override this in subclasses to strip unsupported fields or add
         provider-specific adjustments.
         """
+        if self._chat_template_kwargs:
+            payload["chat_template_kwargs"] = {
+                **payload.get("chat_template_kwargs", {}),
+                **self._chat_template_kwargs,
+            }
         return payload
 
     async def complete(self, request: AnthropicRequest, model: str) -> AnthropicResponse:

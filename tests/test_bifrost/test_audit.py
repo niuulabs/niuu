@@ -262,6 +262,18 @@ class TestLoadAdapter:
         client_timeout = adapter._client.timeout  # type: ignore[attr-defined]
         assert client_timeout.read == 60.0
 
+    def test_chat_template_kwargs_forwarded_to_adapter(self):
+        cfg = ProviderConfig(
+            models=["nvidia/nemotron-3-super"],
+            chat_template_kwargs={"force_nonempty_content": True},
+        )
+
+        adapter = _load_adapter("nemotron", cfg, "https://nemotron.example")
+
+        assert adapter._chat_template_kwargs == {  # type: ignore[attr-defined]
+            "force_nonempty_content": True
+        }
+
     def test_unknown_provider_falls_back_to_openai_compat(self):
         from bifrost.adapters.openai_compat import OpenAICompatAdapter
 

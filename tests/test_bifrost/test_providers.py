@@ -197,6 +197,35 @@ class TestAnthropicAdapter:
 class TestOpenAICompatAdapter:
     @pytest.mark.asyncio
     @respx.mock
+    async def test_provider_chat_template_kwargs_override_request(self):
+        route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=Response(
+                200,
+                json={
+                    "id": "c1",
+                    "choices": [_oai_choice("ok")],
+                    "usage": _oai_usage(),
+                },
+            )
+        )
+        adapter = OpenAICompatAdapter(chat_template_kwargs={"force_nonempty_content": True})
+        request = _simple_request(
+            chat_template_kwargs={
+                "enable_thinking": True,
+                "force_nonempty_content": False,
+            }
+        )
+
+        await adapter.complete(request, "nvidia/nemotron-3-super")
+
+        body = json.loads(route.calls[0].request.content)
+        assert body["chat_template_kwargs"] == {
+            "enable_thinking": True,
+            "force_nonempty_content": True,
+        }
+
+    @pytest.mark.asyncio
+    @respx.mock
     async def test_complete_success(self):
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=Response(
