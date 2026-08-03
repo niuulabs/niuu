@@ -131,6 +131,20 @@ checksum/envoy: {{ include (print $.Template.BasePath "/envoy-configmap.yaml") .
 {{- end }}
 
 {{/*
+Whether this Bifröst needs a database at all.
+
+Truthy (a non-empty string) when either the usage store or the audit log is
+postgres-backed. A gateway keeping both in process — the chart default — has
+nothing to connect to, and demanding credentials it will never use meant it
+could not start without a Postgres somebody had to provision first.
+*/}}
+{{- define "bifrost.needsDatabase" -}}
+{{- $usage := (.Values.config.usage_store).adapter | default "memory" -}}
+{{- $audit := (.Values.config.audit).adapter | default "null" -}}
+{{- if or (eq $usage "postgres") (eq $audit "postgres") }}yes{{ end }}
+{{- end }}
+
+{{/*
 Return the database secret name.
 */}}
 {{- define "bifrost.databaseSecretName" -}}

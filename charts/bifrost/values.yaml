@@ -305,6 +305,8 @@ database:
     port: 5432
 
 migrations:
+  # Ignored unless the usage store or audit log is postgres-backed: a gateway
+  # keeping both in process has no schema to migrate.
   enabled: true
   image:
     repository: migrate/migrate

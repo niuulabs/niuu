@@ -89,7 +89,7 @@ async def test_the_rate_lands_on_the_edge_the_catalogue_already_drew() -> None:
 
     result = await _adapter(records, window_minutes=5.0).discover()
 
-    (edge,) = result.edges
+    (edge,) = [e for e in result.edges if e["relationType"] == "routes_to"]
     assert edge["sourceId"] == "bifrost:valhalla"
     # valhalla's gateway called it; valaskjalf's GPUs answered, so the rate
     # lands on the node the catalogue placed there rather than a phantom one
@@ -98,6 +98,36 @@ async def test_the_rate_lands_on_the_edge_the_catalogue_already_drew() -> None:
     assert edge["relationType"] == "routes_to"
     assert edge["confidence"] == "observed"
     assert edge["ratePerMinute"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_the_caller_is_drawn_reaching_the_gateway() -> None:
+    """The connection from the agent to the gateway was the missing one.
+
+    The graph could show a gateway routing to a model but never who asked it
+    to, so a resident's thinking stopped at its own outline. The agent id is a
+    logical name, resolved against the graph rather than assumed.
+    """
+    records = [{**RECORD, "request_id": f"req-{i}", "agent_id": "ivaldi"} for i in range(5)]
+
+    result = await _adapter(records, window_minutes=5.0).discover()
+
+    uses = [e for e in result.edges if e["relationType"] == "uses"]
+    (edge,) = uses
+    assert edge["sourceId"] == "ivaldi"
+    assert edge["targetId"] == "bifrost:valhalla"
+    assert edge["confidence"] == "observed"
+    assert edge["ratePerMinute"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_an_unclaimed_call_draws_no_caller() -> None:
+    """`anonymous` is the absence of a caller, not a caller by that name."""
+    result = await _adapter([{**RECORD, "agent_id": "anonymous"}]).discover()
+
+    assert [e["relationType"] for e in result.edges] == ["routes_to"]
+    # Still reported in the log, where the missing attribution is worth seeing.
+    assert result.events[0]["subject"] == "anonymous"
 
 
 @pytest.mark.asyncio
@@ -124,7 +154,7 @@ async def test_a_hosted_model_gets_its_rate_on_the_vendor_node() -> None:
         ],
     ).discover()
 
-    (edge,) = result.edges
+    (edge,) = [e for e in result.edges if e["relationType"] == "routes_to"]
     assert edge["targetId"] == "model:anthropic:claude-opus-5"
 
 

@@ -1,4 +1,4 @@
-{{- if .Values.migrations.enabled }}
+{{- if and .Values.migrations.enabled (include "bifrost.needsDatabase" .) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

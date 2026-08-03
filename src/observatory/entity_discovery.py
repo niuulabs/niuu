@@ -1145,6 +1145,7 @@ class BifrostUsageDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
         gateway_id = f"bifrost:{_slug(self._cluster or 'unknown')}"
         events: list[ObservatoryEvent] = []
         calls_per_model: Counter[str] = Counter()
+        calls_per_caller: Counter[str] = Counter()
 
         for record in records:
             if not isinstance(record, dict):
@@ -1155,6 +1156,9 @@ class BifrostUsageDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
             calls_per_model[
                 self._model_target(model, by_key.get(str(record.get("provider") or "")))
             ] += 1
+            caller = str(record.get("agent_id") or "").strip()
+            if caller and caller != _UNCLAIMED_CALLER:
+                calls_per_caller[caller] += 1
             events.append(_usage_event(record, gateway_id))
 
         edges = [
@@ -1169,6 +1173,23 @@ class BifrostUsageDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
             )
             for target, count in sorted(calls_per_model.items())
         ]
+        # Who asked. The graph could show a gateway routing to a model but
+        # never who asked it to, so a resident's thinking stopped at its own
+        # outline. The agent id is a logical name, emitted as a reference and
+        # resolved against the graph — one matching no node, or more than one,
+        # draws nothing rather than inventing a caller.
+        edges.extend(
+            _edge(
+                source_id=caller,
+                target_id=gateway_id,
+                relation_type="uses",
+                source_adapter=self.__class__.__name__,
+                evidence_field="agent_id",
+                confidence="observed",
+                rate_per_minute=round(count / self._window_minutes, 2),
+            )
+            for caller, count in sorted(calls_per_caller.items())
+        )
         return DiscoveryResult(edges=edges, events=events)
 
     def _model_target(self, model_id: str, provider: Mapping[str, Any] | None) -> str:
@@ -2581,6 +2602,11 @@ def _entity_to_node(
 #: for them, rather than the adapter paging through an unbounded history.
 _USAGE_POLL_LIMIT = 200
 
+#: What Bifröst records when nothing identified itself. Left visible in the
+#: signal log, but never drawn as an edge: it is the absence of a caller, not
+#: a caller by that name.
+_UNCLAIMED_CALLER = "anonymous"
+
 
 def _usage_event(record: Mapping[str, Any], gateway_id: str) -> ObservatoryEvent:
     """One proxied model call, as a line for the signal log.
@@ -2591,7 +2617,7 @@ def _usage_event(record: Mapping[str, Any], gateway_id: str) -> ObservatoryEvent
     """
     model = str(record.get("model") or "")
     provider = str(record.get("provider") or "")
-    agent = str(record.get("agent_id") or "").strip() or "anonymous"
+    agent = str(record.get("agent_id") or "").strip() or _UNCLAIMED_CALLER
     latency_ms = record.get("latency_ms")
     tokens_in = record.get("input_tokens") or 0
     tokens_out = record.get("output_tokens") or 0

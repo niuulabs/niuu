@@ -46,9 +46,10 @@ spec:
       priorityClassName: {{ . }}
       {{- end }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 30 }}
-      {{- if or .Values.migrations.enabled .Values.initContainers }}
+      {{- $migrate := and .Values.migrations.enabled (include "bifrost.needsDatabase" .) }}
+      {{- if or $migrate .Values.initContainers }}
       initContainers:
-        {{- if .Values.migrations.enabled }}
+        {{- if $migrate }}
         - name: migrate
           image: "{{ .Values.migrations.image.repository }}:{{ .Values.migrations.image.tag }}"
           imagePullPolicy: {{ .Values.migrations.image.pullPolicy }}
@@ -110,6 +111,14 @@ spec:
               containerPort: {{ .Values.service.targetPort | default 8088 }}
               protocol: TCP
           env:
+            {{- /*
+              A gateway whose usage store and audit log are both in-process
+              needs no database, and wiring these unconditionally meant it
+              could not start without one: the secret does not exist, so the
+              pod stays in CreateContainerConfigError. That forced a Postgres
+              on every cluster wanting a gateway, however small.
+            */}}
+            {{- if include "bifrost.needsDatabase" . }}
             - name: DATABASE_HOST
               value: {{ include "bifrost.databaseHost" . | quote }}
             - name: DATABASE_PORT
@@ -130,6 +139,7 @@ spec:
               value: "postgresql://$(DATABASE_USER):$(DATABASE_PASSWORD)@$(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)"
             - name: BIFROST_AUDIT_DSN
               value: "postgresql://$(DATABASE_USER):$(DATABASE_PASSWORD)@$(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)"
+            {{- end }}
             # Provider API keys sourced from Kubernetes Secrets (populated by ESO from OpenBao)
             {{- range $providerName, $provider := .Values.providers }}
             {{- if $provider.existingSecret }}
@@ -238,7 +248,7 @@ spec:
         - name: config
           configMap:
             name: {{ include "bifrost.fullname" . }}
-        {{- if .Values.migrations.enabled }}
+        {{- if and .Values.migrations.enabled (include "bifrost.needsDatabase" .) }}
         - name: migrations
           configMap:
             name: {{ include "bifrost.fullname" . }}-migrations
