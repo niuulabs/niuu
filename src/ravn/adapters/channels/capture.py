@@ -137,6 +137,15 @@ class TaskResultStore:
         if status in ("complete", "failed", "cancelled"):
             result.completed_at = datetime.now(UTC)
 
+    def set_failure(self, task_id: str, reason: str, errors: list[str] | None = None) -> None:
+        """Record the explanation shown alongside a failed HUD task."""
+        result = self._store.get(task_id)
+        if result is None:
+            return
+        result.metadata["failure_reason"] = reason
+        result.metadata["validation_errors"] = list(errors or [])
+        self.set_status(task_id, "failed")
+
     def get(self, task_id: str) -> TaskResult | None:
         """Return the TaskResult for task_id, or None if not found."""
         return self._store.get(task_id)

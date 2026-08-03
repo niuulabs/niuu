@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -245,6 +246,7 @@ class ResidentLearningRuntime:
         review_requester: ReviewRequester | None = None,
         skill_inventory_interval_seconds: float = DEFAULT_SKILL_INVENTORY_INTERVAL_SECONDS,
         learned_tool_runner: LearnedToolRunner | None = None,
+        operator_answerer: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     ) -> None:
         self.identity = identity
         self._skills = skills
@@ -267,6 +269,7 @@ class ResidentLearningRuntime:
         self._feedback_confidence_bump = feedback_confidence_bump
         self._learning_store = learning_store
         self._review_requester = review_requester
+        self._operator_answerer = operator_answerer
         self._skill_inventory_interval_seconds = skill_inventory_interval_seconds
         self._subscription: Subscription | None = None
         self._inventory_task: asyncio.Task[None] | None = None
@@ -288,6 +291,12 @@ class ResidentLearningRuntime:
 
     def decisions(self) -> list[ResidentLearningDecision]:
         return list(self._decisions)
+
+    def bind_operator_answerer(
+        self,
+        answerer: Callable[..., Awaitable[dict[str, Any]]] | None,
+    ) -> None:
+        self._operator_answerer = answerer
 
     async def start(self) -> None:
         if self._subscription is not None:
@@ -1104,6 +1113,23 @@ class ResidentLearningRuntime:
         self,
         item: ReviewItem,
     ) -> tuple[str, str, ResidentLearningDecision | None]:
+        operator_question = item.evidence.get("operator_question")
+        if isinstance(operator_question, dict):
+            if self._operator_answerer is None:
+                return "apply_failed", "resident operator answer path is unavailable", None
+            case_id = str(operator_question.get("case_id") or "").strip()
+            if not case_id:
+                return "apply_failed", "operator question is missing case_id", None
+            detail = item.decision_reason.strip()
+            if item.status == ReviewStatus.REJECTED.value:
+                answer = f"No. {detail}" if detail else "No, do not proceed."
+            else:
+                answer = f"Yes. {detail}" if detail else "Yes, proceed."
+            result = await self._operator_answerer(case_id=case_id, answer=answer)
+            if not result.get("queued"):
+                return "apply_failed", f"operator answer for {case_id} was not queued", None
+            return "applied", f"operator answer queued for {case_id}", None
+
         action = item.evidence.get("action")
         action = dict(action) if isinstance(action, dict) else {}
         if item.status == ReviewStatus.REJECTED.value:

@@ -4,7 +4,10 @@ import './ObservatoryReadout.css';
 
 interface Props {
   topology: Topology | null;
-  /** Messages per minute on the signal feed; null until a rate is known. */
+  /**
+   * Messages a minute. Defaults to what the topology itself reports, so the
+   * cell fills in on its own; pass a value to override.
+   */
   messageRate?: number | null;
 }
 
@@ -29,8 +32,9 @@ function Cell({ label, value, tone }: { label: string; value: number | null; ton
  * Undiscovered counts render as a dash, never zero: "no pod data" and "no
  * pods" are different claims and this row is the first thing trusted.
  */
-export function ObservatoryReadout({ topology, messageRate = null }: Props) {
+export function ObservatoryReadout({ topology, messageRate }: Props) {
   const stats = deriveObservatoryStats(topology);
+  const rate = messageRate === undefined ? stats.messageRate : messageRate;
   return (
     <div className="obs-readout" data-testid="observatory-readout">
       <Cell label="Realms" value={stats.realms} />
@@ -40,7 +44,7 @@ export function ObservatoryReadout({ topology, messageRate = null }: Props) {
       <Cell label="Residents" value={stats.residents} tone="spring" />
       <Cell label="Meshes" value={stats.meshes} tone="amber" />
       <Cell label="Mímir" value={stats.mimirs} />
-      <Cell label="Msgs / min" value={messageRate} />
+      <Cell label="Msgs / min" value={rate} />
     </div>
   );
 }

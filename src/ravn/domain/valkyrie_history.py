@@ -133,6 +133,8 @@ def decision_record_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
         "confidence": _float(details.get("confidence")),
         "rationale": str(details.get("rationale") or event.get("summary") or ""),
         "recommendedAction": str(details.get("recommended_action") or ""),
+        "continuation": str(details.get("continuation") or ""),
+        "question": str(details.get("question") or ""),
         "actionAuthority": str(details.get("action_authority") or "autonomous"),
         "actionCapability": str(details.get("action_capability") or ""),
         "signalRefs": _string_list(details.get("signal_refs")),
@@ -236,6 +238,8 @@ def decision_requires_review(
     observational = (
         observational_actions if observational_actions is not None else _OBSERVATIONAL_ACTIONS
     )
+    if str(record.get("continuation") or "").lower() == "ask_operator":
+        return False
     if str(record.get("actionAuthority") or "") not in REVIEW_REQUIRED_AUTHORITIES:
         return False
     if str(record.get("tier") or "").lower() not in tiers:

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deriveObservatoryStats, nodesOfType } from './observatoryStats';
+import { deriveMessageRate, deriveObservatoryStats, nodesOfType } from './observatoryStats';
 import type { Topology, TopologyNode } from './index';
 
 function node(id: string, typeId: string, extra: Record<string, unknown> = {}): TopologyNode {
@@ -71,5 +71,98 @@ describe('nodesOfType', () => {
 
   it('returns nothing for an absent topology', () => {
     expect(nodesOfType(null, ['mimir'])).toEqual([]);
+  });
+});
+
+describe('deriveMessageRate', () => {
+  function withEdges(edges: Array<Record<string, unknown>>): Topology {
+    return {
+      timestamp: '2026-08-03T00:00:00Z',
+      nodes: [],
+      edges: edges as Topology['edges'],
+    };
+  }
+
+  it('sums what sources actually report', () => {
+    const rate = deriveMessageRate(
+      withEdges([
+        {
+          id: 'a',
+          sourceId: 's',
+          targetId: 't',
+          kind: 'solid',
+          relationType: 'routes_to',
+          ratePerMinute: 1.5,
+        },
+        {
+          id: 'b',
+          sourceId: 's',
+          targetId: 'u',
+          kind: 'solid',
+          relationType: 'routes_to',
+          ratePerMinute: 2,
+        },
+      ]),
+    );
+
+    expect(rate).toBe(3.5);
+  });
+
+  it('counts one call once, not once per hop it crosses', () => {
+    // A model call is reported twice — caller to gateway, gateway to model —
+    // because both are true and both are drawn. Summing both would say the
+    // estate is twice as busy as it is.
+    const rate = deriveMessageRate(
+      withEdges([
+        {
+          id: 'a',
+          sourceId: 'ivaldi',
+          targetId: 'bifrost',
+          kind: 'solid',
+          relationType: 'uses',
+          ratePerMinute: 4,
+        },
+        {
+          id: 'b',
+          sourceId: 'bifrost',
+          targetId: 'model',
+          kind: 'solid',
+          relationType: 'routes_to',
+          ratePerMinute: 4,
+        },
+      ]),
+    );
+
+    expect(rate).toBe(4);
+  });
+
+  it('says nothing rather than zero when nothing measures anything', () => {
+    // A dash is "no rate reported"; 0 would claim a measurably idle estate.
+    expect(deriveMessageRate(withEdges([]))).toBeNull();
+    expect(
+      deriveMessageRate(
+        withEdges([
+          { id: 'a', sourceId: 's', targetId: 't', kind: 'solid', relationType: 'manages' },
+        ]),
+      ),
+    ).toBeNull();
+    expect(deriveMessageRate(null)).toBeNull();
+  });
+
+  it('reports a measured lull as zero, because that is a measurement', () => {
+    expect(
+      deriveMessageRate(
+        withEdges([
+          {
+            id: 'a',
+            sourceId: 's',
+            targetId: 't',
+            kind: 'solid',
+            relationType: 'routes_to',
+            ratePerMinute: 0,
+          },
+        ]),
+      ),
+    ).toBe(0);
   });
 });

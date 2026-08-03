@@ -16,12 +16,49 @@ export interface ObservatoryStats {
   residents: number | null;
   meshes: number | null;
   mimirs: number | null;
+  /**
+   * Messages a minute crossing the estate, or `null` when nothing measures
+   * any of it.
+   *
+   * Summed from the rates sources actually report, not from what the client
+   * has watched go past: the figure is right the moment the page loads rather
+   * than after a minute of observation, and it is the same number the canvas
+   * draws its flow from, so the readout and the graph cannot disagree.
+   */
+  messageRate: number | null;
 }
 
 const RESIDENT_TYPES: ReadonlySet<string> = new Set(['ravn_long', 'valkyrie', 'resident']);
 
 function countOf(nodes: readonly TopologyNode[], typeId: string): number {
   return nodes.filter((node) => node.typeId === typeId).length;
+}
+
+/**
+ * Relations that restate a message counted at another hop.
+ *
+ * One model call is reported twice — once as the caller reaching its gateway,
+ * once as that gateway reaching the model — because both are true and both
+ * are worth drawing. Summing them both would say the estate is twice as busy
+ * as it is, so a message is counted once, at the hop that delivers it.
+ */
+const RESTATED_RELATIONS: ReadonlySet<string> = new Set(['uses']);
+
+/**
+ * Messages a minute, from the rates sources report.
+ *
+ * `null` when nothing reports one at all — distinct from `0`, which would be
+ * the claim that the estate is measurably idle.
+ */
+export function deriveMessageRate(topology: Topology | null): number | null {
+  const rated = (topology?.edges ?? []).filter(
+    (edge) =>
+      typeof edge.ratePerMinute === 'number' &&
+      !RESTATED_RELATIONS.has(String(edge.relationType ?? '')),
+  );
+  if (rated.length === 0) return null;
+  const total = rated.reduce((sum, edge) => sum + (edge.ratePerMinute ?? 0), 0);
+  return Math.round(total * 10) / 10;
 }
 
 /** Sum a numeric field that adapters attach per host, when they attach it. */
@@ -45,6 +82,7 @@ export function deriveObservatoryStats(topology: Topology | null): ObservatorySt
       residents: null,
       meshes: null,
       mimirs: null,
+      messageRate: null,
     };
   }
 
@@ -57,6 +95,7 @@ export function deriveObservatoryStats(topology: Topology | null): ObservatorySt
     residents: nodes.filter((node) => RESIDENT_TYPES.has(node.typeId)).length,
     meshes: deriveAgentMeshes(topology).length,
     mimirs: countOf(nodes, 'mimir'),
+    messageRate: deriveMessageRate(topology),
   };
 }
 
