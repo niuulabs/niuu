@@ -13,9 +13,20 @@ import pytest
 
 from observatory.entity_discovery import BifrostUsageDiscoveryAdapter
 
+PROVIDERS = [
+    {
+        "key": "valaskjalf-nemotron",
+        "vendor": "valaskjalf-nemotron",
+        "base_url": "https://nemotron-3-super-vllm.valaskjalf.asgard.niuu.world",
+        "model_ids": ["nvidia/nemotron-3-super"],
+    }
+]
 
-def _usage(records: list[dict]) -> httpx.MockTransport:
+
+def _usage(records: list[dict], providers: list[dict] | None = None) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/providers"):
+            return httpx.Response(200, json=PROVIDERS if providers is None else providers)
         assert request.url.path.endswith("/v1/usage")
         assert request.url.params["since"]
         return httpx.Response(200, json={"summary": {}, "records": records})
@@ -23,11 +34,16 @@ def _usage(records: list[dict]) -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
-def _adapter(records: list[dict], **kwargs) -> BifrostUsageDiscoveryAdapter:
+def _adapter(
+    records: list[dict],
+    providers: list[dict] | None = None,
+    **kwargs,
+) -> BifrostUsageDiscoveryAdapter:
     return BifrostUsageDiscoveryAdapter(
         base_url="http://bifrost.test",
         cluster="valhalla",
-        transport=_usage(records),
+        internal_domains=["niuu.world"],
+        transport=_usage(records, providers),
         **kwargs,
     )
 
@@ -75,7 +91,10 @@ async def test_the_rate_lands_on_the_edge_the_catalogue_already_drew() -> None:
 
     (edge,) = result.edges
     assert edge["sourceId"] == "bifrost:valhalla"
-    assert edge["targetId"] == "model:valhalla:nvidia-nemotron-3-super"
+    # valhalla's gateway called it; valaskjalf's GPUs answered, so the rate
+    # lands on the node the catalogue placed there rather than a phantom one
+    # under the calling cluster.
+    assert edge["targetId"] == "model:valaskjalf:nvidia-nemotron-3-super"
     assert edge["relationType"] == "routes_to"
     assert edge["confidence"] == "observed"
     assert edge["ratePerMinute"] == 2.0
@@ -88,6 +107,25 @@ async def test_a_quiet_gateway_reports_no_rate_at_all() -> None:
 
     assert result.edges == []
     assert result.events == []
+
+
+@pytest.mark.asyncio
+async def test_a_hosted_model_gets_its_rate_on_the_vendor_node() -> None:
+    """Three gateways calling Anthropic call the same Anthropic."""
+    result = await _adapter(
+        [{**RECORD, "model": "claude-opus-5", "provider": "anthropic"}],
+        providers=[
+            {
+                "key": "anthropic",
+                "vendor": "anthropic",
+                "base_url": "https://api.anthropic.com",
+                "model_ids": ["claude-opus-5"],
+            }
+        ],
+    ).discover()
+
+    (edge,) = result.edges
+    assert edge["targetId"] == "model:anthropic:claude-opus-5"
 
 
 @pytest.mark.asyncio

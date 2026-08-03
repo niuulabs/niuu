@@ -975,7 +975,13 @@ class BifrostCatalogDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
             # asks. Keying on the local Bifröst made one vLLM on valaskjalf
             # into two nodes because two gateways route to it, and one hosted
             # Claude into three.
-            node_id = self._model_node_id(model_id, vendor, outside, served_cluster)
+            node_id = _model_node_id(
+                model_id,
+                vendor=vendor,
+                outside=outside,
+                served_cluster=served_cluster,
+                gateway_cluster=self._cluster,
+            )
             metadata = {
                 "modelId": model_id,
                 "vendor": vendor,
@@ -1061,25 +1067,6 @@ class BifrostCatalogDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
 
         return DiscoveryResult(entities=entities, edges=edges)
 
-    def _model_node_id(
-        self,
-        model_id: str,
-        vendor: str,
-        outside: bool,
-        served_cluster: str,
-    ) -> str:
-        """One node per model per thing that serves it.
-
-        A gateway-scoped id gave every Bifröst its own copy of the same model,
-        so the canvas showed Claude Fable 5 three times and one vLLM twice. The
-        server is what makes two models the same model, exactly as one cloud
-        per vendor is shared by every cluster routing to it.
-        """
-        if outside:
-            return f"model:{_slug(vendor or 'unknown')}:{_slug(model_id)}"
-        where = served_cluster or self._cluster or "unknown"
-        return f"model:{_slug(where)}:{_slug(model_id)}"
-
     @staticmethod
     def _cloud_id(vendor: str) -> str:
         """One cloud per vendor, shared by every cluster that routes to it.
@@ -1106,16 +1093,27 @@ class BifrostUsageDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
 
     warning_name = "bifrost-usage"
 
-    def __init__(self, *args: Any, window_minutes: float = 5.0, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        window_minutes: float = 5.0,
+        internal_domains: list[str] | None = None,
+        **kwargs: Any,
+    ) -> None:
         """`window_minutes` is how far back a poll looks for calls.
 
         Wide enough that a quiet estate still shows its last activity, narrow
         enough that the rate means "now" rather than "since the pod started".
+
+        `internal_domains` is the estate's DNS zone, for the same reason the
+        catalogue adapter needs it: it decides which cluster answers a model,
+        and therefore which node the rate belongs to.
         """
         super().__init__(*args, **kwargs)
         if window_minutes <= 0:
             raise ValueError("BifrostUsageDiscoveryAdapter needs a positive window_minutes")
         self._window_minutes = window_minutes
+        self._internal_domains = list(internal_domains or [])
 
     async def collect(
         self,
@@ -1133,6 +1131,17 @@ class BifrostUsageDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
         if not isinstance(records, list):
             return DiscoveryResult()
 
+        # Which node a model is is decided by what serves it, not by the
+        # gateway that called it. Reading the same provider list the catalogue
+        # reads is what keeps the two agreeing — a rate on an edge pointing at
+        # a node nobody emitted is worse than no rate at all.
+        providers = await self._json(client, headers, "/api/v1/bifrost/providers")
+        by_key = {
+            str(p.get("key") or ""): p
+            for p in (providers if isinstance(providers, list) else [])
+            if isinstance(p, dict)
+        }
+
         gateway_id = f"bifrost:{_slug(self._cluster or 'unknown')}"
         events: list[ObservatoryEvent] = []
         calls_per_model: Counter[str] = Counter()
@@ -1143,30 +1152,44 @@ class BifrostUsageDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
             model = str(record.get("model") or "").strip()
             if not model:
                 continue
-            calls_per_model[model] += 1
+            calls_per_model[
+                self._model_target(model, by_key.get(str(record.get("provider") or "")))
+            ] += 1
             events.append(_usage_event(record, gateway_id))
 
         edges = [
             _edge(
                 source_id=gateway_id,
-                target_id=self._model_edge_target(model),
+                target_id=target,
                 relation_type="routes_to",
                 source_adapter=self.__class__.__name__,
                 evidence_field="usage",
                 confidence="observed",
                 rate_per_minute=round(count / self._window_minutes, 2),
             )
-            for model, count in sorted(calls_per_model.items())
+            for target, count in sorted(calls_per_model.items())
         ]
         return DiscoveryResult(edges=edges, events=events)
 
-    def _model_edge_target(self, model_id: str) -> str:
-        """The node the catalogue adapter gave this model.
-
-        Both are derived from the same model id, so the rate lands on the edge
-        the catalogue already drew rather than creating a second one.
-        """
-        return f"model:{_slug(self._cluster or 'unknown')}:{_slug(model_id)}"
+    def _model_target(self, model_id: str, provider: Mapping[str, Any] | None) -> str:
+        """The node the catalogue adapter gave this model."""
+        provider = provider or {}
+        base_url = str(provider.get("base_url") or "")
+        vendor = str(provider.get("vendor") or "")
+        location = _model_location(
+            base_url,
+            provider,
+            model_vendor=vendor,
+            internal_domains=self._internal_domains,
+        )
+        served_cluster, _ = _served_from(base_url, self._internal_domains)
+        return _model_node_id(
+            model_id,
+            vendor=vendor,
+            outside=location == "external",
+            served_cluster=served_cluster,
+            gateway_cluster=self._cluster,
+        )
 
 
 class RavnResidentsDiscoveryAdapter(_HttpServiceDiscoveryAdapter):
@@ -1450,6 +1473,29 @@ def _model_location(
 def _normalized_domains(domains: Collection[str]) -> list[str]:
     """Config may name a zone with a leading dot or stray whitespace."""
     return [d.strip().lower().lstrip(".") for d in domains if d and d.strip().strip(".")]
+
+
+def _model_node_id(
+    model_id: str,
+    *,
+    vendor: str,
+    outside: bool,
+    served_cluster: str,
+    gateway_cluster: str,
+) -> str:
+    """One node per model per thing that serves it.
+
+    A gateway-scoped id gave every Bifröst its own copy of the same model, so
+    the canvas showed Claude Fable 5 three times and one vLLM twice. The server
+    is what makes two models the same model, exactly as one cloud per vendor is
+    shared by every cluster routing to it.
+
+    Shared by the catalogue and the usage adapter deliberately: they must agree
+    on the id or the measured rate lands on an edge pointing at nothing.
+    """
+    if outside:
+        return f"model:{_slug(vendor or 'unknown')}:{_slug(model_id)}"
+    return f"model:{_slug(served_cluster or gateway_cluster or 'unknown')}:{_slug(model_id)}"
 
 
 def _served_from(base_url: str, internal_domains: Collection[str] = ()) -> tuple[str, str]:
