@@ -332,6 +332,39 @@ def _parse_soft_wrapped_mapping(
     return parsed or None
 
 
+#: A plain scalar whose value itself contains ``": "``. YAML reads the second
+#: colon as a nested mapping and rejects the document; quoting the value is a
+#: faithful reading of what was written, not a guess at what was meant.
+_AMBIGUOUS_SCALAR_LINE = re.compile(
+    r"""^(?P<prefix>\s*(?:-\s+)?[A-Za-z_][\w .\-]*:[ \t]+)
+         (?P<value>(?!["'\[{&*!|>#])\S.*:[ \t].*?)[ \t]*$""",
+    re.VERBOSE,
+)
+
+
+def _quote_ambiguous_scalars(text: str) -> str | None:
+    """Quote scalar values containing ``": "``; return None when none were found.
+
+    Deliberately conservative: it never touches a value that is already quoted,
+    a flow collection, an anchor/alias, or a block scalar, and it requires a
+    colon *followed by whitespace* so URLs (``https://…``) and timestamps
+    (``10:30:00``) are left alone.
+    """
+    changed = False
+    lines: list[str] = []
+    for line in text.splitlines():
+        match = _AMBIGUOUS_SCALAR_LINE.match(line)
+        if match is None:
+            lines.append(line)
+            continue
+        value = match.group("value").replace("\\", "\\\\").replace('"', '\\"')
+        lines.append(f'{match.group("prefix")}"{value}"')
+        changed = True
+    if not changed:
+        return None
+    return "\n".join(lines)
+
+
 def _validate_against_schema(
     parsed_fields: dict[str, Any],
     schema: OutcomeSchema | None,
@@ -378,7 +411,22 @@ def parse_outcome_block(text: str, schema: OutcomeSchema | None = None) -> Parse
             got = type(loaded).__name__
             parse_errors.append(f"outcome block did not parse as a YAML mapping; got {got}")
     except yaml.YAMLError as exc:
-        parse_errors.append(f"YAML parse error: {exc}")
+        # One unquoted ``key: value`` inside a plain scalar invalidates the whole
+        # document, and the flat fallback below cannot represent nesting — so a
+        # single sloppy line would otherwise discard an entire well-formed
+        # judgment. Quote the ambiguous scalars and try once more before giving
+        # up on structure.
+        repaired = _quote_ambiguous_scalars(clean)
+        loaded = None
+        if repaired is not None:
+            try:
+                loaded = yaml.safe_load(repaired)
+            except yaml.YAMLError:
+                loaded = None
+        if isinstance(loaded, dict):
+            parsed_fields = loaded
+        else:
+            parse_errors.append(f"YAML parse error: {exc}")
 
     validation_errors = _validate_against_schema(parsed_fields, schema) if not parse_errors else []
     errors = list(parse_errors or validation_errors)

@@ -714,3 +714,75 @@ def test_block_parser_adapter_extract_without_schema() -> None:
     result = adapter.extract(text)
     assert result is not None
     assert result.fields == {"key": "value"}
+
+
+# ---------------------------------------------------------------------------
+# Unquoted ``key: value`` inside a scalar (observed on Ivaldi, 2026-08-03)
+# ---------------------------------------------------------------------------
+
+
+def test_unquoted_colon_in_a_value_keeps_the_rest_of_the_structure() -> None:
+    """One sloppy line must not discard an otherwise well-formed judgment.
+
+    The model wrote ``result: completed: reviewed signals`` inside a nested
+    list. That makes the whole document invalid YAML, and the flat fallback
+    cannot represent nesting — so ``working_state`` used to arrive as ``''``
+    and the resident was told its working_state was the wrong type, pointing
+    the repair prompt at entirely the wrong line.
+    """
+    text = (
+        "---outcome---\n"
+        "decision: watch\n"
+        "target_surfaces: []\n"
+        "working_state:\n"
+        "  objectives:\n"
+        "    - description: Continue monitoring\n"
+        "      reference: resident/continuation/cases/abc/latest.md\n"
+        "  attempts:\n"
+        "    - action: received operator input\n"
+        "      result: completed: reviewed signals, all informational\n"
+        "---end---"
+    )
+
+    result = parse_outcome_block(text)
+
+    assert result is not None
+    assert isinstance(result.fields["working_state"], dict)
+    assert result.fields["working_state"]["objectives"][0]["description"] == "Continue monitoring"
+    # The ambiguous value is preserved verbatim, not truncated at the colon.
+    attempt = result.fields["working_state"]["attempts"][0]
+    assert attempt["result"] == "completed: reviewed signals, all informational"
+    # A real empty list, not the string "[]".
+    assert result.fields["target_surfaces"] == []
+
+
+def test_repair_leaves_urls_timestamps_and_quoted_values_alone() -> None:
+    text = (
+        "---outcome---\n"
+        "evidence: generic://workshop-laevateinn/a8311607cd0b3950\n"
+        "expires_at: 2026-08-03T10:30:00Z\n"
+        "state_summary: 'watching: operator confirmed'\n"
+        "note: plain value with a colon: needs quoting\n"
+        "---end---"
+    )
+
+    result = parse_outcome_block(text)
+
+    assert result is not None
+    assert result.fields["evidence"] == "generic://workshop-laevateinn/a8311607cd0b3950"
+    # YAML resolves this to a datetime on its own; the point is that the repair
+    # did not quote it into a string first.
+    assert not isinstance(result.fields["expires_at"], str)
+    assert result.fields["state_summary"] == "watching: operator confirmed"
+    assert result.fields["note"] == "plain value with a colon: needs quoting"
+
+
+def test_a_block_that_is_genuinely_broken_still_reports_a_parse_error() -> None:
+    """The repair must not launder unparseable text into a fake success."""
+    text = "---outcome---\n\t[unclosed\n  - stray\n---end---"
+
+    result = parse_outcome_block(text)
+
+    assert result is not None
+    assert result.valid is False
+    assert any("YAML parse error" in error for error in result.errors)

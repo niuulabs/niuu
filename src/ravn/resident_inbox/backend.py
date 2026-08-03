@@ -38,7 +38,7 @@ from .serialization import (
     signal_from_directed_message,
     signal_from_event,
 )
-from .shape import ShapeAggregate, fold_aggregate, shape_key
+from .shape import ShapeAggregate, fold_aggregate, numeric_novelty, shape_key
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ class LocalResidentInbox(ResidentInboxBackend):
         retention_max_age_days: float = 7.0,
         retention_sweep_interval_seconds: float = 900.0,
         max_distinct_values: int = 24,
-        max_extreme_payloads: int = 16,
+        novelty_min_observations: int = 20,
         max_invalid_attempts: int = 3,
         pending_slot_warn_threshold: int = 200,
     ) -> None:
@@ -99,7 +99,7 @@ class LocalResidentInbox(ResidentInboxBackend):
         self._retention_max_age_days = max(0.0, float(retention_max_age_days))
         self._retention_sweep_interval_seconds = max(0.0, float(retention_sweep_interval_seconds))
         self._max_distinct_values = max(1, int(max_distinct_values))
-        self._max_extreme_payloads = max(1, int(max_extreme_payloads))
+        self._novelty_min_observations = max(1, int(novelty_min_observations))
         self._max_invalid_attempts = max(1, int(max_invalid_attempts))
         self._pending_slot_warn_threshold = max(1, int(pending_slot_warn_threshold))
         self._archive = RawSignalArchive(self._root, prefix=archive_prefix)
@@ -170,6 +170,31 @@ class LocalResidentInbox(ResidentInboxBackend):
         existing = None
         if path.is_file():
             existing = parse_inbox_signal(path.read_text(encoding="utf-8"))
+        if existing is not None:
+            novelty = numeric_novelty(
+                existing.aggregate,
+                signal.payload,
+                observation_count=existing.observation_count,
+                min_observations=self._novelty_min_observations,
+            )
+            if novelty is not None:
+                # Structurally identical but numerically outside everything this
+                # slot has seen. Folding it would bury an excursion behind a
+                # widened bound, so it takes its own slot and wakes the resident.
+                novel_path, novel_value = novelty
+                logger.info(
+                    "resident inbox: %s=%s is outside the established range for shape %s; "
+                    "routing to its own slot",
+                    novel_path,
+                    novel_value,
+                    key,
+                )
+                key = f"{key}-novel"
+                ref = f"{self._pending_prefix}/{key}.md"
+                path = self._path(ref)
+                existing = (
+                    parse_inbox_signal(path.read_text(encoding="utf-8")) if path.is_file() else None
+                )
         slot = self._fold_slot(existing, signal, archive_ref, shape=key)
         self._atomic_write(path, render_inbox_signal(slot))
         if existing is None:
@@ -198,8 +223,8 @@ class LocalResidentInbox(ResidentInboxBackend):
                 aggregate=fold_aggregate(
                     ShapeAggregate(),
                     signal.payload,
+                    archive_ref=archive_ref,
                     max_distinct_values=self._max_distinct_values,
-                    max_extreme_payloads=self._max_extreme_payloads,
                 ),
             )
         # The newest observation becomes the slot's face; the aggregate carries
@@ -220,8 +245,8 @@ class LocalResidentInbox(ResidentInboxBackend):
             aggregate=fold_aggregate(
                 existing.aggregate,
                 signal.payload,
+                archive_ref=archive_ref,
                 max_distinct_values=self._max_distinct_values,
-                max_extreme_payloads=self._max_extreme_payloads,
             ),
         )
 

@@ -1204,7 +1204,13 @@ class ResidentRuntime:
                     "  ```",
                 )
             )
-            context_lines.extend(_extreme_payload_lines(signal, payload_budget))
+            context_lines.extend(
+                _extreme_payload_lines(
+                    signal,
+                    payload_budget,
+                    getattr(self._inbox, "archive", None),
+                )
+            )
         task = AgentTask(
             task_id=_task_id("resident_home"),
             title=f"Resident home turn ({len(rows)} observations)",
@@ -1651,25 +1657,39 @@ def _coalesced_evidence_lines(signal: ResidentInboxSignal) -> list[str]:
     return lines
 
 
-def _extreme_payload_lines(signal: ResidentInboxSignal, budget: int) -> list[str]:
-    """Attach the full payload observed at each numeric extreme.
+def _extreme_payload_lines(
+    signal: ResidentInboxSignal,
+    budget: int,
+    archive: Any | None,
+) -> list[str]:
+    """Attach the observation recorded at each numeric extreme.
 
     An excursion inside a large slot is exactly the observation a summary would
-    lose, so its whole payload travels rather than just its bound.
+    lose, so the whole payload travels rather than just its bound.  The slot
+    stores only an archive reference, so how much detail reaches the prompt is
+    decided here against the context budget rather than frozen at ingestion.
+    Every numeric path keeps its bounds either way; if the archive cannot be
+    read the reference itself is shown, never silently dropped.
     """
-    extremes = signal.aggregate.extreme_payloads
+    extremes = signal.aggregate.extreme_refs
     if signal.observation_count <= 1 or not extremes:
         return []
-    lines = ["  Payloads at numeric extremes:"]
+    lines = ["  Observations at numeric extremes:"]
     for key in sorted(extremes):
+        ref = extremes[key]
+        record = archive.read(ref) if archive is not None else None
+        payload = (record or {}).get("signal", {}).get("payload") if record else None
+        if payload is None:
+            lines.append(f"  {key}: archive_ref={ref} (payload unavailable)")
+            continue
         lines.extend(
             (
-                f"  {key}:",
+                f"  {key}: archive_ref={ref}",
                 "  ```json",
                 _indent(
                     _bounded(
                         json.dumps(
-                            extremes[key],
+                            payload,
                             indent=2,
                             sort_keys=True,
                             ensure_ascii=False,

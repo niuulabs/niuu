@@ -130,7 +130,7 @@ def _build_resident_inbox(
         )
     for name, value in (
         ("max_distinct_values", cfg.signal_max_distinct_values),
-        ("max_extreme_payloads", cfg.signal_max_extreme_payloads),
+        ("novelty_min_observations", cfg.signal_novelty_min_observations),
         ("max_invalid_attempts", cfg.signal_max_invalid_attempts),
         ("pending_slot_warn_threshold", cfg.signal_pending_slot_warn_threshold),
     ):

@@ -97,7 +97,12 @@ class ShapeAggregate:
     numeric: dict[str, tuple[float, float]] = field(default_factory=dict)
     categorical: dict[str, tuple[str, ...]] = field(default_factory=dict)
     high_cardinality: tuple[str, ...] = ()
-    extreme_payloads: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: ``"<path>:min"`` / ``"<path>:max"`` → the archive reference of the
+    #: observation that set that bound. A reference, not a copy: the archive
+    #: already holds every observation, and pointing at it means the number of
+    #: entries is bounded by the slot's own field structure with nothing to
+    #: configure and no field left without context.
+    extreme_refs: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -106,7 +111,7 @@ class ShapeAggregate:
                 path: list(values) for path, values in sorted(self.categorical.items())
             },
             "high_cardinality": list(self.high_cardinality),
-            "extreme_payloads": self.extreme_payloads,
+            "extreme_refs": dict(sorted(self.extreme_refs.items())),
         }
 
     @classmethod
@@ -121,16 +126,19 @@ class ShapeAggregate:
             str(path): tuple(str(item) for item in values or ())
             for path, values in dict(data.get("categorical") or {}).items()
         }
-        extremes = {
-            str(key): dict(value)
-            for key, value in dict(data.get("extreme_payloads") or {}).items()
-            if isinstance(value, dict)
+        # Slots written before extremes became references carried whole payload
+        # copies under ``extreme_payloads``. Those are redundant with the
+        # archive, so they are dropped rather than migrated.
+        refs = {
+            str(key): str(value)
+            for key, value in dict(data.get("extreme_refs") or {}).items()
+            if str(value or "").strip()
         }
         return cls(
             numeric=numeric,
             categorical=categorical,
             high_cardinality=tuple(str(item) for item in data.get("high_cardinality") or ()),
-            extreme_payloads=extremes,
+            extreme_refs=refs,
         )
 
 
@@ -149,25 +157,63 @@ def _flatten_values(payload: Any, *, prefix: str = "") -> dict[str, Any]:
     return {prefix: payload}
 
 
+def numeric_novelty(
+    aggregate: ShapeAggregate,
+    payload: Any,
+    *,
+    observation_count: int,
+    min_observations: int,
+) -> tuple[str, float] | None:
+    """Return the first ``(path, value)`` that lies outside the slot's history.
+
+    A structurally identical observation whose *values* leave the range the slot
+    has already established is the one thing coalescing would otherwise bury: a
+    temperature going 42 → 200 changes no field and no type, so it folds in and
+    merely widens a bound. Treating it as novel gives it its own slot and its
+    own wake.
+
+    This is novelty against the slot's own observed history — it makes no claim
+    about what any field means. It stays quiet until the slot has seen
+    ``min_observations``, because a range drawn from a handful of samples is not
+    yet a range, and it allows drift of one span beyond each bound so ordinary
+    movement does not fragment the queue. A bound that has never moved
+    (``0 → 0`` across thousands of observations) has zero span, so any departure
+    from it is novel — which is exactly the behaviour wanted for an error code.
+    """
+    if observation_count < max(1, min_observations):
+        return None
+    for path, value in _flatten_values(payload).items():
+        if isinstance(value, bool) or value is None or not isinstance(value, _NUMERIC_TYPES):
+            continue
+        bounds = aggregate.numeric.get(path)
+        if bounds is None:
+            continue
+        low, high = bounds
+        span = high - low
+        number = float(value)
+        if number < low - span or number > high + span:
+            return path, number
+    return None
+
+
 def fold_aggregate(
     aggregate: ShapeAggregate,
     payload: Any,
     *,
+    archive_ref: str,
     max_distinct_values: int,
-    max_extreme_payloads: int,
 ) -> ShapeAggregate:
     """Fold one observation's values into the running aggregate.
 
-    Numeric paths keep their observed range and the payload at each extreme, so
-    an excursion is never summarised away.  Categorical paths keep their
-    distinct values up to a cap; above it the path is recorded as
-    high-cardinality rather than growing without bound.
+    Numeric paths keep their observed range and a reference to the archived
+    observation at each extreme, so an excursion is never summarised away.
+    Categorical paths keep their distinct values up to a cap; above it the path
+    is recorded as high-cardinality rather than growing without bound.
     """
     numeric = dict(aggregate.numeric)
     categorical = {path: list(values) for path, values in aggregate.categorical.items()}
     high_cardinality = set(aggregate.high_cardinality)
-    extremes = dict(aggregate.extreme_payloads)
-    flat_payload = payload if isinstance(payload, dict) else {"value": payload}
+    extremes = dict(aggregate.extreme_refs)
 
     for path, value in _flatten_values(payload).items():
         if isinstance(value, bool) or value is None:
@@ -177,16 +223,16 @@ def fold_aggregate(
             previous = numeric.get(path)
             if previous is None:
                 numeric[path] = (number, number)
-                _record_extreme(extremes, f"{path}:min", flat_payload, max_extreme_payloads)
-                _record_extreme(extremes, f"{path}:max", flat_payload, max_extreme_payloads)
+                extremes[f"{path}:min"] = archive_ref
+                extremes[f"{path}:max"] = archive_ref
                 continue
             low, high = previous
             if number < low:
                 numeric[path] = (number, high)
-                _record_extreme(extremes, f"{path}:min", flat_payload, max_extreme_payloads)
+                extremes[f"{path}:min"] = archive_ref
             elif number > high:
                 numeric[path] = (low, number)
-                _record_extreme(extremes, f"{path}:max", flat_payload, max_extreme_payloads)
+                extremes[f"{path}:max"] = archive_ref
             continue
         if path in high_cardinality:
             continue
@@ -204,24 +250,8 @@ def fold_aggregate(
         numeric=numeric,
         categorical={path: tuple(values) for path, values in categorical.items()},
         high_cardinality=tuple(sorted(high_cardinality)),
-        extreme_payloads=extremes,
+        extreme_refs=extremes,
     )
-
-
-def _record_extreme(
-    extremes: dict[str, dict[str, Any]],
-    key: str,
-    payload: dict[str, Any],
-    cap: int,
-) -> None:
-    """Store the payload observed at a numeric extreme, bounded by ``cap``.
-
-    Existing extreme keys keep updating once the cap is reached; only new paths
-    are refused, so a slot's stored payloads cannot grow without bound.
-    """
-    if key not in extremes and len(extremes) >= cap:
-        return
-    extremes[key] = dict(payload)
 
 
 def aggregate_summary_lines(aggregate: ShapeAggregate) -> list[str]:

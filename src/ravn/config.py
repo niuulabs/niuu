@@ -2930,11 +2930,12 @@ class ResidentInboxConfig(BaseModel):
             "growing without bound."
         ),
     )
-    signal_max_extreme_payloads: int = Field(
-        default=16,
+    signal_novelty_min_observations: int = Field(
+        default=20,
         description=(
-            "Full payloads a coalescing slot keeps at numeric extremes, so an "
-            "excursion is never summarised away. Bounds slot size."
+            "Observations a coalescing slot must hold before an out-of-range "
+            "numeric value is treated as novel and given its own slot. Below "
+            "this the slot has not established a range worth measuring against."
         ),
     )
     signal_max_invalid_attempts: int = Field(

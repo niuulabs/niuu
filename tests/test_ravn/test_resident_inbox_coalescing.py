@@ -29,6 +29,7 @@ def _tick(
     *,
     progress: float = 0.0,
     temperature: float = 40.0,
+    error_number: int = 0,
     **extra,
 ) -> ResidentInboxSignal:
     """One machine status observation: same shape, moving values."""
@@ -37,6 +38,7 @@ def _tick(
         "state": "printing",
         "progress": progress,
         "temperature": temperature,
+        "error_number": error_number,
         **extra,
     }
     return ResidentInboxSignal(
@@ -72,10 +74,10 @@ def test_field_paths_are_sorted_and_typed() -> None:
 
 def test_bool_is_categorical_not_numeric() -> None:
     aggregate = fold_aggregate(
-        ShapeAggregate(), {"flag": True}, max_distinct_values=8, max_extreme_payloads=4
+        ShapeAggregate(), {"flag": True}, archive_ref="2026-08-03:0", max_distinct_values=8
     )
     aggregate = fold_aggregate(
-        aggregate, {"flag": False}, max_distinct_values=8, max_extreme_payloads=4
+        aggregate, {"flag": False}, archive_ref="2026-08-03:0", max_distinct_values=8
     )
     assert "flag" not in aggregate.numeric
     assert set(aggregate.categorical["flag"]) == {"True", "False"}
@@ -87,8 +89,8 @@ def test_high_cardinality_paths_stop_growing() -> None:
         aggregate = fold_aggregate(
             aggregate,
             {"job": f"job-{index}"},
+            archive_ref="2026-08-03:0",
             max_distinct_values=3,
-            max_extreme_payloads=4,
         )
     assert "job" in aggregate.high_cardinality
     assert "job" not in aggregate.categorical
@@ -155,20 +157,55 @@ async def test_a_changed_shape_never_folds(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_numeric_excursion_survives_in_the_aggregate(tmp_path) -> None:
-    inbox = LocalResidentInbox(tmp_path / "inbox")
+async def test_a_numeric_excursion_takes_its_own_slot(tmp_path) -> None:
+    """The temperature case: 40° for ages, then 200°.
+
+    Structurally identical, so it would fold in and merely widen a bound. It
+    must instead get its own slot, because that is what wakes the resident.
+    """
+    inbox = LocalResidentInbox(tmp_path / "inbox", novelty_min_observations=20)
 
     for index in range(50):
         await inbox.write_signal(_tick(index, progress=index, temperature=40.0))
-    await inbox.write_signal(_tick(51, progress=51, temperature=95.0))
-    for index in range(52, 80):
-        await inbox.write_signal(_tick(index, progress=index, temperature=40.0))
+    assert len(await inbox.list_signals(limit=10)) == 1
 
-    _ref, slot = (await inbox.list_signals(limit=1))[0]
-    low, high = slot.aggregate.numeric["temperature"]
-    assert (low, high) == (40.0, 95.0)
-    # The payload at the extreme is kept whole, not just its bound.
-    assert slot.aggregate.extreme_payloads["temperature:max"]["temperature"] == 95.0
+    await inbox.write_signal(_tick(51, progress=51, temperature=200.0))
+
+    slots = {slot.shape_key: slot for _ref, slot in await inbox.list_signals(limit=10)}
+    assert len(slots) == 2, "the excursion is not buried in the routine slot"
+    novel = [slot for key, slot in slots.items() if key.endswith("-novel")]
+    assert len(novel) == 1
+    assert novel[0].observation_count == 1
+    assert novel[0].aggregate.numeric["temperature"] == (200.0, 200.0)
+    # And the routine slot is untouched by it.
+    routine = [slot for key, slot in slots.items() if not key.endswith("-novel")][0]
+    assert routine.aggregate.numeric["temperature"] == (40.0, 40.0)
+
+
+@pytest.mark.asyncio
+async def test_ordinary_drift_does_not_fragment_the_queue(tmp_path) -> None:
+    inbox = LocalResidentInbox(tmp_path / "inbox", novelty_min_observations=20)
+
+    # Establish a range, then drift gently inside one span of it.
+    for index in range(30):
+        await inbox.write_signal(_tick(index, progress=index, temperature=38.0 + index % 5))
+    for index in range(30, 60):
+        await inbox.write_signal(_tick(index, progress=index, temperature=43.0))
+
+    assert len(await inbox.list_signals(limit=10)) == 1, "drift stays in one slot"
+
+
+@pytest.mark.asyncio
+async def test_a_bound_that_never_moved_makes_any_departure_novel(tmp_path) -> None:
+    """ErrorNumber sat at 0 for 82,002 observations. A 3 must not fold in."""
+    inbox = LocalResidentInbox(tmp_path / "inbox", novelty_min_observations=20)
+
+    for index in range(40):
+        await inbox.write_signal(_tick(index, progress=index, error_number=0))
+    await inbox.write_signal(_tick(41, progress=41, error_number=3))
+
+    keys = {slot.shape_key for _ref, slot in await inbox.list_signals(limit=10)}
+    assert any(key.endswith("-novel") for key in keys)
 
 
 @pytest.mark.asyncio
@@ -537,10 +574,9 @@ async def test_resident_sees_what_a_coalesced_slot_represents(tmp_path) -> None:
     from ravn.domain.models import OutputMode
     from ravn.resident_runtime import ResidentRuntime
 
-    inbox = LocalResidentInbox(tmp_path / "inbox")
-    for index in range(200):
-        await inbox.write_signal(_tick(index, progress=index / 2.0, temperature=40.0))
-    await inbox.write_signal(_tick(201, progress=99.0, temperature=95.0))
+    inbox = LocalResidentInbox(tmp_path / "inbox", novelty_min_observations=20)
+    for index in range(201):
+        await inbox.write_signal(_tick(index, progress=index / 2.0, temperature=38.0 + index % 5))
 
     runtime = ResidentRuntime(state=LocalResidentState(tmp_path / "state"), inbox=inbox)
     task = await runtime.next_home_task(limit=50, persona=None, output_mode=OutputMode.AMBIENT)
@@ -548,11 +584,12 @@ async def test_resident_sees_what_a_coalesced_slot_represents(tmp_path) -> None:
     assert task is not None
     context = task.initiative_context
     assert "201 observations of this exact shape" in context
-    assert "temperature 40–95" in context
+    assert "temperature 38–42" in context
     assert "Raw archive range:" in context
-    # The excursion travels as a whole payload, not just as a bound.
-    assert "Payloads at numeric extremes:" in context
+    # The observation at each extreme is fetched from the archive, whole.
+    assert "Observations at numeric extremes:" in context
     assert "temperature:max" in context
+    assert "archive_ref=" in context
     # And acknowledgement is pinned to exactly what was shown.
     assert task.resident_inbox_expected
 
