@@ -167,14 +167,25 @@ async def test_a_turn_without_a_snapshot_does_not_read_as_wiping_the_model(tmp_p
 async def test_dict_entries_render_as_text_without_losing_content(tmp_path):
     state = LocalResidentState(tmp_path)
     await state.write_turn(
-        _turn(1, _state(observations=[{"claim": "stock is low", "ref": "inventory.csv"}]))
+        _turn(
+            1,
+            _state(
+                observations=[
+                    {
+                        "description": "stock is low",
+                        "references": ["inventory.csv"],
+                        "severity": "warning",
+                    }
+                ]
+            ),
+        )
     )
 
     timeline = await build_resident_timeline(state)
 
     rendered = timeline.turns[0].working_state["observations"][0]
-    assert "stock is low" in rendered
-    assert "inventory.csv" in rendered
+    assert rendered == ("stock is low — references: inventory.csv · severity: warning")
+    assert not rendered.startswith("{")
 
 
 @pytest.mark.asyncio
