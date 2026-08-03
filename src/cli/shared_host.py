@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -50,11 +52,19 @@ from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_route
 from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
 from volundr.adapters.outbound.linear import LinearAdapter
 from volundr.adapters.outbound.memory_secrets import InMemorySecretManager
+from volundr.adapters.outbound.postgres_credential_enrollments import (
+    PostgresCredentialEnrollmentRepository,
+)
 from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
 from volundr.adapters.outbound.postgres_tenants import PostgresTenantRepository
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
+from volundr.composition_builders import _create_credential_enrollment_runner
 from volundr.config import Settings
 from volundr.domain.services.credential import CredentialService
+from volundr.domain.services.credential_enrollment import (
+    CredentialEnrollmentService,
+    reconcile_credential_enrollments_loop,
+)
 from volundr.domain.services.feature import FeatureService
 from volundr.domain.services.integration_registry import (
     IntegrationRegistry,
@@ -143,6 +153,13 @@ def create_app(
                 )
             )
             tracker_factory = TrackerFactory(credential_store)
+            credential_enrollment_service = CredentialEnrollmentService(
+                repository=PostgresCredentialEnrollmentRepository(pool),
+                runner=_create_credential_enrollment_runner(loaded_settings),
+                integration_repository=integration_repo,
+                integration_registry=integration_registry,
+                credential_store=credential_store,
+            )
             mapping_repository = PostgresMappingRepository(pool)
             default_tracker = None
 
@@ -225,6 +242,7 @@ def create_app(
                     tracker_factory,
                     registry=integration_registry,
                     credential_store=credential_store,
+                    credential_enrollment_service=credential_enrollment_service,
                 )
             )
             app.include_router(
@@ -234,6 +252,7 @@ def create_app(
                     prefix="/internal/api/v1/integrations",
                     registry=integration_registry,
                     credential_store=credential_store,
+                    credential_enrollment_service=credential_enrollment_service,
                 )
             )
             app.include_router(
@@ -249,9 +268,15 @@ def create_app(
             app.include_router(create_features_router(feature_service))
             app.include_router(create_ravn_personas_router())
 
+            enrollment_reconcile_task = asyncio.create_task(
+                reconcile_credential_enrollments_loop(credential_enrollment_service)
+            )
             try:
                 yield
             finally:
+                enrollment_reconcile_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await enrollment_reconcile_task
                 release_credential_store(loaded_settings)
                 await git_registry.close()
 
