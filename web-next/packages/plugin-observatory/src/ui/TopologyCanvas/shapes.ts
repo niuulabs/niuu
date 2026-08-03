@@ -47,6 +47,13 @@ export interface GlyphOptions {
    * utilisation; anything with a real ratio can.
    */
   progress?: number;
+  /**
+   * A narrowing of the shape, where the node knows one — a host passes what
+   * the machine is for. Deliberately not a colour: the canvas already spends
+   * hue on compute class and health, and a third meaning on the same channel
+   * would make all three unreadable.
+   */
+  variant?: string;
 }
 
 function rgba(colour: readonly [number, number, number], alpha: number): string {
@@ -304,9 +311,24 @@ function drawTriangle(ctx: CanvasRenderingContext2D, o: GlyphOptions): void {
   ctx.stroke();
 }
 
-/** A machine: a rack face with shelves. */
+/**
+ * A machine: a rack face, with an interior that says what it is for.
+ *
+ * One silhouette for every host, so a machine still reads as a machine at
+ * overview zoom, and the distinction lives in what fills it:
+ *
+ * - `worker` — three shelves. The baseline, and what most of the estate is.
+ * - `gpu` — vertical fins instead of shelves. A card stood on end, and
+ *   unmistakable against horizontal shelves even when the glyph is a few
+ *   pixels tall, because the difference is orientation rather than count.
+ * - `control-plane` — a solid header rail across the top. The unit that
+ *   directs the others, and the only one carrying weight up there.
+ * - `unknown` — dashed shelves. Nothing declares what this machine is for,
+ *   and dashes are what the rest of the canvas already uses for a thing it
+ *   cannot assert. Drawn at full strength: not knowing is not a fault.
+ */
 function drawRack(ctx: CanvasRenderingContext2D, o: GlyphOptions): void {
-  const { x, y, size, colour, alpha: a, zoom } = o;
+  const { x, y, size, colour, alpha: a, zoom, variant } = o;
   ctx.fillStyle = hexRgba(CORE, a * 0.9);
   ctx.strokeStyle = rgba(colour, 0.85 * a);
   ctx.lineWidth = stroke(1.8, zoom);
@@ -314,14 +336,42 @@ function drawRack(ctx: CanvasRenderingContext2D, o: GlyphOptions): void {
   ctx.fill();
   ctx.stroke();
 
+  if (variant === 'gpu') {
+    ctx.strokeStyle = rgba(colour, 0.55 * a);
+    ctx.lineWidth = stroke(1.2, zoom);
+    for (let i = -2; i <= 2; i += 1) {
+      ctx.beginPath();
+      ctx.moveTo(x + i * size * 0.36, y - size * 0.46);
+      ctx.lineTo(x + i * size * 0.36, y + size * 0.46);
+      ctx.stroke();
+    }
+    return;
+  }
+
+  if (variant === 'control-plane') {
+    ctx.fillStyle = rgba(colour, 0.55 * a);
+    ctx.fillRect(x - size * 0.85, y - size * 0.5, size * 1.7, size * 0.26);
+    ctx.strokeStyle = rgba(colour, 0.45 * a);
+    ctx.lineWidth = stroke(1.2, zoom);
+    for (let i = 0; i <= 1; i += 1) {
+      ctx.beginPath();
+      ctx.moveTo(x - size * 0.85, y + i * size * 0.42 + size * 0.06);
+      ctx.lineTo(x + size * 0.85, y + i * size * 0.42 + size * 0.06);
+      ctx.stroke();
+    }
+    return;
+  }
+
   ctx.strokeStyle = rgba(colour, 0.45 * a);
   ctx.lineWidth = stroke(1.2, zoom);
+  if (variant === 'unknown') ctx.setLineDash([stroke(2, zoom), stroke(2.4, zoom)]);
   for (let i = -1; i <= 1; i += 1) {
     ctx.beginPath();
     ctx.moveTo(x - size * 0.85, y + i * size * 0.42);
     ctx.lineTo(x + size * 0.85, y + i * size * 0.42);
     ctx.stroke();
   }
+  ctx.setLineDash([]);
 }
 
 /**

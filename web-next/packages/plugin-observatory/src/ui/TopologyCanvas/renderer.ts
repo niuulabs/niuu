@@ -16,6 +16,7 @@ import type {
 } from '../../domain';
 import type { EdgeLayer } from '../../domain';
 import { edgeLayer } from '../../domain';
+import { hostRole } from '../../domain/hostRole';
 import { humanizeObservatoryText } from '../displayLabels';
 import type { NodePosition } from './layoutEngine';
 import { zoneRadius, HOST_HALF_W, HOST_HALF_H } from './layoutEngine';
@@ -1387,6 +1388,9 @@ export function drawNode(
     zoom,
     reducedMotion: options.reducedMotion,
     state: node.status,
+    // What the machine is for, where the cluster says so. Read from the
+    // node-role labels and reported GPU capacity, not from the hostname.
+    variant: node.typeId === 'host' ? hostRole(node) : undefined,
     progress:
       typeof (node as unknown as Record<string, unknown>).utilisation === 'number'
         ? ((node as unknown as Record<string, unknown>).utilisation as number)
