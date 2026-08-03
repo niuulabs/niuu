@@ -100,6 +100,9 @@ class OpenAICompatAdapter(ProviderPort):
                 raw_lines,
                 message_id=message_id,
                 model=model,
+                force_nonempty_content=(
+                    self._chat_template_kwargs.get("force_nonempty_content") is True
+                ),
             ):
                 yield event
 

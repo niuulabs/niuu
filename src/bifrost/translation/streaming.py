@@ -22,6 +22,7 @@ async def openai_stream_to_anthropic(
     *,
     message_id: str,
     model: str,
+    force_nonempty_content: bool = False,
 ) -> AsyncIterator[str]:
     """Translate an OpenAI SSE stream to Anthropic SSE event format.
 
@@ -29,6 +30,8 @@ async def openai_stream_to_anthropic(
         openai_chunks: Raw SSE lines from an OpenAI-compatible endpoint.
         message_id: The message ID to embed in Anthropic events.
         model: The model name to report.
+        force_nonempty_content: Promote reasoning to text when the provider
+            finishes with only empty or whitespace text content.
 
     Yields:
         Anthropic-formatted SSE strings.
@@ -40,6 +43,8 @@ async def openai_stream_to_anthropic(
     output_tokens = 0  # Updated from upstream usage if available.
     stop_reason = "end_turn"
     tool_call_accumulator: dict[str, dict] = {}  # index → partial tool call
+    reasoning_parts: list[str] = []
+    has_non_whitespace_text = False
 
     async for raw_line in openai_chunks:
         line = raw_line.strip()
@@ -90,6 +95,7 @@ async def openai_stream_to_anthropic(
         # Reasoning delta.
         reasoning = delta.get("reasoning") or delta.get("reasoning_content")
         if reasoning:
+            reasoning_parts.append(reasoning)
             if active_block_type != "thinking":
                 if active_block_type:
                     yield _sse_event(
@@ -118,6 +124,7 @@ async def openai_stream_to_anthropic(
         # Text delta.
         text = delta.get("content")
         if text:
+            has_non_whitespace_text = has_non_whitespace_text or bool(text.strip())
             if active_block_type != "text":
                 if active_block_type:
                     yield _sse_event(
@@ -164,6 +171,36 @@ async def openai_stream_to_anthropic(
 
         if finish_reason:
             stop_reason = FINISH_REASON_MAP.get(finish_reason, "end_turn")
+
+    if (
+        force_nonempty_content
+        and not tool_call_accumulator
+        and not has_non_whitespace_text
+        and "".join(reasoning_parts).strip()
+    ):
+        if active_block_type:
+            yield _sse_event(
+                "content_block_stop",
+                {"type": "content_block_stop", "index": block_index},
+            )
+            block_index += 1
+        active_block_type = "text"
+        yield _sse_event(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": block_index,
+                "content_block": {"type": "text", "text": ""},
+            },
+        )
+        yield _sse_event(
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": block_index,
+                "delta": {"type": "text_delta", "text": "".join(reasoning_parts)},
+            },
+        )
 
     # Flush tool call accumulator as content blocks.
     if tool_call_accumulator:

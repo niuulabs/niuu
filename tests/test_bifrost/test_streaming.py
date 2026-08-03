@@ -79,11 +79,18 @@ def _parse_events(chunks: list[str]) -> list[dict]:
 
 
 class TestOpenAIStreamToAnthropic:
-    async def _run(self, *lines: str, message_id="msg_test", model="gpt-4o") -> list[dict]:
+    async def _run(
+        self,
+        *lines: str,
+        message_id="msg_test",
+        model="gpt-4o",
+        force_nonempty_content=False,
+    ) -> list[dict]:
         gen = openai_stream_to_anthropic(
             _lines(*lines),
             message_id=message_id,
             model=model,
+            force_nonempty_content=force_nonempty_content,
         )
         chunks = await collect(gen)
         return _parse_events(chunks)
@@ -131,6 +138,40 @@ class TestOpenAIStreamToAnthropic:
             if event.get("delta", {}).get("type") == "thinking_delta"
         ]
         assert thinking == ["inspect ", "the evidence"]
+
+    @pytest.mark.asyncio
+    async def test_reasoning_becomes_text_when_final_content_is_whitespace(self):
+        events = await self._run(
+            _reasoning_chunk("Final answer from reasoning."),
+            _chunk("\n"),
+            _chunk(finish="stop"),
+            "data: [DONE]",
+            force_nonempty_content=True,
+        )
+
+        text = "".join(
+            event["delta"]["text"]
+            for event in events
+            if event.get("delta", {}).get("type") == "text_delta"
+        )
+        assert text == "\nFinal answer from reasoning."
+
+    @pytest.mark.asyncio
+    async def test_reasoning_is_not_duplicated_when_text_content_exists(self):
+        events = await self._run(
+            _reasoning_chunk("Internal reasoning."),
+            _chunk("Final answer."),
+            _chunk(finish="stop"),
+            "data: [DONE]",
+            force_nonempty_content=True,
+        )
+
+        text = "".join(
+            event["delta"]["text"]
+            for event in events
+            if event.get("delta", {}).get("type") == "text_delta"
+        )
+        assert text == "Final answer."
 
     @pytest.mark.asyncio
     async def test_stop_reason_mapped(self):
