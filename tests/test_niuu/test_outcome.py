@@ -786,3 +786,49 @@ def test_a_block_that_is_genuinely_broken_still_reports_a_parse_error() -> None:
     assert result is not None
     assert result.valid is False
     assert any("YAML parse error" in error for error in result.errors)
+
+
+def test_a_stray_trailing_start_marker_does_not_discard_the_block() -> None:
+    """Observed on Ivaldi: the model finished its block, then emitted a bare
+    ``---outcome---`` as its last line with nothing after it.
+
+    The marker is not YAML, so the whole document failed to parse and a complete
+    judgment was thrown away — the second distinct cause of the reject loop.
+    """
+    text = (
+        "---outcome---\n"
+        "decision: investigate\n"
+        "working_state:\n"
+        "  objectives:\n"
+        "    - Determine printer status\n"
+        "---outcome---\n"
+    )
+
+    result = parse_outcome_block(text)
+
+    assert result is not None
+    assert result.fields["decision"] == "investigate"
+    assert isinstance(result.fields["working_state"], dict)
+    assert result.fields["working_state"]["objectives"] == ["Determine printer status"]
+
+
+def test_a_restarted_block_prefers_the_later_attempt() -> None:
+    text = (
+        "---outcome---\n"
+        "decision: watch\n"
+        "working_state:\n"
+        "  objectives:\n"
+        "    - first attempt, abandoned\n"
+        "---outcome---\n"
+        "decision: investigate\n"
+        "working_state:\n"
+        "  objectives:\n"
+        "    - second attempt, complete\n"
+        "---end---"
+    )
+
+    result = parse_outcome_block(text)
+
+    assert result is not None
+    assert result.fields["decision"] == "investigate"
+    assert result.fields["working_state"]["objectives"] == ["second attempt, complete"]

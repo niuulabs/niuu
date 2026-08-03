@@ -342,6 +342,33 @@ _AMBIGUOUS_SCALAR_LINE = re.compile(
 )
 
 
+def _select_marker_segment(clean: str) -> str:
+    """Pick the usable part of a block that contains a stray start marker.
+
+    A model that restarts its outcome block, or trails a bare ``---outcome---``
+    after finishing one, leaves an interior marker inside the extracted block.
+    The marker line is not YAML, so the whole document fails to parse and an
+    otherwise complete judgment is thrown away.
+
+    Segments are tried newest-first because a restart supersedes what came
+    before it, and the last *parseable* one wins — so a trailing marker with
+    nothing after it falls back to the complete block preceding it.
+    """
+    pieces = _OUTCOME_START.split(clean)
+    if len(pieces) < 2:
+        return clean
+    segments = [segment for segment in pieces if segment.strip()]
+    if not segments:
+        return clean
+    for segment in reversed(segments):
+        try:
+            if isinstance(yaml.safe_load(segment), dict):
+                return segment
+        except yaml.YAMLError:
+            continue
+    return segments[-1]
+
+
 def _quote_ambiguous_scalars(text: str) -> str | None:
     """Quote scalar values containing ``": "``; return None when none were found.
 
@@ -398,7 +425,7 @@ def parse_outcome_block(text: str, schema: OutcomeSchema | None = None) -> Parse
         return None
 
     raw = blocks[-1]
-    clean = _strip_code_fence(raw)
+    clean = _select_marker_segment(_strip_code_fence(raw))
 
     parse_errors: list[str] = []
     parsed_fields: dict[str, Any] = {}
