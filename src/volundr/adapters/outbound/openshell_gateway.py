@@ -138,6 +138,7 @@ CODEX_ENROLLMENT_AUTH_PATH = f"{CODEX_ENROLLMENT_HOME}/auth.json"
 CODEX_ENROLLMENT_LOG_PATH = "/tmp/niuu-codex-enrollment.log"
 CODEX_ENROLLMENT_PID_PATH = "/tmp/niuu-codex-enrollment.pid"
 PROVIDER_NETWORK_ONLY_CREDENTIAL = "network_only"
+CODEX_DEVICE_CODE_PATTERN = re.compile(r"[A-Z0-9]{4,8}(?:-[A-Z0-9]{4,8})+")
 HERMES_API_SERVER_KEY_ENV = "API_SERVER_KEY"
 HERMES_API_SERVER_DEFAULT_PORT = 8642
 HERMES_INTERNAL_SERVICE_URL = "http://hermes-api.internal"
@@ -3642,13 +3643,31 @@ def _parse_codex_device_challenge(output: str) -> tuple[str, str] | None:
         if hostname == "chatgpt.com" or hostname.endswith(".openai.com"):
             verification_uri = candidate
             break
-    code_match = re.search(
-        r"(?<![A-Z0-9])[A-Z0-9]{4,8}(?:-[A-Z0-9]{4,8})+(?![A-Z0-9])",
-        clean.upper(),
-    )
-    if not verification_uri or code_match is None:
+    user_code = _parse_codex_device_code(clean)
+    if not verification_uri or not user_code:
         return None
-    return verification_uri, code_match.group(0)
+    return verification_uri, user_code
+
+
+def _parse_codex_device_code(clean: str) -> str:
+    """Read the one-time code Codex printed, ignoring paths that look like one.
+
+    Codex prints the code alone on its own line, so that wins. Anything else
+    has to survive a boundary check: its startup warning names the CODEX_HOME
+    path /tmp/niuu-codex-enrollment, which otherwise reads as "NIUU-CODEX".
+    """
+    lines = [line.strip().upper() for line in clean.splitlines()]
+    for line in lines:
+        if CODEX_DEVICE_CODE_PATTERN.fullmatch(line):
+            return line
+    for line in lines:
+        for match in CODEX_DEVICE_CODE_PATTERN.finditer(line):
+            before = line[match.start() - 1] if match.start() else " "
+            after = line[match.end()] if match.end() < len(line) else " "
+            if before in "/-_." or after in "/-_.":
+                continue
+            return match.group(0)
+    return ""
 
 
 def _string_dict(value: object) -> dict[str, str]:

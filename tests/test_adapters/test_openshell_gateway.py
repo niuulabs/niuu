@@ -489,6 +489,31 @@ def test_parses_codex_device_login_challenge_without_ansi(
     )
 
 
+def test_codex_challenge_ignores_the_codex_home_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex names its CODEX_HOME before printing the code."""
+    adapter = _import_adapter(monkeypatch)
+    output = (
+        "WARNING: proceeding, even though we could not create PATH aliases: "
+        'Refusing to create helper binaries under temporary dir "/tmp" '
+        '(codex_home: AbsolutePathBuf("/tmp/niuu-codex-enrollment"))\n'
+        "\n"
+        "Follow these steps to sign in with ChatGPT using device code authorization:\n"
+        "\n"
+        "1. Open this link in your browser and sign in to your account\n"
+        "   \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n"
+        "\n"
+        "2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m\n"
+        "   \x1b[94m78YQ-3RG20\x1b[0m\n"
+    )
+
+    assert adapter._parse_codex_device_challenge(output) == (
+        "https://auth.openai.com/codex/device",
+        "78YQ-3RG20",
+    )
+
+
 @pytest.mark.asyncio
 async def test_codex_device_enrollment_runs_in_workspace_free_sandbox(
     monkeypatch: pytest.MonkeyPatch,
