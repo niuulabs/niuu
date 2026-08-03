@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -301,6 +302,28 @@ async def test_approved_court_escalation_requests_the_drafted_action(tmp_path) -
     assert actions[0].payload["capability"] == "k8s.restart_pod"
     assert actions[0].payload["authority_boundary"] == "operator_approved"
     assert actions[0].payload["dry_run"] is False
+    await runtime.stop()
+
+
+async def test_operator_question_review_resumes_exact_resident_case(tmp_path) -> None:
+    runtime, bus, _store, _skills = _runtime(tmp_path, autonomy_mode="autonomous")
+    answerer = AsyncMock(return_value={"queued": True})
+    runtime.bind_operator_answerer(answerer)
+    await runtime.start()
+
+    item = _item(
+        kind=ReviewKind.COURT_ESCALATION.value,
+        requested_action="answer_operator_question",
+        evidence={"operator_question": {"case_id": "case-etcd", "question": "Proceed?"}},
+    )
+    item.decide(decision="approved", operator_id="human:jozef", reason="read-only checks")
+    await bus.publish(review_decided_event(item, source="ravn:odin-review"))
+    await bus.flush()
+
+    answerer.assert_awaited_once_with(
+        case_id="case-etcd",
+        answer="Yes. read-only checks",
+    )
     await runtime.stop()
 
 

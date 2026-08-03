@@ -164,14 +164,24 @@ function DecisionPanel({ item }: { item: ReviewItem }) {
   const decide = useDecideReview();
   const [reason, setReason] = useState('');
   const [validationError, setValidationError] = useState('');
+  const isOperatorQuestion =
+    typeof item.evidence.operator_question === 'object' && item.evidence.operator_question !== null;
 
   const submit = (decision: 'approved' | 'rejected') => {
-    if (decision === 'rejected' && !reason.trim()) {
+    if (decision === 'rejected' && !reason.trim() && !isOperatorQuestion) {
       setValidationError('A reason is required to reject.');
       return;
     }
     setValidationError('');
-    decide.mutate({ itemId: item.itemId, decision, reason, participantId: 'human:operator' });
+    decide.mutate({
+      itemId: item.itemId,
+      decision,
+      reason:
+        decision === 'rejected' && isOperatorQuestion && !reason.trim()
+          ? 'No, do not proceed.'
+          : reason,
+      participantId: 'human:operator',
+    });
   };
 
   if (item.status !== 'pending') {
@@ -196,8 +206,12 @@ function DecisionPanel({ item }: { item: ReviewItem }) {
       </p>
       <div className="niuu:flex niuu:items-center niuu:gap-2">
         <input
-          aria-label="Decision reason"
-          placeholder="Reason (recorded in the audit trail)"
+          aria-label={isOperatorQuestion ? 'Operator answer' : 'Decision reason'}
+          placeholder={
+            isOperatorQuestion
+              ? 'Optional details or an exact answer'
+              : 'Reason (recorded in the audit trail)'
+          }
           value={reason}
           onChange={(event) => setReason(event.target.value)}
           className="niuu:flex-1 niuu:rounded-md niuu:border niuu:border-solid niuu:border-border niuu:bg-bg-primary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
@@ -209,7 +223,7 @@ function DecisionPanel({ item }: { item: ReviewItem }) {
           onClick={() => submit('approved')}
         >
           <Check size={14} aria-hidden="true" />
-          Approve
+          {isOperatorQuestion ? 'Yes' : 'Approve'}
         </button>
         <button
           type="button"
@@ -218,7 +232,7 @@ function DecisionPanel({ item }: { item: ReviewItem }) {
           onClick={() => submit('rejected')}
         >
           <X size={14} aria-hidden="true" />
-          Reject
+          {isOperatorQuestion ? 'No' : 'Reject'}
         </button>
       </div>
       {validationError ? (

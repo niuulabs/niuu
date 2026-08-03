@@ -310,6 +310,27 @@ Determine whether the observations require action.
         ]
         assert status["model"] == "test-model"
 
+    def test_resident_hud_explains_failed_outcomes(self):
+        dl, _ = _make_drive_loop_with_mesh(cascade_enabled=True)
+        dl._result_store.start(
+            "failed-task",
+            "signal:durable_window",
+            metadata={"resident_hud": True, "title": "Inspect etcd"},
+        )
+        dl._result_store.set_failure(
+            "failed-task",
+            "The resident returned an invalid structured outcome.",
+            ["resident Valkyrie outcome block is missing"],
+        )
+
+        failed = dl.resident_hud_status()["recent_tasks"][0]
+        assert failed["status"] == "failed"
+        assert failed["failure"] == {
+            "reason": "The resident returned an invalid structured outcome.",
+            "errors": ["resident Valkyrie outcome block is missing"],
+        }
+        assert failed["progress"]["warnings"] == 1
+
     def test_resident_hud_status_describes_waiting_tasks(self):
         dl, _ = _make_drive_loop_with_mesh(cascade_enabled=True)
         task = _make_task("queued-task")

@@ -46,6 +46,24 @@ function morningBriefItem(): ReviewItem {
   };
 }
 
+function operatorQuestionItem(): ReviewItem {
+  return {
+    ...createSeedReviewItems()[0]!,
+    itemId: 'review:court_escalation:operator:case-etcd',
+    kind: 'court_escalation',
+    requestedAction: 'answer_operator_question',
+    title: 'Eir asks: May I inspect etcd logs?',
+    summary: 'Operator approval is required.',
+    evidence: {
+      operator_question: {
+        case_id: 'case-etcd',
+        question: 'May I inspect etcd logs?',
+      },
+    },
+    status: 'pending',
+  };
+}
+
 function renderInbox(services: Record<string, unknown> = {}) {
   return render(<InboxPage />, { wrapper: wrapWithValkyrie(services) });
 }
@@ -122,6 +140,24 @@ describe('InboxPage', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('A reason is required');
     expect(screen.getByTestId('inbox-pending-count')).toHaveTextContent('3 pending');
+  });
+
+  it('answers resident questions directly with yes or no', async () => {
+    const user = userEvent.setup();
+    const service = createMockOdinReviewService([operatorQuestionItem()]);
+    const decide = vi.spyOn(service, 'decideReview');
+    renderInbox({ 'valkyrie.reviews': service });
+
+    expect(await screen.findAllByText('Eir asks: May I inspect etcd logs?')).toHaveLength(2);
+    expect(screen.getByLabelText('Operator answer')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'No' }));
+
+    expect(decide).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decision: 'rejected',
+        reason: 'No, do not proceed.',
+      }),
+    );
   });
 
   it('filters by kind', async () => {

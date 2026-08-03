@@ -928,7 +928,15 @@ function renderRuntime(d){
     ? generated.toISOString().slice(11,19)+"Z":"—";
 
   const live=document.getElementById("live-layout"), input=task?.input||{},
-        progress=task?.progress||{}, events=task?.events||[];
+        progress=task?.progress||{}, events=[...(task?.events||[])],
+        failure=task?.failure||{};
+  if(failure.reason){
+    events.unshift({
+      type:"error",
+      summary:[failure.reason,...(failure.errors||[])].join(" · "),
+      timestamp:task?.completed_at||task?.started_at||"",
+    });
+  }
   live.classList.toggle(
     "on",
     Boolean(task)||(runtime.queued_count||0)>0||(runtime.a2a_count||0)>0

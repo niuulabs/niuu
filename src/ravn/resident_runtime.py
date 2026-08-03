@@ -28,6 +28,7 @@ from ravn.domain.resident_continuation import (
     validate_resident_working_state,
 )
 from ravn.domain.resident_state import ResidentStatePort
+from ravn.odin.review import ReviewItem, ReviewKind, ReviewRequester
 from ravn.ports.trigger import TriggerPort
 from ravn.resident_continuation import _parse_a2a_task, _scheduled_wake_at
 from ravn.resident_inbox import (
@@ -123,6 +124,8 @@ class ResidentRuntime:
         scheduled_wake_default_seconds: float = 3600.0,
         stewardship_interval_seconds: float = 0.0,
         directed_messages_enabled: bool = True,
+        environment_id: str = "",
+        review_requester: ReviewRequester | None = None,
     ) -> None:
         self._state = state
         self._inbox = inbox
@@ -136,6 +139,8 @@ class ResidentRuntime:
         self._scheduled_wake_default_seconds = max(1.0, float(scheduled_wake_default_seconds))
         self._stewardship_interval_seconds = max(0.0, float(stewardship_interval_seconds))
         self._directed_messages_enabled = directed_messages_enabled
+        self._environment_id = environment_id.strip() or "unknown"
+        self._review_requester = review_requester
         self._enqueue: EnqueueResidentTask | None = None
         self._inflight_cases: set[str] = set()
         self._inflight_refs: set[str] = set()
@@ -154,6 +159,9 @@ class ResidentRuntime:
 
     def bind_enqueue(self, enqueue: EnqueueResidentTask) -> None:
         self._enqueue = enqueue
+
+    def bind_review_requester(self, requester: ReviewRequester | None) -> None:
+        self._review_requester = requester
 
     async def prepare_context(self, task: AgentTask) -> str:
         """Present the resident's exact prior working state to a new model turn."""
@@ -926,6 +934,13 @@ class ResidentRuntime:
                 attributes={"ravn.resident.case_id": record.case_id},
                 content={"question": question, "reason": reason},
             )
+        await self._request_operator_review(
+            case_id=record.case_id,
+            question=question,
+            reason=reason,
+            operator_ref=operator_ref,
+            root_correlation_id=record.root_correlation_id,
+        )
         task.resident_case_id = record.case_id
         return ResidentTurnDisposition(
             kind=ContinuationDecisionKind.ASK_OPERATOR,
@@ -939,6 +954,60 @@ class ResidentRuntime:
 
     async def pending_questions(self) -> list[dict[str, str]]:
         return [_pending_view(item) for item in await self._state.list_operator_needed()]
+
+    async def publish_pending_questions(self) -> int:
+        """File persisted operator questions into the shared review inbox."""
+        filed = 0
+        for pending in await self.pending_questions():
+            item = await self._request_operator_review(**pending)
+            filed += item is not None
+        return filed
+
+    async def _request_operator_review(
+        self,
+        *,
+        case_id: str,
+        question: str,
+        reason: str,
+        operator_ref: str,
+        root_correlation_id: str,
+    ) -> ReviewItem | None:
+        if self._review_requester is None:
+            return None
+        digest = hashlib.sha256(f"{self._resident_id}\0{case_id}".encode()).hexdigest()[:24]
+        item = ReviewItem(
+            item_id=f"review:{ReviewKind.COURT_ESCALATION.value}:operator:{digest}",
+            kind=ReviewKind.COURT_ESCALATION.value,
+            requested_action="answer_operator_question",
+            environment_id=self._environment_id,
+            valkyrie_id=self._resident_id,
+            title=f"{self._resident_id} asks: {question}",
+            summary=reason or question,
+            audience="valkyrie",
+            risk_class="medium",
+            urgency=0.8,
+            dedupe_key=f"operator-question:{self._resident_id}:{case_id}",
+            evidence={
+                "operator_question": {
+                    "case_id": case_id,
+                    "question": question,
+                    "reason": reason,
+                    "operator_ref": operator_ref,
+                    "root_correlation_id": root_correlation_id,
+                }
+            },
+            requested_by=self._resident_id,
+            correlation_id=root_correlation_id or case_id,
+        )
+        try:
+            return await self._review_requester.request(item)
+        except Exception as exc:  # noqa: BLE001 — room/Telegram delivery must still proceed
+            get_observability().event(
+                "ravn.resident.operator_question_review_failed",
+                attributes={"ravn.resident.case_id": case_id},
+                content=str(exc),
+            )
+            return None
 
     async def submit_operator_answer(
         self,

@@ -174,6 +174,15 @@ def test_decision_requires_review_only_when_a_human_is_actually_asked() -> None:
     assert court is not None
     assert not decision_requires_review(court)
 
+    # The resident files ask_operator through its exact case-aware review path.
+    asking = _judgment_event(authority="human_review_required")
+    asking["payload"]["continuation"] = "ask_operator"
+    asking["payload"]["question"] = "May I proceed?"
+    question = decision_record_from_event(asking)
+    assert question is not None
+    assert question["question"] == "May I proceed?"
+    assert not decision_requires_review(question)
+
 
 def test_ambient_and_observational_judgments_never_reach_the_inbox() -> None:
     """Guarded residents stamp human_review_required on ALL judgments —

@@ -41,4 +41,25 @@ describe('ObservatoryReadout', () => {
     expect(screen.getByTestId('readout-realms')).toHaveTextContent('—');
     expect(screen.getByTestId('readout-residents')).toHaveTextContent('—');
   });
+
+  it('fills the rate in from the topology when the caller passes none', () => {
+    // The cell had a prop nobody supplied, so it rendered a dash however busy
+    // the estate was.
+    const busy = {
+      ...topology,
+      edges: [
+        {
+          id: 'e',
+          sourceId: 'bifrost',
+          targetId: 'model',
+          kind: 'solid' as const,
+          relationType: 'routes_to' as const,
+          ratePerMinute: 4.2,
+        },
+      ],
+    };
+    render(<ObservatoryReadout topology={busy} />);
+
+    expect(screen.getByTestId('readout-msgs-min')).toHaveTextContent('4.2');
+  });
 });

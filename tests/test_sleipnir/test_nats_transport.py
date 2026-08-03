@@ -732,6 +732,21 @@ async def test_subscriber_adds_core_subscriptions(mock_nats):
     await sub.stop()
 
 
+async def test_subscriber_core_stream_uses_live_core_nats_only(mock_nats):
+    mock_module, client, js, _ = mock_nats
+    sub = NatsSubscriber(
+        subject_prefix="obs.workshop",
+        stream_name="core",
+    )
+    await sub.start()
+    await sub.subscribe(["*"], AsyncMock())
+
+    js.subscribe.assert_not_called()
+    client.subscribe.assert_called_once()
+    assert client.subscribe.call_args.args[0] == "obs.workshop.>"
+    await sub.stop()
+
+
 async def test_subscriber_consumer_group_sets_durable_and_queue(mock_nats):
     mock_module, client, js, _ = mock_nats
     sub = NatsSubscriber(consumer_group="my-service")

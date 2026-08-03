@@ -117,6 +117,9 @@ async def _run_daemon(
         publisher=environment_signal_publisher,
         workspace=workspace,
     )
+    if resident_runtime is not None and resident_learning_runtime is not None:
+        resident_runtime.bind_review_requester(resident_learning_runtime.review_requester)
+        resident_learning_runtime.bind_operator_answerer(resident_runtime.submit_operator_answer)
 
     def _agent_factory(
         channel: ChannelPort,
@@ -515,6 +518,8 @@ async def _run_daemon(
 
     if resident_learning_runtime is not None:
         await resident_learning_runtime.start()
+        if resident_runtime is not None:
+            await resident_runtime.publish_pending_questions()
         tasks.append(asyncio.create_task(asyncio.Event().wait(), name="resident_learning"))
         typer.echo("  Resident learning: subscribed")
 

@@ -217,6 +217,7 @@ def _build_resident_runtime(
         scheduled_wake_default_seconds=cfg.scheduled_wake_default_seconds,
         stewardship_interval_seconds=cfg.stewardship_interval_seconds,
         directed_messages_enabled=settings.resident_inbox.directed_messages_enabled,
+        environment_id=settings.environment.id,
     )
 
 

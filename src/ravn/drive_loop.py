@@ -198,6 +198,11 @@ def _resident_hud_result(
 ) -> dict[str, object]:
     """Project one captured task into the stable HUD task shape."""
     metadata = result.metadata
+    failure_reason = str(metadata.get("failure_reason") or "")
+    validation_errors = metadata.get("validation_errors")
+    validation_errors = (
+        [str(error) for error in validation_errors] if isinstance(validation_errors, list) else []
+    )
     return {
         "task_id": result.task_id,
         "title": str(metadata.get("title") or ""),
@@ -208,6 +213,11 @@ def _resident_hud_result(
         "turn_index": int(metadata.get("turn_index") or 0),
         "trace_id": str(metadata.get("trace_id") or ""),
         "status": result.status,
+        **(
+            {"failure": {"reason": failure_reason, "errors": validation_errors}}
+            if failure_reason
+            else {}
+        ),
         "started_at": result.started_at.isoformat(),
         "completed_at": result.completed_at.isoformat() if result.completed_at else "",
         "input": metadata.get("input") if isinstance(metadata.get("input"), dict) else {},
@@ -222,7 +232,8 @@ def _resident_hud_result(
             "warnings": sum(
                 event.type == "error" or "[warning]" in event.summary.casefold()
                 for event in result.events
-            ),
+            )
+            + bool(failure_reason),
             "prompt": (
                 dict(prompt_budget)
                 if prompt_budget is not None
@@ -2760,7 +2771,10 @@ class DriveLoop:
                     content=str(exc),
                 )
                 logger.error("drive_loop: task %s failed: %s", task.task_id, exc)
-                self._result_store.set_status(task.task_id, "failed")
+                self._result_store.set_failure(
+                    task.task_id,
+                    f"{type(exc).__name__}: {exc}",
+                )
                 await channel.emit(
                     RavnEvent.error(
                         source=self._source_id,
@@ -3415,6 +3429,11 @@ class DriveLoop:
                 authoritative_fields=self._authoritative_valkyrie_fields(task),
             )
             if validation_errors:
+                self._result_store.set_failure(
+                    task.task_id,
+                    "The resident returned an invalid structured outcome.",
+                    validation_errors,
+                )
                 reject_payload: dict[str, object] = {
                     "persona": self._persona_config.name,
                     "success": False,
@@ -3586,6 +3605,11 @@ class DriveLoop:
             )
 
         if outcome_errors:
+            self._result_store.set_failure(
+                task.task_id,
+                "The resident outcome could not be accepted.",
+                outcome_errors,
+            )
             return False
 
         if self._mesh is None:

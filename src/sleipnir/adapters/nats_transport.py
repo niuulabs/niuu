@@ -991,15 +991,18 @@ class NatsSubscriber(SleipnirSubscriber):
         )
         self._subscriptions.append(sub)
 
-        subscriptions = [
-            {"subject": subject, "stream_name": self._stream_name}
-            for subject in _nats_subjects_for_patterns(event_types, self._subject_prefix)
-        ]
-        subscriptions.extend(
-            extra_subscription
-            for extra_subscription in self._extra_subscriptions
-            if _extra_subscription_matches(extra_subscription, event_types)
-        )
+        core_only = self._stream_name.lower() == "core"
+        subscriptions = []
+        if not core_only:
+            subscriptions = [
+                {"subject": subject, "stream_name": self._stream_name}
+                for subject in _nats_subjects_for_patterns(event_types, self._subject_prefix)
+            ]
+            subscriptions.extend(
+                extra_subscription
+                for extra_subscription in self._extra_subscriptions
+                if _extra_subscription_matches(extra_subscription, event_types)
+            )
 
         seen: set[tuple[str, str]] = set()
         for subscription in subscriptions:
@@ -1022,7 +1025,10 @@ class NatsSubscriber(SleipnirSubscriber):
             )
             self._nats_subs.append(nats_sub)
 
-        for subject in self._core_subscriptions:
+        core_subjects = list(self._core_subscriptions)
+        if core_only:
+            core_subjects.extend(_nats_subjects_for_patterns(event_types, self._subject_prefix))
+        for subject in dict.fromkeys(core_subjects):
             nats_sub = await self._create_core_subscription(subject, event_types, sub)
             self._nats_subs.append(nats_sub)
 
