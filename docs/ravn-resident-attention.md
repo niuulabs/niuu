@@ -1,19 +1,31 @@
 # Resident Attention
 
-Status: stages 1 and 2 implemented on `feat/resident-inbox-coalescing`. Stage 3
-remains a proposal.
+Status: stages 1 and 2 are shipped and running on Ivaldi. Stage 3 remains a
+proposal.
 
 ## Implementation status
 
 | Stage | State |
 |---|---|
 | 1 — subscription scope | Verified as a config-only change; see §3 |
-| 2 — archive and coalescing queue | Implemented for `LocalResidentInbox` |
+| 2 — archive and coalescing queue | Shipped for `LocalResidentInbox` |
+| 2a — numeric novelty breaks a slot | Shipped; see §4.2 and §8 |
 | 3 — learned attention | Not started; unchanged proposal |
 
-Two contract changes landed with stage 2 and are worth knowing before reading
+Proven on Ivaldi: 84,066 flat records migrated to 9 slots with an exact
+reconciliation and nothing deleted; an injected out-of-range reading refused to
+fold and took its own slot; a turn published a valid outcome and post-session
+reflection recorded a candidate.
+
+Only `LocalResidentInbox` is affected. `MimirResidentInbox` keeps its existing
+layout, so residents on that backend gain nothing here and need no migration.
+
+Three contract changes landed with stage 2 and are worth knowing before reading
 the rest:
 
+- **A numeric value outside a slot's established range takes its own
+  `-novel` slot** rather than folding and widening a bound. This is what wakes
+  the resident on an excursion; §8 records where it does not yet help.
 - **A slot's reference changes when it is judged**, because the record moves
   from `pending/` to `processed/`. Reference resolution follows a judged slot,
   so references held in older turn records still resolve.
@@ -117,6 +129,16 @@ Two observations share a slot only if they are structurally identical. A payload
 that gains, loses or retypes a field gets its own slot — so schema drift and
 novel structure surface immediately rather than being folded away.
 
+Structure is not the only thing that breaks a slot. An observation whose numeric
+value falls outside the range its slot has already established is routed to a
+`<shape>-novel` slot instead of folding, so an excursion wakes the resident
+rather than quietly widening a bound. The check is novelty against the slot's
+own history and makes no claim about what a field means: it stays quiet until
+the slot holds `signal_novelty_min_observations` observations, tolerates drift
+of one span beyond each bound, and — because a bound that has never moved has
+zero span — treats any departure from a constant as novel. See §8 for the
+window in which this does not yet help.
+
 ### 4.3 What a slot carries
 
 - `observation_count`, first and last observed time
@@ -124,7 +146,11 @@ novel structure surface immediately rather than being folded away.
 - per-numeric-path min/max
 - per-categorical-path distinct value set, up to a configured cardinality cap;
   above the cap the path is recorded as high-cardinality with the cap noted
-- the newest full payload, plus the payloads at each numeric extreme
+- the newest full payload, plus the archive reference of the observation that
+  set each numeric bound — a reference rather than a copy, so the count is
+  bounded by the slot's own field structure with nothing to configure, and how
+  much of it reaches a prompt is decided against the context budget at render
+  time
 
 Aggregates only summarize *within* an identical shape. They never merge across
 shapes and never decide relevance.
@@ -334,6 +360,43 @@ adapters persist outcomes; they do not decide attention.
   classifications. Out of scope, but do not extend it.
 
 ## 8. Risks
+
+### A young slot can learn an anomaly as normal
+
+Numeric novelty is only evaluated once a slot holds
+`signal_novelty_min_observations` observations (default 20), because a range
+drawn from a handful of samples is not yet a range. That gate has a cost: an
+anomaly arriving *early* in a slot's life is folded in like any other value and
+becomes part of the established range. A slot that sees `ErrorNumber: 8` in its
+first few observations learns `[0, 8]` as ordinary, and later 8s fold silently
+instead of breaking out into their own slot.
+
+The exposure is a window, not a permanent state, and it opens in three places:
+
+- a shape observed for the first time;
+- the first observations after a schema change, since a new or retyped field
+  creates a new shape with an empty history;
+- a slot that was judged and cleared, whose replacement starts from nothing.
+
+Ivaldi's dominant slot is not exposed — 82,002 observations with `ErrorNumber`
+pinned at `[0, 0]` make any departure unmistakable. A newly created shape is.
+
+This is the honest limit of deciding attention structurally. The mechanism
+knows only how much a field has varied, never what the field *is*, so it cannot
+tell a rare-but-benign value from a rare-and-serious one during the window
+where it has too little history to tell anything at all. Closing it properly
+means judging meaning rather than variance, which is Stage 3 — where the
+resident authors the pattern from evidence and an out-of-range value fails the
+matcher outright rather than widening a bound.
+
+Two things make it tolerable in the meantime. Nothing is lost: every
+observation is in the archive whatever the queue decided, so a window that
+swallowed an anomaly can still be researched after the fact. And the resident's
+own `working_state` carries intent across turns — "saw this once, act if it
+recurs" — which does not depend on the queue noticing anything, only on the
+observation reaching a turn at all.
+
+### Other risks
 
 - **Coalescing hides a transition between two routine observations.** Mitigated
   structurally: a differing field-path set never folds, numeric extremes keep
