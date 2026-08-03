@@ -201,9 +201,7 @@ def _resident_hud_result(
     failure_reason = str(metadata.get("failure_reason") or "")
     validation_errors = metadata.get("validation_errors")
     validation_errors = (
-        [str(error) for error in validation_errors]
-        if isinstance(validation_errors, list)
-        else []
+        [str(error) for error in validation_errors] if isinstance(validation_errors, list) else []
     )
     return {
         "task_id": result.task_id,
@@ -234,7 +232,8 @@ def _resident_hud_result(
             "warnings": sum(
                 event.type == "error" or "[warning]" in event.summary.casefold()
                 for event in result.events
-            ) + bool(failure_reason),
+            )
+            + bool(failure_reason),
             "prompt": (
                 dict(prompt_budget)
                 if prompt_budget is not None
