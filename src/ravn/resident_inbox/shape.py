@@ -248,4 +248,3 @@ def _number(value: float) -> str:
     if value == int(value):
         return str(int(value))
     return f"{value:.4g}"
-

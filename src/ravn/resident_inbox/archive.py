@@ -108,11 +108,18 @@ class RawSignalArchive:
         after: str,
         through: str,
         limit: int,
+        shape_key: str = "",
     ) -> list[tuple[str, dict[str, Any]]]:
         """Return records with ``after < ref <= through``, oldest first.
 
         Used when a slot advanced while the resident was judging it: the delta
         is rebuilt from durable records rather than guessed from the aggregate.
+
+        ``shape_key`` restricts the result *before* ``limit`` applies.  Without
+        it, a burst of unrelated observations inside the same range would fill
+        the limit and truncate the caller's own tail — which would acknowledge
+        observations the resident never saw.  Records that predate shape
+        tracking carry no key and are always returned for the caller to judge.
         """
         if limit <= 0:
             return []
@@ -140,8 +147,11 @@ class RawSignalArchive:
                         except json.JSONDecodeError:
                             logger.warning("resident inbox archive: malformed record at %s", ref)
                             continue
-                        if isinstance(parsed, dict):
-                            collected.append((ref, parsed))
+                        if not isinstance(parsed, dict):
+                            continue
+                        if shape_key and str(parsed.get("shape_key") or shape_key) != shape_key:
+                            continue
+                        collected.append((ref, parsed))
                         if len(collected) >= limit:
                             return collected
             except OSError:

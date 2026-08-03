@@ -238,6 +238,44 @@ async def test_acknowledge_leaves_observations_that_arrived_mid_turn(tmp_path) -
 
 
 @pytest.mark.asyncio
+async def test_unrelated_traffic_cannot_truncate_the_unjudged_tail(tmp_path) -> None:
+    """A burst of other shapes must not cause a slot's tail to be lost.
+
+    The tail is rebuilt from the archive with a bound sized to the slot. If that
+    bound counted unrelated records, a noisy neighbour would fill it and the
+    slot's own unseen observations would be acknowledged without ever being
+    shown to the resident.
+    """
+    inbox = LocalResidentInbox(tmp_path / "inbox")
+    await inbox.write_signal(_tick(1, progress=1))
+    ref, seen = (await inbox.list_signals(limit=1))[0]
+    assert seen.observation_count == 1
+
+    # Far more unrelated observations than this slot's own count, all landing
+    # inside the range the rebuild has to scan.
+    for index in range(50):
+        await inbox.write_signal(
+            ResidentInboxSignal(
+                id=f"noise-{index}",
+                source="noisy-neighbour",
+                kind="other",
+                summary="unrelated",
+                payload={"noise": index},
+                observed_at=f"2026-08-03T11:{index % 60:02d}:00Z",
+            )
+        )
+    # Then two more of the original shape, which the resident has not seen.
+    await inbox.write_signal(_tick(2, progress=2))
+    await inbox.write_signal(_tick(3, progress=3))
+
+    await inbox.acknowledge((ref,), expected={ref: seen.last_archive_ref})
+
+    remaining = {slot.shape_key: slot for _r, slot in await inbox.list_signals(limit=50)}
+    assert seen.shape_key in remaining, "the slot's unseen tail must survive"
+    assert remaining[seen.shape_key].observation_count == 2
+
+
+@pytest.mark.asyncio
 async def test_acknowledge_without_new_arrivals_clears_the_slot(tmp_path) -> None:
     inbox = LocalResidentInbox(tmp_path / "inbox")
     for index in range(4):
@@ -488,9 +526,7 @@ async def test_archive_range_rebuild_skips_foreign_shapes(tmp_path) -> None:
 
     await inbox.acknowledge((ref,), expected={ref: seen.last_archive_ref})
 
-    remainder = {
-        slot.shape_key: slot for _r, slot in await inbox.list_signals(limit=10)
-    }
+    remainder = {slot.shape_key: slot for _r, slot in await inbox.list_signals(limit=10)}
     assert remainder[seen.shape_key].observation_count == 1, "foreign records are not folded in"
 
 

@@ -139,9 +139,7 @@ class LocalResidentInbox(ResidentInboxBackend):
         # decision, so a coalesced slot always summarises records that exist.
         identity = _slot_identity(signal)
         key = _shape_of(signal)
-        archive_ref = self._archive.append(
-            {"shape_key": key, "signal": _signal_to_dict(signal)}
-        )
+        archive_ref = self._archive.append({"shape_key": key, "signal": _signal_to_dict(signal)})
 
         if signal.status != ResidentInboxStatus.NEW.value:
             # Already-judged records are history, not queue work.
@@ -354,6 +352,7 @@ class LocalResidentInbox(ResidentInboxBackend):
             after=judged_through,
             through=slot.last_archive_ref,
             limit=max(1, slot.observation_count),
+            shape_key=slot.shape_key,
         )
         rebuilt: ResidentInboxSignal | None = None
         for archive_ref, record in records:
