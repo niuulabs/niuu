@@ -2551,7 +2551,12 @@ class DriveLoop:
                     prompt_task,
                     initiative_context=(f"{prompt_task.initiative_context}\n\n{recovery_context}"),
                 )
-            prompt = build_initiative_prompt(prompt_task)
+            prompt = build_initiative_prompt(
+                prompt_task,
+                produces_event_type=str(
+                    getattr(getattr(self._persona_config, "produces", None), "event_type", "") or ""
+                ),
+            )
             prompt = await self._apply_retrieval_reflex(prompt, task)
             telemetry.event(
                 "ravn.task.prompt",

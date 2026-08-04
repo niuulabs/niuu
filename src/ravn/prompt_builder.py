@@ -29,6 +29,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ravn.domain.models import AgentTask
+from ravn.domain.valkyrie_contracts import (
+    is_valkyrie_outcome_event,
+    resident_outcome_section,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -361,12 +365,19 @@ def _is_claude(model: str) -> bool:
     return any(lower.startswith(p) for p in _CLAUDE_MODEL_PREFIXES)
 
 
-def build_initiative_prompt(task: AgentTask) -> str:
+def build_initiative_prompt(task: AgentTask, *, produces_event_type: str = "") -> str:
     """Build the synthetic user message for a drive-loop initiative task.
 
     The returned string is passed directly to ``agent.run_turn()``. Autonomous
     triggers default to silent output; channel-originated human tasks identify
     their origin explicitly while retaining the same outcome contract.
+
+    *produces_event_type* is the persona's canonical outcome event. Validation
+    is driven by the persona, not the trigger, so a resident persona is held to
+    the judgment contract on every turn — and therefore has to be shown it on
+    every turn. Signal-driven turns already embed the block (with their real
+    refs and evidence) in the context; anything else gets the placeholder form
+    appended here rather than being asked for a shape it was never told.
     """
     origin_statement = "You are running autonomously. No human sent this message."
     if task.human_initiated:
@@ -374,6 +385,13 @@ def build_initiative_prompt(task: AgentTask) -> str:
             "A human sent this message through a communication channel. "
             "Treat the human content in the context below as direct input."
         )
+
+    outcome_contract = ""
+    if (
+        is_valkyrie_outcome_event(produces_event_type)
+        and "---outcome---" not in task.initiative_context
+    ):
+        outcome_contract = f"\n{resident_outcome_section()}\n"
 
     return (
         f"[INITIATIVE TASK — triggered by: {task.triggered_by}]\n"
@@ -385,6 +403,7 @@ def build_initiative_prompt(task: AgentTask) -> str:
         "<initiative_context>\n"
         f"{task.initiative_context}\n"
         "</initiative_context>\n"
+        f"{outcome_contract}"
         "\n"
         # Ordering, stated before anything else, because the outcome block ends
         # the turn. A model that writes its whole answer in one pass will emit

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from typing import Any
 
@@ -13,11 +13,47 @@ VALKYRIE_ACTION_PROPOSED = "valkyrie.action.proposed"
 VALKYRIE_ACTION_EXECUTED = "valkyrie.action.executed"
 VALKYRIE_ACTION_FAILED = "valkyrie.action.failed"
 
-VALKYRIE_ATTENTION_TIERS = frozenset({"silent", "ambient", "present", "urgent"})
-VALKYRIE_WAKEFULNESS_STATES = frozenset({"sleeping", "watching", "wakeful", "dreaming"})
-VALKYRIE_ACTION_AUTHORITIES = frozenset(
-    {"autonomous", "yolo_allowed", "court_required", "human_review_required"}
+# Ordered rather than set-literal because these tuples are also what the model
+# is shown, and the order carries meaning: attention tiers and wakefulness
+# states escalate left to right. The frozensets used for validation are derived
+# from them so the prompt cannot describe a vocabulary the validator rejects.
+VALKYRIE_ATTENTION_TIER_ORDER = ("silent", "ambient", "present", "urgent")
+VALKYRIE_WAKEFULNESS_STATE_ORDER = ("sleeping", "watching", "wakeful", "dreaming")
+VALKYRIE_ACTION_AUTHORITY_ORDER = (
+    "autonomous",
+    "yolo_allowed",
+    "court_required",
+    "human_review_required",
 )
+VALKYRIE_DECISION_ORDER = (
+    "ignore",
+    "watch",
+    "investigate",
+    "propose_action",
+    "escalate",
+    "learn",
+    "blocked",
+)
+VALKYRIE_OPERATIONAL_STATE_ORDER = (
+    "nominal",
+    "watching",
+    "investigating",
+    "degraded",
+    "remediating",
+    "blocked",
+    "dreaming",
+)
+VALKYRIE_CONTINUATION_ORDER = ("ask_operator", "sleep", "stop")
+VALKYRIE_NEXT_ACTION_TIMING_ORDER = (
+    "external_event",
+    "scheduled_time",
+    "operator_input",
+    "none",
+)
+
+VALKYRIE_ATTENTION_TIERS = frozenset(VALKYRIE_ATTENTION_TIER_ORDER)
+VALKYRIE_WAKEFULNESS_STATES = frozenset(VALKYRIE_WAKEFULNESS_STATE_ORDER)
+VALKYRIE_ACTION_AUTHORITIES = frozenset(VALKYRIE_ACTION_AUTHORITY_ORDER)
 VALKYRIE_OUTCOME_EVENTS = frozenset(
     {
         VALKYRIE_JUDGMENT_PROPOSED,
@@ -61,6 +97,74 @@ _JUDGMENT_REQUIRED_FIELDS = (
     "dissent_refs",
     "correlation_ids",
 )
+
+
+def _choices(options: Sequence[str]) -> str:
+    return f"<{' | '.join(options)}>"
+
+
+def resident_outcome_template(
+    *,
+    signal_refs: Sequence[str] = (),
+    evidence_lines: Sequence[str] = (),
+) -> str:
+    """Render the literal outcome block a resident turn must reproduce.
+
+    Every resident turn is validated against this contract, so every resident
+    turn has to be shown it. Signal-driven turns pass the refs and evidence they
+    already know; charter-driven wakes (stewardship, scheduled wake, operator
+    answer, dream cycle) get placeholders for the same fields.
+    """
+    ref_lines = [f"  - {ref}" for ref in signal_refs] or [
+        "  - <inbox or continuation ref you actually read, or leave the list empty>"
+    ]
+    ev_lines = list(evidence_lines) or [
+        "  - <what you observed, with its source; leave the list empty if you gathered none>"
+    ]
+    return "\n".join(
+        [
+            "---outcome---",
+            f"decision: {_choices(VALKYRIE_DECISION_ORDER)}",
+            "signal_refs:",
+            *ref_lines,
+            f"tier: {_choices(VALKYRIE_ATTENTION_TIER_ORDER)}",
+            "confidence: <0.0-1.0>",
+            f"operational_state: {_choices(VALKYRIE_OPERATIONAL_STATE_ORDER)}",
+            f"wakefulness: {_choices(VALKYRIE_WAKEFULNESS_STATE_ORDER)}",
+            "rationale: concise reason grounded in what you observed",
+            "evidence:",
+            *ev_lines,
+            "recommended_action: <next step, or none>",
+            "selected_next_action: <one concrete next step, or none>",
+            f"continuation: {_choices(VALKYRIE_CONTINUATION_ORDER)}",
+            f"next_action_timing: {_choices(VALKYRIE_NEXT_ACTION_TIMING_ORDER)}",
+            'question: ""',
+            f"action_authority: {_choices(VALKYRIE_ACTION_AUTHORITY_ORDER)}",
+            "action_capability: <required capability, or none>",
+            "target_surfaces: []",
+            'expires_at: ""',
+            "dissent_refs: []",
+            "---end---",
+        ]
+    )
+
+
+def resident_outcome_section(
+    *,
+    signal_refs: Sequence[str] = (),
+    evidence_lines: Sequence[str] = (),
+) -> str:
+    """Render the '## Required outcome' prompt section around the template."""
+    template = resident_outcome_template(signal_refs=signal_refs, evidence_lines=evidence_lines)
+    return (
+        "## Required outcome\n\n"
+        "Finish with exactly one `valkyrie.judgment.proposed` block in this "
+        "shape — keep the `---outcome---` / `---end---` delimiters, valid YAML "
+        "between them, and no prose after it:\n\n"
+        "```text\n"
+        f"{template}\n"
+        "```\n"
+    )
 
 
 def is_valkyrie_outcome_event(event_type: str) -> bool:

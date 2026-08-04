@@ -25,6 +25,7 @@ from ravn.domain.environment import (
     apply_environment_metadata,
 )
 from ravn.domain.models import AgentTask, OutputMode
+from ravn.domain.valkyrie_contracts import resident_outcome_template
 from ravn.ports.signal_adapter import NormalizedSignal, SignalAdapter
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher
@@ -463,35 +464,11 @@ class EnvironmentSignalRuntime:
         severity_lines = "\n".join(
             f"- **{severity}**: {count}" for severity, count in sorted(severity_counts.items())
         )
-        signal_refs = "\n".join(
-            f"  - {entry['signal_ref']}" for entry in batch[: env_cfg.idle_triage_max_signal_refs]
-        )
-        outcome_template = (
-            "---outcome---\n"
-            "decision: <ignore | watch | investigate | propose_action | "
-            "escalate | learn | blocked>\n"
-            "signal_refs:\n"
-            f"{signal_refs}\n"
-            "tier: <silent | ambient | present | urgent>\n"
-            "confidence: <0.0-1.0>\n"
-            "operational_state: <nominal | watching | investigating | degraded | "
-            "remediating | blocked | dreaming>\n"
-            "wakefulness: <sleeping | watching | wakeful | dreaming>\n"
-            "rationale: <concise evidence-based judgment>\n"
-            "evidence: <evidence references, or []>\n"
-            "recommended_action: <next step, or none>\n"
-            "selected_next_action: <one concrete next step, or none>\n"
-            "continuation: <ask_operator | sleep | stop>\n"
-            "next_action_timing: <external_event | scheduled_time | "
-            "operator_input | none>\n"
-            'question: ""\n'
-            "action_authority: <autonomous | yolo_allowed | court_required | "
-            "human_review_required>\n"
-            "action_capability: <required capability, or none>\n"
-            "target_surfaces: []\n"
-            'expires_at: ""\n'
-            "dissent_refs: []\n"
-            "---end---"
+        outcome_template = resident_outcome_template(
+            signal_refs=[
+                entry["signal_ref"] for entry in batch[: env_cfg.idle_triage_max_signal_refs]
+            ],
+            evidence_lines=["  - <evidence reference>"],
         )
         charter_section = ""
         charter = self._settings.environment.charter.strip()
@@ -670,35 +647,13 @@ class EnvironmentSignalRuntime:
         # The literal block the agent must reproduce. Kept inside a fenced block
         # so the response parser's ---outcome---/---end--- contract is preserved
         # while the ticket renders it as a clean code block, not a stray card.
-        outcome_template = (
-            "---outcome---\n"
-            "decision: <ignore | watch | investigate | propose_action | "
-            "escalate | learn | blocked>\n"
-            "signal_refs:\n"
-            f"  - {signal_ref}\n"
-            "tier: <silent | ambient | present | urgent>\n"
-            "confidence: <0.0-1.0>\n"
-            "operational_state: <nominal | watching | investigating | degraded | "
-            "remediating | blocked | dreaming>\n"
-            "wakefulness: <sleeping | watching | wakeful | dreaming>\n"
-            "rationale: concise reason grounded in the signal\n"
-            "evidence:\n"
-            f"  - event_id: {signal_ref}\n"
-            f"    source_id: {signal.source_id}\n"
-            f"    severity: {signal.severity}\n"
-            "recommended_action: <next step, or none>\n"
-            "selected_next_action: <one concrete next step, or none>\n"
-            "continuation: <ask_operator | sleep | stop>\n"
-            "next_action_timing: <external_event | scheduled_time | "
-            "operator_input | none>\n"
-            'question: ""\n'
-            "action_authority: <autonomous | yolo_allowed | court_required | "
-            "human_review_required>\n"
-            "action_capability: <required capability, or none>\n"
-            "target_surfaces: []\n"
-            'expires_at: ""\n'
-            "dissent_refs: []\n"
-            "---end---"
+        outcome_template = resident_outcome_template(
+            signal_refs=[signal_ref],
+            evidence_lines=[
+                f"  - event_id: {signal_ref}",
+                f"    source_id: {signal.source_id}",
+                f"    severity: {signal.severity}",
+            ],
         )
         resident_block = "\n".join(resident_lines)
         context = (

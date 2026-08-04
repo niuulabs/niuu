@@ -164,6 +164,38 @@ def test_build_initiative_prompt_identifies_human_channel_input_truthfully() -> 
     assert "No human sent this message" not in prompt
 
 
+def test_build_initiative_prompt_teaches_the_resident_outcome_contract() -> None:
+    """A resident persona is validated against the judgment contract on every
+    turn, so every turn must be shown it. Charter-driven wakes (stewardship,
+    scheduled wake, operator answer, dream cycle) carry no template of their
+    own — without this they were asked for a shape nobody had described."""
+    task = _make_task()
+
+    prompt = build_initiative_prompt(task, produces_event_type="valkyrie.judgment.proposed")
+
+    assert "---outcome---" in prompt
+    assert "---end---" in prompt
+    for field in ("signal_refs", "tier", "confidence", "operational_state"):
+        assert f"{field}:" in prompt
+
+
+def test_build_initiative_prompt_does_not_repeat_a_template_already_in_context() -> None:
+    task = _make_task()
+    task.initiative_context = "Signal turn\n---outcome---\ndecision: watch\n---end---"
+
+    prompt = build_initiative_prompt(task, produces_event_type="valkyrie.judgment.proposed")
+
+    assert prompt.count("## Required outcome") == 0
+
+
+def test_build_initiative_prompt_omits_the_contract_for_non_resident_personas() -> None:
+    task = _make_task()
+
+    prompt = build_initiative_prompt(task, produces_event_type="task.completed")
+
+    assert "## Required outcome" not in prompt
+
+
 # ---------------------------------------------------------------------------
 # DriveLoop — enqueue / priority ordering
 # ---------------------------------------------------------------------------
