@@ -626,6 +626,25 @@ class OpenAICompatibleAdapter(LLMPort):
                     len(tool_names),
                     "".join(accumulated_reasoning)[:400],
                 )
+            else:
+                # The agent loop streams; `generate` only serves reflection. A
+                # turn that answers in prose, calls nothing and omits the
+                # outcome block looks like success here and fails two calls
+                # later in schema repair, so record the shape of every stream.
+                text = "".join(accumulated_text)
+                logger.info(
+                    "openai-compatible: stream done model=%s finish_reason=%s "
+                    "content_len=%d reasoning_len=%d tool_calls=%d tool_names=%s "
+                    "content_head=%r content_tail=%r",
+                    model or self._default_model,
+                    finish_reason,
+                    len(text),
+                    len("".join(accumulated_reasoning)),
+                    len(tool_names),
+                    sorted(tool_names.values()),
+                    text[:200],
+                    text[-200:],
+                )
 
             # Emit a MESSAGE_DONE with estimated usage when the API did not send one.
             if not usage_emitted:
