@@ -1287,8 +1287,15 @@ class RavnAgent:
                 case StreamEventType.MESSAGE_DONE:
                     if event.usage:
                         final_usage = event.usage
-                    if tool_calls:
-                        stop_reason = StopReason.TOOL_USE
+
+        # Decided after the stream rather than inside MESSAGE_DONE, because
+        # MESSAGE_DONE is not the last event. Servers that send a usage chunk
+        # (stream_options.include_usage) emit it mid-stream, so a tool call
+        # recovered at end of stream arrived after the only place that set
+        # TOOL_USE — and the turn ended holding a tool call it never ran.
+        # Whether the model asked for tools does not depend on event order.
+        if tool_calls:
+            stop_reason = StopReason.TOOL_USE
 
         return LLMResponse(
             content=accumulated_text,

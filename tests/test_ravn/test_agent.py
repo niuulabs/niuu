@@ -137,6 +137,42 @@ class TestRavnAgentSimpleTurn:
 
 
 class TestRavnAgentToolUse:
+    async def test_tool_call_after_message_done_is_still_executed(self) -> None:
+        """MESSAGE_DONE is not the last event. A server sending a usage chunk
+        emits it mid-stream, so a tool call recovered at end of stream lands
+        after it. Deciding TOOL_USE inside MESSAGE_DONE left the agent holding
+        a tool call it never ran — one iteration, no evidence, no outcome."""
+        tool = EchoTool()
+        tool_call = ToolCall(id="tc1", name="echo", input={"message": "ping"})
+
+        call_count = 0
+
+        async def _stream(*args, **kwargs) -> AsyncIterator[StreamEvent]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield StreamEvent(
+                    type=StreamEventType.MESSAGE_DONE,
+                    usage=TokenUsage(input_tokens=5, output_tokens=2),
+                )
+                yield StreamEvent(type=StreamEventType.TOOL_CALL, tool_call=tool_call)
+            else:
+                yield StreamEvent(type=StreamEventType.TEXT_DELTA, text="pong received")
+                yield StreamEvent(
+                    type=StreamEventType.MESSAGE_DONE,
+                    usage=TokenUsage(input_tokens=8, output_tokens=3),
+                )
+
+        llm = AsyncMock(spec=LLMPort)
+        llm.stream = _stream
+
+        agent, _ = make_agent(llm, tools=[tool])
+        result = await agent.run_turn("echo ping")
+
+        assert result.response == "pong received"
+        assert [call.name for call in result.tool_calls] == ["echo"]
+        assert [r.content for r in result.tool_results] == ["ping"]
+
     async def test_tool_executed_and_result_fed_back(self) -> None:
         """LLM requests tool_use → tool runs → second call returns final text."""
         tool = EchoTool()
