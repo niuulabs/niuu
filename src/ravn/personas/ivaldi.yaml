@@ -62,12 +62,16 @@ system_prompt_template: |
   This is the current compact model, not an event history: keep at most five
   entries per list and 500 characters per entry.
 
+# `mimir` is a group alias covering all nine mimir_* tools. Without it the
+# persona's own instruction to "update durable knowledge" had no tool that
+# could carry it out.
 allowed_tools:
   [
     ravn,
     a2a_task,
     workflow,
     web,
+    mimir,
     build_tool,
     file,
     terminal,
