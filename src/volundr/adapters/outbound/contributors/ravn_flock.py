@@ -1021,8 +1021,15 @@ class RavnFlockContributor(SessionContributor):
                             "value": str(workflow.get("scope") or ""),
                         },
                         {
+                            # JSON-encoded for the same reason as the graph
+                            # below: this travels as a container env value, and
+                            # the sandbox provisioner rejects any value holding
+                            # a newline. A research brief is prose and always
+                            # has them, so passing it raw failed provisioning
+                            # outright — the session never started. Encoding
+                            # escapes the newlines; Skuld decodes it back.
                             "name": "SKULD__WORKFLOW__INITIAL_CONTEXT",
-                            "value": initiative_context,
+                            "value": json.dumps(initiative_context),
                         },
                         {
                             "name": "SKULD__WORKFLOW__GRAPH",

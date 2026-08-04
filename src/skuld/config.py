@@ -165,6 +165,18 @@ class WorkflowRuntimeConfig(BaseModel):
             with suppress(Exception):
                 value = dict(value)
                 value["trace_context"] = json.loads(trace_context)
+        # The initial context is JSON-encoded on the wire because the sandbox
+        # provisioner refuses env values containing newlines, and a workflow
+        # brief is prose. Only accept a decode that yields a string: a context
+        # whose text happens to be valid JSON ("{...}", a bare number) must
+        # stay the literal prose the author wrote, not become an object.
+        initial_context = value.get("initial_context")
+        if isinstance(initial_context, str) and initial_context.strip():
+            with suppress(Exception):
+                decoded = json.loads(initial_context)
+                if isinstance(decoded, str):
+                    value = dict(value)
+                    value["initial_context"] = decoded
         return value
 
 

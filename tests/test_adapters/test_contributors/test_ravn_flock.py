@@ -407,6 +407,36 @@ class TestContributorOutput:
             "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
         }
 
+    async def test_multiline_initial_context_survives_as_a_single_env_line(self, session):
+        """A research brief is prose and always has newlines, but the sandbox
+        provisioner rejects env values containing them — an unencoded brief
+        failed provisioning outright and the session never started."""
+        brief = "Search the repo for error code 7.\n\nReport findings.\r\nEnd."
+        template = LaunchSpec(
+            name="workflow-flock",
+            workload_type="ravn_flock",
+            workload_config={
+                "personas": ["research-explorer"],
+                "initiative_context": brief,
+                "workflow": {
+                    "workflow_id": "wf-2",
+                    "name": "Research",
+                    "graph": {"nodes": [], "edges": []},
+                },
+            },
+        )
+        provider = MagicMock()
+        provider.get.return_value = template
+        c = RavnFlockContributor(launch_spec_provider=provider)
+
+        result = await c.contribute(session, SessionContext(launch_spec="workflow-flock"))
+
+        env_names = {e["name"]: e["value"] for e in result.pod_spec.env}
+        raw = env_names["SKULD__WORKFLOW__INITIAL_CONTEXT"]
+        assert "\n" not in raw
+        assert "\r" not in raw
+        assert json.loads(raw) == brief
+
     async def test_skuld_generic_trigger_env_present_for_plain_coordinator_flock(self, session):
         template = LaunchSpec(
             name="plain-flock",

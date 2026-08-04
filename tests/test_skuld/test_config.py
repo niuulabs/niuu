@@ -1,8 +1,14 @@
 """Tests for Skuld configuration."""
 
+import json
+
 import pytest
 
-from skuld.config import SkuldSessionConfig, SkuldSettings
+from skuld.config import (
+    SkuldSessionConfig,
+    SkuldSettings,
+    WorkflowRuntimeConfig,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -447,3 +453,37 @@ def test_workflow_trace_context_loads_from_nested_env(monkeypatch) -> None:
     assert settings.workflow.trace_context == {
         "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
     }
+
+
+class TestWorkflowRuntimeConfigInitialContext:
+    """The brief travels as a container env value, and the sandbox provisioner
+    rejects any value holding a newline. Volundr JSON-encodes it so the
+    newlines are escaped; these tests hold the decode to that contract."""
+
+    def test_json_encoded_multiline_brief_round_trips(self):
+        brief = "Search the repo for error code 7.\n\nReport what you find.\r\nEnd."
+
+        config = WorkflowRuntimeConfig(initial_context=json.dumps(brief))
+
+        assert config.initial_context == brief
+
+    def test_plain_prose_is_left_alone(self):
+        """An older Volundr sends the value raw. Decoding must not mangle it."""
+        config = WorkflowRuntimeConfig(initial_context="just some prose")
+
+        assert config.initial_context == "just some prose"
+
+    def test_prose_that_happens_to_be_json_stays_literal(self):
+        """A brief whose text parses as a JSON object is still the author's
+        prose, not a structure — decoding it would change the instruction."""
+        config = WorkflowRuntimeConfig(initial_context='{"not": "a brief"}')
+
+        assert config.initial_context == '{"not": "a brief"}'
+
+    def test_prose_that_is_a_bare_json_number_stays_literal(self):
+        config = WorkflowRuntimeConfig(initial_context="42")
+
+        assert config.initial_context == "42"
+
+    def test_empty_stays_empty(self):
+        assert WorkflowRuntimeConfig().initial_context == ""
