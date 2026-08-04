@@ -396,6 +396,33 @@ class OpenAICompatibleAdapter(LLMPort):
             body["stream_options"] = {"include_usage": True}
         if tools:
             body["tools"] = _convert_tools(tools)
+
+        # The response side is already recorded; without its counterpart a turn
+        # that used no tools is ambiguous between "the model declined" and "no
+        # tool was ever offered". Every local reconstruction of this request
+        # produced a tool call, so what the agent actually sends is the one
+        # remaining unobserved difference.
+        request_messages = body["messages"]
+        system_chars = sum(
+            len(str(m.get("content") or ""))
+            for m in request_messages
+            if m.get("role") in ("system", "developer")
+        )
+        logger.info(
+            "openai-compatible: request model=%s stream=%s max_tokens=%s tools=%d "
+            "tool_names=%s messages=%d roles=%s system_chars=%d "
+            "total_content_chars=%d thinking=%s",
+            effective_model,
+            stream,
+            body.get(_max_tokens_param(effective_model)),
+            len(body.get("tools") or []),
+            [t.get("function", {}).get("name") for t in (body.get("tools") or [])],
+            len(request_messages),
+            [m.get("role") for m in request_messages],
+            system_chars,
+            sum(len(str(m.get("content") or "")) for m in request_messages),
+            thinking is not None,
+        )
         return body
 
     async def _post_with_retry(

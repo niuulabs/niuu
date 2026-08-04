@@ -386,13 +386,23 @@ def build_initiative_prompt(task: AgentTask) -> str:
         f"{task.initiative_context}\n"
         "</initiative_context>\n"
         "\n"
+        # Ordering, stated before anything else, because the outcome block ends
+        # the turn. A model that writes its whole answer in one pass will emit
+        # the block in its first reply and never reach a second iteration —
+        # producing a correct description of the work instead of the work.
         "Instructions:\n"
-        "1. Complete the task described above using available tools.\n"
-        "2. When finished, output your ---outcome--- block and STOP.\n"
-        "3. Do NOT continue calling tools after producing the outcome block.\n"
+        "1. Do the work FIRST. Use the available tools to gather the evidence, "
+        "take the action, or establish that no available tool can help. "
+        "Describing an action is not performing it.\n"
+        "2. The outcome block is the LAST thing you produce. Emitting it ends "
+        "the turn immediately: anything you have not done before it will not "
+        "get done. Do not emit it in the same reply as your first thoughts.\n"
+        "3. If a tool could reduce uncertainty or carry out what was asked, "
+        "call it before you decide. Only report a capability gap once you have "
+        "checked what is actually available to you.\n"
         "4. Never finish with prose only; if blocked or ignoring the signal, "
         "still output the required outcome block.\n"
-        "5. Keep your work focused and concise. Avoid unnecessary iterations.\n"
+        "5. Keep your work focused. Prefer one decisive tool call over none.\n"
         "\n"
         "Output:\n"
         "- Default to SILENT unless something requires human attention.\n"
