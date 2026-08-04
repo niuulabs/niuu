@@ -508,12 +508,21 @@ def _codex_auth_provider(settings: Settings) -> Any | None:
         )
         return None
 
-    auth = WorkloadIdentityBearerTokenAuthAdapter(
-        base_url=base_url,
-        token_file=platform.workload_token_file,
-        exchange_url=platform.workload_exchange_url,
-        audiences=list(platform.workload_audiences),
-    )
+    # Pass token_file/exchange_url only when they were actually configured.
+    # Both fall back to NIUU_WORKLOAD_IDENTITY_* inside the adapter, and in a
+    # flock persona those env vars are the correct answer while Ravn's own
+    # defaults are not: workload_token_file defaults to the generic
+    # kubernetes.io service-account token, whose audience the exchange rejects.
+    # Handing over the default silently replaced a working credential with one
+    # that could only ever 401.
+    auth_kwargs: dict[str, Any] = {"base_url": base_url}
+    if "workload_token_file" in platform.model_fields_set:
+        auth_kwargs["token_file"] = platform.workload_token_file
+    if "workload_exchange_url" in platform.model_fields_set:
+        auth_kwargs["exchange_url"] = platform.workload_exchange_url
+    if "workload_audiences" in platform.model_fields_set:
+        auth_kwargs["audiences"] = list(platform.workload_audiences)
+    auth = WorkloadIdentityBearerTokenAuthAdapter(**auth_kwargs)
 
     async def _client() -> httpx.AsyncClient:
         return httpx.AsyncClient(base_url=base_url, headers=await auth.headers())

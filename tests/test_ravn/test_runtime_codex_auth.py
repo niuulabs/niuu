@@ -78,3 +78,50 @@ def test_non_codex_transports_are_untouched() -> None:
         _runtime_cli_transport_kwargs("skuld.transports.subprocess.SubprocessTransport", settings)
         == {}
     )
+
+
+def test_unconfigured_workload_settings_defer_to_the_runtime_env() -> None:
+    """Ravn's workload_token_file defaults to the generic kubernetes.io
+    service-account token, whose audience the exchange rejects. A flock
+    persona is handed the right path in NIUU_WORKLOAD_IDENTITY_TOKEN_FILE and
+    the adapter falls back to it — but only if we do not overwrite it with our
+    own default, which produced a credential that could only ever 401."""
+    settings = Settings.model_validate(
+        {
+            "runtime_executor": {
+                "transport_adapter": _CODEX,
+                "codex_auth_adapter": "skuld.codex_auth.VolundrCodexAuthProvider",
+            },
+            # base_url only — exactly what a flock persona has once the
+            # exchange-URL fallback resolves it.
+            "gateway": {"platform": {"base_url": "https://volundr.example.test"}},
+        }
+    )
+
+    provider = _runtime_cli_transport_kwargs(_CODEX, settings)["codex_auth_provider"]
+    auth = provider._http_client_provider.__closure__[0].cell_contents
+
+    assert auth._token_file == ""
+    assert auth._token_file_env == "NIUU_WORKLOAD_IDENTITY_TOKEN_FILE"
+
+
+def test_explicit_workload_settings_are_still_honoured() -> None:
+    settings = Settings.model_validate(
+        {
+            "runtime_executor": {
+                "transport_adapter": _CODEX,
+                "codex_auth_adapter": "skuld.codex_auth.VolundrCodexAuthProvider",
+            },
+            "gateway": {
+                "platform": {
+                    "base_url": "https://volundr.example.test",
+                    "workload_token_file": "/custom/token",
+                }
+            },
+        }
+    )
+
+    provider = _runtime_cli_transport_kwargs(_CODEX, settings)["codex_auth_provider"]
+    auth = provider._http_client_provider.__closure__[0].cell_contents
+
+    assert auth._token_file == "/custom/token"
