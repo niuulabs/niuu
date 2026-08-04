@@ -627,7 +627,20 @@ class OpenAICompatibleAdapter(LLMPort):
             # that choice away: the agent saw a turn with no tool call, stopped
             # after one iteration, and produced neither the tool's evidence nor
             # an outcome block. Trust the accumulated call, not the marker.
-            if tool_names and not tool_calls_emitted:
+            #
+            # Except on "length": there the model was cut off mid-call, so the
+            # arguments are a truncated JSON fragment. Recovering that would
+            # parse to `{}` and invoke the tool with no arguments at all —
+            # worse than not calling it, and a way to turn a truncated
+            # generation into a real side effect.
+            if finish_reason == "length" and tool_names and not tool_calls_emitted:
+                logger.warning(
+                    "openai-compatible: dropping %d tool call(s) %s truncated by "
+                    "the token limit; arguments are incomplete",
+                    len(tool_names),
+                    sorted(tool_names.values()),
+                )
+            elif tool_names and not tool_calls_emitted:
                 logger.warning(
                     "openai-compatible: stream ended with finish_reason=%r but "
                     "carried %d assembled tool call(s) %s — emitting them anyway",

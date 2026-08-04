@@ -629,6 +629,25 @@ class TestOpenAIAdapterStream:
         assert tool_events[0].tool_call.input == {"q": "printer"}
 
     @respx.mock
+    async def test_stream_drops_a_tool_call_truncated_by_the_token_limit(self) -> None:
+        """Recovery must not resurrect a cut-off call: its arguments are a
+        truncated JSON fragment that parses to {}, which would invoke the tool
+        with nothing at all rather than what the model was writing."""
+        adapter = OpenAICompatibleAdapter(api_key="k", base_url=_BASE_URL)
+        sse = _make_sse_lines(
+            _tool_chunk(0, tool_id="call-1", name="bash", args='{"command": "rm -r'),
+            _tool_chunk(0, tool_id="", name=None, args="", finish_reason="length"),
+            usage={"prompt_tokens": 5, "completion_tokens": 10},
+        )
+        respx.post(f"{_BASE_URL}/v1/chat/completions").mock(
+            return_value=httpx.Response(200, content=sse)
+        )
+
+        events = [event async for event in adapter.stream(_MESSAGES, **_KWARGS)]
+
+        assert [e for e in events if e.type == StreamEventType.TOOL_CALL] == []
+
+    @respx.mock
     async def test_stream_does_not_emit_a_tool_call_twice(self) -> None:
         adapter = OpenAICompatibleAdapter(api_key="k", base_url=_BASE_URL)
         sse = _make_sse_lines(
