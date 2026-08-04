@@ -655,7 +655,12 @@ class MarkdownMimirAdapter(MimirPort):
             results.append((score, MimirPage(meta=meta, content=content)))
 
         results.sort(key=lambda t: t[0], reverse=True)
-        return [page for _, page in results]
+        # Capped like the SearchPort path above. Uncapped, a common word
+        # matched most of the wiki and every match was returned with its
+        # content: one query against a 1,584-page store produced a 3.2 MB
+        # tool result, which exhausted the agent's prompt budget on its own.
+        # A ranked search that returns everything has not ranked anything.
+        return [page for _, page in results[:_SEARCH_RESULT_LIMIT]]
 
     async def upsert_page(
         self,

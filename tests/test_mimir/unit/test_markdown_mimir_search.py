@@ -259,6 +259,25 @@ async def test_search_falls_back_to_keywords_without_port(tmp_path: Path) -> Non
     assert any(p.meta.path == "technical/memory.md" for p in results)
 
 
+@pytest.mark.asyncio
+async def test_keyword_search_is_capped_like_the_search_port_path(tmp_path: Path) -> None:
+    """A ranked search that returns everything has not ranked anything.
+
+    Uncapped, a common word matched most of the wiki and every match came back
+    with its content: one query against a 1,584-page store produced a 3.2 MB
+    tool result that exhausted the agent's prompt budget by itself.
+    """
+    adapter = _make_adapter(tmp_path, search_port=None)
+    for index in range(_SEARCH_RESULT_LIMIT * 3):
+        await adapter.upsert_page(
+            f"technical/page-{index}.md", f"# Page {index}\n\nEpisodic storage notes."
+        )
+
+    results = await adapter.search("episodic")
+
+    assert len(results) == _SEARCH_RESULT_LIMIT
+
+
 # ---------------------------------------------------------------------------
 # upsert_page() — triggers re-indexing
 # ---------------------------------------------------------------------------
