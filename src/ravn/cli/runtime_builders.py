@@ -772,11 +772,32 @@ def _mimir_workload_platform_defaults(settings: Settings) -> tuple[str | None, s
     """
     platform = settings.gateway.platform
     if not platform.enabled:
-        return None, None
+        # A flock persona carries no platform block at all, so this returned
+        # (None, None), the Mímir adapter got no exchange_url, and it sent
+        # every request to the shared Mímir with no Authorization header —
+        # surfacing as a bare 401 that looked like a missing credential rather
+        # than missing config. The runtime does advertise both values; prefer
+        # them over giving up.
+        return _runtime_workload_defaults()
     token_file = platform.workload_token_file or None
     exchange_url = platform.workload_exchange_url or None
     if not exchange_url and platform.base_url:
         exchange_url = f"{platform.base_url.rstrip('/')}/api/v1/tokens/workload/exchange"
+    if not exchange_url or not token_file:
+        env_token_file, env_exchange_url = _runtime_workload_defaults()
+        token_file = token_file or env_token_file
+        exchange_url = exchange_url or env_exchange_url
+    return token_file, exchange_url
+
+
+def _runtime_workload_defaults() -> tuple[str | None, str | None]:
+    """Workload token file and exchange URL advertised by the runtime.
+
+    Bootstrap wiring injected into every session container, not application
+    configuration — the same env the workload identity adapters already read.
+    """
+    token_file = os.environ.get("NIUU_WORKLOAD_IDENTITY_TOKEN_FILE", "").strip() or None
+    exchange_url = os.environ.get(_WORKLOAD_EXCHANGE_URL_ENV, "").strip() or None
     return token_file, exchange_url
 
 

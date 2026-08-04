@@ -107,6 +107,12 @@ class HttpMimirAdapter(MimirPort):
 
         exchange_url = self._auth.exchange_url
         if not exchange_url:
+            logger.warning(
+                "mimir: workload auth configured for %s but no exchange_url and "
+                "no NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL — requests will be sent "
+                "unauthenticated and rejected",
+                self._base_url,
+            )
             return ""
         audiences = list(self._auth.audiences or ("mimir",))
         async with httpx.AsyncClient(timeout=self._timeout) as client:
