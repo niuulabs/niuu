@@ -47,7 +47,7 @@ import copy
 import json
 import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 import httpx
 
@@ -112,6 +112,28 @@ def _strip_reasoning_tags(text: str) -> str:
 def _uses_developer_role(model: str) -> bool:
     """Return True when *model* expects a ``developer`` role instead of ``system``."""
     return any(model.startswith(prefix) for prefix in _DEVELOPER_ROLE_PREFIXES)
+
+
+def _emit_tool_calls(
+    partial_args: dict[int, str],
+    tool_ids: dict[int, str],
+    tool_names: dict[int, str],
+) -> Iterator[StreamEvent]:
+    """Yield one TOOL_CALL event per assembled call, in index order."""
+    for idx in sorted(partial_args):
+        raw_args = partial_args.get(idx, "")
+        try:
+            parsed = json.loads(raw_args) if raw_args else {}
+        except json.JSONDecodeError:
+            parsed = {}
+        yield StreamEvent(
+            type=StreamEventType.TOOL_CALL,
+            tool_call=ToolCall(
+                id=tool_ids.get(idx, ""),
+                name=tool_names.get(idx, ""),
+                input=parsed,
+            ),
+        )
 
 
 def _convert_tools(tools: list[dict]) -> list[dict]:
@@ -527,6 +549,7 @@ class OpenAICompatibleAdapter(LLMPort):
             partial_args: dict[int, str] = {}
             tool_ids: dict[int, str] = {}
             tool_names: dict[int, str] = {}
+            tool_calls_emitted = False
 
             # Accumulate output text for estimation fallback when usage is absent.
             accumulated_text: list[str] = []
@@ -594,20 +617,26 @@ class OpenAICompatibleAdapter(LLMPort):
 
                 # When a tool call finishes, emit the complete TOOL_CALL event.
                 if finish_reason == "tool_calls":
-                    for idx in sorted(partial_args):
-                        raw_args = partial_args.get(idx, "")
-                        try:
-                            parsed = json.loads(raw_args) if raw_args else {}
-                        except json.JSONDecodeError:
-                            parsed = {}
-                        yield StreamEvent(
-                            type=StreamEventType.TOOL_CALL,
-                            tool_call=ToolCall(
-                                id=tool_ids.get(idx, ""),
-                                name=tool_names.get(idx, ""),
-                                input=parsed,
-                            ),
-                        )
+                    for event in _emit_tool_calls(partial_args, tool_ids, tool_names):
+                        yield event
+                    tool_calls_emitted = True
+
+            # A server that ends the stream without a `finish_reason:
+            # "tool_calls"` chunk still chose the tool — the deltas arrived and
+            # were assembled. Emitting only on the finish marker silently threw
+            # that choice away: the agent saw a turn with no tool call, stopped
+            # after one iteration, and produced neither the tool's evidence nor
+            # an outcome block. Trust the accumulated call, not the marker.
+            if tool_names and not tool_calls_emitted:
+                logger.warning(
+                    "openai-compatible: stream ended with finish_reason=%r but "
+                    "carried %d assembled tool call(s) %s — emitting them anyway",
+                    finish_reason,
+                    len(tool_names),
+                    sorted(tool_names.values()),
+                )
+                for event in _emit_tool_calls(partial_args, tool_ids, tool_names):
+                    yield event
 
             # Same reasoning as the non-streaming path: a stream that produced
             # neither text nor a tool call leaves the agent loop with nothing to

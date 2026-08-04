@@ -604,6 +604,47 @@ class TestOpenAIAdapterStream:
         assert tool_events[0].tool_call.input == {"val": "ok"}
 
     @respx.mock
+    async def test_stream_emits_tool_calls_without_a_finish_marker(self) -> None:
+        """A reasoning server can end the stream without ``finish_reason:
+        tool_calls`` while still having streamed the whole call. Emitting only
+        on the marker threw the model's choice away: the agent saw a turn with
+        no tool call, stopped after one iteration, and produced neither the
+        tool's evidence nor an outcome block."""
+        adapter = OpenAICompatibleAdapter(api_key="k", base_url=_BASE_URL)
+        sse = _make_sse_lines(
+            _tool_chunk(0, tool_id="call-1", name="mimir_query", args=""),
+            _tool_chunk(0, tool_id="", name=None, args='{"q": "printer"}'),
+            usage={"prompt_tokens": 5, "completion_tokens": 10},
+        )
+        respx.post(f"{_BASE_URL}/v1/chat/completions").mock(
+            return_value=httpx.Response(200, content=sse)
+        )
+
+        events = [event async for event in adapter.stream(_MESSAGES, **_KWARGS)]
+
+        tool_events = [e for e in events if e.type == StreamEventType.TOOL_CALL]
+        assert len(tool_events) == 1
+        assert tool_events[0].tool_call is not None
+        assert tool_events[0].tool_call.name == "mimir_query"
+        assert tool_events[0].tool_call.input == {"q": "printer"}
+
+    @respx.mock
+    async def test_stream_does_not_emit_a_tool_call_twice(self) -> None:
+        adapter = OpenAICompatibleAdapter(api_key="k", base_url=_BASE_URL)
+        sse = _make_sse_lines(
+            _tool_chunk(0, tool_id="call-1", name="do_thing", args='{"v": 1}'),
+            _tool_chunk(0, tool_id="", name=None, args="", finish_reason="tool_calls"),
+            usage={"prompt_tokens": 5, "completion_tokens": 10},
+        )
+        respx.post(f"{_BASE_URL}/v1/chat/completions").mock(
+            return_value=httpx.Response(200, content=sse)
+        )
+
+        events = [event async for event in adapter.stream(_MESSAGES, **_KWARGS)]
+
+        assert len([e for e in events if e.type == StreamEventType.TOOL_CALL]) == 1
+
+    @respx.mock
     async def test_stream_strips_reasoning_tags(self) -> None:
         adapter = OpenAICompatibleAdapter(api_key="k", base_url=_BASE_URL)
         sse = _make_sse_lines(
