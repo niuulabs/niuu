@@ -582,6 +582,24 @@ class OpenAICompatibleAdapter(LLMPort):
                             ),
                         )
 
+            # Same reasoning as the non-streaming path: a stream that produced
+            # neither text nor a tool call leaves the agent loop with nothing to
+            # act on, and the cause is not recoverable after the fact.
+            if not "".join(accumulated_text).strip() and not tool_names:
+                logger.warning(
+                    "openai-compatible: empty stream model=%s finish_reason=%s "
+                    "content_deltas=%d content_len=%d reasoning_deltas=%d "
+                    "reasoning_len=%d tool_call_indices=%d reasoning_head=%r",
+                    model or self._default_model,
+                    finish_reason,
+                    len(accumulated_text),
+                    len("".join(accumulated_text)),
+                    len(accumulated_reasoning),
+                    len("".join(accumulated_reasoning)),
+                    len(tool_names),
+                    "".join(accumulated_reasoning)[:400],
+                )
+
             # Emit a MESSAGE_DONE with estimated usage when the API did not send one.
             if not usage_emitted:
                 input_text = (
@@ -659,6 +677,39 @@ class OpenAICompatibleAdapter(LLMPort):
         stop_reason = StopReason.TOOL_USE if tool_calls else StopReason.END_TURN
         if finish_reason == "length":
             stop_reason = StopReason.MAX_TOKENS
+
+        # A turn that ends with neither text nor a tool call cannot be acted on,
+        # and the reason is invisible from the outside: an exhausted budget, a
+        # response that was entirely reasoning, and a tool call the server did
+        # not structure all look identical downstream. Record what actually came
+        # back so the next occurrence is diagnosable from logs alone.
+        raw_content = message.get("content") or ""
+        if not content_text and not tool_calls:
+            logger.warning(
+                "openai-compatible: empty completion model=%s finish_reason=%s "
+                "raw_content_len=%d stripped_content_len=%d reasoning_len=%d "
+                "tool_calls=%d message_keys=%s usage=%s raw_content_head=%r",
+                model or self._default_model,
+                finish_reason,
+                len(raw_content),
+                len(content_text),
+                len(reasoning_text),
+                len(message.get("tool_calls") or []),
+                sorted(message),
+                data.get("usage"),
+                raw_content[:400],
+            )
+        else:
+            logger.debug(
+                "openai-compatible: completion model=%s finish_reason=%s "
+                "content_len=%d reasoning_len=%d tool_calls=%d usage=%s",
+                model or self._default_model,
+                finish_reason,
+                len(content_text),
+                len(reasoning_text),
+                len(tool_calls),
+                data.get("usage"),
+            )
 
         # Build an approximate input text for estimation fallback.
         input_text = (
