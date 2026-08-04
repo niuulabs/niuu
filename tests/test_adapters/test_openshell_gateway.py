@@ -2499,3 +2499,69 @@ def test_provider_grant_leaves_declared_credentials_for_the_token_grant(monkeypa
     )
 
     assert adapter._provider_credential_slots(profile) == {"access_token": ""}
+
+
+def test_provider_credential_slots_are_named_per_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The provisioner treats a credential slot name as an env key shared
+    across every provider on a sandbox. Both profiles used to call theirs
+    "access_token", so attaching a platform provider alongside any connection
+    provider failed the whole session:
+
+      credential env key 'access_token' is provided by both provider
+      'volundr-...-39c40789e41f' and provider 'volundr-...-93f7c83ce773';
+      use provider-specific env names
+    """
+    adapter = _import_adapter(monkeypatch)
+
+    platform = adapter._platform_provider_profile(
+        profile_id="resident-platform",
+        token_endpoint="https://volundr.example.test/token",
+        api_urls=("http://niuu-bifrost.volundr.svc.cluster.local/v1",),
+    )
+    connection = adapter._provider_profile(
+        profile_id="resident-noatun",
+        env_name="NOATUN_ACCESS_TOKEN",
+        token_endpoint="https://volundr.example.test/token",
+        target_config={
+            "endpoints": [{"host": "example.test", "port": 443, "tls": "skip"}],
+            "binaries": ["/opt/niuu/bin/python"],
+        },
+    )
+
+    platform_slots = set(adapter._provider_credential_slots(platform))
+    connection_slots = set(adapter._provider_credential_slots(connection))
+
+    assert platform_slots & connection_slots == set()
+    assert platform_slots == {adapter.PLATFORM_ACCESS_TOKEN_ENV}
+    assert connection_slots == {"NOATUN_ACCESS_TOKEN"}
+
+
+def test_two_connection_providers_do_not_collide(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+
+    first = adapter._provider_profile(
+        profile_id="p1",
+        env_name="ONE_TOKEN",
+        token_endpoint="https://volundr.example.test/token",
+        target_config={
+            "endpoints": [{"host": "example.test", "port": 443, "tls": "skip"}],
+            "binaries": ["/opt/niuu/bin/python"],
+        },
+    )
+    second = adapter._provider_profile(
+        profile_id="p2",
+        env_name="TWO_TOKEN",
+        token_endpoint="https://volundr.example.test/token",
+        target_config={
+            "endpoints": [{"host": "example.test", "port": 443, "tls": "skip"}],
+            "binaries": ["/opt/niuu/bin/python"],
+        },
+    )
+
+    assert set(adapter._provider_credential_slots(first)) != set(
+        adapter._provider_credential_slots(second)
+    )

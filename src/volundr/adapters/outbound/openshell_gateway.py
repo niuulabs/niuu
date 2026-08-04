@@ -3188,7 +3188,14 @@ def _provider_profile(
     target = _provider_target(env_name, target_config)
     audience = f"{GRANT_AUDIENCE_PREFIX}{profile_id}"
     credential = openshell_pb2.ProviderProfileCredential(
-        name="access_token",
+        # Named for the env var it fills, not the generic "access_token".
+        # The provisioner treats this name as an env key across every provider
+        # attached to a sandbox, so two providers both calling it
+        # "access_token" collided and the session failed to provision:
+        # "credential env key 'access_token' is provided by both provider ...;
+        # use provider-specific env names". env_name is already unique per
+        # provider and is the key the message is actually about.
+        name=env_name,
         description=f"Runtime {env_name} credential from Niuu OpenBao",
         env_vars=[env_name],
         required=False,
@@ -3308,7 +3315,9 @@ def _platform_provider_profile(
         parsed_urls.append((parsed, port))
     audience = f"{PLATFORM_GRANT_AUDIENCE_PREFIX}{profile_id}"
     credential = openshell_pb2.ProviderProfileCredential(
-        name="access_token",
+        # Same reason as the per-connection profile: the slot name doubles as
+        # an env key at the provisioner, so it has to be provider-specific.
+        name=PLATFORM_ACCESS_TOKEN_ENV,
         description="Workload-bound Völundr token",
         env_vars=[PLATFORM_ACCESS_TOKEN_ENV],
         required=False,
