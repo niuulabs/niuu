@@ -51,6 +51,23 @@ def test_template_working_state_satisfies_the_continuation_validator() -> None:
     assert validate_resident_working_state(fields["working_state"]) == []
 
 
+def test_working_state_is_shown_as_one_flow_mapping() -> None:
+    """Shown as an indented block with a comment inside it, the model
+    collapsed the whole thing onto one line and the value arrived as a
+    string — every other field was correct and the turn was still rejected.
+    A single flow mapping cannot degrade to a scalar."""
+    line = next(
+        line
+        for line in resident_outcome_template().splitlines()
+        if line.startswith("working_state:")
+    )
+
+    assert line.endswith("}")
+    assert "#" not in line
+    for field in RESIDENT_WORKING_STATE_FIELDS:
+        assert f"{field}: []" in line
+
+
 def test_template_vocabularies_are_accepted_by_the_validator() -> None:
     """Each enum's first listed option must actually validate."""
     fields = _template_fields()

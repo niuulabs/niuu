@@ -103,23 +103,22 @@ def _choices(options: Sequence[str]) -> str:
     return f"<{' | '.join(options)}>"
 
 
-def _working_state_lines() -> list[str]:
+def _working_state_line() -> str:
     """Render the durable snapshot skeleton the continuation contract requires.
 
-    Imported here rather than hardcoded so the shown field names cannot drift
-    from the ones ``validate_resident_working_state`` insists on.
-    """
-    from ravn.domain.resident_continuation import (
-        RESIDENT_WORKING_STATE_FIELDS,
-        RESIDENT_WORKING_STATE_MAX_ENTRIES,
-    )
+    Field names come from the continuation contract so the shape shown cannot
+    drift from the one ``validate_resident_working_state`` insists on.
 
-    lines = [
-        f"  # each list holds at most {RESIDENT_WORKING_STATE_MAX_ENTRIES} short "
-        "strings or mappings; use [] when you have none"
-    ]
-    lines.extend(f"  {field}: []" for field in RESIDENT_WORKING_STATE_FIELDS)
-    return lines
+    Written as a single flow mapping on purpose. As an indented block with an
+    explanatory comment inside it, the model collapsed the whole thing onto one
+    line and the value arrived as a string — every other field of the block was
+    correct and the turn was still rejected. Flow style matches how the model
+    already writes `signal_refs` and `evidence`, and cannot degrade to a scalar.
+    """
+    from ravn.domain.resident_continuation import RESIDENT_WORKING_STATE_FIELDS
+
+    fields = ", ".join(f"{field}: []" for field in RESIDENT_WORKING_STATE_FIELDS)
+    return f"working_state: {{{fields}}}"
 
 
 def resident_outcome_template(
@@ -164,8 +163,7 @@ def resident_outcome_template(
             'expires_at: ""',
             "dissent_refs: []",
             "state_summary: <one line the operator could read as your current state>",
-            "working_state:",
-            *_working_state_lines(),
+            _working_state_line(),
             "---end---",
         ]
     )
@@ -177,6 +175,8 @@ def resident_outcome_section(
     evidence_lines: Sequence[str] = (),
 ) -> str:
     """Render the '## Required outcome' prompt section around the template."""
+    from ravn.domain.resident_continuation import RESIDENT_WORKING_STATE_MAX_ENTRIES
+
     template = resident_outcome_template(signal_refs=signal_refs, evidence_lines=evidence_lines)
     return (
         "## Required outcome\n\n"
@@ -185,7 +185,10 @@ def resident_outcome_section(
         "between them, and no prose after it:\n\n"
         "```text\n"
         f"{template}\n"
-        "```\n"
+        "```\n\n"
+        "`working_state` is a mapping, never a string. Each of its lists holds "
+        f"at most {RESIDENT_WORKING_STATE_MAX_ENTRIES} short entries; leave one "
+        "`[]` when you have nothing for it.\n"
     )
 
 
