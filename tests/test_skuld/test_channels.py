@@ -1677,3 +1677,27 @@ class TestChannelRegistry:
         channels = registry.channels
         channels.clear()
         assert registry.count == 1
+
+
+def test_room_message_with_whitespace_only_content_is_suppressed() -> None:
+    """A model that returned no answer must not page the operator.
+
+    Whitespace-only content is as empty as "" to a reader, but it passes a
+    falsy check and used to render as a bare "[Ivaldi]" with nothing after it.
+    """
+    for blank in ("", " ", "\n", "  \n\t "):
+        event = {
+            "type": "room_message",
+            "participant": {"display_name": "Ivaldi"},
+            "content": blank,
+        }
+        assert format_telegram_event(event) is None, f"blank content {blank!r} was delivered"
+
+
+def test_room_message_with_real_content_still_sends() -> None:
+    event = {
+        "type": "room_message",
+        "participant": {"display_name": "Ivaldi"},
+        "content": "printer stalled on layer 480",
+    }
+    assert format_telegram_event(event) == "[Ivaldi] printer stalled on layer 480"

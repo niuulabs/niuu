@@ -662,7 +662,11 @@ def format_telegram_event(event: dict) -> str | None:
             or "agent"
         )
         content = event.get("content", "")
-        if not content:
+        # Whitespace-only content is as empty as "" to a reader, but passes a
+        # falsy check and renders as a bare "[name]" with nothing after it.
+        # A model that returns no answer — because it exhausted its budget
+        # thinking, say — must not page the operator with an empty message.
+        if not content or (isinstance(content, str) and not content.strip()):
             return None
         if isinstance(content, str):
             parsed_outcome = parse_outcome_block(content)
