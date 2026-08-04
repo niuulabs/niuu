@@ -727,15 +727,22 @@ class OpenAICompatibleAdapter(LLMPort):
                 raw_content[:400],
             )
         else:
-            logger.debug(
+            # A non-empty completion is not necessarily a useful one: a turn
+            # that answers in prose, calls nothing and omits the outcome block
+            # looks like success here and only fails two calls later in schema
+            # repair. Record the shape of every reply, not just the blank ones.
+            logger.info(
                 "openai-compatible: completion model=%s finish_reason=%s "
-                "content_len=%d reasoning_len=%d tool_calls=%d usage=%s",
+                "content_len=%d reasoning_len=%d tool_calls=%d tool_names=%s "
+                "usage=%s content_head=%r",
                 model or self._default_model,
                 finish_reason,
                 len(content_text),
                 len(reasoning_text),
                 len(tool_calls),
+                [tc.name for tc in tool_calls],
                 data.get("usage"),
+                content_text[:300],
             )
 
         # Build an approximate input text for estimation fallback.

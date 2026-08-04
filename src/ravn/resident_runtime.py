@@ -1287,6 +1287,12 @@ class ResidentRuntime:
                 "resolving, a capability gap worth researching, a risk worth investigating, "
                 "or an improvement worth proposing.",
                 "",
+                "Look before you judge. Inspecting the environment is not acting "
+                "on it: read state, query what you can reach, check what you "
+                "believe. The restraint below is about consequences, not about "
+                "curiosity — a turn that concludes without having looked has "
+                "grounded nothing.",
+                "",
                 "Deciding that nothing warrants action is a correct and expected "
                 "outcome. Do not manufacture work to justify this turn. Prefer "
                 "`stop` or `sleep` over acting on a hypothesis you cannot ground in "
