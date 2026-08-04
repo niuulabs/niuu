@@ -551,7 +551,16 @@ class TestFluxPodManagerSpecValues:
 
         body = mock_api.create_namespaced_custom_object.call_args[1]["body"]
         values = body["spec"]["values"]
-        assert values["envVars"] == [{"name": "SKULD__MESH__ENABLED", "value": "true"}]
+        # The Codex broker is delivered to every session container the same way
+        # OpenShell merges it into its sandbox — see _inject_codex_auth_env.
+        assert values["envVars"] == [
+            {"name": "SKULD__MESH__ENABLED", "value": "true"},
+            {
+                "name": "SKULD__CODEX_AUTH__ADAPTER",
+                "value": "skuld.codex_auth.VolundrCodexAuthProvider",
+            },
+            {"name": "SKULD__CODEX_AUTH__KWARGS", "value": "{}"},
+        ]
         assert len(values["extraVolumes"]) == 1
         assert values["extraVolumes"][0]["name"] == "csi-vol"
         assert len(values["extraVolumeMounts"]) == 1
@@ -559,8 +568,20 @@ class TestFluxPodManagerSpecValues:
         assert values["extraInitContainers"] == [
             {"name": "write-ravn-cfg-coder", "image": "busybox"}
         ]
+        # Persona sidecars build the Codex transport themselves, so the broker
+        # has to reach them too — a single sandbox never needed this.
         assert values["extraContainers"] == [
-            {"name": "ravn-coder", "image": "ghcr.io/niuulabs/ravn:test"}
+            {
+                "name": "ravn-coder",
+                "image": "ghcr.io/niuulabs/ravn:test",
+                "env": [
+                    {
+                        "name": "SKULD__CODEX_AUTH__ADAPTER",
+                        "value": "skuld.codex_auth.VolundrCodexAuthProvider",
+                    },
+                    {"name": "SKULD__CODEX_AUTH__KWARGS", "value": "{}"},
+                ],
+            }
         ]
         assert values["serviceAccountName"] == "skuld-user-1"
 
@@ -591,6 +612,11 @@ class TestFluxPodManagerSpecValues:
         assert body["spec"]["values"]["envVars"] == [
             {"name": "SKULD__CLAUDE_AUTH", "value": "api_key"},
             {"name": "SKULD__MESH__ENABLED", "value": "true"},
+            {
+                "name": "SKULD__CODEX_AUTH__ADAPTER",
+                "value": "skuld.codex_auth.VolundrCodexAuthProvider",
+            },
+            {"name": "SKULD__CODEX_AUTH__KWARGS", "value": "{}"},
         ]
 
     async def test_empty_pod_spec_no_extra_values(

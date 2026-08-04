@@ -43,3 +43,55 @@ def test_kubernetes_managers_share_mixin_while_local_process_keeps_host_auth() -
     assert issubclass(FluxPodManager, BrokeredCredentialPodManager)
     assert issubclass(DirectK8sPodManager, BrokeredCredentialPodManager)
     assert not issubclass(LocalProcessPodManager, BrokeredCredentialPodManager)
+
+
+def test_flux_delivers_the_codex_broker_to_every_container() -> None:
+    """OpenShell merges this env into its single sandbox; the Flux path wrote
+    broker.codexAuth into the HelmRelease and stopped there, so no container
+    ever saw it. A flock pod is nine containers — six research personas each
+    building the same Codex transport — and all of them opened the websocket
+    unauthenticated: 401 on every turn, while the session read as healthy.
+    """
+    from volundr.adapters.outbound.flux import _inject_codex_auth_env
+
+    values = {
+        "broker": {
+            "codexAuth": {
+                "adapter": "skuld.codex_auth.VolundrCodexAuthProvider",
+                "kwargs": {},
+            }
+        },
+        "extraContainers": [
+            {"name": "ravn-research-framer"},
+            {"name": "ravn-research-explorer", "env": [{"name": "RAVN_PERSONA", "value": "x"}]},
+        ],
+    }
+
+    _inject_codex_auth_env(values)
+
+    main = {entry["name"] for entry in values["envVars"]}
+    assert "SKULD__CODEX_AUTH__ADAPTER" in main
+
+    for container in values["extraContainers"]:
+        names = {entry["name"] for entry in container["env"]}
+        assert "SKULD__CODEX_AUTH__ADAPTER" in names, container["name"]
+    # Pre-existing sidecar env survives.
+    assert any(e["name"] == "RAVN_PERSONA" for e in values["extraContainers"][1]["env"])
+
+
+def test_flux_codex_injection_is_idempotent_and_quiet_when_unconfigured() -> None:
+    from volundr.adapters.outbound.flux import _inject_codex_auth_env
+
+    unconfigured: dict = {"extraContainers": [{"name": "ravn-x"}]}
+    _inject_codex_auth_env(unconfigured)
+    assert "envVars" not in unconfigured
+
+    values = {
+        "broker": {"codexAuth": {"adapter": "skuld.codex_auth.VolundrCodexAuthProvider"}},
+        "extraContainers": [{"name": "ravn-x"}],
+    }
+    _inject_codex_auth_env(values)
+    _inject_codex_auth_env(values)
+
+    adapters = [e for e in values["envVars"] if e["name"] == "SKULD__CODEX_AUTH__ADAPTER"]
+    assert len(adapters) == 1

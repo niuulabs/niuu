@@ -10,7 +10,11 @@ import os
 from collections.abc import Awaitable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
+import httpx
+
+from niuu.adapters.outbound.http_auth import WorkloadIdentityBearerTokenAuthAdapter
 from ravn.config import Settings, ToolGroupConfig
 from ravn.ports.executor import ExecutorPort
 
@@ -430,7 +434,8 @@ def _runtime_cli_transport_kwargs(
     if transport_adapter != "skuld.transports.codex_ws.CodexWebSocketTransport":
         return {}
 
-    config = (settings or Settings()).runtime_executor
+    resolved = settings or Settings()
+    config = resolved.runtime_executor
     kwargs: dict[str, Any] = {}
     if config.skip_permissions is not None:
         kwargs["skip_permissions"] = config.skip_permissions
@@ -439,7 +444,85 @@ def _runtime_cli_transport_kwargs(
     if config.sandbox:
         kwargs["sandbox"] = config.sandbox
 
+    provider = _codex_auth_provider(resolved)
+    if provider is not None:
+        kwargs["codex_auth_provider"] = provider
+
     return kwargs
+
+
+_WORKLOAD_EXCHANGE_URL_ENV = "NIUU_WORKLOAD_IDENTITY_EXCHANGE_URL"
+
+
+def _platform_origin_from_exchange_url() -> str:
+    """Return the Völundr origin implied by the injected exchange URL.
+
+    Bootstrap wiring supplied by the runtime, not an application knob — the
+    same env the workload identity adapters already read.
+    """
+    raw = os.environ.get(_WORKLOAD_EXCHANGE_URL_ENV, "").strip()
+    if not raw:
+        return ""
+    parts = urlsplit(raw)
+    if not parts.scheme or not parts.netloc:
+        return ""
+    return urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+
+
+def _codex_auth_provider(settings: Settings) -> Any | None:
+    """Build the configured Codex auth provider, mirroring Skuld's broker.
+
+    Skuld injects one of these whenever the transport class accepts it. A flock
+    persona runs the same transport but constructs it through Ravn's CLI
+    executor, so without this it opens the Codex websocket with no credential
+    and every turn dies on 401. Same adapter, same broker endpoint, one
+    contract.
+
+    Returns None when no adapter is configured — a host Codex login needs no
+    provider, and that is the historical default.
+    """
+    adapter = settings.runtime_executor.codex_auth_adapter.strip()
+    if not adapter:
+        return None
+
+    platform = settings.gateway.platform
+    base_url = platform.base_url.strip()
+    # Explicitly configured, not merely defaulted. base_url falls back to
+    # http://localhost:8080, which is right for a developer running Völundr
+    # locally and meaningless inside a flock pod — building a provider against
+    # it would turn a missing-config error into a confusing connection failure
+    # at the first model call.
+    if "base_url" not in platform.model_fields_set or not base_url:
+        # A flock persona carries no platform block, but the runtime does inject
+        # the workload exchange URL, which is by construction on the Völundr
+        # that brokers this credential. Same host, same trust, already present.
+        base_url = _platform_origin_from_exchange_url()
+    if not base_url:
+        logger.warning(
+            "runtime_executor: codex_auth_adapter %s is configured but no "
+            "Völundr base URL is available from gateway.platform.base_url or "
+            "%s, so there is no broker to call; leaving the transport "
+            "unauthenticated",
+            adapter,
+            _WORKLOAD_EXCHANGE_URL_ENV,
+        )
+        return None
+
+    auth = WorkloadIdentityBearerTokenAuthAdapter(
+        base_url=base_url,
+        token_file=platform.workload_token_file,
+        exchange_url=platform.workload_exchange_url,
+        audiences=list(platform.workload_audiences),
+    )
+
+    async def _client() -> httpx.AsyncClient:
+        return httpx.AsyncClient(base_url=base_url, headers=await auth.headers())
+
+    cls = _import_class(adapter)
+    return cls(
+        http_client_provider=_client,
+        **dict(settings.runtime_executor.codex_auth_kwargs),
+    )
 
 
 def _transport_mcp_servers(settings: Settings) -> list[dict[str, Any]]:

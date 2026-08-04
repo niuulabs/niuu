@@ -319,6 +319,7 @@ class FluxPodManager(BrokeredCredentialPodManager, PodManager, ResidentRuntimeCo
                 values["podAnnotations"] = dict(spec.pod_spec.annotations)
 
         _inject_workload_exchange_env(values)
+        _inject_codex_auth_env(values)
 
         await self._apply_helmrelease(release_name, values)
 
@@ -549,6 +550,7 @@ class FluxPodManager(BrokeredCredentialPodManager, PodManager, ResidentRuntimeCo
         _deep_merge(values, runtime_values)
         values = self._with_brokered_credential_values(values)
         _inject_workload_exchange_env(values)
+        _inject_codex_auth_env(values)
         return values
 
     async def deploy(
@@ -834,6 +836,41 @@ def _inject_workload_exchange_env(values: dict) -> None:
         if _has_env(container_env, env_entry["name"]):
             continue
         container_env.append(dict(env_entry))
+        container["env"] = container_env
+
+
+def _inject_codex_auth_env(values: dict) -> None:
+    """Give every session container the Codex broker, not just the broker pod.
+
+    A flock persona runs the same Codex transport Skuld does but builds it
+    itself, so it needs the same SKULD__CODEX_AUTH__* contract. Reaching only
+    the main container left all six research personas opening the Codex
+    websocket with no credential — 401 on every turn, while the session itself
+    looked healthy.
+    """
+    environment = BrokeredCredentialPodManager._brokered_credential_environment_values(values)
+    if not environment:
+        return
+
+    entries = [{"name": name, "value": value} for name, value in sorted(environment.items())]
+
+    env_vars = list(values.get("envVars") or [])
+    for entry in entries:
+        if not _has_env(env_vars, entry["name"]):
+            env_vars.append(dict(entry))
+    values["envVars"] = env_vars
+
+    extra_containers = values.get("extraContainers")
+    if not isinstance(extra_containers, list):
+        return
+    for container in extra_containers:
+        if not isinstance(container, dict):
+            continue
+        container_env = list(container.get("env") or [])
+        for entry in entries:
+            if _has_env(container_env, entry["name"]):
+                continue
+            container_env.append(dict(entry))
         container["env"] = container_env
 
 

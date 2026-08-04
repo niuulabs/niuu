@@ -3698,6 +3698,32 @@ class RuntimeExecutorConfig(_LegacyAliasSettings):
             "SKULD__SANDBOX",
         ),
     )
+    # A flock persona drives Codex through the same transport Skuld does, but
+    # builds it itself, so it must resolve the same broker. Without this the
+    # transport is constructed with no auth provider and the Codex CLI opens
+    # its websocket unauthenticated — 401, on every persona, on every turn.
+    # The env alias matches the one the chart already sets for Skuld so both
+    # sides read one contract.
+    codex_auth_adapter: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "codex_auth_adapter",
+            "SKULD__CODEX_AUTH__ADAPTER",
+        ),
+        description=(
+            "Codex auth provider for CLI transports that accept one. Empty "
+            "leaves the transport unauthenticated, which is correct only for a "
+            "host login."
+        ),
+    )
+    codex_auth_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices(
+            "codex_auth_kwargs",
+            "SKULD__CODEX_AUTH__KWARGS",
+        ),
+        description="Constructor kwargs for the Codex auth provider.",
+    )
 
 
 class _ValkyrieTelemetryEnvSource(EnvSettingsSource):
