@@ -103,6 +103,25 @@ def _choices(options: Sequence[str]) -> str:
     return f"<{' | '.join(options)}>"
 
 
+def _working_state_lines() -> list[str]:
+    """Render the durable snapshot skeleton the continuation contract requires.
+
+    Imported here rather than hardcoded so the shown field names cannot drift
+    from the ones ``validate_resident_working_state`` insists on.
+    """
+    from ravn.domain.resident_continuation import (
+        RESIDENT_WORKING_STATE_FIELDS,
+        RESIDENT_WORKING_STATE_MAX_ENTRIES,
+    )
+
+    lines = [
+        f"  # each list holds at most {RESIDENT_WORKING_STATE_MAX_ENTRIES} short "
+        "strings or mappings; use [] when you have none"
+    ]
+    lines.extend(f"  {field}: []" for field in RESIDENT_WORKING_STATE_FIELDS)
+    return lines
+
+
 def resident_outcome_template(
     *,
     signal_refs: Sequence[str] = (),
@@ -144,6 +163,9 @@ def resident_outcome_template(
             "target_surfaces: []",
             'expires_at: ""',
             "dissent_refs: []",
+            "state_summary: <one line the operator could read as your current state>",
+            "working_state:",
+            *_working_state_lines(),
             "---end---",
         ]
     )
