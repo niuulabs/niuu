@@ -525,7 +525,10 @@ def _codex_auth_provider(settings: Settings) -> Any | None:
     auth = WorkloadIdentityBearerTokenAuthAdapter(**auth_kwargs)
 
     async def _client() -> httpx.AsyncClient:
-        return httpx.AsyncClient(base_url=base_url, headers=await auth.headers())
+        # HttpAuthPort.headers() is synchronous — it performs the token
+        # exchange inline and returns a dict. The provider calls this factory
+        # with await, which is about the factory, not about headers().
+        return httpx.AsyncClient(base_url=base_url, headers=auth.headers())
 
     cls = _import_class(adapter)
     return cls(

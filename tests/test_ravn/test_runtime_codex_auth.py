@@ -125,3 +125,27 @@ def test_explicit_workload_settings_are_still_honoured() -> None:
     auth = provider._http_client_provider.__closure__[0].cell_contents
 
     assert auth._token_file == "/custom/token"
+
+
+async def test_client_factory_actually_builds_a_client(monkeypatch) -> None:
+    """The earlier tests constructed the provider but never invoked its client
+    factory, so `await auth.headers()` — headers() is synchronous and returns a
+    dict — got all the way to a live flock and failed there with
+    "TypeError: 'dict' object can't be awaited". Call it here."""
+    import httpx
+
+    from niuu.adapters.outbound import http_auth
+
+    monkeypatch.setattr(
+        http_auth.WorkloadIdentityBearerTokenAuthAdapter,
+        "headers",
+        lambda self: {"Authorization": "Bearer test-token"},
+    )
+    settings = _settings(codex_auth_adapter="skuld.codex_auth.VolundrCodexAuthProvider")
+
+    provider = _runtime_cli_transport_kwargs(_CODEX, settings)["codex_auth_provider"]
+    client = await provider._http_client_provider()
+
+    assert isinstance(client, httpx.AsyncClient)
+    assert client.headers["Authorization"] == "Bearer test-token"
+    await client.aclose()
