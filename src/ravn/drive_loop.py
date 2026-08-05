@@ -3688,7 +3688,18 @@ class DriveLoop:
                 task,
                 outcome_fields,
             )
-        if artifact_publish_error and not artifact_repair_attempted:
+        from ravn.adapters.tools.mimir_tools import PROVENANCE_UNVERIFIABLE  # noqa: PLC0415
+
+        if artifact_publish_error and PROVENANCE_UNVERIFIABLE in artifact_publish_error:
+            # Mímir was unreachable, not wrong. No rewrite the agent can produce
+            # will change that, so do not spend its single repair turn here —
+            # report the real cause instead of a provenance defect.
+            logger.warning(
+                "drive_loop: artifact publish blocked by Mímir availability task_id=%s: %s",
+                task.task_id,
+                artifact_publish_error,
+            )
+        elif artifact_publish_error and not artifact_repair_attempted:
             # Mímir rejects a research page whose frontmatter cites source_ids it
             # never ingested. That rejection is correct — but it used to end the
             # campaign, because an unpublishable artifact means the canonical

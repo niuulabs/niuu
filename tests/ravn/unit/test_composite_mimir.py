@@ -27,6 +27,7 @@ from niuu.domain.mimir import (
     compute_content_hash,
 )
 from ravn.adapters.mimir.composite import CompositeMimirAdapter
+from ravn.domain.exceptions import MimirUnavailableError
 from ravn.domain.mimir import MimirMount, WriteRouting
 
 # ---------------------------------------------------------------------------
@@ -332,6 +333,39 @@ async def test_read_source_from_mount_returns_only_from_named_mount() -> None:
 
 
 @pytest.mark.asyncio
+async def test_read_source_raises_when_no_mount_could_answer() -> None:
+    """An unreachable Mímir is not an absent source.
+
+    Swallowing the failure returned None, which the research-page validator
+    reported as "references missing source_ids: ...; ingest those sources
+    before writing the page". A live campaign hit that on a 503: the page was
+    correct, the sources existed, and the agent was sent to re-ingest them.
+    """
+    local = _make_mount("local")
+    shared = _make_mount("shared", role="shared")
+    local.port.read_source = AsyncMock(side_effect=RuntimeError("503 Service Unavailable"))
+    shared.port.read_source = AsyncMock(side_effect=RuntimeError("503 Service Unavailable"))
+
+    adapter = CompositeMimirAdapter(mounts=[local, shared])
+
+    with pytest.raises(MimirUnavailableError, match="could not read source"):
+        await adapter.read_source("src-1")
+
+
+@pytest.mark.asyncio
+async def test_read_source_returns_none_when_a_mount_answered_and_lacked_it() -> None:
+    """A genuine absence must stay absent — one reachable mount is enough."""
+    local = _make_mount("local")
+    shared = _make_mount("shared", role="shared")
+    local.port.read_source = AsyncMock(side_effect=RuntimeError("down"))
+    shared.port.read_source = AsyncMock(return_value=None)
+
+    adapter = CompositeMimirAdapter(mounts=[local, shared])
+
+    assert await adapter.read_source("src-1") is None
+
+
+@pytest.mark.asyncio
 async def test_read_source_from_mount_handles_port_errors() -> None:
     local = _make_mount("local")
     local.port.read_source = AsyncMock(side_effect=RuntimeError("boom"))
@@ -628,12 +662,15 @@ async def test_lint_exception_in_one_mount_continues_others() -> None:
 async def test_read_source_exception_falls_through() -> None:
     bad_port = _error_port()
     good_port = _mock_port()
+    # _mock_port leaves read_source a bare MagicMock, so awaiting it raised too —
+    # the old blanket swallow hid that and this test never proved fall-through.
+    good_port.read_source = AsyncMock(return_value=None)
     bad = MimirMount(name="bad", port=bad_port, role="local", read_priority=0)
     good = MimirMount(name="good", port=good_port, role="shared", read_priority=1)
     adapter = CompositeMimirAdapter(mounts=[bad, good])
-    # good_port.read_source returns None by default (from _mock_port)
-    await adapter.read_source("src-1")
-    good_port.read_source.assert_called_once()
+
+    assert await adapter.read_source("src-1") is None
+    good_port.read_source.assert_awaited_once()
 
 
 @pytest.mark.asyncio

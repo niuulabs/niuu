@@ -51,6 +51,7 @@ from niuu.domain.mimir import (
     ThreadState,
 )
 from niuu.ports.mimir import MimirPort
+from ravn.domain.exceptions import MimirUnavailableError
 from ravn.domain.mimir import MimirMount, WriteRouting
 
 logger = logging.getLogger(__name__)
@@ -228,18 +229,29 @@ class CompositeMimirAdapter(MimirPort):
         return results
 
     async def read_source(self, source_id: str) -> MimirSource | None:
-        """Return raw source from the first mount that has it."""
+        """Return raw source from the first mount that has it.
+
+        None means every mount answered and none had it. If no mount could
+        answer at all, that is not absence — raise, so callers do not report a
+        Mímir outage as a missing source.
+        """
+        failures: list[str] = []
         for mount in self._mounts:
             try:
                 source = await mount.port.read_source(source_id)
                 if source is not None:
                     return source
             except Exception as exc:
-                logger.debug(
+                failures.append(f"{mount.name}: {exc}")
+                logger.warning(
                     "composite mimir: read_source failed on %s: %s",
                     _sanitize_log(mount.name),
                     _sanitize_log(exc),
                 )
+        if failures and len(failures) == len(self._mounts):
+            raise MimirUnavailableError(
+                f"could not read source {source_id} from any mount — " + "; ".join(failures)
+            )
         return None
 
     async def read_source_from_mount(

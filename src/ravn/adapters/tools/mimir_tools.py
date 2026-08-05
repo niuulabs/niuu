@@ -23,6 +23,7 @@ from mimir.compiled_truth import parse_page as parse_compiled_truth_page
 from niuu.domain.mimir import MimirSource, compute_content_hash, compute_source_id
 from ravn.adapters.tools.entity_extractor import EntityExtractor
 from ravn.adapters.tools.file_security import PathSecurityError, resolve_safe
+from ravn.domain.exceptions import MimirUnavailableError
 from ravn.domain.models import ToolResult
 from ravn.ports.mimir import MimirPort
 from ravn.ports.tool import ToolPort
@@ -63,6 +64,12 @@ def _resolve_ingest_mount_names(adapter: MimirPort, explicit: str | None = None)
     return []
 
 
+# Marks an artifact failure the agent cannot fix — Mímir could not be reached, so
+# provenance is unverified rather than invalid. Callers key off this to skip a
+# model repair turn that would be spent re-ingesting sources that already exist.
+PROVENANCE_UNVERIFIABLE = "provenance could not be verified"
+
+
 async def _validate_research_page_provenance(
     adapter: MimirPort,
     *,
@@ -87,7 +94,13 @@ async def _validate_research_page_provenance(
     resolved_sources: list[MimirSource] = []
     missing: list[str] = []
     for source_id in source_ids:
-        source = await adapter.read_source(source_id)
+        try:
+            source = await adapter.read_source(source_id)
+        except MimirUnavailableError as exc:
+            # Mímir could not answer, so we cannot conclude the source is absent.
+            # Saying "missing" here sent the agent off to re-ingest sources that
+            # were already there, and burned its one repair attempt on an outage.
+            return f"{PROVENANCE_UNVERIFIABLE}: {exc}"
         if source is None:
             missing.append(source_id)
             continue
