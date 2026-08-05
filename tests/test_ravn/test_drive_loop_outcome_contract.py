@@ -1153,6 +1153,113 @@ brief_path: research/campaigns/example/brief.md
         assert canonical.payload["valid"] is False
         assert "unauthorized" in canonical.payload["artifact_publish_error"]
 
+    @staticmethod
+    def _artifact_repair_loop(tmp_path, *, ingested: set[str]):
+        """An explorer whose page cites a source_id Mímir cannot resolve.
+
+        This is the real production failure: the model wrote citations without
+        calling mimir_ingest first, so ``read_source`` returns None and the page
+        is rejected. ``ingested`` stands in for Mímir's source store, so a repair
+        turn that actually ingests makes the very same page publishable.
+        """
+        dl = _make_drive_loop()
+        dl._mesh = AsyncMock()
+        dl._skuld_channel = None
+        dl._source_id = "drive_loop"
+        dl._settings.permission.workspace_root = str(tmp_path)
+        dl._mimir = AsyncMock()
+
+        async def _read_source(source_id: str):
+            if source_id not in ingested:
+                return None
+            return SimpleNamespace(content="the raw source material that was read")
+
+        dl._mimir.read_source.side_effect = _read_source
+        artifact = tmp_path / "research" / "campaigns" / "example" / "notes" / "exploration.md"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text(
+            "---\nsource_ids:\n  - src_abc\n---\n\n# Notes\n\nWhat the sources say.\n",
+            encoding="utf-8",
+        )
+        dl._persona_config = SimpleNamespace(
+            name="research-explorer",
+            produces=SimpleNamespace(
+                event_type="research.explore.completed",
+                event_type_map={"explored": "research.explored"},
+            ),
+        )
+        task = _make_agent_task(task_id="task-artifact-repair")
+        task.workflow_node_id = "research-explorer"
+        response = """\
+---outcome---
+verdict: explored
+summary: Exploration complete.
+notes_path: research/campaigns/example/notes/exploration.md
+---end---
+"""
+        return dl, task, response
+
+    @pytest.mark.asyncio
+    async def test_unpublishable_artifacts_get_one_repair_turn(self, tmp_path) -> None:
+        """Mímir rejecting a page must not silently end the campaign.
+
+        A research page citing source_ids that were never ingested is rejected —
+        correctly. But the canonical outcome is withheld when publication fails,
+        so the next persona waits forever for an event that never comes and the
+        session sits in `running` indefinitely. The rejection names the missing
+        ids and the remedy, so the agent gets the same one-shot repair the graph
+        already grants an outcome it cannot route.
+        """
+        ingested: set[str] = set()
+        dl, task, response = self._artifact_repair_loop(tmp_path, ingested=ingested)
+
+        async def _repair(_prompt: str):
+            ingested.add("src_abc")  # the agent calls mimir_ingest, as instructed
+            return SimpleNamespace(response=response)
+
+        agent = SimpleNamespace(run_turn=AsyncMock(side_effect=_repair))
+
+        accepted = await dl._emit_mesh_outcome_event(
+            task, response, success=True, agent=agent, channel=AsyncMock()
+        )
+
+        agent.run_turn.assert_awaited_once()
+        assert "missing source_ids: src_abc" in agent.run_turn.await_args.args[0]
+        assert accepted is True
+        published = [call.kwargs.get("topic") for call in dl._mesh.publish.await_args_list]
+        assert "research.explore.completed" in published
+
+    @pytest.mark.asyncio
+    async def test_persistently_unpublishable_artifacts_fail_loudly_once(self, tmp_path) -> None:
+        """A stalled campaign must never look identical to a running one.
+
+        When the repair does not help, the rejection used to live only in this
+        process's result store: nothing reached the room, nothing marked the
+        session failed. An ERROR event is terminal for the turn and Skuld already
+        treats a peer error frame as terminal for the whole flock workflow, so
+        emitting one is what converts the silent hang into a visible failure.
+        Exactly one repair — a persistently broken page must not loop.
+        """
+        dl, task, response = self._artifact_repair_loop(tmp_path, ingested=set())
+        agent = SimpleNamespace(run_turn=AsyncMock(return_value=SimpleNamespace(response=response)))
+        channel = AsyncMock()
+
+        accepted = await dl._emit_mesh_outcome_event(
+            task, response, success=True, agent=agent, channel=channel
+        )
+
+        assert accepted is False
+        agent.run_turn.assert_awaited_once()
+        dl._mesh.publish.assert_not_awaited()
+        errors = [
+            call.args[0]
+            for call in channel.emit.await_args_list
+            if getattr(call.args[0], "type", None) == RavnEventType.ERROR
+        ]
+        assert len(errors) == 1
+        assert errors[0].payload["failure_kind"] == "outcome_rejected"
+        assert "missing source_ids" in errors[0].payload["message"]
+
     @pytest.mark.asyncio
     async def test_split_outcome_markers_still_route_alias_for_wrapped_codex_output(self) -> None:
         dl = _make_drive_loop()

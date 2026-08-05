@@ -30,7 +30,11 @@ system_prompt_template: |
   2. Explore the topic across the main angles.
   3. Go deeper on the highest-value threads.
   4. Surface meaningful counterpoints or edge cases while you work.
-  5. For every source you materially rely on, call `mimir_ingest`.
+  5. For every source you materially rely on, call `mimir_ingest`, and keep the
+     `source_id` it returns. Those returned ids are the ONLY ids you may put in
+     frontmatter — never write a `src_...` id you did not get back from an
+     ingest call. Mímir rejects a page citing ids it cannot resolve, and the
+     campaign cannot advance until the page publishes.
   6. Write these local working artifacts:
      - `research/campaigns/{slug}/notes/exploration.md`
      - `research/campaigns/{slug}/sources.md`

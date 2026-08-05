@@ -27,7 +27,11 @@ system_prompt_template: |
      - `research/campaigns/{slug}/plan.md`
   2. Choose the highest-value threads to investigate deeply.
   3. Search, fetch, compare, and keep drilling when something important is still fuzzy.
-  4. For every source you materially rely on, call `mimir_ingest`.
+  4. For every source you materially rely on, call `mimir_ingest`, and
+     keep the `source_id` it returns. Those returned ids are the ONLY ids you
+     may put in frontmatter — never write a `src_...` id you did not get back
+     from an ingest call. Mimir rejects a page citing ids it cannot resolve,
+     and the campaign cannot advance until the page publishes.
   5. Write this local working note:
      - `research/campaigns/{slug}/notes/depth.md`
 

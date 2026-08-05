@@ -344,6 +344,32 @@ def _build_workflow_outcome_repair_prompt(
     )
 
 
+def _build_workflow_artifact_repair_prompt(
+    *,
+    task: AgentTask,
+    original_response: str,
+    error: str,
+) -> str:
+    """Ask the same workflow agent to make its artifacts publishable to Mímir."""
+    return (
+        "Your outcome was accepted but its artifacts could not be published to Mímir, so the "
+        "workflow cannot advance: the next stage reads those pages and they are not there. "
+        "Fix the cause and leave the artifacts in a publishable state.\n\n"
+        f"Mímir rejected the publication with:\n{error}\n\n"
+        "If the rejection names missing source_ids, ingest exactly the sources you actually "
+        "used (mimir_ingest) and correct the page frontmatter to the ids those ingests return. "
+        "Do not invent identifiers, do not cite sources you did not read, and do not delete the "
+        "provenance to get past the check — an unsourced page is worse than a failed one. "
+        "Re-verify by reading the page back before you finish.\n\n"
+        f"Active workflow node: {task.workflow_node_id}\n\n"
+        "Original response:\n"
+        "<original_response>\n"
+        f"{original_response}\n"
+        "</original_response>\n\n"
+        "Return the complete outcome contract required by your persona."
+    )
+
+
 def _default_success_verdict(produces: object) -> str:
     """Return the best success verdict to synthesize for a persona outcome."""
     event_type_map = getattr(produces, "event_type_map", {}) or {}
@@ -2792,7 +2818,13 @@ class DriveLoop:
                 )
 
             if success:
-                success = await self._emit_mesh_outcome_event(task, response_text, success=True)
+                success = await self._emit_mesh_outcome_event(
+                    task,
+                    response_text,
+                    success=True,
+                    agent=agent,
+                    channel=channel,
+                )
                 if not success:
                     self._result_store.set_status(task.task_id, "failed")
 
@@ -3103,6 +3135,111 @@ class DriveLoop:
         )
         return result
 
+    async def _repair_workflow_artifacts(
+        self,
+        *,
+        agent: object | None,
+        task: AgentTask,
+        response_text: str,
+        error: str,
+    ) -> str | None:
+        """Give a workflow agent one chance to publish artifacts Mímir rejected.
+
+        Returns the revised response text, or None when no repair was attempted.
+        """
+        if agent is None or not str(task.workflow_node_id or "").strip():
+            return None
+        run_turn = getattr(agent, "run_turn", None)
+        if run_turn is None or not asyncio.iscoroutinefunction(run_turn):
+            return None
+
+        telemetry = get_observability()
+        attributes = {
+            "ravn.task.id": task.task_id,
+            "ravn.workflow.node.id": task.workflow_node_id,
+            "error.type": "artifact_publish_failed",
+        }
+        logger.warning(
+            "drive_loop: repairing unpublishable workflow artifacts task_id=%s node=%s: %s",
+            task.task_id,
+            task.workflow_node_id,
+            error,
+        )
+        telemetry.event(
+            "ravn.workflow.artifact.repair_requested",
+            attributes=attributes,
+            content={"error": error},
+        )
+        try:
+            result = await run_turn(
+                _build_workflow_artifact_repair_prompt(
+                    task=task,
+                    original_response=response_text,
+                    error=error,
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "drive_loop: workflow artifact repair failed; reporting the original error",
+                exc_info=True,
+            )
+            telemetry.event(
+                "ravn.workflow.artifact.repair_failed",
+                attributes={**attributes, "error.type": type(exc).__name__},
+                content={"error": str(exc)},
+            )
+            return None
+
+        repaired = str(getattr(result, "response", "") or "")
+        if not repaired.strip():
+            return None
+        telemetry.event(
+            "ravn.workflow.artifact.repair_completed",
+            attributes=attributes,
+            content=repaired,
+        )
+        return repaired
+
+    async def _emit_unacceptable_outcome_error(
+        self,
+        task: AgentTask,
+        channel: ChannelPort | None,
+        outcome_errors: list[str],
+    ) -> None:
+        """Announce a terminal outcome rejection on the agent's own channel.
+
+        Without this the rejection lived only in this process's result store: the
+        canonical outcome is deliberately withheld (the next persona must not
+        build on artifacts that are not in Mímir), so the campaign simply went
+        quiet and sat in ``running`` indefinitely. An ERROR event is terminal for
+        the turn and Skuld already treats a peer error frame as terminal for the
+        whole flock workflow — it reports the failed activity state that Volundr,
+        Ting, and A2A clients read — so emitting one here is what turns a silent
+        stall into a visible failure.
+        """
+        if channel is None:
+            return
+        detail = "; ".join(error for error in outcome_errors if error)
+        try:
+            await channel.emit(
+                RavnEvent.error(
+                    source=self._source_id,
+                    message=(
+                        f"Workflow node {task.workflow_node_id or task.task_id} produced an "
+                        f"outcome that cannot be accepted: {detail}"
+                    ),
+                    correlation_id=task.task_id,
+                    session_id=task.session_id or task.task_id,
+                    task_id=task.task_id,
+                    failure_kind="outcome_rejected",
+                )
+            )
+        except Exception:
+            logger.warning(
+                "drive_loop: failed to announce rejected outcome; continuing",
+                exc_info=True,
+            )
+
     async def _emit_sleipnir_task_completed(
         self,
         task: AgentTask,
@@ -3339,7 +3476,14 @@ class DriveLoop:
                 )
 
     async def _emit_mesh_outcome_event(
-        self, task: AgentTask, response_text: str, success: bool
+        self,
+        task: AgentTask,
+        response_text: str,
+        success: bool,
+        *,
+        agent: object | None = None,
+        channel: ChannelPort | None = None,
+        artifact_repair_attempted: bool = False,
     ) -> bool:
         """Publish persona outcomes for both routing and outward visibility.
 
@@ -3513,6 +3657,32 @@ class DriveLoop:
                 task,
                 outcome_fields,
             )
+        if artifact_publish_error and not artifact_repair_attempted:
+            # Mímir rejects a research page whose frontmatter cites source_ids it
+            # never ingested. That rejection is correct — but it used to end the
+            # campaign, because an unpublishable artifact means the canonical
+            # outcome is never emitted and the next persona waits forever for an
+            # event that will never come. The error names the exact missing ids
+            # and what to do about them, so give the agent the same one-shot
+            # repair the graph already grants an unroutable outcome.
+            repaired_response = await self._repair_workflow_artifacts(
+                agent=agent,
+                task=task,
+                response_text=response_text,
+                error=artifact_publish_error,
+            )
+            if repaired_response is not None:
+                # Re-enter with the revised response so verdict, summary, and
+                # artifact paths are all re-derived from it — and never repair
+                # twice, so a persistently broken page fails instead of looping.
+                return await self._emit_mesh_outcome_event(
+                    task,
+                    repaired_response,
+                    success,
+                    agent=agent,
+                    channel=channel,
+                    artifact_repair_attempted=True,
+                )
         if not outcome_errors and not artifact_publish_error:
             await self._maybe_materialize_workflow_artifacts(task, outcome_fields)
         if artifact_publish_error:
@@ -3615,6 +3785,7 @@ class DriveLoop:
                 "The resident outcome could not be accepted.",
                 outcome_errors,
             )
+            await self._emit_unacceptable_outcome_error(task, channel, outcome_errors)
             return False
 
         if self._mesh is None:
