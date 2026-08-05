@@ -54,6 +54,23 @@ class TestMeshActivityChannel:
         mesh.publish.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_emit_publishes_usage_so_a_mesh_only_peer_reports_its_cost(self):
+        """A flock persona has no WebSocket to Skuld — the mesh is its only route.
+
+        USAGE is emitted once per completed turn, not per token, and Skuld's
+        room adapter already consumes ``kind: "usage"`` and dedupes on
+        ``usage_id``. Dropping it here as "ephemeral" was what left every flock
+        session showing zero tokens and zero cost.
+        """
+        mesh = _make_mesh()
+        ch = MeshActivityChannel(mesh, "flock-research-framer")
+
+        await ch.emit(_make_event(RavnEventType.USAGE))
+        await sleep(0)
+
+        mesh.publish.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_emit_response_event(self):
         mesh = _make_mesh()
         ch = MeshActivityChannel(mesh, "p1")

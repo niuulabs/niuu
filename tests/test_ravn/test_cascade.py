@@ -157,6 +157,58 @@ async def test_mesh_outcome_subscription_enqueues_work():
 
 
 @pytest.mark.asyncio
+async def test_mesh_outcome_work_is_ambient_so_the_room_can_see_it():
+    """A flock stage must publish its activity, or the session renders empty.
+
+    Work triggered by a peer's outcome is the VISIBLE work of a flock session.
+    Its only route to the operator is the mesh activity stream: Ravn publishes
+    RESPONSE/TOOL/agent events to ``activity.{peer_id}``, Skuld's collaboration
+    mesh bridge projects them into room messages, and the broker folds those
+    into the durable ``session_event_log`` as ``conversation.turn`` rows — the
+    single source the chat, timeline, and transcript are rebuilt from (Volundr
+    cannot reach a session's workspace PVC, so there is no file-backed
+    fallback).
+
+    ``OutputMode.SILENT`` gives the task no external channel at all, so a whole
+    six-stage research campaign completed with 0 turns recorded and a blank UI
+    while the workflow chain itself advanced normally — outcomes travel on the
+    event-publisher path, not on this one, which is exactly why the failure was
+    invisible until someone opened the session.
+    """
+    dl = _make_drive_loop()
+    settings = Settings()
+    settings.mesh.enabled = True
+    settings.discovery.enabled = False
+    mesh = MagicMock()
+    persona = PersonaConfig(
+        name="research-explorer",
+        consumes=PersonaConsumes(event_types=["research.framed"]),
+    )
+
+    from ravn.cli.commands import _wire_cascade  # type: ignore[attr-defined]
+
+    with patch("ravn.cli.commands._build_mesh", return_value=mesh):
+        _wire_cascade(dl, settings, persona)
+
+    _, handler = mesh._pending_outcome_subscriptions[0]
+    await handler(
+        RavnEvent(
+            type=RavnEventType.OUTCOME,
+            source="flock-research-framer",
+            payload={"event_type": "research.framed", "persona": "research-framer"},
+            timestamp=datetime.now(UTC),
+            urgency=0.5,
+            correlation_id="session-123",
+            session_id="session-123",
+            root_correlation_id="session-123",
+        )
+    )
+
+    queued = list(dl._queue._queue)  # type: ignore[attr-defined]
+    assert queued[0][2].output_mode == OutputMode.AMBIENT
+
+
+@pytest.mark.asyncio
 async def test_mesh_rpc_task_dispatch():
     """RPC handler: task_dispatch enqueues task and returns accepted."""
     dl = _make_drive_loop()

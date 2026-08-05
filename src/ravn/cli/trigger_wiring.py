@@ -627,7 +627,16 @@ def _wire_cascade(
                     title=f"Handle {result.triggered_by}",
                     initiative_context=initiative_context,
                     triggered_by=result.triggered_by,
-                    output_mode=OutputMode.SILENT,
+                    # AMBIENT, not SILENT: work triggered by a peer's outcome is the
+                    # visible work of a flock session, and the mesh activity stream is
+                    # the only way it reaches the room — Skuld's collaboration bridge
+                    # projects those events into room messages, which become the
+                    # session's durable `conversation.turn` rows. SILENT gives the task
+                    # no external channel at all, so a whole campaign would run to
+                    # completion with an empty chat, timeline, and transcript. The
+                    # sibling event-driven triggers (thread_queue, ting_queue) already
+                    # use AMBIENT for the same reason.
+                    output_mode=OutputMode.AMBIENT,
                     persona=(
                         result.persona_name if result.persona_name != persona_config.name else None
                     ),
