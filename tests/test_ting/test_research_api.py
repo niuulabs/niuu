@@ -522,9 +522,7 @@ def test_list_campaigns_ignores_the_workflow_name(tmp_path: Path) -> None:
     beyond its name.
     """
     workflow = replace(_research_workflow(tmp_path), name="Research Campaign Mimir")
-    campaign = replace(
-        _campaign_for_workflow(workflow, slug="renamed-research"), metadata={}
-    )
+    campaign = replace(_campaign_for_workflow(workflow, slug="renamed-research"), metadata={})
     campaign_repo = InMemoryWorkflowCampaignRepository([campaign])
     volundr_port = RecordingVolundrPort()
     volundr_port.sessions[campaign.session_id] = VolundrSession(
