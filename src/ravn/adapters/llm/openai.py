@@ -556,6 +556,21 @@ class OpenAICompatibleAdapter(LLMPort):
             accumulated_reasoning: list[str] = []
             usage_emitted = False
 
+            # Bound here, not only inside the loop: a stream can end without ever
+            # delivering a chunk that carries `choices` — every chunk usage-only,
+            # or nothing at all — and the post-loop recovery and logging all read
+            # this. Leaving it unbound made that case die with UnboundLocalError
+            # inside the very branch meant to report an empty stream, so a
+            # resident turn failed with a Python error instead of a diagnosis.
+            finish_reason: str | None = None
+
+            # Bound here, not only inside the loop: a stream can end without ever
+            # delivering a chunk that carries `choices` — every chunk usage-only,
+            # or nothing at all — and the post-loop recovery and logging all read
+            # this. Leaving it unbound made that case die with UnboundLocalError
+            # inside the very branch meant to report an empty stream, so a
+            # resident turn failed with a Python error instead of a diagnosis.
+
             async for line in response.aiter_lines():
                 if not line.startswith("data: "):
                     continue

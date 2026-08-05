@@ -530,6 +530,38 @@ class TestOpenAIAdapterStream:
         assert "".join(e.text or "" for e in text_events) == "Hello, world!"
 
     @respx.mock
+    async def test_stream_with_no_choices_chunk_does_not_raise(self) -> None:
+        """A stream can carry usage and never a `choices` chunk.
+
+        `finish_reason` is assigned inside the per-chunk loop but read after it
+        by the end-of-stream tool recovery and every summary log. When nothing
+        bound it, the branch that exists to REPORT an empty stream was itself
+        the one that raised, and a live resident turn died with
+        "cannot access local variable 'finish_reason'" instead of a diagnosis.
+        """
+        adapter = OpenAICompatibleAdapter(api_key="k", base_url=_BASE_URL)
+        sse = _make_sse_lines(usage={"prompt_tokens": 7, "completion_tokens": 0})
+        respx.post(f"{_BASE_URL}/v1/chat/completions").mock(
+            return_value=httpx.Response(200, content=sse)
+        )
+
+        events = [event async for event in adapter.stream(_MESSAGES, **_KWARGS)]
+
+        assert any(e.type == StreamEventType.MESSAGE_DONE for e in events)
+
+    @respx.mock
+    async def test_stream_with_no_chunks_at_all_does_not_raise(self) -> None:
+        """The same hole, reached by a stream that yields only [DONE]."""
+        adapter = OpenAICompatibleAdapter(api_key="k", base_url=_BASE_URL)
+        respx.post(f"{_BASE_URL}/v1/chat/completions").mock(
+            return_value=httpx.Response(200, content=_make_sse_lines())
+        )
+
+        events = [event async for event in adapter.stream(_MESSAGES, **_KWARGS)]
+
+        assert all(e.type != StreamEventType.TEXT_DELTA for e in events)
+
+    @respx.mock
     async def test_stream_usage_in_final_chunk(self) -> None:
         adapter = OpenAICompatibleAdapter(api_key="k", base_url=_BASE_URL)
         sse = _make_sse_lines(
