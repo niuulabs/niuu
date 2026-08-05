@@ -1187,6 +1187,8 @@ brief_path: research/campaigns/example/brief.md
                 event_type="research.explore.completed",
                 event_type_map={"explored": "research.explored"},
             ),
+            allowed_tools=["mimir_ingest", "mimir_write"],
+            forbidden_tools=[],
         )
         task = _make_agent_task(task_id="task-artifact-repair")
         task.workflow_node_id = "research-explorer"
@@ -1228,6 +1230,29 @@ notes_path: research/campaigns/example/notes/exploration.md
         assert accepted is True
         published = [call.kwargs.get("topic") for call in dl._mesh.publish.await_args_list]
         assert "research.explore.completed" in published
+
+    @pytest.mark.asyncio
+    async def test_repair_prompt_matches_what_the_persona_may_actually_do(self, tmp_path) -> None:
+        """A persona that cannot ingest must not be told to ingest.
+
+        The skeptic, synthesist, and curator all have `mimir_ingest` in
+        forbidden_tools by design — they reuse the ids the explorer established.
+        Spending the single repair turn instructing them to use a tool they do
+        not have would guarantee the repair fails.
+        """
+        dl, task, response = self._artifact_repair_loop(tmp_path, ingested=set())
+        dl._persona_config.allowed_tools = ["mimir_read", "mimir_read_source", "mimir_write"]
+        dl._persona_config.forbidden_tools = ["mimir_ingest"]
+        agent = SimpleNamespace(run_turn=AsyncMock(return_value=SimpleNamespace(response=response)))
+
+        await dl._emit_mesh_outcome_event(
+            task, response, success=True, agent=agent, channel=AsyncMock()
+        )
+
+        prompt = agent.run_turn.await_args.args[0]
+        assert "You cannot ingest sources at this stage" in prompt
+        assert "mimir_read_source" in prompt
+        assert "used (mimir_ingest)" not in prompt
 
     @pytest.mark.asyncio
     async def test_persistently_unpublishable_artifacts_fail_loudly_once(self, tmp_path) -> None:

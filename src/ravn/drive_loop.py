@@ -349,18 +349,37 @@ def _build_workflow_artifact_repair_prompt(
     task: AgentTask,
     original_response: str,
     error: str,
+    may_ingest: bool,
 ) -> str:
-    """Ask the same workflow agent to make its artifacts publishable to Mímir."""
+    """Ask the same workflow agent to make its artifacts publishable to Mímir.
+
+    The remedy for unresolvable source_ids depends on what this persona is
+    allowed to do. Explorers ingest their own sources. Downstream personas
+    (skeptic, synthesist, curator) have ``mimir_ingest`` forbidden by design and
+    must reuse ids the upstream page already established — telling them to
+    ingest would burn the single repair turn on an unavailable tool.
+    """
+    remedy = (
+        (
+            "If the rejection names missing source_ids, ingest exactly the sources you actually "
+            "used (mimir_ingest) and correct the page frontmatter to the ids those ingests "
+            "return. Do not invent identifiers and do not cite sources you did not read."
+        )
+        if may_ingest
+        else (
+            "You cannot ingest sources at this stage, so do not try. If the rejection names "
+            "missing source_ids, those ids are not real: read the upstream campaign page you "
+            "drew from (mimir_read) and copy only the source_ids it actually carries, then "
+            "confirm each one resolves with mimir_read_source before you rewrite the page."
+        )
+    )
     return (
         "Your outcome was accepted but its artifacts could not be published to Mímir, so the "
         "workflow cannot advance: the next stage reads those pages and they are not there. "
         "Fix the cause and leave the artifacts in a publishable state.\n\n"
         f"Mímir rejected the publication with:\n{error}\n\n"
-        "If the rejection names missing source_ids, ingest exactly the sources you actually "
-        "used (mimir_ingest) and correct the page frontmatter to the ids those ingests return. "
-        "Do not invent identifiers, do not cite sources you did not read, and do not delete the "
-        "provenance to get past the check — an unsourced page is worse than a failed one. "
-        "Re-verify by reading the page back before you finish.\n\n"
+        f"{remedy} Do not delete the provenance to get past the check — an unsourced page is "
+        "worse than a failed one. Re-verify by reading the page back before you finish.\n\n"
         f"Active workflow node: {task.workflow_node_id}\n\n"
         "Original response:\n"
         "<original_response>\n"
@@ -3135,6 +3154,17 @@ class DriveLoop:
         )
         return result
 
+    def _persona_may_ingest(self) -> bool:
+        """Whether this persona is allowed to call ``mimir_ingest``."""
+        persona = self._persona_config
+        if persona is None:
+            return True
+        forbidden = {str(tool).strip() for tool in getattr(persona, "forbidden_tools", []) or []}
+        if "mimir_ingest" in forbidden:
+            return False
+        allowed = {str(tool).strip() for tool in getattr(persona, "allowed_tools", []) or []}
+        return not allowed or "mimir_ingest" in allowed
+
     async def _repair_workflow_artifacts(
         self,
         *,
@@ -3176,6 +3206,7 @@ class DriveLoop:
                     task=task,
                     original_response=response_text,
                     error=error,
+                    may_ingest=self._persona_may_ingest(),
                 )
             )
         except Exception as exc:
