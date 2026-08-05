@@ -49,6 +49,9 @@ from ting.ports.workflow_repository import WorkflowRepository
 _DEFAULT_RESEARCH_WORKFLOW_NAME = "Research Campaign"
 _RESEARCH_SURFACE = "ting.research"
 _A2A_SURFACE = "a2a"
+# How a workflow declares it is research work. The graph is the authority on
+# kind; metadata.surface only records where a launch came from.
+_RESEARCH_TAG = "research"
 logger = logging.getLogger(__name__)
 _MANIFEST_PATH_RE = re.compile(
     r"(research/campaigns/[A-Za-z0-9._/-]+\.md|learnings/research/[A-Za-z0-9._-]+\.md|followups/research/[A-Za-z0-9._-]+\.md)"
@@ -468,21 +471,44 @@ async def _resolve_research_workflow(
     raise HTTPException(status_code=404, detail="Research Campaign workflow not found")
 
 
-def _workflow_has_tag(workflow: WorkflowDefinition, tag: str) -> bool:
-    graph = workflow.graph if isinstance(workflow.graph, dict) else {}
+def _graph_tags(graph: object) -> set[str]:
+    """Normalized tags declared by a workflow graph.
+
+    One reader for both shapes the graph arrives in: a live
+    :class:`WorkflowDefinition` on the launch path, and the frozen
+    ``workflow_snapshot`` a campaign keeps of the graph it launched.
+    """
+    if not isinstance(graph, dict):
+        return set()
     raw_tags = graph.get("tags") or []
-    normalized = {str(item).strip().lower() for item in raw_tags if str(item).strip()}
-    return tag.strip().lower() in normalized
+    return {str(item).strip().lower() for item in raw_tags if str(item).strip()}
+
+
+def _workflow_has_tag(workflow: WorkflowDefinition, tag: str) -> bool:
+    return tag.strip().lower() in _graph_tags(workflow.graph)
 
 
 def _is_research_campaign(campaign: WorkflowCampaign) -> bool:
-    surface = str(campaign.metadata.get("surface") or "").strip()
-    if surface:
-        return surface == _RESEARCH_SURFACE
-    return (
-        campaign.workflow_name == _DEFAULT_RESEARCH_WORKFLOW_NAME
-        or campaign.metadata.get("question") is not None
-    )
+    """Whether this campaign is research work, regardless of who launched it.
+
+    A workflow declares its own kind (``graph.tags``), which is the same
+    question :func:`_resolve_research_workflow` asks when choosing what to
+    launch — so creating and listing now agree on one definition.
+
+    ``metadata.surface`` records the ENTRY POINT, not the kind. Reading kind
+    off it hid every campaign started anywhere but the research page: 38 real
+    Research Campaign runs launched over A2A were filtered out of the list
+    while their artifacts stayed reachable by URL. The old name comparison had
+    the matching flaw a name comparison always has — "Research Campaign Mimir"
+    is tagged research and was excluded for spelling.
+
+    The surface check survives only as an OR: a user who picks some untagged
+    workflow on the research page still owns a research campaign by intent.
+    """
+    snapshot = campaign.workflow_snapshot if isinstance(campaign.workflow_snapshot, dict) else {}
+    if _RESEARCH_TAG in _graph_tags(snapshot.get("graph")):
+        return True
+    return str(campaign.metadata.get("surface") or "").strip() == _RESEARCH_SURFACE
 
 
 def _campaign_artifacts_accessible(campaign: WorkflowCampaign) -> bool:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -478,6 +479,92 @@ def test_create_campaign_rejects_unknown_volundr_target(tmp_path: Path) -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Volundr target not found: missing-target"
+
+
+def test_list_campaigns_includes_research_launched_over_a2a(tmp_path: Path) -> None:
+    """A campaign's kind comes from its workflow, not from where it was launched.
+
+    ``metadata.surface`` records the entry point. Treating it as the kind hid 38
+    real Research Campaign runs started by a resident over A2A — their artifacts
+    stayed reachable by URL while the list they belong on showed only the four
+    started from the research page itself.
+    """
+    workflow = _research_workflow(tmp_path)
+    campaign = replace(
+        _campaign_for_workflow(workflow, slug="a2a-research"),
+        metadata={"surface": "a2a", "prompt": "Survey the literature."},
+    )
+    campaign_repo = InMemoryWorkflowCampaignRepository([campaign])
+    volundr_port = RecordingVolundrPort()
+    volundr_port.sessions[campaign.session_id] = VolundrSession(
+        id=campaign.session_id,
+        name="A2A Research Runtime",
+        status="running",
+        tracker_issue_id=None,
+    )
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]),
+        campaign_repo,
+        RecordingVolundrFactory(volundr_port),
+    )
+
+    response = client.get("/api/v1/ting/research/campaigns", headers=_headers())
+
+    assert response.status_code == 200
+    assert [item["slug"] for item in response.json()] == ["a2a-research"]
+
+
+def test_list_campaigns_ignores_the_workflow_name(tmp_path: Path) -> None:
+    """Kind is declared by graph tags, so spelling cannot decide membership.
+
+    The previous fallback compared against the literal "Research Campaign",
+    which excluded the tagged "Research Campaign Mimir" workflow for no reason
+    beyond its name.
+    """
+    workflow = replace(_research_workflow(tmp_path), name="Research Campaign Mimir")
+    campaign = replace(
+        _campaign_for_workflow(workflow, slug="renamed-research"), metadata={}
+    )
+    campaign_repo = InMemoryWorkflowCampaignRepository([campaign])
+    volundr_port = RecordingVolundrPort()
+    volundr_port.sessions[campaign.session_id] = VolundrSession(
+        id=campaign.session_id,
+        name="Renamed Research Runtime",
+        status="running",
+        tracker_issue_id=None,
+    )
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]),
+        campaign_repo,
+        RecordingVolundrFactory(volundr_port),
+    )
+
+    response = client.get("/api/v1/ting/research/campaigns", headers=_headers())
+
+    assert response.status_code == 200
+    assert [item["slug"] for item in response.json()] == ["renamed-research"]
+
+
+def test_list_campaigns_excludes_a2a_work_that_is_not_research(tmp_path: Path) -> None:
+    """Including every A2A campaign would flood the page with tool builds.
+
+    Fifty Tool & Skill Builder runs share the a2a surface; they are excluded
+    because their workflow does not declare the research tag.
+    """
+    workflow = _non_research_workflow(tmp_path)
+    campaign = replace(
+        _campaign_for_workflow(workflow, slug="a2a-tool-build"), metadata={"surface": "a2a"}
+    )
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]),
+        InMemoryWorkflowCampaignRepository([campaign]),
+        RecordingVolundrFactory(RecordingVolundrPort()),
+    )
+
+    response = client.get("/api/v1/ting/research/campaigns", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 def test_list_campaigns_refreshes_runtime_with_authenticated_principal(tmp_path: Path) -> None:
