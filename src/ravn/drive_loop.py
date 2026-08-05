@@ -2820,7 +2820,20 @@ class DriveLoop:
                     },
                     content=str(exc),
                 )
-                logger.error("drive_loop: task %s failed: %s", task.task_id, exc)
+                # Type first: a read timeout raises with empty args, so logging
+                # only str(exc) printed "failed:" and nothing at all — a real
+                # failure with zero diagnosis. set_failure already keeps the
+                # type; the operator-facing line should too.
+                # Type first: a read timeout raises with empty args, so logging
+                # only str(exc) printed "failed:" and nothing at all — a real
+                # failure with zero diagnosis. set_failure already keeps the
+                # type; the operator-facing line should too.
+                logger.error(
+                    "drive_loop: task %s failed: %s: %s",
+                    task.task_id,
+                    type(exc).__name__,
+                    exc,
+                )
                 self._result_store.set_failure(
                     task.task_id,
                     f"{type(exc).__name__}: {exc}",

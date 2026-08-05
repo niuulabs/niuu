@@ -7,6 +7,7 @@ correctly when mesh is not available.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -492,6 +493,34 @@ Determine whether the observations require action.
         assert TaskContextChannel in channel_types
         wrapped = next(ch for ch in captured[0]._channels if isinstance(ch, TaskContextChannel))
         assert wrapped._channel is mock_skuld
+
+    @pytest.mark.asyncio
+    async def test_failure_log_names_the_exception_type(self, caplog):
+        """A message-less exception must still say what it was.
+
+        A resident home turn stalled and died logging exactly
+        "drive_loop: task ... failed:" — nothing after the colon, because a
+        read timeout raises with empty args and only str(exc) was logged. The
+        operator got a real failure with zero diagnosis.
+        """
+        dl, _ = _make_drive_loop_with_mesh(cascade_enabled=False, mesh_enabled=False)
+        dl._mesh = None
+
+        def _boom(channel, task_id, persona, triggered_by):
+            agent = AsyncMock()
+            agent.run_turn = AsyncMock(side_effect=TimeoutError())  # no message, as httpx raises
+            agent.emit_session_ended = AsyncMock()
+            return agent
+
+        dl._agent_factory = _boom
+
+        with caplog.at_level(logging.ERROR, logger="ravn.drive_loop"):
+            await dl._run_task(_make_task("stalled-task"))
+
+        failures = [r.getMessage() for r in caplog.records if "failed" in r.getMessage()]
+        assert failures, "the failure was not logged at all"
+        assert "TimeoutError" in failures[0]
+        assert not failures[0].rstrip().endswith("failed:")
 
     @pytest.mark.asyncio
     async def test_skuld_channel_receives_error_when_task_fails(self):
