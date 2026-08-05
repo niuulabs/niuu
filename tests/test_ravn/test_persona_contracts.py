@@ -21,6 +21,8 @@ from ravn.adapters.personas.loader import (
     _parse_fan_in,
     _parse_produces,
 )
+from ravn.domain.valkyrie_contracts import VALKYRIE_CONTINUATION_ORDER
+from ravn.drive_loop import _validate_resident_continuation_contract
 
 # ---------------------------------------------------------------------------
 # YAML fixtures — specialist personas
@@ -783,3 +785,67 @@ class TestFilesystemPersonaAdapterMergeWithContracts:
         merged = FilesystemPersonaAdapter.merge(persona, self._make_project())
         assert merged.fan_in.strategy == "all_must_pass"
         assert merged.fan_in.contributes_to == "verdict"
+
+
+# ---------------------------------------------------------------------------
+# Continuation vocabulary — persona schema must match what the runtime accepts
+# ---------------------------------------------------------------------------
+
+
+class TestContinuationVocabularyMatchesContract:
+    """A persona may not advertise a continuation value the runtime rejects.
+
+    ``k8s-valkyrie`` offered ``continue`` alongside the canonical three. The
+    drive loop rejects it outright — a resident case has to name a real wake
+    source — so a resident that reached for it mid-investigation had its whole
+    outcome thrown away, and the repair turn made it worse. ``ivaldi``, which
+    works, has only ever offered the canonical three. The persona is the
+    contract the model reads; it has to be the contract the runtime enforces.
+    """
+
+    _loader = FilesystemPersonaAdapter()
+
+    def test_every_bundled_persona_offers_only_canonical_continuations(self) -> None:
+        offenders: dict[str, list[str]] = {}
+        for path in sorted(_BUILTIN_PERSONAS_DIR.glob("*.yaml")):
+            persona = self._loader.load_from_file(path)
+            if persona is None:
+                continue
+            field = persona.produces.schema.get("continuation")
+            if field is None:
+                continue
+            values = list(field.enum_values or [])
+            if tuple(values) != VALKYRIE_CONTINUATION_ORDER:
+                offenders[path.name] = values
+        assert not offenders, (
+            "personas advertise continuation values the drive loop rejects: "
+            f"{offenders}; canonical is {list(VALKYRIE_CONTINUATION_ORDER)}"
+        )
+
+    def test_continue_is_not_a_canonical_continuation(self) -> None:
+        # Guards the constant: if 'continue' ever becomes canonical, the drive
+        # loop has to stop rejecting it in the same change.
+        assert "continue" not in VALKYRIE_CONTINUATION_ORDER
+
+    def test_drive_loop_rejects_non_canonical_continuations(self) -> None:
+        for value in ("continue", "retry", "loop"):
+            errors = _validate_resident_continuation_contract(
+                {"continuation": value, "selected_next_action": "look again"}
+            )
+            assert errors, f"continuation {value!r} was accepted but is not canonical"
+
+    def test_drive_loop_accepts_each_canonical_continuation(self) -> None:
+        timings = {
+            "ask_operator": "operator_input",
+            "sleep": "scheduled_time",
+            "stop": "none",
+        }
+        for value in VALKYRIE_CONTINUATION_ORDER:
+            errors = _validate_resident_continuation_contract(
+                {
+                    "continuation": value,
+                    "next_action_timing": timings[value],
+                    "selected_next_action": "look again",
+                }
+            )
+            assert not errors, f"canonical continuation {value!r} was rejected: {errors}"

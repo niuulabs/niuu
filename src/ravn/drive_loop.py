@@ -56,6 +56,7 @@ from ravn.domain.help_needed import build_help_needed_event
 from ravn.domain.models import AgentTask, OutputMode, TurnResult
 from ravn.domain.resident_continuation import validate_resident_working_state
 from ravn.domain.valkyrie_contracts import (
+    VALKYRIE_CONTINUATION_ORDER,
     VALKYRIE_JUDGMENT_REJECTED,
     VALKYRIE_RUNTIME_OWNED_FIELDS,
     is_valkyrie_outcome_event,
@@ -682,6 +683,15 @@ def _validate_resident_continuation_contract(fields: Mapping[str, object]) -> li
         return [
             "continuation 'continue' is unsupported; call available tools before the final "
             "outcome, or use sleep/ask_operator for a real wake source"
+        ]
+    # Any other unrecognised value used to fall straight through to a clean
+    # pass: the timing table below only constrains the three it knows, so a
+    # resident that answered 'retry' got a valid outcome with no wake source at
+    # all. A case that names no real way to be woken is a stalled case.
+    if continuation and continuation not in VALKYRIE_CONTINUATION_ORDER:
+        return [
+            f"continuation {continuation!r} is not a known continuation; "
+            f"use one of {sorted(VALKYRIE_CONTINUATION_ORDER)!r}"
         ]
     expected_timing = {
         "ask_operator": {"operator_input"},

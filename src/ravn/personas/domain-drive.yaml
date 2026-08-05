@@ -95,7 +95,7 @@ produces:
       required: false
     continuation:
       type: enum
-      values: [continue, ask_operator, sleep, stop]
+      values: [ask_operator, sleep, stop]
       description: how the durable resident case should proceed after this turn
       required: false
     rationale:
