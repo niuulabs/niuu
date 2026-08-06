@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -288,7 +289,30 @@ class HttpMimirAdapter(MimirPort):
 
     async def read_source(self, source_id: str) -> MimirSource | None:
         """GET /mimir/source?source_id=... — return full raw source."""
-        response = await self._request("GET", "/mimir/source", params={"source_id": source_id})
+        return await self._get_source(source_id, max_chars=None)
+
+    async def read_source_excerpt(
+        self,
+        source_id: str,
+        max_chars: int,
+    ) -> MimirSource | None:
+        """GET /mimir/source?source_id=...&max_chars=N — bounded on the server.
+
+        Raw sources reach several megabytes; bounding here means the service
+        never serialises or ships the part the caller would discard.  A service
+        that predates the parameter ignores it and returns the full source, so
+        the result is still correct — bound it locally in that case.
+        """
+        source = await self._get_source(source_id, max_chars=max_chars)
+        if source is None or max_chars <= 0 or len(source.content) <= max_chars:
+            return source
+        return replace(source, content=source.content[:max_chars])
+
+    async def _get_source(self, source_id: str, *, max_chars: int | None) -> MimirSource | None:
+        params: dict[str, Any] = {"source_id": source_id}
+        if max_chars is not None and max_chars > 0:
+            params["max_chars"] = max_chars
+        response = await self._request("GET", "/mimir/source", params=params)
         if response.status_code == 404:
             return None
         response.raise_for_status()

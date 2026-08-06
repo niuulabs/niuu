@@ -337,3 +337,47 @@ async def test_list_sources_skips_an_entry_that_vanishes_mid_walk(
     sources = await adapter.list_sources()
 
     assert [s.source_id for s in sources] == ["src-1"]
+
+
+# ---------------------------------------------------------------------------
+# Bounded source reads
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_read_source_excerpt_bounds_content(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    adapter._write_raw_source(_make_source("src-1", content="x" * 5_000))
+
+    excerpt = await adapter.read_source_excerpt("src-1", 100)
+
+    assert excerpt is not None
+    assert len(excerpt.content) == 100
+    assert excerpt.source_id == "src-1"
+
+
+@pytest.mark.asyncio
+async def test_read_source_excerpt_leaves_short_content_alone(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    adapter._write_raw_source(_make_source("src-1", content="short"))
+
+    excerpt = await adapter.read_source_excerpt("src-1", 10_000)
+
+    assert excerpt is not None
+    assert excerpt.content == "short"
+
+
+@pytest.mark.asyncio
+async def test_read_source_excerpt_treats_non_positive_as_unbounded(tmp_path: Path) -> None:
+    adapter = _make_adapter(tmp_path)
+    adapter._write_raw_source(_make_source("src-1", content="x" * 500))
+
+    excerpt = await adapter.read_source_excerpt("src-1", 0)
+
+    assert excerpt is not None
+    assert len(excerpt.content) == 500
+
+
+@pytest.mark.asyncio
+async def test_read_source_excerpt_of_a_missing_source(tmp_path: Path) -> None:
+    assert await _make_adapter(tmp_path).read_source_excerpt("src-nope", 100) is None

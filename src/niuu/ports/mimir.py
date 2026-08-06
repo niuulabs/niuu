@@ -7,6 +7,7 @@ depend on this interface.  Neither module depends on the other.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import replace
 from pathlib import Path
 
 from niuu.domain.mimir import (
@@ -164,6 +165,28 @@ class MimirPort(ABC):
     async def read_source(self, source_id: str) -> MimirSource | None:
         """Return the full raw source by ID, or None if not found."""
         raise NotImplementedError
+
+    async def read_source_excerpt(
+        self,
+        source_id: str,
+        max_chars: int,
+    ) -> MimirSource | None:
+        """Return a raw source whose content is bounded to *max_chars*.
+
+        Callers that only ever use a bounded prefix — the synthesis trigger
+        truncates to its context budget — should ask for that prefix rather
+        than pull the whole blob and throw most of it away.  Raw sources reach
+        several megabytes, so over HTTP this is the difference between
+        transferring the corpus and transferring what will actually be read.
+
+        A non-positive *max_chars* means no bound.  This fallback fetches in
+        full and truncates locally, which is correct but saves nothing;
+        adapters that can bound it at the source override it.
+        """
+        source = await self.read_source(source_id)
+        if source is None or max_chars <= 0 or len(source.content) <= max_chars:
+            return source
+        return replace(source, content=source.content[:max_chars])
 
     @abstractmethod
     async def list_sources(self, *, unprocessed_only: bool = False) -> list[MimirSourceMeta]:

@@ -76,7 +76,7 @@ class ConditionPollTrigger(TriggerPort):
             return "CLEAR"
         return channel.response_text.strip().upper()
 
-    async def run(self, enqueue: Callable[[AgentTask], Awaitable[None]]) -> None:
+    async def run(self, enqueue: Callable[[AgentTask], Awaitable[bool]]) -> None:
         while True:
             await asyncio.sleep(self._check_interval)
 

@@ -440,7 +440,7 @@ class CronTrigger(TriggerPort):
     # Main loop
     # ------------------------------------------------------------------
 
-    async def run(self, enqueue: Callable[[AgentTask], Awaitable[None]]) -> None:
+    async def run(self, enqueue: Callable[[AgentTask], Awaitable[bool]]) -> None:
         lock_fd = self._acquire_lock()
         if lock_fd is None:
             logger.warning("cron: another instance holds the lock — skipping")

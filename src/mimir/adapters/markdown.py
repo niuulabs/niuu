@@ -33,7 +33,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -873,6 +873,26 @@ class MarkdownMimirAdapter(MimirPort):
     async def read_source(self, source_id: str) -> MimirSource | None:
         """Return the full raw source by ID, or None if not found."""
         return await asyncio.to_thread(self.read_raw_source, source_id)
+
+    async def read_source_excerpt(
+        self,
+        source_id: str,
+        max_chars: int,
+    ) -> MimirSource | None:
+        """Return the raw source with its content bounded to *max_chars*.
+
+        The blob still has to be parsed off disk, so the saving here is in what
+        the caller receives — over HTTP that is the whole point, since the
+        service serialises and ships only the prefix.
+        """
+        return await asyncio.to_thread(self._read_raw_source_excerpt, source_id, max_chars)
+
+    def _read_raw_source_excerpt(self, source_id: str, max_chars: int) -> MimirSource | None:
+        """Synchronous body of ``read_source_excerpt`` — see there for semantics."""
+        source = self.read_raw_source(source_id)
+        if source is None or max_chars <= 0 or len(source.content) <= max_chars:
+            return source
+        return replace(source, content=source.content[:max_chars])
 
     async def list_sources(self, *, unprocessed_only: bool = False) -> list[MimirSourceMeta]:
         """List all ingested raw sources.

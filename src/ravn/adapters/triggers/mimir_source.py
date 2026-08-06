@@ -58,7 +58,7 @@ class MimirSourceTrigger(TriggerPort):
 
     async def run(
         self,
-        enqueue: Callable[[AgentTask], Awaitable[None]],
+        enqueue: Callable[[AgentTask], Awaitable[bool]],
     ) -> None:
         """Poll loop — runs until cancelled by the DriveLoop."""
         logger.info(
@@ -79,20 +79,27 @@ class MimirSourceTrigger(TriggerPort):
 
     async def _poll_once(
         self,
-        enqueue: Callable[[AgentTask], Awaitable[None]],
+        enqueue: Callable[[AgentTask], Awaitable[bool]],
     ) -> None:
         now = time.monotonic()
         retry_after = self._config.retry_after_seconds
 
         sources = await self._mimir.list_sources(unprocessed_only=True)
+        # Oldest first, so a backlog drains in the order it accumulated instead
+        # of being re-shuffled by directory order on every sweep.
+        sources = sorted(sources, key=lambda meta: meta.ingested_at)
+
         for src in sources:
             enqueued_at = self._enqueued.get(src.source_id)
             if enqueued_at is not None and (now - enqueued_at) < retry_after:
                 continue
-            self._enqueued[src.source_id] = now
 
-            # Fetch full content so the agent can synthesise without filesystem access
-            full_source = await self._mimir.read_source(src.source_id)
+            # Bounded read: the context below truncates to max_content_chars
+            # anyway, and raw sources reach several megabytes.
+            full_source = await self._mimir.read_source_excerpt(
+                src.source_id,
+                self._config.max_content_chars,
+            )
             source_content = (
                 _source_excerpt(full_source.content, self._config.max_content_chars)
                 if full_source is not None
@@ -141,4 +148,17 @@ class MimirSourceTrigger(TriggerPort):
                 src.title,
                 mount_tag,
             )
-            await enqueue(task)
+            if not await enqueue(task):
+                # The drive loop is at capacity. Everything after this would be
+                # discarded too, so stop the sweep rather than read and build
+                # tasks for the rest of the backlog only to throw them away.
+                logger.info(
+                    "MimirSourceTrigger: queue is full — deferring source %r "
+                    "and the rest of this sweep to the next poll",
+                    src.source_id,
+                )
+                return
+
+            # Marked only once accepted: a task the drive loop refused was never
+            # given a chance to run, so suppressing its retry would strand it.
+            self._enqueued[src.source_id] = now

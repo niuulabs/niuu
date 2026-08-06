@@ -123,7 +123,7 @@ class WakefulnessTrigger(TriggerPort):
     def name(self) -> str:
         return "wakefulness"
 
-    async def run(self, enqueue: Callable[[AgentTask], Awaitable[None]]) -> None:
+    async def run(self, enqueue: Callable[[AgentTask], Awaitable[bool]]) -> None:
         """Poll loop — runs until cancelled by the DriveLoop."""
         if not self._config.enabled:
             logger.info("WakefulnessTrigger: disabled — exiting without polling")

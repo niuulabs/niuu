@@ -60,7 +60,7 @@ class DreamCycleTrigger(TriggerPort):
     def name(self) -> str:
         return "dream_cycle"
 
-    async def run(self, enqueue: Callable[[AgentTask], Awaitable[None]]) -> None:
+    async def run(self, enqueue: Callable[[AgentTask], Awaitable[bool]]) -> None:
         """Poll loop — runs until cancelled by the DriveLoop."""
         if not self._config.enabled:
             logger.info("DreamCycleTrigger: disabled — exiting without polling")
@@ -85,7 +85,7 @@ class DreamCycleTrigger(TriggerPort):
 
             await asyncio.sleep(self._config.poll_interval_seconds)
 
-    async def _poll_once(self, enqueue: Callable[[AgentTask], Awaitable[None]]) -> None:
+    async def _poll_once(self, enqueue: Callable[[AgentTask], Awaitable[bool]]) -> None:
         """Single poll cycle: check cron schedule, optionally enqueue dream cycle."""
         now = datetime.now(UTC)
 
@@ -118,7 +118,7 @@ class DreamCycleTrigger(TriggerPort):
 
     async def _enqueue_dream_cycle(
         self,
-        enqueue: Callable[[AgentTask], Awaitable[None]],
+        enqueue: Callable[[AgentTask], Awaitable[bool]],
         now: datetime,
     ) -> None:
         """Build the dream cycle initiative context and enqueue an AgentTask."""

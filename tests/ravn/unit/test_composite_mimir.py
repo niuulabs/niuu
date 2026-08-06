@@ -497,6 +497,39 @@ async def test_summarize_aggregates_mounts_and_survives_an_unreachable_one() -> 
 
 
 @pytest.mark.asyncio
+async def test_read_source_excerpt_falls_through_to_the_mount_that_has_it() -> None:
+    source = MimirSource(
+        source_id="src-1",
+        title="Test source",
+        content="hello",
+        source_type="research",
+        ingested_at=datetime.now(UTC),
+        content_hash=compute_content_hash("hello"),
+    )
+    local = _make_mount("local")
+    shared = _make_mount("shared", role="shared")
+    local.port.read_source_excerpt = AsyncMock(return_value=None)
+    shared.port.read_source_excerpt = AsyncMock(return_value=source)
+
+    adapter = CompositeMimirAdapter(mounts=[local, shared])
+
+    assert await adapter.read_source_excerpt("src-1", 100) == source
+    shared.port.read_source_excerpt.assert_awaited_once_with("src-1", 100)
+
+
+@pytest.mark.asyncio
+async def test_read_source_excerpt_shares_the_outage_semantics() -> None:
+    """A bounded read of an unreachable mount is still an outage, not an absence."""
+    shared = _make_mount("shared", role="shared")
+    shared.port.read_source_excerpt = AsyncMock(side_effect=RuntimeError("503 Service Unavailable"))
+
+    adapter = CompositeMimirAdapter(mounts=[shared])
+
+    with pytest.raises(MimirUnavailableError, match="could not read source"):
+        await adapter.read_source_excerpt("src-1", 100)
+
+
+@pytest.mark.asyncio
 async def test_summarize_handles_mounts_that_were_never_written_or_linted() -> None:
     empty = _make_mount("empty")
     empty.port.summarize = AsyncMock(

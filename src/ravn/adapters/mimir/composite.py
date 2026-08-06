@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
 
 from niuu.domain.mimir import (
     LintIssue,
@@ -299,13 +300,39 @@ class CompositeMimirAdapter(MimirPort):
         its index) and then raise, so callers do not report a Mímir outage as a
         missing source.
         """
+        return await self._read_source_with_retry(
+            source_id,
+            lambda port: port.read_source(source_id),
+        )
+
+    async def read_source_excerpt(
+        self,
+        source_id: str,
+        max_chars: int,
+    ) -> MimirSource | None:
+        """Bounded read from the first mount that has it.
+
+        Shares ``read_source``'s outage semantics — an unanswerable read
+        retries and then raises rather than passing for absence.
+        """
+        return await self._read_source_with_retry(
+            source_id,
+            lambda port: port.read_source_excerpt(source_id, max_chars),
+        )
+
+    async def _read_source_with_retry(
+        self,
+        source_id: str,
+        read: Callable[[MimirPort], Awaitable[MimirSource | None]],
+    ) -> MimirSource | None:
+        """Fan out *read* across mounts, retrying while no mount can answer."""
         deadline = time.monotonic() + self._read_retry_max_seconds
         backoff = self._read_retry_initial_backoff_seconds
         attempt = 0
 
         while True:
             attempt += 1
-            source, failures = await self._read_source_once(source_id)
+            source, failures = await self._read_source_once(source_id, read)
             if source is not None:
                 return source
             if not failures or len(failures) < len(self._mounts):
@@ -334,12 +361,13 @@ class CompositeMimirAdapter(MimirPort):
     async def _read_source_once(
         self,
         source_id: str,
+        read: Callable[[MimirPort], Awaitable[MimirSource | None]],
     ) -> tuple[MimirSource | None, list[str]]:
         """Try every mount once; return the source (if any) and per-mount failures."""
         failures: list[str] = []
         for mount in self._mounts:
             try:
-                source = await mount.port.read_source(source_id)
+                source = await read(mount.port)
                 if source is not None:
                     return source, failures
             except Exception as exc:

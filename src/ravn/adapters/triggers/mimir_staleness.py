@@ -53,7 +53,7 @@ class MimirStalenessTrigger(TriggerPort):
 
     async def run(
         self,
-        enqueue: Callable[[AgentTask], Awaitable[None]],
+        enqueue: Callable[[AgentTask], Awaitable[bool]],
     ) -> None:
         """Schedule loop — fires every ``schedule_hours`` hours until cancelled."""
         interval_seconds = self._config.schedule_hours * 3600
@@ -76,7 +76,7 @@ class MimirStalenessTrigger(TriggerPort):
 
     async def _check_once(
         self,
-        enqueue: Callable[[AgentTask], Awaitable[None]],
+        enqueue: Callable[[AgentTask], Awaitable[bool]],
     ) -> None:
         top = await self._usage.top_pages(self._config.top_n)
         if not top:

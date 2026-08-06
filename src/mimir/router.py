@@ -1769,9 +1769,22 @@ class MimirRouter:
         async def read_source(
             source_id: str = Query(),
             mount: str | None = Query(default=None),
+            max_chars: int | None = Query(
+                default=None,
+                gt=0,
+                description=(
+                    "Bound the returned content to this many characters. Raw sources "
+                    "reach several megabytes; callers that only read a prefix should "
+                    "say so rather than have the whole blob serialised and shipped."
+                ),
+            ),
         ) -> SourceResponse:
             port, resolved_mount = self._resolve_port(mount)
-            source = await port.read_source(source_id)
+            source = (
+                await port.read_source(source_id)
+                if max_chars is None
+                else await port.read_source_excerpt(source_id, max_chars)
+            )
             if source is None:
                 raise HTTPException(status_code=404, detail=f"Source not found: {source_id}")
             compiled_into = (await _source_page_map(port)).get(source.source_id, [])

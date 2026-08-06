@@ -264,6 +264,62 @@ def test_summary_rejects_an_unknown_mount(client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
+# GET /mimir/source — bounded reads
+# ---------------------------------------------------------------------------
+
+
+def test_read_source_returns_full_content_by_default(client: TestClient) -> None:
+    ingest = client.post(
+        "/mimir/ingest",
+        json={"title": "Big Source", "content": "x" * 5_000, "source_type": "document"},
+    )
+    source_id = ingest.json()["source_id"]
+
+    resp = client.get("/mimir/source", params={"source_id": source_id})
+
+    assert resp.status_code == 200
+    assert len(resp.json()["content"]) == 5_000
+
+
+def test_read_source_bounds_content_to_max_chars(client: TestClient) -> None:
+    """A caller that reads a prefix should not make the service ship megabytes."""
+    ingest = client.post(
+        "/mimir/ingest",
+        json={"title": "Big Source", "content": "x" * 5_000, "source_type": "document"},
+    )
+    source_id = ingest.json()["source_id"]
+
+    resp = client.get("/mimir/source", params={"source_id": source_id, "max_chars": 100})
+
+    assert resp.status_code == 200
+    assert len(resp.json()["content"]) == 100
+
+
+def test_read_source_max_chars_above_length_is_a_no_op(client: TestClient) -> None:
+    ingest = client.post(
+        "/mimir/ingest",
+        json={"title": "Small Source", "content": "hello", "source_type": "document"},
+    )
+    source_id = ingest.json()["source_id"]
+
+    resp = client.get("/mimir/source", params={"source_id": source_id, "max_chars": 10_000})
+
+    assert resp.json()["content"] == "hello"
+
+
+def test_read_source_rejects_a_non_positive_max_chars(client: TestClient) -> None:
+    resp = client.get("/mimir/source", params={"source_id": "src_x", "max_chars": 0})
+
+    assert resp.status_code == 422
+
+
+def test_read_source_bounded_still_404s_for_a_missing_source(client: TestClient) -> None:
+    resp = client.get("/mimir/source", params={"source_id": "src_nope", "max_chars": 10})
+
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # GET /mimir/pages
 # ---------------------------------------------------------------------------
 
