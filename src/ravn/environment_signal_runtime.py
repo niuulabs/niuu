@@ -367,15 +367,7 @@ class EnvironmentSignalRuntime:
             return 0
         if adapter.requires_commit:
             if self._durable_home_enabled:
-                if len(resident_results) != len(events) or any(
-                    not result
-                    or result.get("residentAutonomySignalPersisted") is not True
-                    or not str(result.get("residentAutonomySignalRef") or "").strip()
-                    for result in resident_results
-                ):
-                    raise RuntimeError(
-                        "durable signal transport requires every event in the resident inbox"
-                    )
+                self._require_inbox_persistence(events, resident_results)
                 # ResidentHomeTrigger is the sole queue producer for durable inbox
                 # observations. It coalesces NEW records and keeps intake independent
                 # of model latency.
@@ -411,6 +403,27 @@ class EnvironmentSignalRuntime:
             elif not self._durable_home_enabled:
                 self._remember_untriaged(signal, event)
         return enqueued
+
+    def _require_inbox_persistence(
+        self,
+        events: list[SleipnirEvent],
+        resident_results: list[dict[str, Any] | None],
+    ) -> None:
+        """Fail loudly when the inbox did not durably take every observation.
+
+        With the inbox as the sole queue producer, an observation that failed to
+        land there would simply never be judged. Raising keeps the signal out of
+        the seen-cache, so a polling source re-collects it on the next pass and
+        an acking source redelivers it.
+        """
+        if len(resident_results) == len(events) and all(
+            result
+            and result.get("residentAutonomySignalPersisted") is True
+            and str(result.get("residentAutonomySignalRef") or "").strip()
+            for result in resident_results
+        ):
+            return
+        raise RuntimeError("durable signal transport requires every event in the resident inbox")
 
     def _remember_untriaged(self, signal: NormalizedSignal, event: SleipnirEvent) -> None:
         self._untriaged.append(self._window_entry(signal, event))
