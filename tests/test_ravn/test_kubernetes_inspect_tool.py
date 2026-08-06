@@ -180,3 +180,39 @@ def test_k8s_persona_can_request_kubernetes_inspect_tool() -> None:
     )
 
     assert [tool.name for tool in filtered] == ["kubernetes_inspect"]
+
+
+class _NamedTool:
+    """Minimal stand-in so _filter_tools can be exercised by tool name."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+def test_k8s_valkyrie_persona_has_no_shell() -> None:
+    """The resident may inspect and build, but never shell out.
+
+    An ad-hoc script is neither reusable nor auditable and cannot be taught to
+    a peer — but the sharper reason is incentive. build_tool costs ~30 minutes
+    of A2A polling; `bash` costs seconds. With both available the resident
+    always took the shortcut, and the only builds it ever commissioned came
+    while kubernetes_inspect was missing and shelling out to the API failed.
+    """
+    from ravn.adapters.personas.loader import (  # noqa: PLC0415
+        _BUILTIN_PERSONAS_DIR,
+        FilesystemPersonaAdapter,
+    )
+
+    persona = FilesystemPersonaAdapter().load_from_file(_BUILTIN_PERSONAS_DIR / "k8s-valkyrie.yaml")
+    assert persona is not None
+
+    settings = Settings(environment={"id": "cluster-a", "type": "k8s"})
+    offered = ["bash", "terminal", "kubernetes_inspect", "build_tool", "read_file"]
+    surviving = {
+        tool.name for tool in _filter_tools([_NamedTool(n) for n in offered], settings, persona)
+    }
+
+    assert "bash" not in surviving
+    assert "terminal" not in surviving
+    # The replacements have to still be there, or this just removes capability.
+    assert {"kubernetes_inspect", "build_tool", "read_file"} <= surviving

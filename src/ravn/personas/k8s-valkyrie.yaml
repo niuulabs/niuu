@@ -98,6 +98,16 @@ system_prompt_template: |
   to Environment or Flock scope. Do not promote a learning when it depends on one
   transient signal.
 
+# No shell. `kubernetes_inspect` gathers evidence and `build_tool` makes
+# anything beyond it; an ad-hoc script is neither reusable nor auditable, and
+# it cannot be taught to a peer. Leaving the shell in place also made
+# build_tool an irrational choice: a resident can write and run a script in
+# ten seconds, where commissioning a build costs thirty minutes of polling, so
+# it always took the shortcut. The two builds this persona ever commissioned
+# happened while kubernetes_inspect was missing and shelling out to the API
+# kept failing — the capability path was only ever exercised when the shortcut
+# was blocked. `file` stays: a script it can write but not run is inert, and
+# reading its own learned-tool code is legitimate evidence.
 allowed_tools:
   [
     ravn,
@@ -105,7 +115,6 @@ allowed_tools:
     workflow,
     file,
     web,
-    terminal,
     todo_read,
     todo_write,
     cron_create,
@@ -118,7 +127,9 @@ allowed_tools:
     mimir_read,
     mimir_write,
   ]
-forbidden_tools: [cascade, volundr, ask_user]
+# Named explicitly as well as omitted above, so re-granting a tool group cannot
+# quietly hand the shell back.
+forbidden_tools: [cascade, volundr, ask_user, terminal, bash]
 permission_mode: workspace-write
 
 llm:
