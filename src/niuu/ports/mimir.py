@@ -11,6 +11,7 @@ from pathlib import Path
 
 from niuu.domain.mimir import (
     MimirLintReport,
+    MimirMountSummary,
     MimirPage,
     MimirPageMeta,
     MimirQueryResult,
@@ -42,6 +43,29 @@ class MimirPort(ABC):
         internals. Remote/composite adapters keep the ``None`` default.
         """
         return None
+
+    async def summarize(self) -> MimirMountSummary:
+        """Return a cheap scale/health summary of this mount.
+
+        Mount listings and the stats endpoint are polled continuously, so this
+        must not depend on corpus size the way ``list_pages()`` does.  Adapters
+        that can answer from filesystem metadata or a remote summary endpoint
+        should override it; this fallback keeps naive implementations correct
+        at the cost of walking the corpus.
+
+        Never runs lint — the returned counts come from the last lint that
+        actually ran, if any.
+        """
+        pages = await self.list_pages()
+        sources = await self.list_sources()
+        timestamps = [page.updated_at for page in pages]
+        timestamps.extend(source.ingested_at for source in sources)
+        return MimirMountSummary(
+            page_count=len(pages),
+            source_count=len(sources),
+            categories=sorted({page.category for page in pages}),
+            last_write=max(timestamps) if timestamps else None,
+        )
 
     @abstractmethod
     async def ingest(self, source: MimirSource) -> list[str]:

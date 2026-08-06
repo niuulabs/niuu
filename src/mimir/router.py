@@ -73,6 +73,18 @@ class StatsResponse(BaseModel):
     healthy: bool
 
 
+class SummaryResponse(BaseModel):
+    """Cheap scale/health summary of one mount — see ``MimirMountSummary``."""
+
+    page_count: int
+    source_count: int
+    categories: list[str]
+    last_write: str
+    lint_issues: int
+    # Empty when lint has never run; ``lint_issues`` is then unknown, not zero.
+    lint_checked_at: str
+
+
 class PageMetaResponse(BaseModel):
     path: str
     title: str
@@ -268,6 +280,9 @@ class MountResponse(BaseModel):
     pages: int
     sources: int
     lint_issues: int
+    # When empty, lint has never run on this mount and ``lint_issues`` is
+    # unknown rather than clean — summarising deliberately does not lint.
+    lint_checked_at: str = ""
     last_write: str
     embedding: str
     size_kb: int
@@ -692,14 +707,7 @@ async def _summarize_mount(
     mount: dict[str, Any],
 ) -> MountResponse:
     port: MimirPort = mount["port"]
-    pages = await port.list_pages()
-    sources = await port.list_sources()
-    lint_report = await port.lint()
-    last_write = ""
-    page_timestamps = [page.updated_at for page in pages]
-    source_timestamps = [source.ingested_at for source in sources]
-    if page_timestamps or source_timestamps:
-        last_write = max([*page_timestamps, *source_timestamps]).isoformat()
+    summary = await port.summarize()
 
     url = getattr(port, "_base_url", "")
     host = "embedded"
@@ -713,12 +721,15 @@ async def _summarize_mount(
         host=host,
         url=url,
         priority=mount["priority"],
-        categories=mount["categories"] or sorted({page.category for page in pages}),
+        categories=mount["categories"] or summary.categories,
         status="healthy",
-        pages=len(pages),
-        sources=len(sources),
-        lint_issues=len(lint_report.issues),
-        last_write=last_write,
+        pages=summary.page_count,
+        sources=summary.source_count,
+        lint_issues=summary.lint_issues,
+        lint_checked_at=(
+            summary.lint_checked_at.isoformat() if summary.lint_checked_at is not None else ""
+        ),
+        last_write=summary.last_write.isoformat() if summary.last_write is not None else "",
         embedding="fts",
         size_kb=0,
         desc=f"{mount['role']} mount",
@@ -1092,12 +1103,31 @@ class MimirRouter:
         @router.get("/stats", response_model=StatsResponse)
         async def stats(mount: str | None = Query(default=None)) -> StatsResponse:
             port, _ = self._resolve_port(mount)
-            pages = await port.list_pages()
-            categories = sorted({p.category for p in pages})
+            summary = await port.summarize()
             return StatsResponse(
-                page_count=len(pages),
-                categories=categories,
+                page_count=summary.page_count,
+                categories=summary.categories,
                 healthy=True,
+            )
+
+        @router.get("/summary", response_model=SummaryResponse)
+        async def summary(mount: str | None = Query(default=None)) -> SummaryResponse:
+            """Counts and last-write time without reading page or source bodies.
+
+            Exists so a remote mount can be summarised in one cheap call rather
+            than by transferring its whole corpus over ``/pages`` + ``/sources``.
+            """
+            port, _ = self._resolve_port(mount)
+            result = await port.summarize()
+            return SummaryResponse(
+                page_count=result.page_count,
+                source_count=result.source_count,
+                categories=result.categories,
+                last_write=(result.last_write.isoformat() if result.last_write is not None else ""),
+                lint_issues=result.lint_issues,
+                lint_checked_at=(
+                    result.lint_checked_at.isoformat() if result.lint_checked_at is not None else ""
+                ),
             )
 
         @router.get("/mounts", response_model=list[MountResponse])

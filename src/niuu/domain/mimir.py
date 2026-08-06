@@ -208,6 +208,28 @@ class MimirSourceMeta:
 
 
 @dataclass
+class MimirMountSummary:
+    """Scale/health summary of a single mount — used by /mimir/mounts and /mimir/stats.
+
+    This is polled by dashboards and by every mount listing, so it must stay
+    cheap: adapters are expected to answer it from filesystem metadata and
+    cached state, never by reading page or source bodies.
+
+    ``lint_issues`` is the issue count of the last lint that actually ran, with
+    ``lint_checked_at`` recording when that was.  An empty ``lint_checked_at``
+    means lint has never run on this mount, so a zero count means "unknown",
+    not "clean" — summarising must never trigger a fresh lint pass.
+    """
+
+    page_count: int
+    source_count: int
+    categories: list[str]
+    last_write: datetime | None = None
+    lint_issues: int = 0
+    lint_checked_at: datetime | None = None
+
+
+@dataclass
 class LintIssue:
     """A single issue found during a Mímir wiki health check.
 

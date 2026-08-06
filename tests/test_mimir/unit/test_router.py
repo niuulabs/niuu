@@ -224,6 +224,46 @@ def test_stats_with_page(client_with_page: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
+# GET /mimir/summary
+# ---------------------------------------------------------------------------
+
+
+def test_summary_reports_counts_without_linting(client_with_page: TestClient) -> None:
+    """Remote mounts summarise in one call instead of shipping the whole corpus."""
+    resp = client_with_page.get("/mimir/summary")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["page_count"] == 1
+    assert data["source_count"] == 1
+    assert "technical" in data["categories"]
+    assert data["last_write"] != ""
+    # Lint has not run, so the count is unknown rather than a clean bill.
+    assert data["lint_issues"] == 0
+    assert data["lint_checked_at"] == ""
+
+
+def test_summary_of_empty_wiki(client: TestClient) -> None:
+    resp = client.get("/mimir/summary")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["page_count"] == 0
+    assert data["source_count"] == 0
+    assert data["last_write"] == ""
+
+
+def test_summary_reports_lint_once_it_has_run(client_with_page: TestClient) -> None:
+    client_with_page.get("/mimir/lint")
+
+    data = client_with_page.get("/mimir/summary").json()
+
+    assert data["lint_checked_at"] != ""
+
+
+def test_summary_rejects_an_unknown_mount(client: TestClient) -> None:
+    assert client.get("/mimir/summary", params={"mount": "missing"}).status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # GET /mimir/pages
 # ---------------------------------------------------------------------------
 

@@ -624,3 +624,91 @@ async def test_aclose_is_idempotent() -> None:
     _ = await adapter._get_client()
     await adapter.aclose()
     await adapter.aclose()  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# HttpMimirAdapter — summarize
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_summarize_parses_the_summary_endpoint(adapter: HttpMimirAdapter) -> None:
+    respx.get("http://mimir.test/mimir/summary").mock(
+        return_value=Response(
+            200,
+            json={
+                "page_count": 568,
+                "source_count": 282,
+                "categories": ["research", "technical"],
+                "last_write": "2026-08-06T20:53:29+00:00",
+                "lint_issues": 7,
+                "lint_checked_at": "2026-08-06T18:00:00+00:00",
+            },
+        )
+    )
+
+    summary = await adapter.summarize()
+
+    assert summary.page_count == 568
+    assert summary.source_count == 282
+    assert summary.categories == ["research", "technical"]
+    assert summary.last_write is not None
+    assert summary.lint_issues == 7
+    assert summary.lint_checked_at is not None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_summarize_tolerates_empty_timestamps(adapter: HttpMimirAdapter) -> None:
+    """A never-linted, never-written mount reports empty strings, not nulls."""
+    respx.get("http://mimir.test/mimir/summary").mock(
+        return_value=Response(
+            200,
+            json={
+                "page_count": 0,
+                "source_count": 0,
+                "categories": [],
+                "last_write": "",
+                "lint_issues": 0,
+                "lint_checked_at": "",
+            },
+        )
+    )
+
+    summary = await adapter.summarize()
+
+    assert summary.last_write is None
+    assert summary.lint_checked_at is None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_summarize_falls_back_when_the_service_predates_the_endpoint(
+    adapter: HttpMimirAdapter,
+) -> None:
+    """Rollout is not atomic — an older Mímir must still be summarisable."""
+    now = datetime.now(UTC).isoformat()
+    respx.get("http://mimir.test/mimir/summary").mock(return_value=Response(404))
+    respx.get("http://mimir.test/mimir/pages").mock(
+        return_value=Response(
+            200,
+            json=[
+                {
+                    "path": "technical/test.md",
+                    "title": "Test",
+                    "summary": "",
+                    "category": "technical",
+                    "updated_at": now,
+                    "source_ids": [],
+                }
+            ],
+        )
+    )
+    respx.get("http://mimir.test/mimir/sources").mock(return_value=Response(200, json=[]))
+
+    summary = await adapter.summarize()
+
+    assert summary.page_count == 1
+    assert summary.source_count == 0
+    assert summary.categories == ["technical"]

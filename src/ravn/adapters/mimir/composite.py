@@ -37,11 +37,14 @@ Example (two mounts — local filesystem + shared HTTP service)::
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 
 from niuu.domain.mimir import (
     LintIssue,
     MimirLintReport,
+    MimirMountSummary,
     MimirPage,
     MimirPageMeta,
     MimirQueryResult,
@@ -77,10 +80,20 @@ class CompositeMimirAdapter(MimirPort):
         self,
         mounts: list[MimirMount],
         write_routing: WriteRouting | None = None,
+        *,
+        read_retry_max_seconds: float = 0.0,
+        read_retry_initial_backoff_seconds: float = 1.0,
+        read_retry_max_backoff_seconds: float = 10.0,
     ) -> None:
         self._mounts = sorted(mounts, key=lambda m: m.read_priority)
         self._mount_map = {m.name: m for m in mounts}
         self._write_routing = write_routing or WriteRouting()
+        # Retrying a read no mount could answer defaults off: callers that treat
+        # an unanswerable read as fatal (provenance verification) opt in through
+        # config, so nothing else silently gains a multi-second stall.
+        self._read_retry_max_seconds = read_retry_max_seconds
+        self._read_retry_initial_backoff_seconds = read_retry_initial_backoff_seconds
+        self._read_retry_max_backoff_seconds = read_retry_max_backoff_seconds
 
     def ingest_targets(self, explicit: str | None = None) -> list[str]:
         """Return the mount names an ingest should target.
@@ -228,19 +241,107 @@ class CompositeMimirAdapter(MimirPort):
 
         return results
 
+    async def summarize(self) -> MimirMountSummary:
+        """Aggregate every mount's summary.
+
+        Counts are summed across mounts rather than de-duplicated by page path:
+        de-duplication would mean listing the pages, which is exactly the
+        corpus walk this call exists to avoid. A mount that cannot answer is
+        skipped with a warning so one unreachable mount does not blank the
+        whole summary.
+        """
+        page_count = 0
+        source_count = 0
+        lint_issues = 0
+        categories: set[str] = set()
+        last_write = None
+        lint_checked_at = None
+
+        for mount in self._mounts:
+            try:
+                summary = await mount.port.summarize()
+            except Exception as exc:
+                logger.warning(
+                    "composite mimir: summarize failed on %s: %s",
+                    _sanitize_log(mount.name),
+                    _sanitize_log(exc),
+                )
+                continue
+
+            page_count += summary.page_count
+            source_count += summary.source_count
+            lint_issues += summary.lint_issues
+            categories.update(summary.categories)
+            if summary.last_write is not None and (
+                last_write is None or summary.last_write > last_write
+            ):
+                last_write = summary.last_write
+            if summary.lint_checked_at is not None and (
+                lint_checked_at is None or summary.lint_checked_at > lint_checked_at
+            ):
+                lint_checked_at = summary.lint_checked_at
+
+        return MimirMountSummary(
+            page_count=page_count,
+            source_count=source_count,
+            categories=sorted(categories),
+            last_write=last_write,
+            lint_issues=lint_issues,
+            lint_checked_at=lint_checked_at,
+        )
+
     async def read_source(self, source_id: str) -> MimirSource | None:
         """Return raw source from the first mount that has it.
 
         None means every mount answered and none had it. If no mount could
-        answer at all, that is not absence — raise, so callers do not report a
-        Mímir outage as a missing source.
+        answer at all, that is not absence — retry within the configured budget
+        (a restarting Mímir is unreachable for as long as it takes to rebuild
+        its index) and then raise, so callers do not report a Mímir outage as a
+        missing source.
         """
+        deadline = time.monotonic() + self._read_retry_max_seconds
+        backoff = self._read_retry_initial_backoff_seconds
+        attempt = 0
+
+        while True:
+            attempt += 1
+            source, failures = await self._read_source_once(source_id)
+            if source is not None:
+                return source
+            if not failures or len(failures) < len(self._mounts):
+                # At least one mount answered and did not have it — real absence.
+                return None
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise MimirUnavailableError(
+                    f"could not read source {source_id} from any mount "
+                    f"after {attempt} attempt(s) — " + "; ".join(failures)
+                )
+
+            delay = min(backoff, remaining)
+            logger.warning(
+                "composite mimir: no mount could read source %s (attempt %d); "
+                "retrying in %.1fs — %s",
+                _sanitize_log(source_id),
+                attempt,
+                delay,
+                _sanitize_log("; ".join(failures)),
+            )
+            await asyncio.sleep(delay)
+            backoff = min(backoff * 2, self._read_retry_max_backoff_seconds)
+
+    async def _read_source_once(
+        self,
+        source_id: str,
+    ) -> tuple[MimirSource | None, list[str]]:
+        """Try every mount once; return the source (if any) and per-mount failures."""
         failures: list[str] = []
         for mount in self._mounts:
             try:
                 source = await mount.port.read_source(source_id)
                 if source is not None:
-                    return source
+                    return source, failures
             except Exception as exc:
                 failures.append(f"{mount.name}: {exc}")
                 logger.warning(
@@ -248,11 +349,7 @@ class CompositeMimirAdapter(MimirPort):
                     _sanitize_log(mount.name),
                     _sanitize_log(exc),
                 )
-        if failures and len(failures) == len(self._mounts):
-            raise MimirUnavailableError(
-                f"could not read source {source_id} from any mount — " + "; ".join(failures)
-            )
-        return None
+        return None, failures
 
     async def read_source_from_mount(
         self,

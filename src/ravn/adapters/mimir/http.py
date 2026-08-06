@@ -29,6 +29,7 @@ import httpx
 from niuu.domain.mimir import (
     LintIssue,
     MimirLintReport,
+    MimirMountSummary,
     MimirPage,
     MimirPageMeta,
     MimirQueryResult,
@@ -237,6 +238,31 @@ class HttpMimirAdapter(MimirPort):
         response.raise_for_status()
         return [_parse_page_meta(m) for m in response.json()]
 
+    async def summarize(self) -> MimirMountSummary:
+        """GET /mimir/summary — counts and last-write time in one cheap call.
+
+        Older Mímir services predate the endpoint and answer 404; those fall
+        back to the port default, which derives the same summary from
+        ``list_pages``/``list_sources`` at the cost of transferring the corpus.
+        """
+        response = await self._request("GET", "/mimir/summary")
+        if response.status_code == 404:
+            logger.debug(
+                "mimir http: %s has no /mimir/summary — falling back to full listing",
+                self._base_url,
+            )
+            return await super().summarize()
+        response.raise_for_status()
+        data = response.json()
+        return MimirMountSummary(
+            page_count=data["page_count"],
+            source_count=data["source_count"],
+            categories=data.get("categories", []),
+            last_write=_parse_optional_datetime(data.get("last_write")),
+            lint_issues=data.get("lint_issues", 0),
+            lint_checked_at=_parse_optional_datetime(data.get("lint_checked_at")),
+        )
+
     async def lint(self, fix: bool = False) -> MimirLintReport:
         """GET /mimir/lint or POST /mimir/lint/fix — return health-check report."""
         if fix:
@@ -401,6 +427,13 @@ def _parse_thread_page(data: dict) -> MimirPage:
         is_thread=True,
     )
     return MimirPage(meta=meta, content=data.get("content", ""))
+
+
+def _parse_optional_datetime(raw: str | None) -> datetime | None:
+    """Parse an ISO timestamp that the service may legitimately leave empty."""
+    if not raw:
+        return None
+    return datetime.fromisoformat(raw)
 
 
 def _parse_page_meta(data: dict) -> MimirPageMeta:

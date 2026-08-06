@@ -20,6 +20,7 @@ import pytest
 from niuu.domain.mimir import (
     LintIssue,
     MimirLintReport,
+    MimirMountSummary,
     MimirPage,
     MimirPageMeta,
     MimirQueryResult,
@@ -372,6 +373,148 @@ async def test_read_source_from_mount_handles_port_errors() -> None:
     adapter = CompositeMimirAdapter(mounts=[local])
 
     assert await adapter.read_source_from_mount("src-1", "local") is None
+
+
+@pytest.mark.asyncio
+async def test_read_source_retries_until_a_mount_comes_back() -> None:
+    """A restarting Mímir is unavailable for as long as it rebuilds its index.
+
+    Session 30d0d041 failed provenance verification on a single 503 that landed
+    50s into a 74s restart. The source existed the whole time.
+    """
+    source = MimirSource(
+        source_id="src-1",
+        title="Test source",
+        content="hello",
+        source_type="research",
+        ingested_at=datetime.now(UTC),
+        content_hash=compute_content_hash("hello"),
+    )
+    shared = _make_mount("shared", role="shared")
+    shared.port.read_source = AsyncMock(
+        side_effect=[
+            RuntimeError("503 Service Unavailable"),
+            RuntimeError("503 Service Unavailable"),
+            source,
+        ]
+    )
+
+    adapter = CompositeMimirAdapter(
+        mounts=[shared],
+        read_retry_max_seconds=30.0,
+        read_retry_initial_backoff_seconds=0.001,
+        read_retry_max_backoff_seconds=0.001,
+    )
+
+    assert await adapter.read_source("src-1") == source
+    assert shared.port.read_source.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_read_source_raises_once_the_retry_budget_is_spent() -> None:
+    shared = _make_mount("shared", role="shared")
+    shared.port.read_source = AsyncMock(side_effect=RuntimeError("503 Service Unavailable"))
+
+    adapter = CompositeMimirAdapter(
+        mounts=[shared],
+        read_retry_max_seconds=0.005,
+        read_retry_initial_backoff_seconds=0.001,
+        read_retry_max_backoff_seconds=0.001,
+    )
+
+    with pytest.raises(MimirUnavailableError, match="could not read source"):
+        await adapter.read_source("src-1")
+    assert shared.port.read_source.await_count > 1
+
+
+@pytest.mark.asyncio
+async def test_read_source_does_not_retry_a_genuine_absence() -> None:
+    """A mount that answers "not here" is an answer — retrying only adds latency."""
+    shared = _make_mount("shared", role="shared")
+    shared.port.read_source = AsyncMock(return_value=None)
+
+    adapter = CompositeMimirAdapter(
+        mounts=[shared],
+        read_retry_max_seconds=30.0,
+        read_retry_initial_backoff_seconds=0.001,
+    )
+
+    assert await adapter.read_source("src-1") is None
+    assert shared.port.read_source.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_read_source_retry_is_off_by_default() -> None:
+    shared = _make_mount("shared", role="shared")
+    shared.port.read_source = AsyncMock(side_effect=RuntimeError("503 Service Unavailable"))
+
+    adapter = CompositeMimirAdapter(mounts=[shared])
+
+    with pytest.raises(MimirUnavailableError):
+        await adapter.read_source("src-1")
+    assert shared.port.read_source.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_summarize_aggregates_mounts_and_survives_an_unreachable_one() -> None:
+    early = datetime(2026, 1, 1, tzinfo=UTC)
+    late = datetime(2026, 6, 1, tzinfo=UTC)
+
+    local = _make_mount("local")
+    shared = _make_mount("shared", role="shared")
+    down = _make_mount("down", role="domain")
+    local.port.summarize = AsyncMock(
+        return_value=MimirMountSummary(
+            page_count=3,
+            source_count=1,
+            categories=["technical"],
+            last_write=early,
+            lint_issues=2,
+            lint_checked_at=early,
+        )
+    )
+    shared.port.summarize = AsyncMock(
+        return_value=MimirMountSummary(
+            page_count=5,
+            source_count=4,
+            categories=["research"],
+            last_write=late,
+            lint_issues=1,
+            lint_checked_at=late,
+        )
+    )
+    down.port.summarize = AsyncMock(side_effect=RuntimeError("503 Service Unavailable"))
+
+    adapter = CompositeMimirAdapter(mounts=[local, shared, down])
+    summary = await adapter.summarize()
+
+    assert summary.page_count == 8
+    assert summary.source_count == 5
+    assert summary.categories == ["research", "technical"]
+    assert summary.last_write == late
+    assert summary.lint_issues == 3
+    assert summary.lint_checked_at == late
+
+
+@pytest.mark.asyncio
+async def test_summarize_handles_mounts_that_were_never_written_or_linted() -> None:
+    empty = _make_mount("empty")
+    empty.port.summarize = AsyncMock(
+        return_value=MimirMountSummary(
+            page_count=0,
+            source_count=0,
+            categories=[],
+            last_write=None,
+            lint_issues=0,
+            lint_checked_at=None,
+        )
+    )
+
+    summary = await CompositeMimirAdapter(mounts=[empty]).summarize()
+
+    assert summary.page_count == 0
+    assert summary.last_write is None
+    assert summary.lint_checked_at is None
 
 
 # ---------------------------------------------------------------------------
