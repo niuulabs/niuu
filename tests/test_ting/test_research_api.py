@@ -916,6 +916,66 @@ def test_detail_survives_mimir_timeout_without_regressing_stage_state(
     assert list(campaign_repo._campaigns.values())[0].stage_state == finished_stages
 
 
+def test_detail_finds_artifacts_written_under_the_a2a_launch_slug(tmp_path: Path) -> None:
+    """An A2A launch uniquifies the campaign slug; the workflow does not.
+
+    a2a.py stores the campaign as ``<launch-slug>-<id.hex[:12]>`` so repeat runs
+    do not collide, but the workflow writes to ``research/campaigns/<launch-
+    slug>/``. Addressing artifacts by campaign.slug looked in a directory that
+    never existed, so every A2A-launched research campaign reported zero
+    artifacts — and since stage state is derived from that listing, finished
+    campaigns displayed as stage 1/N, unstarted.
+    """
+    workflow = _research_workflow(tmp_path)
+    launch_slug = "published-guidance-on-uv-led-over-temperature"
+    now = datetime.now(UTC)
+    campaign = WorkflowCampaign(
+        id=uuid4(),
+        slug=f"{launch_slug}-c6aa1b687896",
+        name="UV LED over-temperature",
+        owner_id="user-1",
+        workflow_id=workflow.id,
+        workflow_version=workflow.version,
+        workflow_name=workflow.name,
+        workflow_snapshot=build_workflow_snapshot(workflow),
+        session_id="session-1",
+        session_name="UV LED over-temperature",
+        status=WorkflowCampaignStatus.COMPLETED,
+        active_stage_id="publish",
+        stage_state=[],
+        metadata={"surface": "a2a", "a2a_workflow_slug": launch_slug},
+        created_at=now,
+        updated_at=now,
+        last_activity_at=now,
+        completed_at=now,
+    )
+
+    # Written where the workflow actually wrote — no id suffix.
+    research_dir = tmp_path / "wiki" / "research" / "campaigns" / launch_slug
+    research_dir.mkdir(parents=True)
+    (research_dir / "final.md").write_text("# Final\n\nAnswer.", encoding="utf-8")
+    (research_dir / "manifest.md").write_text(
+        f"# Manifest\n- research/campaigns/{launch_slug}/final.md",
+        encoding="utf-8",
+    )
+
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]),
+        InMemoryWorkflowCampaignRepository([campaign]),
+        RecordingVolundrFactory(RecordingVolundrPort()),
+    )
+    response = client.get(
+        f"/api/v1/ting/research/campaigns/{launch_slug}-c6aa1b687896",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    paths = {artifact["path"] for artifact in body["artifacts"]}
+    assert f"research/campaigns/{launch_slug}/final.md" in paths
+    assert body["artifactsUnavailable"] is False
+
+
 def test_artifact_endpoint_rejects_paths_outside_campaign(tmp_path: Path) -> None:
     workflow = _research_workflow(tmp_path)
     workflow_repo = InMemoryWorkflowRepository([workflow])

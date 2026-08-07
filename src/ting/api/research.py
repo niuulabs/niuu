@@ -471,7 +471,7 @@ def create_research_router() -> APIRouter:
             page = await adapter.get_page(path)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Artifact not found") from exc
-        published_paths = await _published_paths(adapter, campaign.slug)
+        published_paths = await _published_paths(adapter, _artifact_slug(campaign))
         artifact = _artifact_response(page, published_paths, manifest_known=bool(published_paths))
         return CampaignArtifactDetailResponse(
             path=artifact.path,
@@ -733,6 +733,27 @@ def _campaign_status_from_session(
     return fallback
 
 
+#: Where an A2A launch stores the slug the workflow actually wrote under.
+#: Mirrors ``ting.api.a2a._WORKFLOW_SLUG_KEY``.
+_A2A_WORKFLOW_SLUG_KEY = "a2a_workflow_slug"
+
+
+def _artifact_slug(campaign: WorkflowCampaign) -> str:
+    """The slug a campaign's Mímir pages actually live under.
+
+    An A2A launch uniquifies the campaign slug with the campaign id
+    (``<launch-slug>-<id.hex[:12]>``) so two runs of the same workflow do not
+    collide. The workflow itself never sees that suffix — it writes to
+    ``research/campaigns/<launch-slug>/``. Addressing artifacts by
+    ``campaign.slug`` therefore looks in a directory that has never existed,
+    and every A2A-launched research campaign reported zero artifacts. Since
+    stage state is derived from that listing, they also displayed as unstarted.
+
+    ``a2a.py`` already resolves paths this way; this is the same rule.
+    """
+    return str(campaign.metadata.get(_A2A_WORKFLOW_SLUG_KEY) or campaign.slug).strip()
+
+
 class _CampaignArtifactsUnavailableError(Exception):
     """Mímir could not be read, so this campaign's artifacts are unknown.
 
@@ -755,7 +776,8 @@ async def _load_campaign_artifacts(
     if adapter is None:
         return [], {}
 
-    prefix = f"research/campaigns/{campaign.slug}/"
+    slug = _artifact_slug(campaign)
+    prefix = f"research/campaigns/{slug}/"
     try:
         pages = await adapter.list_pages(prefix=prefix)
     except httpx.TimeoutException:
@@ -778,8 +800,8 @@ async def _load_campaign_artifacts(
         raise _CampaignArtifactsUnavailableError(campaign.slug) from None
     page_paths = {page.path for page in pages}
     extra_paths = [
-        f"learnings/research/{campaign.slug}.md",
-        f"followups/research/{campaign.slug}.md",
+        f"learnings/research/{slug}.md",
+        f"followups/research/{slug}.md",
     ]
     extra_pages: list[MimirPage] = []
     for path in extra_paths:
@@ -798,7 +820,7 @@ async def _load_campaign_artifacts(
             continue
     full_pages.extend(extra_pages)
 
-    published_paths = await _published_paths(adapter, campaign.slug)
+    published_paths = await _published_paths(adapter, slug)
     manifest_known = bool(published_paths)
     artifacts = [
         _artifact_response(page, published_paths, manifest_known=manifest_known)
@@ -1053,7 +1075,9 @@ def _campaign_owns_path(campaign: WorkflowCampaign, path: str) -> bool:
         )
         return path in declared
 
-    slug = campaign.slug
+    # Same slug the pages were written under, not the uniquified campaign
+    # slug — otherwise every real artifact path fails this check.
+    slug = _artifact_slug(campaign)
     if path.startswith(f"research/campaigns/{slug}/"):
         return True
     return path in {
