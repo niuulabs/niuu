@@ -196,6 +196,17 @@ class MimirQueryResult:
     sources: list[MimirPage] = field(default_factory=list)
 
 
+# Source types that record the system's own activity rather than knowledge about
+# the world: probe output, tool transcripts, run logs. They are never synthesised
+# into wiki pages, so ingesting them leaves a source that can never become
+# "processed" — the shared mount accumulated 61 of them, and the synthesis
+# trigger re-swept every one of them every ten minutes indefinitely.
+#
+# This is a statement about what the store is *for*, not a judgement about what
+# any particular observation means — that judgement stays with Ravn.
+OPERATIONAL_SOURCE_TYPES: frozenset[str] = frozenset({"tool_output", "diagnostic"})
+
+
 @dataclass
 class MimirSourceMeta:
     """Lightweight metadata for a raw source — used by list_sources()."""
@@ -204,7 +215,30 @@ class MimirSourceMeta:
     title: str
     ingested_at: datetime
     source_type: str
+    origin_url: str | None = None
     mount_name: str | None = None  # set by CompositeMimirAdapter to identify origin mount
+
+
+@dataclass
+class MimirMountSummary:
+    """Scale/health summary of a single mount — used by /mimir/mounts and /mimir/stats.
+
+    This is polled by dashboards and by every mount listing, so it must stay
+    cheap: adapters are expected to answer it from filesystem metadata and
+    cached state, never by reading page or source bodies.
+
+    ``lint_issues`` is the issue count of the last lint that actually ran, with
+    ``lint_checked_at`` recording when that was.  An empty ``lint_checked_at``
+    means lint has never run on this mount, so a zero count means "unknown",
+    not "clean" — summarising must never trigger a fresh lint pass.
+    """
+
+    page_count: int
+    source_count: int
+    categories: list[str]
+    last_write: datetime | None = None
+    lint_issues: int = 0
+    lint_checked_at: datetime | None = None
 
 
 @dataclass

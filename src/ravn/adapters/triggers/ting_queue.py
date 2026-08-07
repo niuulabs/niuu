@@ -170,7 +170,7 @@ class TingQueueTrigger(TriggerPort):
 
         return resp.json()
 
-    async def _poll_once(self, enqueue: Callable[[AgentTask], Awaitable[None]]) -> None:
+    async def _poll_once(self, enqueue: Callable[[AgentTask], Awaitable[bool]]) -> None:
         """Single poll cycle — checks dispatcher state then enqueues ready runs."""
         async with httpx.AsyncClient() as client:
             dispatcher = await self._fetch_dispatcher_state(client)
@@ -228,7 +228,7 @@ class TingQueueTrigger(TriggerPort):
             )
             await enqueue(task)
 
-    async def run(self, enqueue: Callable[[AgentTask], Awaitable[None]]) -> None:
+    async def run(self, enqueue: Callable[[AgentTask], Awaitable[bool]]) -> None:
         """Run forever, polling the Ting dispatch queue on each interval."""
         while True:
             await asyncio.sleep(self._poll_interval_s)

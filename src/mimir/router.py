@@ -45,6 +45,7 @@ from mimir.compiled_truth import CompiledTruthPage
 from mimir.compiled_truth import parse_page as parse_compiled_truth_page
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
 from niuu.domain.mimir import (
+    OPERATIONAL_SOURCE_TYPES,
     MimirLintReport,
     MimirPage,
     MimirPageMeta,
@@ -71,6 +72,18 @@ class StatsResponse(BaseModel):
     page_count: int
     categories: list[str]
     healthy: bool
+
+
+class SummaryResponse(BaseModel):
+    """Cheap scale/health summary of one mount — see ``MimirMountSummary``."""
+
+    page_count: int
+    source_count: int
+    categories: list[str]
+    last_write: str
+    lint_issues: int
+    # Empty when lint has never run; ``lint_issues`` is then unknown, not zero.
+    lint_checked_at: str
 
 
 class PageMetaResponse(BaseModel):
@@ -268,6 +281,9 @@ class MountResponse(BaseModel):
     pages: int
     sources: int
     lint_issues: int
+    # When empty, lint has never run on this mount and ``lint_issues`` is
+    # unknown rather than clean — summarising deliberately does not lint.
+    lint_checked_at: str = ""
     last_write: str
     embedding: str
     size_kb: int
@@ -631,6 +647,14 @@ async def _source_page_map(
 
 
 async def _read_full_sources(port: MimirPort) -> list[MimirSource]:
+    """Load every raw source with its content.
+
+    This holds the entire corpus in memory, which is enough to OOM the service
+    on a large mount — listings and activity feeds must use ``list_sources()``
+    instead. Only evidence computation legitimately needs the bodies, because it
+    matches facts against source text, including sources a page does not yet
+    cite.
+    """
     sources: list[MimirSource] = []
     for source_meta in await port.list_sources():
         source = await port.read_source(source_meta.source_id)
@@ -692,14 +716,7 @@ async def _summarize_mount(
     mount: dict[str, Any],
 ) -> MountResponse:
     port: MimirPort = mount["port"]
-    pages = await port.list_pages()
-    sources = await port.list_sources()
-    lint_report = await port.lint()
-    last_write = ""
-    page_timestamps = [page.updated_at for page in pages]
-    source_timestamps = [source.ingested_at for source in sources]
-    if page_timestamps or source_timestamps:
-        last_write = max([*page_timestamps, *source_timestamps]).isoformat()
+    summary = await port.summarize()
 
     url = getattr(port, "_base_url", "")
     host = "embedded"
@@ -713,12 +730,15 @@ async def _summarize_mount(
         host=host,
         url=url,
         priority=mount["priority"],
-        categories=mount["categories"] or sorted({page.category for page in pages}),
+        categories=mount["categories"] or summary.categories,
         status="healthy",
-        pages=len(pages),
-        sources=len(sources),
-        lint_issues=len(lint_report.issues),
-        last_write=last_write,
+        pages=summary.page_count,
+        sources=summary.source_count,
+        lint_issues=summary.lint_issues,
+        lint_checked_at=(
+            summary.lint_checked_at.isoformat() if summary.lint_checked_at is not None else ""
+        ),
+        last_write=summary.last_write.isoformat() if summary.last_write is not None else "",
         embedding="fts",
         size_kb=0,
         desc=f"{mount['role']} mount",
@@ -1092,12 +1112,31 @@ class MimirRouter:
         @router.get("/stats", response_model=StatsResponse)
         async def stats(mount: str | None = Query(default=None)) -> StatsResponse:
             port, _ = self._resolve_port(mount)
-            pages = await port.list_pages()
-            categories = sorted({p.category for p in pages})
+            summary = await port.summarize()
             return StatsResponse(
-                page_count=len(pages),
-                categories=categories,
+                page_count=summary.page_count,
+                categories=summary.categories,
                 healthy=True,
+            )
+
+        @router.get("/summary", response_model=SummaryResponse)
+        async def summary(mount: str | None = Query(default=None)) -> SummaryResponse:
+            """Counts and last-write time without reading page or source bodies.
+
+            Exists so a remote mount can be summarised in one cheap call rather
+            than by transferring its whole corpus over ``/pages`` + ``/sources``.
+            """
+            port, _ = self._resolve_port(mount)
+            result = await port.summarize()
+            return SummaryResponse(
+                page_count=result.page_count,
+                source_count=result.source_count,
+                categories=result.categories,
+                last_write=(result.last_write.isoformat() if result.last_write is not None else ""),
+                lint_issues=result.lint_issues,
+                lint_checked_at=(
+                    result.lint_checked_at.isoformat() if result.lint_checked_at is not None else ""
+                ),
             )
 
         @router.get("/mounts", response_model=list[MountResponse])
@@ -1241,7 +1280,9 @@ class MimirRouter:
                         )
                     )
                 source_pages = await _source_page_map(port)
-                for source in await _read_full_sources(port):
+                # Metadata only — an activity feed needs titles and timestamps,
+                # not the bodies behind them.
+                for source in await port.list_sources():
                     events.append(
                         RecentWriteResponse(
                             id=_stable_id(
@@ -1739,9 +1780,22 @@ class MimirRouter:
         async def read_source(
             source_id: str = Query(),
             mount: str | None = Query(default=None),
+            max_chars: int | None = Query(
+                default=None,
+                gt=0,
+                description=(
+                    "Bound the returned content to this many characters. Raw sources "
+                    "reach several megabytes; callers that only read a prefix should "
+                    "say so rather than have the whole blob serialised and shipped."
+                ),
+            ),
         ) -> SourceResponse:
             port, resolved_mount = self._resolve_port(mount)
-            source = await port.read_source(source_id)
+            source = (
+                await port.read_source(source_id)
+                if max_chars is None
+                else await port.read_source_excerpt(source_id, max_chars)
+            )
             if source is None:
                 raise HTTPException(status_code=404, detail=f"Source not found: {source_id}")
             compiled_into = (await _source_page_map(port)).get(source.source_id, [])
@@ -1755,9 +1809,12 @@ class MimirRouter:
         ) -> list[SourceMetaResponse]:
             port, resolved_mount = self._resolve_port(mount)
             source_pages = await _source_page_map(port)
-            full_sources = await _read_full_sources(port)
             results: list[SourceMetaResponse] = []
-            for source in full_sources:
+            # Metadata only. Reading every source body to build a listing loaded
+            # the whole corpus into memory at once and OOM-killed the service on
+            # the shared mount; the bodies were then discarded, since a listing
+            # has no use for them. Callers that want content fetch /mimir/source.
+            for source in await port.list_sources():
                 if origin_type == "web" and not source.origin_url:
                     continue
                 if origin_type is not None and origin_type != "web" and source.origin_url:
@@ -1775,7 +1832,6 @@ class MimirRouter:
                         ingest_agent="mimir",
                         compiled_into=source_pages.get(source.source_id, []),
                         mount_name=resolved_mount,
-                        content=source.content,
                     )
                 )
             if unprocessed:
@@ -1838,6 +1894,16 @@ class MimirRouter:
             _auth: None = Depends(_require_write_auth),
         ) -> IngestResponse:
             port, _ = self._resolve_port(request.mount)
+            if request.source_type in OPERATIONAL_SOURCE_TYPES:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Refusing to ingest source_type {request.source_type!r}: it records "
+                        "system activity, not knowledge, so nothing will ever synthesise it "
+                        "into a page and it would sit unprocessed forever. Write run output "
+                        "to logs or a thread instead."
+                    ),
+                )
             content_hash = compute_content_hash(request.content)
             source_id = compute_source_id(request.content)
             source = MimirSource(

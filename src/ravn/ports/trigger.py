@@ -48,6 +48,12 @@ class TriggerPort(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def run(self, enqueue: Callable[[AgentTask], Awaitable[None]]) -> None:
-        """Run forever.  Call ``enqueue`` whenever a task should fire."""
+    async def run(self, enqueue: Callable[[AgentTask], Awaitable[bool]]) -> None:
+        """Run forever.  Call ``enqueue`` whenever a task should fire.
+
+        ``enqueue`` returns whether the drive loop accepted the task.  It
+        refuses when the queue is at capacity, and a trigger that ignores the
+        refusal will keep producing work that is thrown away — pay attention to
+        it before doing anything expensive for the next task.
+        """
         raise NotImplementedError

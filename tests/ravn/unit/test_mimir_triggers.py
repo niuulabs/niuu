@@ -97,8 +97,9 @@ class TestMimirSourceTrigger:
         trigger = self._make_trigger(mimir=mimir)
         enqueued: list[AgentTask] = []
 
-        async def _enqueue(task: AgentTask) -> None:
+        async def _enqueue(task: AgentTask) -> bool:
             enqueued.append(task)
+            return True
 
         await trigger._poll_once(_enqueue)
         assert enqueued == []
@@ -107,12 +108,13 @@ class TestMimirSourceTrigger:
     async def test_poll_once_enqueues_task_for_source(self) -> None:
         mimir = AsyncMock()
         mimir.list_sources = AsyncMock(return_value=[_source_meta()])
-        mimir.read_source = AsyncMock(return_value=_full_source())
+        mimir.read_source_excerpt = AsyncMock(return_value=_full_source())
         trigger = self._make_trigger(mimir=mimir)
         enqueued: list[AgentTask] = []
 
-        async def _enqueue(task: AgentTask) -> None:
+        async def _enqueue(task: AgentTask) -> bool:
             enqueued.append(task)
+            return True
 
         await trigger._poll_once(_enqueue)
         assert len(enqueued) == 1
@@ -123,12 +125,13 @@ class TestMimirSourceTrigger:
     async def test_poll_once_skips_recently_enqueued(self) -> None:
         mimir = AsyncMock()
         mimir.list_sources = AsyncMock(return_value=[_source_meta(source_id="src-1")])
-        mimir.read_source = AsyncMock(return_value=_full_source())
+        mimir.read_source_excerpt = AsyncMock(return_value=_full_source())
         trigger = self._make_trigger(mimir=mimir, retry_after=9999)
         enqueued: list[AgentTask] = []
 
-        async def _enqueue(task: AgentTask) -> None:
+        async def _enqueue(task: AgentTask) -> bool:
             enqueued.append(task)
+            return True
 
         await trigger._poll_once(_enqueue)
         await trigger._poll_once(_enqueue)
@@ -138,12 +141,13 @@ class TestMimirSourceTrigger:
     async def test_poll_once_includes_source_content(self) -> None:
         mimir = AsyncMock()
         mimir.list_sources = AsyncMock(return_value=[_source_meta()])
-        mimir.read_source = AsyncMock(return_value=_full_source())
+        mimir.read_source_excerpt = AsyncMock(return_value=_full_source())
         trigger = self._make_trigger(mimir=mimir)
         enqueued: list[AgentTask] = []
 
-        async def _enqueue(task: AgentTask) -> None:
+        async def _enqueue(task: AgentTask) -> bool:
             enqueued.append(task)
+            return True
 
         await trigger._poll_once(_enqueue)
         context = enqueued[0].initiative_context
@@ -153,12 +157,13 @@ class TestMimirSourceTrigger:
     async def test_poll_once_truncates_large_source_content(self) -> None:
         mimir = AsyncMock()
         mimir.list_sources = AsyncMock(return_value=[_source_meta()])
-        mimir.read_source = AsyncMock(return_value=_full_source(content="abcdef"))
+        mimir.read_source_excerpt = AsyncMock(return_value=_full_source(content="abcdef"))
         trigger = self._make_trigger(mimir=mimir, max_content_chars=3)
         enqueued: list[AgentTask] = []
 
-        async def _enqueue(task: AgentTask) -> None:
+        async def _enqueue(task: AgentTask) -> bool:
             enqueued.append(task)
+            return True
 
         await trigger._poll_once(_enqueue)
         context = enqueued[0].initiative_context
@@ -170,12 +175,13 @@ class TestMimirSourceTrigger:
     async def test_poll_once_does_not_embed_literal_source_footer_marker(self) -> None:
         mimir = AsyncMock()
         mimir.list_sources = AsyncMock(return_value=[_source_meta(source_id="src-1")])
-        mimir.read_source = AsyncMock(return_value=_full_source(source_id="src-1"))
+        mimir.read_source_excerpt = AsyncMock(return_value=_full_source(source_id="src-1"))
         trigger = self._make_trigger(mimir=mimir)
         enqueued: list[AgentTask] = []
 
-        async def _enqueue(task: AgentTask) -> None:
+        async def _enqueue(task: AgentTask) -> bool:
             enqueued.append(task)
+            return True
 
         await trigger._poll_once(_enqueue)
         assert "<!-- sources: src-1 -->" not in enqueued[0].initiative_context
@@ -184,12 +190,13 @@ class TestMimirSourceTrigger:
     async def test_poll_once_handles_missing_source_content(self) -> None:
         mimir = AsyncMock()
         mimir.list_sources = AsyncMock(return_value=[_source_meta()])
-        mimir.read_source = AsyncMock(return_value=None)
+        mimir.read_source_excerpt = AsyncMock(return_value=None)
         trigger = self._make_trigger(mimir=mimir)
         enqueued: list[AgentTask] = []
 
-        async def _enqueue(task: AgentTask) -> None:
+        async def _enqueue(task: AgentTask) -> bool:
             enqueued.append(task)
+            return True
 
         await trigger._poll_once(_enqueue)
         assert len(enqueued) == 1
@@ -199,12 +206,13 @@ class TestMimirSourceTrigger:
     async def test_poll_once_includes_mount_tag_when_present(self) -> None:
         mimir = AsyncMock()
         mimir.list_sources = AsyncMock(return_value=[_source_meta(mount_name="gimle-wiki")])
-        mimir.read_source = AsyncMock(return_value=_full_source())
+        mimir.read_source_excerpt = AsyncMock(return_value=_full_source())
         trigger = self._make_trigger(mimir=mimir)
         enqueued: list[AgentTask] = []
 
-        async def _enqueue(task: AgentTask) -> None:
+        async def _enqueue(task: AgentTask) -> bool:
             enqueued.append(task)
+            return True
 
         # Just confirm it doesn't crash with mount_name set
         await trigger._poll_once(_enqueue)
@@ -217,6 +225,127 @@ class TestMimirSourceTrigger:
         trigger = self._make_trigger(mimir=mimir, poll_interval=1)
         with pytest.raises(asyncio.CancelledError):
             await trigger.run(AsyncMock())
+
+    # -- back-pressure ----------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_poll_once_stops_reading_once_the_queue_is_full(self) -> None:
+        """A refused task means every later one is refused too.
+
+        The shared mount's warden sat on a 138-source backlog and fetched every
+        source body — up to 5.5 MB each — before offering the task to a drive
+        loop that was already at its 50-task cap, so most of those reads were
+        thrown away and Mímir paid for all of them every ten minutes.
+        """
+        metas = [_source_meta(source_id=f"src-{i}") for i in range(10)]
+        mimir = AsyncMock()
+        mimir.list_sources = AsyncMock(return_value=metas)
+        mimir.read_source_excerpt = AsyncMock(return_value=_full_source())
+        trigger = self._make_trigger(mimir=mimir)
+
+        accepted: list[AgentTask] = []
+
+        async def _enqueue(task: AgentTask) -> bool:
+            if len(accepted) >= 2:
+                return False
+            accepted.append(task)
+            return True
+
+        await trigger._poll_once(_enqueue)
+
+        assert len(accepted) == 2
+        # Two accepted plus the one that was refused — not all ten.
+        assert mimir.read_source_excerpt.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_a_refused_source_is_retried_on_the_next_sweep(self) -> None:
+        """Suppressing a task the queue refused would strand it for retry_after."""
+        mimir = AsyncMock()
+        mimir.list_sources = AsyncMock(return_value=[_source_meta()])
+        mimir.read_source_excerpt = AsyncMock(return_value=_full_source())
+        trigger = self._make_trigger(mimir=mimir)
+
+        async def _refuse(task: AgentTask) -> bool:
+            return False
+
+        await trigger._poll_once(_refuse)
+
+        accepted: list[AgentTask] = []
+
+        async def _accept(task: AgentTask) -> bool:
+            accepted.append(task)
+            return True
+
+        await trigger._poll_once(_accept)
+
+        assert len(accepted) == 1
+
+    @pytest.mark.asyncio
+    async def test_poll_once_drains_the_backlog_oldest_first(self) -> None:
+        newest = _source_meta(source_id="src-new")
+        newest.ingested_at = datetime(2026, 8, 1, tzinfo=UTC)
+        oldest = _source_meta(source_id="src-old")
+        oldest.ingested_at = datetime(2026, 6, 1, tzinfo=UTC)
+        mimir = AsyncMock()
+        mimir.list_sources = AsyncMock(return_value=[newest, oldest])
+        mimir.read_source_excerpt = AsyncMock(return_value=_full_source())
+        trigger = self._make_trigger(mimir=mimir)
+
+        enqueued: list[AgentTask] = []
+
+        async def _enqueue(task: AgentTask) -> bool:
+            enqueued.append(task)
+            return True
+
+        await trigger._poll_once(_enqueue)
+
+        assert ["src-old", "src-new"] == [t.task_id.rsplit("_", 1)[-1] for t in enqueued]
+
+    @pytest.mark.asyncio
+    async def test_poll_once_skips_operational_sources(self) -> None:
+        """Exhaust can never be cited by a page, so it can never stop being swept.
+
+        The shared mount holds 61 such sources — dream-cycle markers, lint
+        reports, proof readbacks — ingested before the gate existed. Without
+        this skip they are re-swept every poll, forever.
+        """
+        knowledge = _source_meta(source_id="src-real", title="A datasheet")
+        exhaust = _source_meta(source_id="src-log", title="Dream cycle 2026-06-18T08:15")
+        exhaust.source_type = "tool_output"
+        probe = _source_meta(source_id="src-probe", title="Mimir health small ingest probe")
+        probe.source_type = "diagnostic"
+
+        mimir = AsyncMock()
+        mimir.list_sources = AsyncMock(return_value=[exhaust, probe, knowledge])
+        mimir.read_source_excerpt = AsyncMock(return_value=_full_source())
+        trigger = self._make_trigger(mimir=mimir)
+
+        enqueued: list[AgentTask] = []
+
+        async def _enqueue(task: AgentTask) -> bool:
+            enqueued.append(task)
+            return True
+
+        await trigger._poll_once(_enqueue)
+
+        assert [t.title for t in enqueued] == ["Synthesise Mímir source: A datasheet"]
+        # Skipped before the read — exhaust costs nothing at all now.
+        mimir.read_source_excerpt.assert_awaited_once_with("src-real", 120_000)
+
+    @pytest.mark.asyncio
+    async def test_poll_once_asks_for_a_bounded_excerpt(self) -> None:
+        """The context truncates anyway — do not ship the megabytes first."""
+        mimir = AsyncMock()
+        mimir.list_sources = AsyncMock(return_value=[_source_meta()])
+        mimir.read_source_excerpt = AsyncMock(return_value=_full_source())
+        trigger = self._make_trigger(mimir=mimir, max_content_chars=5_000)
+
+        async def _enqueue(task: AgentTask) -> bool:
+            return True
+
+        await trigger._poll_once(_enqueue)
+
+        mimir.read_source_excerpt.assert_awaited_once_with("src-1", 5_000)
 
 
 # ---------------------------------------------------------------------------
@@ -254,8 +383,9 @@ class TestMimirStalenessTrigger:
         trigger = self._make_trigger(usage=usage)
         enqueued: list[AgentTask] = []
 
-        async def _enqueue(task: AgentTask) -> None:
+        async def _enqueue(task: AgentTask) -> bool:
             enqueued.append(task)
+            return True
 
         await trigger._check_once(_enqueue)
         assert enqueued == []
@@ -272,8 +402,9 @@ class TestMimirStalenessTrigger:
         trigger = self._make_trigger(mimir=mimir, usage=usage)
         enqueued: list[AgentTask] = []
 
-        async def _enqueue(task: AgentTask) -> None:
+        async def _enqueue(task: AgentTask) -> bool:
             enqueued.append(task)
+            return True
 
         await trigger._check_once(_enqueue)
         assert enqueued == []
@@ -290,8 +421,9 @@ class TestMimirStalenessTrigger:
         trigger = self._make_trigger(mimir=mimir, usage=usage)
         enqueued: list[AgentTask] = []
 
-        async def _enqueue(task: AgentTask) -> None:
+        async def _enqueue(task: AgentTask) -> bool:
             enqueued.append(task)
+            return True
 
         await trigger._check_once(_enqueue)
         assert len(enqueued) == 1
@@ -309,8 +441,9 @@ class TestMimirStalenessTrigger:
         trigger = self._make_trigger(mimir=mimir, usage=usage)
         enqueued: list[AgentTask] = []
 
-        async def _enqueue(task: AgentTask) -> None:
+        async def _enqueue(task: AgentTask) -> bool:
             enqueued.append(task)
+            return True
 
         await trigger._check_once(_enqueue)
         await trigger._check_once(_enqueue)
@@ -325,8 +458,9 @@ class TestMimirStalenessTrigger:
         trigger = self._make_trigger(mimir=mimir, usage=usage)
         enqueued: list[AgentTask] = []
 
-        async def _enqueue(task: AgentTask) -> None:
+        async def _enqueue(task: AgentTask) -> bool:
             enqueued.append(task)
+            return True
 
         await trigger._check_once(_enqueue)
         assert enqueued == []

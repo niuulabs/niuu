@@ -865,7 +865,14 @@ def _build_mimir(settings: Settings) -> Any:
             rules=[(r["prefix"], r["mounts"]) for r in wr.rules],
             default=wr.default,
         )
-        return CompositeMimirAdapter(mounts=mounts, write_routing=routing)
+        retry = settings.mimir.read_retry
+        return CompositeMimirAdapter(
+            mounts=mounts,
+            write_routing=routing,
+            read_retry_max_seconds=retry.max_seconds,
+            read_retry_initial_backoff_seconds=retry.initial_backoff_seconds,
+            read_retry_max_backoff_seconds=retry.max_backoff_seconds,
+        )
 
     # Single local instance
     from mimir.adapters.markdown import MarkdownMimirAdapter

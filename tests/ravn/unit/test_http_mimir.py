@@ -624,3 +624,173 @@ async def test_aclose_is_idempotent() -> None:
     _ = await adapter._get_client()
     await adapter.aclose()
     await adapter.aclose()  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# HttpMimirAdapter — summarize
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_summarize_parses_the_summary_endpoint(adapter: HttpMimirAdapter) -> None:
+    respx.get("http://mimir.test/mimir/summary").mock(
+        return_value=Response(
+            200,
+            json={
+                "page_count": 568,
+                "source_count": 282,
+                "categories": ["research", "technical"],
+                "last_write": "2026-08-06T20:53:29+00:00",
+                "lint_issues": 7,
+                "lint_checked_at": "2026-08-06T18:00:00+00:00",
+            },
+        )
+    )
+
+    summary = await adapter.summarize()
+
+    assert summary.page_count == 568
+    assert summary.source_count == 282
+    assert summary.categories == ["research", "technical"]
+    assert summary.last_write is not None
+    assert summary.lint_issues == 7
+    assert summary.lint_checked_at is not None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_summarize_tolerates_empty_timestamps(adapter: HttpMimirAdapter) -> None:
+    """A never-linted, never-written mount reports empty strings, not nulls."""
+    respx.get("http://mimir.test/mimir/summary").mock(
+        return_value=Response(
+            200,
+            json={
+                "page_count": 0,
+                "source_count": 0,
+                "categories": [],
+                "last_write": "",
+                "lint_issues": 0,
+                "lint_checked_at": "",
+            },
+        )
+    )
+
+    summary = await adapter.summarize()
+
+    assert summary.last_write is None
+    assert summary.lint_checked_at is None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_summarize_falls_back_when_the_service_predates_the_endpoint(
+    adapter: HttpMimirAdapter,
+) -> None:
+    """Rollout is not atomic — an older Mímir must still be summarisable."""
+    now = datetime.now(UTC).isoformat()
+    respx.get("http://mimir.test/mimir/summary").mock(return_value=Response(404))
+    respx.get("http://mimir.test/mimir/pages").mock(
+        return_value=Response(
+            200,
+            json=[
+                {
+                    "path": "technical/test.md",
+                    "title": "Test",
+                    "summary": "",
+                    "category": "technical",
+                    "updated_at": now,
+                    "source_ids": [],
+                }
+            ],
+        )
+    )
+    respx.get("http://mimir.test/mimir/sources").mock(return_value=Response(200, json=[]))
+
+    summary = await adapter.summarize()
+
+    assert summary.page_count == 1
+    assert summary.source_count == 0
+    assert summary.categories == ["technical"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_read_source_excerpt_asks_the_service_to_bound_it(
+    adapter: HttpMimirAdapter,
+) -> None:
+    route = respx.get("http://mimir.test/mimir/source").mock(
+        return_value=Response(
+            200,
+            json={
+                "source_id": "src_abc123",
+                "title": "Test",
+                "content": "x" * 100,
+                "source_type": "document",
+                "content_hash": "abc",
+                "ingested_at": datetime.now(UTC).isoformat(),
+            },
+        )
+    )
+
+    source = await adapter.read_source_excerpt("src_abc123", 100)
+
+    assert source is not None
+    assert len(source.content) == 100
+    assert route.calls.last.request.url.params["max_chars"] == "100"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_read_source_excerpt_bounds_locally_if_the_service_ignores_it(
+    adapter: HttpMimirAdapter,
+) -> None:
+    """An older service returns the full blob — the caller's bound still holds."""
+    respx.get("http://mimir.test/mimir/source").mock(
+        return_value=Response(
+            200,
+            json={
+                "source_id": "src_abc123",
+                "title": "Test",
+                "content": "x" * 5_000,
+                "source_type": "document",
+                "content_hash": "abc",
+                "ingested_at": datetime.now(UTC).isoformat(),
+            },
+        )
+    )
+
+    source = await adapter.read_source_excerpt("src_abc123", 100)
+
+    assert source is not None
+    assert len(source.content) == 100
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_read_source_does_not_send_max_chars(adapter: HttpMimirAdapter) -> None:
+    route = respx.get("http://mimir.test/mimir/source").mock(
+        return_value=Response(
+            200,
+            json={
+                "source_id": "src_abc123",
+                "title": "Test",
+                "content": "full",
+                "source_type": "document",
+                "content_hash": "abc",
+                "ingested_at": datetime.now(UTC).isoformat(),
+            },
+        )
+    )
+
+    await adapter.read_source("src_abc123")
+
+    assert "max_chars" not in route.calls.last.request.url.params
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_read_source_excerpt_of_a_missing_source(adapter: HttpMimirAdapter) -> None:
+    respx.get("http://mimir.test/mimir/source").mock(return_value=Response(404))
+
+    assert await adapter.read_source_excerpt("src_missing", 100) is None

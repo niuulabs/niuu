@@ -79,7 +79,7 @@ class RecapTrigger(TriggerPort):
     def name(self) -> str:
         return "recap"
 
-    async def run(self, enqueue: Callable[[AgentTask], Awaitable[None]]) -> None:
+    async def run(self, enqueue: Callable[[AgentTask], Awaitable[bool]]) -> None:
         """Poll loop — runs until cancelled by the DriveLoop."""
         if not self._config.enabled:
             logger.info("RecapTrigger: disabled — exiting without polling")
@@ -104,7 +104,7 @@ class RecapTrigger(TriggerPort):
 
             await asyncio.sleep(self._config.poll_interval_seconds)
 
-    async def _poll_once(self, enqueue: Callable[[AgentTask], Awaitable[None]]) -> None:
+    async def _poll_once(self, enqueue: Callable[[AgentTask], Awaitable[bool]]) -> None:
         """Single poll cycle: check return / schedule, optionally enqueue recap."""
         now = datetime.now(UTC)
 
@@ -116,7 +116,7 @@ class RecapTrigger(TriggerPort):
 
     async def _check_return(
         self,
-        enqueue: Callable[[AgentTask], Awaitable[None]],
+        enqueue: Callable[[AgentTask], Awaitable[bool]],
         now: datetime,
     ) -> bool:
         """Detect operator return after absence; enqueue recap if warranted.
@@ -154,7 +154,7 @@ class RecapTrigger(TriggerPort):
 
     async def _check_schedule(
         self,
-        enqueue: Callable[[AgentTask], Awaitable[None]],
+        enqueue: Callable[[AgentTask], Awaitable[bool]],
         now: datetime,
     ) -> None:
         """Fire a scheduled recap if the cron expression matches *now*."""
@@ -186,7 +186,7 @@ class RecapTrigger(TriggerPort):
 
     async def _try_enqueue_recap(
         self,
-        enqueue: Callable[[AgentTask], Awaitable[None]],
+        enqueue: Callable[[AgentTask], Awaitable[bool]],
         now: datetime,
         *,
         triggered_by: str,

@@ -114,7 +114,7 @@ class ThreadEnricher(TriggerPort):
     def name(self) -> str:
         return "thread_enricher"
 
-    async def run(self, enqueue: Callable[[AgentTask], Awaitable[None]]) -> None:
+    async def run(self, enqueue: Callable[[AgentTask], Awaitable[bool]]) -> None:
         """Poll Mímir forever on the configured interval.
 
         Exits immediately (without polling) when ``config.enabled`` is False.

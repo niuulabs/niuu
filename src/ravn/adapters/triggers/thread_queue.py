@@ -72,7 +72,7 @@ class ThreadQueueTrigger(TriggerPort):
 
     async def run(
         self,
-        enqueue: Callable[[AgentTask], Awaitable[None]],
+        enqueue: Callable[[AgentTask], Awaitable[bool]],
     ) -> None:
         """Poll loop — runs until cancelled by the DriveLoop."""
         logger.info(
@@ -94,7 +94,7 @@ class ThreadQueueTrigger(TriggerPort):
 
     async def _poll_once(
         self,
-        enqueue: Callable[[AgentTask], Awaitable[None]],
+        enqueue: Callable[[AgentTask], Awaitable[bool]],
     ) -> None:
         """Single poll cycle: fetch queue → claim → transition → enqueue.
 

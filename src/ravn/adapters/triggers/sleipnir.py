@@ -69,7 +69,7 @@ class SleipnirEventTrigger(TriggerPort):
             logger.warning("Failed to render context_template: %s", exc)
             return self._context_template
 
-    async def run(self, enqueue: Callable[[AgentTask], Awaitable[None]]) -> None:
+    async def run(self, enqueue: Callable[[AgentTask], Awaitable[bool]]) -> None:
         try:
             import aio_pika  # type: ignore[import-untyped]
         except ImportError:
@@ -91,7 +91,7 @@ class SleipnirEventTrigger(TriggerPort):
                 await asyncio.sleep(self._retry_delay_seconds)
 
     async def _connect_and_consume(
-        self, aio_pika: object, enqueue: Callable[[AgentTask], Awaitable[None]]
+        self, aio_pika: object, enqueue: Callable[[AgentTask], Awaitable[bool]]
     ) -> None:
         connection = await aio_pika.connect_robust(self._amqp_url)  # type: ignore[attr-defined]
         async with connection:
@@ -118,7 +118,7 @@ class SleipnirEventTrigger(TriggerPort):
     async def _handle_message(
         self,
         message: object,
-        enqueue: Callable[[AgentTask], Awaitable[None]],
+        enqueue: Callable[[AgentTask], Awaitable[bool]],
     ) -> None:
         import json as _json
 

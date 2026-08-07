@@ -27,11 +27,13 @@ derived wiki pages should be reviewed and updated.
 
 from __future__ import annotations
 
+import asyncio
 import difflib
 import json
 import logging
+import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -57,6 +59,7 @@ from niuu.domain.mimir import (
     EntityType,
     LintIssue,
     MimirLintReport,
+    MimirMountSummary,
     MimirPage,
     MimirPageMeta,
     MimirQueryResult,
@@ -200,6 +203,25 @@ _MIN_GAP_MENTION_COUNT = 3  # mentions before a concept is flagged as a gap
 _MIN_KEY_FACTS = 3  # minimum key facts in a Compiled Truth zone before flagging as thin
 _STALE_CONTENT_DAYS = 60  # days without update before a page is flagged as stale content
 _LINT_CACHE_FILE = ".lint-cache.json"  # stores timeline hashes for L09 detection
+# Result of the last lint that actually ran, so mount summaries can report a
+# lint count without triggering a full corpus pass of their own.
+_LINT_LAST_COUNT_KEY = "last_issue_count"
+_LINT_LAST_RUN_KEY = "last_checked_at"
+
+
+def _stat_or_none(path: Path, kind: str) -> os.stat_result | None:
+    """Stat *path*, or return None if it went away underneath us.
+
+    Summaries walk directories that ingest and lint are actively writing to, so
+    a file can vanish between the glob and the stat.  One racing delete must
+    not fail the whole summary — the entry is skipped and reported.
+    """
+    try:
+        return path.stat()
+    except OSError as exc:
+        logger.warning("Mímir: failed to stat %s %s: %s", kind, path.name, exc)
+        return None
+
 
 # Page types that must have Compiled Truth + Timeline zones
 _MANDATORY_COMPILED_TRUTH_TYPES: frozenset[PageType] = frozenset(
@@ -347,6 +369,14 @@ class MarkdownMimirAdapter(MimirPort):
         self._page_chunk_counts: dict[str, int] = {}
         # Lazily-built wikilink graph (NIU-1058); invalidated on page writes.
         self._graph_cache: LinkGraph | None = None
+        # Raw-source metadata keyed by filename, each entry stamped with the
+        # (mtime_ns, size) it was parsed from.  list_sources() only needs four
+        # fields, but the bodies behind them run to megabytes, so re-parsing
+        # every source on every call is what starved the event loop.
+        self._source_meta_cache: dict[str, tuple[tuple[int, int], MimirSourceMeta]] = {}
+        # Lint walks and rewrites the whole corpus; it now runs off-loop, so
+        # serialise it rather than let two passes interleave their cache writes.
+        self._lint_lock = asyncio.Lock()
         self._ensure_layout()
 
     # ------------------------------------------------------------------
@@ -482,6 +512,11 @@ class MarkdownMimirAdapter(MimirPort):
         Staleness detection (L03) requires re-fetching remote URLs and is
         therefore not performed here; use ``is_source_stale()`` during re-ingest.
         """
+        async with self._lint_lock:
+            return await asyncio.to_thread(self._lint_sync, fix)
+
+    def _lint_sync(self, fix: bool) -> MimirLintReport:
+        """Synchronous body of ``lint`` — see there for semantics."""
         pages_with_content = self._list_pages_with_content()
         all_pages = [meta for meta, _ in pages_with_content]
         content_map = {meta.path: content for meta, content in pages_with_content}
@@ -509,6 +544,10 @@ class MarkdownMimirAdapter(MimirPort):
             content_map = {meta.path: c for meta, c in pages_with_content}
 
         self._update_timeline_cache(content_map, lint_cache)
+        # Recorded so mount summaries can report a real, attributable lint count
+        # instead of running their own pass over the corpus.
+        lint_cache[_LINT_LAST_COUNT_KEY] = len(issues)
+        lint_cache[_LINT_LAST_RUN_KEY] = datetime.now(UTC).isoformat()
         self._save_lint_cache(lint_cache)
 
         report = MimirLintReport(issues=issues, pages_checked=len(all_pages))
@@ -756,20 +795,104 @@ class MarkdownMimirAdapter(MimirPort):
             raise FileNotFoundError(f"Mímir page not found: {path}")
         return page_path.read_text(encoding="utf-8")
 
+    async def summarize(self) -> MimirMountSummary:
+        """Return page/source counts and last-write time without reading bodies.
+
+        Answered entirely from directory entries and ``stat()``: the mount
+        listing is polled continuously and previously walked the whole corpus
+        (every page body, every source blob, plus a full lint) on each call,
+        which blocked the event loop for seconds at a time and cost the service
+        its liveness probe.
+        """
+        return await asyncio.to_thread(self._summarize_sync)
+
+    def _summarize_sync(self) -> MimirMountSummary:
+        """Synchronous body of ``summarize`` — see there for semantics."""
+        categories: set[str] = set()
+        page_count = 0
+        last_write: datetime | None = None
+
+        def _note_write(mtime: float) -> datetime:
+            return datetime.fromtimestamp(mtime, tz=UTC)
+
+        # glob on a missing directory yields nothing, so no existence guard is
+        # needed — and the store's layout is created in the constructor anyway.
+        for md_path in self._wiki.rglob("*.md"):
+            if md_path.name in {"index.md", "log.md"}:
+                continue
+            stat = _stat_or_none(md_path, "page")
+            if stat is None:
+                continue
+            page_count += 1
+            rel_parts = str(self._wiki_relative_path(md_path)).split("/")
+            categories.add(rel_parts[0] if len(rel_parts) > 1 else "uncategorised")
+            written = _note_write(stat.st_mtime)
+            if last_write is None or written > last_write:
+                last_write = written
+
+        source_count = 0
+        for json_path in self._raw.glob("*.json"):
+            stat = _stat_or_none(json_path, "raw source")
+            if stat is None:
+                continue
+            source_count += 1
+            written = _note_write(stat.st_mtime)
+            if last_write is None or written > last_write:
+                last_write = written
+
+        lint_cache = self._load_lint_cache()
+        checked_raw = lint_cache.get(_LINT_LAST_RUN_KEY)
+        checked_at: datetime | None = None
+        if isinstance(checked_raw, str):
+            try:
+                checked_at = datetime.fromisoformat(checked_raw)
+            except ValueError:
+                logger.warning("Mímir: lint cache holds an unparseable timestamp %r", checked_raw)
+
+        return MimirMountSummary(
+            page_count=page_count,
+            source_count=source_count,
+            categories=sorted(categories),
+            last_write=last_write,
+            lint_issues=int(lint_cache.get(_LINT_LAST_COUNT_KEY, 0)),
+            lint_checked_at=checked_at,
+        )
+
     async def list_pages(
         self,
         category: str | None = None,
         prefix: str | None = None,
     ) -> list[MimirPageMeta]:
         """List all wiki pages, optionally filtered by category or path prefix."""
-        pages = [meta for meta, _ in self._list_pages_with_content(category)]
+        pages_with_content = await asyncio.to_thread(self._list_pages_with_content, category)
+        pages = [meta for meta, _ in pages_with_content]
         if prefix is None:
             return pages
         return [meta for meta in pages if meta.path.startswith(prefix)]
 
     async def read_source(self, source_id: str) -> MimirSource | None:
         """Return the full raw source by ID, or None if not found."""
-        return self.read_raw_source(source_id)
+        return await asyncio.to_thread(self.read_raw_source, source_id)
+
+    async def read_source_excerpt(
+        self,
+        source_id: str,
+        max_chars: int,
+    ) -> MimirSource | None:
+        """Return the raw source with its content bounded to *max_chars*.
+
+        The blob still has to be parsed off disk, so the saving here is in what
+        the caller receives — over HTTP that is the whole point, since the
+        service serialises and ships only the prefix.
+        """
+        return await asyncio.to_thread(self._read_raw_source_excerpt, source_id, max_chars)
+
+    def _read_raw_source_excerpt(self, source_id: str, max_chars: int) -> MimirSource | None:
+        """Synchronous body of ``read_source_excerpt`` — see there for semantics."""
+        source = self.read_raw_source(source_id)
+        if source is None or max_chars <= 0 or len(source.content) <= max_chars:
+            return source
+        return replace(source, content=source.content[:max_chars])
 
     async def list_sources(self, *, unprocessed_only: bool = False) -> list[MimirSourceMeta]:
         """List all ingested raw sources.
@@ -777,25 +900,15 @@ class MarkdownMimirAdapter(MimirPort):
         When *unprocessed_only* is True, returns only sources not yet referenced
         by any wiki page (cross-referenced via ``<!-- sources: ... -->`` footers).
         """
-        if not self._raw.exists():
-            return []
+        return await asyncio.to_thread(self._list_sources_sync, unprocessed_only)
 
-        all_sources: list[MimirSourceMeta] = []
-        for json_path in self._raw.glob("*.json"):
-            try:
-                data = json.loads(json_path.read_text(encoding="utf-8"))
-                all_sources.append(
-                    MimirSourceMeta(
-                        source_id=data["source_id"],
-                        title=data["title"],
-                        ingested_at=datetime.fromisoformat(data["ingested_at"]),
-                        source_type=data["source_type"],
-                    )
-                )
-            except Exception as exc:
-                logger.warning("Mímir: failed to read raw source %s: %s", json_path.name, exc)
+    def _list_sources_sync(self, unprocessed_only: bool) -> list[MimirSourceMeta]:
+        """Synchronous body of ``list_sources`` — see there for semantics."""
+        all_sources = self._read_source_meta()
 
-        if not unprocessed_only:
+        # With nothing ingested there is nothing to cross-reference, so skip the
+        # page walk the unprocessed filter would otherwise do.
+        if not unprocessed_only or not all_sources:
             return all_sources
 
         # Collect all source_ids referenced across wiki pages
@@ -1238,6 +1351,52 @@ class MarkdownMimirAdapter(MimirPort):
             except Exception as exc:
                 logger.warning("Mímir: failed to read raw source %s: %s", json_path.name, exc)
         return pairs
+
+    def _read_source_meta(self) -> list[MimirSourceMeta]:
+        """Return metadata for every persisted raw source.
+
+        Raw sources are append-only megabyte-scale JSON blobs, so results are
+        cached per file and re-parsed only when the file's ``(mtime_ns, size)``
+        changes.  A source that is unreadable or malformed is dropped from the
+        listing with a warning rather than failing the whole listing — one bad
+        file must not make the mount look empty.
+        """
+        metas: list[MimirSourceMeta] = []
+        live_names: set[str] = set()
+
+        for json_path in self._raw.glob("*.json"):
+            stat = _stat_or_none(json_path, "raw source")
+            if stat is None:
+                continue
+
+            live_names.add(json_path.name)
+            stamp = (stat.st_mtime_ns, stat.st_size)
+            cached = self._source_meta_cache.get(json_path.name)
+            if cached is not None and cached[0] == stamp:
+                metas.append(cached[1])
+                continue
+
+            try:
+                data = json.loads(json_path.read_text(encoding="utf-8"))
+                meta = MimirSourceMeta(
+                    source_id=data["source_id"],
+                    title=data["title"],
+                    ingested_at=datetime.fromisoformat(data["ingested_at"]),
+                    source_type=data["source_type"],
+                    origin_url=data.get("origin_url"),
+                )
+            except Exception as exc:
+                logger.warning("Mímir: failed to read raw source %s: %s", json_path.name, exc)
+                continue
+
+            self._source_meta_cache[json_path.name] = (stamp, meta)
+            metas.append(meta)
+
+        # Drop cache entries for sources that no longer exist on disk.
+        for stale in self._source_meta_cache.keys() - live_names:
+            del self._source_meta_cache[stale]
+
+        return metas
 
     def read_raw_source(self, source_id: str) -> MimirSource | None:
         """Read a persisted raw source by ID.  Returns None if not found."""

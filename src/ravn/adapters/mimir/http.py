@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ import httpx
 from niuu.domain.mimir import (
     LintIssue,
     MimirLintReport,
+    MimirMountSummary,
     MimirPage,
     MimirPageMeta,
     MimirQueryResult,
@@ -237,6 +239,31 @@ class HttpMimirAdapter(MimirPort):
         response.raise_for_status()
         return [_parse_page_meta(m) for m in response.json()]
 
+    async def summarize(self) -> MimirMountSummary:
+        """GET /mimir/summary — counts and last-write time in one cheap call.
+
+        Older Mímir services predate the endpoint and answer 404; those fall
+        back to the port default, which derives the same summary from
+        ``list_pages``/``list_sources`` at the cost of transferring the corpus.
+        """
+        response = await self._request("GET", "/mimir/summary")
+        if response.status_code == 404:
+            logger.debug(
+                "mimir http: %s has no /mimir/summary — falling back to full listing",
+                self._base_url,
+            )
+            return await super().summarize()
+        response.raise_for_status()
+        data = response.json()
+        return MimirMountSummary(
+            page_count=data["page_count"],
+            source_count=data["source_count"],
+            categories=data.get("categories", []),
+            last_write=_parse_optional_datetime(data.get("last_write")),
+            lint_issues=data.get("lint_issues", 0),
+            lint_checked_at=_parse_optional_datetime(data.get("lint_checked_at")),
+        )
+
     async def lint(self, fix: bool = False) -> MimirLintReport:
         """GET /mimir/lint or POST /mimir/lint/fix — return health-check report."""
         if fix:
@@ -262,7 +289,30 @@ class HttpMimirAdapter(MimirPort):
 
     async def read_source(self, source_id: str) -> MimirSource | None:
         """GET /mimir/source?source_id=... — return full raw source."""
-        response = await self._request("GET", "/mimir/source", params={"source_id": source_id})
+        return await self._get_source(source_id, max_chars=None)
+
+    async def read_source_excerpt(
+        self,
+        source_id: str,
+        max_chars: int,
+    ) -> MimirSource | None:
+        """GET /mimir/source?source_id=...&max_chars=N — bounded on the server.
+
+        Raw sources reach several megabytes; bounding here means the service
+        never serialises or ships the part the caller would discard.  A service
+        that predates the parameter ignores it and returns the full source, so
+        the result is still correct — bound it locally in that case.
+        """
+        source = await self._get_source(source_id, max_chars=max_chars)
+        if source is None or max_chars <= 0 or len(source.content) <= max_chars:
+            return source
+        return replace(source, content=source.content[:max_chars])
+
+    async def _get_source(self, source_id: str, *, max_chars: int | None) -> MimirSource | None:
+        params: dict[str, Any] = {"source_id": source_id}
+        if max_chars is not None and max_chars > 0:
+            params["max_chars"] = max_chars
+        response = await self._request("GET", "/mimir/source", params=params)
         if response.status_code == 404:
             return None
         response.raise_for_status()
@@ -371,6 +421,7 @@ class HttpMimirAdapter(MimirPort):
                 title=item["title"],
                 ingested_at=datetime.fromisoformat(item["ingested_at"]),
                 source_type=item["source_type"],
+                origin_url=item.get("origin_url"),
             )
             for item in response.json()
         ]
@@ -401,6 +452,13 @@ def _parse_thread_page(data: dict) -> MimirPage:
         is_thread=True,
     )
     return MimirPage(meta=meta, content=data.get("content", ""))
+
+
+def _parse_optional_datetime(raw: str | None) -> datetime | None:
+    """Parse an ISO timestamp that the service may legitimately leave empty."""
+    if not raw:
+        return None
+    return datetime.fromisoformat(raw)
 
 
 def _parse_page_meta(data: dict) -> MimirPageMeta:

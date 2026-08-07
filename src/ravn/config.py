@@ -1620,6 +1620,40 @@ class MimirInstanceConfig(BaseModel):
     )
 
 
+class MimirReadRetryConfig(BaseModel):
+    """Retry policy for reads that every mount failed to answer.
+
+    A mount restart takes a remote Mímir out of service for as long as it needs
+    to rebuild its search index, during which the gateway in front of it answers
+    503. Callers that verify provenance treat an unanswerable read as a hard
+    failure, so a restart lands as a failed workflow rather than a pause.
+    Retrying across that window is the difference between the two.
+
+    The budget is deliberately wall-clock rather than an attempt count: what
+    matters is covering a restart, and attempt counts silently stop covering it
+    as backoff changes.
+    """
+
+    max_seconds: float = Field(
+        default=90.0,
+        ge=0.0,
+        description=(
+            "Total wall-clock budget for retrying a read that no mount could answer. "
+            "Sized to outlast a Mímir restart. 0 disables retrying."
+        ),
+    )
+    initial_backoff_seconds: float = Field(
+        default=1.0,
+        gt=0.0,
+        description="Delay before the first retry; doubles per attempt up to max_backoff_seconds.",
+    )
+    max_backoff_seconds: float = Field(
+        default=10.0,
+        gt=0.0,
+        description="Ceiling for the exponential backoff between retries.",
+    )
+
+
 class MimirWriteRoutingConfig(BaseModel):
     """Config-driven write routing for the CompositeMimirAdapter.
 
@@ -1829,6 +1863,10 @@ class MimirConfig(BaseModel):
     write_routing: MimirWriteRoutingConfig = Field(
         default_factory=MimirWriteRoutingConfig,
         description="Write routing rules for the CompositeMimirAdapter.",
+    )
+    read_retry: MimirReadRetryConfig = Field(
+        default_factory=MimirReadRetryConfig,
+        description="Retry policy for reads that no mount could answer.",
     )
     source_trigger: MimirSourceTriggerConfig = Field(
         default_factory=MimirSourceTriggerConfig,
