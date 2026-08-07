@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import httpx
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -841,6 +843,77 @@ def test_detail_reads_artifacts_from_mimir_and_uses_manifest_for_publish_state(
     assert paths["research/campaigns/retrieval-landscape/brief.md"]["publishState"] == "unpublished"
     assert body["canonicalArtifacts"]["final"] == "research/campaigns/retrieval-landscape/final.md"
     assert any(stage["status"] == "complete" for stage in body["stageState"])
+
+
+def test_detail_survives_mimir_timeout_without_regressing_stage_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A slow artifact store must not delete the campaign, nor rewrite its stages.
+
+    Mimir lists pages by walking the corpus even when given a prefix, so past
+    30s it times out. The exception used to escape and 500 the whole detail
+    route, which removed four finished campaigns from the research page. Worse,
+    had it returned an empty list instead, _derive_stage_state would have read
+    that as "no stages complete" and persisted the regression over real
+    progress.
+    """
+    workflow = _research_workflow(tmp_path)
+    now = datetime.now(UTC)
+    finished_stages = [
+        CampaignStageState(stage_id="frame", label="Frame the inquiry", status="complete"),
+        CampaignStageState(stage_id="explore", label="Explore the evidence", status="complete"),
+        CampaignStageState(stage_id="challenge", label="Challenge the thesis", status="complete"),
+        CampaignStageState(stage_id="publish", label="Publish to Mimir", status="complete"),
+    ]
+    campaign = WorkflowCampaign(
+        id=uuid4(),
+        slug="slow-store",
+        name="Slow store",
+        owner_id="user-1",
+        workflow_id=workflow.id,
+        workflow_version=workflow.version,
+        workflow_name=workflow.name,
+        workflow_snapshot=build_workflow_snapshot(workflow),
+        session_id="session-1",
+        session_name="Slow store",
+        status=WorkflowCampaignStatus.COMPLETED,
+        active_stage_id="publish",
+        stage_state=finished_stages,
+        metadata={"question": "Does a slow store erase a finished campaign?"},
+        created_at=now,
+        updated_at=now,
+        last_activity_at=now,
+        completed_at=now,
+    )
+    campaign_repo = InMemoryWorkflowCampaignRepository([campaign])
+
+    async def _timeout(*_args: object, **_kwargs: object) -> list[object]:
+        raise httpx.ReadTimeout("mimir took too long")
+
+    monkeypatch.setattr(
+        "ting.api.research.MarkdownMimirAdapter.list_pages",
+        _timeout,
+        raising=False,
+    )
+
+    client = _make_client(
+        InMemoryWorkflowRepository([workflow]),
+        campaign_repo,
+        RecordingVolundrFactory(RecordingVolundrPort()),
+    )
+    response = client.get("/api/v1/ting/research/campaigns/slow-store", headers=_headers())
+
+    # The campaign is still there — it does not vanish from the page.
+    assert response.status_code == 200
+    body = response.json()
+    assert body["slug"] == "slow-store"
+    # And it says so, rather than implying the campaign produced nothing.
+    assert body["artifactsUnavailable"] is True
+    assert body["artifacts"] == []
+    # The finished stages are intact, not rewritten from an empty listing.
+    assert [stage["status"] for stage in body["stageState"]] == ["complete"] * 4
+    assert list(campaign_repo._campaigns.values())[0].stage_state == finished_stages
 
 
 def test_artifact_endpoint_rejects_paths_outside_campaign(tmp_path: Path) -> None:
